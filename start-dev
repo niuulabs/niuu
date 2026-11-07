@@ -45,7 +45,6 @@ export RAVN_GATEWAY__PLATFORM__BASE_URL="${RAVN_GATEWAY__PLATFORM__BASE_URL:-htt
 UI_VARIANT="${UI_VARIANT:-new}"
 export UI_VARIANT
 PLATFORM_URL="http://${PLATFORM_INTERNAL_HOST}:8080/health"
-VALKYRIE_URL="http://${PLATFORM_INTERNAL_HOST}:8080/api/v1/ravn/valkyrie/dashboard"
 
 mkdir -p "${LOG_DIR}"
 
@@ -189,23 +188,6 @@ bootstrap_dependencies() {
   ensure_node
 }
 
-wait_for_url() {
-  local url="$1"
-  local label="$2"
-  local attempts="${3:-60}"
-
-  for ((i = 1; i <= attempts; i++)); do
-    if curl -fsS "${url}" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 1
-  done
-
-  echo "${label} failed to become ready. Check logs:" >&2
-  echo "  ${PLATFORM_LOG}" >&2
-  return 1
-}
-
 wait_for_platform() {
   local pid="$1"
   local url="$2"
@@ -300,7 +282,6 @@ with open(pid_path, "w", encoding="utf-8") as pid_file:
     pid_file.write(str(process.pid))
 PY
 wait_for_platform "$(cat "${PLATFORM_PID_FILE}")" "${PLATFORM_URL}"
-wait_for_url "${VALKYRIE_URL}" "Valkyrie dashboard"
 
 trap - ERR
 
@@ -311,11 +292,9 @@ UI:
   variant: web-next
   http://${PLATFORM_PUBLIC_HOST}:8080/?config=/config.live.json
   http://${PLATFORM_PUBLIC_HOST}:8080/volundr?config=/config.live.json
-  http://${PLATFORM_PUBLIC_HOST}:8080/valkyries?config=/config.live.json
 
 API:
   http://${PLATFORM_PUBLIC_HOST}:8080/health
-  http://${PLATFORM_PUBLIC_HOST}:8080/api/v1/ravn/valkyrie/dashboard
 
 Logs:
   ${PLATFORM_LOG}

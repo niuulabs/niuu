@@ -76,11 +76,8 @@ def load_base_config(path: Path | None) -> dict[str, Any]:
 _SELF_DRIVING_SECTIONS = (
     ("mimir", "source_trigger"),
     ("mimir", "staleness_trigger"),
-    ("resident_wakefulness", None),
     ("recap", None),
-    ("dream_cycle", None),
     ("thread", None),
-    ("resident_inbox", None),
 )
 
 

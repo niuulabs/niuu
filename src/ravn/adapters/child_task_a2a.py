@@ -235,7 +235,6 @@ class ConfiguredRavnChildTaskA2AGateway(RavnChildTaskA2AGateway):
         result_max_chars: int = 12_000,
         default_connection_id: str = "",
         default_metadata: dict[str, Any] | None = None,
-        push_callback_url: str = "",
         anonymous_dev_mode: bool = False,
     ) -> None:
         origins = list(dict.fromkeys([base_url, *(trusted_origins or [])]))
@@ -273,7 +272,6 @@ class ConfiguredRavnChildTaskA2AGateway(RavnChildTaskA2AGateway):
                 result_max_chars=result_max_chars,
                 default_connection_id=default_connection_id,
                 default_metadata=default_metadata,
-                push_callback_url=push_callback_url,
             ),
             workflow_execution_base_url=base_url,
         )

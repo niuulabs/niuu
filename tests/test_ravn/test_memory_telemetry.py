@@ -20,7 +20,6 @@ from ravn import memory_telemetry
 from ravn.adapters.memory.scoring import combined_score, score_and_admit
 from ravn.adapters.memory.sqlite import SqliteMemoryAdapter
 from ravn.adapters.mimir.http import HttpMimirAdapter
-from ravn.adapters.resident_state import select_resident_state
 from ravn.domain.models import Episode, Outcome
 
 _MIMIR_URL = "http://mimir.test"
@@ -292,30 +291,6 @@ class TestSqliteAdapterOperations:
             name for name, _, _ in telemetry.gauges if name == memory_telemetry.CORPUS_EPISODES
         ]
         assert len(samples) == 1
-
-
-class TestResidentStateSelection:
-    """One configured adapter, no fallback.
-
-    Demoting to a second store when the first was unavailable ran every
-    resident against different data than configured, permanently and silently.
-    """
-
-    class _Adapter:
-        def __init__(self, available: bool) -> None:
-            self._available = available
-
-        async def available(self) -> bool:
-            return self._available
-
-    async def test_available_adapter_is_returned(self) -> None:
-        adapter = self._Adapter(available=True)
-
-        assert await select_resident_state(adapter) is adapter
-
-    async def test_unavailable_adapter_raises_instead_of_substituting(self) -> None:
-        with pytest.raises(RuntimeError, match="backend is not available"):
-            await select_resident_state(self._Adapter(available=False))
 
 
 class TestMimirOperations:

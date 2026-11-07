@@ -19,7 +19,6 @@ from ravn.adapters.triggers.cron import CronJob, CronTrigger, _cron_matches, par
 from ravn.cap_telemetry import degraded_counts
 from ravn.config import InitiativeConfig, Settings, TriggerAdapterConfig
 from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.domain.exceptions import UnboundOperatorReplyError
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.drive_loop import DriveLoop
 from ravn.prompt_builder import build_initiative_prompt
@@ -166,38 +165,6 @@ def test_build_initiative_prompt_identifies_human_channel_input_truthfully() -> 
     assert "No human sent this message" not in prompt
 
 
-def test_build_initiative_prompt_teaches_the_resident_outcome_contract() -> None:
-    """A resident persona is validated against the judgment contract on every
-    turn, so every turn must be shown it. Charter-driven wakes (stewardship,
-    scheduled wake, operator answer, dream cycle) carry no template of their
-    own — without this they were asked for a shape nobody had described."""
-    task = _make_task()
-
-    prompt = build_initiative_prompt(task, produces_event_type="valkyrie.judgment.proposed")
-
-    assert "---outcome---" in prompt
-    assert "---end---" in prompt
-    for field in ("signal_refs", "tier", "confidence", "operational_state"):
-        assert f"{field}:" in prompt
-
-
-def test_build_initiative_prompt_does_not_repeat_a_template_already_in_context() -> None:
-    task = _make_task()
-    task.initiative_context = "Signal turn\n---outcome---\ndecision: watch\n---end---"
-
-    prompt = build_initiative_prompt(task, produces_event_type="valkyrie.judgment.proposed")
-
-    assert prompt.count("## Required outcome") == 0
-
-
-def test_build_initiative_prompt_omits_the_contract_for_non_resident_personas() -> None:
-    task = _make_task()
-
-    prompt = build_initiative_prompt(task, produces_event_type="task.completed")
-
-    assert "## Required outcome" not in prompt
-
-
 # ---------------------------------------------------------------------------
 # DriveLoop — enqueue / priority ordering
 # ---------------------------------------------------------------------------
@@ -275,61 +242,8 @@ async def test_drive_loop_keeps_one_pending_occurrence_per_cron_job(tmp_path: Pa
     assert loop.queued_task_ids() == [first.task_id]
 
 
-@pytest.mark.asyncio
-async def test_drive_loop_keeps_one_pending_idle_triage_window(tmp_path: Path) -> None:
-    """Windows coalesce: a second one waits in its producer, not ahead of other work."""
-    loop, _ = _make_drive_loop(tmp_path)
-    first = _make_task(priority=9, triggered_by="signal:idle_triage")
-    second = _make_task(priority=9, triggered_by="signal:idle_triage")
-
-    assert await loop.enqueue(first) is True
-    assert await loop.enqueue(second) is False
-
-    assert loop.queued_task_ids() == [first.task_id]
-
-
 def _journal_record(task: AgentTask) -> dict:
     return DriveLoop._task_journal_record(task)
-
-
-@pytest.mark.asyncio
-async def test_journal_restore_lifts_a_home_turn_to_home_priority(tmp_path: Path) -> None:
-    """A home turn journaled at the old default priority must not wait behind signals."""
-    journal = tmp_path / "queue.json"
-    home = _make_task(priority=10, triggered_by="resident:home")
-    signal_task = _make_task(priority=9, triggered_by="signal:idle_triage")
-    journal.write_text(
-        json.dumps({"queue": [_journal_record(signal_task), _journal_record(home)], "inflight": []})
-    )
-    loop = DriveLoop(
-        agent_factory=MagicMock(),
-        config=_make_initiative_config(queue_journal_path=str(journal)),
-        settings=Settings(),
-    )
-
-    loop._load_journal()
-
-    assert loop.queued_task_ids()[0] == home.task_id
-
-
-@pytest.mark.asyncio
-async def test_journal_restore_keeps_only_the_newest_idle_triage_window(tmp_path: Path) -> None:
-    journal = tmp_path / "queue.json"
-    older = _make_task(priority=9, triggered_by="signal:idle_triage")
-    newer = _make_task(priority=9, triggered_by="signal:idle_triage")
-    newer.created_at = older.created_at + timedelta(minutes=15)
-    journal.write_text(
-        json.dumps({"queue": [_journal_record(older), _journal_record(newer)], "inflight": []})
-    )
-    loop = DriveLoop(
-        agent_factory=MagicMock(),
-        config=_make_initiative_config(queue_journal_path=str(journal)),
-        settings=Settings(),
-    )
-
-    loop._load_journal()
-
-    assert loop.queued_task_ids() == [newer.task_id]
 
 
 def test_unreadable_journal_stops_startup_instead_of_emptying_the_queue(tmp_path: Path) -> None:
@@ -359,7 +273,7 @@ def test_unrestorable_journal_entry_stops_startup(tmp_path: Path) -> None:
 
 
 def test_failed_journal_write_is_counted_as_degraded(tmp_path: Path) -> None:
-    from ravn.cap_telemetry import degraded_counts, reset_cap_hits
+    from ravn.cap_telemetry import reset_cap_hits
 
     reset_cap_hits()
     blocker = tmp_path / "not-a-directory"
@@ -626,7 +540,6 @@ def test_drive_loop_journal_keeps_newest_recurring_occurrence(tmp_path: Path) ->
 async def test_drive_loop_surface_escalation_logged(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    import logging
 
     loop, factory = _make_drive_loop(tmp_path)
 
@@ -1237,7 +1150,6 @@ async def test_condition_poll_run_sensor_exception_continues_loop() -> None:
 
 @pytest.mark.asyncio
 async def test_sleipnir_trigger_disabled_without_aio_pika(caplog) -> None:
-    import logging
 
     from ravn.adapters.triggers.sleipnir import SleipnirEventTrigger
 
@@ -1367,103 +1279,6 @@ async def test_directed_message_steers_single_active_agent(tmp_path: Path) -> No
 
     steerable.steer.assert_awaited_once_with("Change course")
     loop.enqueue.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_directed_message_interceptor_can_consume_reply(tmp_path: Path) -> None:
-    loop, _ = _make_drive_loop(tmp_path)
-    loop.enqueue = AsyncMock()
-    interceptor = AsyncMock(return_value=True)
-    loop.register_directed_message_interceptor(interceptor)
-
-    steerable = MagicMock()
-    steerable.supports_steering = True
-    steerable.steering_mode = "live"
-    steerable.steer = AsyncMock(return_value=True)
-    loop._active_agents["task-1"] = steerable
-
-    metadata = {"help_context": {"operator_contact_id": "operator-contact-risky"}}
-    assert await loop.handle_directed_message("Approved", metadata) is True
-
-    interceptor.assert_awaited_once_with("Approved", metadata)
-    steerable.steer.assert_not_called()
-    loop.enqueue.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_an_unbound_operator_reply_is_delivered_labelled_not_as_chat(
-    tmp_path: Path,
-) -> None:
-    """A reply whose question is gone is not swallowed, steered into the running turn,
-    or passed off as fresh chat: it is queued and says it bound to nothing."""
-    loop, _ = _make_drive_loop(tmp_path)
-    loop.enqueue = AsyncMock(return_value=True)
-    loop.register_directed_message_interceptor(
-        AsyncMock(side_effect=UnboundOperatorReplyError("resident-stewardship-1"))
-    )
-    steerable = MagicMock()
-    steerable.supports_steering = True
-    steerable.steering_mode = "live"
-    steerable.steer = AsyncMock(return_value=True)
-    loop._active_agents["task-1"] = steerable
-
-    assert await loop.handle_directed_message(
-        "It is intended behaviour",
-        {"help_context": {"resident_case_id": "resident-stewardship-1"}},
-    )
-
-    steerable.steer.assert_not_called()
-    task = loop.enqueue.await_args.args[0]
-    assert "resident case resident-stewardship-1" in task.initiative_context
-    assert "not applied as an answer" in task.initiative_context
-    assert "Human reply: It is intended behaviour" in task.initiative_context
-
-
-@pytest.mark.asyncio
-async def test_an_unbound_operator_reply_is_counted(tmp_path: Path) -> None:
-    loop, _ = _make_drive_loop(tmp_path)
-    loop.enqueue = AsyncMock(return_value=True)
-    loop.register_directed_message_interceptor(
-        AsyncMock(side_effect=UnboundOperatorReplyError("resident-stewardship-1"))
-    )
-
-    await loop.handle_directed_message("late answer", None)
-
-    assert degraded_counts() == {"operator_reply.unbound": 1}
-
-
-@pytest.mark.asyncio
-async def test_a_failed_operator_answer_save_is_delivered_and_counted(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Raising would drop the operator's words; carrying on must still be loud."""
-    loop, _ = _make_drive_loop(tmp_path)
-    loop.enqueue = AsyncMock(return_value=True)
-    loop.register_directed_message_interceptor(AsyncMock(side_effect=OSError("disk full")))
-
-    with caplog.at_level(logging.ERROR):
-        assert await loop.handle_directed_message("Approved", None) is True
-
-    task = loop.enqueue.await_args.args[0]
-    assert "Approved" in task.initiative_context
-    assert degraded_counts() == {"operator_reply.persist": 1}
-    assert any(
-        r.levelno == logging.ERROR and "operator_reply.persist" in r.getMessage()
-        for r in caplog.records
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_failed_directed_message_persist_is_counted(tmp_path: Path) -> None:
-    loop, _ = _make_drive_loop(tmp_path)
-    loop.enqueue = AsyncMock(return_value=True)
-    loop._resident_runtime = MagicMock(
-        capture_directed_message=AsyncMock(side_effect=OSError("read-only"))
-    )
-
-    assert await loop.handle_directed_message("hello", None, output_mode=OutputMode.AMBIENT)
-
-    assert degraded_counts() == {"directed_message.persist": 1}
 
 
 @pytest.mark.asyncio
@@ -1767,7 +1582,6 @@ async def test_finalise_thread_mimir_error_is_logged_not_raised(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Mímir errors during finalisation → logged, not propagated."""
-    import logging
 
     loop, factory, mock_mimir = _make_drive_loop_with_mimir(tmp_path)
     mock_mimir.update_thread_state = AsyncMock(side_effect=Exception("mimir down"))

@@ -47,7 +47,7 @@ ATTENTION_AVAILABLE = "available"
 ATTENTION_AWAY = "away"
 
 _APPROVAL_CAPABILITIES = frozenset({"approve", "authorize_action"})
-_REVIEWABLE_AUTHORITIES = frozenset({"court_required", "human_review_required"})
+_REVIEWABLE_AUTHORITIES = frozenset({"human_review_required"})
 
 
 @dataclass(frozen=True)

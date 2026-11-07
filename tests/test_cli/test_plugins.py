@@ -467,8 +467,6 @@ class TestRavnPlugin:
             "ravn-runtime-api",
             "ravn-trigger-api",
             "ravn-budget-api",
-            "ravn-valkyrie-api",
-            "ravn-odin-api",
             "ravn-session-api",
             "ravn-api",
         ]
@@ -478,13 +476,11 @@ class TestRavnPlugin:
         )
         assert route_domains[1].prefixes == ("/api/v1/ravn/triggers",)
         assert route_domains[2].prefixes == ("/api/v1/ravn/budget",)
-        assert route_domains[3].prefixes == ("/api/v1/ravn/valkyrie",)
-        assert route_domains[4].prefixes == ("/api/v1/ravn/odin",)
-        assert route_domains[5].prefixes == (
+        assert route_domains[3].prefixes == (
             "/api/v1/ravn/status",
             "/api/v1/ravn/sessions",
         )
-        assert route_domains[6].prefixes == ("/api/v1/ravn",)
+        assert route_domains[4].prefixes == ("/api/v1/ravn",)
 
     def test_api_client_returns_instance(self) -> None:
         plugin = RavnPlugin()

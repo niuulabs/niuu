@@ -8,7 +8,6 @@
 #   - Composite Mimir: local + shared Valhalla remote
 #   - Compiled truth format with entity detection on ingest
 #   - Hybrid semantic search (embedding-backed)
-#   - Dream cycle curator on nightly cron
 #   - Thread enrichment + wakefulness + recap
 #   - Inline fact detection ("remember that" → Mimir pages)
 #   - Drive loop with autonomous task execution
@@ -165,17 +164,6 @@ thread:
 
 # ── Wakefulness (Vaka M2) ──────────────────────────────────────────────────
 
-wakefulness:
-  enabled: true
-  silence_threshold_seconds: 1800
-  reflection_cooldown_seconds: 3600
-  deep_reflection_threshold_seconds: 7200
-  deep_reflection_cooldown_seconds: 14400
-  llm_alias: fast
-  max_intents_per_reflection: 5
-  initial_thread_weight: 5.0
-  poll_interval_seconds: 60
-
 # ── Recap (Vaka M3) ────────────────────────────────────────────────────────
 
 recap:
@@ -186,17 +174,6 @@ recap:
   max_threads_in_recap: 10
   persona: produce-recap
   poll_interval_seconds: 60
-
-# ── Dream cycle: nightly Mimir enrichment (NIU-587) ────────────────────────
-
-dream_cycle:
-  enabled: true
-  cron_expression: "0 3 * * *"
-  persona: mimir-curator
-  task_description: "Nightly dream cycle: enrich, lint, cross-reference"
-  token_budget_usd: 0.50
-  poll_interval_seconds: 60
-  state_dir: ~/.ravn/daemon
 
 # ── Checkpoint ──────────────────────────────────────────────────────────────
 
@@ -246,12 +223,6 @@ browser:
     - "*.stackoverflow.com"
 
 # ── Evolution / self-improvement ────────────────────────────────────────────
-
-evolution:
-  enabled: true
-  min_new_outcomes: 5
-  max_episodes: 50
-  skill_suggestion_threshold: 0.7
 
 # ── Skills extraction ───────────────────────────────────────────────────────
 

@@ -178,28 +178,6 @@ class MimirObservabilityConfig(ObservabilityConfig):
     service_name: str = Field(default="mimir")
 
 
-class ResidentMemoryConfig(BaseModel):
-    """Mount the memory residents serve from their own gateways.
-
-    The directory says which stores are served and where; this host then
-    reads each by name only (``?mount=resident-<id>``), never in merged reads,
-    so a resident that is down cannot break this host's own answers.
-    """
-
-    directory: dict = Field(
-        description=(
-            "Dynamic ResidentMemoryDirectoryPort adapter and kwargs, e.g. "
-            "mimir.adapters.valkyrie_memory.ValkyrieMemoryDirectory."
-        ),
-    )
-    mount_auth: dict = Field(
-        description=(
-            "MimirAuth fields this host presents to residents, e.g. a workload "
-            "exchange for the audience residents verify."
-        ),
-    )
-
-
 class MimirServiceConfig(BaseSettings):
     """Configuration for a Mímir service instance (standalone or plugin).
 
@@ -348,10 +326,6 @@ class MimirServiceConfig(BaseSettings):
     )
     deployment: dict | None = Field(
         default=None, description="Dynamic knowledge deployment adapter and constructor kwargs."
-    )
-    resident_memory: ResidentMemoryConfig | None = Field(
-        default=None,
-        description="Mount the memory residents serve; None mounts none.",
     )
     ranking: RankingConfig = Field(
         default_factory=RankingConfig,

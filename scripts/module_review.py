@@ -17,7 +17,6 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TARGETS = (
     "src/skuld/broker.py",
     "src/ravn/cli/commands.py",
-    "src/ravn/api/valkyries.py",
     "src/volundr/main.py",
     "src/niuu/app.py",
     "src/niuu/session_proxy.py",

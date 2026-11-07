@@ -311,7 +311,7 @@ class NotificationService:
         if not owner_id:
             return None
         run_name = str(data.get("run_name") or data.get("tracker_id") or data.get("run_id") or "")
-        summary = str(data.get("summary") or "A council member needs your feedback.")
+        summary = str(data.get("summary") or "An agent needs your feedback.")
         reason = str(data.get("reason") or "").strip()
         ui_path = str(data.get("ui_path") or "").strip()
         ui_url = _ui_url(ui_path, self._public_origin)

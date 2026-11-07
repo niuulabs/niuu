@@ -422,63 +422,6 @@ class TestCapabilityKeyDedup:
         )
         assert capability_key("get_pod") != capability_key("get_pod_logs")
 
-    async def test_an_existing_tool_is_found_under_a_different_spelling(
-        self, tmp_path: Path
-    ) -> None:
-        from ravn.valkyrie_evolution.tool_curation import find_installed_capability
-
-        _install_tool(tmp_path, "inspect_kubernetes_node_disk_pressure")
-        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
-
-        found = await find_installed_capability(
-            tools_dir=code_dir,
-            artifacts_dir=artifacts_dir,
-            skills=None,
-            capability_id="",
-            name="inspect_k8s_node_disk_pressure",
-            description="",
-        )
-
-        assert found is not None
-        assert found.entry.name == "inspect_kubernetes_node_disk_pressure"
-        assert found.matched_by == "spelling"
-
-    async def test_exact_name_still_wins_over_a_fold(self, tmp_path: Path) -> None:
-        from ravn.valkyrie_evolution.tool_curation import find_installed_capability
-
-        _install_tool(tmp_path, "inspect_k8s_node_disk_pressure")
-        _install_tool(tmp_path, "inspect_kubernetes_node_disk_pressure")
-        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
-
-        found = await find_installed_capability(
-            tools_dir=code_dir,
-            artifacts_dir=artifacts_dir,
-            skills=None,
-            capability_id="",
-            name="inspect_k8s_node_disk_pressure",
-            description="",
-        )
-
-        assert found is not None
-        assert found.entry.name == "inspect_k8s_node_disk_pressure"
-
-    async def test_an_unrelated_tool_is_not_matched(self, tmp_path: Path) -> None:
-        from ravn.valkyrie_evolution.tool_curation import find_installed_capability
-
-        _install_tool(tmp_path, "inspect_node_memory_pressure")
-        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
-
-        found = await find_installed_capability(
-            tools_dir=code_dir,
-            artifacts_dir=artifacts_dir,
-            skills=None,
-            capability_id="",
-            name="inspect_node_disk_pressure",
-            description="",
-        )
-
-        assert found is None
-
 
 class TestContainedLearnedToolRunnerVerify:
     """verify() runs in the SAME execution boundary as run() — the fix for

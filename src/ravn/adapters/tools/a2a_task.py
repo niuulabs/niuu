@@ -50,7 +50,6 @@ class A2ATaskTool(ToolPort):
         default_connection_id: str = "",
         default_metadata: dict[str, Any] | None = None,
         gate_decisions: bool = True,
-        push_callback_url: str = "",
     ) -> None:
         self._gate_decisions = gate_decisions
         self._directory = agent_directory
@@ -64,7 +63,6 @@ class A2ATaskTool(ToolPort):
         self._activity_finder = activity_finder
         self._default_metadata = dict(default_metadata or {})
         self._default_connection_id = default_connection_id.strip()
-        self._push_callback_url = push_callback_url.strip()
         self._start_lock = asyncio.Lock()
 
     @property
@@ -76,9 +74,7 @@ class A2ATaskTool(ToolPort):
         return (
             "Interact with a peer skill discovered through capability_list. "
             "Operations: start a task, find durable task handles, get current "
-            "state/artifacts, reply when it requests input, or cancel it. A start "
-            "response with push_registered=true "
-            "will wake the resident on state changes, so do not repeatedly poll it. "
+            "state/artifacts, reply when it requests input, or cancel it. "
             "The peer and skill are your choice."
         )
 
@@ -394,23 +390,6 @@ class A2ATaskTool(ToolPort):
             (task.get("id") if isinstance(task, dict) else "") or input.get("task_id") or ""
         )
         state = str(status.get("state") or "")
-        push_registered: bool | None = None
-        if operation == "start" and task_id and self._push_callback_url:
-            push_registered = False
-            if bool(agent.capabilities.get("pushNotifications")):
-                try:
-                    await self._register_push(
-                        endpoint,
-                        task_id,
-                        auth_token=str(input.get(_PERSISTED_AUTH_TOKEN) or ""),
-                    )
-                    push_registered = True
-                except _A2ATaskError as exc:
-                    logger.warning(
-                        "A2A push registration failed for task %s; polling remains available: %s",
-                        task_id,
-                        exc,
-                    )
         result_attributes = {
             "a2a.agent.id": agent.id,
             "a2a.operation": operation,
@@ -442,7 +421,6 @@ class A2ATaskTool(ToolPort):
                 ),
                 "source_tool": self.name,
                 "request_fingerprint": request_fingerprint,
-                **({"push_registered": push_registered} if push_registered is not None else {}),
             }
         )
         return ToolResult(
@@ -453,21 +431,7 @@ class A2ATaskTool(ToolPort):
                 result=result,
                 requested_task_id=str(input.get("task_id") or "").strip(),
                 max_chars=self._result_max_chars,
-                push_registered=push_registered,
             ),
-        )
-
-    async def _register_push(self, endpoint: str, task_id: str, *, auth_token: str = "") -> None:
-        await self._rpc(
-            endpoint,
-            "CreateTaskPushNotificationConfig",
-            {
-                "taskId": task_id,
-                "id": f"ravn-{uuid4()}",
-                "url": self._push_callback_url,
-                "authentication": {"scheme": "Bearer"},
-            },
-            auth_token=auth_token,
         )
 
     async def _emit_activity(self, activity: dict[str, object]) -> None:
@@ -680,7 +644,6 @@ def _render_response_payload(
     result: dict[str, Any],
     requested_task_id: str,
     max_chars: int,
-    push_registered: bool | None = None,
 ) -> str:
     embedded = result.get("task")
     task = embedded if isinstance(embedded, dict) else result
@@ -718,8 +681,6 @@ def _render_response_payload(
             "directory": [item.model_dump(by_alias=True) for item in agent.provenance[:8]],
         },
     }
-    if push_registered is not None:
-        payload["push_registered"] = push_registered
     message = a2a_status_text(status)
     if message:
         payload["status_message"] = _truncate(str(message), 2_000)

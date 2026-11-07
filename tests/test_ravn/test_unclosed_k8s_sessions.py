@@ -19,16 +19,10 @@ from typing import Any
 
 import pytest
 
-from ravn.adapters.deployment import KubernetesApplyWardenDeploymentAdapter
-from ravn.adapters.environment_signals import KubernetesSignalAdapter
 from ravn.adapters.tools.kubernetes import KubernetesClients, KubernetesInspectTool
-from ravn.domain.environment import k8s_environment_fixture
-from ravn.environment_signal_runtime import EnvironmentSignalRuntime
-from ravn.ports.signal_adapter import NormalizedSignal, SignalAdapter
 from ravn.valkyrie_evolution.k8s_tool_runner import KubernetesJobExecutor
 from ravn.valkyrie_evolution.learned_tools import LearnedToolError
 from ravn.valkyrie_evolution.reach_plan import EgressPlan
-from ravn.warden import WardenSpec
 
 
 class _FakeApiClient:
@@ -238,65 +232,6 @@ async def test_caller_owned_clients_are_never_closed_by_the_tool() -> None:
 # --- kubernetes-events signal source -----------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_kubernetes_signal_adapter_polls_on_one_client_and_closes_it(
-    fake_kubernetes: list[_FakeApiClient],
-) -> None:
-    adapter = KubernetesSignalAdapter(environment=k8s_environment_fixture(), in_cluster=True)
-
-    for _ in range(3):
-        await adapter.collect()
-    assert len(fake_kubernetes) == 1
-    assert fake_kubernetes[0].close_calls == 0
-
-    await adapter.close()
-
-    _assert_every_client_closed_once(fake_kubernetes, expected=1)
-
-
-@pytest.mark.asyncio
-async def test_kubernetes_signal_adapter_close_leaves_an_injected_client_alone() -> None:
-    api = _FakeApi()
-    adapter = KubernetesSignalAdapter(environment=k8s_environment_fixture(), core_v1=api)
-
-    await adapter.collect()
-    await adapter.close()
-
-    assert api.api_client.close_calls == 0
-
-
-class _ClosableAdapter(SignalAdapter):
-    environment = k8s_environment_fixture()
-    closed = 0
-
-    @property
-    def source_id(self) -> str:
-        return "closable"
-
-    @property
-    def signal_type(self) -> str:  # type: ignore[override]
-        return "generic"
-
-    async def collect(self) -> list[NormalizedSignal]:
-        return []
-
-    async def close(self) -> None:
-        type(self).closed += 1
-
-
-@pytest.mark.asyncio
-async def test_signal_runtime_stop_closes_every_adapter() -> None:
-    runtime = object.__new__(EnvironmentSignalRuntime)
-    runtime._tasks = []
-    runtime._adapters = [_ClosableAdapter(), _ClosableAdapter()]
-    runtime._owns_publisher = False
-    _ClosableAdapter.closed = 0
-
-    await runtime.stop()
-
-    assert _ClosableAdapter.closed == 2
-
-
 # --- k8s_job learned-tool executor --------------------------------------------
 
 
@@ -374,18 +309,3 @@ async def test_job_executor_refuses_an_unpinned_image_before_opening_a_client(
 
 
 # --- warden k8s-apply deployment ----------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_warden_apply_adapter_closes_its_api_client_after_each_operation(
-    fake_kubernetes: list[_FakeApiClient],
-) -> None:
-    """Each operation runs on its own asyncio.run loop; a cached client outlives it."""
-    adapter = KubernetesApplyWardenDeploymentAdapter(namespace="ravn-test")
-    spec = WardenSpec(id="research-warden", name="Research Warden")
-
-    first = await adapter._observe_install(spec)
-    second = await adapter._observe_install(spec)
-
-    assert first["deployment_present"] and second["deployment_present"]
-    _assert_every_client_closed_once(fake_kubernetes, expected=2)

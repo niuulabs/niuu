@@ -864,7 +864,6 @@ def _ravn_local_profile(
                         "instances": [{"name": "local", "role": "shared", "url": platform_url}],
                         "writeRouting": {"default": ["local"]},
                     },
-                    "wakefulness": {"enabled": True},
                 },
             }
         },

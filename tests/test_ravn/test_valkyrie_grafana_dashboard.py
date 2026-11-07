@@ -30,8 +30,6 @@ def test_runtime_dashboard_covers_judgment_and_causal_dependencies() -> None:
     assert a2a_trace_panel["type"] == "table"
     assert "ravn.a2a" in a2a_trace_panel["targets"][0]["query"]
     assert "ravn.tool_build" in a2a_trace_panel["targets"][0]["query"]
-    assert "ravn_valkyrie_judgments" in queries
-    assert "ravn_signal_transport_messages" in queries
     assert "ravn_agent_tool_calls" in queries
     assert "ravn_learned_tool_installed" in queries
     assert "ravn_a2a_operations" in queries
@@ -77,7 +75,6 @@ def test_runtime_dashboard_covers_every_agent_memory_metric() -> None:
         memory_telemetry.CORPUS_EPISODES,
         memory_telemetry.CORPUS_EMBEDDING_COVERAGE,
         memory_telemetry.CORPUS_INDEX_COVERAGE,
-        memory_telemetry.RESIDENT_STATE_OPERATIONS,
         memory_telemetry.MIMIR_OPERATIONS,
     ):
         assert metric.replace(".", "_") in queries, f"{metric} is emitted but never plotted"

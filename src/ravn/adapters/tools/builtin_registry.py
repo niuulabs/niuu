@@ -408,7 +408,6 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "default_connection_id": s.gateway.platform.a2a_default_connection_id,
             "default_metadata": s.gateway.platform.a2a_default_metadata,
             "gate_decisions": s.gateway.platform.a2a_gate_decisions,
-            "push_callback_url": s.gateway.platform.a2a_push_callback_url,
         },
     ),
     "workflow_execution_expand": BuiltinToolDef(
@@ -561,7 +560,6 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "skill_manager": ctx.get("skill_manager"),
             "workflow_sources": ctx.get("workflow_sources") or [],
             "learned_tools_provider": ctx.get("learned_tools_provider"),
-            "retired_learned_tools": ctx.get("retired_learned_tools"),
             "refused_learned_tools": ctx.get("refused_learned_tools"),
             "agent_directory": ctx.get("agent_directory"),
         },

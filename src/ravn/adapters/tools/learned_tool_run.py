@@ -35,11 +35,10 @@ from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolUnloadableError,
     learned_tool_venvs_dir,
 )
-from ravn.valkyrie_evolution.resident_learning import (
+from ravn.valkyrie_evolution.models import (
     DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES,
     EVOLUTION_ROLLED_BACK_EVENT,
 )
-from ravn.valkyrie_evolution.tool_curation import ROLLED_BACK
 from ravn.valkyrie_evolution.tool_runtime import remove_tool_venv
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher
@@ -47,6 +46,11 @@ from sleipnir.ports.events import SleipnirPublisher
 logger = logging.getLogger(__name__)
 
 _PERMISSION = "tool:run"
+
+#: The archive reason of a tool that kept failing. The tool stays installed, its
+#: archive detail holds the failure that crossed the threshold, and an identical
+#: reinstall restores it.
+ROLLED_BACK = "rolled_back"
 
 
 class LearnedToolRunTool(ToolPort):
@@ -70,21 +74,13 @@ class LearnedToolRunTool(ToolPort):
         self._permission = permission
         self._skill_manager = skill_manager
         self._host_tools_provider = host_tools_provider
-        #: Same regression threshold ResidentEvolutionConfig.rollback_
-        #: consecutive_failures expresses for the autonomous install loop
-        #: (resident_learning._rollback_regressed_skill) — applied here too,
-        #: because this dispatcher, not that loop, is the path every learned
-        #: tool actually runs through today. A tool that keeps failing here
-        #: must stop being runnable, the same as one the autonomous loop
-        #: executes on a signal's behalf.
+        #: ``resident_evolution.rollback_consecutive_failures``: a tool that
+        #: keeps failing here must stop being runnable.
         self._rollback_consecutive_failures = rollback_consecutive_failures
-        #: When wired, rollback publishes the SAME valkyrie.evolution.
-        #: rolled_back event the autonomous install loop publishes (so the
-        #: realm capability sync and peers learn the capability is gone) and
+        #: When wired, rollback publishes valkyrie.evolution.rolled_back and
         #: prunes the tool's dedicated dependency venv. Without a publisher/
         #: tools_dir this dispatcher still archives the tool for real — it
-        #: just cannot announce it or reclaim the venv, which callers should
-        #: wire when resident evolution is enabled.
+        #: just cannot announce it or reclaim the venv.
         self._publisher = publisher
         self._environment_id = environment_id
         self._valkyrie_id = valkyrie_id
@@ -148,7 +144,7 @@ class LearnedToolRunTool(ToolPort):
     def description(self) -> str:
         return (
             "Run one of this resident's learned tools by name. Learned tools "
-            "(built with build_tool or adopted from the flock) are not preloaded "
+            "(built through a verified tool build or adopted from the flock) are not preloaded "
             "as native tools — discover them with capability_list (kind='tool', "
             "tag 'learned'), then execute here with the tool's name and an input "
             "object matching its input_schema."
@@ -223,11 +219,7 @@ class LearnedToolRunTool(ToolPort):
                 span.set_attribute("ravn.learned_tool.outcome", "unloadable")
                 return ToolResult(
                     tool_call_id="",
-                    content=(
-                        f"{exc} — {name!r} is installed but cannot be run on this resident. "
-                        "Call build_tool for the same capability with replace=true to rebuild "
-                        "it so it loads here."
-                    ),
+                    content=(f"{exc} — {name!r} is installed but cannot be run on this resident."),
                     is_error=True,
                 )
             except LearnedToolError as exc:
@@ -355,9 +347,7 @@ class LearnedToolRunTool(ToolPort):
         check at the top of ``execute`` refuses an archived tool), so the
         next dispatch fails loudly and clearly instead of quietly repeating
         the same failure forever. When wired with a publisher, this emits
-        the SAME ``valkyrie.evolution.rolled_back`` event the autonomous
-        install loop's rollback emits, so the realm capability sync and
-        peers learn the capability is gone; when wired with tools_dir, the
+        ``valkyrie.evolution.rolled_back``; when wired with tools_dir, the
         tool's dedicated dependency venv is reclaimed.
         """
         await skill_manager.archive(name, reason=ROLLED_BACK, detail=result.content)

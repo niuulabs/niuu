@@ -104,7 +104,6 @@ from volundr.adapters.outbound.notification_image_fetcher import (
     BrokerTargetLookup,
     SessionLookup,
 )
-from volundr.adapters.outbound.odin_review_notification_relay import OdinReviewNotificationRelay
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_message_delivery import PostgresMessageDelivery
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
@@ -128,9 +127,6 @@ from volundr.adapters.outbound.postgres_notifications import (
     PostgresNotificationImageRepository,
     PostgresNotificationRepository,
     PostgresNotificationRuleRepository,
-)
-from volundr.adapters.outbound.postgres_odin_review_relay import (
-    PostgresOdinReviewRelayStateStore,
 )
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
 from volundr.adapters.outbound.postgres_resident_runtimes import (
@@ -370,45 +366,6 @@ async def _retire_unserved_push_rules(
             "the push gateway alerts instead" if gateway_on else "push.enabled is false",
         )
     return retired
-
-
-def _create_odin_review_relay(
-    settings: Settings,
-    pool: Any,
-    notification_service: NotificationService | None,
-) -> OdinReviewNotificationRelay | None:
-    """Follow the ODIN review queue into the feed (``notifications.odin_review_relay``).
-
-    Enabled but unable to run is fatal: the source adapter is built here, so a bad class
-    path or kwargs stops startup with the remedy instead of leaving questions unannounced.
-    """
-    config = settings.notifications.odin_review_relay
-    if not config.enabled:
-        return None
-    if notification_service is None:
-        raise RuntimeError(
-            "notifications.odin_review_relay.enabled records into the notification feed: "
-            "set notifications.enabled: true, or disable the relay"
-        )
-    if not settings.push.enabled:
-        logger.warning(
-            "ODIN review relay is on but push.enabled is false: resident questions reach the "
-            "notification feed and nothing is pushed to a phone"
-        )
-    source = import_class(config.source.adapter)(
-        **resolve_secret_kwargs(config.source.kwargs, config.source.secret_kwargs_env)
-    )
-    # With the Guild push gateway this node has no push sink: the gateway alerts for
-    # each question's notification itself, so no owner needs the sink's rule.
-    pushes_through_sink = settings.push.enabled and not settings.push.gateway.enabled
-    return OdinReviewNotificationRelay(
-        source,
-        PostgresOdinReviewRelayStateStore(pool),
-        notification_service,
-        owner_ids=config.owner_ids,
-        poll_interval_seconds=config.poll_interval_seconds,
-        push_sink=settings.push.attention_sink if pushes_through_sink else None,
-    )
 
 
 def _create_notification_service(
@@ -1452,8 +1409,6 @@ def create_app(
                 notification_service,
             )
             app.state.resident_notification_relay = resident_notification_relay
-            odin_review_relay = _create_odin_review_relay(settings, pool, notification_service)
-            app.state.odin_review_relay = odin_review_relay
             app.state.notification_image_worker = notification_image_worker
             notification_delivery = _create_notification_delivery(
                 settings,
@@ -2443,8 +2398,6 @@ def create_app(
             )
             if notification_delivery is not None:
                 await notification_delivery.start()
-            if odin_review_relay is not None:
-                await odin_review_relay.start()
             if notification_image_worker is not None:
                 await notification_image_worker.start()
             artifact_hold: ArtifactHold | None = None
@@ -2505,8 +2458,6 @@ def create_app(
                     bifrost_catalog_task.cancel()
                     await asyncio.gather(bifrost_catalog_task, return_exceptions=True)
                 await telegram_ingress.stop()
-                if odin_review_relay is not None:
-                    await odin_review_relay.stop()
                 if notification_delivery is not None:
                     await notification_delivery.stop()
                 if notification_image_worker is not None:

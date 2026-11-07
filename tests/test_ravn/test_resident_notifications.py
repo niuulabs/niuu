@@ -249,19 +249,6 @@ class TestDaemonWiring:
             }
         )
 
-    def test_the_outbox_follows_the_shim(self, tmp_path):
-        from ravn.cli.resident_runtime_wiring import build_resident_notification_outbox
-
-        assert build_resident_notification_outbox(self._settings(tmp_path)) is None
-        off = self._settings(tmp_path, enabled=True, notifications_enabled=False)
-        assert build_resident_notification_outbox(off) is None
-        outbox = build_resident_notification_outbox(self._settings(tmp_path, enabled=True))
-        try:
-            assert isinstance(outbox, SqliteResidentNotificationOutbox)
-            assert (tmp_path / "state.db").exists(), "it shares the shim's own database"
-        finally:
-            outbox.close()
-
     def test_notify_is_offered_unless_disabled_or_forbidden(self, tmp_path):
         from types import SimpleNamespace
 
@@ -303,43 +290,6 @@ class TestCliAgentNotify:
             outbox.close()
         forbidden = SimpleNamespace(forbidden_tools=[NOTIFY_TOOL_NAME])
         assert _tool_mcp_notification_outbox(on, forbidden) is None
-
-    async def test_the_daemon_closes_the_outbox_when_it_shuts_down(self, tmp_path):
-        """Both exits share one shutdown; it releases the outbox's connection."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from ravn.config import Settings
-
-        settings = Settings()
-        for name in ("telegram", "http", "discord", "slack", "matrix", "whatsapp"):
-            getattr(settings.gateway.channels, name).enabled = False
-        settings.odin_court.enabled = False
-        outbox = MagicMock(spec=SqliteResidentNotificationOutbox)
-
-        with (
-            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}),
-            patch("ravn.adapters.llm.anthropic.AnthropicAdapter"),
-            patch("ravn.cli.commands._build_mimir", return_value=None),
-            patch(
-                "ravn.cli.commands._start_mcp_shared",
-                new_callable=AsyncMock,
-                return_value=(None, []),
-            ),
-            patch("ravn.cli.commands._shutdown_mcp", new_callable=AsyncMock) as shutdown_mcp,
-            patch("ravn.cli.commands._wire_triggers", return_value=[]),
-            patch("ravn.cli.commands._wire_cron", return_value=[]),
-            patch(
-                "ravn.cli.resident_runtime_wiring.build_resident_notification_outbox",
-                return_value=outbox,
-            ),
-        ):
-            from ravn.cli.commands import _run_daemon
-
-            await _run_daemon(settings)
-
-        outbox.close.assert_called_once_with()
-        # The "nothing to do" exit used to skip MCP, memory and the outbox.
-        shutdown_mcp.assert_awaited_once()
 
     def test_tool_mcp_closes_the_outbox_when_the_server_cannot_be_built(self, tmp_path):
         from unittest.mock import MagicMock, patch
@@ -404,7 +354,6 @@ class TestCliAgentNotify:
             patch.object(commands_mod, "_build_tool_mcp_tools", return_value=[]),
             patch.object(commands_mod, "_tool_mcp_notification_outbox", return_value=outbox),
             patch.object(commands_mod, "_resolve_workspace", return_value=tmp_path),
-            patch.object(commands_mod, "_attach_agent_build_tool"),
             patch("ravn.adapters.mcp.tool_port_server.ToolPortMcpServer", side_effect=server_for),
         ):
             commands_mod.tool_mcp(

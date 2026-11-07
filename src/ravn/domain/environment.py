@@ -47,10 +47,6 @@ _VALID_EVENT_METADATA_PREFIXES = (
     "signal.",
     "environment.",
     "valkyrie.",
-    "odin.",
-    "attention.",
-    "feedback.",
-    "learning.",
     "participant.",
     "room.",
 )
@@ -199,7 +195,6 @@ class ActionCapability(BaseModel):
         "observe_only",
         "autonomous",
         "yolo_allowed",
-        "court_required",
         "human_review_required",
     ] = "human_review_required"
     targets: list[str] = Field(default_factory=list)
@@ -213,7 +208,7 @@ class AutonomyPolicy(BaseModel):
 
     mode: AutonomyMode = "guarded"
     allowed_authorities: list[str] = Field(
-        default_factory=lambda: ["autonomous", "court_required", "human_review_required"]
+        default_factory=lambda: ["autonomous", "human_review_required"]
     )
     yolo_enabled: bool = False
     max_autonomous_risk: Literal["low", "medium", "high"] = "medium"
@@ -230,11 +225,9 @@ class AutonomyPolicy(BaseModel):
 
 
 class WakefulnessState(BaseModel):
-    """Lifecycle projection reused by Warden-style wake/dream operators."""
+    """Lifecycle projection of an Environment's resident."""
 
     state: WakefulnessMode = "watching"
-    wakefulness_enabled: bool = True
-    dream_cycle_enabled: bool = True
     since: datetime = Field(default_factory=_stable_now)
     last_wake_at: datetime | None = None
     last_dream_at: datetime | None = None
@@ -359,7 +352,7 @@ class Environment(BaseModel):
 
     @property
     def mimir_mount_names(self) -> list[str]:
-        """Flattened Mimir mount list for Warden/Ravn runtime config."""
+        """Flattened Mimir mount list for Ravn runtime config."""
         return _dedupe(mount for scope in self.learning_scopes for mount in scope.mimir_mounts)
 
     def signal_subjects(self) -> list[str]:
@@ -444,12 +437,7 @@ class Environment(BaseModel):
             subscribes_to=tuple(self.signal_subjects()),
             emits=tuple(
                 self.subject_for_event_type(event_type)
-                for event_type in (
-                    "environment.state.changed",
-                    "valkyrie.judgment.proposed",
-                    "valkyrie.action.proposed",
-                    "learning.promoted",
-                )
+                for event_type in ("environment.state.changed",)
             ),
             tools=tuple(capability.name for capability in self.action_capabilities),
             status=self.operational_state.health,
@@ -598,7 +586,7 @@ def k8s_environment_fixture() -> Environment:
             ),
             ActionCapability(
                 name="k8s.restart_deployment",
-                authority="court_required",
+                authority="human_review_required",
                 targets=["deployment", "namespace"],
                 risk="high",
             ),

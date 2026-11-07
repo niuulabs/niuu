@@ -1471,7 +1471,7 @@ def require_backend_support(
 
     The one rule for "this execution backend cannot load this tool". Every
     consumer asks here: :class:`LearnedTool` at load, the resolver when it
-    decides what the catalog may advertise, the curation pass, and build_tool
+    decides what the catalog may advertise, and the capability matcher
     when it decides whether an installed tool already serves a request. A
     second copy of the rule is how the catalog came to advertise tools that
     ``learned_tool_run`` refused.
@@ -1534,7 +1534,7 @@ def require_verified_artifact(artifact: LearnedToolArtifact) -> None:
     if verification is None:
         raise LearnedToolUnloadableError(
             f"learned tool {name!r} has no verification record and will not be run. "
-            f"Rebuild it with build_tool, which verifies before installing."
+            f"Reinstall it through a verified build."
         )
     if not isinstance(verification, dict) or verification.get("ok") is not True:
         detail = ""
@@ -2213,8 +2213,7 @@ class LearnedToolResolver:
                 raise LearnedToolError(
                     f"learned tool {name!r} is not installed; only archived versions of it "
                     "exist. Use the installed tool that serves the same capability "
-                    "(capability_list), or ask build_tool for this capability, which "
-                    "restores it when it is still the right tool"
+                    "(capability_list)"
                 )
             raise LearnedToolError(f"no learned tool named {name!r} is installed")
         artifact = read_learned_tool_artifact(artifact_path)
@@ -2252,7 +2251,7 @@ class LearnedToolResolver:
 
         A refused tool is reported, not dropped: each is an error log and a
         count on ``degraded.learned_tool.refused`` the first time this process
-        sees it, and the curation pass retires it so ``build_tool`` repairs it.
+        sees it.
         """
         loadable: list[LearnedToolArtifact] = []
         refused: list[RefusedLearnedTool] = []
@@ -2283,10 +2282,9 @@ class LearnedToolResolver:
                 DEGRADED_PATH_LEARNED_TOOL_REFUSED,
                 f"learned tool {entry.name!r} is installed but the "
                 f"{self._execution_backend or 'local'!r} execution backend refuses to load it, "
-                f"so it is not offered and cannot run: {entry.reason}. Repair it with "
-                "build_tool (replace=true) so it is rebuilt to load here; with "
-                "resident_evolution.tool_curation.enabled the next consolidation dream "
-                "retires it as unrunnable, and build_tool then restores and repairs it.",
+                f"so it is not offered and cannot run: {entry.reason}. Rebuild it so it "
+                "loads on this backend, or change "
+                "resident_evolution.learned_tool_execution_backend.",
             )
 
     def _require_installed(self, artifact: LearnedToolArtifact) -> Path:

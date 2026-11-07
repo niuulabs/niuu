@@ -282,7 +282,7 @@ def _default_instance_catalog() -> list[InstanceCatalogEntryConfig]:
             label="Ravn",
             rune="ᚱ",
             summary="agent runtime",
-            detail="runs ravens and wardens",
+            detail="runs ravens",
         ),
         InstanceCatalogEntryConfig(
             kind=InstanceKind.OBSERVATORY,

@@ -60,16 +60,13 @@ class TestMemberConfig:
 
         assert config["mimir"]["source_trigger"]["enabled"] is False
         assert config["mimir"]["staleness_trigger"]["enabled"] is False
-        assert config["resident_wakefulness"]["enabled"] is False
-        assert config["dream_cycle"]["enabled"] is False
 
     def test_autonomous_leaves_triggers_alone(self) -> None:
         config = build_member_config(
             handle="reviewer", broker_url="ws://x/ws/ravn", autonomous=True
         )
 
-        assert "resident_wakefulness" not in config
-        assert "dream_cycle" not in config
+        assert "source_trigger" not in config.get("mimir", {})
 
     def test_paths_are_threaded_through(self, tmp_path: Path) -> None:
         config = build_member_config(

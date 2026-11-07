@@ -9,11 +9,10 @@ healthy from the outside because nothing counted the hit.
 Every cap that is still enforced reports here. :func:`record_cap_hit` logs at
 error level with the knob that bounds it and the remedy, increments the
 ``ravn.cap.hits`` counter (attribute ``ravn.cap.knob``), and keeps a process
-count that the resident health snapshot publishes next to its durable counts
-(:meth:`ravn.resident_runtime.ResidentRuntime.health_snapshot`), so a
-resident that keeps hitting a limit shows it on the scorecard instead of only
-in logs. :func:`require_complete` is the check every model call makes on its
-response; a ``StopReason.MAX_TOKENS`` answer is a cap hit wherever it happens.
+count (:func:`health_counts`), so a runtime that keeps hitting a limit shows it
+on its health surface instead of only in logs. :func:`require_complete` is the
+check every model call makes on its response; a ``StopReason.MAX_TOKENS``
+answer is a cap hit wherever it happens.
 
 The limits themselves, their defaults, and what bounds them are listed in
 ``docs/operator/ravn-limits.md``.
@@ -33,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 CAP_HITS = "ravn.cap.hits"
 ATTR_KNOB = "ravn.cap.knob"
-#: Prefix of the per-knob keys merged into the resident health snapshot.
+#: Prefix of the per-knob keys merged into a component health snapshot.
 HEALTH_KEY_PREFIX = "cap_hits."
 HEALTH_TOTAL_KEY = "cap_hits_total"
 
@@ -140,7 +139,7 @@ def cap_hit_counts() -> dict[str, int]:
 
 
 def health_counts() -> dict[str, int]:
-    """Cap hits shaped for the resident health snapshot."""
+    """Cap hits, degradations and retries shaped for a component health snapshot."""
     counts = cap_hit_counts()
     snapshot = {f"{HEALTH_KEY_PREFIX}{knob}": count for knob, count in sorted(counts.items())}
     snapshot[HEALTH_TOTAL_KEY] = sum(counts.values())

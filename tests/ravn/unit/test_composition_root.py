@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -649,39 +649,6 @@ class TestBuildTools:
 
         assert "persisted_metric_window" in {tool.name for tool in tools}
 
-    @pytest.mark.parametrize(("enabled", "refused"), [(True, True), (False, False)])
-    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
-    async def test_mimir_write_refuses_the_friction_ledger_while_it_is_kept(
-        self,
-        settings: Settings,
-        tmp_path: Path,
-        enabled: bool,
-        refused: bool,
-    ) -> None:
-        from ravn.cli.commands import _build_tools
-        from ravn.domain.models import Session
-
-        settings.reflection.friction.enabled = enabled
-        settings.reflection.friction.ledger_prefix = "ledger"
-        mimir = AsyncMock()
-
-        tools = _build_tools(
-            settings,
-            tmp_path,
-            Session(),
-            MagicMock(),
-            None,
-            None,
-            mimir,
-            no_tools=False,
-            persona_config=MagicMock(allowed_tools=["mimir_write"], forbidden_tools=None),
-        )
-
-        write = next(tool for tool in tools if tool.name == "mimir_write")
-        result = await write.execute({"path": "ledger/x.md", "content": "# Closed"})
-        assert result.is_error is refused
-        assert mimir.upsert_page.await_count == (0 if refused else 1)
-
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
     def test_bulk_mode_reports_refused_tools_instead_of_skipping_them_quietly(
         self,
@@ -943,7 +910,7 @@ class TestBuildTools:
         payload = json.loads(listed.content)
         assert [item["name"] for item in payload["capabilities"]] == ["self_contained_tool"]
         assert payload["unavailable_learned_tools"] == ["read_configmap_key_tail"]
-        assert "build_tool" in payload["unavailable_next_step"]
+        assert "NOT callable" in payload["unavailable_next_step"]
 
         by_query = json.loads(
             (await by_name["capability_list"].execute({"query": "configmap"})).content
@@ -952,7 +919,7 @@ class TestBuildTools:
         (match,) = by_query["unavailable_matches"]
         assert match["name"] == "read_configmap_key_tail"
         assert "ravn.sdk" in match["reason"]
-        assert "replace=true" in match["next_step"]
+        assert "cannot run on this resident" in match["next_step"]
 
         # Reported on the health surface, once per tool however often it is listed.
         assert degraded_counts() == {"learned_tool.refused": 1}
@@ -961,7 +928,7 @@ class TestBuildTools:
             {"name": "read_configmap_key_tail", "input": {}}
         )
         assert refused.is_error
-        assert "build_tool" in refused.content
+        assert "cannot be run on this resident" in refused.content
         assert "capability_list" not in refused.content
         reset_cap_hits()
 
@@ -1810,24 +1777,3 @@ class TestBuildMimirAuthWorkloadDefaults:
         assert auth.type == "bearer"
         assert auth.token == "tok"
         assert auth.exchange_url is None
-
-
-def test_resident_daemon_wires_learning_injection() -> None:
-    """The daemon builds its agent through executor.build(), not _build_agent.
-
-    Wiring only commands.py left every resident with the constructor default
-    of False — the setting existed, the config said true, and injection still
-    never ran. AgentExecutor.build filters kwargs against the RavnAgent
-    signature, so a parameter that is never passed fails silently rather than
-    raising.
-    """
-    from pathlib import Path
-
-    source = Path("src/ravn/cli/daemon_runtime.py").read_text(encoding="utf-8")
-    build_call = source.split("agent = executor.build(", 1)[1].split("\n        )", 1)[0]
-    for param in (
-        "inject_learnings=settings.reflection.inject_learnings",
-        "max_learnings_injected=settings.reflection.max_learnings_injected",
-        "learning_token_budget=settings.reflection.learning_token_budget",
-    ):
-        assert param in build_call, f"{param} missing from the daemon agent build"

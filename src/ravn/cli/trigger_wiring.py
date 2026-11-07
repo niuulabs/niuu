@@ -104,40 +104,6 @@ def _wire_mimir_triggers(
                 settings.thread.enricher_llm_alias,
             )
 
-    # Wakefulness trigger (NIU-565) — detects silence, reflects, emits intents.
-    # Gated on ``wakefulness.enabled`` (the trigger's own config); the resident
-    # state machine's ``resident_wakefulness`` is a different feature.
-    if settings.wakefulness.enabled and llm is not None:
-        if _uses_cli_transport_runtime():
-            logger.info(
-                "wakefulness: skipped for CLI-transport runtime; auxiliary LLM hooks still need "
-                "transport-backed support"
-            )
-        else:
-            if interaction_tracker is None or gateway is None:
-                raise RuntimeError(
-                    "wakefulness.enabled is true but this daemon has no operator conversation "
-                    "to reflect on (no interaction tracker or gateway): enable a gateway "
-                    "channel under gateway.channels, or set wakefulness.enabled to false"
-                )
-            from ravn.adapters.triggers.wakefulness import WakefulnessTrigger
-
-            drive_loop.register_trigger(
-                WakefulnessTrigger(
-                    tracker=interaction_tracker,
-                    mimir=mimir,
-                    llm=llm,
-                    config=settings.wakefulness,
-                    transcript=gateway.transcript_since,
-                )
-            )
-            logger.info(
-                "wakefulness: trigger registered (silence=%ds, cooldown=%ds, poll=%ds)",
-                settings.wakefulness.silence_threshold_seconds,
-                settings.wakefulness.reflection_cooldown_seconds,
-                settings.wakefulness.poll_interval_seconds,
-            )
-
     # Recap trigger (NIU-569) — surfaces overnight work on operator return.
     if settings.recap.enabled:
         if interaction_tracker is None:
@@ -160,18 +126,30 @@ def _wire_mimir_triggers(
                 settings.recap.poll_interval_seconds,
             )
 
-    # Dream cycle trigger (NIU-587) — nightly Mímir enrichment, lint, cross-reference.
-    if settings.dream_cycle.enabled:
-        from ravn.adapters.triggers.dream_cycle import DreamCycleTrigger
 
-        drive_loop.register_trigger(DreamCycleTrigger(config=settings.dream_cycle))
-        logger.info(
-            "dream_cycle: trigger registered (cron=%r, persona=%r, budget=$%.2f, poll=%ds)",
-            settings.dream_cycle.cron_expression,
-            settings.dream_cycle.persona,
-            settings.dream_cycle.token_budget_usd,
-            settings.dream_cycle.poll_interval_seconds,
-        )
+def _wire_triggers(drive_loop: Any, initiative: InitiativeConfig) -> list[Any]:
+    """Instantiate trigger adapters from config and register them on drive_loop.
+
+    Loads each entry in ``initiative.trigger_adapters`` via its fully-qualified
+    class path (any :class:`~ravn.ports.trigger.TriggerPort` subclass).
+
+    Returns an empty list — cron jobs come exclusively from ``_wire_cron`` now.
+    """
+    for ta in initiative.trigger_adapters:
+        try:
+            cls = _import_class(ta.adapter)
+            kwargs = _inject_secrets(dict(ta.kwargs), ta.secret_kwargs_env)
+            trigger = cls(**kwargs)
+            drive_loop.register_trigger(trigger)
+            logger.info(
+                "trigger adapter registered: %s (name=%r)",
+                ta.adapter,
+                getattr(trigger, "name", "?"),
+            )
+        except Exception as exc:
+            logger.error("Failed to wire trigger adapter %r: %s", ta.adapter, exc)
+
+    return []
 
 
 def _wire_cron(

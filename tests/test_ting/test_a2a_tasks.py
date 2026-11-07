@@ -28,7 +28,6 @@ from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from niuu.domain.models import Principal
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
-from ravn.adapters.tools.build_tool import BuildTool
 from ting.api.a2a import (
     _launch_digest,
     campaign_to_task,
@@ -46,11 +45,9 @@ from ting.domain.models import (
     WorkflowDefinition,
     WorkflowScope,
 )
-from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.workflow_execution import ExecutionConflictError
 from ting.domain.workflow_snapshot import build_workflow_snapshot
 from ting.ports.volundr import (
-    ActivityEvent,
     ForgeProjectRef,
     PublicSessionLogEntry,
     PublicSessionLogPage,
@@ -2875,105 +2872,6 @@ class TestTaskArtifacts:
         )
         assert fetched.status_code == 200
         assert fetched.json()["content"] == self._JSON_CONTENT
-
-    def test_blocked_publish_retry_completes_task_with_artifact(self, tmp_path: Path) -> None:
-        """A successful publish supersedes its earlier help-needed task state."""
-        import asyncio
-
-        workflow = _mimir_workflow(tmp_path)
-        workflow.graph["nodes"].append(
-            {
-                "id": "capability-complete",
-                "kind": "end",
-                "completionEvent": "capability.ready",
-            }
-        )
-        campaign = _make_campaign(
-            slug=self._SLUG,
-            metadata={"a2a_workflow_slug": self._SLUG},
-            workflow_snapshot=build_workflow_snapshot(workflow),
-        )
-        campaigns = InMemoryCampaignRepository([campaign])
-        port = RecordingVolundrPort()
-        settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
-        client, _, _ = _make_client(
-            campaign_repo=campaigns,
-            settings=settings,
-            volundr=port,
-        )
-        artifact_dir = tmp_path / "wiki" / "capabilities" / self._SLUG
-        artifact_dir.mkdir(parents=True)
-        (artifact_dir / "learned_tool.json").write_text(self._JSON_CONTENT, encoding="utf-8")
-
-        class Factory:
-            async def primary_for_owner(self, owner_id: str):
-                return port
-
-            async def for_connection(self, owner_id: str, connection_id: str):
-                return None
-
-        projector = WorkflowCampaignProjector(
-            repo=campaigns,
-            volundr_factory=Factory(),
-            event_bus=AsyncMock(),
-        )
-
-        async def project_publish_retry() -> None:
-            assert await projector.record_help_needed(
-                {"summary": "Publisher needs the artifact path."},
-                campaign.owner_id,
-                session_id=campaign.session_id,
-                gate={"node_id": "capability-publish", "status": "blocked"},
-            )
-            assert await projector.handle_activity(
-                ActivityEvent(
-                    session_id=campaign.session_id,
-                    state="idle",
-                    metadata={
-                        "completion_source": "ravn_flock",
-                        "completion_event_type": "capability.ready",
-                        "completion_peer_id": "workflow-stop:capability-complete",
-                        "outcome_valid": True,
-                        "structured_outcome": {
-                            "verdict": "approve",
-                            "authoritative": True,
-                            "checks": [
-                                {
-                                    "persona": "capability-publisher",
-                                    "event_type": "capability.ready",
-                                    "verdict": "published",
-                                }
-                            ],
-                        },
-                    },
-                    owner_id=campaign.owner_id,
-                ),
-                campaign.owner_id,
-            )
-
-        asyncio.run(project_publish_retry())
-
-        result = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]
-
-        assert result["status"]["state"] == "TASK_STATE_COMPLETED"
-        artifacts = {artifact["artifactId"]: artifact for artifact in result["artifacts"]}
-        artifact = artifacts[self._JSON_PATH]["parts"][0]
-        assert artifact["text"] == self._JSON_CONTENT
-
-        installed: list = []
-        build_tool = BuildTool(
-            tools_dir=tmp_path / "tools",
-            artifacts_dir=tmp_path / "artifacts",
-            register_tool=lambda tool, replace=False: installed.append((tool, replace)),
-            autonomy_mode="autonomous",
-        )
-        installation = asyncio.run(build_tool.execute(json.loads(artifact["text"])))
-
-        assert installation.is_error is False
-        assert len(installed) == 1
-        execution = asyncio.run(installed[0][0].execute({"installed": True}))
-        assert execution.is_error is False
-        assert json.loads(execution.content) == {"echo": {"installed": True}}
 
     def test_running_task_exposes_no_artifacts(self, tmp_path: Path) -> None:
         client, campaign = self._client_with_files(

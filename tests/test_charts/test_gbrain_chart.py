@@ -92,12 +92,6 @@ def test_native_dream_jobs_are_separate_from_service():
     assert "app.kubernetes.io/name" not in labels  # Never selected by the HTTP service.
 
 
-def test_gbrain_rejects_warden():
-    result = render("--set", "warden.enabled=true")
-    assert result.returncode != 0
-    assert "gbrain uses native dream cycles" in result.stderr
-
-
 def test_managed_postgres_uses_operator_credentials_and_configured_storage():
     result = render(
         "--set",

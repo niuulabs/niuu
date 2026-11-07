@@ -6,7 +6,6 @@ import copy
 import hashlib
 from typing import Any
 
-from mimir.dream_results import dream_results
 from mimir.ports.deployment import DeploymentRequest, KnowledgeDeploymentPort
 from niuu.adapters.flux import (
     HELMRELEASE_GROUP,
@@ -30,7 +29,6 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         cluster: str = "current",
         storage_class: str = "",
         secrets: dict[str, str] | None = None,
-        warden: dict | None = None,
         envoy: dict | None = None,
         global_instances: list[str] | None = None,
         source_namespace: str = "",
@@ -55,7 +53,6 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         self.secrets = secrets or {}
         self.envoy = envoy or {}
         self.global_instances = global_instances or []
-        self.warden = warden
         self.in_cluster = in_cluster
         self.context = kube_context
         # `<provider>:<model>` passed straight through to gbrain's `think` MCP
@@ -131,8 +128,6 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
             "cluster": self.cluster,
             "namespace": self.namespace,
             "target": "cluster",
-            "warden_available": self.warden is not None,
-            "dream_available": "gbrain" in self.versions,
             "backends": sorted(set(self.versions) & set(self.images)),
             "releases": [
                 self._view(item) for item in result["items"] if self._owned(item, tenant_id)
@@ -263,8 +258,6 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         if backend not in self.versions or backend not in self.images:
             raise ValueError(f"No chart and image configured for {backend}")
         secret = request.secret or self.secrets.get(backend, "").replace("{name}", request.name)
-        if request.warden and self.warden is None:
-            raise ValueError("Configure a warden runtime on this target before enabling it")
         image = self.images[backend]
         repository, tag = image.rsplit(":", 1)
         values: dict[str, Any] = {
@@ -281,7 +274,6 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
                 engine="postgres",
                 existingSecret=secret,
                 postgres={"enabled": not bool(secret), "storageClass": self.storage_class},
-                dream=request.dream.model_dump(),
                 connection={"enabled": True},
             )
             if self.gbrain_config:
@@ -294,35 +286,6 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
             values["envoy"] = self.envoy
             values["image"]["registry"] = ""
             values["config"] = {"name": request.name, "role": "shared"}
-        if request.warden:
-            warden = copy.deepcopy(self.warden)
-            warden["enabled"] = True
-            warden["spec"] = request.warden_overrides.apply(warden.get("spec", {}))
-            # Explicit instance choices take precedence over legacy runtime overrides.
-            config = warden.setdefault("config", {})
-            paths = {
-                "model": [("llm", "model")],
-                "persona": [
-                    ("initiative", "default_persona"),
-                    ("dream_cycle", "persona"),
-                    ("mimir", "source_trigger", "persona"),
-                    ("mimir", "staleness_trigger", "persona"),
-                ],
-                "dream_cycle_cron_expression": [("dream_cycle", "cron_expression")],
-                "source_trigger_poll_interval_seconds": [
-                    ("mimir", "source_trigger", "poll_interval_seconds")
-                ],
-                "staleness_trigger_schedule_hours": [
-                    ("mimir", "staleness_trigger", "schedule_hours")
-                ],
-            }
-            for key, value in request.warden_overrides.model_dump(exclude_none=True).items():
-                for path in paths[key]:
-                    section = config
-                    for part in path[:-1]:
-                        section = section.setdefault(part, {})
-                    section[path[-1]] = value
-            values["warden"] = warden
         body = self._build_helmrelease(
             self._release_name(request.name, request.tenant_id),
             values,
@@ -364,16 +327,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
                 logs[key] = await core.read_namespaced_pod_log(
                     pod.metadata.name, self.namespace, container=container.name, tail_lines=200
                 )
-        values = obj.get("spec", {}).get("values", {})
-        return {
-            **self._view(obj),
-            "logs": logs,
-            "dream_results": [
-                report for output in logs.values() for report in dream_results(output)
-            ],
-            "dream": values.get("dream", {}),
-            "warden": values.get("warden", {}).get("enabled", False),
-        }
+        return {**self._view(obj), "logs": logs}
 
     async def control(self, name: str, action: str, *, tenant_id: str = "") -> dict:
         name = await self._owned_release_name(name.removeprefix("cluster/"), tenant_id)
@@ -418,7 +372,6 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
                 "spec": {
                     "values": {
                         "replicaCount": 1 if action == "start" else 0,
-                        "dream": {"suspend": action == "stop"},
                     }
                 }
             },

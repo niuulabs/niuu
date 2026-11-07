@@ -45,22 +45,6 @@ class ToolBuildInputRequiredError(ToolBuildError):
         super().__init__(f"A2A task {task_id} requires {input_kind} input: {prompt}")
 
 
-class ToolBuildPendingError(ToolBuildError):
-    """A commissioned build is running and will resume after an A2A callback."""
-
-    def __init__(
-        self,
-        *,
-        task_id: str,
-        continuation: dict[str, Any],
-        push_registered: bool,
-    ) -> None:
-        self.task_id = task_id
-        self.continuation = continuation
-        self.push_registered = push_registered
-        super().__init__(f"A2A task {task_id} is still running")
-
-
 class ToolBuildTaskEndedError(ToolBuildError):
     """The commissioned remote task reached a terminal state without a result.
 

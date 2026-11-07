@@ -6,6 +6,17 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from sleipnir.domain import registry
+
+#: Published when a learned tool is archived after repeated failures. A tool must
+#: fail repeatedly, never once, before it is rolled back: transient failures
+#: (timeouts, odd payloads) must not destroy a working tool.
+EVOLUTION_ROLLED_BACK_EVENT = registry.VALKYRIE_EVOLUTION_ROLLED_BACK
+
+#: Consecutive failures before a learned tool is archived (the default for
+#: ``resident_evolution.rollback_consecutive_failures``).
+DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES = 3
+
 
 @dataclass(frozen=True)
 class OperationalSignal:
@@ -60,7 +71,7 @@ class ToolReachGrant:
 
     The manifest is a contract, not a sandbox by itself. Review, install, and
     invocation policy use these grants to decide what may run automatically and
-    what must be held for an operator or court decision.
+    what must be held for an operator decision.
     """
 
     kind: str

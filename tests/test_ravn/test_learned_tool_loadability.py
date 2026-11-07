@@ -179,7 +179,7 @@ class TestResolver:
         (record,) = [r for r in caplog.records if "degraded [learned_tool.refused]" in r.message]
         assert record.levelname == "ERROR"
         assert "uses_host_sdk" in record.message
-        assert "build_tool" in record.message
+        assert "execution backend" in record.message
         reset_cap_hits()
 
     def test_an_unbuildable_backend_stops_construction_with_the_remedy(

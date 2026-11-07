@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -13,24 +12,14 @@ from niuu.domain.outcome import OutcomeField
 from ravn.cap_telemetry import cap_hit_counts
 from ravn.domain.events import RavnEventType
 from ravn.domain.models import TokenUsage, ToolCall, ToolResult, TurnResult
-from ravn.domain.valkyrie_contracts import (
-    RESIDENT_ESCALATION_GUIDANCE,
-    VALKYRIE_ASK_OPERATOR_REQUIRES_QUESTION,
-    VALKYRIE_ESCALATE_REQUIRES_QUESTION,
-    normalize_valkyrie_outcome,
-)
 from ravn.drive_loop import (
-    _build_resident_valkyrie_schema_repair_prompt,
     _build_workflow_outcome_repair_prompt,
     _default_success_verdict,
-    _extract_mimir_dream_counts,
     _infer_tool_written_verdict,
     _known_verdict_tokens,
     _merge_repair_result,
     _normalize_outcome_verdict,
     _parse_outcome_for_persona,
-    _resident_valkyrie_validation_result,
-    _validate_resident_continuation_contract,
 )
 from sleipnir.domain import registry
 from tests.test_ravn.conftest import _make_agent_task, _make_drive_loop
@@ -65,7 +54,6 @@ def _valkyrie_judgment_produces() -> SimpleNamespace:
                 enum_values=[
                     "autonomous",
                     "yolo_allowed",
-                    "court_required",
                     "human_review_required",
                 ],
             ),
@@ -741,185 +729,6 @@ findings: "[{severity: high}]"
         assert "expected array, got str" in emitted[0].payload["message"]
 
     @pytest.mark.asyncio
-    async def test_repair_resident_valkyrie_outcome_retries_with_strict_schema(self) -> None:
-        dl = _make_drive_loop()
-        dl._persona_config = SimpleNamespace(
-            name="k8s-valkyrie",
-            produces=_valkyrie_judgment_produces(),
-        )
-        task = _make_agent_task(task_id="task-valkyrie-repair")
-        task.initiative_context = (
-            "Environment: cluster-a (k8s)\n"
-            "Resident peer id: k8s-valkyrie\n"
-            "Signal type: kubernetes\n"
-        )
-
-        class RepairAgent:
-            def __init__(self) -> None:
-                self.prompts: list[str] = []
-
-            async def repair_outcome(self, prompt: str) -> TurnResult:
-                self.prompts.append(prompt)
-                return TurnResult(
-                    response=_valid_valkyrie_judgment_text(),
-                    tool_calls=[],
-                    tool_results=[],
-                    usage=TokenUsage(input_tokens=8, output_tokens=12),
-                )
-
-        agent = RepairAgent()
-        repair_result = await dl._maybe_repair_resident_valkyrie_outcome(
-            agent=agent,
-            task=task,
-            response_text="Endpoints ticked off queue interCAL question",
-        )
-
-        assert repair_result is not None
-        assert agent.prompts
-        assert "Do not call tools" in agent.prompts[0]
-        assert "resident Valkyrie outcome block is missing" in agent.prompts[0]
-        _, _, validation_errors = _resident_valkyrie_validation_result(
-            repair_result.response,
-            dl._persona_config,
-        )
-        assert validation_errors == []
-
-    @pytest.mark.asyncio
-    async def test_an_escalation_without_a_question_is_repaired_with_the_remedy(self) -> None:
-        """Runa recorded 27 escalating turns that slept with an empty question and
-        reached nobody. The contract rejects that turn and the repair turn is told
-        exactly how to fix it; the decision is not converted and no question is
-        invented here."""
-        dl = _make_drive_loop()
-        produces = _valkyrie_judgment_produces()
-        produces.schema["decision"] = OutcomeField(
-            type="enum", description="decision", enum_values=["watch", "escalate"]
-        )
-        dl._persona_config = SimpleNamespace(name="k8s-valkyrie", produces=produces)
-        task = _make_agent_task(task_id="task-valkyrie-escalate")
-        unasked = _valid_valkyrie_judgment_text().replace(
-            "decision: propose_action", 'decision: escalate\nquestion: ""'
-        )
-        asked = unasked.replace('question: ""', "question: May I restart etcd member qftlj?")
-
-        _, _, errors = _resident_valkyrie_validation_result(unasked, dl._persona_config)
-        assert errors == [VALKYRIE_ESCALATE_REQUIRES_QUESTION]
-        assert "requires a non-empty 'question'" in errors[0]
-        assert "'watch' with continuation 'sleep'" in errors[0]
-
-        class RepairAgent:
-            def __init__(self) -> None:
-                self.prompts: list[str] = []
-
-            async def repair_outcome(self, prompt: str) -> TurnResult:
-                self.prompts.append(prompt)
-                return TurnResult(
-                    response=asked,
-                    tool_calls=[],
-                    tool_results=[],
-                    usage=TokenUsage(input_tokens=8, output_tokens=12),
-                )
-
-        agent = RepairAgent()
-        repair_result = await dl._maybe_repair_resident_valkyrie_outcome(
-            agent=agent, task=task, response_text=unasked
-        )
-
-        assert repair_result is not None
-        assert VALKYRIE_ESCALATE_REQUIRES_QUESTION in agent.prompts[0]
-        assert RESIDENT_ESCALATION_GUIDANCE in agent.prompts[0]
-        _, repaired, repaired_errors = _resident_valkyrie_validation_result(
-            repair_result.response, dl._persona_config
-        )
-        assert repaired_errors == []
-        assert repaired["decision"] == "escalate"
-        assert repaired["question"] == "May I restart etcd member qftlj?"
-
-    @pytest.mark.asyncio
-    async def test_ask_operator_without_a_question_is_repaired_with_the_remedy(self) -> None:
-        dl = _make_drive_loop()
-        dl._persona_config = SimpleNamespace(
-            name="k8s-valkyrie", produces=_valkyrie_judgment_produces()
-        )
-        task = _make_agent_task(task_id="task-valkyrie-ask")
-        unasked = _valid_valkyrie_judgment_text().replace(
-            "decision: propose_action",
-            "decision: propose_action\n"
-            "continuation: ask_operator\n"
-            "next_action_timing: operator_input\n"
-            "open_questions:\n  - Which scope is authorized?",
-        )
-        asked = unasked.replace(
-            "open_questions:", "question: Which scope is authorized?\nopen_questions:"
-        )
-
-        _, _, errors = _resident_valkyrie_validation_result(unasked, dl._persona_config)
-        assert errors == [VALKYRIE_ASK_OPERATOR_REQUIRES_QUESTION]
-
-        class RepairAgent:
-            def __init__(self) -> None:
-                self.prompts: list[str] = []
-
-            async def repair_outcome(self, prompt: str) -> TurnResult:
-                self.prompts.append(prompt)
-                return TurnResult(
-                    response=asked,
-                    tool_calls=[],
-                    tool_results=[],
-                    usage=TokenUsage(input_tokens=8, output_tokens=12),
-                )
-
-        agent = RepairAgent()
-        repair_result = await dl._maybe_repair_resident_valkyrie_outcome(
-            agent=agent, task=task, response_text=unasked
-        )
-
-        assert repair_result is not None
-        assert VALKYRIE_ASK_OPERATOR_REQUIRES_QUESTION in agent.prompts[0]
-        _, _, repaired_errors = _resident_valkyrie_validation_result(
-            repair_result.response, dl._persona_config
-        )
-        assert repaired_errors == []
-
-    def test_an_escalation_with_a_question_is_valid_whatever_the_continuation(self) -> None:
-        produces = _valkyrie_judgment_produces()
-        produces.schema["decision"] = OutcomeField(
-            type="enum", description="decision", enum_values=["watch", "escalate"]
-        )
-        persona = SimpleNamespace(name="k8s-valkyrie", produces=produces)
-        text = _valid_valkyrie_judgment_text().replace(
-            "decision: propose_action",
-            "decision: escalate\n"
-            "question: Is the etcd closure gate still the right thing to wait for?\n"
-            "continuation: sleep\n"
-            "next_action_timing: scheduled_time",
-        )
-
-        _, _, errors = _resident_valkyrie_validation_result(text, persona)
-
-        assert errors == []
-
-    @pytest.mark.asyncio
-    async def test_an_empty_resident_turn_is_not_repaired_into_an_outcome(self) -> None:
-        """Repairing nothing invented "No previous outcome or supporting evidence
-        was supplied", closed the case and consumed the operator's answer."""
-        dl = _make_drive_loop()
-        dl._persona_config = SimpleNamespace(
-            name="k8s-valkyrie",
-            produces=_valkyrie_judgment_produces(),
-        )
-        task = _make_agent_task(task_id="task-valkyrie-empty")
-
-        class RepairAgent:
-            async def repair_outcome(self, prompt: str) -> TurnResult:
-                raise AssertionError("an empty turn must not reach repair")
-
-        with pytest.raises(RuntimeError, match="produced no output"):
-            await dl._maybe_repair_resident_valkyrie_outcome(
-                agent=RepairAgent(), task=task, response_text="  "
-            )
-
-    @pytest.mark.asyncio
     async def test_repair_unroutable_workflow_outcome_reuses_same_agent(self) -> None:
         dl = _make_drive_loop()
         dl._persona_config = SimpleNamespace(
@@ -1006,104 +815,6 @@ findings: "[{severity: high}]"
         assert "capability-frame" in prompt
         assert "transient failure" in prompt
         assert "Do not claim success without evidence" in prompt
-
-    def test_resident_control_fields_do_not_depend_on_an_episode(self) -> None:
-        dl = _make_drive_loop()
-        dl._persona_config = SimpleNamespace(
-            name="k8s-valkyrie",
-            produces=_valkyrie_judgment_produces(),
-        )
-        dl._settings = SimpleNamespace(
-            environment=SimpleNamespace(id="cluster-a", type="k8s"),
-            mesh=SimpleNamespace(own_peer_id="k8s-valkyrie"),
-        )
-        result = TurnResult(
-            response=_valid_valkyrie_judgment_text(),
-            tool_calls=[],
-            tool_results=[],
-            usage=TokenUsage(input_tokens=8, output_tokens=12),
-        )
-
-        fields, valid = dl._decorate_turn_result_outcome(
-            _make_agent_task(task_id="task-no-episode"),
-            result,
-            result.response,
-        )
-
-        assert result.episode is None
-        assert valid is True
-        assert fields["decision"] == "propose_action"
-        assert fields["environment_id"] == "cluster-a"
-
-    def test_schema_repair_prompt_includes_required_resident_contract_shape(self) -> None:
-        prompt = _build_resident_valkyrie_schema_repair_prompt(
-            original_response="bad",
-            validation_errors=["resident Valkyrie outcome block is missing"],
-            outcome_fields={},
-        )
-
-        assert "decision: ignore | watch | investigate" in prompt
-        assert "confidence: <number from 0.0 to 1.0>" in prompt
-        assert "action_authority: autonomous | yolo_allowed" in prompt
-        assert "only a real event/time/operator answer wakes a turn" in prompt
-        assert "working_state` must be a mapping" in prompt
-        assert "empty list as `field: []`" in prompt
-        assert "at most five entries per list" in prompt
-        assert "Use only the supplied response and parsed fields" in prompt
-        assert "<initiative_context>" not in prompt
-
-        working_state_prompt = _build_resident_valkyrie_schema_repair_prompt(
-            original_response="partial state",
-            validation_errors=["working_state.hypotheses must be a list"],
-            outcome_fields={"working_state": {"observations": ["signal-a"]}},
-        )
-        assert (
-            "working_state:\n  objectives: []\n  observations: []\n  hypotheses: []"
-            in working_state_prompt
-        )
-        assert "preserve valid prior entries" in working_state_prompt
-
-    def test_free_text_continue_is_not_a_supported_wake_source(self) -> None:
-        unsupported = (
-            "continuation 'continue' is unsupported; call available tools before the final "
-            "outcome, or use sleep/ask_operator for a real wake source"
-        )
-        assert _validate_resident_continuation_contract(
-            {
-                "continuation": "continue",
-                "selected_next_action": "continue",
-                "next_action_timing": "immediate",
-            }
-        ) == [unsupported]
-        assert (
-            _validate_resident_continuation_contract(
-                {
-                    "continuation": "sleep",
-                    "selected_next_action": "continue",
-                    "next_action_timing": "external_event",
-                }
-            )
-            == []
-        )
-        assert _validate_resident_continuation_contract(
-            {
-                "continuation": "continue",
-                "selected_next_action": "inspect the source",
-                "next_action_timing": "external_event",
-            }
-        ) == [unsupported]
-        assert _validate_resident_continuation_contract(
-            {
-                "continuation": "continue",
-                "selected_next_action": "inspect the source",
-            }
-        ) == [unsupported]
-        assert _validate_resident_continuation_contract(
-            {
-                "selected_next_action": "inspect the source",
-                "next_action_timing": "immediate",
-            }
-        ) == ["selected_next_action requires explicit continuation control"]
 
     @pytest.mark.asyncio
     async def test_canonical_and_alias_outcomes_are_split(self) -> None:
@@ -1215,271 +926,6 @@ files_changed: 2
         assert alias_event.payload["event_type"] == "code.changed"
         assert alias_event.payload["canonical_event_type"] == "code.completed"
         assert alias_event.payload["routing_only"] is True
-
-    @pytest.mark.asyncio
-    async def test_valid_resident_valkyrie_judgment_preserves_structured_metadata(self) -> None:
-        dl = _make_drive_loop()
-        mesh = AsyncMock()
-        published = []
-        dl._mesh = mesh
-        dl._skuld_channel = None
-        dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock(side_effect=published.append))
-        dl._source_id = "drive_loop"
-        dl._settings.environment.id = "cluster-runtime"
-        dl._settings.environment.type = "k8s"
-        dl._settings.mesh.own_peer_id = "runtime-valkyrie"
-        dl._persona_config = SimpleNamespace(
-            name="k8s-valkyrie",
-            produces=_valkyrie_judgment_produces(),
-        )
-
-        task = _make_agent_task(task_id="task-k8s-1")
-        task.session_id = "sess-k8s-1"
-        task.root_correlation_id = "corr-runtime"
-        task.workflow_parent_event_id = "evt-runtime"
-
-        await dl._emit_mesh_outcome_event(
-            task,
-            _valid_valkyrie_judgment_text(),
-            success=True,
-        )
-
-        assert mesh.publish.await_count == 2
-        canonical_event = mesh.publish.await_args_list[0].args[0]
-        canonical_topic = mesh.publish.await_args_list[0].kwargs["topic"]
-        assert canonical_topic == registry.VALKYRIE_JUDGMENT_PROPOSED
-        assert canonical_event.payload["valid"] is True
-        assert canonical_event.payload["outcome"]["tier"] == "ambient"
-        assert canonical_event.payload["outcome"]["signal_refs"] == ["evt-k8s-1"]
-        assert canonical_event.payload["outcome"]["evidence"] == [
-            {"event_id": "evt-k8s-1", "kind": "kubernetes"}
-        ]
-        assert canonical_event.payload["outcome"]["target_surfaces"] == ["surface:ops"]
-        outcome = canonical_event.payload["outcome"]
-        assert outcome["environment_id"] == "cluster-runtime"
-        assert outcome["environment_type"] == "k8s"
-        assert outcome["valkyrie_id"] == "runtime-valkyrie"
-        assert outcome["correlation_ids"] == {
-            "root": "corr-runtime",
-            "task": "task-k8s-1",
-            "environment": "cluster-runtime",
-            "signal": "evt-runtime",
-        }
-
-        alias_topic = mesh.publish.await_args_list[1].kwargs["topic"]
-        alias_event = mesh.publish.await_args_list[1].args[0]
-        assert alias_topic == registry.VALKYRIE_ACTION_PROPOSED
-        assert alias_event.payload["canonical_event_type"] == registry.VALKYRIE_JUDGMENT_PROPOSED
-        assert alias_event.payload["routing_only"] is True
-        assert [event.event_type for event in published] == [registry.VALKYRIE_JUDGMENT_PROPOSED]
-        assert published[0].payload["task_id"] == "task-k8s-1"
-        assert published[0].payload["environment_id"] == "cluster-runtime"
-        assert published[0].payload["valid"] is True
-
-    def test_runtime_identity_overrides_model_environment_claim(self) -> None:
-        produces = _valkyrie_judgment_produces()
-        produces.schema["environment_type"] = OutcomeField(
-            type="string",
-            description="runtime environment type",
-        )
-        response = _valid_valkyrie_judgment_text().replace(
-            "environment_id: cluster-a",
-            "environment_id: claimed-environment\nenvironment_type: k8s",
-        )
-
-        _, fields, errors = _resident_valkyrie_validation_result(
-            response,
-            SimpleNamespace(produces=produces),
-            authoritative_fields={
-                "environment_id": "workshop",
-                "environment_type": "workshop",
-                "valkyrie_id": "ivaldi-local",
-                "correlation_ids": {
-                    "root": "runtime-root",
-                    "task": "runtime-task",
-                    "environment": "workshop",
-                },
-            },
-        )
-
-        assert errors == []
-        assert fields["environment_id"] == "workshop"
-        assert fields["environment_type"] == "workshop"
-        assert fields["valkyrie_id"] == "ivaldi-local"
-        assert fields["correlation_ids"]["root"] == "runtime-root"
-
-    def test_optional_null_outcome_field_is_omitted_without_repair(self) -> None:
-        produces = _valkyrie_judgment_produces()
-        produces.schema["question"] = OutcomeField(
-            type="string",
-            description="operator question",
-            required=False,
-        )
-        response = _valid_valkyrie_judgment_text().replace(
-            "---end---",
-            "question: null\n---end---",
-        )
-
-        _, fields, errors = _resident_valkyrie_validation_result(
-            response,
-            SimpleNamespace(produces=produces),
-        )
-
-        assert errors == []
-        assert "question" not in fields
-
-    @pytest.mark.asyncio
-    async def test_resident_valkyrie_judgment_normalizes_local_model_yaml_drift(self) -> None:
-        dl = _make_drive_loop()
-        mesh = AsyncMock()
-        dl._mesh = mesh
-        dl._skuld_channel = None
-        dl._source_id = "drive_loop"
-        dl._persona_config = SimpleNamespace(
-            name="k8s-valkyrie",
-            produces=_valkyrie_judgment_produces(),
-        )
-
-        task = _make_agent_task(task_id="task-k8s-drift")
-        task.session_id = "sess-k8s-drift"
-
-        await dl._emit_mesh_outcome_event(
-            task,
-            """\
----outcome---
-decision: propose_action
-environment_id: cluster-a
-valkyrie_id: k8s-valkyrie
-signal_refs: evt-k8s-1
-tier: ambient
-confidence: "0.84"
-operational_state: investigating
-wakefulness: wakeful
-rationale: pod restart signal needs inspection
-evidence:
-  event_id: evt-k8s-1
-  kind: kubernetes
-recommended_action: inspect pod before changing cluster state
-action_authority: yolo
-target_surfaces: surface:ops
-expires_at: 2026-06-04T20:30:00Z
-dissent_refs: null
-correlation_ids:
-  root: corr-k8s-1
-  task: task-k8s-1
----end---
-""",
-            success=True,
-        )
-
-        canonical_event = mesh.publish.await_args_list[0].args[0]
-        outcome = canonical_event.payload["outcome"]
-        assert canonical_event.payload["valid"] is True
-        assert outcome["signal_refs"] == ["evt-k8s-1"]
-        assert outcome["confidence"] == 0.84
-        assert outcome["wakefulness"] == "wakeful"
-        assert outcome["action_authority"] == "yolo_allowed"
-        assert outcome["evidence"] == [{"event_id": "evt-k8s-1", "kind": "kubernetes"}]
-        assert outcome["target_surfaces"] == ["surface:ops"]
-        assert outcome["dissent_refs"] == []
-        assert outcome["expires_at"] == "2026-06-04T20:30:00Z"
-        assert outcome["state_summary"].startswith("investigating:")
-        json.dumps(canonical_event.payload)
-
-    def test_resident_valkyrie_normalization_makes_yaml_datetime_wire_safe(self) -> None:
-        outcome = normalize_valkyrie_outcome(
-            registry.VALKYRIE_JUDGMENT_PROPOSED,
-            {
-                "environment_id": "cluster-a",
-                "valkyrie_id": "k8s-valkyrie",
-                "signal_refs": ["evt-k8s-1"],
-                "tier": "ambient",
-                "confidence": 0.84,
-                "operational_state": "investigating",
-                "rationale": "pod restart signal needs inspection",
-                "evidence": [{"event_id": "evt-k8s-1"}],
-                "recommended_action": "inspect pod",
-                "action_authority": "autonomous",
-                "target_surfaces": ["surface:ops"],
-                "expires_at": datetime(2026, 6, 4, 20, 30, tzinfo=UTC),
-                "dissent_refs": [],
-                "correlation_ids": {"root": "corr-k8s-1"},
-            },
-        )
-
-        assert outcome["expires_at"] == "2026-06-04T20:30:00+00:00"
-        json.dumps(outcome)
-
-    def test_resident_valkyrie_normalization_accepts_common_state_aliases(self) -> None:
-        outcome = normalize_valkyrie_outcome(
-            registry.VALKYRIE_JUDGMENT_PROPOSED,
-            {
-                "operational_state": "investigate",
-                "wakefulness": "watchful",
-            },
-        )
-
-        assert outcome["operational_state"] == "investigating"
-        assert outcome["wakefulness"] == "watching"
-
-    def test_resident_valkyrie_normalization_coerces_loose_correlation_ids(self) -> None:
-        list_outcome = normalize_valkyrie_outcome(
-            registry.VALKYRIE_JUDGMENT_PROPOSED,
-            {"correlation_ids": ["pod/skuld-a", "event/backoff"]},
-        )
-        scalar_outcome = normalize_valkyrie_outcome(
-            registry.VALKYRIE_JUDGMENT_PROPOSED,
-            {"correlation_ids": "pod/skuld-a"},
-        )
-        empty_outcome = normalize_valkyrie_outcome(
-            registry.VALKYRIE_JUDGMENT_PROPOSED,
-            {"correlation_ids": ""},
-        )
-
-        assert list_outcome["correlation_ids"] == {"refs": ["pod/skuld-a", "event/backoff"]}
-        assert scalar_outcome["correlation_ids"] == {"root": "pod/skuld-a"}
-        assert empty_outcome["correlation_ids"] == {}
-
-    @pytest.mark.asyncio
-    async def test_invalid_resident_valkyrie_judgment_is_rejected_before_publication(
-        self,
-    ) -> None:
-        dl = _make_drive_loop()
-        mesh = AsyncMock()
-        skuld_channel = AsyncMock()
-        published = []
-        dl._mesh = mesh
-        dl._skuld_channel = skuld_channel
-        dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock(side_effect=published.append))
-        dl._source_id = "drive_loop"
-        dl._persona_config = SimpleNamespace(
-            name="k8s-valkyrie",
-            produces=_valkyrie_judgment_produces(),
-        )
-
-        task = _make_agent_task(task_id="task-k8s-invalid")
-        task.session_id = "sess-k8s-invalid"
-
-        await dl._emit_mesh_outcome_event(
-            task,
-            _valid_valkyrie_judgment_text(tier="watch"),
-            success=True,
-        )
-
-        mesh.publish.assert_awaited_once()
-        rejected_event = mesh.publish.await_args.args[0]
-        rejected_topic = mesh.publish.await_args.kwargs["topic"]
-        assert rejected_topic == registry.VALKYRIE_JUDGMENT_REJECTED
-        assert rejected_event.payload["event_type"] == registry.VALKYRIE_JUDGMENT_REJECTED
-        assert rejected_event.payload["canonical_event_type"] == registry.VALKYRIE_JUDGMENT_PROPOSED
-        assert rejected_event.payload["valid"] is False
-        assert any("tier" in error for error in rejected_event.payload["errors"])
-        json.dumps(rejected_event.payload)
-        skuld_channel.emit.assert_awaited_once()
-        assert [event.event_type for event in published] == [registry.VALKYRIE_JUDGMENT_REJECTED]
-        assert published[0].payload["task_id"] == "task-k8s-invalid"
-        assert published[0].payload["canonical_event_type"] == registry.VALKYRIE_JUDGMENT_PROPOSED
-        assert published[0].payload["valid"] is False
 
     @pytest.mark.asyncio
     async def test_task_lifecycle_publishes_sleipnir_started_completed_and_dropped(
@@ -1907,7 +1353,7 @@ plan_revision: plan-7
         dl._skuld_channel = None
         dl._source_id = "drive_loop"
         dl._persona_config = SimpleNamespace(
-            name="mimir-memory-curator",
+            name="note-curator",
             produces=SimpleNamespace(
                 event_type="mimir.curated",
                 event_type_map={"blocked": "mimir.curation_blocked"},
@@ -1918,7 +1364,7 @@ plan_revision: plan-7
 
         task = _make_agent_task(task_id="task-curation")
         task.session_id = "sess-curation"
-        task.workflow_node_id = "run-memory-curator"
+        task.workflow_node_id = "run-note-curator"
         response_text = "Curated the ingested memory source into canonical wiki knowledge."
 
         await dl._emit_mesh_outcome_event(task, response_text, success=True)
@@ -1939,7 +1385,7 @@ plan_revision: plan-7
         dl._skuld_channel = None
         dl._source_id = "drive_loop"
         dl._persona_config = SimpleNamespace(
-            name="mimir-memory-curator",
+            name="note-curator",
             produces=SimpleNamespace(
                 event_type="mimir.curated",
                 event_type_map={"blocked": "mimir.curation_blocked"},
@@ -1956,7 +1402,7 @@ plan_revision: plan-7
 
         task = _make_agent_task(task_id="task-curation-field-schema")
         task.session_id = "sess-curation-field-schema"
-        task.workflow_node_id = "run-memory-curator"
+        task.workflow_node_id = "run-note-curator"
         response_text = "Curated the ingested memory source into canonical wiki knowledge."
 
         await dl._emit_mesh_outcome_event(task, response_text, success=True)
@@ -2700,26 +2146,6 @@ summary: post-mortem source captured
         assert task.root_correlation_id == "remote-room"
 
     @pytest.mark.asyncio
-    async def test_handle_directed_message_attaches_durable_inbox_ref(self) -> None:
-        dl = _make_drive_loop()
-        dl.enqueue = AsyncMock(return_value=True)
-        resident_runtime = SimpleNamespace(
-            capture_directed_message=AsyncMock(
-                return_value="resident/inbox/signals/operator-message.md"
-            )
-        )
-        dl.set_resident_runtime(resident_runtime)
-
-        assert await dl.handle_directed_message("Please retain this objective.") is True
-
-        task = dl.enqueue.await_args.args[0]
-        assert task.resident_inbox_refs == ["resident/inbox/signals/operator-message.md"]
-        resident_runtime.capture_directed_message.assert_awaited_once_with(
-            "Please retain this objective.",
-            None,
-        )
-
-    @pytest.mark.asyncio
     async def test_handle_directed_message_steers_active_agent_when_available(self) -> None:
         dl = _make_drive_loop()
         dl.enqueue = AsyncMock()
@@ -2809,107 +2235,6 @@ summary: post-mortem source captured
         assert payload["raw_observed_at"] == "2026-06-05T01:42:00+00:00"
 
     @pytest.mark.asyncio
-    async def test_emit_sleipnir_valkyrie_outcome_normalizes_payload_for_msgpack(self) -> None:
-        dl = _make_drive_loop()
-        dl._source_id = "drive_loop"
-        published = []
-        dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock(side_effect=published.append))
-
-        task = _make_agent_task(task_id="task-valkyrie-safe")
-        task.persona = "k8s-valkyrie"
-        task.session_id = "session-valkyrie-safe"
-
-        await dl._emit_sleipnir_valkyrie_outcome(
-            registry.VALKYRIE_JUDGMENT_PROPOSED,
-            {
-                "environment_id": "ymir",
-                "valkyrie_id": "valkyrie-ymir-k8s",
-                "tier": "present",
-                "confidence": 0.84,
-                "summary": "ImagePullBackOff needs inspection.",
-                "observed_at": datetime(2026, 6, 5, 1, 48, tzinfo=UTC),
-                "evidence": [{"seen_at": datetime(2026, 6, 5, 1, 47, tzinfo=UTC)}],
-            },
-            task,
-            "root-valkyrie-safe",
-            valid=True,
-        )
-
-        assert published
-        payload = published[0].payload
-        assert payload["observed_at"] == "2026-06-05T01:48:00+00:00"
-        assert payload["evidence"] == [{"seen_at": "2026-06-05T01:47:00+00:00"}]
-
-    def test_extract_mimir_dream_counts_prefers_outcome_fields_and_falls_back_to_prose(
-        self,
-    ) -> None:
-        persona = SimpleNamespace(
-            produces=SimpleNamespace(
-                schema={
-                    "pages_updated": OutcomeField(type="number", description="pages"),
-                    "entities_created": OutcomeField(type="number", description="entities"),
-                    "lint_fixes": OutcomeField(type="number", description="lint"),
-                }
-            )
-        )
-
-        counts = _extract_mimir_dream_counts(
-            ("---outcome---\npages_updated: 3\nentities_created: 2\nlint_fixes: 1\n---end---"),
-            persona,
-        )
-        assert counts == {"pages_updated": 3, "entities_created": 2, "lint_fixes": 1}
-
-        assert _extract_mimir_dream_counts(
-            "maintenance ran; pages_updated=4, entities_created=0, lint_fixes=2",
-            None,
-        ) == {"pages_updated": 4, "entities_created": 0, "lint_fixes": 2}
-
-    @pytest.mark.asyncio
-    async def test_emit_sleipnir_mimir_dream_completed_for_dream_cycle_task(self) -> None:
-        dl = _make_drive_loop()
-        dl._source_id = "drive_loop"
-        published = []
-        dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock(side_effect=published.append))
-
-        task = _make_agent_task(task_id="task-dream")
-        task.triggered_by = "dream_cycle:cron"
-        task.persona = "mimir-warden"
-        task.session_id = "sess-dream"
-
-        await dl._emit_sleipnir_mimir_dream_completed(
-            task,
-            response_text=(
-                "---outcome---\n"
-                "verdict: complete\n"
-                "pages_updated: 5\n"
-                "entities_created: 2\n"
-                "lint_fixes: 1\n"
-                "---end---"
-            ),
-        )
-
-        assert published
-        event = published[0]
-        assert event.event_type == registry.MIMIR_DREAM_COMPLETED
-        assert event.correlation_id == "sess-dream"
-        assert event.payload["pages_updated"] == 5
-        assert event.payload["entities_created"] == 2
-        assert event.payload["lint_fixes"] == 1
-        assert event.payload["task_id"] == "task-dream"
-        assert event.payload["persona"] == "mimir-warden"
-
-    @pytest.mark.asyncio
-    async def test_emit_sleipnir_mimir_dream_completed_ignores_non_dream_task(self) -> None:
-        dl = _make_drive_loop()
-        dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock())
-        task = _make_agent_task(task_id="task-normal")
-        task.triggered_by = "thread:inbox"
-
-        await dl._emit_sleipnir_mimir_dream_completed(task, response_text="pages_updated=1")
-
-        dl._sleipnir_publisher.publish.assert_not_awaited()
-
-    @pytest.mark.asyncio
     async def test_emit_tool_outcome_event_publishes_and_tolerates_skuld_failure(self) -> None:
         dl = _make_drive_loop()
         dl._mesh = AsyncMock()
@@ -2924,7 +2249,7 @@ summary: post-mortem source captured
 
         await dl.emit_tool_outcome_event(
             task=task,
-            persona_name="mimir-warden",
+            persona_name="knowledge-writer",
             event_type="mimir.page.written",
             fields={"summary": "page written", "page_path": "research/demo.md"},
         )
@@ -2940,7 +2265,7 @@ summary: post-mortem source captured
         dl = _make_drive_loop()
         dl._mesh = AsyncMock()
         dl._skuld_channel = AsyncMock()
-        dl._persona_config = SimpleNamespace(name="mimir-warden")
+        dl._persona_config = SimpleNamespace(name="knowledge-writer")
         dl.set_workflow_allowed_outcomes_resolver(lambda *_args: {"review.completed"})
 
         task = _make_agent_task(task_id="task-tool-blocked")
@@ -2948,7 +2273,7 @@ summary: post-mortem source captured
 
         await dl.emit_tool_outcome_event(
             task=task,
-            persona_name="mimir-warden",
+            persona_name="knowledge-writer",
             event_type="mimir.page.written",
             fields={"summary": "page written"},
         )
@@ -3084,42 +2409,6 @@ recommendation: choose whether to optimize for latency or quality
         )
 
     @pytest.mark.asyncio
-    async def test_a_resident_outcome_never_publishes_its_own_help_request(self) -> None:
-        """With a resident runtime its disposition alone asks the operator, after the
-        question is persisted. An outcome-path request reached the operator for a
-        question the runtime had not persisted (a spent budget), so no reply bound."""
-        dl = _make_drive_loop()
-        dl._mesh = AsyncMock()
-        dl._skuld_channel = AsyncMock()
-        dl._resident_runtime = object()
-        dl._source_id = "drive_loop"
-        dl._persona_config = SimpleNamespace(
-            name="regin",
-            produces=SimpleNamespace(
-                event_type="valkyrie.judgment.proposed",
-                event_type_map={"help_needed": "valkyrie.help.requested"},
-            ),
-        )
-        task = _make_agent_task(task_id="task-steward")
-        task.root_correlation_id = "regin-operator-room"
-        task.resident_case_id = "resident-stewardship-20261026T002939Z"
-        response_text = """\
----outcome---
-verdict: help_needed
-summary: which route is authorized
-question: Which deployment route is authorized?
-reason: needs_context
----end---
-"""
-
-        await dl._emit_mesh_outcome_event(task, response_text, success=True)
-
-        topics = [call.kwargs.get("topic") for call in dl._mesh.publish.await_args_list]
-        assert "help_needed" not in topics
-        emitted = [call.args[0].type for call in dl._skuld_channel.emit.await_args_list]
-        assert "help_needed" not in emitted
-
-    @pytest.mark.asyncio
     async def test_a_workflow_persona_question_is_asked_beside_a_resident_runtime(
         self,
     ) -> None:
@@ -3237,30 +2526,6 @@ recommendation: reply with the preferred tradeoff
         assert "council.human_input.requested" in published_topics
         assert "help_needed" in published_topics
 
-    @pytest.mark.asyncio
-    async def test_help_event_uses_configured_channel_without_platform_fallback(self) -> None:
-        dl = _make_drive_loop()
-        sleipnir_publisher = AsyncMock()
-        skuld_channel = AsyncMock()
-        dl._sleipnir_publisher = sleipnir_publisher
-        dl._skuld_channel = skuld_channel
-        dl._source_id = "drive_loop"
-        dl._persona_config = SimpleNamespace(name="council-chair")
-        task = _make_agent_task(task_id="task-room-help")
-
-        await dl._emit_resident_help_needed(
-            task,
-            SimpleNamespace(
-                case_id="case-room-help",
-                reason="needs_context",
-                question="Which rollout should I choose?",
-                operator_ref="operator-needed/case-room-help.json",
-            ),
-        )
-
-        skuld_channel.emit.assert_awaited_once()
-        sleipnir_publisher.publish.assert_not_awaited()
-
 
 class TestTaskPersonaContract:
     """A triggered task is judged against the persona it actually ran as.
@@ -3330,30 +2595,6 @@ class TestTaskPersonaContract:
         task.persona = ""
 
         assert dl._task_persona_config(task) is dl._persona_config
-
-    @pytest.mark.asyncio
-    async def test_curator_outcome_is_not_validated_as_a_valkyrie_judgment(self) -> None:
-        """The end-to-end symptom: a dream.completed body must not be rejected."""
-        dl = _make_drive_loop()
-        dl._persona_config = self._resident_persona()
-        dl._mesh = AsyncMock()
-        dl._source_id = "drive_loop"
-
-        task = _make_agent_task(task_id="task-synth")
-        task.persona = "mimir-curator"
-        dl._active_agents[task.task_id] = SimpleNamespace(persona_config=self._curator_persona())
-
-        published = await dl._emit_mesh_outcome_event(
-            task,
-            response_text=("---outcome---\nverdict: complete\npages_updated: 3\n---end---"),
-            success=True,
-        )
-
-        assert published is not False
-        # The rejection that fired for every synthesis task on every resident.
-        emitted = str(dl._mesh.mock_calls)
-        assert registry.VALKYRIE_JUDGMENT_REJECTED not in emitted
-        assert "dream.completed" in emitted
 
 
 class TestSteadyStateTelemetryRefresh:

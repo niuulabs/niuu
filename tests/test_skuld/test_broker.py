@@ -20,7 +20,6 @@ from niuu.domain.workflow_kickoff import (
     WORKFLOW_KICKOFF_REDELIVERY_KEY,
 )
 from niuu.mesh.transport_builder import TransportBuildError
-from ravn.feedback import EnvironmentFeedbackRecorder
 from skuld.broker import (
     Broker,
     ConversationTurn,
@@ -43,7 +42,6 @@ from skuld.transports import (
 )
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry as event_registry
-from sleipnir.domain.catalog import feedback_recorded
 from sleipnir.testing import EventCapture
 
 
@@ -6826,52 +6824,6 @@ class TestBrokerRoomAdapter:
 
         with pytest.raises(PermissionError):
             b.require_room_capability("human:observer", "authorize_action")
-
-    @pytest.mark.asyncio
-    async def test_joined_human_feedback_links_to_valkyrie_decision(self, room_settings):
-        class _Memory:
-            def __init__(self) -> None:
-                self.episodes = []
-
-            async def record_episode(self, episode):
-                self.episodes.append(episode)
-
-        bus = InProcessBus()
-        memory = _Memory()
-        recorder = EnvironmentFeedbackRecorder(subscriber=bus, publisher=bus, memory=memory)
-        await recorder.start()
-        b = Broker(settings=room_settings, sleipnir_publisher=bus)
-        await b.join_environment(
-            participant_id="human:owner",
-            display_name="Owner",
-            environment_id="cluster-a",
-            role="owner",
-        )
-
-        await bus.publish(
-            feedback_recorded(
-                environment_id="cluster-a",
-                target_event_id="attention-decision-1",
-                feedback_type="useful",
-                rating="correct",
-                notes="Good escalation.",
-                judgment_refs=["judgment-1"],
-                court_decision_id="attention-decision-1",
-                user_id="human:owner",
-                responsible_valkyrie_id="valkyrie:k8s-a",
-                source="human:owner",
-                correlation_id="root-feedback",
-            )
-        )
-        await bus.flush()
-
-        assert len(memory.episodes) == 1
-        structured = memory.episodes[0].structured_outcome
-        assert structured["user_id"] == "human:owner"
-        assert structured["judgment_refs"] == ["judgment-1"]
-        assert structured["court_decision_id"] == "attention-decision-1"
-
-        await recorder.stop()
 
     # -----------------------------------------------------------------------
     # directed_message dispatch
