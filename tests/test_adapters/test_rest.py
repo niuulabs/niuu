@@ -2137,6 +2137,52 @@ class TestHelpRequestProxy:
         assert "not answered" in response.json()["detail"].lower()
 
 
+class TestSessionRuntimes:
+    """Tests for GET /api/v1/forge/session-runtimes."""
+
+    def test_a_host_without_a_choice_offers_no_runtimes(self, client: TestClient):
+        response = client.get("/api/v1/forge/session-runtimes")
+        assert response.status_code == 200
+        assert response.json() == {"runtimes": []}
+
+    def test_offers_carry_the_execution_grants_and_readiness(self, client: TestClient, pod_manager):
+        from volundr.domain.session_runtimes import (
+            ReadinessState,
+            RuntimeReadiness,
+            SessionGrant,
+            SessionRuntimeKind,
+            SessionRuntimeOffer,
+        )
+
+        pod_manager.session_runtimes = AsyncMock(
+            return_value=(
+                SessionRuntimeOffer(
+                    runtime=SessionRuntimeKind.OPENSHELL,
+                    execution_profile="vm-openshell@1",
+                    default=False,
+                    grants=(SessionGrant.SUDO,),
+                    readiness=RuntimeReadiness(
+                        state=ReadinessState.FULL, warm=0, remedy="raise the pool"
+                    ),
+                ),
+            )
+        )
+
+        response = client.get("/api/v1/forge/session-runtimes")
+
+        assert response.json() == {
+            "runtimes": [
+                {
+                    "runtime": "openshell",
+                    "execution_profile": "vm-openshell@1",
+                    "default": False,
+                    "grants": ["sudo"],
+                    "readiness": {"state": "full", "warm": 0, "remedy": "raise the pool"},
+                }
+            ]
+        }
+
+
 class TestFeatureFlags:
     """Tests for GET /api/v1/forge/feature-flags."""
 

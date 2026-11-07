@@ -2362,6 +2362,59 @@ def test_live_preview_settings_surface_a_node_failure() -> None:
     assert response.status_code >= 500
 
 
+@respx.mock
+def test_session_runtimes_come_from_the_requested_instance() -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha", is_default=True),
+            _instance("vms", base_url="http://vms"),
+        ]
+    )
+    offered = {
+        "runtimes": [
+            {
+                "runtime": "container",
+                "execution_profile": "vm-container@1",
+                "default": True,
+                "grants": [],
+                "readiness": {"state": "warm", "warm": 1, "remedy": None},
+            }
+        ]
+    }
+    vms = respx.get("http://vms/api/v1/forge/session-runtimes").mock(
+        return_value=Response(200, json=offered)
+    )
+    alpha = respx.get("http://alpha/api/v1/forge/session-runtimes").mock(
+        return_value=Response(200, json={"runtimes": []})
+    )
+
+    response = client.get("/api/v1/forge/session-runtimes?instance_id=vms", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json() == offered
+    assert vms.called and not alpha.called
+
+
+@respx.mock
+def test_session_runtimes_surface_a_node_failure() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha", is_default=True)])
+    respx.get("http://alpha/api/v1/forge/session-runtimes").mock(
+        return_value=Response(503, json={"detail": "down"})
+    )
+
+    response = client.get("/api/v1/forge/session-runtimes", headers=_headers())
+
+    assert response.status_code >= 500
+
+
+def test_session_runtimes_reject_an_invisible_instance() -> None:
+    client = _client([_instance("private", base_url="http://private", tenant_id="other")])
+
+    response = client.get("/api/v1/forge/session-runtimes?instance_id=private", headers=_headers())
+
+    assert response.status_code == 404
+
+
 def test_live_preview_settings_reject_an_invisible_instance() -> None:
     client = _client([_instance("private", base_url="http://private", tenant_id="other")])
 

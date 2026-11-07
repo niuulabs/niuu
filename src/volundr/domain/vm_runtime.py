@@ -13,6 +13,7 @@ from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.compute import ComputeLease, MachineBootstrap, SlotLease
 from volundr.domain.guest_credentials import GuestCredentialDelivery
 from volundr.domain.models import Session, SessionSpec
+from volundr.domain.session_runtimes import SessionGrant, SessionRuntimeKind
 
 
 class VmRuntimeUnavailableError(RuntimeError):
@@ -154,6 +155,19 @@ class VmRuntime(ABC):
     @property
     def supports_reuse(self) -> bool:
         return False
+
+    @property
+    def session_runtime(self) -> SessionRuntimeKind | None:
+        """What a session runs in under this runtime, as a launch offers it.
+
+        None means the runtime cannot be offered as a launch choice.
+        """
+        return None
+
+    @property
+    def session_grants(self) -> tuple[SessionGrant, ...]:
+        """Extra access this runtime can give one session, enforced in placement."""
+        return ()
 
     async def recycle(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         """Remove stopped session resources after durable archival; idempotent."""

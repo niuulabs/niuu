@@ -164,6 +164,21 @@ async def test_execution_selection_without_catalog_fails_before_start():
     assert not manager.start_calls
 
 
+async def test_runtime_grants_without_catalog_fail_before_start():
+    repository, manager = InMemorySessionRepository(), MockPodManager()
+    service = SessionService(repository, manager)
+    session = await service.create_session(name="test", model="test")
+    with pytest.raises(ValueError, match="this host offers none"):
+        await service.start_session(session.id, workload_config={"runtime_grants": ["sudo"]})
+    assert not manager.start_calls
+
+
+async def test_session_runtimes_come_from_the_pod_manager():
+    manager = MockPodManager()
+    service = SessionService(InMemorySessionRepository(), manager)
+    assert await service.session_runtimes() == ()
+
+
 async def test_vm_storage_is_independent_of_openshell_credential_backend():
     storage = AsyncMock()
     contributor = StorageContributor(storage=storage)

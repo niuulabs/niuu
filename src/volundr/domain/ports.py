@@ -101,6 +101,7 @@ from volundr.domain.push import PushTokenKind
 from volundr.domain.session_changes import SessionChanges
 from volundr.domain.session_participants import ParticipantRole, SessionParticipant
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
+from volundr.domain.session_runtimes import SessionRuntimeOffer
 from volundr.domain.session_startup import SessionStartup, StartupStage
 
 __all__ = [
@@ -585,6 +586,14 @@ class PodManager(ABC):
         sessions may exclude that reservation here so a restart can reuse it.
         """
         return await self.capacity()
+
+    async def session_runtimes(self) -> tuple[SessionRuntimeOffer, ...]:
+        """The runtimes a launch on this host may choose between.
+
+        Empty means the host offers no choice: its sessions run the way this
+        pod manager always runs them.
+        """
+        return ()
 
     @property
     def delivers_forge_session_token(self) -> bool:

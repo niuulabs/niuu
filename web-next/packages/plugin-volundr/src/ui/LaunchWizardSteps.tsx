@@ -19,6 +19,7 @@ import {
   WizardSelect,
 } from './LaunchWizardPrimitives';
 import { withRepoSourceControl } from './launchEngines';
+import { RUNTIME_LABELS, type SessionRuntimeOffer } from '../domain/sessionRuntimes';
 import './LaunchWizard.css';
 
 export * from './LaunchWizardPrimitives';
@@ -204,12 +205,15 @@ export function ConfirmStep({
   integrations,
   sessionDefinitions,
   targets,
+  runsAs,
 }: {
   form: WizardForm;
   models: Record<string, RuntimeModelDescriptor>;
   integrations: IntegrationConnection[];
   sessionDefinitions: SessionDefinition[];
   targets: VolundrTarget[];
+  /** The runtime chosen on a host that offers a choice. */
+  runsAs?: SessionRuntimeOffer;
 }) {
   const modelLabel = formatModelOption(form.model, models[form.model]);
   const definitionLabel =
@@ -233,6 +237,9 @@ export function ConfirmStep({
         <div className="niuu:flex niuu:flex-col niuu:divide-y niuu:divide-border-subtle">
           <ConfirmRow label="session" value={deriveSessionName(form)} />
           <ConfirmRow label="forge" value={targetLabel} />
+          {runsAs ? (
+            <ConfirmRow label="runs as" value={RUNTIME_LABELS[runsAs.runtime].name} />
+          ) : null}
           <ConfirmRow label="definition" value={definitionLabel} />
           <ConfirmRow label="persona" value={form.personaName || 'not attached'} />
           <ConfirmRow label="model" value={modelLabel} />
