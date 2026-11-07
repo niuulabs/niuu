@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import typer
 
+from cli.services.compose_bundle import WORKLOAD_IDENTITY_CONTRIBUTOR
 from cli.services.manager import ServiceState, StartupError
 from cli.services.preflight import (
     PreflightConfig,
@@ -683,6 +684,12 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
         "GIT__VALIDATE_ON_CREATE": "false",
         "RESIDENT_RUNTIMES": json.dumps(_mini_resident_runtimes_config(settings)),
         "BIFROST_CONFIG": _effective_bifrost_config(settings).model_dump_json(),
+        # Workload identity needs a Kubernetes service-account token issuer, which one
+        # machine has none of: switched off rather than left to emit a token volume that
+        # neither local sessions nor registered hosts can be given.
+        "SESSION_CONTRIBUTORS": json.dumps(
+            [{"adapter": WORKLOAD_IDENTITY_CONTRIBUTOR, "kwargs": {"enabled": False}}]
+        ),
         "CREDENTIAL_STORE": json.dumps(
             {
                 "adapter": ("volundr.adapters.outbound.file_credential_store.FileCredentialStore"),

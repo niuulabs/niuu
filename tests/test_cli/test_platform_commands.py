@@ -1685,3 +1685,18 @@ class TestHostsJoinHost:
         probe.connect.assert_called_once_with(("192.0.2.1", 9))
         probe.send.assert_not_called()
         assert make.call_args.args == (socket.AF_INET, socket.SOCK_DGRAM)
+
+
+def test_mini_mode_switches_workload_identity_off():
+    """One machine has no Kubernetes token issuer for the contributor's projected token."""
+    env = _resolve_local_pod_manager_env(CLISettings(mode="mini", hosts={"enabled": False}))
+    contributors = json.loads(env["SESSION_CONTRIBUTORS"])
+    assert contributors == [
+        {
+            "adapter": (
+                "volundr.adapters.outbound.contributors.workload_identity."
+                "WorkloadIdentityContributor"
+            ),
+            "kwargs": {"enabled": False},
+        }
+    ]
