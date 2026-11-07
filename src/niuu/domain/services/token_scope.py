@@ -436,6 +436,8 @@ def credential_allows_route(token: str, method: str, path: str) -> bool:
         ("PUT", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
         ("DELETE", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
         ("POST", r"/api/v1/niuu/guild/join", NODE_JOIN_SCOPE),
+        ("GET", r"/api/v1/forge/compute/hosts/join\.sh", COMPUTE_HOST_JOIN_SCOPE),
+        ("POST", r"/api/v1/forge/compute/hosts/join", COMPUTE_HOST_JOIN_SCOPE),
         ("POST", r"/api/v1/forge/push/call", FORGE_PUSH_CALL_SCOPE),
     ]
     granted = credential_scopes(claims)
