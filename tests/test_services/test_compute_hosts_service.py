@@ -546,6 +546,56 @@ class TestChecks:
         assert checked.findings == ("Forge could not reach the host: RuntimeError",)
         observe.return_value.count.assert_not_called()
 
+    async def test_a_host_follows_the_revision_that_replaced_the_one_it_joined_with(self, caplog):
+        # The built-in catalog's revision follows its content: a Forge release retires it.
+        host = make_host(execution="host@1", last_checked_at=datetime.now(UTC))
+        successor = make_execution(execution="host@2", profile="host")
+        service, repository, _, inspector = _service(host, executions={"host@2": successor})
+
+        with patch("volundr.domain.services.compute_hosts.get_observability") as observe:
+            await service.maintain()
+
+        stored = repository.hosts[host.id]
+        assert (stored.execution, stored.profile) == ("host@2", "host")
+        observe.return_value.count.assert_called_once_with(
+            "volundr.compute.host.execution_followed", attributes={"pool": POOL}
+        )
+        assert "now runs host@2: its execution host@1 is no longer offered" in caplog.text
+        assert (await service.check(stored)).health is HostHealth.HEALTHY
+        assert inspector.audits[-1][0] == host.id
+
+    @pytest.mark.parametrize(
+        "offered",
+        [{"docker@1"}, {"host@2", "host@3"}],
+        ids=["no-successor", "two-successors"],
+    )
+    async def test_a_host_without_one_successor_stays_and_is_quarantined(self, offered):
+        host = make_host(execution="host@1", health=HostHealth.PENDING)
+        executions = {name: make_execution(execution=name) for name in offered}
+        service, repository, _, inspector = _service(host, executions=executions)
+
+        await service.maintain()
+
+        stored = repository.hosts[host.id]
+        assert stored.execution == "host@1"
+        assert stored.health is HostHealth.QUARANTINED
+        assert stored.findings == (
+            f"its execution host@1 is no longer offered ({', '.join(sorted(offered))}); "
+            "remove the host and join it again",
+        )
+        assert inspector.audits == []
+
+    async def test_a_host_whose_execution_is_gone_can_still_be_removed(self):
+        host = make_host(execution="host@1")
+        inspector = Inspector()
+        inspector.leave_error = RuntimeError("host hrimfaxi runs execution host@1, ...")
+        service, repository, _, _ = _service(
+            host, inspector=inspector, executions={"docker@1": make_execution()}
+        )
+
+        assert await service.remove(ADMIN, host.id) is False
+        assert host.id not in repository.hosts
+
     async def test_maintain_checks_due_hosts_and_finishes_removals(self):
         now = datetime.now(UTC)
         pending = make_host(

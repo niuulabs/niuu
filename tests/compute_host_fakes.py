@@ -165,6 +165,13 @@ class HostRepository(RegisteredHostRepository):
             }
         )
 
+    async def follow_execution(self, host_id, *, execution, profile):
+        if host_id not in self.hosts:
+            raise LookupError(host_id)
+        self.hosts[host_id] = self.hosts[host_id].model_copy(
+            update={"execution": execution, "profile": profile}
+        )
+
     async def record_check(self, host_id, *, facts, findings, health, checked_at):
         updated = self.hosts[host_id].model_copy(
             update={

@@ -167,12 +167,22 @@ def build_registered_hosts(
         )
         accesses[str(plan.execution)] = access
 
+    def offered(table, host):
+        try:
+            return table[host.execution]
+        except KeyError:
+            # Typed like an unreachable host: its check and its removal report it.
+            raise RuntimeError(
+                f"host {host.name} runs execution {host.execution}, which this Forge no "
+                f"longer offers ({', '.join(sorted(table))})"
+            ) from None
+
     def access_for(host):
-        return accesses[host.execution]
+        return offered(accesses, host)
 
     def uid_base_for(host):
         # The uid the host's own platform runs its slots at (a Mac's runtime may differ).
-        limits = runtimes[host.execution].for_platform(host.platform).slot_limits
+        limits = offered(runtimes, host).for_platform(host.platform).slot_limits
         return limits.uid_base if limits is not None else None
 
     inspector = SshHostInspector(
@@ -459,7 +469,7 @@ async def resolve_session_images(config: ComputeConfig) -> SessionImages | None:
     from volundr.domain.vm_runtime import SessionImages
 
     images = config.session_images
-    if images is None or not (images.linux or images.darwin):
+    if images is None or not (images.linux or images.darwin or images.native):
         return None
     timeout = images.resolve_timeout_seconds
     async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -469,7 +479,8 @@ async def resolve_session_images(config: ComputeConfig) -> SessionImages | None:
             else None
             for name, reference in (("linux", images.linux), ("darwin", images.darwin))
         }
-    return SessionImages(**pinned)
+    # Native images are references the session bundle stands in for, already digest-pinned.
+    return SessionImages(**pinned, native=tuple(images.native))
 
 
 def _takes(factory: Callable, name: str) -> bool:

@@ -78,6 +78,15 @@ async def test_every_host_statement_runs_on_postgres(db_pool):
             checked_at=datetime.now(UTC),
         )
         assert checked.facts == {"cpus": 8}
+        await repository.follow_execution(host.id, execution="host@2", profile="bm")
+        followed = await repository.get(host.id)
+        assert (followed.execution, followed.profile, followed.tags) == (
+            "host@2",
+            "bm",
+            ("gpu", "big"),
+        )
+        with pytest.raises(LookupError):
+            await repository.follow_execution(uuid4(), execution="host@2", profile="bm")
         allocation = uuid4()
         claimed = await repository.claim(
             pool_id, allocation, "bm", HostSelector(tags=("gpu",), match="all")

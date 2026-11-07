@@ -26,7 +26,7 @@ from volundr.domain.host_preparation import HostPreparation
 from volundr.domain.services.compute_hosts import HostExecution
 from volundr.domain.services.host_access_key import generate_host_access_key
 from volundr.domain.session_runtimes import SessionRuntimeKind
-from volundr.domain.vm_runtime import SlotLimits, VmRuntime
+from volundr.domain.vm_runtime import SessionImages, SlotLimits, VmRuntime
 
 
 class DurableStore(MemoryCredentialStore):
@@ -696,6 +696,10 @@ def test_the_inspector_reaches_a_host_through_its_executions_access_and_uid_base
     assert hosts.inspector._access_for(plain) is accesses["vm-b"]
     assert hosts.inspector._uid_base_for(isolated) == 62000
     assert hosts.inspector._uid_base_for(plain) is None
+    retired = SimpleNamespace(name="hrimfaxi", execution="vm@retired", platform=linux)
+    for lookup in (hosts.inspector._access_for, hosts.inspector._uid_base_for):
+        with pytest.raises(RuntimeError, match="runs execution vm@retired, which this Forge"):
+            lookup(retired)
     assert hosts.inspector._floor == 2048
 
 
@@ -842,6 +846,17 @@ async def test_only_the_configured_session_image_is_pinned(pinned):
 
     assert (images.linux, images.darwin) == (None, DARWIN_PINNED)
     assert [reference for reference, _ in pinned] == [DARWIN_REF]
+
+
+async def test_native_images_are_handed_on_as_configured_and_pinned_by_nobody(pinned):
+    bao = "quay.io/openbao/openbao@sha256:" + "c" * 64
+
+    images = await module.resolve_session_images(
+        _provider_config(session_images={"native": [bao]})
+    )
+
+    assert images == SessionImages(native=(bao,))
+    assert pinned == []
 
 
 async def test_a_session_image_that_cannot_be_pinned_stops_startup(monkeypatch):

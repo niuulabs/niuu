@@ -157,6 +157,19 @@ class PostgresRegisteredHostRepository(RegisteredHostRepository):
         if result != "UPDATE 1":
             raise LookupError(f"Registered host {host.id} does not exist")
 
+    async def follow_execution(self, host_id: UUID, *, execution: str, profile: str) -> None:
+        result = await self._pool.execute(
+            """UPDATE compute_hosts
+               SET data = data || jsonb_build_object('execution', $2::text, 'profile', $3::text),
+                   updated_at = NOW()
+               WHERE id = $1""",
+            host_id,
+            execution,
+            profile,
+        )
+        if result != "UPDATE 1":
+            raise LookupError(f"Registered host {host_id} does not exist")
+
     async def record_check(
         self,
         host_id: UUID,

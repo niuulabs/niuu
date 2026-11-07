@@ -227,6 +227,10 @@ class RegisteredHostRepository(ABC):
         """
 
     @abstractmethod
+    async def follow_execution(self, host_id: UUID, *, execution: str, profile: str) -> None:
+        """Store the execution revision (and its profile) the host now runs."""
+
+    @abstractmethod
     async def record_check(
         self,
         host_id: UUID,

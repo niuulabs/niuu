@@ -628,10 +628,54 @@ class ComputeHostService:
 
     # ── checks ───────────────────────────────────────────────────────────────
 
+    async def _follow(self, host: RegisteredHost) -> RegisteredHost:
+        """Move a host onto the revision that replaced the one it joined with.
+
+        A host runs one execution revision. The built-in catalog's revision follows its
+        content, so a Forge release that changes the execution retires the revision every
+        host joined with and offers its successor under the same id. The host follows it:
+        its allocation still pins the old plan, and the pool re-prepares an idle host whose
+        plan changed. With no successor, or more than one, the host stays as it is and its
+        check quarantines it.
+        """
+        if host.execution in self._executions:
+            return host
+        execution_id = host.execution.partition("@")[0]
+        successors = [name for name in self._executions if name.partition("@")[0] == execution_id]
+        if len(successors) != 1:
+            return host
+        [successor] = successors
+        profile = self._executions[successor].profile
+        await self._repository.follow_execution(host.id, execution=successor, profile=profile)
+        logger.warning(
+            "Host %s (%s) now runs %s: its execution %s is no longer offered",
+            host.name,
+            host.id,
+            successor,
+            host.execution,
+        )
+        get_observability().count(
+            "volundr.compute.host.execution_followed", attributes={"pool": self._pool_id}
+        )
+        return host.model_copy(update={"execution": successor, "profile": profile})
+
     async def check(self, host: RegisteredHost) -> RegisteredHost:
         """Reach the host, read its facts and audit it; the result is its health."""
-        live = await self.live_sessions(host)
         now = datetime.now(UTC)
+        if host.execution not in self._executions:
+            # Forge has no way to reach or audit it: the access is the execution's.
+            return await self._record(
+                host,
+                host.facts,
+                (
+                    f"its execution {host.execution} is no longer offered "
+                    f"({', '.join(sorted(self._executions))}); remove the host and join "
+                    "it again",
+                ),
+                HostHealth.QUARANTINED,
+                now,
+            )
+        live = await self.live_sessions(host)
         try:
             platform = host.platform
         except ValueError as exc:
@@ -695,7 +739,7 @@ class ComputeHostService:
         """One pass: reach pending and due hosts, and finish removals that are now empty."""
         now = datetime.now(UTC)
         due: list[RegisteredHost] = []
-        hosts = await self._repository.list(self._pool_id)
+        hosts = [await self._follow(host) for host in await self._repository.list(self._pool_id)]
         # A connector that knows its connection (a tunnel) reports a drop here, every tick;
         # the host is checked at once and goes unreachable instead of waiting for its audit.
         statuses = await asyncio.gather(
