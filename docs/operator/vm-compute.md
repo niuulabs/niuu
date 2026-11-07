@@ -553,14 +553,20 @@ The sidecar refreshes the files and serves the last answer on
 `refresh_fraction`, `retry_seconds`, `request_timeout_seconds`, `ca_file` (guest
 path of a private CA), `listen_port` (80), `agent_command`.
 
-The agent calls `POST /api/v1/internal/compute/metadata/credentials`. Forge answers
-only for the session currently bound to the calling allocation (READY/BUSY, not
-stopping), minting fresh ServiceAccount tokens and a Forge session credential for
-the session's **current** launch. Every authentication failure is the same 401; an
-authenticated allocation without a running session is 409 with a reason code
+The agent calls `POST /api/v1/internal/compute/metadata/credentials` with the body
+`{"allocation_id": "<uuid>", "slot": <index>}`. Forge answers only for the session
+currently bound to that slot of the calling allocation (machine ready or idle, slot
+starting or busy, not stopping), minting fresh ServiceAccount tokens and a Forge
+session credential for the session's **current** launch. `slot` may be omitted only
+when the allocation has one slot (the guest agent of a one-session machine sends
+none); on a machine with more slots it is required, and a `slot` that is not an
+integer below the allocation's slot count is a 400 after authentication. Every
+authentication failure is the same 401; an authenticated allocation without a
+running session in that slot is 409 with a reason code
 (`allocation_not_running`, `session_stopping`, `no_bound_session`,
 `session_not_launched`, `no_service_account`, `forge_session_unavailable`); Forge
-logs the detail at warning, and the guest agent logs the code. The chart's
+logs the detail at warning, and the guest agent logs the code. A warm spare that
+holds no session answers `no_bound_session`. The chart's
 `guestMetadata.enabled` renders the Envoy bypass for exactly that route (JWT and
 Cedar are skipped; the route authenticates the guest itself). Check that Forge's
 NetworkPolicy and ingress admit guest traffic.
@@ -701,8 +707,8 @@ no separate VM login/refresh protocol is required.
 
 Settings → Forge → Compute pool manages the configured provider's pool. The
 same controls work for every `MachineProvider`/`VmRuntime` pair: profile name,
-maximum machines, ready spares, concurrent provisioning, spare lifetime,
-provisioning timeout, pause and drain. Provider-specific image, network, disk,
+maximum machines, sessions per machine, free warm slots, concurrent provisioning,
+spare lifetime, provisioning timeout, pause and drain. Provider-specific image, network, disk,
 CPU, memory and cloud-init remain in the provider adapter's profile kwargs.
 The profile selector is populated by the provider's `profiles()` catalog. The
 Machine profiles section shows adapter-selected public details; raw cloud-init
@@ -713,7 +719,9 @@ the shared UI does not interpret provider-specific configuration.
 HTTP authentication is optional at the composition boundary: adapters using a
 native credential chain can omit `compute.auth` entirely.
 
-Initial policy comes from `compute.max_machines`, `compute.warm_min` (default
+Initial policy comes from `compute.max_machines`, `compute.slots_per_machine`
+(default one), `compute.max_sessions_per_machine` and
+`compute.max_machine_age_seconds` (both unset), `compute.warm_min` (default
 zero), `compute.max_provisioning` (one), `compute.idle_timeout_seconds` (3600),
 and `compute.provisioning_timeout_seconds` (600). The profile comes from the VM
 pod manager. After initialization, policy is stored in PostgreSQL and admin
@@ -737,13 +745,66 @@ preserving any session data.
 Pause rejects new assignments and provisioning without interrupting sessions.
 Drain additionally removes unbound spares. Lowering capacity retires excess idle
 guests; it never terminates active sessions. With replacement policy, reducing
-the spare target also retires excess spares immediately. Reuse policy retains
-excess spares until idle expiry, within maximum capacity. Failed,
+the free warm slots also retires excess empty machines immediately. Reuse policy
+retains excess spares until idle expiry, within maximum capacity. Failed,
 quarantined and deleting allocations continue consuming capacity. The database
 admission lock applies policy across concurrent controllers, not just one process.
 
-Compute status shows pool counts, reconciliation health, allocation ownership
-and errors. Dispose unused machine is restricted to unbound allocations; stop
+### Session slots, free warm slots and draining
+
+A machine has `slots_per_machine` slots (**Sessions per machine**, default 1), and
+each slot holds one session. One slot is the behaviour described above: a machine
+serves one session. More than one slot per machine needs a runtime that keeps the
+slots apart (`VmRuntime.supports_slots`); no shipped runtime does yet, so Forge
+refuses a policy above one slot at startup and in the admin form, naming the
+runtime and the remedy. The slot count is fixed when a machine is created, so
+changing it applies to machines booted afterwards.
+
+**Placement.** A new session takes a free slot of a ready machine whose profile and
+host digest match its execution plan, before Forge boots a machine. Among the
+candidates it picks the machine with the most occupied slots, then the oldest, so
+sessions pack onto few machines and empty ones stay free to expire. The choice is
+checked again under the machine's lock; a machine with a stop pending on any slot,
+past its limits, or no longer idle is not offered. Only when no slot is free does
+the session boot a machine (with `slots_per_machine` slots, itself in slot 0).
+
+**Free warm slots.** `warm_min` (**Free warm slots**) counts free, usable slots on
+compatible machines that are provisioning, ready or idle, not machines. The pool
+keeps at least that many; when sessions take slots and the count drops below it,
+the pool boots `ceil((warm_min - free) / slots_per_machine)` machines, within
+**Maximum machines** and **Concurrent provisioning**. With four slots, `warm_min: 1`
+keeps one free slot and boots another machine when the last is taken, and
+`warm_min: 4` keeps a whole machine's worth free. `warm_min` cannot exceed
+`max_machines * slots_per_machine`. At one slot the count is the number of ready
+spare machines, exactly as before.
+
+Only an empty machine is ever disposed for being surplus or idle, and only while
+the free slots left stay at `warm_min`; a machine with a session is never touched.
+Idle expiry (`idle_timeout_seconds`) applies to empty machines above that count.
+
+**Draining.** Under **Replace VM**, a machine takes new sessions until it has served
+**Sessions before replacement** (`max_sessions_per_machine`; unset means one per
+slot) or reached **Machine lifetime (seconds)** (`max_machine_age_seconds`; unset
+means no limit). It then takes no new session, keeps serving the ones it has, and
+is deleted once its last session stops; the warm rule above boots its replacement
+as soon as its free slots stop counting. A limit above the slot count reuses
+cleaned slots in place and needs a runtime that supports reuse. A machine past its
+lifetime is not cleaned for another session. Both drain limits are rejected under
+**Reuse cleaned VM**, and a limit below the slot count is rejected.
+
+**Capacity shortfall.** When the pool needs machines to reach its free warm slots
+but is at **Maximum machines**, it keeps running short rather than quietly: it
+logs once at error when the shortfall starts, counts every hit on
+`volundr.compute.warm.capacity_hits`, and shows the reason (for example
+`3 of 4 free warm slots: the pool is at its maximum of 2 machines; raise the maximum
+or lower the free warm slots`) as **Warm capacity** in Compute status and as
+`capacity_shortfall` in the compute snapshot. Raise **Maximum machines** or lower
+**Free warm slots**; the shortfall clears on the tick the target is met.
+
+Compute status shows pool counts, reconciliation health, warm capacity, and one
+row per machine with its state, profile, sessions in use out of its slots, and
+each session's slot, state and id. Dispose unused machine lists only machines
+without sessions; stop
 session-owned machines through Forge to preserve their files. An owned machine
 missing from the ledger is quarantined, never silently adopted or deleted.
 Inspect its data before explicitly disposing it. A failed archive leaves the
@@ -758,9 +819,14 @@ visible in admin settings; provider exception bodies are not exposed as they
 may contain credentials.
 
 With the existing Niuu observability exporter enabled, monitor
-`volundr.compute.machines` by pool/state, `volundr.compute.assignments` by
+`volundr.compute.machines` by pool/state (a machine in service shows as `busy`),
+`volundr.compute.slots` by pool/state (`starting`, `busy`, `failed`, `draining`,
+`retired`, and `free`: the usable free slots on compatible machines, the number
+`warm_min` is compared with), `volundr.compute.assignments` by
 warm/cold source, `volundr.compute.warm.duration`,
-`volundr.compute.reconcile.duration` and `volundr.compute.reconcile.errors`.
+`volundr.compute.warm.capacity_hits` (the pool is at its maximum and short of free
+warm slots), `volundr.compute.reconcile.duration` and
+`volundr.compute.reconcile.errors`.
 A growing failed/draining/quarantined count explains unavailable capacity.
 Admin operations require the existing `volundr:admin` role. Runtime session
 routes keep the existing ownership, tenant and workload-identity authorization.
@@ -770,6 +836,14 @@ unreleased allocations. Migration 000067 refuses downgrade with live claims.
 Back up the PostgreSQL ledger, configured credential store and controller-local
 workspace archives together. Guest disk loss before a successful stop/archive
 is still outside the durability guarantee of controller-local storage.
+
+Migration 000107 (`compute_slots`) moves each allocation's session into a slot
+binding (slot 0) and stores machines as `idle` while in service. Stop older
+controllers before applying it: they cannot read the new records and fail loudly,
+as for 000068. Its down migration refuses to run while any allocation is
+unreleased (pause admission, stop sessions, drain spares and verify zero
+unreleased allocations first), then restores the old shape and drops
+`compute_slots`.
 
 ## Local controller installation
 
@@ -942,7 +1016,7 @@ reset retains the binding and stop request for retry; the VM is never offered as
 idle after incomplete cleanup. The provider and allocation record remain the
 same across successful reuse. Retained surplus VMs expire after
 `idle_timeout_seconds`; lowering maximum capacity or draining the pool can remove
-them sooner. Spares within the warm minimum never expire: they stay ready until a
-session claims them, so an idle pool does not churn machines.
+them sooner. Free slots within the warm minimum never expire: their machines stay
+ready until a session claims a slot, so an idle pool does not churn machines.
 Closing a browser tab does not stop a session. Explicit stop, archive, and delete
 operations use the session lifecycle's cleanup path.

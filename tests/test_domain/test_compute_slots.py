@@ -21,6 +21,7 @@ from volundr.domain.compute import (
     SlotLease,
     SlotState,
     display_state,
+    machine_expired,
     next_free_slot,
     session_limit,
     usable_slots,
@@ -293,6 +294,14 @@ def test_a_machine_past_its_age_limit_offers_nothing_even_when_empty():
     assert usable_slots(lease, [], policy(max_machine_age_seconds=101), NOW) == 1
     assert usable_slots(lease, [], policy(max_machine_age_seconds=100), NOW) == 0
     assert usable_slots(lease, [], policy(max_machine_age_seconds=50), NOW) == 0
+
+
+def test_a_machine_expires_at_its_age_limit_and_never_without_one():
+    lease = machine(created_at=NOW - timedelta(seconds=100))
+
+    assert not machine_expired(lease, policy(), NOW)
+    assert not machine_expired(lease, policy(max_machine_age_seconds=101), NOW)
+    assert machine_expired(lease, policy(max_machine_age_seconds=100), NOW)
 
 
 def test_usable_slots_never_goes_negative():

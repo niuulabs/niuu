@@ -322,6 +322,96 @@ describe('SettingsPage', () => {
     expect(await screen.findByText('Saved.')).toBeTruthy();
   });
 
+  describe('number fields', () => {
+    function installPoolSection(limit: number | null) {
+      const defaults = apiMocks.get.getMockImplementation();
+      apiMocks.get.mockImplementation(async (path: string) => {
+        if (path !== '/settings') return defaults?.(path);
+        return {
+          title: 'Ting',
+          scope: 'service',
+          sections: [
+            {
+              id: 'pool',
+              label: 'Pool',
+              path: '/settings/pool',
+              saveLabel: 'Save pool settings',
+              fields: [
+                { key: 'slots', label: 'Sessions per machine', type: 'number', value: 2 },
+                {
+                  key: 'limit',
+                  label: 'Sessions before replacement',
+                  type: 'number',
+                  value: limit,
+                  nullable: true,
+                  placeholder: 'Unset',
+                },
+              ],
+            },
+          ],
+        };
+      });
+    }
+
+    function open() {
+      routerMocks.params = { providerId: 'ting', sectionId: 'pool' };
+      wrap(<SettingsPage />);
+    }
+
+    it('shows an unset nullable number as an empty field and saves it back as null', async () => {
+      installPoolSection(null);
+      open();
+
+      const limit = (await screen.findByRole('spinbutton', {
+        name: /Sessions before replacement/,
+      })) as HTMLInputElement;
+      expect(limit.value).toBe('');
+      expect(limit.placeholder).toBe('Unset');
+      fireEvent.click(screen.getByRole('button', { name: 'Save pool settings' }));
+
+      await waitFor(() => {
+        expect(apiMocks.patch).toHaveBeenCalledWith('/settings/pool', { slots: 2, limit: null });
+      });
+    });
+
+    it('saves an emptied nullable number as null and a typed one as a number', async () => {
+      installPoolSection(3);
+      open();
+
+      const limit = await screen.findByRole('spinbutton', {
+        name: /Sessions before replacement/,
+      });
+      expect((limit as HTMLInputElement).value).toBe('3');
+      fireEvent.change(limit, { target: { value: '' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save pool settings' }));
+      await waitFor(() => {
+        expect(apiMocks.patch).toHaveBeenLastCalledWith('/settings/pool', {
+          slots: 2,
+          limit: null,
+        });
+      });
+
+      fireEvent.change(limit, { target: { value: '4' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save pool settings' }));
+      await waitFor(() => {
+        expect(apiMocks.patch).toHaveBeenLastCalledWith('/settings/pool', { slots: 2, limit: 4 });
+      });
+    });
+
+    it('still saves an emptied number that is not nullable as 0', async () => {
+      installPoolSection(null);
+      open();
+
+      const slots = await screen.findByRole('spinbutton', { name: /Sessions per machine/ });
+      fireEvent.change(slots, { target: { value: '' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save pool settings' }));
+
+      await waitFor(() => {
+        expect(apiMocks.patch).toHaveBeenCalledWith('/settings/pool', { slots: 0, limit: null });
+      });
+    });
+  });
+
   it('shows the server reason when a section save fails', async () => {
     routerMocks.params = { providerId: 'ting', sectionId: 'notifications' };
     apiMocks.patch.mockRejectedValueOnce(

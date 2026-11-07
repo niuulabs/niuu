@@ -1792,3 +1792,153 @@ async def test_stop_deletes_a_machine_maintenance_began_draining_in_the_meantime
 
     assert machine.id not in provider.machines
     runtime.stop.assert_not_awaited()
+
+
+# --- placing sessions into the free slots of a multi-slot machine -------------------------------
+# The runtime here declares slot support; the real runtimes do not yet, so these are the only
+# tests that place more than one session on a machine.
+
+
+@pytest.fixture
+def slot_pool():
+    from volundr.domain.services.compute_pool import ComputePoolService
+
+    repository, provider, store = Repository(), ReadyProvider(), MemoryCredentialStore()
+    service = ComputeLeaseService(
+        repository,
+        provider,
+        pool_id="pool",
+        max_machines=3,
+        bootstrap=MachineBootstrap(),
+        bootstrap_store=store,
+    )
+    runtime = AsyncMock()
+    runtime.supports_slots = True
+    runtime.supports_reuse = False
+    runtime.machine_bootstrap = lambda defaults: defaults
+    runtime.session_bootstrap = lambda session, spec, machine: machine
+    runtime.ready.return_value = True
+    runtime.target.return_value = SessionProxyTarget("http://127.0.0.1:9000", "127.0.0.1", 9000)
+    manager = VmPodManager(
+        profile="small", pool_id="pool", max_machines=3, poll_interval_seconds=0.001
+    )
+    manager.configure_compute(
+        service, repository, runtime, MachineBootstrap(), pool_id="pool", max_machines=3
+    )
+    pool = ComputePoolService(
+        repository,
+        service,
+        provider,
+        runtime,
+        pool_id="pool",
+        defaults=ComputePoolPolicy(
+            profile="small", max_machines=3, slots_per_machine=2, warm_min=4
+        ),
+        bootstrap=MachineBootstrap(),
+    )
+    manager.configure_pool(pool)
+    return manager, pool, repository, provider
+
+
+def _a_session() -> Session:
+    return Session(id=uuid4(), name="VM session", owner_id="owner", tenant_id="tenant")
+
+
+async def _warm_two_machines(pool, repository):
+    await pool.maintain()
+    await pool.maintain()
+    first, second = sorted(repository.leases.values(), key=lambda m: m.created_at)
+    assert (first.state, second.state) == (LeaseState.IDLE, LeaseState.IDLE)
+    return first, second
+
+
+async def test_sessions_fill_one_machine_before_the_next(slot_pool):
+    manager, pool, repository, provider = slot_pool
+    first, second = await _warm_two_machines(pool, repository)
+
+    placed = [await manager._claim_warm(_a_session(), SPEC) for _ in range(4)]
+
+    # The oldest empty machine first, then the busiest, so the second machine stays free.
+    assert [(p.id, p.binding.slot) for p in placed] == [
+        (first.id, 0),
+        (first.id, 1),
+        (second.id, 0),
+        (second.id, 1),
+    ]
+    assert await manager._claim_warm(_a_session(), SPEC) is None
+    assert len(provider.created) == 2
+
+
+async def test_the_most_occupied_machine_is_preferred_over_an_older_empty_one(slot_pool):
+    manager, pool, repository, _ = slot_pool
+    first, second = await _warm_two_machines(pool, repository)
+    async with repository.operation(second.id):
+        await manager._service.bind(
+            repository.leases[second.id], uuid4(), "owner", "tenant", MachineBootstrap(), 60
+        )
+
+    placed = await manager._claim_warm(_a_session(), SPEC)
+
+    assert (placed.id, placed.binding.slot) == (second.id, 1)
+    assert repository.leases[first.id].state == LeaseState.IDLE
+
+
+async def test_a_stop_intent_on_any_slot_hides_the_machines_free_slots(slot_pool):
+    manager, pool, repository, _ = slot_pool
+    first, second = await _warm_two_machines(pool, repository)
+    taken = await manager._claim_warm(_a_session(), SPEC)
+    assert taken.id == first.id
+    async with repository.operation(first.id):
+        await repository.save_slot(taken.binding.model_copy(update={"stop_requested": True}))
+
+    placed = await manager._claim_warm(_a_session(), SPEC)
+
+    assert (placed.id, placed.binding.slot) == (second.id, 0)
+
+
+async def test_a_machine_past_its_lifetime_offers_no_free_slot(slot_pool):
+    manager, pool, repository, _ = slot_pool
+    first, second = await _warm_two_machines(pool, repository)
+    await pool.configure((await pool.policy()).model_copy(update={"max_machine_age_seconds": 60}))
+    repository.leases[first.id] = first.model_copy(
+        update={"created_at": datetime.now(UTC) - timedelta(hours=1)}
+    )
+
+    placed = await manager._claim_warm(_a_session(), SPEC)
+
+    assert placed.id == second.id
+
+
+async def test_a_machine_that_served_its_session_limit_offers_no_free_slot(slot_pool):
+    manager, pool, repository, _ = slot_pool
+    first, second = await _warm_two_machines(pool, repository)
+    one = await manager._claim_warm(_a_session(), SPEC)
+    two = await manager._claim_warm(_a_session(), SPEC)
+    assert {one.id, two.id} == {first.id}
+    # The first slot's session ended and its slot was retired: the machine has served 2 of 2.
+    async with repository.operation(first.id):
+        await repository.save_slot(one.binding.model_copy(update={"state": SlotState.RETIRED}))
+    async with repository.operation(first.id):
+        await repository.save_slot(two.binding.model_copy(update={"state": SlotState.RETIRED}))
+
+    placed = await manager._claim_warm(_a_session(), SPEC)
+
+    assert placed.id == second.id
+
+
+async def test_start_takes_a_free_slot_of_a_warm_machine_without_booting_another(slot_pool):
+    manager, pool, repository, provider = slot_pool
+    first, _ = await _warm_two_machines(pool, repository)
+    one, two = _a_session(), _a_session()
+
+    await manager.start(one, SPEC)
+    await manager.start(two, SPEC)
+
+    assert len(provider.created) == 2
+    placed = [await repository.active_for_session("pool", s.id) for s in (one, two)]
+    assert [(p.id, p.binding.slot) for p in placed] == [(first.id, 0), (first.id, 1)]
+    assert await manager.status(one) == SessionStatus.RUNNING
+    assert await manager.status(two) == SessionStatus.RUNNING
+    # Six slots (three machines of two), two taken.
+    capacity = await manager.capacity()
+    assert (capacity.limit, capacity.active) == (6, 2)
