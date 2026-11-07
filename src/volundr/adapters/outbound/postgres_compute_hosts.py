@@ -195,8 +195,8 @@ class PostgresRegisteredHostRepository(RegisteredHostRepository):
             tags = list(selector.tags)
             data = await conn.fetchval(
                 """UPDATE compute_hosts
-                   SET allocation_id = $2,
-                       data = jsonb_set(data, '{allocation_id}', to_jsonb($2::text)),
+                   SET allocation_id = $2::uuid,
+                       data = jsonb_set(data, '{allocation_id}', to_jsonb($2::uuid)),
                        updated_at = NOW()
                    WHERE id = (
                        SELECT id FROM compute_hosts
