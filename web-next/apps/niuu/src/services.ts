@@ -957,8 +957,7 @@ function toDomainSession(session: VolundrSession): Session {
     resources: EMPTY_SESSION_RESOURCES,
     env: {},
     events: [],
-    bootProgress:
-      state === 'provisioning' ? (session.status === 'starting' ? 0.25 : 0.6) : undefined,
+    startup: session.startup ?? null,
     connectionType: 'cli',
     tokensIn: session.tokensUsed,
     tokensOut: 0,

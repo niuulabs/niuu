@@ -63,6 +63,7 @@ import {
 } from '../domain/projectTree';
 import { groupByState } from './sessions/groupByState';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
+import { SessionStartupHeadline } from './SessionStartupProgress';
 import { useElementWidth } from './detail/useElementWidth';
 import { ProjectHome } from './ProjectHome';
 import { sessionHarness, type Session, type SessionState } from '../domain/session';
@@ -456,6 +457,21 @@ function PodEntry({
                 {session.shortDescription}
               </div>
             )}
+            {/* A starting (or failed-to-start) session says which launch stage it is on. */}
+            {session.startup &&
+              (session.state === 'requested' ||
+                session.state === 'provisioning' ||
+                session.state === 'failed') && (
+                <SessionStartupHeadline
+                  startup={session.startup}
+                  status={session.state}
+                  error={session.error}
+                  className={cn(
+                    'forge-session-row__preview',
+                    session.state === 'failed' && 'niuu:text-critical',
+                  )}
+                />
+              )}
             {/* Lexi's second line: host · model · role, then the state on the right. */}
             <div className="forge-session-row__metadata">
               {forgeLabel && (

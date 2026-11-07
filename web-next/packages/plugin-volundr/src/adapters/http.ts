@@ -70,6 +70,8 @@ import type {
   VolundrSessionTraceSummary,
   ExternalSession,
   SessionReadState,
+  SessionStartup,
+  StartupStageState,
 } from '../models/volundr.model';
 import { normalizeSecretRequest, type SecretRequestPayload } from './secretRequestWire';
 import { SessionForkError, SessionReadStateConflictError } from '../domain/session';
@@ -176,6 +178,7 @@ type SessionPayload = {
   activity_state?: VolundrSession['activityState'];
   activityStateSince?: string | null;
   activity_state_since?: string | null;
+  startup?: StartupPayload | null;
   turnStartedAt?: string | null;
   turn_started_at?: string | null;
   needsAttention?: boolean;
@@ -193,6 +196,34 @@ type SessionPayload = {
   short_description?: string | null;
   worked_seconds_24h?: number | null;
 };
+
+type StartupPayload = {
+  started_at: string;
+  stages?: Array<{
+    key: string;
+    label: string;
+    state: StartupStageState;
+    detail?: string | null;
+    started_at?: string | null;
+    finished_at?: string | null;
+  }>;
+  progress_error?: string | null;
+};
+
+function normalizeStartup(payload: StartupPayload): SessionStartup {
+  return {
+    startedAt: payload.started_at,
+    stages: (payload.stages ?? []).map((stage) => ({
+      key: stage.key,
+      label: stage.label,
+      state: stage.state,
+      detail: stage.detail ?? null,
+      startedAt: stage.started_at ?? null,
+      finishedAt: stage.finished_at ?? null,
+    })),
+    progressError: payload.progress_error ?? null,
+  };
+}
 
 type ReadStatePayload = {
   is_unread?: boolean;
@@ -614,6 +645,7 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     activityState: session.activityState ?? session.activity_state ?? undefined,
     activityStateSince: session.activityStateSince ?? session.activity_state_since ?? null,
     turnStartedAt: session.turnStartedAt ?? session.turn_started_at ?? null,
+    startup: session.startup ? normalizeStartup(session.startup) : null,
     needsAttention:
       Boolean(session.needsAttention ?? session.needs_attention) ||
       (session.activityState ?? session.activity_state) === 'awaiting_input',

@@ -198,6 +198,29 @@ export interface SessionCoordination {
   labels?: string[];
 }
 
+/** Where one step of a session's launch stands, as the runtime backend reported it. */
+export type StartupStageState = 'pending' | 'active' | 'done' | 'failed';
+
+/** One step of a launch: a pod condition, a kubelet event, a VM's phase, with real times. */
+export interface StartupStage {
+  key: string;
+  label: string;
+  state: StartupStageState;
+  /** The backend's own words (event message, node, VM phase), when it gave any. */
+  detail: string | null;
+  /** Null while the stage is still to come. */
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+/** The stages of a session's latest launch. */
+export interface SessionStartup {
+  startedAt: string;
+  stages: StartupStage[];
+  /** Why Forge could not read the backend's progress on its last attempt. */
+  progressError: string | null;
+}
+
 export interface VolundrSession {
   sessionDefinition?: string;
   coordination?: SessionCoordination;
@@ -231,6 +254,8 @@ export interface VolundrSession {
     | null;
   activityStateSince?: string | null;
   turnStartedAt?: string | null;
+  /** The latest launch's stages; absent for a session not started since Forge records them. */
+  startup?: SessionStartup | null;
   /** True when the session is blocked waiting on the user (awaiting_input). */
   needsAttention?: boolean;
   /** Its broker's metadata records a pending human gate; its gates say whether one still waits. */

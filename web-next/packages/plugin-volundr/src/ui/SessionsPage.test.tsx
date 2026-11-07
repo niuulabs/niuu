@@ -115,7 +115,8 @@ function makeSession(
     },
     env: overrides.env ?? {},
     events: overrides.events ?? [],
-    bootProgress: overrides.bootProgress,
+    startup: overrides.startup,
+    error: overrides.error,
     connectionType: overrides.connectionType,
     tokensIn: overrides.tokensIn,
     tokensOut: overrides.tokensOut,
@@ -362,6 +363,64 @@ describe('SessionsPage', () => {
   it('renders BOOTING group with provisioning sessions', async () => {
     wrap();
     await waitFor(() => expect(screen.getByTestId('pod-group-booting')).toBeInTheDocument());
+  });
+
+  it('says which launch stage a starting session is on, and where a failed one stopped', async () => {
+    localStorage.setItem('niuu.forge.filter', 'all');
+    const stage = (state: 'active' | 'done', detail: string) => ({
+      key: 'containers',
+      label: 'Starting containers',
+      state,
+      detail,
+      startedAt: '2026-11-06T12:00:40Z',
+      finishedAt: state === 'done' ? '2026-11-06T12:01:00Z' : null,
+    });
+    const booting = makeSession({
+      id: 'booting',
+      name: 'Booting',
+      personaName: 'dev',
+      state: 'provisioning',
+      startup: {
+        startedAt: '2026-11-06T12:00:00Z',
+        progressError: null,
+        stages: [stage('active', 'Pulling image "skuld:dev"')],
+      },
+    });
+    const failed = makeSession({
+      id: 'failed',
+      name: 'Failed',
+      personaName: 'dev',
+      state: 'failed',
+      error: 'ErrImagePull',
+      startup: {
+        startedAt: '2026-11-06T12:00:00Z',
+        progressError: null,
+        stages: [stage('active', 'Pulling image "skuld:dev"')],
+      },
+    });
+    const running = makeSession({
+      id: 'running',
+      name: 'Running',
+      personaName: 'dev',
+      state: 'running',
+      startup: {
+        startedAt: '2026-11-06T12:00:00Z',
+        progressError: null,
+        stages: [stage('done', 'Started')],
+      },
+    });
+    wrap(createSessionStoreWithSessions([booting, failed, running]));
+
+    const bootingRow = await screen.findByTestId('pod-entry-booting');
+    expect(within(bootingRow).getByTestId('session-startup-headline')).toHaveTextContent(
+      'Starting containers · Pulling image "skuld:dev"',
+    );
+    expect(
+      within(screen.getByTestId('pod-entry-failed')).getByTestId('session-startup-headline'),
+    ).toHaveTextContent('Starting containers failed · ErrImagePull');
+    expect(
+      within(screen.getByTestId('pod-entry-running')).queryByTestId('session-startup-headline'),
+    ).not.toBeInTheDocument();
   });
 
   it('renders ERROR group with failed sessions', async () => {

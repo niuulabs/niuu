@@ -13,6 +13,7 @@ import type {
   SessionCoordination,
   SessionReadState,
   SessionSource,
+  SessionStartup,
 } from '../models/volundr.model';
 
 export type SessionState =
@@ -79,8 +80,8 @@ export interface Session {
   resources: SessionResources;
   env: Record<string, string>;
   events: SessionEvent[];
-  /** Boot progress 0–1, present while state is requested/provisioning. */
-  bootProgress?: number;
+  /** The latest launch's stages, as the runtime backend reported them. */
+  startup?: SessionStartup | null;
   /** How the session is being accessed. */
   connectionType?: ConnectionType;
   /** Tokens consumed (input side). */

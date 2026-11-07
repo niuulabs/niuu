@@ -4,6 +4,7 @@ import { RenameSession } from './RenameSession';
 import { AssignSessionProject } from './AssignSessionProject';
 import { PinSession } from './PinSession';
 import { SessionActivityElapsed } from './SessionActivityElapsed';
+import { SessionStartupProgress } from './SessionStartupProgress';
 import { useNavigate } from '@tanstack/react-router';
 import { useOptionalService, useService } from '@niuulabs/plugin-sdk';
 import { getAuthHeaders } from '@niuulabs/query';
@@ -4472,7 +4473,7 @@ function LiveSessionDetailPageInner({
           >
             Session failed: <LinkedText text={liveSession.error} />
           </div>
-        ) : liveSession?.error && isSessionBooting(sessionStatus) ? (
+        ) : liveSession?.error && isSessionBooting(sessionStatus) && !liveSession.startup ? (
           <div
             role="status"
             className="niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-2 niuu:text-xs niuu:text-secondary"
@@ -4558,6 +4559,14 @@ function LiveSessionDetailPageInner({
                             renderPermissions={permissionRenderer}
                           />
                         </>
+                      ) : failedBeforeStart && liveSession?.startup ? (
+                        <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:overflow-auto niuu:p-6">
+                          <SessionStartupProgress
+                            startup={liveSession.startup}
+                            status={sessionStatus}
+                            error={liveSession.error}
+                          />
+                        </div>
                       ) : failedBeforeStart ? (
                         <div
                           className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted"
@@ -4603,6 +4612,14 @@ function LiveSessionDetailPageInner({
                           onSend={() => {}}
                           onStop={() => {}}
                         />
+                      ) : isSessionBooting(sessionStatus) && liveSession?.startup ? (
+                        <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:overflow-auto niuu:p-6">
+                          <SessionStartupProgress
+                            startup={liveSession.startup}
+                            status={sessionStatus}
+                            error={liveSession.error}
+                          />
+                        </div>
                       ) : isSessionBooting(sessionStatus) ? (
                         <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
                           Session is starting…

@@ -419,6 +419,63 @@ describe('__testables', () => {
     });
     expect(session.archivedAt).toBeUndefined();
     expect(session.trackerIssue).toBeUndefined();
+    expect(session.startup).toBeNull();
+
+    expect(
+      normalizeSession({
+        id: 'sess-2',
+        name: 'booting',
+        source: { type: 'git', repo: 'r', branch: 'main' },
+        status: 'provisioning',
+        model: 'sonnet',
+        startup: {
+          started_at: '2026-11-06T12:00:00Z',
+          progress_error: 'events forbidden',
+          stages: [
+            {
+              key: 'schedule',
+              label: 'Scheduling',
+              state: 'done',
+              detail: 'On node valhalla-w-07',
+              started_at: '2026-11-06T12:00:01Z',
+              finished_at: '2026-11-06T12:00:02Z',
+            },
+            { key: 'containers', label: 'Starting containers', state: 'pending' },
+          ],
+        },
+      } as any).startup,
+    ).toEqual({
+      startedAt: '2026-11-06T12:00:00Z',
+      progressError: 'events forbidden',
+      stages: [
+        {
+          key: 'schedule',
+          label: 'Scheduling',
+          state: 'done',
+          detail: 'On node valhalla-w-07',
+          startedAt: '2026-11-06T12:00:01Z',
+          finishedAt: '2026-11-06T12:00:02Z',
+        },
+        {
+          key: 'containers',
+          label: 'Starting containers',
+          state: 'pending',
+          detail: null,
+          startedAt: null,
+          finishedAt: null,
+        },
+      ],
+    });
+    expect(
+      normalizeSession({
+        id: 'sess-3',
+        name: 'old',
+        source: { type: 'git', repo: 'r', branch: 'main' },
+        status: 'running',
+        model: 'sonnet',
+        startup: { started_at: '2026-11-06T12:00:00Z' },
+      } as any).startup,
+    ).toEqual({ startedAt: '2026-11-06T12:00:00Z', stages: [], progressError: null });
 
     expect(
       normalizeTarget({

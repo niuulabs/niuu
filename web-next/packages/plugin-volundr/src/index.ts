@@ -281,6 +281,9 @@ export type {
   ExternalSessionHarness,
   SessionReadState,
   SessionReadStateChange,
+  SessionStartup,
+  StartupStage,
+  StartupStageState,
   ForgeMcpGrant,
 } from './models/volundr.model';
 

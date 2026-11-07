@@ -1958,7 +1958,7 @@ describe('buildServices', () => {
       expect.objectContaining({
         id: 'sess-starting',
         state: 'provisioning',
-        bootProgress: 0.25,
+        startup: null,
         clusterId: 'tenant-a',
         ravnId: 'tenant-a',
       }),
