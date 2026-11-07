@@ -714,7 +714,8 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
   `_ensure_host_prepared` path. It does not run at registration. Registration only
   reaches the host and audits it.
 - The audit checks free disk only; there is no memory floor.
-- Not built yet: the reverse SSH connector, `warm_targets` per selector, macOS hosts.
+- Not built yet: the reverse SSH connector, `warm_targets` per selector, the
+  Re-prepare action (a recipe change today needs drain, then resume), macOS hosts.
 
 ## Decisions (settled 2026-11-07)
 

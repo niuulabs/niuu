@@ -164,4 +164,6 @@ is retried. Capacity is never freed on a host nobody checked.
 - The reverse SSH connector for hosts behind NAT (design: "Connection"). Today a
   host must be reachable from Forge.
 - `warm_targets` per tag selector. `warm_min` counts free slots across the pool.
+- **Re-prepare.** After a recipe change, drain the host and resume it; the next claim
+  runs the new recipe.
 - macOS hosts.
