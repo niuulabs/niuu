@@ -35,10 +35,8 @@
   "dependencies": {
     "@niuulabs/domain": "workspace:*",
     "@niuulabs/plugin-mimir": "workspace:*",
-    "@niuulabs/plugin-ravn": "workspace:*",
     "@niuulabs/plugin-sdk": "workspace:*",
     "@niuulabs/plugin-ting": "workspace:*",
-    "@niuulabs/plugin-valkyrie": "workspace:*",
     "@niuulabs/plugin-volundr": "workspace:*",
     "@niuulabs/query": "workspace:*",
     "@niuulabs/shell": "workspace:*",

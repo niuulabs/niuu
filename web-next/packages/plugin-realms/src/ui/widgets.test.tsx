@@ -30,7 +30,7 @@ describe('WalkthroughRail', () => {
   it('shows progress, the current step detail and can be hidden', async () => {
     const user = userEvent.setup();
     render(<WalkthroughRail walkthrough={FIRST_REALM_WALKTHROUGH} action={<span>act</span>} />);
-    expect(screen.getByTestId('walkthrough-rail')).toHaveTextContent('0 / 5');
+    expect(screen.getByTestId('walkthrough-rail')).toHaveTextContent('0 / 4');
     expect(screen.getByText('Product resident fits most codebases.')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Hide walkthrough' }));
     expect(screen.queryByTestId('walkthrough-rail')).not.toBeInTheDocument();

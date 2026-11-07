@@ -16,8 +16,6 @@ export default defineConfig({
     '@niuulabs/ui',
     '@niuulabs/domain',
     '@niuulabs/query',
-    '@niuulabs/plugin-valkyrie',
-    '@niuulabs/plugin-ravn',
     '@niuulabs/plugin-ting',
     '@niuulabs/plugin-volundr',
     '@niuulabs/plugin-mimir',

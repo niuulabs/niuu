@@ -81,11 +81,8 @@ describe('filters', () => {
   });
 
   it('filters by source', () => {
-    const usage = (name: string) => (name === 'used' ? 2 : 0);
-    expect(matchesPersonaSource(persona('x'), 'all', usage)).toBe(true);
-    expect(matchesPersonaSource(persona('used'), 'in-use', usage)).toBe(true);
-    expect(matchesPersonaSource(persona('idle'), 'in-use', usage)).toBe(false);
-    expect(matchesPersonaSource(persona('x', { isBuiltin: false }), 'custom', usage)).toBe(true);
+    expect(matchesPersonaSource(persona('x'), 'all')).toBe(true);
+    expect(matchesPersonaSource(persona('x', { isBuiltin: false }), 'custom')).toBe(true);
   });
 });
 

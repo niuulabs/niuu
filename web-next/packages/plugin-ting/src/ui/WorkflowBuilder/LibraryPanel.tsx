@@ -71,14 +71,6 @@ export const DEFAULT_PERSONAS: PersonaEntry[] = [
     consumes: ['review.completed', 'security.completed'],
     produces: ['mimir.source.ingested'],
   },
-  {
-    id: 'mimir-memory-curator',
-    label: 'mimir-memory-curator',
-    role: 'memory',
-    summary: 'Curates ingested memory into canonical wiki pages.',
-    consumes: ['mimir.source.ingested'],
-    produces: ['mimir.curated'],
-  },
 ];
 
 const FLOW_CONTROL_BLOCKS: ReadonlyArray<{

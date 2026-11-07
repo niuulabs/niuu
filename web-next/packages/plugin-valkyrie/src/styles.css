@@ -1,7 +1,0 @@
-/*
- * @niuulabs/plugin-valkyrie stylesheet.
- * Tailwind utilities, driven by @niuulabs/design-tokens preset.
- */
-
-@import 'tailwindcss' prefix(niuu);
-@config "../tailwind.config.ts";

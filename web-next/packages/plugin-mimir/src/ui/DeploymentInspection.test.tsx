@@ -4,7 +4,7 @@ import { createMimirMockAdapter } from '../adapters/mock';
 import { renderWithMimir } from '../testing/renderWithMimir';
 import { DeploymentInspection } from './DeploymentInspection';
 
-it('shows native phase outcomes and selects actual process output', async () => {
+it('selects actual process output and controls the deployment', async () => {
   const service = createMimirMockAdapter();
   service.mounts.getDeployments = async () => ({
     cluster: 'local',
@@ -18,24 +18,12 @@ it('shows native phase outcomes and selects actual process output', async () => 
     name: 'brain',
     ready: true,
     message: 'Running',
-    dream: { enabled: true, schedule: '0 2 * * *', phases: ['lint', 'orphans'] },
-    logs: { stdout: '', stderr: 'Server listening', dream: 'native JSON output' },
-    dream_results: [
-      {
-        timestamp: '2026-09-10T01:00:00Z',
-        status: 'clean',
-        duration_ms: 25,
-        phases: [
-          { phase: 'lint', status: 'skipped', details: { reason: 'no_brain_dir' } },
-          { phase: 'orphans', status: 'ok', summary: '0 orphan pages' },
-        ],
-      },
-    ],
+    logs: { stdout: '', stderr: 'Server listening' },
   });
   service.mounts.controlDeployment = vi.fn().mockResolvedValue({});
   renderWithMimir(<DeploymentInspection instanceName="brain" />, service);
-  expect(await screen.findByText('0 orphan pages')).toBeInTheDocument();
-  expect(screen.getByText(/Skipped: no filesystem checkout/)).toBeInTheDocument();
+  expect(await screen.findByText('gbrain runtime')).toBeInTheDocument();
+  expect(await screen.findByText('Process logs')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Start', exact: true })).toBeDisabled();
   fireEvent.click(screen.getByText('Process logs'));
   expect(screen.getByText('Server listening')).toBeInTheDocument();

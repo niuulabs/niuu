@@ -1,9 +1,9 @@
 import { Boxes, FileText, GitPullRequest, NotebookText, TestTubes } from 'lucide-react';
 
 /**
- * The picture for a realm template: what the resident produces, not the word for it.
- * Product residents turn tickets into pull requests, QA residents run tests and
- * reproductions, docs residents write pages, a blank resident has only its charter.
+ * The picture for a realm template: what the workspace produces, not the word for it.
+ * Product workspaces turn tickets into pull requests, QA workspaces run tests and
+ * reproductions, docs workspaces write pages, a blank workspace has only its charter.
  */
 export function TemplateIcon({
   templateId,
@@ -29,27 +29,12 @@ export function TemplateIcon({
 export function templateLabel(templateId: string | null | undefined): string {
   switch (templateId) {
     case 'product-resident':
-      return 'Product resident';
+      return 'Product workspace';
     case 'qa-resident':
-      return 'QA resident';
+      return 'QA workspace';
     case 'docs-resident':
-      return 'Docs resident';
-    case 'blank-resident':
-      return 'Resident';
+      return 'Docs workspace';
     default:
-      return 'Resident';
+      return 'Workspace';
   }
-}
-
-/** Relative time in plain words for card footers. */
-export function agoLabel(iso: string | undefined, now = Date.now()): string | null {
-  if (!iso) return null;
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return null;
-  const minutes = Math.max(0, Math.round((now - then) / 60_000));
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours} h ago`;
-  return `${Math.round(hours / 24)} d ago`;
 }

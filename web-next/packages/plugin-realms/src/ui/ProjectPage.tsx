@@ -10,7 +10,6 @@ import {
 } from '../application/useRealmsHome';
 import { useForgeProjects, useUpdateProject } from '../application/useProjects';
 import { ArtifactList } from '@niuulabs/plugin-ting';
-import { NeedsYouRow } from './NeedsYouRow';
 import { RealmCard } from './RealmCard';
 import { SessionsTable } from './SessionsTable';
 import { NeedsYouError, TicketReviewRow } from './TicketReviewRow';
@@ -101,14 +100,8 @@ export function ProjectPage() {
       />
     );
   }
-  const environments = new Set(cards.map((card) => card.resident?.environmentId));
-  const needsYou = home.pendingReviews.filter((item) => environments.has(item.environmentId));
   const tickets = ticketsOf(cards);
-  const pendingTotal = [...environments].reduce(
-    (sum, id) => sum + (id ? (home.pendingByEnvironment[id] ?? 0) : 0),
-    0,
-  );
-  const waiting = pendingTotal + tickets.length;
+  const waiting = tickets.length;
   const projectSessions = (sessions.data ?? []).filter(
     (session) => session.coordination?.projectId === projectId,
   );
@@ -139,7 +132,7 @@ export function ProjectPage() {
       {cards.length === 0 ? (
         <EmptyState
           title="No workspaces in this project yet"
-          description="A workspace is one resident and the job you give it."
+          description="A workspace is a home for one job in this project: its board, its sessions and its memory."
         />
       ) : (
         <div className="niuu:grid niuu:grid-cols-3 niuu:gap-4" data-testid="project-workspaces">
@@ -147,12 +140,8 @@ export function ProjectPage() {
             <RealmCard
               key={card.realm.slug}
               realm={card.realm}
-              resident={card.resident}
-              ravn={card.ravn}
-              environment={card.environment}
               binding={card.binding}
               boardName={card.boardName}
-              pendingReviews={card.pendingReviews}
               waitingTickets={card.waitingTickets.length}
               runningSessions={card.runningSessions}
             />
@@ -170,16 +159,6 @@ export function ProjectPage() {
               <>
                 {tickets.map(({ item, card }) => (
                   <TicketReviewRow key={item.taskId} item={item} workspace={card.realm.name} />
-                ))}
-                {needsYou.map((item) => (
-                  <NeedsYouRow
-                    key={item.itemId}
-                    item={item}
-                    card={
-                      cards.find((card) => card.resident?.environmentId === item.environmentId) ??
-                      null
-                    }
-                  />
                 ))}
               </>
             )}

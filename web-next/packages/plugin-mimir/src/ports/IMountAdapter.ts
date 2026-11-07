@@ -6,7 +6,6 @@ import type {
 } from '../domain/instances';
 import type { Mount } from '@niuulabs/domain';
 import type { WriteRoutingRule } from '../domain/routing';
-import type { RavnBinding } from '../domain/ravn-binding';
 import type { RegistryMount } from '../domain/registry';
 import type { EvalReport, QueryStats } from '../domain/analytics';
 import type { DoctorReport } from '../domain/doctor';
@@ -24,7 +23,7 @@ export interface RecentWrite {
   page: string;
   /** Ravn that performed the write. */
   ravn: string;
-  kind: 'write' | 'compile' | 'lint-fix' | 'dream';
+  kind: 'write' | 'compile' | 'lint-fix';
   message: string;
 }
 
@@ -32,7 +31,7 @@ export interface RecentWrite {
  * Port: IMountAdapter
  *
  * Provides access to the set of Mímir mounts registered in a deployment,
- * including write-routing rules and ravn mount bindings.
+ * including write-routing rules.
  */
 export interface IMountAdapter {
   inspectInstances?(mount?: string): Promise<InstanceInspection[]>;
@@ -71,9 +70,6 @@ export interface IMountAdapter {
 
   /** Delete a routing rule by id. No-op if the id does not exist. */
   deleteRoutingRule(id: string): Promise<void>;
-
-  /** List ravn bindings — each ravn's mount access and last dream summary. */
-  listRavnBindings(): Promise<RavnBinding[]>;
 
   /**
    * Fetch the most recent write events across all mounts, newest first.

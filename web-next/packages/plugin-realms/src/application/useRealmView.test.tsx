@@ -1,18 +1,13 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
-import {
-  REALMS_QUERY_KEY,
-  createMockValkyrieService,
-  createSeedRealms,
-  type RealmDetail,
-  type RealmTrustGrant,
-  type ValkyrieResident,
-} from '@niuulabs/plugin-valkyrie';
 import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { createCallLog, fakeMimir, fakeRealmService } from '../testing/fakes';
+import { createSeedRealms } from '../adapters/mock';
+import type { RealmDetail, RealmTrustGrant } from '../domain/governance';
+import { createCallLog, fakeRealmService } from '../testing/fakes';
 import { defaultServices } from '../testing/renderRealms';
+import { REALMS_QUERY_KEY, REALM_GOVERNANCE_SERVICE_KEY } from './useRealmGovernance';
 import { useRealmView } from './useRealmView';
 
 function wrapper(client: QueryClient, services: Record<string, unknown>) {
@@ -39,7 +34,7 @@ describe('useRealmView', () => {
         return unsubscribe;
       }),
     };
-    const services = defaultServices(log, { 'valkyrie.realms': realmService });
+    const services = defaultServices(log, { [REALM_GOVERNANCE_SERVICE_KEY]: realmService });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const hook = renderHook(() => useRealmView(realm.slug), {
       wrapper: wrapper(client, services),
@@ -79,7 +74,7 @@ describe('useRealmView', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
-  async function renderWithResidentMemory(grants: RealmTrustGrant[]) {
+  async function renderWithGrants(grants: RealmTrustGrant[]) {
     const [realm] = createSeedRealms();
     if (!realm) throw new Error('realm seed is required for this test');
     const log = createCallLog();
@@ -87,47 +82,20 @@ describe('useRealmView', () => {
       ...fakeRealmService(log, [realm]),
       listTrustGrants: async () => grants,
     };
-    const valkyrie = createMockValkyrieService();
-    const base = await valkyrie.getDashboard();
-    const resident = {
-      ...base.valkyries[0],
-      id: 'regin',
-      name: realm.slug,
-      memory: [
-        { name: 'local', role: 'local', platformMount: 'regin' },
-        { name: 'mimir-yggdrasil', role: 'shared', platformMount: '' },
-      ],
-    } as ValkyrieResident;
-    const mimir = fakeMimir(log);
-    const services = defaultServices(log, {
-      'valkyrie.realms': realmService,
-      valkyrie: { ...valkyrie, getDashboard: async () => ({ ...base, valkyries: [resident] }) },
-      mimir: {
-        ...mimir,
-        mounts: {
-          ...mimir.mounts,
-          listMounts: async () => [{ name: 'regin', role: 'local', status: 'healthy', pages: 9 }],
-        },
-      },
-    });
+    const services = defaultServices(log, { [REALM_GOVERNANCE_SERVICE_KEY]: realmService });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     return renderHook(() => useRealmView(realm.slug), { wrapper: wrapper(client, services) });
   }
 
-  it('opens the memory an adopted resident reports by its platform mount', async () => {
-    const hook = await renderWithResidentMemory([]);
+  it('has no memory mount of its own when no memory target was named', async () => {
+    const hook = await renderWithGrants([]);
 
-    await waitFor(() => expect(hook.result.current.residentMemory[0]?.mount?.name).toBe('regin'));
+    await waitFor(() => expect(hook.result.current.view).not.toBeNull());
     expect(hook.result.current.mountName).toBeNull();
-    expect(hook.result.current.residentMemory.map((entry) => entry.store.name)).toEqual([
-      'local',
-      'mimir-yggdrasil',
-    ]);
-    expect(hook.result.current.residentMemory[1]?.mount).toBeNull();
   });
 
   it('keeps a created workspace on the memory made with it', async () => {
-    const hook = await renderWithResidentMemory([
+    const hook = await renderWithGrants([
       {
         id: 'grant-observe',
         realm_id: 'r1',
@@ -142,6 +110,5 @@ describe('useRealmView', () => {
     ]);
 
     await waitFor(() => expect(hook.result.current.mountName).not.toBeNull());
-    expect(hook.result.current.residentMemory).toEqual([]);
   });
 });

@@ -13,7 +13,6 @@ import type { PageMeta, Page, SearchResult, Zone } from '../domain/page';
 import type { Source, OriginType } from '../domain/source';
 import type {
   LintReport,
-  DreamCycle,
   LintIssue,
   IssueSeverity,
   LintRule,
@@ -32,7 +31,6 @@ import type { EmbeddingSearchResult } from '../ports/IEmbeddingStore';
 import type { EntityKind, EntityMeta } from '../domain/entity';
 import type { FactEvidence, RelatedPage, ReviseRequest } from '../domain/evidence';
 import type { WriteRoutingRule } from '../domain/routing';
-import type { RavnBinding } from '../domain/ravn-binding';
 import type { RegistryMount } from '../domain/registry';
 import type { EvalReport, EvalMetrics, QueryStats } from '../domain/analytics';
 import type { DoctorReport, DoctorCheck } from '../domain/doctor';
@@ -132,7 +130,6 @@ interface RawLintIssue {
   page?: string;
   page_path?: string;
   mount?: string;
-  assignee?: string;
   auto_fix?: boolean;
   auto_fixable?: boolean;
   message: string;
@@ -183,17 +180,6 @@ interface RawSource {
   ingest_agent?: string;
   compiled_into?: string[];
   content?: string;
-}
-
-interface RawDreamCycle {
-  id: string;
-  timestamp: string;
-  ravn: string;
-  mounts: string[];
-  pages_updated: number;
-  entities_created: number;
-  lint_fixes: number;
-  duration_ms: number;
 }
 
 interface RawActivityEvent {
@@ -539,7 +525,6 @@ export function toLintIssue(raw: RawLintIssue): LintIssue {
     severity: normalizeSeverity(raw.severity),
     page: raw.page ?? raw.page_path ?? '',
     mount: raw.mount ?? 'local',
-    assignee: raw.assignee,
     autoFix: raw.auto_fix ?? raw.auto_fixable ?? false,
     message: raw.message,
   };
@@ -594,19 +579,6 @@ export function toSource(raw: RawSource): Source {
     ingestAgent: raw.ingest_agent ?? 'mimir',
     compiledInto: raw.compiled_into ?? [],
     content: raw.content ?? '',
-  };
-}
-
-export function toDreamCycle(raw: RawDreamCycle): DreamCycle {
-  return {
-    id: raw.id,
-    timestamp: raw.timestamp,
-    ravn: raw.ravn,
-    mounts: raw.mounts,
-    pagesUpdated: raw.pages_updated,
-    entitiesCreated: raw.entities_created,
-    lintFixes: raw.lint_fixes,
-    durationMs: raw.duration_ms,
   };
 }
 
@@ -946,15 +918,6 @@ export function buildMimirHttpAdapter(
 
       async deleteRoutingRule(id: string): Promise<void> {
         await client.delete<void>(`/routing/rules/${id}`);
-      },
-
-      async listRavnBindings(): Promise<RavnBinding[]> {
-        try {
-          return await client.get<RavnBinding[]>('/ravns/bindings');
-        } catch (error) {
-          if (!isMissingRouteError(error)) throw error;
-          return [];
-        }
       },
 
       async getRecentWrites(limit?: number): Promise<RecentWrite[]> {
@@ -1303,16 +1266,6 @@ export function buildMimirHttpAdapter(
         return toLintReport(raw);
       },
 
-      async getDreamCycles(limit = 20): Promise<DreamCycle[]> {
-        try {
-          const raw = await client.get<RawDreamCycle[]>(`/dreams?limit=${limit}`);
-          return raw.map(toDreamCycle);
-        } catch (error) {
-          if (!isMissingRouteError(error)) throw error;
-          return [];
-        }
-      },
-
       async getActivityLog(limit = 50): Promise<ActivityEvent[]> {
         try {
           const raw = await client.get<RawActivityEvent[]>(`/activity?limit=${limit}`);
@@ -1321,14 +1274,6 @@ export function buildMimirHttpAdapter(
           if (!isMissingRouteError(error)) throw error;
           return [];
         }
-      },
-
-      async reassignIssues(issueIds: string[], assignee: string): Promise<LintReport> {
-        const raw = await client.post<RawLintReport>('/lint/reassign', {
-          issue_ids: issueIds,
-          assignee,
-        });
-        return toLintReport(raw);
       },
     },
   };

@@ -8,10 +8,11 @@ import {
   useWorkCollection,
   type Saga,
 } from '@niuulabs/plugin-ting';
-import { useCreateTrustGrant, type RealmSummary } from '@niuulabs/plugin-valkyrie';
 import { SectionCard } from '@niuulabs/plugin-volundr';
 import { Chip } from '@niuulabs/ui';
 import { useForgeProjects, useSetRealmProject } from '../application/useProjects';
+import { useCreateTrustGrant } from '../application/useRealmGovernance';
+import type { RealmSummary } from '../domain/governance';
 import type { ProjectChoice } from '../domain/projects';
 import type { RealmView } from '../domain/realm';
 import { ProjectPicker } from './ProjectPicker';

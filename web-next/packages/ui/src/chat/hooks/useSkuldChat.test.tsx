@@ -419,7 +419,7 @@ describe('useSkuldChat', () => {
     expect(result.current.participants.has('peer-missing')).toBe(false);
   });
 
-  it('skips session history fetch for warden-style live consoles', async () => {
+  it('skips session history fetch for live consoles', async () => {
     const fetchSpy = vi.fn(async () => ({
       ok: true,
       json: async () => ({ turns: [] }),
@@ -427,7 +427,7 @@ describe('useSkuldChat', () => {
     vi.stubGlobal('fetch', fetchSpy);
 
     const { result } = renderHook(() =>
-      useSkuldChat('ws://localhost:8080/wardens/test/ws', { historyMode: 'none' }),
+      useSkuldChat('ws://localhost:8080/consoles/test/ws', { historyMode: 'none' }),
     );
 
     await waitFor(() => expect(result.current.historyLoaded).toBe(true));

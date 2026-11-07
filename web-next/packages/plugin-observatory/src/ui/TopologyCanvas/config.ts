@@ -103,7 +103,7 @@ export const LAYOUT = {
   /** Stable orbit for the named core services inside a cluster. */
   CLUSTER_CORE_ORBIT: 148,
 
-  /** Base orbit for wardens and ravens within a cluster. */
+  /** Base orbit for ravens within a cluster. */
   CLUSTER_RAVEN_ORBIT: 248,
 
   /** Extra orbit added for additional raven bands. */
@@ -252,7 +252,6 @@ export const HIT_RADIUS: Record<string, number> = {
   volundr: 16,
   valkyrie: 12,
   ravn_long: 12,
-  warden: 12,
   ravn_run: 9,
   skuld: 9,
   trigger: 9,
@@ -279,7 +278,6 @@ export const NODE_SIZE: Record<string, number> = {
   volundr: 13,
   valkyrie: 10,
   ravn_long: 9,
-  warden: 10,
   ravn_run: 6,
   skuld: 7,
   trigger: 7,

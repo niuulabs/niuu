@@ -304,9 +304,9 @@ describe('drawEdges', () => {
           status: 'healthy',
         },
         {
-          id: 'warden',
-          typeId: 'warden',
-          label: 'warden',
+          id: 'agent',
+          typeId: 'ravn_long',
+          label: 'agent',
           parentId: 'namespace-ymir-volundr',
           status: 'healthy',
         },
@@ -321,7 +321,7 @@ describe('drawEdges', () => {
       edges: [
         {
           id: 'edge:writes',
-          sourceId: 'warden',
+          sourceId: 'agent',
           targetId: 'mimir',
           kind: 'dashed-long',
           relationType: 'writes',
@@ -331,7 +331,7 @@ describe('drawEdges', () => {
     };
     const positions = new Map<string, NodePosition>([
       ['namespace-ymir-volundr', { x: 100, y: 300 }],
-      ['warden', { x: 0, y: 0 }],
+      ['agent', { x: 0, y: 0 }],
       ['mimir', { x: 200, y: 0 }],
     ]);
 

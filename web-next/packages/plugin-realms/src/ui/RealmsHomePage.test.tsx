@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { createMockOdinReviewService, createSeedRealms } from '@niuulabs/plugin-valkyrie';
+import { createSeedRealms } from '../adapters/mock';
 import {
   createCallLog,
   fakeRealmService,
@@ -16,11 +16,11 @@ describe('RealmsHomePage', () => {
     localStorage.clear();
   });
 
-  it('lists every realm as a card with its resident state', async () => {
+  it('lists every realm as a card', async () => {
     renderRealms('/realms');
     await screen.findByTestId('realm-card-valhalla');
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
-      /workspaces across your projects, each kept by a resident/,
+      /workspaces across your projects/,
     );
   });
 
@@ -131,29 +131,6 @@ describe('RealmsHomePage', () => {
     );
   });
 
-  it('counts the whole review queue, not the page of it that was listed', async () => {
-    const reviews = createMockOdinReviewService();
-    const summary = await reviews.getSummary();
-    const listed = (await reviews.listReviews({ status: 'pending' })).slice(0, 2);
-    vi.spyOn(reviews, 'listReviews').mockResolvedValue(listed);
-    vi.spyOn(reviews, 'getSummary').mockResolvedValue({
-      ...summary,
-      pendingTotal: 340,
-      pendingByEnvironment: { 'env-k8s-valhalla': 330 },
-    });
-    const home = renderRealms('/realms', { 'valkyrie.reviews': reviews });
-    expect(await screen.findByText('340 open ·', { exact: false })).toBeInTheDocument();
-    await within(await screen.findByTestId('realm-card-valhalla')).findByRole('link', {
-      name: 'Review 330',
-    });
-    home.unmount();
-
-    renderRealms('/realms/needs-you', { 'valkyrie.reviews': reviews });
-    expect(await screen.findByTestId('needs-you-truncated')).toHaveTextContent(
-      'Showing the newest 2 of 340 open reviews.',
-    );
-  });
-
   it('opens straight into the workspace of a project that has only one', async () => {
     const log = createCallLog();
     const [valhalla, ...others] = createSeedRealms();
@@ -161,7 +138,7 @@ describe('RealmsHomePage', () => {
       { ...valhalla!, project_id: 'project-solo' },
       ...others.map((realm) => ({ ...realm, project_id: null })),
     ];
-    renderRealms('/realms', { 'valkyrie.realms': fakeRealmService(log, realms) }, log);
+    renderRealms('/realms', { 'realms.governance': fakeRealmService(log, realms) }, log);
     const group = await screen.findByTestId('project-group-project-solo');
     expect(within(group).getByRole('heading', { level: 2 }).querySelector('a')).toHaveAttribute(
       'href',
@@ -169,30 +146,9 @@ describe('RealmsHomePage', () => {
     );
   });
 
-  it('gives a running resident a workspace without deploying anything', async () => {
-    const user = userEvent.setup();
-    const log = createCallLog();
-    const { router } = renderRealms(
-      '/realms',
-      { 'valkyrie.realms': fakeRealmService(log, []) },
-      log,
-    );
-    const list = await screen.findByTestId('unclaimed-residents');
-    const first = within(list).getAllByRole('button', { name: 'Create workspace' })[0]!;
-    await user.click(first);
-    const dialog = await screen.findByTestId('adopt-dialog');
-    const name = within(dialog).getByRole('textbox', { name: 'Workspace name' });
-    await user.clear(name);
-    await user.type(name, 'Clusters');
-    await user.click(screen.getAllByRole('button', { name: 'Create workspace' }).at(-1)!);
-    await waitFor(() => expect(log.calls.some((c) => c.startsWith('createRealm:'))).toBe(true));
-    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/realms\/[a-z0-9]/));
-    expect(log.calls.some((call) => call.startsWith('deploy'))).toBe(false);
-  });
-
   it('shows the empty state when there are no realms', async () => {
     const log = createCallLog();
-    renderRealms('/realms', { 'valkyrie.realms': fakeRealmService(log, []) }, log);
+    renderRealms('/realms', { 'realms.governance': fakeRealmService(log, []) }, log);
     await screen.findByText('No projects yet');
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Start with one sentence');
   });
@@ -212,21 +168,11 @@ describe('RealmsHomePage', () => {
 
   it('lists the templates on the templates tab', async () => {
     renderRealms('/realms/templates');
-    await screen.findByText('Product resident');
+    await screen.findByText('Product workspace');
     expect(screen.getAllByText('Use this template')).toHaveLength(4);
   });
 
-  it('lets you decide a pending review from the needs-you tab', async () => {
-    const user = userEvent.setup();
-    renderRealms('/realms/needs-you');
-    const approve = (await screen.findAllByRole('button', { name: 'Approve' }))[0]!;
-    await user.click(approve);
-    await waitFor(() =>
-      expect(screen.queryAllByRole('button', { name: 'Approve' }).length).toBeLessThan(10),
-    );
-  });
-
-  it('lists a ticket at a gate in the inbox and in the panel', async () => {
+  it('lists a ticket at a gate on the needs-you tab and in the panel', async () => {
     const log = createCallLog();
     const services = await workspaceWithWaitingTicket(log, 'valhalla');
     const inbox = renderRealms('/realms/needs-you', services, log);

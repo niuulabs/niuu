@@ -37,7 +37,7 @@ export type MountStatus = z.infer<typeof mountStatusSchema>;
  * - `plugin-ting` — dispatch feasibility check reads mount health.
  */
 export const mountSchema = z.object({
-  /** Unique short name used in write-routing rules and RavnBindings. */
+  /** Unique short name used in write-routing rules. */
   name: z.string().min(1),
   /** Role this mount plays in the deployment. */
   role: mountRoleSchema,

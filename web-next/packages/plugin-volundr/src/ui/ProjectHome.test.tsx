@@ -63,7 +63,6 @@ function makeNotification(
     engine: null,
     model: null,
     correlationId: null,
-    reviewId: null,
     speak: null,
     createdAt: hoursAgo(overrides.seq),
     read: false,

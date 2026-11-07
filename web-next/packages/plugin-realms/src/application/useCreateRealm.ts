@@ -2,15 +2,7 @@ import { useCallback, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { IMimirService } from '@niuulabs/plugin-mimir';
-import type {
-  IPersonaStore,
-  IResidentControl,
-  ITriggerStore,
-  PersonaCreateRequest,
-} from '@niuulabs/plugin-ravn';
 import type { ITrackerBrowserService } from '@niuulabs/plugin-ting';
-import type { IRealmGovernanceService, RealmSummary } from '@niuulabs/plugin-valkyrie';
-import { REALMS_QUERY_KEY } from '@niuulabs/plugin-valkyrie';
 import type { IVolundrService } from '@niuulabs/plugin-volundr';
 import {
   ACTION_CLASSES,
@@ -18,15 +10,16 @@ import {
   charterPagePathFor,
   deploymentNameFor,
   mountNameFor,
-  personaNameFor,
   requiredDraftError,
-  residentNameFor,
   routingPrefixFor,
   routingRuleIdFor,
   type RealmDraft,
 } from '../domain/realm';
+import type { RealmSummary } from '../domain/governance';
 import { templateById } from '../domain/templates';
+import type { IRealmGovernanceService } from '../ports';
 import { PROJECTS_QUERY_KEY, resolveProjectChoice } from './useProjects';
+import { REALMS_QUERY_KEY, REALM_GOVERNANCE_SERVICE_KEY } from './useRealmGovernance';
 
 /** One step of the create recipe, in the order it runs. */
 export interface RecipeStep {
@@ -40,15 +33,12 @@ export const RECIPE_STEPS: RecipeStep[] = [
   { id: 'validate', label: 'check the draft', detailPath: '/realms' },
   { id: 'connections', label: 'test connections', detailPath: '/settings/integrations' },
   { id: 'project', label: 'set up the project', detailPath: '/volundr' },
-  { id: 'realm', label: 'create the workspace', detailPath: '/valkyrie' },
+  { id: 'realm', label: 'create the workspace', detailPath: '/realms' },
   { id: 'memory', label: 'create workspace memory', detailPath: '/mimir/registry' },
   { id: 'routing', label: 'route memory writes', detailPath: '/mimir/registry' },
-  { id: 'persona', label: 'write the persona', detailPath: '/ravn/personas' },
-  { id: 'trust', label: 'grant trust', detailPath: '/valkyrie' },
-  { id: 'jobs', label: 'schedule standing jobs', detailPath: '/ravn' },
+  { id: 'trust', label: 'grant trust', detailPath: '/realms' },
   { id: 'board', label: 'import the tracker board', detailPath: '/ting/work' },
   { id: 'charter', label: 'write the charter to memory', detailPath: '/mimir' },
-  { id: 'resident', label: 'start the resident', detailPath: '/ravn/ravens' },
 ];
 
 export type StepState = 'todo' | 'running' | 'done' | 'failed';
@@ -101,11 +91,8 @@ function errorText(error: unknown): string {
  * says where the partial state can be seen.
  */
 export function useCreateRealm() {
-  const realms = useService<IRealmGovernanceService>('valkyrie.realms');
+  const realms = useService<IRealmGovernanceService>(REALM_GOVERNANCE_SERVICE_KEY);
   const mimir = useService<IMimirService>('mimir');
-  const personas = useService<IPersonaStore>('ravn.personas');
-  const residents = useService<IResidentControl>('ravn.residents');
-  const triggers = useService<ITriggerStore>('ravn.triggers');
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
   const volundr = useService<IVolundrService>('volundr');
   const queryClient = useQueryClient();
@@ -114,7 +101,6 @@ export function useCreateRealm() {
   const run = useCallback(
     async (draft: RealmDraft): Promise<RealmSummary> => {
       const template = templateById(draft.templateId);
-      const personaName = personaNameFor(draft.slug);
       const mountName = mountNameFor(draft.slug);
       let states = { ...IDLE.states };
       setProgress({ ...IDLE, states });
@@ -153,7 +139,7 @@ export function useCreateRealm() {
       });
 
       const projectId = await step('project', () =>
-        resolveProjectChoice(volundr, draft, draft.name, draft.instanceId || undefined),
+        resolveProjectChoice(volundr, draft, draft.name),
       );
 
       const realm = await step('realm', () =>
@@ -161,7 +147,6 @@ export function useCreateRealm() {
           slug: draft.slug,
           name: draft.name.trim(),
           sleipnir_domain: 'code',
-          instance_id: draft.instanceId || null,
           autonomy_profile: 'balanced',
           project_id: projectId,
         }),
@@ -191,17 +176,6 @@ export function useCreateRealm() {
         }),
       );
 
-      await step('persona', () => {
-        const request: PersonaCreateRequest = {
-          ...template.persona,
-          name: personaName,
-          summary: template.name,
-          description: draft.charter.trim(),
-          systemPromptTemplate: template.prompt(draft.charter, draft.repo, draft.trackerBoard),
-        };
-        return personas.createPersona(request);
-      });
-
       await step('trust', async () => {
         await realms.createTrustGrant(draft.slug, {
           action_class: 'observe',
@@ -229,50 +203,18 @@ export function useCreateRealm() {
         }
       });
 
-      await step('jobs', async () => {
-        for (const [index, job] of template.jobs.entries()) {
-          const created = await triggers.createTrigger({
-            kind: job.kind,
-            personaName,
-            spec: job.spec,
-            // Event triggers must be scoped to this realm's repo — the
-            // Sleipnir event bus is not tenant-scoped, so without this an
-            // event-kind trigger would fire on every tenant's matching
-            // events (ravn.adapters.triggers.api_source's payload filter).
-            repo: job.kind === 'event' ? draft.repo : '',
-            enabled: true,
-          });
-          // executionEnabled is deployment-wide, not per-trigger, so one
-          // check after the first create is enough — fail loud instead of
-          // quietly storing standing jobs that nothing will ever run.
-          if (index === 0 && !created.executionEnabled) {
-            throw new Error(
-              'Standing jobs were created but nothing executes them: trigger execution is ' +
-                'disabled for this deployment. Ask an operator to enable resident-side ' +
-                'trigger execution before relying on scheduled jobs.',
-            );
-          }
-        }
-      });
-
       await step('board', async () => {
         if (!draft.trackerBoard) return;
         await tracker.importProject(
           draft.trackerBoard,
           draft.repo ? [draft.repo] : [],
           draft.branch || undefined,
-          // A project stays on the Forge that holds it, wherever the resident runs.
-          projectId ? null : draft.instanceId || null,
+          null,
           projectId ? { forgeProjectId: projectId } : undefined,
         );
       });
 
-      // The charter must exist in Mímir before the resident starts: the
-      // deployed resident resolves its charter from realm memory at
-      // startup and exits if that page is configured but missing (see
-      // resident_runtime_wiring.py's _resolve_environment_charter), and the
-      // local controller has no restart policy — so this step runs before
-      // 'resident', not after.
+      // The charter is the first page of the workspace's own memory.
       await step('charter', async () => {
         const deadline = Date.now() + MOUNT_DISCOVERY_DEADLINE_MS;
         while (Date.now() < deadline) {
@@ -292,23 +234,11 @@ export function useCreateRealm() {
         );
       });
 
-      await step('resident', () =>
-        residents.deploy({
-          name: residentNameFor(draft.slug),
-          profileId: draft.profileId,
-          instanceId: draft.instanceId,
-          personaName,
-          model: draft.model || undefined,
-          realmId: realm.id,
-        }),
-      );
-
       await queryClient.invalidateQueries({ queryKey: REALMS_QUERY_KEY });
-      await queryClient.invalidateQueries({ queryKey: ['ravn'] });
       await queryClient.invalidateQueries({ queryKey: PROJECTS_QUERY_KEY });
       return realm;
     },
-    [mimir, personas, queryClient, realms, residents, tracker, triggers, volundr],
+    [mimir, queryClient, realms, tracker, volundr],
   );
 
   const reset = useCallback(() => setProgress(IDLE), []);

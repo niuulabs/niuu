@@ -79,12 +79,8 @@ export function ProjectGroupSection({
             <RealmCard
               key={card.realm.slug}
               realm={card.realm}
-              resident={card.resident}
-              ravn={card.ravn}
-              environment={card.environment}
               binding={card.binding}
               boardName={card.boardName}
-              pendingReviews={card.pendingReviews}
               waitingTickets={card.waitingTickets.length}
               runningSessions={card.runningSessions}
             />

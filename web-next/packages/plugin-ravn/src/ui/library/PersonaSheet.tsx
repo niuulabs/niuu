@@ -1,12 +1,8 @@
 import { useState, type ReactNode } from 'react';
 import { ArrowRight } from 'lucide-react';
 import type { PersonaDetail } from '../../ports';
-import type { Ravn } from '../../domain/ravn';
-import { nameForRavn } from '../../domain/residentActions';
-import { ravnLifeState, ravnTarget } from '../../application/ravnWorkbench';
 import { useTriggers } from '../hooks/useTriggers';
-import { RavnStateBadge } from '../workbench/RavnMark';
-import { errorText } from '../workbench/errorText';
+import { errorText } from './errorText';
 
 function Section({
   title,
@@ -72,17 +68,7 @@ function Triggers({ persona }: { persona: PersonaDetail }) {
 }
 
 /** A persona read as a character sheet: what it does, how it fits the flow, what it may use. */
-export function PersonaSheet({
-  persona,
-  usedBy,
-  onOpenRavn,
-  onDeploy,
-}: {
-  persona: PersonaDetail;
-  usedBy: Ravn[];
-  onOpenRavn: (ravn: Ravn) => void;
-  onDeploy: () => void;
-}) {
+export function PersonaSheet({ persona }: { persona: PersonaDetail }) {
   const [promptOpen, setPromptOpen] = useState(false);
   const consumes = persona.consumes.events;
   const schema = Object.entries(persona.produces.schemaDef ?? {});
@@ -188,33 +174,6 @@ export function PersonaSheet({
 
       <Section title="Triggers">
         <Triggers persona={persona} />
-      </Section>
-
-      <Section title="Agents using it" testId="persona-used-by">
-        {usedBy.length === 0 ? (
-          <p className="rw-muted">
-            None yet.{' '}
-            <button type="button" className="rw-btn rw-btn--small" onClick={onDeploy}>
-              Deploy one
-            </button>
-          </p>
-        ) : (
-          <div className="rw-kv">
-            {usedBy.map((ravn) => (
-              <div key={`${ravn.instanceId ?? ''}:${ravn.id}`}>
-                <div className="rw-kv__k">{ravnTarget(ravn)}</div>
-                <button
-                  type="button"
-                  className="rw-btn rw-btn--small"
-                  onClick={() => onOpenRavn(ravn)}
-                >
-                  <RavnStateBadge state={ravnLifeState(ravn)} />
-                  {nameForRavn(ravn)}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
       </Section>
 
       <p className="rw-muted">

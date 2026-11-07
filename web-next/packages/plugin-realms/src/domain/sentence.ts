@@ -1,6 +1,6 @@
 import type { ActionClass } from './realm';
 
-/** What one sentence gives us before the resident has read anything. */
+/** What one sentence gives us before anything has read the repository. */
 export interface SentenceDraft {
   charter: string;
   repo: string | null;

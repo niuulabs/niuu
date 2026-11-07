@@ -1,7 +1,7 @@
 /**
  * MimirTopbar — shell topbar-right slot for the Mímir plugin.
  *
- * Shows: active mount name · pages count · wardens count · lint count (red if > 0),
+ * Shows: active mount name · pages count · lint count (red if > 0),
  * on every Mímir route except the memory view.
  */
 
@@ -10,7 +10,6 @@ import { useRouterState } from '@tanstack/react-router';
 import { useActiveMount } from '../application/useActiveMount';
 import { useMimirPages } from './useMimirPages';
 import { useLint } from '../application/useLint';
-import { useRavns } from '../application/useRavns';
 import './MimirTopbar.css';
 
 interface MimirTopbarProps {
@@ -32,17 +31,12 @@ function MimirTopbarStats() {
 
   const { data: pages = [] } = useMimirPages(mountName ? { mountName } : undefined);
   const { summary: lintSummary } = useLint(mountName);
-  const { data: ravns = [] } = useRavns();
 
   const mountLabel = activeMount === 'all' ? 'all mounts' : activeMount;
   const pageCount =
     activeMount === 'all'
       ? pages.length
       : pages.filter((p) => p.mounts.includes(activeMount)).length;
-  const ravnCount =
-    activeMount === 'all'
-      ? ravns.length
-      : ravns.filter((r) => r.mountNames.includes(activeMount)).length;
   const lintCount = lintSummary.error + lintSummary.warn + lintSummary.info;
 
   return (
@@ -57,13 +51,6 @@ function MimirTopbarStats() {
       <span className="mm-topbar-stat">
         <span className="mm-topbar-stat__k">pages</span>
         <strong className="mm-topbar-stat__v">{pageCount.toLocaleString()}</strong>
-      </span>
-      <span className="mm-topbar-sep" aria-hidden>
-        ·
-      </span>
-      <span className="mm-topbar-stat">
-        <span className="mm-topbar-stat__k">wardens</span>
-        <strong className="mm-topbar-stat__v">{ravnCount}</strong>
       </span>
       <span className="mm-topbar-sep" aria-hidden>
         ·

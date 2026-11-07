@@ -290,14 +290,6 @@ const SERVICES: TopologyNode[] = [
     'keycloak.niuu.world',
   ),
   service('svc-openbao', 'openbao', 'cluster-ymir', 'yggdrasil', 'secrets', 'openbao.niuu.world'),
-  service(
-    'svc-warden-ymir',
-    'warden-agent',
-    'cluster-ymir',
-    'yggdrasil',
-    'niuu',
-    'mimir-shared-warden-agent · 1/1',
-  ),
   service('svc-nats-ymir', 'nats', 'cluster-ymir', 'yggdrasil', 'mesh', 'nats-yggdrasil · 3/3'),
 
   // nóatún — second deployment
@@ -851,7 +843,6 @@ const PLATFORM_EDGES: TopologyEdge[] = [
   edge('plat-guild-ting', 'svc-guild', 'ting-ymir', 'soft', 'uses'),
   edge('plat-keycloak', 'svc-keycloak', 'volundr-ymir', 'soft', 'uses'),
   edge('plat-openbao', 'svc-openbao', 'volundr-ymir', 'soft', 'uses'),
-  edge('plat-warden', 'svc-warden-ymir', 'mimir-ymir', 'soft', 'observes'),
   edge('plat-envoy', 'svc-envoy-noatun', 'volundr-noatun', 'solid', 'routes_to'),
   edge('plat-sandbox', 'run-coding', 'svc-openshell', 'dashed-anim', 'uses'),
   edge('plat-openclaw', 'svc-openclaw', 'svc-openshell', 'soft', 'uses'),

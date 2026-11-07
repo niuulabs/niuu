@@ -123,7 +123,7 @@ const MOCK_USAGE: BifrostUsageResponse = {
   records: [
     {
       requestId: 'req-1',
-      agentId: 'warden-test',
+      agentId: 'agent-test',
       tenantId: 'dev',
       sessionId: 'session-1',
       sagaId: 'saga-1',
