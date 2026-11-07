@@ -253,6 +253,16 @@ class GuestCredentialDelivery(ABC):
     def delivers_forge_session_token(self) -> bool:
         return True
 
+    @property
+    def serves_slots(self) -> bool:
+        """Whether each slot of a VM can receive its own credentials from this delivery.
+
+        A delivery that proves the whole allocation to Forge (a guest identity)
+        would hand every slot the same identity, and retire it when any slot
+        stops; it serves only a VM's single session.
+        """
+        return False
+
     def machine_bootstrap(self, defaults: MachineBootstrap) -> MachineBootstrap:
         """Add what an unbound guest needs for delivery (e.g. its identity)."""
         return defaults

@@ -75,6 +75,8 @@ class OpenShellVmRuntime(SshContainerVmRuntime):
     # The OpenShell gateway owns the sandbox: no Docker sidecars or token volumes,
     # and its broker keeps its own Forge credential.
     _runs_pod_containers = False
+    # The OpenShell sandbox and its policy are the session's boundary.
+    _separates_slots = False
 
     @property
     def delivers_forge_session_token(self) -> bool:

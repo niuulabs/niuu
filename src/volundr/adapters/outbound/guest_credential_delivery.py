@@ -20,6 +20,7 @@ from uuid import UUID
 
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.observability import get_observability
+from volundr.adapters.outbound.vm_slot_layout import GUEST_AGENT_DIRECTORY, state_key
 from volundr.domain.compute import ComputeLease, MachineBootstrap
 from volundr.domain.guest_credentials import (
     METADATA_ADDRESS,
@@ -35,7 +36,7 @@ from volundr.domain.vm_runtime import VmRuntimeStageError
 logger = logging.getLogger(__name__)
 
 #: Guest directory holding the agent's configuration (no credentials).
-AGENT_CONFIG_DIRECTORY = "/etc/niuu/guest-agent"
+AGENT_CONFIG_DIRECTORY = GUEST_AGENT_DIRECTORY
 AGENT_CONFIG_FILE = "config.json"
 
 
@@ -61,11 +62,16 @@ class SshPushCredentialDelivery(GuestCredentialDelivery):
         self._tokens = service_account_tokens
         self._refresh_fraction = refresh_fraction
         self._retry = retry_seconds
-        # Lease id -> the task keeping that guest's tokens fresh.
+        # Lease (and slot past 0) -> the task keeping that session's tokens fresh.
         self._refreshers: dict[str, asyncio.Task] = {}
         # Session id -> its current launch credential. Memory only: every start
         # mints a new one and revokes the previous, so a stored copy is stale.
         self._forge_sessions: dict[UUID, IssuedForgeSessionToken] = {}
+
+    @property
+    def serves_slots(self) -> bool:
+        # Every write goes through the slot's own files, keyed by its session.
+        return True
 
     def stage_forge_session(self, session_id: UUID, credential: IssuedForgeSessionToken) -> None:
         self._forge_sessions[session_id] = credential
@@ -106,7 +112,7 @@ class SshPushCredentialDelivery(GuestCredentialDelivery):
         plan: GuestCredentialPlan,
         files: GuestFiles,
     ) -> None:
-        key = str(lease.id)
+        key = state_key(lease)
         running = self._refreshers.get(key)
         if running is not None and not running.done():
             return
@@ -200,7 +206,7 @@ class SshPushCredentialDelivery(GuestCredentialDelivery):
         await self._ensure_refresh(lease, bootstrap, plan, files)
 
     async def stop(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
-        task = self._refreshers.pop(str(lease.id), None)
+        task = self._refreshers.pop(state_key(lease), None)
         if task is None:
             return
         task.cancel()

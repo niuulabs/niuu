@@ -71,12 +71,19 @@ class GuestAccess(ABC):
         reverse_port: int,
         controller_host: str,
         controller_port: int,
+        remote_host: str = "127.0.0.1",
+        key: str | None = None,
     ) -> SessionProxyTarget:
-        """Open or reuse the allocation-scoped runtime and callback tunnel."""
+        """Open or reuse the runtime and callback tunnel kept under ``key``.
+
+        ``key`` defaults to the allocation; a VM serving several sessions keys
+        each slot's tunnel apart. ``remote_host`` is where the guest end of the
+        forward connects, its loopback unless the runtime listens elsewhere.
+        """
 
     @abstractmethod
     async def close_tunnel(self, lease_id: str) -> None:
-        """Close one allocation's tunnel."""
+        """Close the tunnel kept under ``lease_id`` (an allocation or slot key)."""
 
     @abstractmethod
     async def close(self) -> None:

@@ -703,6 +703,9 @@ for provider in json.loads(sys.argv[5]):
 class SshOpenShellVmRuntime(SshContainerVmRuntime):
     """Use official OpenShell on the allocated host instead of raw Docker."""
 
+    # Each session is an OpenShell sandbox, whose policy is its boundary.
+    _separates_slots = False
+
     def __init__(
         self,
         *,
