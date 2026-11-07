@@ -48,8 +48,9 @@ below it, the pool boots another machine ahead of demand, within
 | 1 | Always one free slot. When the last free slot is taken, another VM boots. |
 | 4 | Always a whole VM's worth free; a burst of four starts in seconds. |
 
-A machine counts towards warm capacity only once it is ready (booted, prepared,
-images pulled), as today. A pool that hits `max_machines` stops adding machines
+A machine's free slots count towards warm capacity from the moment it is
+provisioning, as spares do today, so the pool never boots twice for the same gap;
+a session is only placed on it once it is ready (booted, prepared, images pulled). A pool that hits `max_machines` stops adding machines
 and reports it on the pool's health surface, rather than quietly running
 without spares.
 
