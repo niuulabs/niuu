@@ -532,8 +532,9 @@ daemon in a slot** run on registered hosts:
 - **Container via rootless Podman**: a later mode of the container runtime. Today
   `SshContainerVmRuntime` runs root Docker, so it declares a new
   `requires_root_daemon`, and a registered-host pool refuses it at startup.
-- **OpenShell**: possible on one-slot hosts (its sandbox is the boundary, and it
-  refuses `slot_isolation`). Not needed first.
+- **OpenShell**: its runtimes run the guest agents under host Docker today, so they
+  declare `requires_root_daemon` and are refused on hosts as well. A rootless OpenShell
+  mode would make it possible on one-slot hosts (its sandbox is the boundary).
 
 ## Security
 

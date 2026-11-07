@@ -26,7 +26,8 @@ class ComputeHostsConfig(BaseModel):
 
     join_url: str = Field(
         min_length=1,
-        pattern=r"^https?://[^/?#]+$",
+        # A hostname (or IPv4) and an optional port: the URL goes into a shell line.
+        pattern=r"^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$",
         description=(
             "Forge's base URL as hosts reach it (scheme and host, no path); the join "
             "command and join.sh call it. http:// is refused unless allow_plaintext_join"

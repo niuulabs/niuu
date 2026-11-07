@@ -68,13 +68,6 @@ def test_a_join_url_is_a_scheme_and_host_with_no_path(url):
         ComputeHostsConfig(**hosts(join_url=url, allow_plaintext_join=True))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "join_url's pattern allows whitespace and shell metacharacters in the host part, and "
-        "the join command puts the URL into a shell line unquoted"
-    ),
-)
 @pytest.mark.parametrize("url", ["https://forge.example.test x", "https://forge.test;rm"])
 def test_a_join_url_host_may_not_hold_whitespace_or_shell_metacharacters(url):
     with pytest.raises(ValidationError):

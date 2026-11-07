@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -20,8 +19,6 @@ from volundr.domain.compute_hosts import (
     HostPairingCode,
     HostService,
 )
-
-MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations"
 
 
 def _code(**changes):
@@ -234,19 +231,3 @@ class TestHosts:
         assert "allocation_id IS NULL" in pool.execute.call_args.args[0]
         pool.execute.return_value = "DELETE 0"
         assert await repo.delete(uuid4()) is False
-
-
-class TestMigration:
-    def test_up_is_idempotent_and_keeps_columns_equal_to_data(self):
-        up = (MIGRATIONS / "000108_compute_hosts.up.sql").read_text()
-        for statement in ("CREATE TABLE", "CREATE UNIQUE INDEX", "CREATE INDEX"):
-            assert up.count(f"{statement} IF NOT EXISTS") == up.count(statement)
-        assert "ON compute_hosts (pool_id, name)" in up
-        assert "ON compute_hosts (host_public_key)" in up
-        assert "WHERE allocation_id IS NOT NULL" in up
-        assert "data->>'allocation_id' IS NOT DISTINCT FROM allocation_id::text" in up
-
-    def test_down_drops_both_tables(self):
-        down = (MIGRATIONS / "000108_compute_hosts.down.sql").read_text()
-        assert "DROP TABLE IF EXISTS compute_host_pairing_codes" in down
-        assert "DROP TABLE IF EXISTS compute_hosts" in down

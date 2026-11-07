@@ -281,7 +281,7 @@ class ComputeHostService:
         )
         await self._repository.create_pairing_code(pairing)
         header = f"Authorization: Bearer {issued.token}"
-        url = self.join_script_url()
+        url = shlex.quote(self.join_script_url())
         return MintedHostCode(
             code=issued.token,
             pairing=pairing,
