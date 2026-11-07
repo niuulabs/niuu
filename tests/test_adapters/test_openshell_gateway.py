@@ -110,6 +110,8 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
     openshell_pb2_mod.SANDBOX_PHASE_DELETING = 4
     openshell_pb2_mod.SANDBOX_PHASE_STOPPED = 5
     openshell_pb2_mod.SANDBOX_PHASE_STOPPING = 6
+    openshell_pb2_mod.SANDBOX_PHASE_SUSPENDING = 11
+    openshell_pb2_mod.SANDBOX_PHASE_SUSPENDED = 12
 
     class SandboxPhase:
         """The generated enum's name lookup, as the protobuf runtime provides it."""
@@ -122,6 +124,8 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
             4: "SANDBOX_PHASE_DELETING",
             5: "SANDBOX_PHASE_STOPPED",
             6: "SANDBOX_PHASE_STOPPING",
+            11: "SANDBOX_PHASE_SUSPENDING",
+            12: "SANDBOX_PHASE_SUSPENDED",
         }
 
         @classmethod
@@ -922,6 +926,30 @@ def test_native_lifecycle_calls_authenticated_gateway(monkeypatch, method, rpc):
     assert getattr(client, method)("forge").id == "id"
     assert call.call_args.args[0].name == "forge"
     assert ("authorization", "Bearer test-token") in call.call_args.kwargs["metadata"]
+
+
+@pytest.mark.parametrize(
+    "phase,expected",
+    [
+        ("SANDBOX_PHASE_SUSPENDING", SessionStatus.STOPPING),
+        ("SANDBOX_PHASE_SUSPENDED", SessionStatus.STOPPED),
+        ("SANDBOX_PHASE_STOPPING", SessionStatus.STOPPING),
+        ("SANDBOX_PHASE_STOPPED", SessionStatus.STOPPED),
+    ],
+)
+def test_session_status_reports_a_suspended_sandbox_as_down(
+    monkeypatch, phase: str, expected: SessionStatus
+):
+    """OpenShell v0.1.7 can suspend a sandbox; it runs no workload, so it is not provisioning."""
+    adapter = _import_adapter(monkeypatch)
+    sandbox = adapter.OpenShellSandbox(
+        id="sandbox-id",
+        name="session",
+        phase=getattr(adapter.openshell_pb2, phase),
+    )
+
+    assert adapter._status_from_sandbox(sandbox) is expected
+    assert adapter._phase_name(sandbox.phase) == phase.removeprefix("SANDBOX_PHASE_")
 
 
 @pytest.mark.asyncio
@@ -1927,14 +1955,14 @@ async def test_resident_reconcile_reports_processes_when_they_cannot_be_started(
     assert observation.conditions[1].reason == "Unavailable"
 
 
-def _drain_sandbox(adapter, client) -> None:
-    """Leave the sandbox as a node drain does: stopped until the gateway starts it."""
+def _drain_sandbox(adapter, client, phase: str = "SANDBOX_PHASE_STOPPED") -> None:
+    """Leave the sandbox as a node drain (or a suspend) does: down until the gateway starts it."""
     running = client.get_sandbox
 
     def stopped(name: str):
         return replace(
             running(name),
-            phase=adapter.openshell_pb2.SANDBOX_PHASE_STOPPED,
+            phase=getattr(adapter.openshell_pb2, phase),
             ready=False,
         )
 
@@ -1951,16 +1979,18 @@ def _drain_sandbox(adapter, client) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stopped_phase", ["SANDBOX_PHASE_STOPPED", "SANDBOX_PHASE_SUSPENDED"])
 async def test_resident_reconcile_starts_a_sandbox_that_stopped_under_it(
     monkeypatch: pytest.MonkeyPatch,
+    stopped_phase: str,
 ) -> None:
-    """A drained resident comes back on its own sandbox, then gets its processes."""
+    """A drained or suspended resident comes back on its own sandbox, then gets its processes."""
     adapter = _import_adapter(monkeypatch)
     runtime = _deployed_resident(_resident_runtime())
     client = _FakeOpenShellGatewayClient(adapter)
     client.exec_script = lambda **_kwargs: (1, "")
     manager = _deployed_resident_manager(adapter, client, runtime)
-    _drain_sandbox(adapter, client)
+    _drain_sandbox(adapter, client, stopped_phase)
     sandbox_name = runtime.backend_ref["name"]
 
     observation = await manager.reconcile(runtime, _resident_profile())
@@ -4666,12 +4696,14 @@ async def test_restart_on_the_current_image_restarts_processes_in_place(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stopped_phase", ["SANDBOX_PHASE_STOPPED", "SANDBOX_PHASE_SUSPENDED"])
 async def test_restart_brings_back_a_sandbox_that_stopped_under_the_resident(
     monkeypatch: pytest.MonkeyPatch,
+    stopped_phase: str,
 ) -> None:
     adapter, runtime, client, manager, _ = await _resident_on_old_image(monkeypatch)
     client.sandbox_image = _CURRENT_SANDBOX_IMAGE
-    _drain_sandbox(adapter, client)
+    _drain_sandbox(adapter, client, stopped_phase)
 
     await manager.restart(runtime, _resident_profile())
 
