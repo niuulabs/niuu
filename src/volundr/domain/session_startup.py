@@ -124,11 +124,29 @@ class SessionStartup(BaseModel):
         ]
 
     def with_stages(self, observed: Iterable[StartupStage]) -> SessionStartup:
-        """Merge a backend's current view of its stages, in its order."""
+        """Merge a backend's current view of its stages, in its order.
+
+        The backend decides where its stages go relative to each other: a stage
+        it only learns about later (a pod's volumes, once the pod exists) takes
+        its place in the launch, not the end of the list. Stages outside the view
+        (Forge's own, or the failure) keep their place around them.
+        """
+        view = list(observed)
         merged = self
-        for stage in observed:
+        for stage in view:
             merged = merged.with_stage(stage)
-        return merged.model_copy(update={"progress_error": None})
+        keys = [stage.key for stage in view]
+        by_key = {stage.key: stage for stage in merged.stages}
+        ordered: list[StartupStage] = []
+        placed = False
+        for stage in merged.stages:
+            if stage.key not in by_key or stage.key not in keys:
+                ordered.append(stage)
+                continue
+            if not placed:
+                ordered.extend(by_key[key] for key in keys)
+                placed = True
+        return merged.model_copy(update={"stages": tuple(ordered), "progress_error": None})
 
     def with_progress_error(self, error: str) -> SessionStartup:
         return self.model_copy(update={"progress_error": error})
