@@ -32,9 +32,11 @@ from volundr.domain.models import Session, SessionSpec, SessionStatus
 from volundr.domain.ports import PodManager, PodStartResult, SessionCapacity
 from volundr.domain.services.compute_leases import ComputeLeaseService
 from volundr.domain.services.execution_catalog import ExecutionPlanResolver
+from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
 from volundr.domain.vm_runtime import (
     ForgeSessionVmRuntime,
     ProfileAwareVmRuntime,
+    StartupReportingVmRuntime,
     VmRuntime,
     VmRuntimeStageError,
     VmRuntimeUnavailableError,
@@ -95,6 +97,8 @@ class VmPodManager(PodManager):
         self._owns_runtime = True
         self._locks: dict[UUID, asyncio.Lock] = {}
         self._recoveries: dict[UUID, asyncio.Task] = {}
+        # Session id -> the stages of its current start, as this controller drove them.
+        self._progress: dict[UUID, SessionStartup] = {}
 
     def _runtimes(self) -> tuple[VmRuntime, ...]:
         return (
@@ -376,9 +380,89 @@ class VmPodManager(PodManager):
             remedy=capacity.remedy,
         )
 
+    @property
+    def reports_startup_stages(self) -> bool:
+        return True
+
+    async def startup_stages(self, session: Session) -> tuple[StartupStage, ...]:
+        """The stages this controller drove the session's current start through.
+
+        After a controller restart the start is replayed by reconciliation, which
+        reports from the step it resumes at.
+        """
+        progress = self._progress.get(session.id)
+        return progress.stages if progress is not None else ()
+
+    def _begin_progress(self, session_id: UUID) -> None:
+        now = datetime.now(UTC)
+        pending = StartupStageState.PENDING
+        self._progress[session_id] = SessionStartup(
+            started_at=now,
+            stages=(
+                StartupStage(key="allocate", label="Claiming a VM", state=pending),
+                StartupStage(key="boot", label="Booting the VM", state=pending),
+                StartupStage(key="guest", label="Waiting for the guest", state=pending),
+                StartupStage(key="broker", label="Waiting for the broker", state=pending),
+            ),
+        )
+        for runtime in self._runtimes():
+            if isinstance(runtime, StartupReportingVmRuntime):
+                runtime.report_startup_to(self._runtime_step)
+
+    def _set_stage(
+        self,
+        session_id: UUID,
+        key: str,
+        label: str,
+        state: StartupStageState,
+        detail: str | None = None,
+    ) -> None:
+        progress = self._progress.get(session_id)
+        if progress is None:
+            return
+        now = datetime.now(UTC)
+        current = next((s for s in progress.stages if s.key == key), None)
+        if current is not None and current.state is state and current.detail == detail:
+            return
+        started = current.started_at if current is not None and current.started_at else now
+        self._progress[session_id] = progress.with_stage(
+            StartupStage(
+                key=key,
+                label=label,
+                state=state,
+                detail=detail,
+                started_at=started,
+                finished_at=now if state is StartupStageState.DONE else None,
+            )
+        )
+
+    def _skip_stage(self, session_id: UUID, key: str) -> None:
+        """Drop a stage still pending that this start does not go through."""
+        progress = self._progress.get(session_id)
+        if progress is None:
+            return
+        self._progress[session_id] = progress.model_copy(
+            update={
+                "stages": tuple(
+                    s
+                    for s in progress.stages
+                    if s.key != key or s.state is not StartupStageState.PENDING
+                )
+            }
+        )
+
+    def _stage_pending(self, session_id: UUID, key: str) -> bool:
+        progress = self._progress.get(session_id)
+        stage = next((s for s in progress.stages if s.key == key), None) if progress else None
+        return stage is not None and stage.state is StartupStageState.PENDING
+
+    def _runtime_step(self, session_id: UUID, key: str, label: str) -> None:
+        self._set_stage(session_id, key, label, StartupStageState.ACTIVE)
+
     async def start(self, session: Session, spec: SessionSpec) -> PodStartResult:
         service, repository, legacy_runtime = self._configured()
         async with self._locks.setdefault(session.id, asyncio.Lock()):
+            self._begin_progress(session.id)
             if spec.forge_session is not None:
                 # Held per launch, never in the lease bootstrap: the next start
                 # mints a new credential and revokes this one.
@@ -409,10 +493,24 @@ class VmPodManager(PodManager):
                     )
                 bootstrap = await service.bootstrap_for(lease)
                 lease = await self._retry_failed_runtime(lease.id)
+                self._set_stage(
+                    session.id,
+                    "allocate",
+                    "Claiming a VM",
+                    StartupStageState.DONE,
+                    "This session's own VM",
+                )
             else:
                 lease = await self._claim_warm(session, spec)
                 if lease is not None:
                     bootstrap = await service.bootstrap_for(lease)
+                    self._set_stage(
+                        session.id,
+                        "allocate",
+                        "Claiming a VM",
+                        StartupStageState.DONE,
+                        "A warm VM from the pool",
+                    )
             if lease is None:
                 plan = (
                     await self.execution_for(session)
@@ -445,6 +543,13 @@ class VmPodManager(PodManager):
                     "volundr.compute.assignments",
                     attributes={"pool": self._pool_id, "source": "cold"},
                 )
+                self._set_stage(
+                    session.id,
+                    "allocate",
+                    "Claiming a VM",
+                    StartupStageState.ACTIVE,
+                    f"Requesting a new VM, profile {profile}",
+                )
                 timeout_seconds = (
                     (await self._pool_service.policy()).provisioning_timeout_seconds
                     if self._pool_service
@@ -465,6 +570,13 @@ class VmPodManager(PodManager):
                 )
                 if plan is not None:
                     bootstrap = await service.bootstrap_for(lease)
+                self._set_stage(
+                    session.id,
+                    "allocate",
+                    "Claiming a VM",
+                    StartupStageState.DONE,
+                    f"A new VM, profile {profile}",
+                )
             # Survives the timeout's cancellation of the wait, so the failure says why.
             wait: dict = {"count": 0, "reason": None}
             try:
@@ -503,6 +615,14 @@ class VmPodManager(PodManager):
                         session.id,
                         self._pool_id,
                     )
+                    self._set_stage(
+                        session.id,
+                        "allocate",
+                        "Claiming a VM",
+                        StartupStageState.ACTIVE,
+                        f"Waiting for a provisioning slot: compute pool {self._pool_id} is "
+                        "already provisioning as many VMs as its policy allows",
+                    )
                     queued = True
                 await asyncio.sleep(self._poll)
 
@@ -530,6 +650,7 @@ class VmPodManager(PodManager):
                     # own timeout: either way the guest never became ready, so say why.
                     error = f"{self._runtime_not_ready(wait['reason'])}. {error}"
                 raise RuntimeError(error)
+            self._observe_boot(session.id, lease)
             if (
                 lease.machine
                 and lease.machine.state == MachineState.RUNNING
@@ -546,6 +667,13 @@ class VmPodManager(PodManager):
                     # silently: a guest that stays unprepared needs an operator.
                     wait["count"] += 1
                     wait["reason"] = str(exc) or type(exc).__name__
+                    self._set_stage(
+                        session.id,
+                        "guest",
+                        "Waiting for the guest",
+                        StartupStageState.ACTIVE,
+                        wait["reason"],
+                    )
                     if wait["count"] == 1 or wait["count"] % self._runtime_wait_log_every == 0:
                         logger.warning(
                             "Session %s: VM runtime not ready on allocation %s (attempt %d): %s",
@@ -557,6 +685,30 @@ class VmPodManager(PodManager):
                     if wait["count"] >= self._runtime_wait_surface_after:
                         self._wait_reasons[session.id] = f"Runtime not ready: {wait['reason']}"
             await asyncio.sleep(self._poll)
+
+    def _observe_boot(self, session_id: UUID, lease: ComputeLease) -> None:
+        """Report the machine's own state while it boots, then that the guest is next."""
+        machine = lease.machine
+        if machine is not None and machine.state == MachineState.RUNNING and machine.addresses:
+            progress = self._progress.get(session_id)
+            boot = next((s for s in progress.stages if s.key == "boot"), None) if progress else None
+            if boot is not None and boot.state is StartupStageState.PENDING:
+                # A warm or retained VM was already up: this start never booted it.
+                self._skip_stage(session_id, "boot")
+            else:
+                self._set_stage(
+                    session_id,
+                    "boot",
+                    "Booting the VM",
+                    StartupStageState.DONE,
+                    f"{machine.phase or 'Running'} at {', '.join(machine.addresses)}",
+                )
+            return
+        if machine is None:
+            detail = "Creating the VM"
+        else:
+            detail = machine.phase or machine.status_detail or f"VM is {machine.state.value}"
+        self._set_stage(session_id, "boot", "Booting the VM", StartupStageState.ACTIVE, detail)
 
     def _runtime_not_ready(self, reason: str) -> str:
         return f"VM runtime did not become ready within {self._provisioning_timeout:g}s: {reason}"
@@ -692,13 +844,44 @@ class VmPodManager(PodManager):
                 remaining = self._provisioning_timeout
                 if lease.provision_deadline is not None:
                     remaining = (lease.provision_deadline - datetime.now(UTC)).total_seconds()
+                session_id = lease.session_id
                 async with asyncio.timeout(max(0, remaining)):
+                    if session_id is not None and lease.execution_plan is not None:
+                        self._set_stage(
+                            session_id, "host", "Preparing the host", StartupStageState.ACTIVE
+                        )
                     lease = await self._ensure_host_prepared(lease, service, repository)
+                    if session_id is not None and self._stage_pending(session_id, "guest"):
+                        # Retries keep the reason the last attempt gave.
+                        self._set_stage(
+                            session_id,
+                            "guest",
+                            "Waiting for the guest",
+                            StartupStageState.ACTIVE,
+                            "Connecting to the guest",
+                        )
                     await runtime.prepare(lease, bootstrap)
+                    if session_id is not None:
+                        self._set_stage(
+                            session_id,
+                            "guest",
+                            "Waiting for the guest",
+                            StartupStageState.DONE,
+                            "The guest answered",
+                        )
+                        if not isinstance(runtime, StartupReportingVmRuntime):
+                            self._runtime_step(session_id, "guest_start", "Starting the runtime")
                     lease = lease.model_copy(update={"runtime_data_started": True})
                     await repository.save(lease)
                     await runtime.start(lease, bootstrap)
                     await repository.save(lease.model_copy(update={"runtime_started": True}))
+                    if session_id is not None:
+                        self._set_stage(
+                            session_id,
+                            "broker",
+                            "Waiting for the broker",
+                            StartupStageState.ACTIVE,
+                        )
             except VmRuntimeUnavailableError:
                 raise
             except Exception as error:
@@ -817,6 +1000,7 @@ class VmPodManager(PodManager):
             return SessionStatus.PROVISIONING
         if not await runtime.ready(lease, bootstrap):
             return SessionStatus.PROVISIONING
+        self._set_stage(session.id, "broker", "Waiting for the broker", StartupStageState.DONE)
         if lease.state is not LeaseState.BUSY:
             try:
                 await service.mark_busy(lease.id)
@@ -848,6 +1032,7 @@ class VmPodManager(PodManager):
     async def stop(self, session: Session) -> bool:
         service, repository, _ = self._configured()
         self._wait_reasons.pop(session.id, None)
+        self._progress.pop(session.id, None)
         for runtime in self._runtimes():
             if isinstance(runtime, ForgeSessionVmRuntime):
                 runtime.discard_forge_session(session.id)

@@ -174,6 +174,7 @@ from volundr.domain.session_read_state import (
     SessionReadStateChange,
     SessionReadStateConflictError,
 )
+from volundr.domain.session_startup import SessionStartup
 from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import load_workspace_transcript
 
@@ -215,6 +216,7 @@ def _session_summary(item: Any, node: str | None) -> dict[str, Any]:
         "name": item.name,
         "status": item.status.value if hasattr(item.status, "value") else item.status,
         "activity_state": getattr(item, "activity_state", None),
+        "startup": getattr(item, "startup", None),
         "short_description": getattr(item, "short_description", None),
         "project": (
             {"id": str(coordination.project_id), "role": coordination.role}
@@ -1278,6 +1280,14 @@ class SessionResponse(BaseModel):
         default_factory=dict,
         description="Metadata from the latest activity report",
     )
+    startup: SessionStartup | None = Field(
+        default=None,
+        description=(
+            "Stages of the latest launch as the runtime backend reported them (pod "
+            "conditions and events, VM state), with when each began and ended; null "
+            "for a session never started since stages were recorded"
+        ),
+    )
     needs_attention: bool = Field(
         default=False,
         description=(
@@ -1439,6 +1449,7 @@ class SessionResponse(BaseModel):
                 session.turn_started_at.isoformat() if session.turn_started_at else None
             ),
             activity_metadata=session.activity_metadata,
+            startup=session.startup,
             needs_attention=session.needs_attention,
             workload_type=session.workload_type,
             origin=session.origin,

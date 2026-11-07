@@ -57,6 +57,10 @@ class Machine(BaseModel):
     state: MachineState
     addresses: tuple[str, ...] = ()
     status_detail: str | None = Field(default=None, max_length=512)
+    phase: str | None = Field(
+        default=None,
+        description="The provider's own words for where the machine is (e.g. 'Starting on hnoss')",
+    )
 
 
 class MachineProviderError(RuntimeError):

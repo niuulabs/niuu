@@ -328,6 +328,8 @@ provisioning:
   timeoutSeconds: 300.0
   # -- Initial delay before starting readiness polls in seconds
   initialDelaySeconds: 5.0
+  # -- Seconds between reads of a starting session's launch stages (pod conditions and events, VM state)
+  startupPollSeconds: 2.0
 
 # -- Seconds between realm-detail SSE state checks and idle keepalive comments
 realmDetailStreamIntervalSeconds: 15.0

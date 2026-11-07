@@ -71,6 +71,7 @@ data:
     provisioning:
       timeout_seconds: {{ .Values.provisioning.timeoutSeconds | default 300.0 }}
       initial_delay_seconds: {{ .Values.provisioning.initialDelaySeconds | default 5.0 }}
+      startup_poll_seconds: {{ .Values.provisioning.startupPollSeconds | default 2.0 }}
 
     realm_detail_stream_interval_seconds: {{ .Values.realmDetailStreamIntervalSeconds | default 15.0 }}
 

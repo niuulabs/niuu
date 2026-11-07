@@ -23,6 +23,7 @@ from volundr.domain.session_read_state import (
     SessionReadStateChange,
     SessionReadStateConflictError,
 )
+from volundr.domain.session_startup import SessionStartup
 
 
 class PostgresSessionRepository(SessionRepository):
@@ -180,7 +181,7 @@ class PostgresSessionRepository(SessionRepository):
                       turn_started_at, last_active,
                       short_description, description,
                       short_description_updated_at, description_updated_at,
-                      last_work_at, open_tool_count, session_usage
+                      last_work_at, open_tool_count, session_usage, startup
             """,
             session.id,
             session.name,
@@ -232,6 +233,8 @@ class PostgresSessionRepository(SessionRepository):
                 **self._work_fact_fields(row),
                 # Projection-owned: an unrelated stale update must preserve newer usage.
                 "session_usage": self._parse_json_dict(row.get("session_usage")) or None,
+                # Recorder-owned: a lifecycle update never moves a launch's stages.
+                "startup": self._parse_startup(row.get("startup")),
             }
         )
 
@@ -308,6 +311,19 @@ class PostgresSessionRepository(SessionRepository):
             now,
         )
         return self._row_to_session(row) if row is not None else None
+
+    async def update_startup(self, session_id: UUID, startup: SessionStartup) -> Session | None:
+        row = await self._pool.fetchrow(
+            "UPDATE sessions SET startup = $2::jsonb WHERE id = $1 RETURNING *",
+            session_id,
+            startup.model_dump_json(),
+        )
+        return self._row_to_session(row) if row is not None else None
+
+    @classmethod
+    def _parse_startup(cls, value) -> SessionStartup | None:
+        parsed = cls._parse_json_dict(value)
+        return SessionStartup.model_validate(parsed) if parsed else None
 
     async def list_stale_running(self, older_than: datetime) -> list[Session]:
         """Return RUNNING sessions whose last_active is at/before older_than."""
@@ -489,6 +505,7 @@ class PostgresSessionRepository(SessionRepository):
             turn_started_at=turn_started_at,
             activity_metadata=activity_metadata,
             session_usage=self._parse_json_dict(row.get("session_usage")) or None,
+            startup=self._parse_startup(row.get("startup")),
             **self._description_fields(row),
             **self._work_fact_fields(row),
         )

@@ -210,9 +210,18 @@ class InMemorySessionRepository(SessionRepository):
                 "short_description_updated_at": current.short_description_updated_at,
                 "description_updated_at": current.description_updated_at,
                 "session_usage": current.session_usage,
+                "startup": current.startup,
             }
         )
         self._sessions[session.id] = updated
+        return updated
+
+    async def update_startup(self, session_id, startup):
+        current = self._sessions.get(session_id)
+        if current is None:
+            return None
+        updated = current.model_copy(update={"startup": startup})
+        self._sessions[session_id] = updated
         return updated
 
     async def update_description(self, session_id, changes, now):

@@ -101,6 +101,7 @@ from volundr.domain.push import PushTokenKind
 from volundr.domain.session_changes import SessionChanges
 from volundr.domain.session_participants import ParticipantRole, SessionParticipant
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
+from volundr.domain.session_startup import SessionStartup, StartupStage
 
 __all__ = [
     "AuthorizationPort",
@@ -183,6 +184,15 @@ class SessionRepository(ABC):
 
         Returns the stored session, or ``None`` when it no longer exists. The
         running launch's credential is unchanged; the next start mints from these.
+        """
+
+    @abstractmethod
+    async def update_startup(self, session_id: UUID, startup: SessionStartup) -> Session | None:
+        """Replace only the session's launch stages.
+
+        The startup recorder is the column's only writer; ordinary updates never
+        write it, so a lifecycle update with a stale copy cannot lose a stage.
+        Returns the stored session, or ``None`` when it no longer exists.
         """
 
     @abstractmethod
@@ -646,6 +656,42 @@ class PodManager(ABC):
 
     async def status_detail(self, session: Session) -> str | None:
         """Return a safe, non-terminal detail for the current runtime status."""
+        return None
+
+    # --- Launch progress -------------------------------------------------
+    #
+    # Any backend can show people what a starting session waits on. Forge's
+    # SessionStartupRecorder calls ``startup_stages`` every
+    # ``provisioning.startup_poll_seconds`` while a session is starting and
+    # persists the merged result on ``sessions.startup`` (REST, the session
+    # stream, the Guild facade). A backend opts in by returning True from
+    # ``reports_startup_stages`` and implementing ``startup_stages``; one that
+    # does not shows a single "Starting the runtime" stage. Rules:
+    #
+    # - Return the whole launch every time, oldest stage first, with stable
+    #   ``key``s. Earlier views are merged by key; a stage keeps its earliest
+    #   start, and a new stage that begins ends every earlier active one.
+    # - Only real backend state: a condition or event with its own timestamp,
+    #   or the time this controller performed the step. Never a timer, an
+    #   estimate or a percentage. ``detail`` is the backend's own words.
+    # - Stages still to come may be returned as PENDING (no ``started_at``).
+    # - Running ends every open stage and a failure marks the active one with
+    #   ``session.error``; backends never report those terminal verdicts.
+    # - Raise when the backend cannot be read: the recorder logs it at error,
+    #   counts it and shows it on the record as ``progress_error``.
+
+    @property
+    def reports_startup_stages(self) -> bool:
+        """Whether ``startup_stages`` reports this backend's launch stages."""
+        return False
+
+    async def startup_stages(self, session: Session) -> tuple[StartupStage, ...] | None:
+        """The current launch's stages as this backend knows them now, in order.
+
+        Called only after Forge handed the launch to ``start``. None means this
+        backend does not report its stages; an empty tuple means nothing has
+        happened yet for this launch.
+        """
         return None
 
     @abstractmethod
