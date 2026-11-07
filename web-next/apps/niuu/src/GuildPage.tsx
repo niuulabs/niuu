@@ -28,6 +28,7 @@ import {
   WifiOff,
 } from 'lucide-react';
 import { resolveNiuuRegistryBase, resolveSettingsServiceBase } from './services';
+import { ForgeHostsLink } from '@niuulabs/plugin-volundr';
 import { EditInstanceDialog, DeleteInstanceDialog, guildActionClass } from './GuildInstanceDialogs';
 import {
   canManageInstance,
@@ -712,6 +713,9 @@ function GuildDetailRail({
             <Trash2 className="niuu:h-4 niuu:w-4" />
             Delete node
           </button>
+          {instance.kind === 'volundr' ? (
+            <ForgeHostsLink instanceId={instance.id} className={guildActionClass} />
+          ) : null}
         </div>
         {!instance.enabled ? (
           <p className="niuu:mt-3 niuu:text-sm niuu:text-text-muted">
