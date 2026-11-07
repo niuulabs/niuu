@@ -245,9 +245,10 @@ open.
 curl -fsSL -H 'Authorization: Bearer <pairing code>' https://forge-hosts.valhalla.asgard.niuu.world/api/v1/forge/compute/hosts/join.sh | sudo sh
 ```
 
-That is the whole step. It needs only what a stock systemd Linux has: `sh`,
+That is the whole step. It needs only what a stock Linux has: `sh`,
 `curl` (or `wget`, which the UI offers as an alternative line), `ssh-keygen` and
-`sshd` or `ssh`, depending on the connector. The script is POSIX `sh`. It
+`sshd` or `ssh`, depending on the connector. systemd is not required (see
+"Hosts without systemd" below). The script is POSIX `sh`. It
 installs nothing itself: everything else (Nix, rootless Podman, `uidmap`,
 `nftables`, the slot supervisor) comes from Forge's recipe in the next step.
 
@@ -266,9 +267,11 @@ installs nothing itself: everything else (Nix, rootless Podman, `uidmap`,
 
 The script, in order:
 
-1. Checks only what the join needs: Linux, root, systemd, cgroup v2, the tools
-   above, and no existing registration. Each missing item prints its fix, and
-   nothing is changed.
+1. Checks only what the join needs: Linux, root, cgroup v2, the tools above, and
+   no existing registration. Each missing item prints its fix, and nothing is
+   changed. It reports the host's init as a fact: `init systemd` when PID 1 is
+   systemd (`/run/systemd/system` exists, the test `sd_booted()` uses), otherwise
+   `init other`. A host without systemd is not refused.
 2. Generates the host's Ed25519 key at `/etc/niuu/ssh_host_ed25519_key`
    (`umask 077`, refuse to overwrite), the same path VMs use.
 3. Sends `name`, `facts` (a few `/proc` reads) and the public key to
@@ -278,14 +281,94 @@ The script, in order:
 4. Runs the connector's host setup from the join response. For direct SSH, it
    adds the key as an sshd `HostKey` (`/etc/ssh/sshd_config.d/10-niuu-host-key.conf`)
    and installs Forge's public key with the options from decision 1. For reverse
-   SSH, it also writes and starts `niuu-host-connect.service` (see Connection).
-   This is a host-level unit. "No systemd units" applies to sessions and slots,
-   not to the one connection the host keeps.
-5. Installs `/usr/local/sbin/niuu-host-leave`, which undoes steps 2 and 4.
+   SSH, it also starts the tunnel as the host service `host-connect` through
+   `niuu-host-service` (below): a systemd unit where the init is systemd, a
+   supervised process otherwise. This is a host-level service. "No systemd
+   units" applies to sessions and slots, not to the one connection the host keeps.
+5. Installs `/usr/local/sbin/niuu-host-leave`, which undoes steps 2 and 4, and
+   `/usr/local/sbin/niuu-host-service`. It records the init in
+   `/etc/niuu/compute-host.env` (`INIT=systemd|other`).
 6. Prints "Registered as `glad`. Forge is preparing this host; follow it in the UI."
 
 The `niuu` CLI is not needed. `niuu join … --as-compute` may later wrap the same
 script for people who have the CLI, but it is not a second implementation.
+
+### Hosts without systemd
+
+The real requirement is **cgroup v2** (the unified hierarchy, with the `cpu`,
+`memory` and `pids` controllers). systemd is one way to manage it, not a
+requirement. A host on Alpine with OpenRC, Void with runit, or any other init
+joins the same way.
+
+**The cgroup manager is fixed per host at join.** Forge derives it from the `init`
+fact the join reports and records it on the host as `cgroup_manager`:
+
+| `init` at join | `cgroup_manager` | A slot's cgroup |
+|---|---|---|
+| `systemd` | `systemd` | the transient slice `niuu_slot_<n>.slice` |
+| `other` | `cgroupfs` | the directory `/sys/fs/cgroup/niuu.slots/slot-<n>` |
+
+The manager is never chosen at runtime by trying one and then the other
+(`.claude/rules/no-fallbacks.md`). The host's machine record carries it to the slot
+supervisor, which runs only the recorded form. Every check compares the `init` it
+measures with the one the host joined with; a change (the host was reinstalled
+with another init) is a finding, "remove the host and join it again", and the host
+takes no sessions until then. A host registered before this fact existed has no
+manager and is quarantined with the same remedy. VM providers report `systemd`,
+because Forge's VM images boot systemd.
+
+The two forms do the same things:
+
+| Step | `systemd` | `cgroupfs` |
+|---|---|---|
+| Create | `systemctl set-property --runtime niuu_slot_<n>.slice` | `mkdir` the slot's directory under `niuu.slots`, after enabling `+cpu +memory +pids` in the subtree of the root and of `niuu.slots` |
+| Limits | `CPUQuota=`, `MemoryMax=`, `TasksMax=` | `cpu.max` (`<quota> 100000`, the kernel's default period), `memory.max`, `pids.max`; `max` for `null` |
+| Containers | `--cgroup-parent niuu_slot_<n>.slice` | `--cgroup-parent /niuu.slots/slot-<n>`; the supervisor refuses a container engine whose cgroup driver is not `cgroupfs` |
+| Teardown | `systemctl stop` and `systemctl revert` | write `1` to `cgroup.kill`, wait on `cgroup.events` until `populated 0`, then remove the slot's directories bottom up |
+| Verify | the slice is not active, has no settings left and its cgroup is gone | the slot's directory is gone |
+
+`cgroupfs` needs `cgroup.kill`, so Linux 5.14 or later; the join reports
+`cgroup_kill` as a fact and the supervisor refuses a slot without it, naming the
+kernel. Containers inside a slot (rootless Podman in host mode) already use
+`cgroupfs` in a subtree delegated to the slot's user inside the slot's cgroup,
+so they do not depend on the init.
+
+**Long-lived host processes.** Anything that must keep running on the host
+outside a session (the reverse-SSH tunnel, the Nix daemon on a host without
+systemd) is a **host service**, managed by `niuu-host-service`, which join.sh
+installs:
+
+- `niuu-host-service ensure <name> <argv…>`, `stop <name>`, `status`, `boot`.
+- With `INIT=systemd` it writes `/etc/systemd/system/niuu-<name>.service`
+  (`Restart=always`) and enables it.
+- Otherwise it runs a **supervised process**: a restart loop started with
+  `setsid`, its pid in `/run/niuu/services/<name>.pid` and its output in
+  `/var/log/niuu/services/<name>.log`. Each exit is logged with its status, and the
+  loop starts the command again after `compute.hosts.service_restart_delay_seconds`.
+  The argv is kept in `/etc/niuu/services/<name>`, so `boot` starts every service
+  again after a reboot.
+- Starting at boot is one line for the host's init, which join.sh prints and the
+  operator guide lists: on OpenRC, a `/etc/local.d/niuu.start` that runs
+  `niuu-host-service boot` (with `rc-update add local default`); on runit (Void) or
+  sysvinit, the same line in `/etc/rc.local`.
+- The audit finds every recorded service that is not running ("host service
+  `<name>` is not running; run `niuu-host-service boot` and add it to the host's
+  boot"), so a host that rebooted without the hook is quarantined, never silently
+  half-working. The helper decides nothing itself: it reads the init the host
+  joined with from `/etc/niuu/compute-host.env`.
+
+**Nix.** The multi-user installer sets up `nix-daemon`'s systemd units only where
+systemd runs; elsewhere it installs Nix and starts nothing. The recipe's Nix stage
+(`deploy/nix/install-nix.sh`, on the host-mode branch) then starts the daemon as
+the host service `nix-daemon` when the host's recorded `INIT` is `other`, and its
+verify step checks that `/nix/var/nix/daemon-socket/socket` answers. Recipe stages
+branch on the recorded init only; they never probe for systemd themselves.
+
+Not covered by this section yet: host-mode sessions bind
+`/run/systemd/resolve/resolv.conf` over `/etc/resolv.conf`
+(`SshHostVmRuntime`), which exists only with systemd-resolved. Without it the
+view must bind the host's own `/etc/resolv.conf`; that change belongs to the
+host-mode branch.
 
 ### Forge prepares the host
 
@@ -398,10 +481,12 @@ changing it is remove and join again.
 2. **Outbound reverse SSH tunnel** (`ReverseSshConnector`). *Recommended for hosts
    behind NAT, and the first host-initiated connector.* The host keeps one
    connection open, and Forge sends everything down it; nothing polls.
-   - The host's `niuu-host-connect.service` runs
+   - The host's `host-connect` host service (`niuu-host-service ensure
+     host-connect …`: the unit `niuu-host-connect.service` with `Restart=always`
+     on systemd, a supervised process otherwise; see "Hosts without systemd") runs
      `ssh -N -i /etc/niuu/ssh_host_ed25519_key -o ExitOnForwardFailure=yes
      -o ServerAliveInterval=15 -R 127.0.0.1:<assigned port>:127.0.0.1:22
-     niuu-connect@<endpoint>`, with `Restart=always`. Stock OpenSSH is enough. The
+     niuu-connect@<endpoint>`. Stock OpenSSH is enough. The
      host's sshd listens on loopback only if the operator wants, since nothing
      needs to reach it from outside.
    - **The endpoint** is an OpenSSH server in a sidecar container of the Forge
@@ -424,7 +509,7 @@ changing it is remove and join again.
      The host becomes `unreachable` and is offered nothing new. Its sessions are
      marked "host disconnected" in the session view and keep running on the
      host, since Skuld does not need Forge to keep working. Messages to them fail
-     with that reason until the tunnel returns. `Restart=always` reconnects; Forge
+     with that reason until the tunnel returns. The host service restarts it; Forge
      then re-opens the per-slot tunnels (the existing reconnect path after a Forge
      restart) and the host returns to `in_service`. Each disconnect is counted on
      `volundr.compute.host.disconnects`.
@@ -458,9 +543,12 @@ connector, and a new connector adds a reachability path, not a trust path.
 ### Per slot, every stop
 
 The slot supervisor already tears a slot down and checks it (#1261): it removes the
-containers, rules, interface, namespace, slice, directories, user and group, then
-fails `slot-down` naming anything left, and the stop is retried. For hosts the
-same `down` also checks:
+containers, rules, interface, namespace, cgroup, directories, user and group, then
+fails `slot-down` naming anything left, and the stop is retried. The cgroup is
+removed in the host's recorded form: a systemd host stops and reverts the slice; a
+`cgroupfs` host kills everything left in the slot's cgroup through `cgroup.kill`,
+waits until the kernel reports it empty and removes the directory, and a directory
+that is still there fails `down`. For hosts the same `down` also checks:
 
 - no process with the slot's uid (including rootless Podman's `conmon` and
   `pasta`);
@@ -468,8 +556,8 @@ same `down` also checks:
   slot could write (`find -xdev -uid`). Slots get a private `/tmp`, `/var/tmp` and
   `/dev/shm` in their own mount namespace, so this should always be empty; the
   check proves it;
-- no SysV IPC objects, cron or at jobs, `loginctl` linger, or systemd user
-  manager for the slot's user;
+- no SysV IPC objects, cron or at jobs for the slot's user, and on systemd hosts
+  no `loginctl` linger or systemd user manager;
 - the slot's rootless Podman storage is gone (it lives under the slot's home, so
   it goes with it);
 - Nix: the slot's profile and GC roots are gone. The shared `/nix/store` stays, and
@@ -488,8 +576,11 @@ The **audit** applies the slot `down` checks to the whole slot uid range and add
 host checks:
 
 - the recipe digest still matches;
-- no `niuu-slot-*` users, groups, netns, veths, nft rules or slices exist beyond
-  those of live bindings;
+- no `niuu-slot-*` users, groups, netns, veths, nft rules or slot cgroups (slices
+  on systemd hosts, `niuu.slots/slot-<n>` on `cgroupfs` hosts) exist beyond those
+  of live bindings;
+- the host's init is still the one it joined with, and every host service
+  recorded by `niuu-host-service` is running;
 - no slot user is in the `docker`, `sudo`, `wheel` or `adm` groups;
 - Nix `trusted-users` is root only;
 - sshd still uses the registered host key;
@@ -510,7 +601,7 @@ There is no "ignore": a finding clears when the audit stops seeing it.
   slot = 11"). The admin confirms it; Forge never picks silently.
 - **Per-slot limits** come from the host's execution (`slot_isolation`: `cpu`,
   `memory_mib`, `pids`, each set or `null`), as on VMs. They are cgroup v2 limits
-  on the slot's slice. Limit hits are counted on `volundr.compute.slot.limit_hits`.
+  on the slot's cgroup (its slice, or its `cgroupfs` directory). Limit hits are counted on `volundr.compute.slot.limit_hits`.
 - **System reserve.** The provider has kwargs `reserved_cpu` and
   `reserved_memory_mib` (no defaults; write them per host class). Forge refuses
   `slots × limit > facts − reserve` for any limit that is set, with the arithmetic
@@ -611,7 +702,7 @@ daemon in a slot** run on registered hosts:
 ### Forge's access to the host
 
 Forge needs root on the host: creating slot users, network namespaces, nft rules
-and slices is root's job. That is the same trust it has in a VM, but a host is
+and slot cgroups is root's job. That is the same trust it has in a VM, but a host is
 not disposable and may sit on a LAN with BMCs and other machines. Decision 1
 settles it: a narrowed root SSH login now, a forced-command agent later. In both:
 
@@ -628,10 +719,19 @@ settles it: a narrowed root SSH login now, a forced-command agent later. In both
 - No sudo and no Docker group for any slot user; the audit fails a host where
   one is in `sudo`, `wheel`, `docker` or `adm`.
 - Rootless Podman per slot user, inside the slot's user, network and PID
-  namespaces and slice. Its network is the slot's netns (pasta), not the host's.
+  namespaces and cgroup. Its network is the slot's netns (pasta), not the host's.
 - Nix: slots are `allowed-users`, never `trusted-users` (a trusted user can add
   substituters and poison the shared store for everyone).
-- `loginctl` linger off, no user cron, private `/tmp`, `/var/tmp` and `/dev/shm`.
+- `loginctl` linger off (on systemd hosts), no user cron, private `/tmp`,
+  `/var/tmp` and `/dev/shm`.
+- **Cgroups without systemd.** On a `cgroupfs` host Forge writes the slot cgroups
+  under `/sys/fs/cgroup/niuu.slots` as root. No slot user owns the slot's
+  directory or its limit files, so a slot cannot raise its own limits; only the
+  session subtree inside it is delegated (host mode), as on systemd hosts.
+  `niuu.slots` is Forge's alone, and the audit reports any slot directory there
+  without a live binding.
+- **Host services** run as root, from argv Forge wrote through its own SSH login
+  (`/etc/niuu/services`, root-only). Slots can neither read nor change them.
 - **Egress**: slots NAT out of the host's default route, and nft rules deny the
   host itself, other slots and the container networks, as on VMs. On bare metal
   the LAN (RFC 1918 ranges, the BMC network) is also denied by default, except
@@ -728,8 +828,12 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
 - The edge (`credential_allows_route`) admits a `compute_host_join` code on exactly
   `GET …/hosts/join.sh` and `POST …/hosts/join`.
 - `warm_targets` per selector were dropped (decision 6).
+- systemd is optional: the join reports `init`, the host records `cgroup_manager`,
+  the slot supervisor has a `cgroupfs` form, the audit checks whichever form the
+  host uses, and `niuu-host-service` runs host services with or without systemd.
 - Not built yet: the reverse SSH connector, the Re-prepare action (a recipe change
-  today needs drain, then resume), macOS hosts.
+  today needs drain, then resume), macOS hosts, and the Nix stage and resolver
+  changes for hosts without systemd (host-mode branch).
 
 ## Decisions (settled 2026-11-07)
 
