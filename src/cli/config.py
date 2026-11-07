@@ -6,7 +6,14 @@ import json
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -505,6 +512,144 @@ class ResidentsConfig(BaseModel):
     )
 
 
+PLACEMENT_POD_MANAGER_ADAPTER = (
+    "volundr.adapters.outbound.placement_pod_manager.PlacementPodManager"
+)
+VM_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.vm_pod_manager.VmPodManager"
+REGISTERED_HOST_PROVIDER_ADAPTER = (
+    "volundr.adapters.outbound.registered_hosts.RegisteredHostMachineProvider"
+)
+FILE_EXECUTION_CATALOG_ADAPTER = (
+    "volundr.adapters.outbound.file_execution_catalog.FileExecutionCatalog"
+)
+DIRECT_SSH_CONNECTOR_ADAPTER = "volundr.adapters.outbound.host_connectors.DirectSshConnector"
+
+
+class HostsConfig(BaseModel):
+    """Registered hosts next to this machine's own sessions (mini mode).
+
+    ``enabled: true`` renders a Forge compute pool on registered hosts and places a
+    session there only when it asks for a host (``workload_config.host_selector`` or
+    ``execution_profile``); every other session keeps running on this machine.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=False, description="Run sessions on registered hosts too.")
+    pool_id: str = Field(
+        default="local-hosts", min_length=1, description="The hosts pool's compute pool id."
+    )
+    profile: str = Field(
+        default="host",
+        min_length=1,
+        description="Provider profile of the hosts; the catalog's execution machine names it.",
+    )
+    max_hosts: int = Field(
+        default=16,
+        gt=0,
+        description=(
+            "compute.max_machines: how many hosts the pool may hold at once. A host "
+            "beyond it waits as ready and unclaimed; raise it to use more hosts."
+        ),
+    )
+    execution_catalog: str = Field(
+        default="",
+        description=(
+            "Directory of the execution catalog the hosts run (catalog.yaml). Required "
+            "until a default host-mode execution ships with Niuu."
+        ),
+    )
+    join_url: str = Field(
+        default="",
+        description="compute.hosts.join_url: Forge's base URL as hosts reach it.",
+    )
+    allow_plaintext_join: bool = Field(
+        default=False,
+        description="compute.hosts.allow_plaintext_join: accept an http:// join_url.",
+    )
+    allowed_sources: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Source networks Forge's SSH key is accepted from on a host (from=); "
+            "empty accepts any source."
+        ),
+    )
+    reserved_cpu: float = Field(
+        default=2, ge=0, description="CPU cores kept for each host itself when slots are sized."
+    )
+    reserved_memory_mib: int = Field(
+        default=4096, ge=0, description="Memory kept for each host itself when slots are sized."
+    )
+    min_free_disk_mib: int = Field(
+        default=20480,
+        ge=0,
+        description="Free space on a host's / below which the audit quarantines it.",
+    )
+    pairing_signing_key_file: str = Field(
+        default="~/.niuu/forge-host-pairing-key.pem",
+        min_length=1,
+        description="Forge's own key that signs host pairing codes in mini mode.",
+    )
+
+    def compute(self) -> ComputeConfig:
+        """The Forge ``compute:`` section for the hosts pool."""
+        if not self.execution_catalog.strip():
+            raise ValueError(
+                "hosts.enabled needs hosts.execution_catalog, the directory of the "
+                "execution catalog the hosts run; set it, or set hosts.enabled: false"
+            )
+        hosts: dict[str, Any] = {
+            "allow_plaintext_join": self.allow_plaintext_join,
+            "connectors": [
+                {
+                    "binding_id": "direct-ssh",
+                    "adapter": DIRECT_SSH_CONNECTOR_ADAPTER,
+                    "kwargs": {"allowed_sources": list(self.allowed_sources)},
+                }
+            ],
+            "reserved_cpu": self.reserved_cpu,
+            "reserved_memory_mib": self.reserved_memory_mib,
+            "min_free_disk_mib": self.min_free_disk_mib,
+            "pairing_signing_key_file": self.pairing_signing_key_file,
+        }
+        if self.join_url:
+            hosts["join_url"] = self.join_url
+        return ComputeConfig.model_validate(
+            {
+                "pool_id": self.pool_id,
+                "max_machines": self.max_hosts,
+                "reuse_policy": "reuse",
+                "provider_binding": self.pool_id,
+                "provider": {
+                    "adapter": REGISTERED_HOST_PROVIDER_ADAPTER,
+                    "kwargs": {"profiles": {self.profile: {"label": "Registered host"}}},
+                },
+                "execution_catalog": {
+                    "adapter": FILE_EXECUTION_CATALOG_ADAPTER,
+                    "kwargs": {"root": str(Path(self.execution_catalog).expanduser())},
+                },
+                "hosts": hosts,
+            }
+        )
+
+    def pod_manager(self, local_adapter: str, local_kwargs: dict[str, Any]) -> dict[str, Any]:
+        """The placement pod manager: ``local`` as configured, ``pool`` on the hosts."""
+        return {
+            "adapter": PLACEMENT_POD_MANAGER_ADAPTER,
+            "kwargs": {
+                "local": {"adapter": local_adapter, "kwargs": dict(local_kwargs)},
+                "pool": {
+                    "adapter": VM_POD_MANAGER_ADAPTER,
+                    "kwargs": {
+                        "profile": self.profile,
+                        "pool_id": self.pool_id,
+                        "max_machines": self.max_hosts,
+                    },
+                },
+            },
+        }
+
+
 class ServiceConfig(BaseModel):
     """Service management configuration."""
 
@@ -977,6 +1122,7 @@ class CLISettings(BaseSettings):
     bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
     observability: CLIObservabilityConfig = Field(default_factory=CLIObservabilityConfig)
     compute: ComputeConfig | None = None
+    hosts: HostsConfig = Field(default_factory=HostsConfig)
     service_overrides: dict[str, PerServiceConfig] = Field(
         default_factory=dict,
         description="Per-service enabled/port overrides keyed by service name.",
@@ -1004,6 +1150,23 @@ class CLISettings(BaseSettings):
             raise ValueError("Docker compute max_machines must match pod_manager.max_machines")
         if self.compute.runtime is None:
             raise ValueError("Docker compute requires a runtime adapter")
+        return self
+
+    @model_validator(mode="after")
+    def _hosts_pool_is_the_only_pool(self) -> CLISettings:
+        if not self.hosts.enabled:
+            return self
+        if self.mode != "mini":
+            raise ValueError(
+                f"hosts.enabled is for mini mode; mode {self.mode!r} configures its "
+                "compute pool under compute:"
+            )
+        if self.compute is not None:
+            raise ValueError(
+                "hosts.enabled and compute: both define this Forge's compute pool; "
+                "remove compute:, or set hosts.enabled: false"
+            )
+        self.hosts.compute()
         return self
 
     #: Plugins that do not yet go through any auth.mode-aware identity check

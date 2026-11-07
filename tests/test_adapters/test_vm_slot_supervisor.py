@@ -8,7 +8,10 @@ can run ``up`` and ``down`` end to end and ask what is left.
 import base64
 import io
 import json
+import os
+import pathlib
 import shlex
+import shutil
 import subprocess
 import sys
 from collections import namedtuple
@@ -169,6 +172,7 @@ def _spec(root: Path, **overrides) -> dict:
         "uid": 61003,
         "data_root": str(root / "var" / "slots" / "3"),
         "run_root": str(root / "run" / "slots" / "3"),
+        "agent_root": str(root / "etc" / "slots" / "3"),
         "netns": "niuu-slot-3",
         "host_link": "niuuslot3",
         "gateway": "10.249.0.13",
@@ -195,9 +199,27 @@ def vm(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "_SYSTEMD_CONTROL", tmp_path / "control")
     monkeypatch.setattr(module, "_CGROUP_ROOT", tmp_path / "cgroup")
     monkeypatch.setattr(
-        module.os, "chown", lambda path, uid, gid: fake.chowned.append((str(path), uid, gid))
+        module.os, "fchown", lambda fd, uid, gid: fake.chowned.append((_fd_path(fd), uid, gid))
     )
     return fake
+
+
+def _fd_path(fd: int) -> str:
+    """The path an open descriptor names (Linux and macOS)."""
+    if sys.platform == "darwin":
+        import fcntl
+
+        raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
+        path = raw.split(b"\0", 1)[0].decode()
+    else:
+        path = os.readlink(f"/proc/self/fd/{fd}")
+    # macOS reports /private/var for tmp paths reached through /var.
+    return path.removeprefix("/private") if path.startswith("/private/var/") else path
+
+
+def _real(path) -> str:
+    resolved = str(pathlib.Path(path).resolve())
+    return resolved.removeprefix("/private") if resolved.startswith("/private/var/") else resolved
 
 
 def _supervisor(vm: FakeVm, **overrides) -> SlotSupervisor:
@@ -217,7 +239,10 @@ def test_up_creates_the_whole_slot_boundary(vm):
     assert "/usr/sbin/nologin" in useradd and str(supervisor.home) in useradd
     for path in (supervisor.data_root, supervisor.home, supervisor.workspace, supervisor.run_root):
         assert path.is_dir() and path.stat().st_mode & 0o777 == 0o700
-        assert (str(path), 61003, 61003) in vm.chowned
+        assert (_real(path), 61003, 61003) in vm.chowned
+    # The slot's root agents' state: root's, readable by the slot's group, closed to others.
+    assert supervisor.agent_root.is_dir() and supervisor.agent_root.stat().st_mode & 0o777 == 0o750
+    assert (_real(supervisor.agent_root), 0, 61003) in vm.chowned
     passwd = (supervisor.identity_directory / "passwd").read_text()
     assert "skuld:x:61003:61003::/home/skuld:/bin/bash" in passwd
     assert "root:x:0:0:root:/root:/bin/bash" in passwd
@@ -377,6 +402,7 @@ def test_down_removes_everything_and_proves_it(vm):
     assert supervisor.leftovers() == []
     assert vm.rules == [] and vm.links == set() and vm.users == {} and vm.groups == {}
     assert not supervisor.data_root.exists() and not supervisor.run_root.exists()
+    assert not supervisor.agent_root.exists()
     assert vm.ran("docker", "rm") == [["docker", "rm", "--force", "--volumes", "holder-id"]]
     # Another slot's rule whose tag merely starts the same is never touched.
     assert vm.foreign_rules and not [a for a in vm.commands if "niuu-slot-31" in a]
@@ -432,6 +458,7 @@ def test_leftovers_list_every_kind_of_slot_state(vm):
         "group niuu-slot-3",
         f"directory {supervisor.data_root}",
         f"directory {supervisor.run_root}",
+        f"directory {supervisor.agent_root}",
         "container holder-id",
         "network namespace niuu-slot-3",
         "interface niuuslot3",
@@ -455,6 +482,35 @@ def test_down_refuses_a_symlinked_slot_directory(vm, tmp_path):
     assert target.exists()
 
 
+@pytest.mark.parametrize("child", ["session", "identity"])
+def test_up_refuses_a_slot_directory_the_slot_turned_into_a_link(vm, tmp_path, child):
+    supervisor = _supervisor(vm)
+    supervisor.up()
+    target = tmp_path / "victim"
+    target.mkdir()
+    replaced = supervisor.data_root / child
+    shutil.rmtree(replaced)
+    replaced.symlink_to(target)
+
+    with pytest.raises(SlotError, match="symbolic link"):
+        supervisor.up()
+    # Nothing was owned or written through the link.
+    assert all(_real(target) != path for path, _, _ in vm.chowned)
+    assert list(target.iterdir()) == []
+
+
+def test_up_refuses_an_agent_directory_reached_through_a_link(vm, tmp_path):
+    supervisor = _supervisor(vm)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    supervisor.agent_root.parent.parent.mkdir(parents=True)
+    supervisor.agent_root.parent.symlink_to(elsewhere)
+
+    with pytest.raises(SlotError, match="symbolic link"):
+        supervisor.up()
+    assert list(elsewhere.iterdir()) == []
+
+
 def test_up_refuses_a_symlinked_slot_directory(vm, tmp_path, monkeypatch):
     supervisor = _supervisor(vm)
     target = tmp_path / "elsewhere"
@@ -471,6 +527,7 @@ def test_up_refuses_a_symlinked_slot_directory(vm, tmp_path, monkeypatch):
     [
         ({"data_root": "relative/slots/3"}, "slots/3"),
         ({"run_root": "/run/niuu/slots/4"}, "slots/3"),
+        ({"agent_root": "/etc/niuu/agents/3"}, "slots/3"),
         ({"data_root": "/var/lib/niuu/other/3"}, "slots/3"),
         ({"data_root": "/var/lib/niuu/slots/../3"}, "slots/3"),
         ({"slice": "niuu-slot-3.slice"}, "top-level"),

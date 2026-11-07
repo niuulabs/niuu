@@ -68,6 +68,37 @@ Pairing codes are short-lived scoped JWTs. Which key signs them:
 
 Any other combination fails at startup and names the fix.
 
+### Mini mode: hosts next to this machine's sessions
+
+On one machine running `niuu platform up`, set this in `~/.niuu/config.yaml`:
+
+```yaml
+hosts:
+  enabled: true
+  execution_catalog: ~/.niuu/hosts/execution-catalog
+  join_url: http://192.168.1.10:8080
+  allow_plaintext_join: true
+```
+
+This machine keeps running its own sessions. The CLI wraps the configured pod
+manager in `PlacementPodManager` as `local` and adds a `VmPodManager` on the
+registered-host pool as `pool`. It also renders the `compute:` section above with
+these defaults: pool `local-hosts`, profile `host`, `max_hosts: 16`,
+`reuse_policy: reuse`, one `direct-ssh` connector (`allowed_sources: []`),
+`reserved_cpu: 2`, `reserved_memory_mib: 4096`, `min_free_disk_mib: 20480`, and the
+pairing key file under `~/.niuu`. Each of these is a `hosts.*` key. If `compute:` is
+also set, or the mode is not mini, the CLI refuses the config.
+
+A session runs on a host only when it asks for one, with
+`workload_config.host_selector` or an `execution_profile` of the hosts catalog. Every
+other session runs on this machine. The session keeps that placement for life,
+through the execution pin. A host session that cannot be placed waits or fails, and
+never runs locally. The reverse also holds.
+
+Until Niuu ships a default host-mode execution, `hosts.execution_catalog` is required.
+It is a catalog whose execution's machine names profile `host` and whose runtime is
+the rootless host runtime.
+
 ## Where hosts join
 
 Joining sends a pairing code that leads to root on the host, so the join never
@@ -142,6 +173,22 @@ Forge reaches the host, and optionally the number of slots, then copy the comman
 ```bash
 curl -fsSL -H 'Authorization: Bearer <code>' https://forge-hosts…/api/v1/forge/compute/hosts/join.sh | sudo sh
 ```
+
+To read the script before it runs, choose **Download and read first**. The UI then
+shows the script's SHA-256, a button that downloads the same file, and these commands
+for the host. They fetch the script, check the digest, show it, and run it only once
+you have read it:
+
+```bash
+curl -fsSL -o niuu-join.sh -H 'Authorization: Bearer <code>' https://forge-hosts…/api/v1/forge/compute/hosts/join.sh
+echo '<sha256>  niuu-join.sh' | sha256sum -c -
+less niuu-join.sh
+sudo sh niuu-join.sh
+```
+
+Forge renders the script for each code, so the digest is the one for this code. The
+mint response (`POST …/pairing-codes`) carries it as `script.sha256`, with the script
+itself and these commands.
 
 The host needs systemd, cgroup v2, OpenSSH server, `sudo`, `python3`, `iproute2` and
 `curl` or `wget` (`curl` for a pinned join, see Local mode). A stock Ubuntu server has all of these. The script checks them
@@ -224,7 +271,7 @@ not an SSH destination).
 | pending | Registered; Forge has not reached it yet (tried every `pending_check_interval_seconds`) |
 | ready | Reached, audited clean, not held |
 | in_service | Held by the pool; sessions are placed in its free slots |
-| draining | Takes no new sessions; leaves service once its allocation is empty and audited |
+| draining | Takes no new sessions; leaves service once its allocation is empty and audited; **Cancel drain** returns it to service |
 | out_of_service | Nothing runs and nothing is placed; **Resume** audits it and makes it ready |
 | quarantined | A check or audit found something; offered to no one until a check is clean |
 | unreachable | Forge cannot reach it, or its key no longer matches; retried, never placed on |
@@ -243,8 +290,34 @@ Only new placement stops.
   the host is still removed from Forge. The response then says to run
   `sudo niuu-host-leave` on the host.
 
+- **Cancel drain** returns a draining host to service at once
+  (`POST …/hosts/{id}/resume`). A host set to drain and remove cannot be cancelled.
+
 `niuu-host-leave` removes Forge's key, the key link and the config. Slot users and
 their data are the audit's business.
+
+## Re-prepare
+
+A host's recipe runs once per allocation: the allocation that holds the host pins the
+execution plan, carries the preparation result and keys the checkpoint on the host.
+While an allocation holds the host, later claims only verify the recipe; they do not
+run it again.
+
+**Re-prepare** (`POST /api/v1/forge/compute/hosts/{id}/reprepare`) has the next claim
+run the execution's current recipe again. It works only on a host that runs no
+session; otherwise it answers 409 and says to drain the host first. If an idle
+allocation holds the host, Forge disposes of it the way the pool disposes of any idle
+allocation whose plan changed: the allocation is deleted, the host is audited and
+released, and its service setting is kept. The next claim pins the current plan and
+runs every recipe stage against a fresh checkpoint. Re-prepare then checks the host,
+so a finding shows at once. A host that no allocation holds has no preparation to
+discard; Re-prepare only checks it, and its next claim prepares it anyway.
+
+If Forge cannot reach the host to audit it, Re-prepare answers 409 with the reason.
+The allocation stays draining, and the pool retries the release.
+
+A host that should change recipe while it runs sessions: **Drain**, wait until it is
+out of service, **Re-prepare**, then **Resume**.
 
 ## Tags and targeting
 
@@ -296,10 +369,94 @@ is retried. Capacity is never freed on a host nobody checked.
 | `compute.hosts.join_listener.cert_file` / `key_file` | `~/.niuu/forge-host-join-{cert,key}.pem` | The listener's certificate and the key the pin comes from | Unreadable, readable by others or not matching: startup fails |
 | `compute.hosts.join_listener.key_bits` | 2048 | Size of a generated key | — |
 
+## Hosts behind NAT: the reverse SSH connector
+
+A host Forge cannot dial keeps one outbound SSH connection to the Forge instead.
+`niuu-host-connect.service` on the host runs stock OpenSSH,
+`ssh -N -R 127.0.0.1:<port>:127.0.0.1:22 niuu-connect@<endpoint>`, logging in with the
+host's own key and pinning the endpoint's key, and restarts it whenever it drops. The
+endpoint is an sshd sidecar in the Forge pod, sharing Forge's loopback, so the forwarded
+port is reachable by Forge and nothing else. Forge then reaches the host's sshd through
+it with the host's registered key pinned, as for direct SSH.
+
+1. Create the endpoint's host key once, as a Secret:
+
+   ```bash
+   ssh-keygen -t ed25519 -N '' -C forge-connect -f forge-connect
+   kubectl -n <ns> create secret generic forge-connect-host-key --from-file=ssh_host_ed25519_key=forge-connect
+   ```
+
+2. Enable it in the volundr chart. It needs exactly one Forge pod:
+
+   ```yaml
+   replicaCount: 1
+   strategy:
+     type: Recreate        # a rolling update would split the tunnels between two pods
+   hostConnect:
+     enabled: true
+     hostKeySecret:
+       name: forge-connect-host-key
+     service:
+       type: LoadBalancer  # or tcpRoute.enabled with parentRefs to a TCP Gateway listener
+   ```
+
+   The sidecar runs as root (sshd separates each connection into the unprivileged
+   `niuu-connect` user), so the namespace must admit Pod Security `baseline`.
+
+3. Add the connector:
+
+   ```yaml
+   compute:
+     hosts:
+       connectors:
+         - binding_id: reverse-ssh
+           adapter: volundr.adapters.outbound.host_connectors.ReverseSshConnector
+           kwargs:
+             endpoint: hosts-connect.valhalla.asgard.niuu.world:2222  # as hosts dial it
+             endpoint_host_key: "ssh-ed25519 AAAA…"  # forge-connect.pub, without the comment
+             port_range: "20000-20999"
+   ```
+
+Hosts joining with this connector need nothing reachable from outside. On join, a
+host gets the next free port of `port_range`; Forge's key on the host is limited to
+`from="127.0.0.1,::1"`, where Forge's sessions arrive.
+
+**What the endpoint admits.** On every connection its `AuthorizedKeysCommand` asks
+Forge, on a socket in a volume only Forge and the sidecar mount, for the key's line.
+Only the key of a registered reverse-SSH host gets one, as `niuu-connect` only:
+`restrict,port-forwarding,permitlisten="127.0.0.1:<its port>",command="/usr/sbin/nologin"`.
+The sidecar's `sshd_config` also refuses local forwarding for everyone
+(`AllowTcpForwarding remote`, `PermitOpen none`). A host can listen on its own
+loopback port and do nothing else.
+
+**Health.** Forge reads every tunnel's listener on each maintenance tick. A dropped
+tunnel makes the host unreachable at once, is logged at error and counted on
+`volundr.compute.host.disconnects`. Its sessions keep running; when the unit
+reconnects, the next check makes the host healthy again.
+
+**Removing.** Removing the host stops Forge answering for its key at once, and asks the
+sidecar to end its live connection (a failure to do so is an error, counted on
+`volundr.compute.host.revoke_failures`). `niuu-host-leave` disables the unit and
+removes it and the endpoint's pinned key; it does not stop a running tunnel, since
+Forge may run leave through it. Without the pinned key the unit does not start again.
+To end it at once on the host: `sudo systemctl stop niuu-host-connect.service`.
+
+| Knob | Default | Bounds | On a hit |
+|---|---|---|---|
+| `port_range` (connector) | required | Ports on the endpoint's loopback, one per reverse-SSH host of the Forge | The join is refused (422) naming `port_range`, counted on `volundr.compute.host.port_range_full` |
+| `server_alive_interval_seconds` (connector) | 15 | How often the host's ssh checks the endpoint is there | — |
+| `reconnect_seconds` (connector) | 5 | Wait before the unit reconnects | — |
+| `revoke_timeout_seconds` (connector) | 10 | How long removal waits for the endpoint to end a connection | Removal fails with the reason, counted on `volundr.compute.host.revoke_failures` |
+| `hostConnect.keyLookupTimeoutSeconds` (chart) | 5 | One key lookup from sshd to Forge | The connection is refused; the host retries |
+| `hostConnect.clientAliveIntervalSeconds` × `clientAliveCountMax` (chart) | 15 × 3 | How long a silent host keeps its port | The connection is dropped; the host reconnects |
+
+Startup fails if the connector is configured without the endpoint (`runtime_dir` is
+missing), and the chart refuses `hostConnect` with more than one replica, autoscaling,
+a rolling update or no host key Secret.
+
 ## Not built yet
 
-- The reverse SSH connector for hosts behind NAT (design: "Connection"). Today a
-  host must be reachable from Forge.
-- **Re-prepare.** After a recipe change, drain the host and resume it; the next claim
-  runs the new recipe.
 - macOS hosts.
+- **Sessions on a Mac.** A Mac runs the same join line and is checked and audited
+  (design: "macOS hosts"), always with one slot, but no runtime runs on macOS yet,
+  so the join refuses it: "… does not run sessions on macOS hosts".

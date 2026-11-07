@@ -219,9 +219,6 @@ class ExecutionCatalogSnapshot(_FrozenModel):
 
     default_execution: CatalogRef
     legacy_compute_profiles: dict[str, CatalogRef] = Field(default_factory=dict)
-    # The executions a launch may choose between, in the order offered. Not part
-    # of any plan: changing it never changes a pinned plan's digest.
-    launch_executions: tuple[CatalogRef, ...] = ()
     machines: tuple[MachineProfile, ...]
     host_recipes: tuple[HostRecipe, ...]
     access_configurations: tuple[AccessConfiguration, ...]
@@ -236,16 +233,6 @@ class ExecutionCatalogSnapshot(_FrozenModel):
     ) -> dict[str, CatalogRef]:
         if any(not name.strip() for name in value):
             raise ValueError("Legacy compute profile names must not be blank")
-        return value
-
-    @field_validator("launch_executions")
-    @classmethod
-    def require_unique_launch_executions(
-        cls,
-        value: tuple[CatalogRef, ...],
-    ) -> tuple[CatalogRef, ...]:
-        if len(set(value)) != len(value):
-            raise ValueError("Launch executions must be unique")
         return value
 
 

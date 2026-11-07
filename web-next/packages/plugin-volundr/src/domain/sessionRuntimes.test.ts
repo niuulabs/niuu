@@ -1,61 +1,35 @@
 import { describe, expect, it } from 'vitest';
 import {
+  offeredGrants,
   readinessLine,
   runsAsWorkloadConfig,
-  selectedGrants,
-  selectedOffer,
   type SessionRuntimeOffer,
 } from './sessionRuntimes';
 
 const container: SessionRuntimeOffer = {
   runtime: 'container',
-  executionProfile: 'vm-container@1',
-  isDefault: false,
   grants: [],
   readiness: { state: 'warm', warm: 1, remedy: null },
 };
 const host: SessionRuntimeOffer = {
   runtime: 'host',
-  executionProfile: 'vm-host@1',
-  isDefault: true,
   grants: ['sudo', 'docker'],
   readiness: { state: 'boot', warm: 0, remedy: null },
 };
 
-describe('selectedOffer', () => {
-  it('takes the selection, else the default, else the first offer', () => {
-    expect(
-      selectedOffer([container, host], { executionProfile: 'vm-container@1', grants: [] }),
-    ).toBe(container);
-    expect(selectedOffer([container, host], null)).toBe(host);
-    expect(selectedOffer([container], { executionProfile: 'gone@1', grants: [] })).toBe(container);
-    expect(selectedOffer([], null)).toBeUndefined();
-  });
-});
-
-describe('selectedGrants', () => {
-  it('keeps only grants the selected runtime offers', () => {
-    expect(
-      selectedGrants(host, { executionProfile: 'vm-host@1', grants: ['sudo', 'docker'] }),
-    ).toEqual(['sudo', 'docker']);
-    expect(
-      selectedGrants(container, { executionProfile: 'vm-container@1', grants: ['sudo'] }),
-    ).toEqual([]);
-    expect(selectedGrants(host, { executionProfile: 'vm-container@1', grants: ['sudo'] })).toEqual(
-      [],
-    );
-    expect(selectedGrants(undefined, null)).toEqual([]);
+describe('offeredGrants', () => {
+  it('keeps only grants the host runtime offers', () => {
+    expect(offeredGrants(host, ['sudo', 'docker'])).toEqual(['sudo', 'docker']);
+    expect(offeredGrants(host, ['docker'])).toEqual(['docker']);
+    expect(offeredGrants(container, ['sudo'])).toEqual([]);
+    expect(offeredGrants(undefined, ['sudo'])).toEqual([]);
   });
 });
 
 describe('runsAsWorkloadConfig', () => {
-  it('names the execution and only the grants asked for', () => {
-    expect(runsAsWorkloadConfig(undefined, [])).toEqual({});
-    expect(runsAsWorkloadConfig(container, [])).toEqual({ execution_profile: 'vm-container@1' });
-    expect(runsAsWorkloadConfig(host, ['docker'])).toEqual({
-      execution_profile: 'vm-host@1',
-      runtime_grants: ['docker'],
-    });
+  it('sends only the grants asked for, never an execution', () => {
+    expect(runsAsWorkloadConfig([])).toEqual({});
+    expect(runsAsWorkloadConfig(['docker'])).toEqual({ runtime_grants: ['docker'] });
   });
 });
 

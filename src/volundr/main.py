@@ -1076,6 +1076,7 @@ def create_app(
             compute_host_service = None
             compute_hosts_task = None
             host_join_listener = None
+            host_connect_key_servers = []
             execution_components = None
             guest_metadata_service = None
             if settings.compute is not None:
@@ -1283,6 +1284,7 @@ def create_app(
                 await compute_pool.validate_policy(await compute_pool.policy())
                 pod_manager.configure_pool(compute_pool)
                 if host_components is not None:
+                    from volundr.compute.main import build_host_connect_key_servers
                     from volundr.domain.services.compute_hosts import ComputeHostService
 
                     hosts_config = compute.hosts
@@ -1291,6 +1293,7 @@ def create_app(
                         pool_id=compute.pool_id,
                         repository=host_components.repository,
                         compute_repository=compute_repository,
+                        compute_pool=compute_pool,
                         connectors=host_components.connectors,
                         inspector=host_components.inspector,
                         executions=host_components.executions,
@@ -1319,6 +1322,9 @@ def create_app(
                             port=hosts_config.join_listener.port,
                             tls=join_endpoint.tls,
                         )
+                    host_connect_key_servers = build_host_connect_key_servers(
+                        host_components.connectors, compute_host_service.endpoint_key
+                    )
             codex_credential_broker = _create_codex_credential_broker(
                 settings,
                 credential_store=credential_store,
@@ -2473,6 +2479,8 @@ def create_app(
                 await host_join_listener.start()
             if compute_host_service is not None:
                 compute_hosts_task = asyncio.create_task(compute_host_service.run())
+            for key_server in host_connect_key_servers:
+                await key_server.start()
             try:
                 yield
             finally:
@@ -2491,6 +2499,8 @@ def create_app(
                     await asyncio.gather(compute_hosts_task, return_exceptions=True)
                 if host_join_listener is not None:
                     await host_join_listener.stop()
+                for key_server in host_connect_key_servers:
+                    await key_server.stop()
                 if bifrost_catalog_task is not None:
                     bifrost_catalog_task.cancel()
                     await asyncio.gather(bifrost_catalog_task, return_exceptions=True)

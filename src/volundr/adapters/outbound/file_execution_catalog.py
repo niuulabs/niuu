@@ -66,12 +66,15 @@ _UniqueKeyLoader.add_constructor(
 )
 
 
+#: A catalog.yaml key that once let a launch choose between executions.
+_REMOVED_LAUNCH_EXECUTIONS = "launch_executions"
+
+
 class _CatalogManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     default_execution: CatalogRef
     legacy_compute_profiles: dict[str, CatalogRef] = Field(default_factory=dict)
-    launch_executions: tuple[CatalogRef, ...] = ()
 
 
 class _RawArtifact(BaseModel):
@@ -110,7 +113,7 @@ class FileExecutionCatalog(ExecutionCatalogPort):
     def load(self) -> ExecutionCatalogSnapshot:
         if not self._root.is_dir():
             raise ExecutionCatalogError(f"Execution catalog directory does not exist: {self._root}")
-        manifest = self._read_model(self._root / "catalog.yaml", _CatalogManifest)
+        manifest = self._read_manifest(self._root / "catalog.yaml")
         machines = self._load_entries("machines", MachineProfile)
         recipes = self._load_recipes()
         access = self._load_entries("access", AccessConfiguration)
@@ -119,7 +122,6 @@ class FileExecutionCatalog(ExecutionCatalogPort):
         snapshot = ExecutionCatalogSnapshot(
             default_execution=manifest.default_execution,
             legacy_compute_profiles=manifest.legacy_compute_profiles,
-            launch_executions=manifest.launch_executions,
             machines=machines,
             host_recipes=recipes,
             access_configurations=access,
@@ -240,9 +242,6 @@ class FileExecutionCatalog(ExecutionCatalogPort):
                 raise ExecutionCatalogError(
                     f"Legacy compute profile {profile!r} references unknown execution: {reference}"
                 )
-        for reference in snapshot.launch_executions:
-            if (reference.id, reference.revision) not in executions:
-                raise ExecutionCatalogError(f"Launch execution does not exist: {reference}")
         catalogs = {
             "machine": {(entry.id, entry.revision) for entry in snapshot.machines},
             "host recipe": {(entry.id, entry.revision) for entry in snapshot.host_recipes},
@@ -275,6 +274,21 @@ class FileExecutionCatalog(ExecutionCatalogPort):
         if not isinstance(value, dict):
             raise ExecutionCatalogError(f"Execution catalog file must contain a mapping: {path}")
         return value
+
+    @classmethod
+    def _read_manifest(cls, path: Path) -> _CatalogManifest:
+        raw = cls._read_mapping(path)
+        if _REMOVED_LAUNCH_EXECUTIONS in raw:
+            raise ExecutionCatalogError(
+                f"{path} sets {_REMOVED_LAUNCH_EXECUTIONS}, which no longer exists: a VM Forge "
+                "runs exactly one runtime, the one its default_execution names, and sessions "
+                f"never choose another. Remove {_REMOVED_LAUNCH_EXECUTIONS} from catalog.yaml; "
+                "to offer a different runtime, run it as its own VM Forge."
+            )
+        try:
+            return _CatalogManifest.model_validate(raw)
+        except ValidationError as exc:
+            raise ExecutionCatalogError(f"Invalid execution catalog file {path}: {exc}") from exc
 
     @classmethod
     def _read_model(cls, path: Path, model: type[_EntryT]) -> _EntryT:

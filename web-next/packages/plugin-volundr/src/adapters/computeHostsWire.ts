@@ -90,6 +90,12 @@ export interface NewPairingCodePayload extends PairingCodePayload {
   join_url: string;
   /** The join listener's `curl --pinnedpubkey` pin; null when Forge's API serves the join. */
   pin: string | null;
+  script: {
+    filename: string;
+    sha256: string;
+    content: string;
+    commands: string[];
+  };
 }
 
 export interface ComputeHostsPayload {
@@ -181,7 +187,21 @@ export function toPairingCode(code: PairingCodePayload): PairingCode {
   };
 }
 
-export function toNewPairingCode(code: NewPairingCodePayload): NewPairingCode {
+export function toNewPairingCode(
+  code: NewPairingCodePayload | undefined,
+  source: string,
+): NewPairingCode {
+  const script = code?.script;
+  if (
+    !code ||
+    typeof code.code !== 'string' ||
+    !script ||
+    typeof script.sha256 !== 'string' ||
+    typeof script.content !== 'string' ||
+    !Array.isArray(script.commands)
+  ) {
+    throw invalidPayload('pairing code', source);
+  }
   return {
     ...toPairingCode(code),
     code: code.code,
@@ -189,6 +209,12 @@ export function toNewPairingCode(code: NewPairingCodePayload): NewPairingCode {
     commandWget: code.command_wget,
     joinUrl: code.join_url,
     pin: code.pin,
+    script: {
+      filename: script.filename,
+      sha256: script.sha256,
+      content: script.content,
+      commands: script.commands,
+    },
   };
 }
 

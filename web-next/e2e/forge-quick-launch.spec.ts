@@ -4,27 +4,23 @@ const baseConfig = JSON.parse(
   readFileSync(new URL('../apps/niuu/public/config.json', import.meta.url), 'utf8'),
 );
 const origin = 'http://forge-launch-fixture.invalid';
-// Valhalla VMs-style host: a VM Forge that offers what its sessions run as.
-const vmRuntimes = [
-  {
-    runtime: 'container',
-    execution_profile: 'vm-container@1',
-    default: true,
-    grants: [],
-    readiness: { state: 'warm', warm: 1, remedy: null },
-  },
-  {
-    runtime: 'openshell',
-    execution_profile: 'vm-openshell@1',
-    default: false,
-    grants: [],
-    readiness: { state: 'boot', warm: 0, remedy: null },
-  },
-];
+// Valhalla VMs-style host: a VM Forge says the one runtime it runs every session as.
+const vmRuntime = {
+  runtime: 'container',
+  grants: [],
+  readiness: { state: 'warm', warm: 1, remedy: null },
+};
+// A host-mode Forge: its runtime can give a session extra access.
+const hostRuntime = {
+  runtime: 'host',
+  grants: ['sudo', 'docker'],
+  readiness: { state: 'boot', warm: 0, remedy: null },
+};
 type RuntimesFixture = (instanceId: string | null) => Promise<{ status?: number; json: unknown }>;
-const vmOnBuild: RuntimesFixture = async (instanceId) => ({
-  json: { runtimes: instanceId === 'build' ? vmRuntimes : [] },
-});
+const runtimeOnBuild =
+  (offer: Record<string, unknown>): RuntimesFixture =>
+  async (instanceId) => ({ json: { runtimes: instanceId === 'build' ? [offer] : [] } });
+const vmOnBuild = runtimeOnBuild(vmRuntime);
 async function fixture(page: Page, failLaunch = false, runtimes: RuntimesFixture = vmOnBuild) {
   const mutations: Array<{ path: string; body: Record<string, unknown> }> = [];
   const hosts = [
@@ -251,35 +247,32 @@ test('quick launch stays readable and inside an iPhone viewport', async ({ page 
   await expect(page.getByRole('button', { name: 'Launch Claude', exact: true })).toBeInViewport();
 });
 
-test('a VM host offers what the session runs as, and the launch carries the choice', async ({
+test('a VM host names what its sessions run as, and the launch does not choose it', async ({
   page,
 }) => {
   const calls = await fixture(page);
   await page.goto('/volundr/catalog');
   await expect(page.getByRole('button', { name: 'Launch Claude', exact: true })).toBeEnabled();
-  // Thor runs its sessions one way: no choice.
-  await expect(page.getByRole('group', { name: 'Runs as' })).toHaveCount(0);
+  // Thor does not say what it runs: nothing is shown.
+  await expect(page.getByTestId('runs-as')).toHaveCount(0);
   await page.getByLabel('Host', { exact: true }).selectOption('build');
-  const choice = page.getByRole('group', { name: 'Runs as' });
-  await expect(choice).toBeVisible();
-  await expect(choice.getByRole('button', { name: /Container/ })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  );
+  const runsAs = page.getByTestId('runs-as');
+  await expect(runsAs).toHaveText('Runs as: Container');
+  // It is the server's runtime, so there is nothing to pick.
+  await expect(runsAs.getByRole('button')).toHaveCount(0);
   await expect(page.getByTestId('runs-as-readiness')).toHaveText(
     'Free slot ready, starts in seconds',
   );
-  await page.screenshot({ path: '/tmp/forge-quick-launch-runs-as.png', fullPage: true });
-  await choice.getByRole('button', { name: /OpenShell/ }).click();
-  await expect(page.getByTestId('runs-as-readiness')).toContainText('a VM boots first');
-  // Nothing on the fixture offers extra access, so none is shown.
+  // This fixture offers no extra access.
   await expect(page.getByText(/extra access/)).toHaveCount(0);
+  await page.screenshot({ path: '/tmp/forge-quick-launch-runs-as.png', fullPage: true });
   await page.getByRole('button', { name: 'Launch Claude', exact: true }).click();
   await expect.poll(() => calls.length).toBe(1);
   expect(calls[0]!.body).toMatchObject({
     instance_id: 'build',
-    workload_config: { reasoningEffort: 'xhigh', execution_profile: 'vm-openshell@1' },
+    workload_config: { reasoningEffort: 'xhigh' },
   });
+  expect(calls[0]!.body.workload_config).not.toHaveProperty('execution_profile');
   expect(calls[0]!.body.workload_config).not.toHaveProperty('runtime_grants');
 });
 
@@ -305,19 +298,23 @@ test('a host that cannot say what it runs as blocks the launch with the reason',
   await expect(page.getByRole('button', { name: 'Launch Claude', exact: true })).toBeDisabled();
 });
 
-test('the runtime choice works from the keyboard', async ({ page }) => {
-  const calls = await fixture(page);
+test('extra access is offered by the host runtime and works from the keyboard', async ({
+  page,
+}) => {
+  const calls = await fixture(page, false, runtimeOnBuild(hostRuntime));
   await page.goto('/volundr/catalog');
   await page.getByLabel('Host', { exact: true }).selectOption('build');
-  const openshell = page.getByRole('button', { name: /OpenShell/ });
-  await page.getByRole('button', { name: /Container/ }).focus();
-  await page.keyboard.press('Tab');
-  await expect(openshell).toBeFocused();
+  await expect(page.getByTestId('runs-as')).toContainText('Runs as: On the VM');
+  await expect(page.getByText('Either one gives this session a VM to itself.')).toBeVisible();
+  const sudo = page.getByRole('checkbox', { name: 'sudo' });
+  await sudo.focus();
   await page.keyboard.press('Space');
-  await expect(openshell).toHaveAttribute('aria-pressed', 'true');
+  await expect(sudo).toBeChecked();
   await page.getByRole('button', { name: 'Launch Claude', exact: true }).click();
   await expect.poll(() => calls.length).toBe(1);
   expect(calls[0]!.body).toMatchObject({
-    workload_config: { execution_profile: 'vm-openshell@1' },
+    instance_id: 'build',
+    workload_config: { reasoningEffort: 'xhigh', runtime_grants: ['sudo'] },
   });
+  expect(calls[0]!.body.workload_config).not.toHaveProperty('execution_profile');
 });

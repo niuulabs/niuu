@@ -132,7 +132,9 @@ class GuestAgent:
         await self._client.aclose()
 
     async def fetch(self) -> Fetched:
-        body = json.dumps({"allocation_id": self._config.allocation_id}).encode()
+        body = json.dumps(
+            {"allocation_id": self._config.allocation_id, "slot": self._config.slot}
+        ).encode()
         headers = await self._signer.headers(method="POST", path=self._path, body=body)
         headers["Content-Type"] = "application/json"
         try:

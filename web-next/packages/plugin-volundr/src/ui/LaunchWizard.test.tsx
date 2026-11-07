@@ -318,43 +318,34 @@ describe('LaunchWizard', () => {
     expect(screen.getAllByTestId('boot-step').length).toBe(8);
   });
 
-  it('launches with the runtime chosen on a host that offers a choice', async () => {
+  it('names the host runtime and launches without choosing one', async () => {
     const service = createMockVolundrService();
     service.getSessionRuntimes = vi.fn(async () => [
       {
-        runtime: 'container' as const,
-        executionProfile: 'vm-container@1',
-        isDefault: true,
-        grants: [],
-        readiness: { state: 'warm' as const, warm: 2, remedy: null },
-      },
-      {
         runtime: 'openshell' as const,
-        executionProfile: 'vm-openshell@1',
-        isDefault: false,
-        grants: [],
-        readiness: { state: 'boot' as const, warm: 0, remedy: null },
+        grants: ['sudo' as const],
+        readiness: { state: 'warm' as const, warm: 2, remedy: null },
       },
     ]);
     const startSession = vi.spyOn(service, 'startSession');
     wrap(true, vi.fn(), service);
     await advanceToRuntime();
-    expect(await screen.findByRole('group', { name: 'Runs as' })).toBeInTheDocument();
+    expect(await screen.findByTestId('runs-as')).toHaveTextContent('Runs as: OpenShell');
     expect(service.getSessionRuntimes).toHaveBeenCalledWith('mock-volundr-default');
     expect(screen.getByTestId('runs-as-readiness')).toHaveTextContent('2 free slots ready');
-    fireEvent.click(screen.getByRole('button', { name: /OpenShell/ }));
+    expect(screen.queryByRole('button', { name: /OpenShell/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'sudo' }));
     fireEvent.click(screen.getByTestId('wizard-next'));
     await screen.findByTestId('step-confirm-content');
     expect(screen.getByText('OpenShell')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('wizard-next'));
-    await waitFor(() =>
-      expect(startSession).toHaveBeenCalledWith(
-        expect.objectContaining({
-          instanceId: 'mock-volundr-default',
-          workloadConfig: { execution_profile: 'vm-openshell@1' },
-        }),
-      ),
-    );
+    await waitFor(() => expect(startSession).toHaveBeenCalledOnce());
+    const request = startSession.mock.calls[0]?.[0];
+    expect(request).toMatchObject({
+      instanceId: 'mock-volundr-default',
+      workloadConfig: { runtime_grants: ['sudo'] },
+    });
+    expect(request?.workloadConfig).not.toHaveProperty('execution_profile');
   });
 
   it('holds the launch while the host cannot say how it runs sessions', async () => {

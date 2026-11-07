@@ -33,6 +33,12 @@ function newCode(overrides: Partial<NewPairingCode> = {}): NewPairingCode {
     commandWget: "wget --header='Authorization: Bearer jwt-code-0123456789-abcdefghij' x | sudo sh",
     joinUrl: 'https://forge.example',
     pin: null,
+    script: {
+      filename: 'niuu-join.sh',
+      sha256: '0'.repeat(64),
+      content: '#!/bin/sh\n',
+      commands: ['sudo sh niuu-join.sh'],
+    },
     ...overrides,
   };
 }

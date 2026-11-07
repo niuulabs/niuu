@@ -1,4 +1,4 @@
-"""How a host offers to run a session: the runtimes a launch may choose between."""
+"""What a host runs sessions as: the one runtime of a VM Forge, with its readiness."""
 
 from __future__ import annotations
 
@@ -57,13 +57,9 @@ class RuntimeReadiness:
 
 @dataclass(frozen=True)
 class SessionRuntimeOffer:
-    """One runtime a launch on this host may choose."""
+    """The runtime this host runs every session as. A host has exactly one."""
 
     runtime: SessionRuntimeKind
-    # The exact execution (id@revision) the choice selects; sent back as
-    # workload_config.execution_profile.
-    execution_profile: str
-    default: bool
     grants: tuple[SessionGrant, ...]
     readiness: RuntimeReadiness
 

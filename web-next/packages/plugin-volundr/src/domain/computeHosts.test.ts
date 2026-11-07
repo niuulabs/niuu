@@ -268,20 +268,40 @@ describe('row actions', () => {
     expect(hostActions(hrimfaxi)).toEqual(['check', 'drain', 'drain_remove']);
   });
 
-  it('lets a draining host be upgraded to a removal, once', () => {
-    expect(hostActions({ ...arvak, removeWhenEmpty: false })).toEqual(['check', 'drain_remove']);
+  it('offers re-prepare on an empty in-service host', () => {
+    expect(hostActions({ ...hrimfaxi, sessions: [] })).toEqual([
+      'check',
+      'reprepare',
+      'drain',
+      'drain_remove',
+    ]);
+  });
+
+  it('lets a draining host be cancelled or upgraded to a removal, once', () => {
+    expect(hostActions({ ...arvak, removeWhenEmpty: false })).toEqual([
+      'check',
+      'cancel_drain',
+      'drain_remove',
+    ]);
     expect(hostActions(arvak)).toEqual(['check']);
   });
 
   it('offers remove only on an empty host', () => {
     expect(hostActions(alsvin)).toEqual(['check', 'drain', 'drain_remove']);
-    expect(hostActions({ ...alsvin, sessions: [] })).toEqual(['check', 'drain', 'remove']);
+    expect(hostActions({ ...alsvin, sessions: [] })).toEqual([
+      'check',
+      'reprepare',
+      'drain',
+      'remove',
+    ]);
     expect(hostActions(ljosi)).toEqual(['check', 'drain', 'drain_remove']);
+    expect(hostActions({ ...ljosi, sessions: [] })).toEqual(['check', 'drain', 'remove']);
   });
 
   it('offers resume on an out-of-service host', () => {
     expect(hostActions({ ...skinfaxi, state: 'out_of_service', sessions: [] })).toEqual([
       'check',
+      'reprepare',
       'resume',
       'remove',
     ]);
@@ -290,9 +310,10 @@ describe('row actions', () => {
   it('opens a joining host and a ready one that waits for its capacity', () => {
     expect(hostActions(glad)).toEqual(['open', 'remove']);
     const waiting = { ...glad, state: 'ready' as const, health: 'healthy' as const };
-    expect(hostActions(waiting)).toEqual(['open', 'check', 'drain', 'remove']);
+    expect(hostActions(waiting)).toEqual(['open', 'check', 'reprepare', 'drain', 'remove']);
     expect(hostActions({ ...skinfaxi, state: 'ready', sessions: [] })).toEqual([
       'check',
+      'reprepare',
       'drain',
       'remove',
     ]);

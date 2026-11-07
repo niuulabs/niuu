@@ -1,66 +1,45 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { RunsAsChoice, RunsAsReadiness } from './RunsAsChoice';
+import { RunsAs, RunsAsReadiness } from './RunsAs';
 import type { SessionRuntimeOffer } from '../domain/sessionRuntimes';
 
 const container: SessionRuntimeOffer = {
   runtime: 'container',
-  executionProfile: 'vm-container@1',
-  isDefault: true,
   grants: [],
   readiness: { state: 'warm', warm: 1, remedy: null },
 };
 const host: SessionRuntimeOffer = {
   runtime: 'host',
-  executionProfile: 'vm-host@1',
-  isDefault: false,
   grants: ['sudo', 'docker'],
   readiness: { state: 'full', warm: 0, remedy: 'raise max machines' },
 };
 
-function renderChoice(offer: SessionRuntimeOffer, grants: SessionRuntimeOffer['grants'] = []) {
-  const onSelect = vi.fn();
+function renderRunsAs(offer: SessionRuntimeOffer, grants: SessionRuntimeOffer['grants'] = []) {
   const onGrantsChange = vi.fn();
-  render(
-    <RunsAsChoice
-      offers={[container, host]}
-      offer={offer}
-      grants={grants}
-      onSelect={onSelect}
-      onGrantsChange={onGrantsChange}
-    />,
-  );
-  return { onSelect, onGrantsChange };
+  render(<RunsAs offer={offer} grants={grants} onGrantsChange={onGrantsChange} />);
+  return { onGrantsChange };
 }
 
-describe('RunsAsChoice', () => {
-  it('renders nothing for a host without a choice', () => {
+describe('RunsAs', () => {
+  it('renders nothing for a host that declares no runtime', () => {
     const { container: root } = render(
-      <RunsAsChoice
-        offers={[]}
-        offer={undefined}
-        grants={[]}
-        onSelect={vi.fn()}
-        onGrantsChange={vi.fn()}
-      />,
+      <RunsAs offer={undefined} grants={[]} onGrantsChange={vi.fn()} />,
     );
     expect(root).toBeEmptyDOMElement();
   });
 
-  it('shows each offered runtime as a card and selects one', () => {
-    const { onSelect } = renderChoice(container);
-    expect(screen.getByRole('group', { name: 'Runs as' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Container.*Own image, own root/ })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+  it('names the host runtime as a read-only line with no choice and no grants', () => {
+    renderRunsAs(container);
+    expect(screen.getByTestId('runs-as')).toHaveTextContent('Runs as: Container');
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
     expect(screen.queryByText(/extra access/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /On the VM/ }));
-    expect(onSelect).toHaveBeenCalledWith(host);
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
   });
 
-  it('offers the chosen runtime grants with the machine-to-itself warning', () => {
-    const { onGrantsChange } = renderChoice(host, ['docker']);
+  it('offers the runtime grants with the machine-to-itself warning', () => {
+    const { onGrantsChange } = renderRunsAs(host, ['docker']);
+    expect(screen.getByTestId('runs-as')).toHaveTextContent('Runs as: On the VM');
     expect(screen.getByRole('group', { name: 'On the VM: extra access' })).toBeInTheDocument();
     expect(screen.getByText('Either one gives this session a VM to itself.')).toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: 'Docker' })).toBeChecked();
@@ -72,7 +51,7 @@ describe('RunsAsChoice', () => {
 });
 
 describe('RunsAsReadiness', () => {
-  it('says how soon the chosen runtime starts', () => {
+  it('says how soon a session starts', () => {
     const { rerender } = render(<RunsAsReadiness offer={container} />);
     expect(screen.getByRole('status')).toHaveTextContent('Free slot ready, starts in seconds');
     rerender(<RunsAsReadiness offer={host} />);

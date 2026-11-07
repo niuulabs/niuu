@@ -1,4 +1,4 @@
-"""A VM Forge offers the runtimes its catalog lists for launch, with warm readiness."""
+"""A VM Forge runs one runtime, offers it read-only, and reports warm readiness."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,18 +50,11 @@ class KindRuntime(RecordingPlanRuntime):
         return self._grants
 
 
-def _catalog(tmp_path: Path, launch: list[str] | None) -> ExecutionPlanResolver:
+def _catalog(tmp_path: Path) -> ExecutionPlanResolver:
     """The lifecycle catalog plus a second execution on the same host, ``vm-b``."""
     resolver = _resolver(tmp_path)
     execution = yaml.safe_load((tmp_path / "executions" / "vm.yaml").read_text(encoding="utf-8"))
     _yaml(tmp_path / "executions" / "vm-b.yaml", {**execution, "id": "vm-b"})
-    catalog_path = tmp_path / "catalog.yaml"
-    catalog = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
-    if launch is not None:
-        catalog["launch_executions"] = [
-            {"id": entry, "revision": execution["revision"]} for entry in launch
-        ]
-    _yaml(catalog_path, catalog)
     return resolver
 
 
@@ -99,6 +92,28 @@ def _manager(resolver: ExecutionPlanResolver, runtimes: dict[str, VmRuntime], *,
     return manager, leases, repository, provider, plans
 
 
+def _legacy_manager(runtime: VmRuntime) -> VmPodManager:
+    """A Forge without an execution catalog, running ``compute.runtime``."""
+    repository = Repository()
+    leases = ComputeLeaseService(
+        repository,
+        ReadyProvider(),
+        pool_id="pool",
+        max_machines=2,
+        bootstrap=MachineBootstrap(),
+        bootstrap_store=MemoryCredentialStore(),
+        provider_binding="provider",
+        provider_fingerprint="provider-config-v1",
+    )
+    manager = VmPodManager(
+        profile="small", pool_id="pool", max_machines=2, poll_interval_seconds=0.001
+    )
+    manager.configure_compute(
+        leases, repository, runtime, MachineBootstrap(), pool_id="pool", max_machines=2
+    )
+    return manager
+
+
 def _session(manager: VmPodManager, plan, **config) -> Session:
     return Session(
         id=uuid4(),
@@ -109,48 +124,58 @@ def _session(manager: VmPodManager, plan, **config) -> Session:
     )
 
 
-async def test_a_catalog_without_launch_executions_offers_no_choice(tmp_path: Path):
-    resolver = _catalog(tmp_path, None)
+async def test_the_default_executions_runtime_is_the_one_offer(tmp_path: Path):
+    resolver = _catalog(tmp_path)
     manager, *_ = _manager(
         resolver,
         {
-            "vm": KindRuntime("vm", SessionRuntimeKind.CONTAINER),
-            "vm-b": KindRuntime("vm-b", None),
-        },
-    )
-
-    assert await manager.session_runtimes() == ()
-
-
-async def test_a_pod_manager_without_a_catalog_offers_no_choice():
-    manager = VmPodManager(profile="small", pool_id="pool", max_machines=1)
-
-    assert await manager.session_runtimes() == ()
-
-
-async def test_offers_follow_the_catalog_order_and_mark_the_default(tmp_path: Path):
-    resolver = _catalog(tmp_path, ["vm-b", "vm"])
-    manager, *_ = _manager(
-        resolver,
-        {
-            "vm": KindRuntime("vm", SessionRuntimeKind.CONTAINER),
+            "vm": KindRuntime("vm", SessionRuntimeKind.CONTAINER, [SessionGrant.DOCKER]),
             "vm-b": KindRuntime("vm-b", SessionRuntimeKind.OPENSHELL, [SessionGrant.SUDO]),
         },
     )
 
-    offers = await manager.session_runtimes()
+    [offer] = await manager.session_runtimes()
 
-    assert [(o.runtime, o.execution_profile, o.default) for o in offers] == [
-        (SessionRuntimeKind.OPENSHELL, "vm-b@2026-09-18", False),
-        (SessionRuntimeKind.CONTAINER, "vm@2026-09-18", True),
-    ]
-    assert offers[0].grants == (SessionGrant.SUDO,)
-    assert offers[1].grants == ()
-    assert {o.readiness.state for o in offers} == {ReadinessState.BOOT}
+    assert offer.runtime is SessionRuntimeKind.CONTAINER
+    assert offer.grants == (SessionGrant.DOCKER,)
+    assert offer.readiness.state is ReadinessState.BOOT
 
 
-async def test_a_free_prepared_machine_makes_each_runtime_on_its_host_warm(tmp_path: Path):
-    resolver = _catalog(tmp_path, ["vm", "vm-b"])
+async def test_a_default_runtime_that_declares_no_kind_offers_nothing(tmp_path: Path):
+    resolver = _catalog(tmp_path)
+    manager, *_ = _manager(
+        resolver,
+        {"vm": KindRuntime("vm", None), "vm-b": KindRuntime("vm-b", SessionRuntimeKind.OPENSHELL)},
+    )
+
+    assert await manager.session_runtimes() == ()
+
+
+async def test_a_forge_without_a_catalog_offers_its_configured_runtime():
+    manager = _legacy_manager(KindRuntime("legacy", SessionRuntimeKind.HOST, [SessionGrant.SUDO]))
+
+    [offer] = await manager.session_runtimes()
+
+    assert offer.runtime is SessionRuntimeKind.HOST
+    assert offer.grants == (SessionGrant.SUDO,)
+    assert offer.readiness.state is ReadinessState.BOOT
+
+
+async def test_a_forge_without_a_catalog_whose_runtime_declares_no_kind_offers_nothing():
+    manager = _legacy_manager(KindRuntime("legacy", None))
+
+    assert await manager.session_runtimes() == ()
+
+
+async def test_an_uncomposed_pod_manager_refuses_to_say_what_it_runs():
+    manager = VmPodManager(profile="small", pool_id="pool", max_machines=1)
+
+    with pytest.raises(RuntimeError, match="VM runtime is not composed"):
+        await manager.session_runtimes()
+
+
+async def test_a_free_prepared_machine_makes_the_default_runtime_warm(tmp_path: Path):
+    resolver = _catalog(tmp_path)
     manager, leases, repository, provider, plans = _manager(
         resolver,
         {
@@ -177,12 +202,9 @@ async def test_a_free_prepared_machine_makes_each_runtime_on_its_host_warm(tmp_p
     await pool.maintain()
     await pool.maintain()
 
-    offers = await manager.session_runtimes()
+    [offer] = await manager.session_runtimes()
 
-    assert [(o.readiness.state, o.readiness.warm) for o in offers] == [
-        (ReadinessState.WARM, 1),
-        (ReadinessState.WARM, 1),
-    ]
+    assert (offer.readiness.state, offer.readiness.warm) == (ReadinessState.WARM, 1)
 
     # A session takes the spare's only slot: it is in service, not warm.
     plan = plans["vm"]
@@ -190,16 +212,13 @@ async def test_a_free_prepared_machine_makes_each_runtime_on_its_host_warm(tmp_p
     await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
     assert len(repository.leases) == 1
 
-    offers = await manager.session_runtimes()
+    [offer] = await manager.session_runtimes()
 
-    assert [(o.readiness.state, o.readiness.warm) for o in offers] == [
-        (ReadinessState.BOOT, 0),
-        (ReadinessState.BOOT, 0),
-    ]
+    assert (offer.readiness.state, offer.readiness.warm) == (ReadinessState.BOOT, 0)
 
 
 async def test_a_full_pool_names_where_capacity_is_raised(tmp_path: Path):
-    resolver = _catalog(tmp_path, ["vm"])
+    resolver = _catalog(tmp_path)
     manager, _, _, _, plans = _manager(
         resolver,
         {
@@ -219,32 +238,8 @@ async def test_a_full_pool_names_where_capacity_is_raised(tmp_path: Path):
     assert "pool capacity" in offer.readiness.remedy
 
 
-async def test_an_offered_execution_whose_runtime_has_no_kind_fails_composition(tmp_path: Path):
-    resolver = _catalog(tmp_path, ["vm", "vm-b"])
-    with pytest.raises(ValueError, match="cannot be offered as a launch choice"):
-        _manager(
-            resolver,
-            {
-                "vm": KindRuntime("vm", SessionRuntimeKind.CONTAINER),
-                "vm-b": KindRuntime("vm-b", None),
-            },
-        )
-
-
-async def test_two_offered_executions_of_one_kind_fail_composition(tmp_path: Path):
-    resolver = _catalog(tmp_path, ["vm", "vm-b"])
-    with pytest.raises(ValueError, match="one execution per runtime"):
-        _manager(
-            resolver,
-            {
-                "vm": KindRuntime("vm", SessionRuntimeKind.CONTAINER),
-                "vm-b": KindRuntime("vm-b", SessionRuntimeKind.CONTAINER),
-            },
-        )
-
-
 async def test_grants_the_selected_runtime_does_not_offer_are_refused(tmp_path: Path):
-    resolver = _catalog(tmp_path, ["vm", "vm-b"])
+    resolver = _catalog(tmp_path)
     manager, _, _, _, plans = _manager(
         resolver,
         {
@@ -266,7 +261,7 @@ async def test_grants_the_selected_runtime_does_not_offer_are_refused(tmp_path: 
 
 
 async def test_malformed_grants_are_a_selection_error(tmp_path: Path):
-    resolver = _catalog(tmp_path, None)
+    resolver = _catalog(tmp_path)
     manager, _, _, _, plans = _manager(
         resolver,
         {"vm": KindRuntime("vm", None), "vm-b": KindRuntime("vm-b", None)},
@@ -279,7 +274,7 @@ async def test_malformed_grants_are_a_selection_error(tmp_path: Path):
 
 
 async def test_grants_on_a_legacy_allocation_are_refused(tmp_path: Path):
-    resolver = _catalog(tmp_path, None)
+    resolver = _catalog(tmp_path)
     manager, leases, _, _, _ = _manager(
         resolver,
         {"vm": KindRuntime("vm", None), "vm-b": KindRuntime("vm-b", None)},
@@ -308,14 +303,15 @@ def test_requested_grants_reads_absent_as_none():
     assert requested_grants({"runtime_grants": ["docker"]}) == {SessionGrant.DOCKER}
 
 
-def test_unknown_or_repeated_launch_executions_are_rejected(tmp_path: Path):
-    _catalog(tmp_path, ["missing"])
-    with pytest.raises(ExecutionCatalogError, match="Launch execution does not exist"):
-        FileExecutionCatalog(tmp_path).load()
+def test_a_catalog_that_still_lists_launch_executions_must_drop_them(tmp_path: Path):
+    _catalog(tmp_path)
+    catalog_path = tmp_path / "catalog.yaml"
+    catalog = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
+    catalog["launch_executions"] = [{"id": "vm", "revision": "2026-09-18"}]
+    _yaml(catalog_path, catalog)
 
-    _catalog(tmp_path / "again", ["vm", "vm"])
-    with pytest.raises(ValueError, match="Launch executions must be unique"):
-        FileExecutionCatalog(tmp_path / "again").load()
+    with pytest.raises(ExecutionCatalogError, match="Remove launch_executions from catalog.yaml"):
+        FileExecutionCatalog(tmp_path).load()
 
 
 def test_vm_runtime_adapters_declare_what_sessions_run_in():
@@ -347,7 +343,7 @@ class TaggedProvider(ReadyProvider):
 
 
 def _tagged_manager(tmp_path: Path, tag_sets):
-    resolver = _catalog(tmp_path, None)
+    resolver = _catalog(tmp_path)
     manager, _, _, _, plans = _manager(
         resolver, {"vm": KindRuntime("vm", None), "vm-b": KindRuntime("vm-b", None)}
     )
@@ -399,7 +395,7 @@ async def test_a_selector_against_a_pool_with_no_machines_says_none_are_offered(
 
 
 async def test_a_selector_without_a_pool_is_refused(tmp_path: Path):
-    resolver = _catalog(tmp_path, None)
+    resolver = _catalog(tmp_path)
     manager, _, _, _, plans = _manager(
         resolver, {"vm": KindRuntime("vm", None), "vm-b": KindRuntime("vm-b", None)}
     )

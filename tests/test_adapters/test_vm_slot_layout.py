@@ -99,7 +99,8 @@ def test_a_slot_past_a_real_bound_is_refused_with_the_knob(slot, config, message
         ("/etc/niuu/session-launch.json", "/var/lib/niuu/slots/3/etc/session-launch.json"),
         ("/etc/niuu/session-secrets/0", "/var/lib/niuu/slots/3/etc/session-secrets/0"),
         ("/etc/niuu/forge-session", "/var/lib/niuu/slots/3/etc/forge-session"),
-        (AGENT_CONFIG_DIRECTORY, "/var/lib/niuu/slots/3/etc/guest-agent"),
+        # Root's, never the slot's: the agent's configuration names the slot it serves.
+        (AGENT_CONFIG_DIRECTORY, "/etc/niuu/slots/3/guest-agent"),
         ("/run/niuu/session/tokens/sa", "/run/niuu/slots/3/tokens/sa"),
         # The VM's own files, shared by every slot, and look-alikes stay put.
         ("/etc/niuu/forge-session-other", "/etc/niuu/forge-session-other"),
@@ -111,6 +112,25 @@ def test_a_slot_past_a_real_bound_is_refused_with_the_knob(slot, config, message
 )
 def test_session_guest_paths_move_into_the_slot(path, placed):
     assert _layout(3).relocate(path) == placed
+
+
+def test_a_sidecars_group_becomes_the_slots_so_the_session_can_read_what_it_writes():
+    layout = _layout(2)
+    payload = {
+        "environment": {},
+        "init_containers": [{"name": "openbao", "user": "100:1000", "mounts": []}],
+        "sidecars": [
+            {"name": "agent", "user": "0", "mounts": []},
+            {"name": "plain", "mounts": []},
+        ],
+    }
+
+    placed = layout.launch(payload, platform_port=18080)
+
+    # OpenBao renders 0640 for its group; gid 1000 is the VM's login account.
+    assert placed["init_containers"][0]["user"] == "100:61002"
+    assert [c.get("user") for c in placed["sidecars"]] == ["0", None]
+    assert payload["init_containers"][0]["user"] == "100:1000"
 
 
 def test_launch_moves_guest_sources_but_not_container_paths():
@@ -149,7 +169,7 @@ def test_launch_moves_guest_sources_but_not_container_paths():
     assert placed["volume_mounts"][0]["target"] == "/var/run/niuu/forge-session"
     agent = placed["init_containers"][0]["mounts"][0]
     assert agent == {
-        "source": "/var/lib/niuu/slots/1/etc/guest-agent",
+        "source": "/etc/niuu/slots/1/guest-agent",
         "target": AGENT_CONFIG_DIRECTORY,
     }
     # The delivery's plan keeps the session's paths; the runtime's file writes move them.
@@ -185,6 +205,7 @@ def test_supervisor_and_stop_specs_name_the_same_slot():
     assert spec["platform_forward_port"] == 18102 and spec["platform_port"] == 18080
     assert spec["limits"] == {"cpu": None, "memory_mib": 4096, "pids": 1024}
     assert spec["image"] == "skuld@sha256:x" and spec["image_user"] == "skuld"
+    assert spec["agent_root"] == "/etc/niuu/slots/2"
     assert layout.stop_spec() == {
         "data_root": "/var/lib/niuu/slots/2/session",
         "marker": f"{ALLOCATION}-slot-2",

@@ -21,6 +21,7 @@ from volundr.domain.compute_hosts import (
     HostInspector,
     HostJoinSetup,
     HostPairingCode,
+    HostPlatform,
     RegisteredHost,
     RegisteredHostRepository,
     SshDial,
@@ -64,7 +65,7 @@ def make_host(**changes) -> RegisteredHost:
         "host_public_key": HOST_KEY,
         "slots": 4,
         # (32 − 4 reserved) ÷ 4 CPUs and (131072 − 8192) ÷ 16384 MiB: 7 slots fit.
-        "facts": {"cpus": 32, "memory_mib": 131072},
+        "facts": {"platform": "linux", "cpus": 32, "memory_mib": 131072},
         "health": HostHealth.HEALTHY,
         "registered_by": "admin",
     }
@@ -83,6 +84,7 @@ def make_execution(**changes) -> HostExecution:
         "slot_limits": SlotLimits(uid_base=61000, cpu=4, memory_mib=16384, pids=4096),
         "forge_public_key": "ssh-ed25519 FORGEKEY forge",
         "ssh_user": "root",
+        "platforms": frozenset({HostPlatform.LINUX}),
     }
     values.update(changes)
     return HostExecution(**values)
@@ -135,6 +137,12 @@ class HostRepository(RegisteredHostRepository):
 
     async def get(self, host_id):
         return self.hosts.get(host_id)
+
+    async def with_public_key(self, public_key):
+        return next((h for h in self.hosts.values() if h.host_public_key == public_key), None)
+
+    async def connection_values(self, field):
+        return [h.connection[field] for h in self.hosts.values() if field in h.connection]
 
     async def held_by(self, allocation_id):
         return next((h for h in self.hosts.values() if h.allocation_id == allocation_id), None)
@@ -204,8 +212,9 @@ class HostRepository(RegisteredHostRepository):
 
 
 class Connector(HostConnector):
-    def __init__(self, *, connected: bool = True):
+    def __init__(self, *, connected: bool = True, platforms=None):
         self.connected = connected
+        self._platforms = platforms
         self.revoked: list[UUID] = []
         self.admitted: list[dict] = []
         self.closed = False
@@ -220,6 +229,10 @@ class Connector(HostConnector):
 
     def join_setup(self, host):
         return HostJoinSetup(kind="fake", authorized_key_options="restrict,port-forwarding")
+
+    @property
+    def platforms(self):
+        return super().platforms if self._platforms is None else self._platforms
 
     async def admit(self, host, offered):
         if not offered.get("address"):
@@ -242,7 +255,9 @@ class Connector(HostConnector):
 
 class Inspector(HostInspector):
     def __init__(self, *, facts=None, findings=(), error: Exception | None = None):
-        self.facts_result = facts if facts is not None else {"cpus": 32, "memory_mib": 131072}
+        self.facts_result = (
+            facts if facts is not None else {"platform": "linux", "cpus": 32, "memory_mib": 131072}
+        )
         self.findings = tuple(findings)
         self.error = error
         self.leave_error: Exception | None = None
@@ -310,3 +325,24 @@ class SlotLedger:
 
     async def slots(self, allocation_id):
         return list(self.bindings.get(allocation_id, []))
+
+
+class HostPool:
+    """Only the ``dispose`` the host service needs of the compute pool.
+
+    Disposing of an idle allocation ends its hold, as the registered-host provider's clean
+    does; ``error`` makes it fail as the pool would.
+    """
+
+    def __init__(self, repository=None):
+        self.repository = repository
+        self.disposed: list = []
+        self.error: Exception | None = None
+
+    async def dispose(self, allocation_id):
+        self.disposed.append(allocation_id)
+        if self.error is not None:
+            raise self.error
+        held = await self.repository.held_by(allocation_id)
+        if held is not None:
+            await self.repository.release(allocation_id, held)

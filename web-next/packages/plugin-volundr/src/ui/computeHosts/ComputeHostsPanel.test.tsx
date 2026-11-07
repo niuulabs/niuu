@@ -49,10 +49,12 @@ describe('ComputeHostsPanel', () => {
     setup();
     expect(await row('hrimfaxi')).toBeInTheDocument();
     expect(
-      screen.getByText('3 in service · 1 draining · 1 joining · 2 need attention'),
+      screen.getByText(
+        '3 in service · 1 draining · 1 joining · 1 out of service · 2 need attention',
+      ),
     ).toBeInTheDocument();
-    expect(screen.getByText('of 44')).toBeInTheDocument();
-    expect(screen.getAllByTestId(/^host-row-/)).toHaveLength(7);
+    expect(screen.getByText('of 52')).toBeInTheDocument();
+    expect(screen.getAllByTestId(/^host-row-/)).toHaveLength(8);
     expect(screen.getByText('in use')).toBeInTheDocument();
   });
 
@@ -203,6 +205,28 @@ describe('ComputeHostsPanel', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Resume skinfaxi' }));
       await waitFor(() => expect(spies.resumeComputeHost).toHaveBeenCalledWith('forge', out.id));
       expect(await within(await row('skinfaxi')).findByText('Ready')).toBeInTheDocument();
+    });
+
+    it('cancels a drain', async () => {
+      const draining: ComputeHost = { ...skinfaxi, state: 'draining', service: 'draining' };
+      const { spies } = setup({ hosts: [draining] });
+      await row('skinfaxi');
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel drain skinfaxi' }));
+      await waitFor(() =>
+        expect(spies.resumeComputeHost).toHaveBeenCalledWith('forge', draining.id),
+      );
+      expect(await within(await row('skinfaxi')).findByText('In service')).toBeInTheDocument();
+    });
+
+    it('re-prepares an empty host', async () => {
+      const idle: ComputeHost = { ...hrimfaxi, sessions: [] };
+      const { spies } = setup({ hosts: [idle] });
+      await row('hrimfaxi');
+      fireEvent.click(screen.getByRole('button', { name: 'Re-prepare hrimfaxi' }));
+      await waitFor(() =>
+        expect(spies.reprepareComputeHost).toHaveBeenCalledWith('forge', idle.id),
+      );
+      expect(await within(await row('hrimfaxi')).findByText('Ready')).toBeInTheDocument();
     });
 
     it('shows why an action failed and re-enables the row', async () => {

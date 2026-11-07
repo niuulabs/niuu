@@ -646,7 +646,17 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
             }
         ),
     }
-    if settings.compute is not None:
+    if settings.hosts.enabled:
+        # This machine keeps its own sessions; the placement pod manager adds the
+        # registered-hosts pool next to them.
+        env.pop("POD_MANAGER__ADAPTER")
+        env["POD_MANAGER"] = json.dumps(
+            settings.hosts.pod_manager(settings.pod_manager.adapter, kwargs)
+        )
+        env["COMPUTE"] = json.dumps(
+            settings.hosts.compute().model_dump(mode="json", exclude_none=True)
+        )
+    elif settings.compute is not None:
         env.pop("POD_MANAGER__ADAPTER")
         env["POD_MANAGER"] = json.dumps(
             {

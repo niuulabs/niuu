@@ -55,12 +55,14 @@ async def test_concurrent_flushes_do_not_delete_each_others_unsent_batches(tmp_p
     client = AsyncMock()
     client.post.side_effect = post
     with patch.object(broker, "_get_http_client", AsyncMock(return_value=client)):
+        # Deadlines only guard against a hang: each flush persists the buffer to disk,
+        # which a loaded CI runner can take over a second to do.
         first = asyncio.create_task(broker._flush_event_log())
-        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(entered.wait(), 30)
         second = asyncio.create_task(broker._flush_event_log())
         await asyncio.sleep(0)
         release.set()
-        await asyncio.wait_for(asyncio.gather(first, second), 1)
+        await asyncio.wait_for(asyncio.gather(first, second), 30)
 
     assert batches == [[1], [2]]
     assert [e["seq"] for e in broker._event_log_buffer] == [3]

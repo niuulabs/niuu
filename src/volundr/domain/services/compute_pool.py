@@ -118,18 +118,29 @@ class ComputePoolService:
                     "runtime without one (host mode with rootless Podman) for this pool"
                 )
 
+    def new_machine_slots(
+        self, policy: ComputePoolPolicy, plan: ResolvedExecutionPlan | None = None
+    ) -> int:
+        """How many slots a new machine for ``plan`` (the default execution if None) gets.
+
+        A runtime that cannot keep slots apart gets a machine to itself, whatever
+        ``slots_per_machine`` says, as a session with root-equivalent grants would.
+        """
+        runtime = self.runtime if plan is None else self._execution_runtimes[plan.plan_digest]
+        return policy.slots_per_machine if runtime.supports_slots else 1
+
     def _require_slot_support(self, policy: ComputePoolPolicy) -> None:
         """Refuse a policy the configured runtimes cannot honour; never run it degraded."""
-        if policy.slots_per_machine > 1:
-            for runtime in self._configured_runtimes():
-                if not runtime.supports_slots:
-                    raise ValueError(
-                        f"Compute pool {self.pool_id} sets slots_per_machine="
-                        f"{policy.slots_per_machine}, but runtime {type(runtime).__name__} "
-                        "does not support slots; set compute.slots_per_machine and the "
-                        "pool's 'Sessions per machine' setting to 1, or configure a runtime "
-                        "that supports slots"
-                    )
+        # The default execution's runtime serves the warm slots, so it must keep slots
+        # apart; other executions' runtimes without slots get machines of one slot.
+        if policy.slots_per_machine > 1 and not self.runtime.supports_slots:
+            raise ValueError(
+                f"Compute pool {self.pool_id} sets slots_per_machine="
+                f"{policy.slots_per_machine}, but its default runtime "
+                f"{type(self.runtime).__name__} does not support slots; set "
+                "compute.slots_per_machine and the pool's 'Sessions per machine' setting to "
+                "1, or make the default execution a runtime that supports slots"
+            )
         limit = policy.max_sessions_per_machine
         if policy.reuse_policy != "replace" or limit is None or limit <= policy.slots_per_machine:
             return

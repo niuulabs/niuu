@@ -1,15 +1,20 @@
 """Facts and the leftover audit of a registered host, run over its pinned SSH connection.
 
-Both programs are POSIX ``sh`` run as root (``sudo -n sh -s``), so a host needs nothing but
-what a stock systemd Linux has. Each prints lines ``fact <key> <value>`` or
-``finding <text>``; anything else is ignored. A finding is something an operator must fix
-before the host takes sessions again; the audit never fixes anything itself except the
-allocation markers it is told to clear.
+Every program is POSIX ``sh`` run as root (``sudo -n sh -s``), so a host needs nothing but
+what a stock systemd Linux or a stock macOS has. Each prints lines ``fact <key> <value>``
+or ``finding <text>``; anything else is ignored. A finding is something an operator must
+fix before the host takes sessions again; the audit never fixes anything itself except the
+allocation markers it is told to clear. The platform the host joined as picks the pair.
 
-The slot layout matches ``volundr.adapters.outbound.vm_slot_supervisor``: user and group
-``niuu-slot-<n>`` with uid ``uid_base + n``, directories ``/var/lib/niuu/slots/<n>`` and
-``/run/niuu/slots/<n>``, netns ``niuu-slot-<n>``, link ``niuuslot<n>`` and slice
+On Linux the slot layout matches ``volundr.adapters.outbound.vm_slot_supervisor``: user and
+group ``niuu-slot-<n>`` with uid ``uid_base + n``, directories ``/var/lib/niuu/slots/<n>``
+and ``/run/niuu/slots/<n>``, netns ``niuu-slot-<n>``, link ``niuuslot<n>`` and slice
 ``niuu_slot_<n>.slice``.
+
+On macOS a host has one slot, 0, and nothing but its user keeps a session apart: user and
+group ``niuu-slot-0`` with uid ``uid_base``, directories ``/var/lib/niuu/slots/0`` and
+``/var/run/niuu/slots/0``, and the session's launchd job ``world.niuu.slot.0`` in the
+system domain (``/Library/LaunchDaemons/world.niuu.slot.0.plist``).
 """
 
 from __future__ import annotations
@@ -22,17 +27,26 @@ from uuid import UUID
 from pydantic import JsonValue
 
 from volundr.domain.compute import Machine, MachineBootstrap, MachineState
-from volundr.domain.compute_hosts import HostConnector, HostInspector, RegisteredHost
+from volundr.domain.compute_hosts import (
+    HostConnector,
+    HostInspector,
+    HostPlatform,
+    RegisteredHost,
+)
 from volundr.domain.guest_access import GuestAccess
 
 #: Installed by join.sh; removes Forge's key, the sshd drop-in, the host key and the host's
 #: Forge configuration.
 LEAVE_PATH = "/usr/local/sbin/niuu-host-leave"
+#: Connector hooks niuu-host-leave runs before it removes the files join set up; each is a
+#: setup file of its connector, so leave removes it too.
+LEAVE_HOOKS_DIR = "/etc/niuu/leave.d"
 
 #: Reads what the capacity step and the host list show. Shared with join.sh, which sends the
 #: same facts at join.
 FACTS_SH = r"""
 set -u
+echo "fact platform $(uname -s | tr '[:upper:]' '[:lower:]')"
 echo "fact cpus $(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc)"
 echo "fact memory_mib $(awk '/^MemTotal:/ {print int($2/1024)}' /proc/meminfo)"
 echo "fact disk_free_mib $(df -Pm / | awk 'NR==2 {print $4}')"
@@ -116,6 +130,113 @@ if [ "$free_mib" -lt "$floor_mib" ]; then
   echo "finding only ${free_mib} MiB free on /, below the floor of ${floor_mib} MiB"
 fi
 """
+
+
+#: The facts of a Mac, as ``FACTS_SH`` reads them on Linux. Apple's GPU is not offered to
+#: sessions, so ``gpus`` is 0, and there are no cgroups.
+DARWIN_FACTS_SH = r"""
+set -u
+echo "fact platform $(uname -s | tr '[:upper:]' '[:lower:]')"
+echo "fact cpus $(sysctl -n hw.ncpu)"
+echo "fact memory_mib $(($(sysctl -n hw.memsize) / 1048576))"
+echo "fact disk_free_mib $(df -Pm / | awk 'NR==2 {print $4}')"
+echo "fact kernel $(uname -r)"
+echo "fact arch $(uname -m)"
+echo "fact cgroup_v2 false"
+echo "fact gpus 0"
+echo "fact os $(sw_vers -productName) $(sw_vers -productVersion)"
+"""
+
+#: The audit of a Mac; the same arguments as ``AUDIT_SH``. A Mac has one slot, so the user
+#: is the whole boundary: what the audit proves is that nothing of a finished session's user
+#: is left (account, processes, launchd jobs, files, IPC, cron, Nix profile) and that no slot
+#: user holds a group that reaches past it.
+DARWIN_AUDIT_SH = r"""
+set -u
+uid_base=$1; slots=$2; live=",$3,"; floor_mib=$4; mode=$5
+if [ "$(uname -s)" != Darwin ]; then
+  echo "finding this host is not macOS (uname -s says $(uname -s)); remove it and join it again"
+  exit 0
+fi
+if [ "$mode" = clean ]; then
+  rm -f /var/lib/niuu/bootstrap.sha256 /var/lib/niuu/bootstrap-state.json
+fi
+[ "$slots" -le 1 ] || echo "finding macOS hosts run one slot, but this one is set to $slots"
+is_live() { case "$live" in *",$1,"*) return 0 ;; esac; return 1; }
+slot_users=$(dscl . -list /Users | awk '/^niuu-slot-[0-9]+$/')
+for user in $slot_users; do
+  is_live "${user#niuu-slot-}" && continue
+  echo "finding user $user still exists"
+done
+for group in $(dscl . -list /Groups | awk '/^niuu-slot-[0-9]+$/'); do
+  is_live "${group#niuu-slot-}" && continue
+  echo "finding group $group still exists"
+done
+n=0
+while [ "$n" -lt "$slots" ]; do
+  if ! is_live "$n"; then
+    uid=$((uid_base + n))
+    ps -axo uid=,pid=,comm= | awk -v u="$uid" '$1 == u {
+      pid = $2; $1 = ""; $2 = ""; sub(/^ +/, "")
+      print "finding process " $0 " (pid " pid ") still runs as uid " u }'
+    for dir in /private/tmp /private/var/tmp /private/var/folders /Users/Shared \
+        /var/lib/niuu/slots /var/run/niuu/slots; do
+      [ -d "$dir" ] || continue
+      find "$dir" -xdev -uid "$uid" -prune 2>/dev/null | while read -r path; do
+        echo "finding $path is owned by uid $uid"
+      done
+    done
+    [ -e "/var/lib/niuu/slots/$n" ] && echo "finding /var/lib/niuu/slots/$n still exists"
+    [ -e "/var/run/niuu/slots/$n" ] && echo "finding /var/run/niuu/slots/$n still exists"
+    launchctl print "system/world.niuu.slot.$n" >/dev/null 2>&1 && \
+      echo "finding launchd job world.niuu.slot.$n is still loaded"
+    [ -e "/Library/LaunchDaemons/world.niuu.slot.$n.plist" ] && \
+      echo "finding /Library/LaunchDaemons/world.niuu.slot.$n.plist still exists"
+    # launchd keeps a user's domain after its last process; only Apple's own jobs may be in it.
+    for domain in "user/$uid" "gui/$uid"; do
+      launchctl print "$domain" 2>/dev/null | awk -v d="$domain" '
+        /^\tservices = \{/ {s = 1; next}
+        s && /^\t\}/ {exit}
+        s && $NF !~ /^com\.apple\./ {print "finding launchd job " $NF " is still loaded in " d}'
+    done
+    ipcs -c 2>/dev/null | awk -v u="$uid" '$1 ~ /^[mqs]$/ && NF >= 8 {
+      for (i = 5; i <= 8; i++) if ($i == u) f = 1 } END {exit !f}' && \
+      echo "finding IPC objects created by uid $uid still exist"
+    [ -e "/private/var/at/tabs/niuu-slot-$n" ] && \
+      echo "finding a crontab for niuu-slot-$n still exists"
+    for path in "/nix/var/nix/profiles/per-user/niuu-slot-$n" \
+        "/nix/var/nix/gcroots/per-user/niuu-slot-$n"; do
+      [ -e "$path" ] && echo "finding $path still exists"
+    done
+  fi
+  n=$((n + 1))
+done
+for user in $slot_users; do
+  for group in admin wheel _developer com.apple.access_ssh com.apple.access_screensharing; do
+    dseditgroup -o checkmember -m "$user" "$group" >/dev/null 2>&1 && \
+      echo "finding $user is in group $group"
+  done
+done
+for file in /etc/sudoers /etc/sudoers.d/*; do
+  [ -f "$file" ] && grep -q 'niuu-slot-' "$file" && echo "finding $file names a slot user"
+done
+if [ -r /etc/nix/nix.conf ]; then
+  trusted=$(awk -F= '/^[[:space:]]*trusted-users[[:space:]]*=/ {print $2}' /etc/nix/nix.conf)
+  for user in $trusted; do
+    case "$user" in root) ;; *) echo "finding nix trusted-users includes $user" ;; esac
+  done
+fi
+free_mib=$(df -Pm / | awk 'NR==2 {print $4}')
+if [ "$free_mib" -lt "$floor_mib" ]; then
+  echo "finding only ${free_mib} MiB free on /, below the floor of ${floor_mib} MiB"
+fi
+"""
+
+#: The facts and audit programs of each platform a host can join as.
+PROGRAMS: dict[HostPlatform, tuple[str, str]] = {
+    HostPlatform.LINUX: (FACTS_SH, AUDIT_SH),
+    HostPlatform.DARWIN: (DARWIN_FACTS_SH, DARWIN_AUDIT_SH),
+}
 
 
 @dataclass(frozen=True)
@@ -203,7 +324,7 @@ class SshHostInspector(HostInspector):
         self._timeout = command_timeout_seconds
 
     async def facts(self, host: RegisteredHost) -> dict[str, JsonValue]:
-        return (await self._run(host, FACTS_SH, ())).facts
+        return (await self._run(host, PROGRAMS[host.platform][0], ())).facts
 
     async def audit(
         self, host: RegisteredHost, *, live_slots: Iterable[int], clean: bool
@@ -221,7 +342,7 @@ class SshHostInspector(HostInspector):
             str(self._floor),
             "clean" if clean else "check",
         )
-        return (await self._run(host, AUDIT_SH, args)).findings
+        return (await self._run(host, PROGRAMS[host.platform][1], args)).findings
 
     def machine(self, host: RegisteredHost, allocation_id: UUID | None = None) -> Machine:
         """The machine record guest access dials: the connector decides how to reach it."""
@@ -242,6 +363,7 @@ class SshHostInspector(HostInspector):
         )
 
     async def leave(self, host: RegisteredHost) -> None:
+        await self._connectors[host.connector].require_connection(host)
         await self._access_for(host).execute(
             self._ref(host),
             MachineBootstrap(),
@@ -255,6 +377,7 @@ class SshHostInspector(HostInspector):
         )
 
     async def _run(self, host: RegisteredHost, program: str, args: tuple[str, ...]) -> CheckOutput:
+        await self._connectors[host.connector].require_connection(host)
         ref = self._ref(host)
         command = shlex.join(["sudo", "-n", "sh", "-s", "--", *args])
         result = await self._access_for(host).execute(
