@@ -15,6 +15,7 @@ from tests.compute_host_fakes import (
     HOST_KEY,
     POOL,
     Connector,
+    HostPool,
     HostRepository,
     Inspector,
     Issuer,
@@ -42,14 +43,19 @@ ADMIN = Principal(user_id="admin", email="a@x", tenant_id="tenant", roles=["volu
 USER = Principal(user_id="user", email="u@x", tenant_id="tenant", roles=["volundr:developer"])
 
 
-def _service(*hosts, issuer=None, inspector=None, connector=None, ledger=None, executions=None):
+def _service(
+    *hosts, issuer=None, inspector=None, connector=None, ledger=None, executions=None, pool=None
+):
     repository = HostRepository(*hosts)
+    if pool is not None:
+        pool.repository = repository
     connector = connector or Connector()
     inspector = inspector or Inspector()
     service = ComputeHostService(
         pool_id=POOL,
         repository=repository,
         compute_repository=ledger or SlotLedger(),
+        compute_pool=pool or HostPool(repository),
         connectors={"direct-ssh": connector},
         inspector=inspector,
         executions=executions
@@ -376,12 +382,65 @@ class TestOperatorActions:
         observe.return_value.count.assert_called_once()
         assert repository.hosts == {}
 
+    async def test_reprepare_ends_the_idle_hold_then_checks(self):
+        allocation = uuid4()
+        host = make_host(allocation_id=allocation, health=HostHealth.QUARANTINED)
+        ledger = SlotLedger({allocation: [_binding(allocation, state=SlotState.RELEASED)]})
+        pool = HostPool()
+        service, repository, _, inspector = _service(host, ledger=ledger, pool=pool)
+        reprepared = await service.reprepare(ADMIN, host.id)
+        assert pool.disposed == [allocation]
+        assert reprepared.allocation_id is None
+        assert (reprepared.service, reprepared.health) == (HostService.ACTIVE, HostHealth.HEALTHY)
+        assert inspector.audits == [(host.id, (), False)]
+
+    async def test_reprepare_an_unheld_host_only_checks_it(self):
+        host = make_host(service=HostService.OUT)
+        pool = HostPool()
+        service, _, _, inspector = _service(host, pool=pool)
+        reprepared = await service.reprepare(ADMIN, host.id)
+        assert pool.disposed == []
+        assert reprepared.service is HostService.OUT
+        assert len(inspector.audits) == 1
+
+    async def test_reprepare_refuses_while_sessions_run(self):
+        allocation = uuid4()
+        host = make_host(allocation_id=allocation)
+        ledger = SlotLedger({allocation: [_binding(allocation)]})
+        pool = HostPool()
+        service, *_ = _service(host, ledger=ledger, pool=pool)
+        with pytest.raises(ComputeHostStateError, match="drain it"):
+            await service.reprepare(ADMIN, host.id)
+        assert pool.disposed == []
+
+    async def test_reprepare_refuses_a_host_being_removed(self):
+        host = make_host(allocation_id=uuid4(), service=HostService.REMOVING)
+        service, *_ = _service(host)
+        with pytest.raises(ComputeHostStateError, match="being removed"):
+            await service.reprepare(ADMIN, host.id)
+
+    @pytest.mark.parametrize(
+        ("error", "reason"),
+        [
+            (ValueError("Stop the session"), "placed on this host meanwhile"),
+            (RuntimeError("ssh 255"), "could not end the host's current preparation: Runtime"),
+        ],
+    )
+    async def test_reprepare_reports_a_disposal_that_fails(self, error, reason):
+        host = make_host(allocation_id=uuid4())
+        pool = HostPool()
+        pool.error = error
+        service, *_ = _service(host, pool=pool)
+        with pytest.raises(ComputeHostStateError, match=reason):
+            await service.reprepare(ADMIN, host.id)
+
     async def test_admin_only(self):
         host = make_host()
         service, *_ = _service(host)
         for call in (
             service.drain(USER, host.id, remove=False),
             service.resume(USER, host.id),
+            service.reprepare(USER, host.id),
             service.remove(USER, host.id),
             service.check_now(USER, host.id),
         ):

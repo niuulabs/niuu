@@ -7,6 +7,8 @@ usable code of this pool, so no route here is open without a credential.
 
 from __future__ import annotations
 
+import hashlib
+import shlex
 from typing import Any
 from uuid import UUID
 
@@ -20,6 +22,7 @@ from volundr.domain.compute import ComputeSlot
 from volundr.domain.compute_hosts import RegisteredHost
 from volundr.domain.models import Principal
 from volundr.domain.services.compute_hosts import (
+    JOIN_SCRIPT_FILENAME,
     ComputeHostAccessError,
     ComputeHostError,
     ComputeHostService,
@@ -213,11 +216,25 @@ def create_compute_hosts_router(service: ComputeHostService, pool: ComputePoolSe
             )
         except ComputeHostError as exc:
             raise _http(exc) from exc
+        # The same bytes join.sh serves for this code, so the digest checks either download.
+        script = render_join_script(forge_url=service.join_base_url, code=minted.code)
+        digest = hashlib.sha256(script.encode()).hexdigest()
         return {
             **pairing_view(minted.pairing),
             "code": minted.code,
             "command": minted.command,
             "command_wget": minted.command_wget,
+            "script": {
+                "filename": JOIN_SCRIPT_FILENAME,
+                "sha256": digest,
+                "content": script,
+                "commands": [
+                    minted.command_download,
+                    f"echo {shlex.quote(f'{digest}  {JOIN_SCRIPT_FILENAME}')} | sha256sum -c -",
+                    f"less {JOIN_SCRIPT_FILENAME}",
+                    f"sudo sh {JOIN_SCRIPT_FILENAME}",
+                ],
+            },
         }
 
     @router.delete("/pairing-codes/{code_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -303,6 +320,16 @@ def create_compute_hosts_router(service: ComputeHostService, pool: ComputePoolSe
     ) -> dict[str, Any]:
         try:
             host = await service.resume(principal, host_id)
+        except (ComputeHostError, LookupError) as exc:
+            raise _http(exc) from exc
+        return await view(host)
+
+    @router.post("/{host_id}/reprepare")
+    async def reprepare(
+        host_id: UUID, principal: Principal = Depends(extract_principal)
+    ) -> dict[str, Any]:
+        try:
+            host = await service.reprepare(principal, host_id)
         except (ComputeHostError, LookupError) as exc:
             raise _http(exc) from exc
         return await view(host)

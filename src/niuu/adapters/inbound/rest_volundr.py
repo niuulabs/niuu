@@ -2956,11 +2956,12 @@ def create_volundr_router(
     async def act_on_compute_host(
         request: Request,
         host_id: UUID,
-        action: Literal["drain", "resume", "check"],
+        action: Literal["drain", "resume", "check", "reprepare"],
         instance_id: str | None = Query(default=None),
         principal: Principal = Depends(extract_principal),
     ) -> Response:
-        """Drain, resume or check one host (the Forge answers 409 for a wrong state)."""
+        """Drain, resume, check or re-prepare one host (the Forge answers 409 for a wrong
+        state)."""
         return await _proxy_compute_hosts(
             request,
             principal,

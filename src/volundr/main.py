@@ -1287,6 +1287,7 @@ def create_app(
                         pool_id=compute.pool_id,
                         repository=host_components.repository,
                         compute_repository=compute_repository,
+                        compute_pool=compute_pool,
                         connectors=host_components.connectors,
                         inspector=host_components.inspector,
                         executions=host_components.executions,
