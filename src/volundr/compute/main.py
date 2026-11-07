@@ -33,7 +33,12 @@ from volundr.domain.compute import (
     MachineProvider,
     MachineState,
 )
-from volundr.domain.compute_hosts import HostConnector, HostInspector, RegisteredHostRepository
+from volundr.domain.compute_hosts import (
+    HostConnector,
+    HostInspector,
+    HostPlatform,
+    RegisteredHostRepository,
+)
 from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestIdentity
 from volundr.domain.service_account_tokens import ServiceAccountTokenPort
 from volundr.domain.services.compute_hosts import HostExecution
@@ -149,9 +154,7 @@ def build_registered_hosts(
             execution=str(plan.execution),
             profile=plan.provider_profile,
             runtime=kind,
-            label=_RUNTIME_LABELS.get(kind, type(runtime).__name__)
-            if kind
-            else str(plan.execution),
+            label=_runtime_label(runtime, str(plan.execution)),
             supports_slots=runtime.supports_slots,
             requires_root_daemon=runtime.requires_root_daemon,
             slot_limits=runtime.slot_limits,
@@ -195,6 +198,18 @@ def build_host_connect_key_servers(
     return [HostConnectKeyServer(socket_path=path, answer=answer) for path in sockets]
 
 
+def _runtime_label(runtime, execution: str) -> str:
+    """What the Add host form calls an execution's runtime."""
+    kind = runtime.session_runtime
+    if kind is None:
+        return execution
+    if kind is SessionRuntimeKind.HOST and runtime.host_platforms == {HostPlatform.DARWIN}:
+        return _MAC_HOST_LABEL
+    return _RUNTIME_LABELS.get(kind, type(runtime).__name__)
+
+
+#: A Mac runs one session at a time, as a fresh macOS user.
+_MAC_HOST_LABEL = "Host · macOS (one session, its own user)"
 #: What the Add host form calls each runtime a host can run.
 _RUNTIME_LABELS = {
     SessionRuntimeKind.HOST: "Host · Nix + rootless Podman",

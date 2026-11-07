@@ -20,7 +20,7 @@ from volundr.adapters.outbound.profiled_vm_runtime import ProfiledVmRuntime
 from volundr.adapters.outbound.ssh_guest_access import SshGuestAccess
 from volundr.compute import main as module
 from volundr.compute.config import ComputeConfig
-from volundr.domain.compute_hosts import LINUX_ONLY, HostConnector, HostInspector
+from volundr.domain.compute_hosts import LINUX_ONLY, HostConnector, HostInspector, HostPlatform
 from volundr.domain.guest_access import GuestAccess
 from volundr.domain.host_preparation import HostPreparation
 from volundr.domain.services.compute_hosts import HostExecution
@@ -433,9 +433,14 @@ def test_a_registered_host_provider_with_compute_hosts_is_accepted(monkeypatch):
 
 
 class _HostRuntime(RecordingPlanRuntime):
-    def __init__(self, name, kind, *, slots=False, root_daemon=False, limits=None):
+    def __init__(self, name, kind, *, slots=False, root_daemon=False, limits=None, platforms=None):
         super().__init__(name)
         self._kind, self._slots, self._root, self._limits = kind, slots, root_daemon, limits
+        self._platforms = platforms
+
+    @property
+    def host_platforms(self):
+        return self._platforms or super().host_platforms
 
     @property
     def session_runtime(self):
@@ -595,6 +600,28 @@ def test_registered_hosts_describe_each_execution_with_its_runtime_limits_and_ss
     )
     assert (host.forge_public_key, host.ssh_user) == (accesses["vm-b"].public_key, "niuu")
     assert host.refusal is None and host.exclusive_only
+
+
+def test_a_mac_host_runtime_is_labelled_as_macos(tmp_path):
+    resolver = _catalog_resolver(tmp_path)
+    plans = {plan.execution.id: plan for plan in resolver.plans()}
+    accesses = {name: _ssh_access(tmp_path, name, "root") for name in ("vm", "vm-b")}
+    darwin = frozenset({HostPlatform.DARWIN})
+    execution = _components(
+        resolver,
+        {
+            "vm": _HostRuntime("vm", SessionRuntimeKind.HOST),
+            "vm-b": _HostRuntime("vm-b", SessionRuntimeKind.HOST, platforms=darwin),
+        },
+        accesses,
+    )
+
+    hosts = module.build_registered_hosts(_hosts_config(), MagicMock(), execution)
+
+    mac = hosts.executions[str(plans["vm-b"].execution)]
+    assert (mac.label, mac.platforms) == ("Host · macOS (one session, its own user)", darwin)
+    linux = hosts.executions[str(plans["vm"].execution)]
+    assert linux.label == "Host · Nix + rootless Podman"
 
 
 def test_a_runtime_without_a_kind_is_labelled_by_its_execution(tmp_path):
