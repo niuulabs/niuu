@@ -12,8 +12,6 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from volundr.adapters.outbound import ssh_vm_runtime as module
 from volundr.adapters.outbound.ssh_host_preparation import SshHostPreparation
@@ -29,6 +27,7 @@ from volundr.domain.compute import (
 )
 from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
+from volundr.domain.services.host_access_key import generate_host_access_key
 from volundr.domain.vm_runtime import VmRuntimeStageError, VmRuntimeUnavailableError
 
 
@@ -83,26 +82,13 @@ def test_restore_skips_codex_tmp_links_but_keeps_data_filter_for_other_links(tmp
     assert not (unsafe_root / ".allocation").exists()
 
 
+HOST_KEY = generate_host_access_key()
+
+
 @pytest.fixture
 def setup(tmp_path):
-    key = Ed25519PrivateKey.generate()
-    private = tmp_path / "key"
-    public = tmp_path / "key.pub"
-    private.write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.OpenSSH,
-            serialization.NoEncryption(),
-        )
-    )
-    public.write_bytes(
-        key.public_key().public_bytes(
-            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
-        )
-    )
     runtime = SshContainerVmRuntime(
-        ssh_private_key_file=str(private),
-        ssh_public_key_file=str(public),
+        host_key=HOST_KEY,
         data_dir=str(tmp_path / "data"),
         skuld_image="test/skuld:dev",
         command_timeout_seconds=0.05,
@@ -282,8 +268,7 @@ async def test_start_without_a_reporter_names_no_steps(setup):
 async def test_explicit_ssh_bootstrap_uses_tofu_once_then_strict_pin(setup, tmp_path):
     runtime, session, spec, provider_bootstrap, lease = setup
     post_connect = SshContainerVmRuntime(
-        ssh_private_key_file=runtime._private_key,
-        ssh_public_key_file=runtime._private_key + ".pub",
+        host_key=HOST_KEY,
         data_dir=str(tmp_path / "post-connect"),
         skuld_image="test/skuld:dev",
         bootstrap_delivery="ssh",
@@ -360,8 +345,7 @@ async def test_explicit_ssh_bootstrap_uses_tofu_once_then_strict_pin(setup, tmp_
 async def test_verified_ssh_bootstrap_never_falls_back_to_tofu(setup, tmp_path):
     runtime, session, spec, _, lease = setup
     post_connect = SshContainerVmRuntime(
-        ssh_private_key_file=runtime._private_key,
-        ssh_public_key_file=runtime._private_key + ".pub",
+        host_key=HOST_KEY,
         data_dir=str(tmp_path / "post-connect"),
         skuld_image="test/skuld:dev",
         bootstrap_delivery="ssh",
@@ -389,8 +373,7 @@ async def test_verified_ssh_bootstrap_never_falls_back_to_tofu(setup, tmp_path):
 def test_warm_spares_use_allocation_scoped_ssh_bootstrap_paths(setup, tmp_path):
     runtime, _, _, _, lease = setup
     post_connect = SshContainerVmRuntime(
-        ssh_private_key_file=runtime._private_key,
-        ssh_public_key_file=runtime._private_key + ".pub",
+        host_key=HOST_KEY,
         data_dir=str(tmp_path / "post-connect"),
         skuld_image="test/skuld:dev",
         bootstrap_delivery="ssh",
@@ -427,8 +410,7 @@ def test_rejects_unknown_bootstrap_delivery(setup, tmp_path):
     runtime, *_ = setup
     with pytest.raises(ValueError, match="bootstrap_delivery"):
         SshContainerVmRuntime(
-            ssh_private_key_file=runtime._private_key,
-            ssh_public_key_file=runtime._private_key + ".pub",
+            host_key=HOST_KEY,
             data_dir=str(tmp_path / "invalid"),
             skuld_image="test/skuld:dev",
             bootstrap_delivery="automatic",
@@ -518,8 +500,7 @@ def test_numeric_container_uid_gets_nss_identity(setup, tmp_path, monkeypatch):
 
     monkeypatch.setattr(module.Path, "glob", glob)
     wrapped = SshContainerVmRuntime(
-        ssh_private_key_file=runtime._private_key,
-        ssh_public_key_file=runtime._private_key + ".pub",
+        host_key=HOST_KEY,
         data_dir=str(tmp_path / "numeric-user"),
         skuld_image="test/skuld:dev",
     )
@@ -800,8 +781,7 @@ def test_restore_excludes_runtime_cache_but_rejects_other_escaping_links(tmp_pat
 def test_archive_exclusions_require_explicit_relative_paths(setup, tmp_path, excluded):
     with pytest.raises(ValueError, match="explicit relative paths"):
         SshContainerVmRuntime(
-            ssh_private_key_file=str(tmp_path / "key"),
-            ssh_public_key_file=str(tmp_path / "key.pub"),
+            host_key=HOST_KEY,
             data_dir=str(tmp_path / "excluded-data"),
             skuld_image="test-image",
             archive_excludes=[excluded],
@@ -863,24 +843,8 @@ async def test_injected_access_is_closed_only_by_composition_owner(setup, tmp_pa
 
 
 def _preview_runtime(tmp_path: Path, **kwargs) -> SshContainerVmRuntime:
-    key = Ed25519PrivateKey.generate()
-    private = tmp_path / "preview-key"
-    public = tmp_path / "preview-key.pub"
-    private.write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.OpenSSH,
-            serialization.NoEncryption(),
-        )
-    )
-    public.write_bytes(
-        key.public_key().public_bytes(
-            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
-        )
-    )
     return SshContainerVmRuntime(
-        ssh_private_key_file=str(private),
-        ssh_public_key_file=str(public),
+        host_key=HOST_KEY,
         data_dir=str(tmp_path / "preview-data"),
         skuld_image="test/skuld:dev",
         **kwargs,
@@ -1012,29 +976,23 @@ def test_start_program_can_run_only_the_pod_containers(tmp_path: Path):
     assert (tmp_path / "tokens").is_dir()
 
 
-def test_a_runtime_without_key_files_uses_the_key_forge_generates(tmp_path):
+def test_a_runtime_hands_ssh_the_pools_key_from_the_credential_store(tmp_path):
     runtime = SshContainerVmRuntime(
-        data_dir=str(tmp_path / "runtime-data"), skuld_image="test/skuld:dev"
+        host_key=HOST_KEY, data_dir=str(tmp_path / "runtime-data"), skuld_image="test/skuld:dev"
     )
 
-    generated = tmp_path / "runtime-data" / "host-access" / "id_ed25519"
-    assert generated.is_file()
-    assert runtime._private_key == str(generated.resolve())
-    assert runtime._public_key.startswith("ssh-ed25519 ")
+    written = tmp_path / "runtime-data" / "host-access" / "id_ed25519"
+    assert runtime._private_key == str(written.resolve())
+    assert written.read_text() == HOST_KEY.private_key
+    assert runtime._public_key == HOST_KEY.public_key
 
 
-def test_a_runtime_without_key_files_still_needs_a_data_dir():
-    with pytest.raises(ValueError, match="Configure data_dir"):
-        SshContainerVmRuntime(skuld_image="test/skuld:dev")
-
-
-def test_a_runtime_with_half_a_key_pair_names_both_kwargs(tmp_path):
-    with pytest.raises(ValueError, match="ssh_private_key_file and ssh_public_key_file"):
-        SshContainerVmRuntime(
-            ssh_private_key_file=str(tmp_path / "key"),
-            data_dir=str(tmp_path / "runtime-data"),
-            skuld_image="test/skuld:dev",
-        )
+@pytest.mark.parametrize(
+    "kwargs", [{"host_key": HOST_KEY}, {"data_dir": "runtime-data"}], ids=["no-data-dir", "no-key"]
+)
+def test_a_runtime_that_builds_its_own_access_needs_the_key_and_a_data_dir(tmp_path, kwargs):
+    with pytest.raises(ValueError, match="Configure data_dir .* or inject guest_access"):
+        SshContainerVmRuntime(skuld_image="test/skuld:dev", **kwargs)
 
 
 # -- the per-slot audit a reusing runtime runs before a slot takes another session ----------------

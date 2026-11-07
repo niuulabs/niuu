@@ -117,16 +117,17 @@ access binding is `SshGuestAccess` with `bootstrap_delivery: registered` and tru
 mode `registered_host_key`. The host's own key is pinned, and nothing is trusted on
 first use.
 
-The access binding's `ssh_private_key_file` and `ssh_public_key_file` are optional. Set
-both to use a key you manage; set only one and startup fails. Set neither and Forge
-makes its own: on first start it generates an Ed25519 key at
-`<data_dir>/host-access/id_ed25519` (and `.pub`), where `data_dir` is the binding's
-own kwarg. The private key is mode 0600 in a 0700 directory and is never overwritten;
-every restart reuses it. Keep `data_dir` on a persistent volume (on a cluster, the
-Forge's sessions volume). Delete the files and Forge makes a new key, so every host must
-join again. Forge logs which key it uses and the public key's `SHA256:` fingerprint,
-never the private key. A pair that is incomplete, mismatched, not Ed25519, or a private
-key readable by others stops startup, naming the path and the fix.
+Forge keeps the SSH key it reaches hosts with in its credential store (`credential_store`:
+OpenBao on a cluster, the file store in mini mode), as the pool's credential
+`compute/<pool_id>/host-access-ssh-key`. Nothing SSH-specific is configured. The first
+Forge of a pool generates an Ed25519 pair and stores it; every later start, and every
+other Forge of the pool, reads the same pair. Generation runs under an advisory lock on
+Forge's database, so Forges starting together store one key. Each start writes the
+private key to `<data_dir>/host-access/id_ed25519` (0600 in a 0700 directory), where
+`ssh -i` reads it, and logs the public key's `SHA256:` fingerprint, never the private key.
+Startup fails if the store cannot be read or written, if the stored value is not a
+matching Ed25519 pair (delete the credential to have a new one made; every host must then join again), or if
+`credential_store` is the in-memory store, which forgets the key on restart.
 
 Startup fails if any of these hold:
 
@@ -482,7 +483,7 @@ is retried. Capacity is never freed on a host nobody checked.
 | `remote.follow_timeout_seconds` (CLI) | 900 | How long `niuu remote join` follows a host to ready; `--timeout` per run | Exit 1, naming the host's step; Forge goes on |
 | `remote.leave_timeout_seconds` (CLI) | 3600 | How long `niuu remote leave` waits for sessions to end; `--timeout` per run | Exit 1; Forge still removes the host once it is empty |
 | `remote.poll_interval_seconds` (CLI) | 2 | How often `niuu remote` re-reads the host | — |
-| access binding `ssh_private_key_file` / `ssh_public_key_file` | unset: `<data_dir>/host-access/id_ed25519` | The key Forge reaches hosts with. Unset, Forge generates it once (0600) and reuses it; set both to use your own | Only one set, an incomplete or mismatched pair, a key that is not Ed25519, or a private key readable by others: startup fails, naming the path |
+| `credential_store` (credential `compute/<pool_id>/host-access-ssh-key`) | made on first start | The key Forge reaches hosts with: generated once into the store, read on every start | Store unreachable, a stored value that is not a matching Ed25519 pair, or the in-memory store: startup fails, naming the credential |
 | `compute.hosts.pairing_signing_key_file` | `~/.niuu/forge-host-pairing-key.pem` | Used only without a workload-identity key, with the allow-all identity adapter | Unreadable or unwritable: startup fails, naming the knob |
 | `compute.hosts.join_listener.bind_host` / `port` | `0.0.0.0` / `8443` | Where the pinned join listener listens | Cannot bind: startup fails, naming the knob |
 | `compute.hosts.join_listener.cert_file` / `key_file` | `~/.niuu/forge-host-join-{cert,key}.pem` | The listener's certificate and the key the pin comes from | Unreadable, readable by others or not matching: startup fails |

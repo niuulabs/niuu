@@ -19,7 +19,7 @@ from uuid import uuid4
 
 import pytest
 
-from tests.test_adapters.test_ssh_vm_runtime_slots import ISOLATION, SlotView, _keys
+from tests.test_adapters.test_ssh_vm_runtime_slots import ISOLATION, SlotView
 from volundr.adapters.outbound import linux_guest_programs as programs
 from volundr.adapters.outbound import ssh_host_vm_runtime as module
 from volundr.adapters.outbound import ssh_vm_runtime
@@ -29,6 +29,7 @@ from volundr.adapters.outbound.ssh_vm_runtime import SlotNotCleanError
 from volundr.domain.compute import Machine, MachineBootstrap, MachineState
 from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
+from volundr.domain.services.host_access_key import generate_host_access_key
 from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.domain.vm_runtime import SessionImages
 
@@ -77,10 +78,8 @@ def _description(reference: str) -> dict:
 
 
 def _runtime(tmp_path: Path, **kwargs) -> SshHostVmRuntime:
-    private, public = _keys(tmp_path)
     options = {
-        "ssh_private_key_file": str(private),
-        "ssh_public_key_file": str(public),
+        "host_key": generate_host_access_key(),
         "data_dir": str(tmp_path / "data"),
         "skuld_image": IMAGE,
         "slot_isolation": {**ISOLATION, "image_user": "sandbox"},

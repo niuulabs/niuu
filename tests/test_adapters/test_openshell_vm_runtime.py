@@ -12,6 +12,7 @@ from niuu.ports.session_proxy import SessionProxyTarget
 from tests.test_adapters.test_openshell_gateway import _import_adapter
 from tests.test_adapters.test_ssh_vm_runtime import setup as ssh_setup  # noqa: F401
 from volundr.domain.compute import MachineBootstrap
+from volundr.domain.services.host_access_key import generate_host_access_key
 
 GATEWAY = """[openshell]
 version=2
@@ -41,8 +42,7 @@ def setup(ssh_setup, monkeypatch):  # noqa: F811
     sys.modules.pop("volundr.adapters.outbound.openshell_vm_runtime", None)
     module = importlib.import_module("volundr.adapters.outbound.openshell_vm_runtime")
     runtime = module.OpenShellVmRuntime(
-        ssh_private_key_file=old._private_key,
-        ssh_public_key_file=old._private_key + ".pub",
+        host_key=generate_host_access_key(),
         data_dir=str(old._data),
         skuld_image="test/openshell:dev",
         gateway_image="test/gateway:version",

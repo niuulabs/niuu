@@ -1061,8 +1061,10 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
 
 ### Bring your own machine (2026-11-07)
 
-- **Forge makes its own host SSH key** under the access binding's `data_dir`
-  (`host-access/id_ed25519`, 0600, never overwritten), so no secret store is needed.
+- **Forge makes its own host SSH key** in the credential store it already has
+  (`compute/<pool_id>/host-access-ssh-key`, made once under the credential lock), so no
+  key is provisioned or mounted. Where it lives is the store's choice; the in-memory
+  store is refused because it would forget the key.
 - **A built-in host execution** (`BuiltinHostCatalog`) ships with Niuu: the
   registered-host profile, SSH access with registered-host-key trust, the Nix and
   Linux-tools recipe, and `PlatformHostRuntime`. Its settings are the deployment's own.

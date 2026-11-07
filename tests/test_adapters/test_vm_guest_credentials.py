@@ -12,8 +12,6 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.forge_mcp.models import ForgeMcpGrant
@@ -47,6 +45,7 @@ from volundr.domain.guest_credentials import (
 )
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
 from volundr.domain.service_account_tokens import ServiceAccountToken, ServiceAccountTokenPort
+from volundr.domain.services.host_access_key import generate_host_access_key
 from volundr.domain.vm_runtime import VmRuntimeStageError
 
 TOKEN_VOLUME = {
@@ -137,23 +136,8 @@ def runtime(tmp_path):
 
 
 def _runtime(tmp_path, **kwargs):
-    key = Ed25519PrivateKey.generate()
-    private, public = tmp_path / "key", tmp_path / "key.pub"
-    private.write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.OpenSSH,
-            serialization.NoEncryption(),
-        )
-    )
-    public.write_bytes(
-        key.public_key().public_bytes(
-            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
-        )
-    )
     return SshContainerVmRuntime(
-        ssh_private_key_file=str(private),
-        ssh_public_key_file=str(public),
+        host_key=generate_host_access_key(),
         data_dir=str(tmp_path / "data"),
         skuld_image="test/skuld:dev",
         default_service_account="skuld-session",

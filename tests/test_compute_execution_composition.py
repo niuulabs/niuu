@@ -1,16 +1,16 @@
 """File-configured execution adapters are composed through their actual ports."""
 
 import asyncio
+import contextlib
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from niuu.adapters.memory_credential_store import MemoryCredentialStore
 from niuu.config import DynamicAdapterConfig
+from niuu.ports.credentials import CredentialRefreshLockPort
 from tests.compute_fakes import Provider
 from tests.test_adapters.test_file_execution_catalog import _catalog
 from tests.test_adapters.test_profiled_vm_runtime import RecordingRuntime
@@ -24,8 +24,30 @@ from volundr.domain.compute_hosts import LINUX_ONLY, HostConnector, HostInspecto
 from volundr.domain.guest_access import GuestAccess
 from volundr.domain.host_preparation import HostPreparation
 from volundr.domain.services.compute_hosts import HostExecution
+from volundr.domain.services.host_access_key import generate_host_access_key
 from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.domain.vm_runtime import SlotLimits, VmRuntime
+
+
+class DurableStore(MemoryCredentialStore):
+    """The memory store standing in for a store that keeps keys (the file store, OpenBao)."""
+
+    durable = True
+
+
+class Lock(CredentialRefreshLockPort):
+    @contextlib.asynccontextmanager
+    async def hold(self, owner_type, owner_id, name):
+        yield
+
+
+def host_keys(pool_id="default", store=None) -> module.HostKeySource:
+    return module.HostKeySource(pool_id, store or DurableStore(), Lock())
+
+
+async def build(config, store=None):
+    store = store or DurableStore()
+    return await module.build_execution_components(config, store, host_keys(config.pool_id, store))
 
 
 def configuration(root):
@@ -41,7 +63,7 @@ def configuration(root):
     )
 
 
-def test_runtime_factory_composes_nested_profile_runtimes() -> None:
+async def test_runtime_factory_composes_nested_profile_runtimes() -> None:
     config = DynamicAdapterConfig(
         adapter="volundr.adapters.outbound.profiled_vm_runtime.ProfiledVmRuntime",
         kwargs={
@@ -59,7 +81,7 @@ def test_runtime_factory_composes_nested_profile_runtimes() -> None:
         },
     )
 
-    runtime = module.build_runtime(config)
+    runtime = await module.build_runtime(config)
 
     assert isinstance(runtime, ProfiledVmRuntime)
     assert isinstance(runtime._default, RecordingRuntime)
@@ -67,7 +89,7 @@ def test_runtime_factory_composes_nested_profile_runtimes() -> None:
     assert runtime._profiles["openshell"].name == "openshell"
 
 
-def test_runtime_factory_passes_adapter_configs_for_the_guest_through(tmp_path) -> None:
+async def test_runtime_factory_passes_adapter_configs_for_the_guest_through(tmp_path) -> None:
     # Skuld's preview.router_auth is an adapter config for the guest, not a runtime:
     # building it here failed startup with "must implement VmRuntime".
     from tests.test_adapters.test_ssh_vm_runtime import (
@@ -80,15 +102,13 @@ def test_runtime_factory_passes_adapter_configs_for_the_guest_through(tmp_path) 
     config = DynamicAdapterConfig(
         adapter="volundr.adapters.outbound.ssh_vm_runtime.SshContainerVmRuntime",
         kwargs={
-            "ssh_private_key_file": str(tmp_path / "preview-key"),
-            "ssh_public_key_file": str(tmp_path / "preview-key.pub"),
             "data_dir": str(tmp_path / "preview-data"),
             "skuld_image": "test/skuld:dev",
             "preview_router_auth": _ROUTER_AUTH,
         },
     )
 
-    runtime = module.build_runtime(config)
+    runtime = await module.build_runtime(config, host_keys=host_keys())
 
     assert type(runtime) is type(template)
     environment = _launch_environment(runtime)
@@ -96,7 +116,7 @@ def test_runtime_factory_passes_adapter_configs_for_the_guest_through(tmp_path) 
     assert json.loads(environment["SKULD__PREVIEW__ROUTER_AUTH"]) == _ROUTER_AUTH
 
 
-def test_runtime_factory_builds_runtimes_only_where_the_constructor_takes_them() -> None:
+async def test_runtime_factory_builds_runtimes_only_where_the_constructor_takes_them() -> None:
     class Wrapping(RecordingRuntime):
         def __init__(self, *, inner: VmRuntime, settings: dict) -> None:
             super().__init__(name="wrapping")
@@ -109,7 +129,7 @@ def test_runtime_factory_builds_runtimes_only_where_the_constructor_takes_them()
         side_effect=lambda name: Wrapping if name == "wrapping" else module.import_class(name)
     )
 
-    runtime = module.build_runtime(
+    runtime = await module.build_runtime(
         {
             "adapter": "wrapping",
             "kwargs": {"inner": {**inner, "kwargs": {"name": "docker"}}, "settings": settings},
@@ -122,16 +142,41 @@ def test_runtime_factory_builds_runtimes_only_where_the_constructor_takes_them()
     assert runtime.settings == settings
 
 
-def test_runtime_factory_refuses_nested_configs_it_cannot_type() -> None:
+async def test_runtime_factory_refuses_nested_configs_it_cannot_type() -> None:
     class Unresolvable(RecordingRuntime):
         def __init__(self, *, inner: "NotImported") -> None:  # noqa: F821
             super().__init__(name="unresolvable")
 
     with pytest.raises(TypeError, match="do not resolve"):
-        module.build_runtime(
+        await module.build_runtime(
             {"adapter": "unresolvable", "kwargs": {"inner": {"adapter": "x.Y"}}},
             importer=lambda name: Unresolvable,
         )
+
+
+async def test_runtime_factory_hands_every_ssh_runtime_in_the_tree_the_pools_one_key(
+    tmp_path,
+) -> None:
+    store = DurableStore()
+    ssh = "volundr.adapters.outbound.ssh_vm_runtime.SshContainerVmRuntime"
+
+    def child(name):
+        return {
+            "adapter": ssh,
+            "kwargs": {"data_dir": str(tmp_path / name), "skuld_image": "test/skuld:dev"},
+        }
+
+    runtime = await module.build_runtime(
+        {
+            "adapter": "volundr.adapters.outbound.profiled_vm_runtime.ProfiledVmRuntime",
+            "kwargs": {"default": child("a"), "profiles": {"b": child("b")}},
+        },
+        host_keys=host_keys(store=store),
+    )
+
+    stored = await store.get_value("compute", "default", "host-access-ssh-key")
+    assert runtime._default._public_key == stored["public_key"]
+    assert runtime._profiles["b"]._public_key == stored["public_key"]
 
 
 async def test_composes_each_plan_with_shared_access_and_resolved_secret(tmp_path, monkeypatch):
@@ -156,7 +201,7 @@ async def test_composes_each_plan_with_shared_access_and_resolved_secret(tmp_pat
         return constructors[name][1]
 
     monkeypatch.setattr(module, "import_class", importer)
-    result = await module.build_execution_components(configuration(root), MemoryCredentialStore())
+    result = await build(configuration(root))
     digest = result.default_plan.plan_digest
     assert result.runtimes[digest] is runtime
     assert result.preparations[digest] is preparation
@@ -177,14 +222,14 @@ async def test_missing_execution_secret_never_uses_plain_kwarg_default(tmp_path,
     root, _ = _catalog(tmp_path)
     monkeypatch.delenv("COMPUTE_SSH_PASSPHRASE", raising=False)
     with pytest.raises(ValueError, match="secret environment reference is missing"):
-        await module.build_execution_components(configuration(root), MemoryCredentialStore())
+        await build(configuration(root))
 
 
 async def test_wrong_pool_fails_before_constructing_access(tmp_path, monkeypatch):
     root, _ = _catalog(tmp_path)
     config = configuration(root).model_copy(update={"pool_id": "another-pool"})
     with pytest.raises(ValueError, match="configured pool/provider"):
-        await module.build_execution_components(config, MemoryCredentialStore())
+        await build(config)
 
 
 async def test_failed_composition_closes_already_created_access(tmp_path, monkeypatch):
@@ -201,7 +246,7 @@ async def test_failed_composition_closes_already_created_access(tmp_path, monkey
 
     monkeypatch.setattr(module, "import_class", importer)
     with pytest.raises(ValueError, match="Preparation adapter missing"):
-        await module.build_execution_components(configuration(root), MemoryCredentialStore())
+        await build(configuration(root))
     access.close.assert_awaited_once()
 
 
@@ -225,30 +270,11 @@ def test_provider_fingerprint_tracks_identity_not_resolved_secret_values(tmp_pat
     ],
 )
 async def test_real_file_catalog_composes_both_ssh_runtimes(tmp_path, adapter, backend):
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     from tests.test_adapters.test_file_execution_catalog import _yaml
     from volundr.domain.compute import MachineBootstrap
 
     root, _ = _catalog(tmp_path / "catalog")
-    key = Ed25519PrivateKey.generate()
-    private = tmp_path / "id_ed25519"
-    public = tmp_path / "id_ed25519.pub"
-    private.write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.OpenSSH,
-            serialization.NoEncryption(),
-        )
-    )
-    private.chmod(0o600)
-    public.write_bytes(
-        key.public_key().public_bytes(
-            serialization.Encoding.OpenSSH,
-            serialization.PublicFormat.OpenSSH,
-        )
-    )
     _yaml(
         root / "access" / "ssh.yaml",
         {
@@ -258,8 +284,6 @@ async def test_real_file_catalog_composes_both_ssh_runtimes(tmp_path, adapter, b
                 "binding_id": "ssh-v1",
                 "adapter": "volundr.adapters.outbound.ssh_guest_access.SshGuestAccess",
                 "kwargs": {
-                    "ssh_private_key_file": str(private),
-                    "ssh_public_key_file": str(public),
                     "data_dir": str(tmp_path / "access"),
                     "ssh_user": "ubuntu",
                 },
@@ -295,9 +319,7 @@ async def test_real_file_catalog_composes_both_ssh_runtimes(tmp_path, adapter, b
             "storage_mode": "vm",
         },
     )
-    components = await module.build_execution_components(
-        configuration(root), MemoryCredentialStore()
-    )
+    components = await build(configuration(root))
     plan = components.default_plan
     runtime = components.runtimes[plan.plan_digest]
     preparation = components.preparations[plan.plan_digest]
@@ -464,23 +486,8 @@ class _HostRuntime(RecordingPlanRuntime):
 
 
 def _ssh_access(tmp_path, name, ssh_user):
-    key = Ed25519PrivateKey.generate()
-    private, public = tmp_path / f"{name}-key", tmp_path / f"{name}-key.pub"
-    private.write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.OpenSSH,
-            serialization.NoEncryption(),
-        )
-    )
-    public.write_bytes(
-        key.public_key().public_bytes(
-            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
-        )
-    )
     return SshGuestAccess(
-        ssh_private_key_file=str(private),
-        ssh_public_key_file=str(public),
+        host_key=generate_host_access_key(),
         data_dir=str(tmp_path / f"{name}-data"),
         ssh_user=ssh_user,
         bootstrap_delivery="registered",
@@ -708,7 +715,7 @@ async def test_execution_components_record_each_plans_access(tmp_path, monkeypat
 
     monkeypatch.setattr(module, "import_class", importer)
 
-    result = await module.build_execution_components(configuration(root), MemoryCredentialStore())
+    result = await build(configuration(root))
 
     assert result.accesses_by_plan == {result.default_plan.plan_digest: access}
     assert result.accesses == (access,)
@@ -1073,7 +1080,7 @@ async def test_the_built_in_catalog_composes_real_linux_and_mac_runtimes(tmp_pat
         },
     )
 
-    components = await module.build_execution_components(config, MemoryCredentialStore())
+    components = await build(config)
     try:
         runtime = components.runtimes[components.default_plan.plan_digest]
         assert isinstance(runtime, PlatformHostRuntime)
@@ -1102,13 +1109,13 @@ async def test_the_built_in_catalog_composes_real_linux_and_mac_runtimes(tmp_pat
 
 async def test_the_built_in_catalog_without_session_images_is_refused(tmp_path):
     with pytest.raises(ValueError, match="needs a session image"):
-        await module.build_execution_components(_builtin_config(tmp_path), MemoryCredentialStore())
+        await build(_builtin_config(tmp_path))
 
 
 async def test_session_images_are_pinned_once_and_handed_to_the_runtimes(tmp_path, pinned):
     config = _builtin_config(tmp_path, session_images={"linux": LINUX_REF, "darwin": DARWIN_REF})
 
-    components = await module.build_execution_components(config, MemoryCredentialStore())
+    components = await build(config)
     try:
         runtime = components.runtimes[components.default_plan.plan_digest]
         assert runtime.for_platform(HostPlatform.LINUX)._image == LINUX_PINNED

@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from volundr.adapters.outbound import ssh_openshell_vm_runtime as module
 from volundr.domain.compute import BootstrapFile, MachineBootstrap
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
+from volundr.domain.services.host_access_key import generate_host_access_key
 
 
 def test_sandbox_name_is_deterministic_and_within_openshell_limit():
@@ -49,8 +50,7 @@ def test_session_bootstrap_adapts_paths_policy_and_platform_without_installing(t
         )
     )
     runtime = module.SshOpenShellVmRuntime(
-        ssh_private_key_file=str(private),
-        ssh_public_key_file=str(public),
+        host_key=generate_host_access_key(),
         data_dir=str(tmp_path / "runtime"),
         skuld_image="test/skuld@sha256:" + "a" * 64,
         sandbox_platform_url="https://platform.test/",
@@ -1185,8 +1185,7 @@ def test_runtime_requires_a_pinned_openshell_release(tmp_path: Path, override, m
     )
     with pytest.raises(ValueError, match=message):
         module.SshOpenShellVmRuntime(
-            ssh_private_key_file=str(private),
-            ssh_public_key_file=str(public),
+            host_key=generate_host_access_key(),
             data_dir=str(tmp_path / "runtime"),
             skuld_image="test/skuld@sha256:" + "a" * 64,
             **{"policy": "version: 1\n", **override},
@@ -1230,23 +1229,8 @@ def test_policy_with_mounts_refuses_a_malformed_filesystem_policy():
 
 
 def _keyed_runtime(tmp_path: Path, **kwargs) -> module.SshOpenShellVmRuntime:
-    key = Ed25519PrivateKey.generate()
-    private, public = tmp_path / "key", tmp_path / "key.pub"
-    private.write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.OpenSSH,
-            serialization.NoEncryption(),
-        )
-    )
-    public.write_bytes(
-        key.public_key().public_bytes(
-            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
-        )
-    )
     return module.SshOpenShellVmRuntime(
-        ssh_private_key_file=str(private),
-        ssh_public_key_file=str(public),
+        host_key=generate_host_access_key(),
         data_dir=str(tmp_path / "runtime"),
         skuld_image="test/openshell@sha256:" + "a" * 64,
         policy="version: 1\nnetwork_policies: {}\n",

@@ -60,6 +60,7 @@ from volundr.domain.compute import (
 from volundr.domain.guest_access import GuestAccess
 from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestCredentialPlan
 from volundr.domain.models import Session, SessionSpec
+from volundr.domain.services.host_access_key import HostAccessKey
 from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.domain.vm_runtime import SlotLimits, StartupStepReport, VmRuntime
 
@@ -328,8 +329,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
     def __init__(
         self,
         *,
-        ssh_private_key_file: str | None = None,
-        ssh_public_key_file: str | None = None,
+        host_key: HostAccessKey | None = None,
         data_dir: str | None = None,
         skuld_image: str,
         codex_auth_adapter: str = DEFAULT_CODEX_AUTH_ADAPTER,
@@ -427,11 +427,13 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             raise ValueError("VM machine commands must contain non-empty arguments")
         self._owns_guest_access = guest_access is None
         if guest_access is None:
-            if not data_dir:
-                raise ValueError("Configure data_dir, or inject guest_access")
+            if not data_dir or host_key is None:
+                raise ValueError(
+                    "Configure data_dir (Forge provides the pool's host key), or inject "
+                    "guest_access"
+                )
             guest_access = SshGuestAccess(
-                ssh_private_key_file=ssh_private_key_file,
-                ssh_public_key_file=ssh_public_key_file,
+                host_key=host_key,
                 data_dir=data_dir,
                 ssh_user=ssh_user,
                 ssh_port=ssh_port,

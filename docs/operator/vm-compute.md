@@ -377,10 +377,7 @@ compute:
   runtime:
     adapter: volundr.adapters.outbound.ssh_vm_runtime.SshContainerVmRuntime
     kwargs:
-      # Optional; both or neither. Without them Forge generates
-      # <data_dir>/host-access/id_ed25519 on first start.
-      ssh_private_key_file: /secure/niuu/ssh_key
-      ssh_public_key_file: /secure/niuu/ssh_key.pub
+      # The SSH key comes from credential_store; it is written here for ssh.
       data_dir: /var/lib/niuu/vm-sessions
       skuld_image: ghcr.io/niuulabs/skuld:dev
       platform_port: 8088
@@ -398,16 +395,17 @@ tunnel to the app port reaches Forge unauthenticated and the broker's calls
 (delivery claims, notifications) are refused with 401. A Forge without Envoy in
 front, as in the standalone example above, points it at its own HTTP port.
 
-`ssh_private_key_file` and `ssh_public_key_file` are optional. Set both to use a
-keypair you manage (a real SSH client keypair; set only one and startup fails). Set
-neither and Forge generates its own Ed25519 key at
-`<data_dir>/host-access/id_ed25519` on first start (private key 0600 in a 0700
-directory, public key 0644), never overwrites it and reuses it on every restart. Keep
-`data_dir` on a persistent volume; deleting the files makes a new key, and every guest
-that trusts the old one must be bootstrapped again. Forge logs the key it uses and the
-public key's `SHA256:` fingerprint, never the private key. An incomplete or mismatched
-pair, a key that is not Ed25519, or a private key readable by others stops startup,
-naming the path and the fix. The guest must have
+Forge keeps the SSH key it reaches its VMs with in its credential store (`credential_store`:
+OpenBao on a cluster, the file store in mini mode), as the pool's credential
+`compute/<pool_id>/host-access-ssh-key`. Nothing SSH-specific is configured. The first
+Forge of a pool generates an Ed25519 pair and stores it; every later start, and every
+other Forge of the pool, reads the same pair. Generation runs under an advisory lock on
+Forge's database, so Forges starting together store one key. Each start writes the
+private key to `<data_dir>/host-access/id_ed25519` (0600 in a 0700 directory), where
+`ssh -i` reads it, and logs the public key's `SHA256:` fingerprint, never the private key.
+Startup fails if the store cannot be read or written, if the stored value is not a
+matching Ed25519 pair (delete the credential to have a new one made; every guest that trusts the old one must then be bootstrapped again), or if
+`credential_store` is the in-memory store, which forgets the key on restart. The guest must have
 OpenSSH, passwordless sudo for `ssh_user` (default `ubuntu`), Python 3.12+, Git,
 Docker and the QEMU guest agent. The controller needs OpenSSH and network access
 to the guest SSH port. Each start pulls the configured Skuld image; an existing

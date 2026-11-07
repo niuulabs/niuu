@@ -101,5 +101,9 @@ class MemoryCredentialStore(CredentialStorePort):
             results = [c for c in results if c.secret_type == secret_type]
         return sorted(results, key=lambda c: c.name)
 
+    @property
+    def durable(self) -> bool:
+        return False
+
     async def health_check(self) -> bool:
         return True

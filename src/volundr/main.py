@@ -1087,6 +1087,7 @@ def create_app(
                     PostgresGuestRequestWatermarks,
                 )
                 from volundr.compute.main import (
+                    HostKeySource,
                     build_execution_components,
                     build_guest_credentials,
                     build_provider,
@@ -1113,8 +1114,13 @@ def create_app(
                 if compute.database is not None and compute.database != settings.database:
                     raise ValueError("Forge compute leases must use the Forge database")
                 runtime = None
+                host_keys = HostKeySource(
+                    compute.pool_id, credential_store, PostgresCredentialRefreshLock(pool)
+                )
                 if compute.runtime is not None:
-                    runtime = build_runtime(compute.runtime, importer=import_class)
+                    runtime = await build_runtime(
+                        compute.runtime, importer=import_class, host_keys=host_keys
+                    )
                     compute_resources.push_async_callback(runtime.close)
                     if isinstance(runtime, CredentialAwareVmRuntime):
                         runtime.configure_credentials(credential_store)
@@ -1129,7 +1135,7 @@ def create_app(
                                 "Existing legacy allocations require compute.runtime until drained"
                             )
                     execution_components = await build_execution_components(
-                        compute, credential_store
+                        compute, credential_store, host_keys
                     )
                     for access in execution_components.accesses:
                         compute_resources.push_async_callback(access.close)

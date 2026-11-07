@@ -19,7 +19,7 @@ from uuid import uuid4
 
 import pytest
 
-from tests.test_adapters.test_ssh_vm_runtime_slots import SlotView, _keys
+from tests.test_adapters.test_ssh_vm_runtime_slots import SlotView
 from volundr.adapters.outbound import darwin_guest_programs as programs
 from volundr.adapters.outbound.host_checks import DARWIN_AUDIT_SH
 from volundr.adapters.outbound.host_session_programs import SESSION_BOOT
@@ -35,6 +35,7 @@ from volundr.domain.compute import Machine, MachineBootstrap, MachineState
 from volundr.domain.compute_hosts import HostPlatform
 from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
+from volundr.domain.services.host_access_key import generate_host_access_key
 from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.domain.vm_runtime import SessionImages
 
@@ -46,10 +47,8 @@ DESCRIPTION = {"format": 1, "platform": "darwin-arm64"}
 
 
 def _runtime(tmp_path: Path, **kwargs) -> SshDarwinHostRuntime:
-    private, public = _keys(tmp_path)
     options = {
-        "ssh_private_key_file": str(private),
-        "ssh_public_key_file": str(public),
+        "host_key": generate_host_access_key(),
         "data_dir": str(tmp_path / "data"),
         "skuld_bundle": BUNDLE,
         "native_images": [BAO],

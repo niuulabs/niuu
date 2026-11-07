@@ -63,6 +63,11 @@ class CredentialStorePort(ABC):
     async def health_check(self) -> bool:
         """Check if the credential store backend is reachable."""
 
+    @property
+    def durable(self) -> bool:
+        """Whether what is stored survives a restart of the process that stored it."""
+        return True
+
 
 class CredentialRefreshLockPort(ABC):
     """Serialize mini-mode credential rotation across processes sharing a database."""

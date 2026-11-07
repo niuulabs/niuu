@@ -18,8 +18,6 @@ from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from volundr.adapters.outbound import ssh_vm_runtime as module
 from volundr.adapters.outbound import vm_slot_supervisor
@@ -34,6 +32,7 @@ from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestIdentity
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
 from volundr.domain.service_account_tokens import ServiceAccountTokenPort
+from volundr.domain.services.host_access_key import generate_host_access_key
 from volundr.domain.vm_runtime import SlotLimits, VmRuntimeStageError
 
 ISOLATION = {"cpu": 1.0, "memory_mib": 1024, "pids": 256}
@@ -52,29 +51,9 @@ class SlotView:
         self.owner_id = "owner"
 
 
-def _keys(tmp_path: Path) -> tuple[Path, Path]:
-    key = Ed25519PrivateKey.generate()
-    private, public = tmp_path / "key", tmp_path / "key.pub"
-    private.write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.OpenSSH,
-            serialization.NoEncryption(),
-        )
-    )
-    public.write_bytes(
-        key.public_key().public_bytes(
-            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
-        )
-    )
-    return private, public
-
-
 def _runtime(tmp_path: Path, **kwargs) -> SshContainerVmRuntime:
-    private, public = _keys(tmp_path)
     return SshContainerVmRuntime(
-        ssh_private_key_file=str(private),
-        ssh_public_key_file=str(public),
+        host_key=generate_host_access_key(),
         data_dir=str(tmp_path / "data"),
         skuld_image="test/skuld:dev",
         command_timeout_seconds=0.05,
@@ -313,8 +292,7 @@ async def test_slot_zero_without_isolation_keeps_the_whole_vm_layout(tmp_path):
 def test_runtimes_with_their_own_sandbox_refuse_slot_isolation(tmp_path):
     with pytest.raises(ValueError, match="own sandbox boundary"):
         SshOpenShellVmRuntime(
-            ssh_private_key_file=str(_keys(tmp_path)[0]),
-            ssh_public_key_file=str(_keys(tmp_path)[1]),
+            host_key=generate_host_access_key(),
             data_dir=str(tmp_path / "data"),
             skuld_image="test/skuld:dev",
             slot_isolation=ISOLATION,

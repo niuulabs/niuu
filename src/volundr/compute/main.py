@@ -23,7 +23,7 @@ import asyncpg
 import yaml
 
 from niuu.config import DynamicAdapterConfig
-from niuu.ports.credentials import CredentialStorePort
+from niuu.ports.credentials import CredentialRefreshLockPort, CredentialStorePort
 from niuu.utils import import_class, resolve_secret_kwargs
 from volundr.adapters.outbound.postgres_compute_leases import PostgresComputeLeaseRepository
 from volundr.compute.config import ComputeConfig
@@ -43,6 +43,7 @@ from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestIdent
 from volundr.domain.service_account_tokens import ServiceAccountTokenPort
 from volundr.domain.services.compute_hosts import HostExecution
 from volundr.domain.services.compute_leases import ComputeLeaseService
+from volundr.domain.services.host_access_key import HostAccessKey, HostAccessKeyService
 from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.external_modules import load_external_module_manifests
 
@@ -276,12 +277,17 @@ def build_guest_credentials(
     return GuestCredentialComponents(tokens, identity, delivery)
 
 
-def build_runtime(
+async def build_runtime(
     config: DynamicAdapterConfig | Mapping[str, object],
     *,
     importer: Callable[[str], type] = import_class,
+    host_keys: HostKeySource | None = None,
 ) -> VmRuntime:
-    """Compose a runtime tree from dynamic adapter configs at the package root."""
+    """Compose a runtime tree from dynamic adapter configs at the package root.
+
+    Every runtime in the tree that takes the pool's host key (an SSH runtime building its
+    own access) gets it from ``host_keys``.
+    """
     from volundr.domain.vm_runtime import VmRuntime
 
     parsed = (
@@ -293,10 +299,13 @@ def build_runtime(
     runtime_class = importer(parsed.adapter)
     nested = _runtime_parameters(runtime_class, kwargs)
     composed = {
-        name: _runtime_value(value, importer=importer) if name in nested else value
+        name: await _runtime_value(value, importer=importer, host_keys=host_keys)
+        if name in nested
+        else value
         for name, value in kwargs.items()
     }
-    runtime = runtime_class(**composed)
+    keys = await host_keys.for_factory(runtime_class) if host_keys else {}
+    runtime = runtime_class(**composed, **keys)
     if not isinstance(runtime, VmRuntime):
         raise TypeError("Configured compute runtime must implement VmRuntime")
     return runtime
@@ -337,15 +346,21 @@ def _holds_runtime(annotation, runtime_type: type) -> bool:
     return any(_holds_runtime(arg, runtime_type) for arg in typing.get_args(annotation))
 
 
-def _runtime_value(value, *, importer: Callable[[str], type]):
+async def _runtime_value(
+    value, *, importer: Callable[[str], type], host_keys: HostKeySource | None
+):
     if isinstance(value, Mapping):
         if "adapter" in value and set(value) <= {"adapter", "kwargs", "secret_kwargs_env"}:
-            return build_runtime(value, importer=importer)
-        return {name: _runtime_value(item, importer=importer) for name, item in value.items()}
-    if isinstance(value, list):
-        return [_runtime_value(item, importer=importer) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_runtime_value(item, importer=importer) for item in value)
+            return await build_runtime(value, importer=importer, host_keys=host_keys)
+        return {
+            name: await _runtime_value(item, importer=importer, host_keys=host_keys)
+            for name, item in value.items()
+        }
+    if isinstance(value, list | tuple):
+        items = [
+            await _runtime_value(item, importer=importer, host_keys=host_keys) for item in value
+        ]
+        return items if isinstance(value, list) else tuple(items)
     return value
 
 
@@ -386,11 +401,20 @@ def _execution_binding_kwargs(binding) -> dict:
     return {**copy.deepcopy(binding.kwargs), **secret_values}
 
 
-def _execution_component(binding, **collaborators):
+def _execution_parts(binding) -> tuple[Callable, dict]:
+    """The binding's adapter and kwargs; a missing secret fails before anything is imported."""
     kwargs = _execution_binding_kwargs(binding)
+    return import_class(binding.adapter), kwargs
+
+
+def _construct(factory: Callable, kwargs: dict, **collaborators):
     if set(kwargs) & set(collaborators):
         raise ValueError("Execution adapter kwargs conflict with composed collaborators")
-    return import_class(binding.adapter)(**kwargs, **collaborators)
+    return factory(**kwargs, **collaborators)
+
+
+def _execution_component(binding, **collaborators):
+    return _construct(*_execution_parts(binding), **collaborators)
 
 
 def _execution_runtime(binding, **collaborators) -> VmRuntime:
@@ -448,8 +472,65 @@ async def resolve_session_images(config: ComputeConfig) -> SessionImages | None:
     return SessionImages(**pinned)
 
 
+def _takes(factory: Callable, name: str) -> bool:
+    """Whether ``factory(name=…)`` reaches a constructor that names ``name``.
+
+    For a class, follows ``**kwargs`` up its bases, so a subclass that passes its extra
+    keywords on still counts as taking what its base names.
+    """
+    if not isinstance(factory, type):
+        return name in inspect.signature(factory).parameters
+    for klass in factory.__mro__:
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        parameters = inspect.signature(init).parameters
+        if name in parameters:
+            return True
+        if not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+            return False
+    return False
+
+
+class HostKeySource:
+    """The pool's host-access key, read from (or made once in) the credential store.
+
+    Asked for only when an SSH access or runtime takes it, so a pool without SSH never
+    stores one. The store must keep it across restarts: an in-memory store would give the
+    pool a new key on every start, which every VM and host would then refuse.
+    """
+
+    def __init__(
+        self,
+        pool_id: str,
+        credential_store: CredentialStorePort,
+        lock: CredentialRefreshLockPort,
+    ) -> None:
+        self._pool_id = pool_id
+        self._store = credential_store
+        self._lock = lock
+        self._key: HostAccessKey | None = None
+
+    async def key(self) -> HostAccessKey:
+        if self._key is None:
+            if not self._store.durable:
+                raise ValueError(
+                    f"credential_store is {type(self._store).__name__}, which forgets on "
+                    "restart, but Forge keeps its SSH key for the pool's VMs and hosts there; "
+                    "configure a durable credential_store (the file store, OpenBao)"
+                )
+            self._key = await HostAccessKeyService(self._store, self._lock).ensure(self._pool_id)
+        return self._key
+
+    async def for_factory(self, factory: Callable) -> dict[str, object]:
+        """``{"host_key": …}`` for an adapter that takes it, else nothing."""
+        if not _takes(factory, "host_key"):
+            return {}
+        return {"host_key": await self.key()}
+
+
 async def build_execution_components(
-    config: ComputeConfig, credential_store: CredentialStorePort
+    config: ComputeConfig, credential_store: CredentialStorePort, host_keys: HostKeySource
 ) -> ExecutionComponents:
     """Build approved adapters from the file catalog; never import lease payloads."""
     from volundr.domain.guest_access import GuestAccess
@@ -478,7 +559,8 @@ async def build_execution_components(
                     "Execution profile does not belong to the configured pool/provider"
                 )
             access_binding = plan.access.transport
-            access = _execution_component(access_binding)
+            factory, kwargs = _execution_parts(access_binding)
+            access = _construct(factory, kwargs, **await host_keys.for_factory(factory))
             if not isinstance(access, GuestAccess):
                 raise TypeError("Configured guest access must implement GuestAccess")
             opened.append(access)

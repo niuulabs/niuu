@@ -19,11 +19,11 @@ from typing import BinaryIO
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from niuu.adapters.workload_identity.key_file import load_or_create_ssh_keypair
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.compute import AllocationRef, BootstrapFile, MachineBootstrap
 from volundr.domain.execution_catalog import TrustMode
 from volundr.domain.guest_access import GuestAccess, GuestCommandResult
+from volundr.domain.services.host_access_key import HostAccessKey
 from volundr.domain.vm_runtime import VmRuntimeStageError, VmRuntimeUnavailableError
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 #: Where Forge keeps its own host-access key under ``data_dir`` when none is configured.
 HOST_ACCESS_KEY_DIR = "host-access"
 HOST_ACCESS_KEY_NAME = "id_ed25519"
-HOST_ACCESS_KEY_COMMENT = "forge-host-access"
 
 HOST_KEY_PATH = "/etc/niuu/ssh_host_ed25519_key"
 HOST_KEY_CONFIG_PATH = "/etc/ssh/sshd_config.d/10-niuu-host-key.conf"
@@ -117,8 +116,7 @@ class SshGuestAccess(GuestAccess):
     def __init__(
         self,
         *,
-        ssh_private_key_file: str | None = None,
-        ssh_public_key_file: str | None = None,
+        host_key: HostAccessKey,
         data_dir: str,
         ssh_user: str = "ubuntu",
         ssh_port: int = 22,
@@ -142,20 +140,12 @@ class SshGuestAccess(GuestAccess):
         ):
             raise ValueError("VM machine commands must contain non-empty arguments")
 
-        if (ssh_private_key_file is None) != (ssh_public_key_file is None):
-            raise ValueError(
-                "Set both ssh_private_key_file and ssh_public_key_file to use a configured "
-                "SSH key, or neither to use the key Forge generates under data_dir"
-            )
         self._data = Path(data_dir).expanduser().resolve()
         self._data.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if ssh_private_key_file is None or ssh_public_key_file is None:
-            self._private_key, self._public_key = self._generated_key()
-        else:
-            self._private_key = str(Path(ssh_private_key_file).expanduser().resolve(strict=True))
-            self._public_key = Path(ssh_public_key_file).expanduser().read_text().strip()
-            serialization.load_ssh_public_key(self._public_key.encode())
-            logger.info("Forge host access: using the configured SSH key %s", self._private_key)
+        # OpenSSH reads the key from a file: the store's key, written for it on every start.
+        self._private_key = str(self._key_file(host_key))
+        self._public_key = host_key.public_key
+        logger.info("Forge host access: SSH key %s from the credential store", host_key.fingerprint)
         self._ssh_user = ssh_user
         self._ssh_port = ssh_port
         self._connect_timeout = connect_timeout_seconds
@@ -169,20 +159,19 @@ class SshGuestAccess(GuestAccess):
         self._tunnels: dict[str, tuple[asyncio.subprocess.Process, int, str]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
-    def _generated_key(self) -> tuple[str, str]:
-        """Forge's own key under ``data_dir``: made on first start, then reused."""
-        pair = load_or_create_ssh_keypair(
-            self._data / HOST_ACCESS_KEY_DIR,
-            name=HOST_ACCESS_KEY_NAME,
-            comment=HOST_ACCESS_KEY_COMMENT,
-        )
-        logger.info(
-            "Forge host access: %s the SSH key %s (public key %s)",
-            "generated" if pair.created else "using",
-            pair.private_path,
-            pair.fingerprint,
-        )
-        return str(pair.private_path), pair.public_key
+    def _key_file(self, host_key: HostAccessKey) -> Path:
+        """The private key where ``ssh -i`` reads it: replaced whole, never readable by others."""
+        directory = self._data / HOST_ACCESS_KEY_DIR
+        directory.mkdir(mode=0o700, exist_ok=True)
+        directory.chmod(0o700)
+        path = directory / HOST_ACCESS_KEY_NAME
+        temporary = directory / f".{HOST_ACCESS_KEY_NAME}.tmp"
+        temporary.unlink(missing_ok=True)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            stream.write(host_key.private_key)
+        os.replace(temporary, path)
+        return path
 
     @property
     def principal(self) -> str:
