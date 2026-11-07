@@ -270,3 +270,28 @@ Limits of this exception, enforced together:
 - **Forge's authority to mint is narrow.** The ServiceAccount tokens come from
   the Kubernetes TokenRequest API under a namespaced Role allowing only `create`
   on `serviceaccounts/token` (`guestMetadata` in the Volundr chart).
+
+### Containers in host-mode slots are rootless
+
+A host-mode session (`SshHostVmRuntime`) runs on its VM as its slot's user, in
+the slot's network namespace and cgroup (`vm_slot_supervisor`). Sessions on one
+VM are kept apart by those boundaries alone, so nothing a slot is given may be
+root on the machine:
+
+- **Never the guest's Docker daemon.** No slot user joins the `docker` group
+  and its socket is never mounted into a slot: either is root, and reads
+  every other slot. The guest's Docker runs only the platform's own
+  containers (the slot holder, the credential agents).
+- **No sudo** for a slot user, and no other root-equivalent capability (a
+  privileged container, `CAP_SYS_ADMIN`, a host mount).
+- **Containers are rootless Podman**, inside the slot: subordinate ids per
+  slot that overlap no other slot and no VM account, a cgroup delegated from
+  the slot's own (so every container sits under the slot's limits), the
+  slot's network namespace, and the session's PID namespace.
+- **The VM's own credentials are hidden from the session's view** (an empty
+  tmpfs over `/etc/niuu`), whatever their modes, because the session runs on
+  the VM's filesystem.
+
+There is no grant that lifts this, and no "machine to itself" path for a host
+session. A session that needs root runs on a container runtime
+(`SshContainerVmRuntime`), where root is its container's.

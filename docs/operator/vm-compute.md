@@ -552,6 +552,172 @@ slot but 0 is refused. With it, `SshContainerVmRuntime` declares slot support
 OpenShell runtimes refuse `slot_isolation`: their sandbox is the boundary, and
 they serve one session per machine.
 
+## Host mode
+
+`volundr.adapters.outbound.ssh_host_vm_runtime.SshHostVmRuntime` runs each
+session directly on its VM: Skuld and the agent CLI run as the slot's user
+against the VM's own filesystem, toolchain and Nix store, with no session
+container. A VM Forge runs one runtime, so host mode is a Forge (and a Guild
+host) of its own, never a choice beside Docker on the same pool.
+
+```yaml
+compute:
+  runtime:
+    adapter: volundr.adapters.outbound.ssh_host_vm_runtime.SshHostVmRuntime
+    kwargs:
+      skuld_image: "ghcr.io/niuulabs/openshell@sha256:<digest>"
+      slot_isolation:        # required: the slot is the session's boundary
+        cpu: 2
+        memory_mib: 4096
+        pids: 4096
+        image_user: sandbox  # the OpenShell image's session account
+      nix: true              # the machine profile installs Nix (below)
+      containers: {}         # rootless Podman in every slot (below); null for none
+      # session_start_timeout_seconds: 30  (until Skuld's PID 1 runs; a hit fails the start)
+      # … SSH, platform and preview settings as for SshContainerVmRuntime
+```
+
+How a session runs, all over SSH as every other guest step, never as a service:
+
+1. The slot supervisor creates the slot exactly as for Docker sessions (user
+   `niuu-slot-<n>`, its directories, the holder container that keeps the slot's
+   network namespace and cgroup, the veth, the rules and the slice). The
+   credential agents (guest agent, OpenBao's agent) run beside the holder in
+   the guest's Docker, as for `SshContainerVmRuntime`.
+2. The session image is unpacked once per digest under
+   `/var/lib/niuu/host-images/<digest>` (`docker create` and `docker export`; no
+   container runs it), with wrappers for the agent CLIs (`claude`, `codex`,
+   `opencode`, `grok`, `pi`, `muse`) and fallback tools (`gh`, `glab`, `uv`,
+   `node`, `npm`). `warm` does this ahead of sessions.
+3. A guest program joins the slot's network namespace and the holder's cgroup
+   (so the slot's limits apply), opens its own mount and PID namespaces and
+   becomes PID 1 there. In that mount namespace it binds, read-only, the
+   unpacked image at `/opt/niuu-skuld` and the image's venv and Python at their
+   own paths, then the workspace at `/workspace`, the home at `/home/skuld`, the
+   launch's secret and volume mounts at their targets, a private `/tmp`,
+   `/var/tmp` and `/dev/shm`, and the VM's upstream resolvers over
+   `/etc/resolv.conf` (the slot cannot reach the VM's resolver on loopback).
+   An empty read-only tmpfs covers `/etc/niuu`, where the VM keeps its own
+   credentials (the guest identity token, Forge's SSH host key): a session
+   runs on the VM's filesystem, so it must not depend on their modes.
+   It then runs Skuld as the slot's uid. When Skuld ends, PID 1 ends, and with
+   it every process the session left.
+
+A host session runs on the VM as the slot's user, who owns the slot's data and
+runtime directories and could swap anything in them for a link. So whatever
+root or the credential agents write for the slot (the launch file, secrets, the
+Forge session credential, the guest agent's configuration, the token and volume
+directories) lives in the slot's root-owned `/etc/niuu/slots/<n>`
+(`root:<slot group> 0750`, closed to other slots too), and only the session's
+home and workspace stay in `/var/lib/niuu/slots/<n>`. The supervisor creates
+and owns the slot's directories, and writes its identity files, through
+directory descriptors that never follow a link; the workspace marker and the
+restore do the same, the start clones the repository as the slot's user, and
+it touches the slot's storage only once a replaced session has exited.
+
+`PATH` is the image's agent CLIs first (the pinned versions), then the
+`docker` shim (rootless Podman), then Nix's profiles (`~/.nix-profile/bin`, the default profile), then the VM's own
+directories, then the image's fallback tools. The agent's system prompt says it
+runs on the VM as an unprivileged user and how to install with Nix.
+
+**The image needs a relocatable Python.** Skuld runs from the image's venv on
+the VM's kernel and libc, so its interpreter must not be the image
+distribution's: `ghcr.io/niuulabs/openshell` is built on uv's
+python-build-standalone and declares `VIRTUAL_ENV` and `UV_PYTHON_INSTALL_DIR`.
+The Skuld image's Python is Ubuntu's and runs only inside its own root; the
+unpack refuses such an image, naming the remedy. One digest serves the
+holder, the credential agents and Skuld.
+
+Stopping a session sends Skuld `SIGTERM` (then `SIGKILL` after
+`stop_timeout_seconds`), which ends its containers with it, removes its
+subordinate ids, and then stops, archives and
+removes the slot as for Docker sessions. A host session's links to absolute
+paths (Nix makes `~/.nix-profile` and its caches that way) are restored as
+written; they are never followed, and a member whose own path resolves outside
+the session still fails the restore. Docker sessions keep refusing them.
+
+### Nix on host-mode VMs
+
+Software is shared through a multi-user Nix: one daemon, one `/nix/store`,
+profiles per user. `deploy/nix/install-nix.sh` installs a pinned release
+(checked by SHA-256) as root and is idempotent; run it from the machine
+profile's cloud-init or a host recipe. It:
+
+- enables `nix-command` and `flakes`, lets every user build through the daemon
+  and trusts only root, so a slot can add packages but never a substituter or
+  an unsigned path, and cannot change another slot's packages;
+- puts one copy of a locked nixpkgs (`NIX_NIXPKGS`, a revision with its
+  narHash) in the store, roots it (`/nix/var/nix/gcroots/niuu-nixpkgs`) and
+  makes it what `nixpkgs` means in the system registry. No slot resolves a
+  branch through the GitHub API, which rate-limits a shared egress address, and
+  none downloads or unpacks nixpkgs again;
+- installs `NIX_BASELINE` into the default profile, when set: for example the
+  repository's own flake, `github:niuulabs/niuu/<rev>?dir=deploy/nix#baseline`,
+  which builds the same toolchain on Linux and macOS.
+
+Pass garbage collection thresholds in `NIX_EXTRA_CONF`, for example
+`min-free = 2147483648` and `max-free = 8589934592`: the daemon then collects
+on its own when free space drops, which keeps a long-lived VM from filling.
+A stopped slot's profile goes with its home, so its packages become garbage.
+With `replace` (the default) machines drain after their sessions as well.
+
+A slot installs with `nix profile install nixpkgs#<package>` (kept in its
+profile, which is archived with its home) or `nix shell nixpkgs#<package>`; a
+package another slot installed is in the store already and needs no download.
+The runtime refuses to start a session with `nix: true` on a VM without the
+daemon socket.
+
+Limit: a profile is a store path built on the VM. A session restored onto
+another VM keeps `~/.nix-profile`, but that VM lacks the profile's store path
+until the session installs its packages again.
+
+### Rootless containers
+
+Every slot can build and run containers with rootless Podman (`containers`,
+on by default; `null` turns it off). The machine profile installs `podman`,
+`uidmap` and `passt` (Ubuntu 24.04 ships AppArmor profiles that let them use
+user namespaces) and writes `/etc/containers/containers.conf`:
+
+```toml
+[engine]
+cgroup_manager = "cgroupfs"   # no systemd user session; the runtime delegates a cgroup
+events_logger = "file"
+
+[network]
+default_rootless_network_cmd = "pasta"
+```
+
+For each slot the runtime adds:
+
+- **Subordinate ids of its own.** Slot `n` maps container uids and gids to
+  `subordinate_id_base + n × subordinate_ids_per_slot` onwards (defaults
+  1000000 and 65536) in `/etc/subuid` and `/etc/subgid`, and removes them at
+  stop. Forge refuses ranges that run past the id space or overlap the slots'
+  own uids; the start refuses one another VM user holds.
+- **A delegated cgroup inside the slot's.** The holder's Docker scope in the
+  slot's slice becomes a tree: the holder in a leaf, and a `session` subtree
+  owned by the slot's user, with the `cpu`, `memory` and `pids` controllers.
+  The session runs in its `init` leaf, and Podman (`cgroupfs`) puts each
+  container in a cgroup of its own under `session`, so `--memory` and
+  `--pids-limit` work and every container stays under the slot's limits.
+- **Its own runtime directory** (`XDG_RUNTIME_DIR=/run/niuu/slots/<n>/xdg`) and
+  storage in its home (`~/.local/share/containers`). Container storage holds
+  files owned by subordinate ids and is the machine's: it is never archived
+  (`home/.local/share/containers` and `home/.cache/containers` join the
+  archive exclusions) and the start leaves its owners as they are.
+- A `docker` command that runs `podman`.
+
+Containers share the slot's network namespace through pasta: a published port
+listens in the slot as the slot's user, so two slots can publish the same port
+and the preview offers it. Their processes are in the session's PID namespace
+and end with it.
+
+What a slot never gets: the guest's Docker daemon (its socket is
+`root:docker`, and no slot user is in `docker`), sudo, or any other
+root-equivalent access. The guest's Docker runs only the platform's holder and
+credential agents. See `.claude/rules/architecture.md` ("Containers in
+host-mode slots are rootless").
+
 ## VM session credentials
 
 A session pod gets its ServiceAccount's tokens from the kubelet and its Forge
