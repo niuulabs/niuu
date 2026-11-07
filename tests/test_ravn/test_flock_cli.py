@@ -170,7 +170,7 @@ def test_mdns_discovery_uses_the_adapters_list(tmp_path: Path) -> None:
 
     config = Path(node.config_path).read_text(encoding="utf-8")
     assert "adapters:" in config
-    assert "ravn.adapters.discovery.mdns.MdnsDiscoveryAdapter" in config
+    assert "niuu.adapters.discovery.mdns.MdnsDiscoveryAdapter" in config
     assert f"handshake_port: {node.handshake_port}" in config
     assert "adapter: mdns" not in config
 

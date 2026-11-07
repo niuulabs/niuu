@@ -149,7 +149,7 @@ class RavnStateTool(ToolPort):
         # Flock peers
         if self._discovery is not None:
             try:
-                peers = self._discovery.peers()  # dict[str, RavnPeer]
+                peers = self._discovery.peers()  # dict[str, MeshPeer]
                 if peers:
                     lines.append(f"\n**Flock peers** ({len(peers)}):")
                     for p in peers.values():

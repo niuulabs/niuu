@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Protocol, runtime_checkable
 
-from ravn.domain.events import RavnEvent
+from niuu.mesh.events import MeshEvent
 
 
 class PeerNotFoundError(Exception):
@@ -37,14 +37,14 @@ class MeshPort(Protocol):
     - ``CompositeMeshAdapter`` — all-active: every configured transport at once
     """
 
-    async def publish(self, event: RavnEvent, topic: str) -> None:
+    async def publish(self, event: MeshEvent, topic: str) -> None:
         """Broadcast an event to all subscribers of the given topic."""
         raise NotImplementedError
 
     async def subscribe(
         self,
         topic: str,
-        handler: Callable[[RavnEvent], Awaitable[None]],
+        handler: Callable[[MeshEvent], Awaitable[None]],
     ) -> None:
         """Register an async handler for events on a topic."""
         raise NotImplementedError

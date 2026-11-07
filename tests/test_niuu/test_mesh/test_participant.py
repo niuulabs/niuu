@@ -232,18 +232,18 @@ class TestMeshParticipantIntegration:
 
         from datetime import UTC, datetime
 
-        from ravn.domain.events import RavnEvent, RavnEventType
+        from niuu.mesh.events import MeshEvent, MeshEventType
 
-        received: list[RavnEvent] = []
+        received: list[MeshEvent] = []
 
-        async def handler(event: RavnEvent) -> None:
+        async def handler(event: MeshEvent) -> None:
             received.append(event)
 
         await p.start()
         await p.subscribe("test.topic", handler)
 
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="test-src",
             payload={"data": "hello"},
             timestamp=datetime.now(UTC),

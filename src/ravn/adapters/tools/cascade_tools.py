@@ -26,9 +26,9 @@ from niuu.ports.tool import ToolPort
 from ravn.domain.models import AgentTask, OutputMode
 
 if TYPE_CHECKING:
+    from niuu.ports.discovery import DiscoveryPort
+    from niuu.ports.mesh import MeshPort
     from ravn.drive_loop import DriveLoop
-    from ravn.ports.discovery import DiscoveryPort
-    from ravn.ports.mesh import MeshPort
     from ravn.ports.spawn import SpawnPort
 
 logger = logging.getLogger(__name__)

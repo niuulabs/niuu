@@ -15,9 +15,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes
 from ravn.config import Settings
-from ravn.domain.events import RavnEvent, RavnEventType
 from tests.test_ravn.conftest import _make_drive_loop
 
 
@@ -209,8 +209,8 @@ async def test_unmatched_filtered_event_is_not_recorded_as_consumed(tmp_path) ->
         _wire_cascade(dl, settings, persona)
     handlers = dict(mesh._pending_outcome_subscriptions)
 
-    event = RavnEvent(
-        type=RavnEventType.OUTCOME,
+    event = MeshEvent(
+        type=MeshEventType.OUTCOME,
         source="flock-producer",
         payload={
             "event_type": "delivery.requested",
@@ -234,8 +234,8 @@ async def test_unmatched_filtered_event_is_not_recorded_as_consumed(tmp_path) ->
     assert not dl._consumed_workflow_event_ids
 
     # A matching event with the required field IS recorded.
-    matching_event = RavnEvent(
-        type=RavnEventType.OUTCOME,
+    matching_event = MeshEvent(
+        type=MeshEventType.OUTCOME,
         source="flock-producer",
         payload={
             "event_type": "delivery.requested",

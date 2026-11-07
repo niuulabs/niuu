@@ -10,10 +10,10 @@ import pytest
 
 from niuu.domain.outcome import OutcomeField
 from niuu.domain.tool import ToolResult
+from niuu.mesh.events import MeshEventType
 from ravn.adapters.personas.loader import PersonaConfig, PersonaProduces
 from ravn.agent import RavnAgent, _build_assistant_content
 from ravn.budget import IterationBudget
-from ravn.domain.events import RavnEventType
 from ravn.domain.exceptions import MaxIterationsError, PromptBudgetExceededError
 from ravn.domain.models import (
     LLMResponse,
@@ -161,8 +161,8 @@ class TestRavnAgentSimpleTurn:
         await agent.run_turn("Hey")
 
         event_types = [e.type for e in channel.events]
-        assert RavnEventType.THOUGHT in event_types
-        assert RavnEventType.RESPONSE in event_types
+        assert MeshEventType.THOUGHT in event_types
+        assert MeshEventType.RESPONSE in event_types
 
     async def test_cumulative_usage_tracked(self) -> None:
         llm = make_simple_llm("ok")
@@ -344,8 +344,8 @@ class TestRavnAgentToolUse:
         await agent.run_turn("go")
 
         event_types = [e.type for e in channel.events]
-        assert RavnEventType.TOOL_START in event_types
-        assert RavnEventType.TOOL_RESULT in event_types
+        assert MeshEventType.TOOL_START in event_types
+        assert MeshEventType.TOOL_RESULT in event_types
 
     async def test_unknown_tool_returns_error(self) -> None:
         tool_call = ToolCall(id="tc1", name="nonexistent", input={})
@@ -373,7 +373,7 @@ class TestRavnAgentToolUse:
         agent, channel = make_agent(llm, tools=[])
         await agent.run_turn("go")
 
-        error_events = [e for e in channel.events if e.type == RavnEventType.TOOL_RESULT]
+        error_events = [e for e in channel.events if e.type == MeshEventType.TOOL_RESULT]
         assert any(e.payload.get("is_error") for e in error_events)
 
     async def test_permission_denied_returns_error(self) -> None:
@@ -403,7 +403,7 @@ class TestRavnAgentToolUse:
         agent, channel = make_agent(llm, tools=[tool], permission=DenyAllPermission())
         await agent.run_turn("go")
 
-        tool_result_events = [e for e in channel.events if e.type == RavnEventType.TOOL_RESULT]
+        tool_result_events = [e for e in channel.events if e.type == MeshEventType.TOOL_RESULT]
         assert any(e.payload.get("is_error") for e in tool_result_events)
 
     async def test_tool_exception_returns_error_result(self) -> None:

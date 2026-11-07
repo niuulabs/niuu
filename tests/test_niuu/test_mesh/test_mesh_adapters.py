@@ -7,7 +7,7 @@ Coverage targets:
 - PeerNotFoundError
 - SleipnirMeshAdapter: publish, subscribe, unsubscribe, send, rpc handler,
   timeout, peer-not-found, start/stop
-- RavnEvent <-> SleipnirEvent conversion
+- MeshEvent <-> SleipnirEvent conversion
 """
 
 from __future__ import annotations
@@ -24,12 +24,11 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import ValidationError
 
+from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
 from niuu.mesh import mesh_event_prefix
-from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE
-from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
-from ravn.config import MeshConfig
-from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.ports.mesh import MeshPort, PeerNotFoundError
+from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshConfig
+from niuu.mesh.events import MeshEvent, MeshEventType
+from niuu.ports.mesh import MeshPort, PeerNotFoundError
 from sleipnir.domain.events import SleipnirEvent
 
 # ---------------------------------------------------------------------------
@@ -37,8 +36,8 @@ from sleipnir.domain.events import SleipnirEvent
 # ---------------------------------------------------------------------------
 
 
-def _make_event(source: str = "test-ravn") -> RavnEvent:
-    return RavnEvent.thought(
+def _make_event(source: str = "test-ravn") -> MeshEvent:
+    return MeshEvent.thought(
         source=source,
         text="hello mesh",
         correlation_id="cid-1",
@@ -264,8 +263,8 @@ class TestSleipnirMeshAdapterUnit:
             own_peer_id="valkyrie-a",
             environment_id="cluster-a",
         )
-        event = RavnEvent(
-            type=RavnEventType.DECISION,
+        event = MeshEvent(
+            type=MeshEventType.DECISION,
             source="valkyrie-a",
             payload={"signal": "pod/restarted"},
             timestamp=datetime.now(UTC),
@@ -276,7 +275,7 @@ class TestSleipnirMeshAdapterUnit:
         )
 
         with (
-            caplog.at_level(logging.WARNING, logger="ravn.adapters.mesh.sleipnir_mesh"),
+            caplog.at_level(logging.WARNING, logger="niuu.adapters.mesh.sleipnir_mesh"),
             pytest.raises(RuntimeError, match="broker unavailable"),
         ):
             await adapter.publish(event, "signal.kubernetes.pod")
@@ -313,9 +312,9 @@ class TestSleipnirMeshAdapterUnit:
     async def test_subscribe_handler_receives_converted_event(
         self, adapter: SleipnirMeshAdapter, transport: _FakeSleipnirTransport
     ) -> None:
-        received_events: list[RavnEvent] = []
+        received_events: list[MeshEvent] = []
 
-        async def handler(event: RavnEvent) -> None:
+        async def handler(event: MeshEvent) -> None:
             received_events.append(event)
 
         await adapter.subscribe("test.topic", handler)
@@ -330,7 +329,7 @@ class TestSleipnirMeshAdapterUnit:
         await adapter.publish(event, "test.topic")
 
         assert len(received_events) == 1
-        assert received_events[0].type == RavnEventType.THOUGHT
+        assert received_events[0].type == MeshEventType.THOUGHT
         assert received_events[0].trace_context == event.trace_context
 
     @pytest.mark.asyncio
@@ -345,12 +344,12 @@ class TestSleipnirMeshAdapterUnit:
             environment_id="cluster-b",
         )
 
-        async def failing_handler(event: RavnEvent) -> None:
+        async def failing_handler(event: MeshEvent) -> None:
             raise ValueError("bad handler")
 
         await adapter.subscribe("signal.kubernetes.pod", failing_handler)
-        event = RavnEvent(
-            type=RavnEventType.DECISION,
+        event = MeshEvent(
+            type=MeshEventType.DECISION,
             source="valkyrie-a",
             payload={"signal": "pod/restarted"},
             timestamp=datetime.now(UTC),
@@ -367,7 +366,7 @@ class TestSleipnirMeshAdapterUnit:
         await adapter.publish(event, "signal.kubernetes.pod")
 
         with (
-            caplog.at_level(logging.WARNING, logger="ravn.adapters.mesh.sleipnir_mesh"),
+            caplog.at_level(logging.WARNING, logger="niuu.adapters.mesh.sleipnir_mesh"),
             pytest.raises(ValueError, match="bad handler"),
         ):
             await subscription.handler(transport.published[0])
@@ -497,7 +496,7 @@ class TestSleipnirMeshAdapterUnit:
         rpc_subscription = subscriber.subscriptions[0]
 
         with (
-            caplog.at_level(logging.WARNING, logger="ravn.adapters.mesh.sleipnir_mesh"),
+            caplog.at_level(logging.WARNING, logger="niuu.adapters.mesh.sleipnir_mesh"),
             pytest.raises(RuntimeError, match="broker unavailable"),
         ):
             await rpc_subscription.handler(request)
@@ -687,7 +686,7 @@ class TestRpcRedelivery:
             await rpc_subscription.handler(request)
         assert _replies(publisher) == []
 
-        with caplog.at_level(logging.INFO, logger="ravn.adapters.mesh.sleipnir_mesh"):
+        with caplog.at_level(logging.INFO, logger="niuu.adapters.mesh.sleipnir_mesh"):
             await rpc_subscription.handler(_redelivered(request))
 
         handler.assert_awaited_once_with({"action": "test"})

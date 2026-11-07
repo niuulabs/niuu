@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
@@ -51,6 +52,71 @@ def test_niuu_does_not_import_feature_packages() -> None:
     }
 
     assert actual == set()
+
+
+#: Every module and subpackage of ``ravn`` that a dotted path can name.  Wire names
+#: that merely start with ``ravn.`` (``ravn.mesh.*`` event types, ``ravn.memory.*``
+#: metrics, ``ravn.niuu.world/*`` labels) are not modules and are not listed.
+_RAVN_MODULES = (
+    "adapters",
+    "agent",
+    "api",
+    "budget",
+    "build",
+    "cap_telemetry",
+    "cli",
+    "compression",
+    "config",
+    "context",
+    "domain",
+    "drive_loop",
+    "dynamic_adapters",
+    "harness_telemetry",
+    "huddle_archiver",
+    "main",
+    "personas",
+    "plugin",
+    "ports",
+    "prompt_builder",
+    "registry",
+    "resident_text",
+    "session_join",
+    "skills",
+    "static",
+    "tool_observability",
+    "tui",
+    "valkyrie_evolution",
+    "web",
+    "workflow_kickoff",
+    "workflow_runtime",
+)
+_RAVN_MODULE_PATH = re.compile(rf"(?<![\w.])ravn\.(?:{'|'.join(_RAVN_MODULES)})\b")
+
+
+def test_niuu_does_not_import_ravn() -> None:
+    actual = {path for path, imported in _external_package_imports("niuu") if imported == "ravn"}
+
+    assert actual == set()
+
+
+def test_niuu_does_not_name_ravn_modules_in_strings() -> None:
+    """Dynamic-adapter paths, ``import_class`` arguments and docstrings are covered.
+
+    A dotted-path string is an import the AST walk above cannot see; niuu reaching
+    into ``ravn`` through one is the same dependency.
+    """
+    niuu_root = SRC_ROOT / "niuu"
+    violations: set[str] = set()
+
+    for path in niuu_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if _RAVN_MODULE_PATH.search(node.value):
+                violations.add(f"{path.relative_to(niuu_root).as_posix()}:{node.lineno}")
+
+    assert violations == set()
 
 
 def test_mimir_does_not_import_ravn() -> None:

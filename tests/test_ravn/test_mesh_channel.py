@@ -8,12 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.channels.mesh_channel import MeshActivityChannel
-from ravn.domain.events import RavnEvent, RavnEventType
 
 
-def _make_event(event_type: RavnEventType = RavnEventType.THOUGHT) -> RavnEvent:
-    return RavnEvent(
+def _make_event(event_type: MeshEventType = MeshEventType.THOUGHT) -> MeshEvent:
+    return MeshEvent(
         type=event_type,
         source="ravn-test",
         payload={"text": "hello"},
@@ -40,7 +40,7 @@ class TestMeshActivityChannel:
     async def test_emit_publishes_to_mesh(self):
         mesh = _make_mesh()
         ch = MeshActivityChannel(mesh, "peer-01")
-        event = _make_event(RavnEventType.RESPONSE)
+        event = _make_event(MeshEventType.RESPONSE)
         await ch.emit(event)
         await sleep(0)
         mesh.publish.assert_awaited_once_with(event, topic="activity.peer-01")
@@ -49,7 +49,7 @@ class TestMeshActivityChannel:
     async def test_emit_drops_ephemeral_thought_event(self):
         mesh = _make_mesh()
         ch = MeshActivityChannel(mesh, "p1")
-        event = _make_event(RavnEventType.THOUGHT)
+        event = _make_event(MeshEventType.THOUGHT)
         await ch.emit(event)
         mesh.publish.assert_not_awaited()
 
@@ -65,7 +65,7 @@ class TestMeshActivityChannel:
         mesh = _make_mesh()
         ch = MeshActivityChannel(mesh, "flock-research-framer")
 
-        await ch.emit(_make_event(RavnEventType.USAGE))
+        await ch.emit(_make_event(MeshEventType.USAGE))
         await sleep(0)
 
         mesh.publish.assert_awaited_once()
@@ -74,7 +74,7 @@ class TestMeshActivityChannel:
     async def test_emit_response_event(self):
         mesh = _make_mesh()
         ch = MeshActivityChannel(mesh, "p1")
-        event = _make_event(RavnEventType.RESPONSE)
+        event = _make_event(MeshEventType.RESPONSE)
         await ch.emit(event)
         await sleep(0)
         mesh.publish.assert_awaited_once()
@@ -83,7 +83,7 @@ class TestMeshActivityChannel:
     async def test_emit_tool_start_event(self):
         mesh = _make_mesh()
         ch = MeshActivityChannel(mesh, "p1")
-        event = _make_event(RavnEventType.TOOL_START)
+        event = _make_event(MeshEventType.TOOL_START)
         await ch.emit(event)
         await sleep(0)
         mesh.publish.assert_awaited_once()
@@ -95,7 +95,7 @@ class TestMeshActivityChannel:
         mesh.publish.side_effect = RuntimeError("mesh down")
         ch = MeshActivityChannel(mesh, "p1")
         # Must not raise
-        await ch.emit(_make_event(RavnEventType.ERROR))
+        await ch.emit(_make_event(MeshEventType.ERROR))
         await sleep(0)
 
     @pytest.mark.asyncio
@@ -104,6 +104,6 @@ class TestMeshActivityChannel:
         mesh.publish.side_effect = RuntimeError("mesh down")
         ch = MeshActivityChannel(mesh, "p1")
         with patch("ravn.adapters.channels.mesh_channel.logger") as mock_logger:
-            await ch.emit(_make_event(RavnEventType.ERROR))
+            await ch.emit(_make_event(MeshEventType.ERROR))
             await sleep(0)
         mock_logger.warning.assert_called_once()

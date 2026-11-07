@@ -15,13 +15,13 @@ from niuu.domain.agent_directory import (
     AgentProvenance,
     AgentSkill,
 )
+from niuu.mesh.events import MeshEventType
 from ravn.adapters.permission.allow_deny import AllowAllPermission
 from ravn.adapters.tool_build.http import HttpResponse
 from ravn.adapters.tools.a2a_task import A2ATaskTool
 from ravn.adapters.tools.capability_catalog import CapabilityListTool
 from ravn.agent import RavnAgent
 from ravn.cap_telemetry import cap_hit_counts
-from ravn.domain.events import RavnEventType
 from ravn.domain.models import StreamEvent, StreamEventType, TokenUsage, ToolCall
 from tests.ravn.fixtures.fakes import InMemoryChannel
 
@@ -659,7 +659,7 @@ async def test_agent_discovers_peer_handles_question_and_uses_returned_artifact(
     tool_names = [
         event.payload["tool_name"]
         for event in channel.events
-        if event.type == RavnEventType.TOOL_START
+        if event.type == MeshEventType.TOOL_START
     ]
     assert tool_names == [
         "capability_list",

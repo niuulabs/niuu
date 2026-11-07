@@ -33,7 +33,7 @@ TOKEN = "test-token-4a1b2c3d4e5f60718293a4b5c6d7e8f9"
 
 @dataclass
 class _Event:
-    """Duck-types ravn.domain.events.RavnEvent for the shim's consumption."""
+    """Duck-types niuu.mesh.events.MeshEvent for the shim's consumption."""
 
     type: str
     payload: dict

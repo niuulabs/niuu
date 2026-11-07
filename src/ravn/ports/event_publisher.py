@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from ravn.domain.events import RavnEvent
+from niuu.mesh.events import MeshEvent
 
 
 class EventPublisherPort(ABC):
@@ -18,7 +18,7 @@ class EventPublisherPort(ABC):
     """
 
     @abstractmethod
-    async def publish(self, event: RavnEvent) -> None:
+    async def publish(self, event: MeshEvent) -> None:
         """Publish an event. Never raises — implementations must absorb errors."""
         raise NotImplementedError
 

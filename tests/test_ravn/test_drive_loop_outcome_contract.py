@@ -10,8 +10,8 @@ import pytest
 
 from niuu.domain.outcome import OutcomeField
 from niuu.domain.tool import ToolResult
+from niuu.mesh.events import MeshEventType
 from ravn.cap_telemetry import cap_hit_counts
-from ravn.domain.events import RavnEventType
 from ravn.domain.models import TokenUsage, ToolCall, TurnResult
 from ravn.drive_loop import (
     _build_workflow_outcome_repair_prompt,
@@ -312,11 +312,11 @@ summary: review complete
             {"severity": "high", "evidence": "missing boundary test"}
         ]
         assert all(
-            call.args[0].type != RavnEventType.ERROR
+            call.args[0].type != MeshEventType.ERROR
             for call in dl._skuld_channel.emit.await_args_list
         )
         assert any(
-            call.args[0].type == RavnEventType.USAGE
+            call.args[0].type == MeshEventType.USAGE
             for call in dl._skuld_channel.emit.await_args_list
         )
         assert dl._budget.spent_today_usd > 0
@@ -725,7 +725,7 @@ findings: "[{severity: high}]"
         dl._mesh.publish.assert_not_awaited()
         emitted = [call.args[0] for call in dl._skuld_channel.emit.await_args_list]
         assert len(emitted) == 1
-        assert emitted[0].type == RavnEventType.ERROR
+        assert emitted[0].type == MeshEventType.ERROR
         assert emitted[0].payload["failure_kind"] == "outcome_rejected"
         assert "expected array, got str" in emitted[0].payload["message"]
 
@@ -1733,7 +1733,7 @@ notes_path: research/campaigns/example/notes/exploration.md
         errors = [
             call.args[0]
             for call in channel.emit.await_args_list
-            if getattr(call.args[0], "type", None) == RavnEventType.ERROR
+            if getattr(call.args[0], "type", None) == MeshEventType.ERROR
         ]
         assert len(errors) == 1
         assert errors[0].payload["failure_kind"] == "outcome_rejected"
@@ -1917,7 +1917,7 @@ rationale: delivery_evidence approval was denied
         mesh.publish.assert_not_awaited()
         dl._skuld_channel.emit.assert_awaited_once()
         error = dl._skuld_channel.emit.await_args.args[0]
-        assert error.type == RavnEventType.ERROR
+        assert error.type == MeshEventType.ERROR
         # A declared block is reported as one, with the agent's reason; it used
         # to read as a malformed outcome ("cannot be accepted").
         assert error.payload["failure_kind"] == "blocked"
@@ -2205,10 +2205,10 @@ summary: post-mortem source captured
         task.persona = "coder"
         task.session_id = "sess-sleipnir"
 
-        from ravn.domain.events import RavnEvent
+        from niuu.mesh.events import MeshEvent
 
-        fake_event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        fake_event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="sleipnir",
             payload={"raw_observed_at": datetime(2026, 6, 5, 1, 42, tzinfo=UTC)},
             timestamp=datetime.now(UTC),

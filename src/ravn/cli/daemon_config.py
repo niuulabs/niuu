@@ -131,7 +131,7 @@ def mesh_block(handle: str, *, pub_port: int, rep_port: int, cluster_file: Path)
             "enabled": True,
             "adapters": [
                 {
-                    "adapter": "ravn.adapters.discovery.static.StaticDiscoveryAdapter",
+                    "adapter": "niuu.adapters.discovery.static.StaticDiscoveryAdapter",
                     "cluster_file": str(cluster_file),
                     "poll_interval_s": 5,
                 }

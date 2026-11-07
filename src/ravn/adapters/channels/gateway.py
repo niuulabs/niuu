@@ -23,8 +23,8 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.config import GatewayConfig
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.profile import RavnProfile
 from ravn.ports.channel import ChannelPort
 from ravn.ports.executor import ExecutionAgentPort
@@ -35,11 +35,11 @@ logger = logging.getLogger(__name__)
 AgentFactory = Callable[[ChannelPort], ExecutionAgentPort]
 
 # Optional broadcast callback invoked on every emitted event.
-BroadcastCallback = Callable[[RavnEvent], Awaitable[None]]
+BroadcastCallback = Callable[[MeshEvent], Awaitable[None]]
 
 
 class GatewayChannel(ChannelPort):
-    """Buffers :class:`RavnEvent` objects in an asyncio queue for gateway consumption.
+    """Buffers :class:`MeshEvent` objects in an asyncio queue for gateway consumption.
 
     Each :class:`GatewaySession` owns one channel instance.  When ``run_turn``
     emits events they land in the queue; the gateway then drains them to
@@ -54,10 +54,10 @@ class GatewayChannel(ChannelPort):
         *,
         broadcast_cb: BroadcastCallback | None = None,
     ) -> None:
-        self._queue: asyncio.Queue[RavnEvent | None] = asyncio.Queue()
+        self._queue: asyncio.Queue[MeshEvent | None] = asyncio.Queue()
         self._broadcast_cb = broadcast_cb
 
-    async def emit(self, event: RavnEvent) -> None:
+    async def emit(self, event: MeshEvent) -> None:
         await self._queue.put(event)
         if self._broadcast_cb is not None:
             await self._broadcast_cb(event)
@@ -69,17 +69,17 @@ class GatewayChannel(ChannelPort):
     async def collect_response(self) -> str:
         """Drain the queue and return the final response text.
 
-        Reads events until a :attr:`~RavnEventType.RESPONSE` or
-        :attr:`~RavnEventType.ERROR` is received (or a sentinel ``None``).
+        Reads events until a :attr:`~MeshEventType.RESPONSE` or
+        :attr:`~MeshEventType.ERROR` is received (or a sentinel ``None``).
         Returns the response text, or ``"[error] …"`` on error.
         """
         while True:
             event = await self._queue.get()
             if event is None:
                 return ""
-            if event.type == RavnEventType.RESPONSE:
+            if event.type == MeshEventType.RESPONSE:
                 return event.payload["text"]
-            if event.type == RavnEventType.ERROR:
+            if event.type == MeshEventType.ERROR:
                 return f"[error] {event.payload['message']}"
 
     def drain(self) -> None:
@@ -94,8 +94,8 @@ class GatewayChannel(ChannelPort):
             except asyncio.QueueEmpty:
                 break
 
-    async def stream(self) -> AsyncIterator[RavnEvent]:
-        """Yield events until :attr:`~RavnEventType.RESPONSE`, ERROR, or sentinel.
+    async def stream(self) -> AsyncIterator[MeshEvent]:
+        """Yield events until :attr:`~MeshEventType.RESPONSE`, ERROR, or sentinel.
 
         Used by the HTTP SSE endpoint to stream events in real time.
         """
@@ -104,7 +104,7 @@ class GatewayChannel(ChannelPort):
             if event is None:
                 return
             yield event
-            if event.type in (RavnEventType.RESPONSE, RavnEventType.ERROR):
+            if event.type in (MeshEventType.RESPONSE, MeshEventType.ERROR):
                 return
 
 
@@ -141,7 +141,7 @@ class RavnGateway:
         self._profile = profile
         self._interaction_tracker = interaction_tracker
         self._sessions: dict[str, GatewaySession] = {}
-        self._broadcast_queues: list[asyncio.Queue[RavnEvent | None]] = []
+        self._broadcast_queues: list[asyncio.Queue[MeshEvent | None]] = []
 
     # ------------------------------------------------------------------
     # Session management
@@ -203,7 +203,7 @@ class RavnGateway:
             await session.agent.run_turn(text)
             return await session.channel.collect_response()
 
-    async def handle_message_stream(self, session_id: str, text: str) -> AsyncIterator[RavnEvent]:
+    async def handle_message_stream(self, session_id: str, text: str) -> AsyncIterator[MeshEvent]:
         """Run *text* against *session_id* and yield events as they arrive.
 
         The agent turn runs concurrently with the event drain so callers
@@ -234,18 +234,18 @@ class RavnGateway:
     # Broadcast (GET /events)
     # ------------------------------------------------------------------
 
-    def subscribe(self) -> asyncio.Queue[RavnEvent | None]:
+    def subscribe(self) -> asyncio.Queue[MeshEvent | None]:
         """Register a new broadcast subscriber queue and return it."""
-        q: asyncio.Queue[RavnEvent | None] = asyncio.Queue()
+        q: asyncio.Queue[MeshEvent | None] = asyncio.Queue()
         self._broadcast_queues.append(q)
         return q
 
-    def unsubscribe(self, q: asyncio.Queue[RavnEvent | None]) -> None:
+    def unsubscribe(self, q: asyncio.Queue[MeshEvent | None]) -> None:
         """Remove *q* from the broadcast subscriber list."""
         with suppress(ValueError):
             self._broadcast_queues.remove(q)
 
-    async def _broadcast(self, event: RavnEvent) -> None:
+    async def _broadcast(self, event: MeshEvent) -> None:
         """Fan out *event* to all registered broadcast subscribers."""
         for q in self._broadcast_queues:
             await q.put(event)

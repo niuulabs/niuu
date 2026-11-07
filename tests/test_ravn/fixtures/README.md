@@ -6,7 +6,7 @@ disabled, workspace pinned to `~/.ravn-dev/workspace`). Never captured against
 `:7477` — that is the live Travis wired to a real Telegram thread.
 
 These exist because the OpenClaw adapter's `TurnTranslator` was designed against
-frame shapes *read from `ravn.domain.events`*, not observed. This corpus is what
+frame shapes *read from `niuu.mesh.events`*, not observed. This corpus is what
 turns that design from inference into fact.
 
 | Fixture | Frames | What it proves |

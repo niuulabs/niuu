@@ -15,8 +15,8 @@ import asyncio
 import logging
 from contextlib import suppress
 
-from ravn.domain.models import RavnCandidate, RavnIdentity, RavnPeer
-from ravn.ports.discovery import PeerCallback
+from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer
+from niuu.ports.discovery import PeerCallback
 
 logger = logging.getLogger(__name__)
 
@@ -70,13 +70,13 @@ class CompositeDiscoveryAdapter:
             return_exceptions=True,
         )
 
-    async def scan(self) -> list[RavnCandidate]:
+    async def scan(self) -> list[MeshCandidate]:
         """Return all candidates from all backends (deduplicated by peer_id)."""
         results = await asyncio.gather(
             *(backend.scan() for backend in self._backends),  # type: ignore[attr-defined]
             return_exceptions=True,
         )
-        seen: dict[str, RavnCandidate] = {}
+        seen: dict[str, MeshCandidate] = {}
         for result in results:
             if isinstance(result, list):
                 for candidate in result:
@@ -88,7 +88,7 @@ class CompositeDiscoveryAdapter:
         self._on_join.append(on_join)
         self._on_leave.append(on_leave)
 
-    async def handshake(self, candidate: RavnCandidate) -> RavnPeer | None:
+    async def handshake(self, candidate: MeshCandidate) -> MeshPeer | None:
         """Delegate handshake to the first backend that succeeds."""
         for backend in self._backends:
             with suppress(Exception):
@@ -97,15 +97,15 @@ class CompositeDiscoveryAdapter:
                     return peer
         return None
 
-    def peers(self) -> dict[str, RavnPeer]:
+    def peers(self) -> dict[str, MeshPeer]:
         """Return the merged verified peer table from all backends."""
-        merged: dict[str, RavnPeer] = {}
+        merged: dict[str, MeshPeer] = {}
         for backend in self._backends:
             with suppress(Exception):
                 merged.update(backend.peers())  # type: ignore[attr-defined]
         return merged
 
-    async def own_identity(self) -> RavnIdentity:
+    async def own_identity(self) -> MeshIdentity:
         """Return this Ravn's identity from the first backend."""
         for backend in self._backends:
             try:
@@ -119,7 +119,7 @@ class CompositeDiscoveryAdapter:
     # ------------------------------------------------------------------
 
     def _make_join_callback(self, backend: object) -> PeerCallback:
-        def on_join(peer: RavnPeer) -> None:
+        def on_join(peer: MeshPeer) -> None:
             count = self._peer_backend_count.get(peer.peer_id, 0)
             self._peer_backend_count[peer.peer_id] = count + 1
             if count == 0:
@@ -131,7 +131,7 @@ class CompositeDiscoveryAdapter:
         return on_join
 
     def _make_leave_callback(self, backend: object) -> PeerCallback:
-        def on_leave(peer: RavnPeer) -> None:
+        def on_leave(peer: MeshPeer) -> None:
             count = self._peer_backend_count.get(peer.peer_id, 0)
             if count <= 1:
                 self._peer_backend_count.pop(peer.peer_id, None)

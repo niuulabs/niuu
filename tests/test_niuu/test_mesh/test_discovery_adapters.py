@@ -13,19 +13,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ravn.adapters.discovery._identity import (
+from niuu.adapters.discovery._identity import (
     load_or_create_peer_id,
     load_or_create_realm_key,
     realm_id_from_key,
     realm_id_hash,
 )
-from ravn.adapters.discovery.composite import CompositeDiscoveryAdapter
-from ravn.adapters.discovery.k8s import K8sDiscoveryAdapter
-from ravn.adapters.discovery.mdns import MdnsDiscoveryAdapter, _hmac_hex
-from ravn.adapters.discovery.sleipnir import SleipnirDiscoveryAdapter
-from ravn.config import DiscoveryConfig, DiscoveryMdnsConfig, SleipnirConfig
-from ravn.domain.models import RavnCandidate, RavnIdentity, RavnPeer
-from ravn.ports.discovery import DiscoveryPort
+from niuu.adapters.discovery.composite import CompositeDiscoveryAdapter
+from niuu.adapters.discovery.k8s import K8sDiscoveryAdapter
+from niuu.adapters.discovery.mdns import MdnsDiscoveryAdapter, _hmac_hex
+from niuu.adapters.discovery.sleipnir import SleipnirDiscoveryAdapter
+from niuu.mesh.config import DiscoveryConfig, DiscoveryMdnsConfig
+from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer
+from niuu.ports.discovery import DiscoveryPort
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -35,8 +35,8 @@ from ravn.ports.discovery import DiscoveryPort
 def _make_identity(
     peer_id: str = "peer-a",
     realm_id: str = "realm-xyz",
-) -> RavnIdentity:
-    return RavnIdentity(
+) -> MeshIdentity:
+    return MeshIdentity(
         peer_id=peer_id,
         realm_id=realm_id,
         persona="test-agent",
@@ -52,9 +52,9 @@ def _make_peer(
     peer_id: str = "peer-b",
     trust_level: str = "verified",
     status: str = "idle",
-) -> RavnPeer:
+) -> MeshPeer:
     now = datetime.now(UTC)
-    return RavnPeer(
+    return MeshPeer(
         peer_id=peer_id,
         realm_id="realm-xyz",
         persona="test-peer",
@@ -72,8 +72,8 @@ def _make_peer(
     )
 
 
-def _make_candidate(peer_id: str = "peer-b", realm_id_hash_val: str = "abc123") -> RavnCandidate:
-    return RavnCandidate(
+def _make_candidate(peer_id: str = "peer-b", realm_id_hash_val: str = "abc123") -> MeshCandidate:
+    return MeshCandidate(
         peer_id=peer_id,
         realm_id_hash=realm_id_hash_val,
         host="127.0.0.1",
@@ -97,7 +97,7 @@ def _make_discovery_config(**kwargs: Any) -> DiscoveryConfig:
 # ---------------------------------------------------------------------------
 
 
-class TestRavnCandidate:
+class TestMeshCandidate:
     def test_fields(self) -> None:
         c = _make_candidate("peer-x", "deadbeef")
         assert c.peer_id == "peer-x"
@@ -106,7 +106,7 @@ class TestRavnCandidate:
         assert c.handshake_port == 7492
 
     def test_metadata_default_empty(self) -> None:
-        c = RavnCandidate(
+        c = MeshCandidate(
             peer_id="p",
             realm_id_hash="h",
             host="h",
@@ -117,9 +117,9 @@ class TestRavnCandidate:
         assert c.metadata == {}
 
 
-class TestRavnIdentity:
+class TestMeshIdentity:
     def test_optional_fields_default_none(self) -> None:
-        ident = RavnIdentity(
+        ident = MeshIdentity(
             peer_id="p",
             realm_id="r",
             persona="ag",
@@ -133,7 +133,7 @@ class TestRavnIdentity:
         assert ident.sleipnir_routing_key is None
 
 
-class TestRavnPeer:
+class TestMeshPeer:
     def test_extends_identity(self) -> None:
         peer = _make_peer()
         assert peer.peer_id == "peer-b"
@@ -170,8 +170,7 @@ class TestDiscoveryPortProtocol:
     def test_sleipnir_adapter_satisfies_protocol(self) -> None:
         config = _make_discovery_config()
         identity = _make_identity()
-        sc = SleipnirConfig()
-        adapter = SleipnirDiscoveryAdapter(config=config, sleipnir_config=sc, own_identity=identity)
+        adapter = SleipnirDiscoveryAdapter(config=config, own_identity=identity)
         assert isinstance(adapter, DiscoveryPort)
 
     def test_k8s_adapter_satisfies_protocol(self) -> None:
@@ -192,26 +191,26 @@ class TestDiscoveryPortProtocol:
 
 class TestIdentityPersistence:
     def test_load_or_create_peer_id_creates_on_first_run(self, tmp_path: Path) -> None:
-        with patch("ravn.adapters.discovery._identity._ravn_dir", return_value=tmp_path):
+        with patch("niuu.adapters.discovery._identity._ravn_dir", return_value=tmp_path):
             peer_id = load_or_create_peer_id()
         assert uuid.UUID(peer_id)  # valid UUID
         assert (tmp_path / "peer_id").exists()
 
     def test_load_or_create_peer_id_stable_across_calls(self, tmp_path: Path) -> None:
-        with patch("ravn.adapters.discovery._identity._ravn_dir", return_value=tmp_path):
+        with patch("niuu.adapters.discovery._identity._ravn_dir", return_value=tmp_path):
             a = load_or_create_peer_id()
             b = load_or_create_peer_id()
         assert a == b
 
     def test_load_or_create_realm_key_creates_32_bytes(self, tmp_path: Path) -> None:
-        with patch("ravn.adapters.discovery._identity._ravn_dir", return_value=tmp_path):
+        with patch("niuu.adapters.discovery._identity._ravn_dir", return_value=tmp_path):
             key = load_or_create_realm_key()
         assert isinstance(key, bytes)
         assert len(key) == 32
         assert (tmp_path / "realm.key").exists()
 
     def test_load_or_create_realm_key_stable(self, tmp_path: Path) -> None:
-        with patch("ravn.adapters.discovery._identity._ravn_dir", return_value=tmp_path):
+        with patch("niuu.adapters.discovery._identity._ravn_dir", return_value=tmp_path):
             a = load_or_create_realm_key()
             b = load_or_create_realm_key()
         assert a == b
@@ -287,15 +286,15 @@ class TestMdnsDiscoveryAdapter:
     @pytest.mark.asyncio
     async def test_watch_registers_callbacks(self) -> None:
         adapter = self._make_adapter()
-        joins: list[RavnPeer] = []
-        leaves: list[RavnPeer] = []
+        joins: list[MeshPeer] = []
+        leaves: list[MeshPeer] = []
         await adapter.watch(on_join=joins.append, on_leave=leaves.append)
         assert len(adapter._on_join) == 1
         assert len(adapter._on_leave) == 1
 
     def test_add_peer_fires_on_join(self) -> None:
         adapter = self._make_adapter()
-        joins: list[RavnPeer] = []
+        joins: list[MeshPeer] = []
         adapter._on_join.append(joins.append)
         peer = _make_peer("peer-x")
         adapter._add_peer(peer)
@@ -304,7 +303,7 @@ class TestMdnsDiscoveryAdapter:
 
     def test_add_peer_not_duplicate_join(self) -> None:
         adapter = self._make_adapter()
-        joins: list[RavnPeer] = []
+        joins: list[MeshPeer] = []
         adapter._on_join.append(joins.append)
         peer = _make_peer("peer-x")
         adapter._add_peer(peer)
@@ -313,7 +312,7 @@ class TestMdnsDiscoveryAdapter:
 
     def test_remove_candidate_fires_on_leave(self) -> None:
         adapter = self._make_adapter()
-        leaves: list[RavnPeer] = []
+        leaves: list[MeshPeer] = []
         adapter._on_leave.append(leaves.append)
         peer = _make_peer("peer-x")
         adapter._peers["peer-x"] = peer
@@ -323,7 +322,7 @@ class TestMdnsDiscoveryAdapter:
 
     def test_remove_candidate_missing_peer_noop(self) -> None:
         adapter = self._make_adapter()
-        leaves: list[RavnPeer] = []
+        leaves: list[MeshPeer] = []
         adapter._on_leave.append(leaves.append)
         adapter._remove_candidate("nonexistent")
         assert leaves == []
@@ -331,7 +330,7 @@ class TestMdnsDiscoveryAdapter:
     def test_evict_stale_peers(self) -> None:
         adapter = self._make_adapter()
         adapter._peer_ttl_s = 10.0
-        leaves: list[RavnPeer] = []
+        leaves: list[MeshPeer] = []
         adapter._on_leave.append(leaves.append)
 
         stale_peer = _make_peer("stale")
@@ -363,13 +362,13 @@ class TestMdnsDiscoveryAdapter:
     def test_realm_mismatch_silently_ignored(self) -> None:
         """Service with different realm hash must be ignored without error."""
         adapter = self._make_adapter(realm_key=b"realm_a" * 5)
-        joins: list[RavnPeer] = []
+        joins: list[MeshPeer] = []
         adapter._on_join.append(joins.append)
 
         # Candidate has realm hash derived from a different key
         other_key = b"realm_b" * 5
         other_hash = realm_id_hash(other_key)
-        candidate = RavnCandidate(
+        candidate = MeshCandidate(
             peer_id="foreign-peer",
             realm_id_hash=other_hash,
             host="127.0.0.1",
@@ -416,7 +415,7 @@ class TestMdnsDiscoveryAdapter:
     async def test_handshake_returns_none_without_pynng(self) -> None:
         adapter = self._make_adapter()
         candidate = _make_candidate()
-        with patch("ravn.adapters.discovery.mdns.pynng", None):
+        with patch("niuu.adapters.discovery.mdns.pynng", None):
             result = await adapter.handshake(candidate)
         assert result is None
 
@@ -431,7 +430,7 @@ class TestMdnsDiscoveryAdapter:
     @pytest.mark.asyncio
     async def test_start_skips_without_zeroconf(self) -> None:
         adapter = self._make_adapter()
-        with patch("ravn.adapters.discovery.mdns.AsyncZeroconf", None):
+        with patch("niuu.adapters.discovery.mdns.AsyncZeroconf", None):
             await adapter.start()  # should not raise
 
     @pytest.mark.asyncio
@@ -474,9 +473,9 @@ class TestHandshakeProtocol:
         nonce_b: str,
         challenge_hmac: str,
         accept_identity: dict,
-    ) -> RavnPeer | None:
+    ) -> MeshPeer | None:
         """Simulate what _run_handshake_initiator does, using a mock socket."""
-        from ravn.adapters.discovery.mdns import _HANDSHAKE_PREFIX, _hmac_hex
+        from niuu.adapters.discovery.mdns import _HANDSHAKE_PREFIX, _hmac_hex
 
         # Verify challenge HMAC
         expected = _hmac_hex(realm_key, _HANDSHAKE_PREFIX, nonce_a, own_id, peer_id)
@@ -494,7 +493,7 @@ class TestHandshakeProtocol:
         realm_key = b"shared-secret-key-32-bytes-long!"
         own_id, peer_id = "peer-a", "peer-b"
         nonce_a, nonce_b = "nonce_aaa", "nonce_bbb"
-        from ravn.adapters.discovery.mdns import _HANDSHAKE_PREFIX, _hmac_hex
+        from niuu.adapters.discovery.mdns import _HANDSHAKE_PREFIX, _hmac_hex
 
         challenge_hmac = _hmac_hex(realm_key, _HANDSHAKE_PREFIX, nonce_a, own_id, peer_id)
         accept_identity = {
@@ -516,7 +515,7 @@ class TestHandshakeProtocol:
         realm_key_b = b"realm-key-bbb-32-bytes-padding!!"
         own_id, peer_id = "peer-a", "peer-b"
         nonce_a, nonce_b = "nonce_aaa", "nonce_bbb"
-        from ravn.adapters.discovery.mdns import _HANDSHAKE_PREFIX, _hmac_hex
+        from niuu.adapters.discovery.mdns import _HANDSHAKE_PREFIX, _hmac_hex
 
         # B signs with its key, not the shared key
         wrong_hmac = _hmac_hex(realm_key_b, _HANDSHAKE_PREFIX, nonce_a, own_id, peer_id)
@@ -535,9 +534,8 @@ class TestHandshakeProtocol:
 class TestSleipnirDiscoveryAdapter:
     def _make_adapter(self) -> SleipnirDiscoveryAdapter:
         config = _make_discovery_config()
-        sc = SleipnirConfig()
         identity = _make_identity()
-        return SleipnirDiscoveryAdapter(config=config, sleipnir_config=sc, own_identity=identity)
+        return SleipnirDiscoveryAdapter(config=config, own_identity=identity)
 
     def test_peers_initially_empty(self) -> None:
         adapter = self._make_adapter()
@@ -565,14 +563,14 @@ class TestSleipnirDiscoveryAdapter:
     @pytest.mark.asyncio
     async def test_watch_registers_callbacks(self) -> None:
         adapter = self._make_adapter()
-        joins: list[RavnPeer] = []
+        joins: list[MeshPeer] = []
         await adapter.watch(on_join=joins.append, on_leave=lambda _: None)
         assert len(adapter._on_join) == 1
 
     @pytest.mark.asyncio
     async def test_handle_announce_join_adds_peer(self) -> None:
         adapter = self._make_adapter()
-        joins: list[RavnPeer] = []
+        joins: list[MeshPeer] = []
         adapter._on_join.append(joins.append)
 
         raw = {
@@ -618,7 +616,7 @@ class TestSleipnirDiscoveryAdapter:
         adapter = self._make_adapter()
         peer = _make_peer("peer-b")
         adapter._peers["peer-b"] = peer
-        leaves: list[RavnPeer] = []
+        leaves: list[MeshPeer] = []
         adapter._on_leave.append(leaves.append)
 
         raw = {
@@ -663,7 +661,7 @@ class TestSleipnirDiscoveryAdapter:
     def test_evict_stale_peers(self) -> None:
         adapter = self._make_adapter()
         adapter._peer_ttl_s = 5.0
-        leaves: list[RavnPeer] = []
+        leaves: list[MeshPeer] = []
         adapter._on_leave.append(leaves.append)
 
         stale = _make_peer("stale")
@@ -684,7 +682,7 @@ class TestSleipnirDiscoveryAdapter:
     @pytest.mark.asyncio
     async def test_start_skips_without_aio_pika(self) -> None:
         adapter = self._make_adapter()
-        with patch("ravn.adapters.discovery.sleipnir.aio_pika", None):
+        with patch("niuu.adapters.discovery.sleipnir.aio_pika", None):
             await adapter.start()  # should not raise, just warn
 
     def test_peers_returns_copy(self) -> None:
@@ -732,13 +730,13 @@ class TestK8sDiscoveryAdapter:
     @pytest.mark.asyncio
     async def test_watch_registers_callbacks(self) -> None:
         adapter = self._make_adapter()
-        joins: list[RavnPeer] = []
+        joins: list[MeshPeer] = []
         await adapter.watch(on_join=joins.append, on_leave=lambda _: None)
         assert len(adapter._on_join) == 1
 
     def test_list_candidates_returns_empty_without_k8s(self) -> None:
         adapter = self._make_adapter()
-        with patch("ravn.adapters.discovery.k8s.k8s_client", None):
+        with patch("niuu.adapters.discovery.k8s.k8s_client", None):
             candidates = adapter._list_candidates()
         assert candidates == []
 
@@ -756,7 +754,7 @@ class TestK8sDiscoveryAdapter:
         mock_v1 = MagicMock()
         mock_v1.list_pod_for_all_namespaces.return_value.items = [mock_pod]
 
-        with patch("ravn.adapters.discovery.k8s.k8s_client") as mock_k8s:
+        with patch("niuu.adapters.discovery.k8s.k8s_client") as mock_k8s:
             mock_k8s.CoreV1Api.return_value = mock_v1
             candidates = adapter._list_candidates()
 
@@ -774,7 +772,7 @@ class TestK8sDiscoveryAdapter:
         mock_v1 = MagicMock()
         mock_v1.list_pod_for_all_namespaces.return_value.items = [mock_pod]
 
-        with patch("ravn.adapters.discovery.k8s.k8s_client") as mock_k8s:
+        with patch("niuu.adapters.discovery.k8s.k8s_client") as mock_k8s:
             mock_k8s.CoreV1Api.return_value = mock_v1
             candidates = adapter._list_candidates()
 
@@ -783,7 +781,7 @@ class TestK8sDiscoveryAdapter:
     @pytest.mark.asyncio
     async def test_do_scan_adds_peers(self) -> None:
         adapter = self._make_adapter()
-        joins: list[RavnPeer] = []
+        joins: list[MeshPeer] = []
         adapter._on_join.append(joins.append)
 
         mock_candidate = _make_candidate("peer-z")
@@ -806,7 +804,7 @@ class TestK8sDiscoveryAdapter:
         # Pre-existing peer
         peer = _make_peer("peer-old")
         adapter._peers["peer-old"] = peer
-        leaves: list[RavnPeer] = []
+        leaves: list[MeshPeer] = []
         adapter._on_leave.append(leaves.append)
 
         # Scan returns no peers this time
@@ -819,7 +817,7 @@ class TestK8sDiscoveryAdapter:
     @pytest.mark.asyncio
     async def test_start_skips_without_k8s(self) -> None:
         adapter = self._make_adapter()
-        with patch("ravn.adapters.discovery.k8s.k8s_client", None):
+        with patch("niuu.adapters.discovery.k8s.k8s_client", None):
             await adapter.start()  # should not raise
 
     @pytest.mark.asyncio
@@ -837,7 +835,7 @@ class _FakeBackend:
     """Minimal fake DiscoveryPort for composite tests."""
 
     def __init__(self, peer_table: dict | None = None) -> None:
-        self._peers_table: dict[str, RavnPeer] = peer_table or {}
+        self._peers_table: dict[str, MeshPeer] = peer_table or {}
         self._on_join: list[Any] = []
         self._on_leave: list[Any] = []
         self.started = False
@@ -852,27 +850,27 @@ class _FakeBackend:
     async def announce(self) -> None:
         pass
 
-    async def scan(self) -> list[RavnCandidate]:
+    async def scan(self) -> list[MeshCandidate]:
         return []
 
     async def watch(self, on_join: Any, on_leave: Any) -> None:
         self._on_join.append(on_join)
         self._on_leave.append(on_leave)
 
-    async def handshake(self, candidate: RavnCandidate) -> RavnPeer | None:
+    async def handshake(self, candidate: MeshCandidate) -> MeshPeer | None:
         return None
 
-    def peers(self) -> dict[str, RavnPeer]:
+    def peers(self) -> dict[str, MeshPeer]:
         return dict(self._peers_table)
 
-    async def own_identity(self) -> RavnIdentity:
+    async def own_identity(self) -> MeshIdentity:
         return _make_identity()
 
-    def fire_join(self, peer: RavnPeer) -> None:
+    def fire_join(self, peer: MeshPeer) -> None:
         for cb in self._on_join:
             cb(peer)
 
-    def fire_leave(self, peer: RavnPeer) -> None:
+    def fire_leave(self, peer: MeshPeer) -> None:
         for cb in self._on_leave:
             cb(peer)
 
@@ -910,7 +908,7 @@ class TestCompositeDiscoveryAdapter:
         comp = CompositeDiscoveryAdapter(backends=[b1])
         await comp.start()
 
-        joins: list[RavnPeer] = []
+        joins: list[MeshPeer] = []
         await comp.watch(on_join=joins.append, on_leave=lambda _: None)
 
         peer = _make_peer("peer-x")
@@ -925,7 +923,7 @@ class TestCompositeDiscoveryAdapter:
         comp = CompositeDiscoveryAdapter(backends=[b1])
         await comp.start()
 
-        leaves: list[RavnPeer] = []
+        leaves: list[MeshPeer] = []
         await comp.watch(on_join=lambda _: None, on_leave=leaves.append)
 
         peer = _make_peer("peer-x")
@@ -942,7 +940,7 @@ class TestCompositeDiscoveryAdapter:
         comp = CompositeDiscoveryAdapter(backends=[b1, b2])
         await comp.start()
 
-        joins: list[RavnPeer] = []
+        joins: list[MeshPeer] = []
         await comp.watch(on_join=joins.append, on_leave=lambda _: None)
 
         peer = _make_peer("peer-x")
@@ -957,7 +955,7 @@ class TestCompositeDiscoveryAdapter:
         comp = CompositeDiscoveryAdapter(backends=[b1, b2])
         await comp.start()
 
-        leaves: list[RavnPeer] = []
+        leaves: list[MeshPeer] = []
         await comp.watch(on_join=lambda _: None, on_leave=leaves.append)
 
         peer = _make_peer("peer-x")
@@ -974,7 +972,7 @@ class TestCompositeDiscoveryAdapter:
         cand = _make_candidate("peer-x")
 
         class ScanBackend(_FakeBackend):
-            async def scan(self) -> list[RavnCandidate]:
+            async def scan(self) -> list[MeshCandidate]:
                 return [cand]
 
         b1, b2 = ScanBackend(), ScanBackend()
@@ -1018,7 +1016,7 @@ class TestCompositeDiscoveryAdapter:
 class TestCapabilityRouting:
     def test_filter_idle_bash_capable_verified(self) -> None:
         """Verify the cascade can filter peers by capability + status + trust."""
-        peers: dict[str, RavnPeer] = {
+        peers: dict[str, MeshPeer] = {
             "a": _make_peer("a", trust_level="verified", status="idle"),
             "b": _make_peer("b", trust_level="verified", status="busy"),
             "c": _make_peer("c", trust_level="unverified", status="idle"),
@@ -1057,11 +1055,11 @@ class TestInProcessDiscovery:
         adapter_a._realm_key = realm_key
         adapter_b._realm_key = realm_key
 
-        joins_a: list[RavnPeer] = []
+        joins_a: list[MeshPeer] = []
         await adapter_a.watch(on_join=joins_a.append, on_leave=lambda _: None)
 
         # Simulate B announcing and A successfully verifying
-        peer_b = RavnPeer(
+        peer_b = MeshPeer(
             peer_id="peer-b",
             realm_id=realm_id_from_key(realm_key),
             persona="test-agent",
@@ -1083,7 +1081,7 @@ class TestInProcessDiscovery:
 
     @pytest.mark.asyncio
     async def test_peers_dict_shape_for_mesh_adapter(self) -> None:
-        """peers() returns dict[str, RavnPeer] with rep_address and pub_address."""
+        """peers() returns dict[str, MeshPeer] with rep_address and pub_address."""
         config = _make_discovery_config()
         adapter = MdnsDiscoveryAdapter(config=config, own_identity=_make_identity())
         peer = _make_peer("peer-b")
@@ -1103,10 +1101,10 @@ class TestMdnsCrossThreadScheduling:
     """Browse callbacks and the handshake responder run without an event loop."""
 
     def _adapter(self):
-        from ravn.adapters.discovery.mdns import MdnsDiscoveryAdapter
-        from ravn.domain.models import RavnIdentity
+        from niuu.adapters.discovery.mdns import MdnsDiscoveryAdapter
+        from niuu.mesh.identity import MeshIdentity
 
-        identity = RavnIdentity(
+        identity = MeshIdentity(
             peer_id="alpha",
             realm_id="realm",
             persona="p",

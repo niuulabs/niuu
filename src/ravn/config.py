@@ -45,7 +45,7 @@ from bifrost.config import PricingOverride
 from mimir.client_config import MimirConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
-from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshNatsConfig
+from niuu.mesh.config import DiscoveryConfig, MeshConfig
 from ravn.domain.permission_mode import (
     PermissionMode,
     parse_optional_permission_mode,
@@ -1733,7 +1733,7 @@ class GatewayConfig(BaseModel):
 class SleipnirConfig(BaseModel):
     """Sleipnir event-backbone publishing configuration (NIU-438).
 
-    When enabled, Ravn publishes every RavnEvent to a RabbitMQ topic exchange
+    When enabled, Ravn publishes every MeshEvent to a RabbitMQ topic exchange
     so the rest of ODIN (Valkyrie attention model, Ting, monitoring) can consume
     agent output without being coupled to a specific session.
 
@@ -2043,205 +2043,6 @@ class LoggingConfig(BaseModel):
 
     level: str = Field(default="warning")
     format: str = Field(default="text")
-
-
-class NngMeshConfig(BaseModel):
-    """nng transport settings for Pi-mode mesh (NIU-517)."""
-
-    pub_sub_address: str = Field(
-        default="tcp://*:7480",
-        description="nng PUB/SUB listen address (e.g. tcp://*:7480 or ipc:///tmp/ravn-pub.ipc).",
-    )
-    req_rep_address: str = Field(
-        default="tcp://*:7481",
-        description="nng REQ/REP listen address (e.g. tcp://*:7481 or ipc:///tmp/ravn-rep.ipc).",
-    )
-
-
-class MeshSleipnirConfig(BaseModel):
-    """RabbitMQ-specific mesh settings for infra-mode mesh (NIU-517)."""
-
-    exchange: str = Field(
-        default="ravn.mesh",
-        description="Topic exchange used for Ravn mesh pub/sub and RPC.",
-    )
-    rpc_timeout_s: float = Field(
-        default=10.0,
-        description="Default RPC reply timeout in seconds.",
-    )
-
-
-class DiscoveryMdnsConfig(BaseModel):
-    """mDNS-specific discovery settings (Pi mode)."""
-
-    service_type: str = Field(
-        default="_ravn._tcp.local.",
-        description="mDNS service type for flock discovery. Must end with '.' per DNS-SD spec.",
-    )
-    handshake_timeout_s: float = Field(
-        default=5.0,
-        description="Seconds to wait for HMAC handshake completion.",
-    )
-    handshake_port: int = Field(
-        default=7482,
-        description=(
-            "nng PAIR port used for HMAC handshake exchange. "
-            "Must be unique per instance on the same host."
-        ),
-    )
-    convergence_wait_s: float = Field(
-        default=3.0,
-        description=(
-            "Seconds to wait after start() for mDNS announcements "
-            "to arrive before querying the peer table."
-        ),
-    )
-
-
-class DiscoverySleipnirConfig(BaseModel):
-    """Sleipnir-specific discovery settings (infra mode)."""
-
-    heartbeat_interval_s: float = Field(
-        default=60.0,
-        description="Seconds between Sleipnir announce heartbeats.",
-    )
-    convergence_wait_s: float = Field(
-        default=5.0,
-        description="Seconds to wait on startup for other peers to announce.",
-    )
-    spiffe_audience_env: str = Field(
-        default="SPIFFE_TRUST_DOMAIN",
-        description="Env var containing the SPIFFE trust domain for JWT-SVID validation.",
-    )
-
-
-class DiscoveryK8sConfig(BaseModel):
-    """Kubernetes label adapter settings (infra mode cold-start)."""
-
-    namespace: str = Field(
-        default="",
-        description="K8s namespace to query (empty = all namespaces).",
-    )
-    label_selector: str = Field(
-        default="ravn.niuu.world/role=agent",
-        description="Label selector used to list Ravn pods.",
-    )
-
-
-class DiscoveryConfig(BaseModel):
-    """Flock peer detection configuration (NIU-538).
-
-    Uses dynamic adapter loading. All adapters in the ``adapters`` list run
-    simultaneously — peers are merged from all backends (union semantics).
-
-    Example::
-
-        discovery:
-          enabled: true
-          adapters:
-            - adapter: ravn.adapters.discovery.mdns.MdnsDiscoveryAdapter
-              handshake_port: 7482
-            - adapter: ravn.adapters.discovery.k8s.K8sDiscoveryAdapter
-              namespace: ravn
-              label_selector: "ravn.niuu.world/role=agent"
-    """
-
-    enabled: bool = Field(
-        default=False,
-        description="Enable flock peer discovery.",
-    )
-    realm_id: str = Field(
-        default="",
-        description="Explicit discovery realm identity; empty uses the persisted realm key.",
-    )
-    adapters: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description=(
-            "List of discovery adapters to run simultaneously. Each entry has "
-            "'adapter' (fully-qualified class path) plus adapter-specific kwargs. "
-            "All adapters run in parallel; peer tables are merged."
-        ),
-    )
-    # Common settings passed to all adapters
-    heartbeat_interval_s: float = Field(
-        default=30.0,
-        description="Seconds between liveness heartbeats.",
-    )
-    peer_ttl_s: float = Field(
-        default=90.0,
-        description="Seconds of missed heartbeats before a peer is evicted (≈ 3 heartbeats).",
-    )
-    realm_id_env: str = Field(
-        default="RAVN_REALM_ID",
-        description="Env var carrying the realm_id for infra mode (OpenBao / K8s label).",
-    )
-    # Legacy fields — deprecated, use adapters list instead
-    adapter: str = Field(
-        default="",
-        description="DEPRECATED: Use 'adapters' list instead. Legacy single-adapter mode.",
-    )
-    mdns: DiscoveryMdnsConfig = Field(default_factory=DiscoveryMdnsConfig)
-    sleipnir: DiscoverySleipnirConfig = Field(default_factory=DiscoverySleipnirConfig)
-    k8s: DiscoveryK8sConfig = Field(default_factory=DiscoveryK8sConfig)
-
-
-class MeshConfig(BaseModel):
-    """Ravn-to-Ravn mesh transport configuration (NIU-517).
-
-    Uses dynamic adapter loading. All adapters in the ``adapters`` list run
-    simultaneously — publish fans out to all transports, subscribe receives
-    from any transport.
-
-    Example::
-
-        mesh:
-          enabled: true
-          adapters:
-            - adapter: ravn.adapters.mesh.nng.NngMeshAdapter
-              pub_sub_address: "ipc:///tmp/ravn-mesh/node.ipc"
-              req_rep_address: "ipc:///tmp/ravn-mesh/node-rep.ipc"
-            - adapter: ravn.adapters.mesh.webhook.WebhookMeshAdapter
-              listen_port: 7483
-              hmac_secret_env: RAVN_WEBHOOK_SECRET
-    """
-
-    enabled: bool = Field(default=False)
-    adapters: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description=(
-            "List of mesh transport adapters to run simultaneously. Each entry has "
-            "'adapter' (fully-qualified class path) plus adapter-specific kwargs. "
-            "All transports are active: publish fans out to all, subscribe receives from any."
-        ),
-    )
-    # Common settings passed to all adapters
-    rpc_timeout_s: float = Field(
-        default=10.0,
-        description="Default RPC reply timeout in seconds.",
-    )
-    rpc_reply_cache_size: int = Field(
-        default=DEFAULT_RPC_REPLY_CACHE_SIZE,
-        ge=1,
-        description=(
-            "Completed RPC replies a Sleipnir mesh adapter keeps, keyed on the request "
-            "event_id, so a redelivered request gets its stored reply instead of "
-            "running the handler again. Keep it above the number of RPC requests this "
-            "peer completes within the transport's redelivery window (JetStream: the "
-            "nak backoff across max_deliver deliveries, and ack_wait)."
-        ),
-    )
-    own_peer_id: str = Field(
-        default="",
-        description="This Ravn's unique mesh peer identifier (auto: hostname when empty).",
-    )
-    # Legacy fields — deprecated, use adapters list instead
-    adapter: str = Field(
-        default="",
-        description="DEPRECATED: Use 'adapters' list instead. Legacy single-adapter mode.",
-    )
-    nng: NngMeshConfig = Field(default_factory=NngMeshConfig)
-    sleipnir: MeshSleipnirConfig = Field(default_factory=MeshSleipnirConfig)
-    nats: MeshNatsConfig = Field(default_factory=MeshNatsConfig)
 
 
 class BuriConfig(BaseModel):

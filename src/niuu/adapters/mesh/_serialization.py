@@ -1,6 +1,6 @@
-"""Shared RavnEvent JSON serialization for mesh adapters (NIU-517).
+"""Shared MeshEvent JSON serialization for mesh adapters (NIU-517).
 
-Both NngMeshAdapter and SleipnirMeshAdapter encode/decode RavnEvent objects
+Both NngMeshAdapter and SleipnirMeshAdapter encode/decode MeshEvent objects
 identically — only the framing differs (nng prepends a topic prefix, Sleipnir
 uses raw bytes).  This module owns the common event ↔ dict ↔ bytes conversion
 so neither adapter duplicates it.
@@ -11,10 +11,10 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from ravn.domain.events import RavnEvent, RavnEventType
+from niuu.mesh.events import MeshEvent, MeshEventType
 
 
-def event_to_dict(event: RavnEvent) -> dict:
+def event_to_dict(event: MeshEvent) -> dict:
     """Return a JSON-serialisable dict representation of *event*."""
     return {
         "type": event.type,
@@ -29,10 +29,10 @@ def event_to_dict(event: RavnEvent) -> dict:
     }
 
 
-def dict_to_event(raw: dict) -> RavnEvent:
-    """Reconstruct a :class:`RavnEvent` from a decoded JSON dict."""
-    return RavnEvent(
-        type=RavnEventType(raw["type"]),
+def dict_to_event(raw: dict) -> MeshEvent:
+    """Reconstruct a :class:`MeshEvent` from a decoded JSON dict."""
+    return MeshEvent(
+        type=MeshEventType(raw["type"]),
         source=raw["source"],
         payload=raw["payload"],
         timestamp=datetime.fromisoformat(raw["timestamp"]),
@@ -44,11 +44,11 @@ def dict_to_event(raw: dict) -> RavnEvent:
     )
 
 
-def encode_event(event: RavnEvent) -> bytes:
+def encode_event(event: MeshEvent) -> bytes:
     """Serialise *event* to UTF-8 JSON bytes."""
     return json.dumps(event_to_dict(event)).encode()
 
 
-def decode_event(data: bytes) -> RavnEvent:
-    """Deserialise a :class:`RavnEvent` from UTF-8 JSON bytes."""
+def decode_event(data: bytes) -> MeshEvent:
+    """Deserialise a :class:`MeshEvent` from UTF-8 JSON bytes."""
     return dict_to_event(json.loads(data))

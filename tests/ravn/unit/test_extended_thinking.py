@@ -4,7 +4,7 @@ Covers:
 - ExtendedThinkingConfig in config
 - TokenUsage.thinking_tokens tracking and arithmetic
 - StreamEventType.THINKING
-- RavnEvent.thinking() factory method
+- MeshEvent.thinking() factory method
 - AnthropicAdapter: thinking param in request, THINKING stream events,
   thinking_tokens in usage, headers, generate() with thinking blocks
   it for non-supporting providers
@@ -22,10 +22,10 @@ import httpx
 import pytest
 import respx
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.llm.anthropic import AnthropicAdapter
 from ravn.agent import RavnAgent, _parse_think_flag
 from ravn.config import ExtendedThinkingConfig
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.models import (
     LLMResponse,
     StopReason,
@@ -103,20 +103,20 @@ def test_thinking_stream_event():
 
 
 # ---------------------------------------------------------------------------
-# RavnEvent.thinking factory
+# MeshEvent.thinking factory
 # ---------------------------------------------------------------------------
 
 
 def test_ravn_event_thinking_type():
-    evt = RavnEvent.thinking("ravn-test", "some reasoning", "corr-1", "sess-1")
-    assert evt.type == RavnEventType.THOUGHT
+    evt = MeshEvent.thinking("ravn-test", "some reasoning", "corr-1", "sess-1")
+    assert evt.type == MeshEventType.THOUGHT
     assert evt.payload["text"] == "some reasoning"
     assert evt.payload.get("thinking") is True
 
 
 def test_ravn_event_thought_no_thinking_flag():
-    evt = RavnEvent.thought("ravn-test", "text delta", "corr-1", "sess-1")
-    assert evt.type == RavnEventType.THOUGHT
+    evt = MeshEvent.thought("ravn-test", "text delta", "corr-1", "sess-1")
+    assert evt.type == MeshEventType.THOUGHT
     assert evt.payload.get("thinking") is None
 
 
@@ -658,7 +658,7 @@ async def test_agent_thinking_events_emitted_to_channel():
     await agent.run_turn("think: do something")
 
     thinking_events = [
-        e for e in ch.events if e.type == RavnEventType.THOUGHT and e.payload.get("thinking")
+        e for e in ch.events if e.type == MeshEventType.THOUGHT and e.payload.get("thinking")
     ]
     assert len(thinking_events) == 1
     assert thinking_events[0].payload["text"] == "reasoning step"

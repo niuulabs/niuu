@@ -22,19 +22,19 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from ravn.domain.events import RavnEvent, RavnEventType
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.ports.channel import ChannelPort
 
 if TYPE_CHECKING:
-    from ravn.ports.mesh import MeshPort
+    from niuu.ports.mesh import MeshPort
 
 logger = logging.getLogger(__name__)
 
-_EPHEMERAL_EVENT_TYPES = {RavnEventType.THOUGHT}
+_EPHEMERAL_EVENT_TYPES = {MeshEventType.THOUGHT}
 
 
 class MeshActivityChannel(ChannelPort):
-    """Publishes durable RavnEvent boundaries under ``activity.{peer_id}``.
+    """Publishes durable MeshEvent boundaries under ``activity.{peer_id}``.
 
     Used alongside SkuldChannel in a CompositeChannel so that activity events
     are delivered via Sleipnir mesh in addition to (or instead of) WebSocket.
@@ -48,14 +48,14 @@ class MeshActivityChannel(ChannelPort):
         self._topic = f"activity.{peer_id}"
         self._publishes: set[asyncio.Task[None]] = set()
 
-    async def emit(self, event: RavnEvent) -> None:
+    async def emit(self, event: MeshEvent) -> None:
         if event.type in _EPHEMERAL_EVENT_TYPES:
             return
         task = asyncio.create_task(self._publish(event))
         self._publishes.add(task)
         task.add_done_callback(self._publishes.discard)
 
-    async def _publish(self, event: RavnEvent) -> None:
+    async def _publish(self, event: MeshEvent) -> None:
         try:
             await self._mesh.publish(event, topic=self._topic)
         except Exception:

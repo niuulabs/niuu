@@ -198,7 +198,7 @@ class TestBuildMesh:
         settings = _make_settings(**{"mesh.rpc_reply_cache_size": 7})
         with (
             patch("niuu.mesh.transport_builder.build_transport", return_value=MagicMock()),
-            patch("ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter") as mock_cls,
+            patch("niuu.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter") as mock_cls,
             patch("niuu.mesh.cluster.read_cluster_pub_addresses", return_value=[]),
         ):
             _build_mesh(settings)
@@ -300,15 +300,15 @@ class TestBuildDiscovery:
         mock_discovery = MagicMock()
         with (
             patch(
-                "ravn.adapters.discovery._identity.load_or_create_peer_id",
+                "niuu.adapters.discovery._identity.load_or_create_peer_id",
                 return_value="p1",
             ),
             patch(
-                "ravn.adapters.discovery._identity.load_or_create_realm_key",
+                "niuu.adapters.discovery._identity.load_or_create_realm_key",
                 return_value=b"key",
             ),
             patch(
-                "ravn.adapters.discovery._identity.realm_id_from_key",
+                "niuu.adapters.discovery._identity.realm_id_from_key",
                 return_value="realm-1",
             ),
             patch("importlib.metadata.version", return_value="0.0.0"),
@@ -334,15 +334,15 @@ class TestBuildDiscovery:
 
         with (
             patch(
-                "ravn.adapters.discovery._identity.load_or_create_peer_id",
+                "niuu.adapters.discovery._identity.load_or_create_peer_id",
                 return_value="p1",
             ),
             patch(
-                "ravn.adapters.discovery._identity.load_or_create_realm_key",
+                "niuu.adapters.discovery._identity.load_or_create_realm_key",
                 return_value=b"key",
             ),
             patch(
-                "ravn.adapters.discovery._identity.realm_id_from_key",
+                "niuu.adapters.discovery._identity.realm_id_from_key",
                 return_value="realm-1",
             ),
             patch("importlib.metadata.version", return_value="0.0.0"),
@@ -399,15 +399,15 @@ class TestRunPeers:
         settings = _make_settings()
         with (
             patch(
-                "ravn.adapters.discovery._identity.load_or_create_peer_id",
+                "niuu.adapters.discovery._identity.load_or_create_peer_id",
                 return_value="p1",
             ),
             patch(
-                "ravn.adapters.discovery._identity.load_or_create_realm_key",
+                "niuu.adapters.discovery._identity.load_or_create_realm_key",
                 return_value=b"key",
             ),
             patch(
-                "ravn.adapters.discovery._identity.realm_id_from_key",
+                "niuu.adapters.discovery._identity.realm_id_from_key",
                 return_value="realm-1",
             ),
             patch("importlib.metadata.version", return_value="0.0.0"),

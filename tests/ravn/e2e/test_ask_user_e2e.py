@@ -15,11 +15,11 @@ import io
 
 import pytest
 
+from niuu.mesh.events import MeshEventType
 from ravn.adapters.cli_channel import CliChannel
 from ravn.adapters.permission.allow_deny import AllowAllPermission
 from ravn.adapters.tools.ask_user import AskUserTool
 from ravn.agent import RavnAgent
-from ravn.domain.events import RavnEventType
 from ravn.domain.models import LLMResponse, StopReason, TokenUsage, ToolCall
 from tests.ravn.conftest import MockLLM, make_agent, make_text_response
 
@@ -61,11 +61,11 @@ class TestAskUserE2E:
         assert "list" in result.response.lower()
 
         # ask_user tool start was emitted.
-        tool_starts = [e for e in channel.events if e.type == RavnEventType.TOOL_START]
+        tool_starts = [e for e in channel.events if e.type == MeshEventType.TOOL_START]
         assert any(e.payload.get("tool_name") == "ask_user" for e in tool_starts)
 
         # ask_user result (the user's answer) was emitted.
-        tool_results = [e for e in channel.events if e.type == RavnEventType.TOOL_RESULT]
+        tool_results = [e for e in channel.events if e.type == MeshEventType.TOOL_RESULT]
         assert any("list" in e.payload.get("result", "") for e in tool_results)
 
     async def test_clarification_injected_into_session(self) -> None:
@@ -156,7 +156,7 @@ class TestAskUserE2E:
 
         assert "Alice" in result.response
         # All three answers should appear in tool result events.
-        tool_results = [e for e in channel.events if e.type == RavnEventType.TOOL_RESULT]
+        tool_results = [e for e in channel.events if e.type == MeshEventType.TOOL_RESULT]
         result_texts = " ".join(e.payload.get("result", "") for e in tool_results)
         assert "Alice" in result_texts
         assert "30" in result_texts

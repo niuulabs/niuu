@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from niuu.mesh.events import MeshEvent
 from ravn.adapters.channels.skuld_channel import SkuldChannel
-from ravn.domain.events import RavnEvent
 from skuld.collaboration_adapter import SkuldCollaborationAdapter
 from skuld.config import RoomConfig
 
@@ -19,7 +19,7 @@ async def test_help_trace_and_exact_case_context_round_trip_to_operator_reply() 
         peer_id="resident-1",
         persona="Resident",
     )
-    help_event = RavnEvent.help_needed(
+    help_event = MeshEvent.help_needed(
         source="resident-1",
         persona="Resident",
         reason="operator_authority_required",
@@ -96,7 +96,7 @@ async def test_resident_help_and_operator_delivery_share_one_trace(monkeypatch) 
         persona="Resident",
     )
     with telemetry.span("ravn.judgment.help_needed"):
-        help_event = RavnEvent.help_needed(
+        help_event = MeshEvent.help_needed(
             source="resident-1",
             persona="Resident",
             reason="operator_authority_required",

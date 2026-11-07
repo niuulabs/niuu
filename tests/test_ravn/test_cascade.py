@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes, PersonaFanIn
 from ravn.adapters.tools.cascade_tools import (
     FlockSpawnTool,
@@ -38,7 +39,6 @@ from ravn.adapters.tools.cascade_tools import (
     build_cascade_tools,
 )
 from ravn.config import InitiativeConfig, PresentFileConfig, Settings
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.drive_loop import DriveLoop
 from ravn.ports.spawn import SpawnConfig
@@ -139,8 +139,8 @@ async def test_mesh_outcome_subscription_enqueues_work(tmp_path):
     topic, handler = mesh._pending_outcome_subscriptions[0]
     assert topic == "code.requested"
 
-    source_event = RavnEvent(
-        type=RavnEventType.OUTCOME,
+    source_event = MeshEvent(
+        type=MeshEventType.OUTCOME,
         source="skuld",
         payload={"event_type": "code.requested", "persona": "skuld"},
         timestamp=datetime.now(UTC),
@@ -157,12 +157,12 @@ async def test_mesh_outcome_subscription_enqueues_work(tmp_path):
     assert queued[0][2].workflow_parent_event_id == source_event.event_id
 
 
-def _outcome_event(event_type: str, persona: str, parent_event_id: str = "") -> RavnEvent:
+def _outcome_event(event_type: str, persona: str, parent_event_id: str = "") -> MeshEvent:
     payload = {"event_type": event_type, "persona": persona}
     if parent_event_id:
         payload["workflow_parent_event_id"] = parent_event_id
-    return RavnEvent(
-        type=RavnEventType.OUTCOME,
+    return MeshEvent(
+        type=MeshEventType.OUTCOME,
         source=f"flock-{persona}",
         payload=payload,
         timestamp=datetime.now(UTC),
@@ -305,7 +305,7 @@ def _workflow_outcome(
     outcome: dict | None = None,
     success: object = True,
     valid: object = True,
-) -> RavnEvent:
+) -> MeshEvent:
     payload = {
         "event_type": event_type,
         "persona": persona,
@@ -317,8 +317,8 @@ def _workflow_outcome(
         payload["workflow_node_id"] = node_id
     if parent_event_id:
         payload["workflow_parent_event_id"] = parent_event_id
-    return RavnEvent(
-        type=RavnEventType.OUTCOME,
+    return MeshEvent(
+        type=MeshEventType.OUTCOME,
         source=f"flock-{persona}",
         payload=payload,
         timestamp=timestamp,
@@ -782,8 +782,8 @@ async def test_mesh_outcome_work_is_ambient_so_the_room_can_see_it(tmp_path):
 
     _, handler = mesh._pending_outcome_subscriptions[0]
     await handler(
-        RavnEvent(
-            type=RavnEventType.OUTCOME,
+        MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="flock-research-framer",
             payload={"event_type": "research.framed", "persona": "research-framer"},
             timestamp=datetime.now(UTC),
@@ -861,8 +861,8 @@ async def test_review_fan_in_preserves_consumer_persona(tmp_path):
     _, handler = mesh._pending_outcome_subscriptions[0]
 
     await handler(
-        RavnEvent(
-            type=RavnEventType.OUTCOME,
+        MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="flock-architecture",
             payload={
                 "event_type": "plan.review.completed",
@@ -883,8 +883,8 @@ async def test_review_fan_in_preserves_consumer_persona(tmp_path):
 
     for reviewer in ("architecture", "correctness", "security"):
         await handler(
-            RavnEvent(
-                type=RavnEventType.OUTCOME,
+            MeshEvent(
+                type=MeshEventType.OUTCOME,
                 source=f"flock-{reviewer}",
                 payload={
                     "event_type": "plan.review.completed",

@@ -5,20 +5,20 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.domain.surface import strip_surface_marker
+from niuu.mesh.events import MeshEvent, MeshEventType
+from niuu.mesh.surface import strip_surface_marker
 
-_ACTIVITY_BY_EVENT: dict[RavnEventType, str] = {
-    RavnEventType.THOUGHT: "thinking",
-    RavnEventType.TOOL_START: "tool_executing",
-    RavnEventType.TOOL_RESULT: "idle",
-    RavnEventType.TASK_STARTED: "busy",
-    RavnEventType.TASK_COMPLETE: "idle",
-    RavnEventType.DECISION: "thinking",
+_ACTIVITY_BY_EVENT: dict[MeshEventType, str] = {
+    MeshEventType.THOUGHT: "thinking",
+    MeshEventType.TOOL_START: "tool_executing",
+    MeshEventType.TOOL_RESULT: "idle",
+    MeshEventType.TASK_STARTED: "busy",
+    MeshEventType.TASK_COMPLETE: "idle",
+    MeshEventType.DECISION: "thinking",
 }
 
 
-def _base(event: RavnEvent, kind: str) -> dict[str, Any]:
+def _base(event: MeshEvent, kind: str) -> dict[str, Any]:
     projected: dict[str, Any] = {
         "kind": kind,
         "sourceEventId": event.event_id,
@@ -36,19 +36,19 @@ def _base(event: RavnEvent, kind: str) -> dict[str, Any]:
     return projected
 
 
-def _activity_detail(event: RavnEvent) -> Any:
-    if event.type == RavnEventType.THOUGHT:
+def _activity_detail(event: MeshEvent) -> Any:
+    if event.type == MeshEventType.THOUGHT:
         return event.payload.get("text", "")
-    if event.type == RavnEventType.TOOL_START:
+    if event.type == MeshEventType.TOOL_START:
         return event.payload.get("tool_name", "")
-    if event.type == RavnEventType.TOOL_RESULT:
+    if event.type == MeshEventType.TOOL_RESULT:
         return event.payload.get("result", "")
-    if event.type == RavnEventType.TASK_STARTED:
+    if event.type == MeshEventType.TASK_STARTED:
         return event.payload.get("title", "")
     return event.payload
 
 
-def _agent_event(event: RavnEvent) -> dict[str, Any]:
+def _agent_event(event: MeshEvent) -> dict[str, Any]:
     projected = _base(event, "agent_event")
     projected["event"] = {
         "type": str(event.type),
@@ -62,12 +62,12 @@ def _agent_event(event: RavnEvent) -> dict[str, Any]:
     return projected
 
 
-def _timeline_event(event: RavnEvent) -> dict[str, Any] | None:
+def _timeline_event(event: MeshEvent) -> dict[str, Any] | None:
     """Project Ravn tool semantics into the coarse Chronicle vocabulary."""
-    if event.type == RavnEventType.TOOL_RESULT and event.payload.get("is_error"):
+    if event.type == MeshEventType.TOOL_RESULT and event.payload.get("is_error"):
         result = str(event.payload.get("result") or "")
         return {"type": "error", "label": _preview(result, 120)}
-    if event.type != RavnEventType.TOOL_START:
+    if event.type != MeshEventType.TOOL_START:
         return None
 
     tool_name = str(event.payload.get("tool_name") or "")
@@ -94,7 +94,7 @@ def _preview(content: str, limit: int) -> str:
     return preview[: limit - 3].rstrip() + "..."
 
 
-def _help_notification(event: RavnEvent, persona: str) -> dict[str, Any]:
+def _help_notification(event: MeshEvent, persona: str) -> dict[str, Any]:
     payload = event.payload
     context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
     notification = _base(event, "notification")
@@ -128,7 +128,7 @@ def _help_notification(event: RavnEvent, persona: str) -> dict[str, Any]:
     return notification
 
 
-def _outcome(event: RavnEvent, persona: str) -> dict[str, Any]:
+def _outcome(event: MeshEvent, persona: str) -> dict[str, Any]:
     payload = event.payload
     explicit_fields = payload.get("fields")
     fields = dict(explicit_fields) if isinstance(explicit_fields, dict) else dict(payload)
@@ -170,8 +170,8 @@ def _outcome(event: RavnEvent, persona: str) -> dict[str, Any]:
     return projected
 
 
-def _delegation(event: RavnEvent, persona: str) -> dict[str, Any] | None:
-    if event.type != RavnEventType.TOOL_START:
+def _delegation(event: MeshEvent, persona: str) -> dict[str, Any] | None:
+    if event.type != MeshEventType.TOOL_START:
         return None
     if event.payload.get("tool_name") != "route_work":
         return None
@@ -191,7 +191,7 @@ def _delegation(event: RavnEvent, persona: str) -> dict[str, Any] | None:
     return projected
 
 
-def _without_surface_marker(event: RavnEvent) -> RavnEvent:
+def _without_surface_marker(event: MeshEvent) -> MeshEvent:
     """The escalation marker is for the drive loop, so a room never sees it."""
     payload = dict(event.payload)
     for key in ("text", "summary"):
@@ -204,26 +204,26 @@ def _without_surface_marker(event: RavnEvent) -> RavnEvent:
     return replace(event, payload=payload)
 
 
-def project_ravn_event(event: RavnEvent, *, persona: str = "") -> list[dict[str, Any]]:
+def project_mesh_event(event: MeshEvent, *, persona: str = "") -> list[dict[str, Any]]:
     """Return collaboration events whose meaning is decided inside Ravn."""
     event = _without_surface_marker(event)
-    if event.type in (RavnEventType.RESPONSE, RavnEventType.ERROR):
+    if event.type in (MeshEventType.RESPONSE, MeshEventType.ERROR):
         projected = _base(event, "message")
         projected.update(
             {
                 "content": str(
                     event.payload.get("text")
-                    if event.type == RavnEventType.RESPONSE
+                    if event.type == MeshEventType.RESPONSE
                     else event.payload.get("message", "")
                 ),
-                "error": event.type == RavnEventType.ERROR,
+                "error": event.type == MeshEventType.ERROR,
                 "metadata": {},
                 "visibility": "public",
             }
         )
-        if event.type == RavnEventType.ERROR and event.payload.get("failure_kind"):
+        if event.type == MeshEventType.ERROR and event.payload.get("failure_kind"):
             projected["failureKind"] = str(event.payload["failure_kind"])
-        if event.type == RavnEventType.ERROR:
+        if event.type == MeshEventType.ERROR:
             # Which workflow node failed, so the room can attribute the
             # failure to a stage rather than only to a peer.
             projected["metadata"] = {
@@ -233,13 +233,13 @@ def project_ravn_event(event: RavnEvent, *, persona: str = "") -> list[dict[str,
             }
         return [projected]
 
-    if event.type == RavnEventType.HELP_NEEDED:
+    if event.type == MeshEventType.HELP_NEEDED:
         return [_help_notification(event, persona)]
 
-    if event.type == RavnEventType.OUTCOME:
+    if event.type == MeshEventType.OUTCOME:
         return [_outcome(event, persona)]
 
-    if event.type == RavnEventType.USAGE:
+    if event.type == MeshEventType.USAGE:
         projected = _base(event, "usage")
         projected["usage"] = dict(event.payload)
         return [projected]

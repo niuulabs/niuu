@@ -64,9 +64,9 @@ from typing import Any
 
 from niuu.mesh import mesh_event_prefix
 from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE
-from ravn.adapters.collaboration import project_ravn_event
-from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.ports.mesh import PeerNotFoundError
+from niuu.mesh.events import MeshEvent, MeshEventType
+from niuu.mesh.projection import project_mesh_event
+from niuu.ports.mesh import PeerNotFoundError
 from sleipnir.ports.events import SleipnirPublisher, SleipnirSubscriber, Subscription
 
 logger = logging.getLogger(__name__)
@@ -87,13 +87,13 @@ def _sanitize_topic(topic: str) -> str:
 
 
 def _ravn_to_sleipnir(
-    event: RavnEvent,
+    event: MeshEvent,
     topic: str,
     source_peer_id: str,
     event_prefix: str,
     environment_id: str,
 ) -> dict:
-    """Convert RavnEvent to SleipnirEvent dict for publishing."""
+    """Convert MeshEvent to SleipnirEvent dict for publishing."""
     from sleipnir.domain.events import SleipnirEvent
 
     # Use topic as part of the event type
@@ -113,7 +113,7 @@ def _ravn_to_sleipnir(
             "ravn_root_correlation_id": event.root_correlation_id,
             "ravn_trace_context": event.trace_context,
             "ravn_environment_id": environment_id,
-            "collaboration_events": project_ravn_event(event),
+            "collaboration_events": project_mesh_event(event),
         },
         summary=f"Mesh event: {topic}",
         urgency=event.urgency,
@@ -123,18 +123,18 @@ def _ravn_to_sleipnir(
     )
 
 
-def _sleipnir_to_ravn(sleipnir_event: Any) -> RavnEvent:
-    """Convert SleipnirEvent back to RavnEvent."""
+def _sleipnir_to_ravn(sleipnir_event: Any) -> MeshEvent:
+    """Convert SleipnirEvent back to MeshEvent."""
     payload = sleipnir_event.payload
     ravn_type_str = payload.get("ravn_type", "response")
 
-    # Map string back to RavnEventType
+    # Map string back to MeshEventType
     try:
-        ravn_type = RavnEventType(ravn_type_str)
+        ravn_type = MeshEventType(ravn_type_str)
     except ValueError:
-        ravn_type = RavnEventType.RESPONSE
+        ravn_type = MeshEventType.RESPONSE
 
-    return RavnEvent(
+    return MeshEvent(
         type=ravn_type,
         source=payload.get("ravn_source", sleipnir_event.source),
         payload=payload.get("ravn_event", {}),
@@ -217,7 +217,7 @@ class SleipnirMeshAdapter:
     # MeshPort interface
     # ------------------------------------------------------------------
 
-    async def publish(self, event: RavnEvent, topic: str) -> None:
+    async def publish(self, event: MeshEvent, topic: str) -> None:
         """Broadcast *event* to all subscribers of *topic*.
 
         Raises whatever the transport raised: an event that never left this
@@ -249,7 +249,7 @@ class SleipnirMeshAdapter:
     async def subscribe(
         self,
         topic: str,
-        handler: Callable[[RavnEvent], Awaitable[None]],
+        handler: Callable[[MeshEvent], Awaitable[None]],
     ) -> None:
         """Register *handler* for events on *topic*."""
         event_type_pattern = f"{self._event_prefix}.{_sanitize_topic(topic)}"

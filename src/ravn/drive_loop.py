@@ -34,6 +34,8 @@ from mimir.reflex import ReflexInjector, build_reflex_injector
 from niuu.domain.json_schema import PortableSchemaError, validate_object_instance
 from niuu.domain.mimir import ThreadState
 from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
+from niuu.mesh.events import MeshEvent, MeshEventType
+from niuu.mesh.surface import strip_surface_marker
 from niuu.observability import get_observability
 from niuu.ports.mimir import MimirPort
 from ravn.adapters.channels.capture import (
@@ -53,7 +55,6 @@ from ravn.config import (
     Settings,
 )
 from ravn.domain.budget import DailyBudgetTracker, resolve_task_cost_usd
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.exceptions import (
     LLMError,
     PromptBudgetExceededError,
@@ -64,7 +65,6 @@ from ravn.domain.models import (
     OutputMode,
     TurnResult,
 )
-from ravn.domain.surface import strip_surface_marker
 from ravn.ports.channel import ChannelPort
 from ravn.ports.event_publisher import EventPublisherPort
 from ravn.ports.resident_budget import ResidentBudgetPort
@@ -74,8 +74,8 @@ from ravn.workflow_runtime import _workflow_result_schema_for_event
 from sleipnir.domain.events import SleipnirEvent
 
 if TYPE_CHECKING:
+    from niuu.ports.mesh import MeshPort
     from ravn.adapters.personas.loader import PersonaConfig
-    from ravn.ports.mesh import MeshPort
 
 try:
     from sleipnir.domain.catalog import (
@@ -2169,13 +2169,13 @@ class DriveLoop:
                 return self._wrap_activity_channel(MeshActivityChannel(self._mesh, peer_id), task)
         return None
 
-    def _task_error_event(self, task: AgentTask, exc: Exception) -> RavnEvent:
+    def _task_error_event(self, task: AgentTask, exc: Exception) -> MeshEvent:
         """Build the terminal error event for a failed task.
 
         Carries the workflow node the task was running so whoever turns the
         error into a workflow failure can say which stage failed.
         """
-        event = RavnEvent.error(
+        event = MeshEvent.error(
             source=self._source_id,
             message=self._format_task_error(task, exc),
             correlation_id=task.task_id,
@@ -2214,7 +2214,7 @@ class DriveLoop:
             try:
                 await target.emit(self._task_error_event(task, exc))
                 await target.emit(
-                    RavnEvent.task_complete(
+                    MeshEvent.task_complete(
                         source=self._source_id,
                         success=False,
                         correlation_id=task.task_id,
@@ -2230,8 +2230,8 @@ class DriveLoop:
                 )
         try:
             await self._event_publisher.publish(
-                RavnEvent(
-                    type=RavnEventType.TASK_COMPLETE,
+                MeshEvent(
+                    type=MeshEventType.TASK_COMPLETE,
                     source=self._source_id,
                     payload={"task_id": task.task_id, "success": False, "error": reason},
                     timestamp=datetime.now(UTC),
@@ -2551,7 +2551,7 @@ class DriveLoop:
         )
 
         await channel.emit(
-            RavnEvent.task_started(
+            MeshEvent.task_started(
                 source=self._source_id,
                 task_id=task.task_id,
                 title=task.title,
@@ -2561,8 +2561,8 @@ class DriveLoop:
         )
 
         await self._event_publisher.publish(
-            RavnEvent(
-                type=RavnEventType.TASK_STARTED,
+            MeshEvent(
+                type=MeshEventType.TASK_STARTED,
                 source=self._source_id,
                 payload={
                     "task_id": task.task_id,
@@ -2639,8 +2639,8 @@ class DriveLoop:
                 logger.info("drive_loop: task %s cancelled mid-turn", task.task_id)
                 self._result_store.set_status(task.task_id, "cancelled")
                 await self._event_publisher.publish(
-                    RavnEvent(
-                        type=RavnEventType.TASK_COMPLETE,
+                    MeshEvent(
+                        type=MeshEventType.TASK_COMPLETE,
                         source=self._source_id,
                         payload={"task_id": task.task_id, "success": False},
                         timestamp=datetime.now(UTC),
@@ -2721,8 +2721,8 @@ class DriveLoop:
             await self._emit_sleipnir_task_completed(task, outcome, response_text=response_text)
 
             await self._event_publisher.publish(
-                RavnEvent(
-                    type=RavnEventType.TASK_COMPLETE,
+                MeshEvent(
+                    type=MeshEventType.TASK_COMPLETE,
                     source=self._source_id,
                     payload={"task_id": task.task_id, "success": success},
                     timestamp=datetime.now(UTC),
@@ -2733,7 +2733,7 @@ class DriveLoop:
                 )
             )
             await channel.emit(
-                RavnEvent.task_complete(
+                MeshEvent.task_complete(
                     source=self._source_id,
                     success=success,
                     correlation_id=task.task_id,
@@ -2794,7 +2794,7 @@ class DriveLoop:
             )
         return f"{type(exc).__name__}: {exc}"
 
-    async def _publish_help_needed(self, task: AgentTask, event: RavnEvent) -> None:
+    async def _publish_help_needed(self, task: AgentTask, event: MeshEvent) -> None:
         """Publish an LLM-selected help request through the configured operator transports."""
         telemetry = get_observability()
         attributes = {
@@ -2820,7 +2820,7 @@ class DriveLoop:
                         )
                     await self._mesh.publish(
                         mesh_event,
-                        topic=str(RavnEventType.HELP_NEEDED),
+                        topic=str(MeshEventType.HELP_NEEDED),
                     )
                     telemetry.event("ravn.operator.help.mesh_published")
                 except Exception:
@@ -3095,7 +3095,7 @@ class DriveLoop:
             return
         try:
             await channel.emit(
-                RavnEvent.error(
+                MeshEvent.error(
                     source=self._source_id,
                     message=message,
                     correlation_id=task.task_id,
@@ -3324,8 +3324,8 @@ class DriveLoop:
         if isinstance(summary, str) and summary.strip():
             payload["summary"] = summary.strip()
 
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source=self._source_id,
             payload=payload,
             timestamp=datetime.now(UTC),
@@ -3696,8 +3696,8 @@ class DriveLoop:
         if self._skuld_channel is not None:
             canonical_payload["collaboration_routing_only"] = True
 
-        canonical_event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        canonical_event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source=self._source_id,
             payload=canonical_payload,
             timestamp=datetime.now(UTC),
@@ -3837,8 +3837,8 @@ class DriveLoop:
         alias_payload["routing_only"] = True
         alias_payload["bubble_up"] = False
 
-        alias_event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        alias_event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source=self._source_id,
             payload=alias_payload,
             timestamp=datetime.now(UTC),
@@ -3958,8 +3958,8 @@ class DriveLoop:
         )
         self._budget.mark_warn_emitted()
         await self._event_publisher.publish(
-            RavnEvent(
-                type=RavnEventType.DECISION,
+            MeshEvent(
+                type=MeshEventType.DECISION,
                 source=self._source_id,
                 payload={
                     "budget_warning": True,
@@ -4075,7 +4075,7 @@ class DriveLoop:
             f"{cache_read_tokens}:{cache_write_tokens}:{thinking_tokens}"
         )
         await channel.emit(
-            RavnEvent.usage(
+            MeshEvent.usage(
                 source=self._source_id,
                 model=model or "unknown",
                 input_tokens=input_tokens,
@@ -4098,8 +4098,8 @@ class DriveLoop:
             "drive_loop: task %s surface escalation — publishing to Sleipnir",
             task.task_id,
         )
-        event = RavnEvent(
-            type=RavnEventType.RESPONSE,
+        event = MeshEvent(
+            type=MeshEventType.RESPONSE,
             source=self._source_id,
             payload={"text": strip_surface_marker(text), "surface_escalation": True},
             timestamp=datetime.now(UTC),
@@ -4136,8 +4136,8 @@ class DriveLoop:
             await asyncio.sleep(self._config.heartbeat_interval_seconds)
             active = len(self._active_tasks)
             queued = self._queue.qsize()
-            event = RavnEvent(
-                type=RavnEventType.TASK_STARTED,
+            event = MeshEvent(
+                type=MeshEventType.TASK_STARTED,
                 source=self._source_id,
                 payload={
                     "active_tasks": active,

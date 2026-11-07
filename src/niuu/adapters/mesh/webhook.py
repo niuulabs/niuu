@@ -28,8 +28,8 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.ports.mesh import PeerNotFoundError
+from niuu.mesh.events import MeshEvent, MeshEventType
+from niuu.ports.mesh import PeerNotFoundError
 
 if TYPE_CHECKING:
     from aiohttp import web
@@ -103,7 +103,7 @@ class WebhookMeshAdapter:
         self._connect_timeout_s = connect_timeout_s
 
         # Topic -> handlers
-        self._handlers: dict[str, list[Callable[[RavnEvent], Awaitable[None]]]] = {}
+        self._handlers: dict[str, list[Callable[[MeshEvent], Awaitable[None]]]] = {}
         self._rpc_handler: Callable[[dict], Awaitable[dict]] | None = None
 
         # HTTP components
@@ -115,7 +115,7 @@ class WebhookMeshAdapter:
     # MeshPort interface
     # ------------------------------------------------------------------
 
-    async def publish(self, event: RavnEvent, topic: str) -> None:
+    async def publish(self, event: MeshEvent, topic: str) -> None:
         """Broadcast event to all peers subscribed to topic."""
         if self._session is None:
             logger.debug("webhook_mesh: not started, skipping publish")
@@ -142,7 +142,7 @@ class WebhookMeshAdapter:
     async def subscribe(
         self,
         topic: str,
-        handler: Callable[[RavnEvent], Awaitable[None]],
+        handler: Callable[[MeshEvent], Awaitable[None]],
     ) -> None:
         """Register handler for events on topic."""
         if topic not in self._handlers:
@@ -416,8 +416,8 @@ class WebhookMeshAdapter:
     # Internal — serialization
     # ------------------------------------------------------------------
 
-    def _event_to_dict(self, event: RavnEvent, topic: str, msg_type: str) -> dict:
-        """Convert RavnEvent to wire format."""
+    def _event_to_dict(self, event: MeshEvent, topic: str, msg_type: str) -> dict:
+        """Convert MeshEvent to wire format."""
         return {
             "type": msg_type,
             "topic": topic,
@@ -435,16 +435,16 @@ class WebhookMeshAdapter:
             "timestamp": datetime.now(UTC).isoformat(),
         }
 
-    def _dict_to_event(self, payload: dict) -> RavnEvent:
-        """Convert wire format back to RavnEvent."""
+    def _dict_to_event(self, payload: dict) -> MeshEvent:
+        """Convert wire format back to MeshEvent."""
         event_data = payload.get("event", {})
 
         # Parse event type
         type_str = event_data.get("type", "response")
         try:
-            event_type = RavnEventType(type_str)
+            event_type = MeshEventType(type_str)
         except ValueError:
-            event_type = RavnEventType.RESPONSE
+            event_type = MeshEventType.RESPONSE
 
         # Parse timestamp
         ts_str = event_data.get("timestamp")
@@ -453,7 +453,7 @@ class WebhookMeshAdapter:
         else:
             timestamp = datetime.now(UTC)
 
-        return RavnEvent(
+        return MeshEvent(
             type=event_type,
             source=event_data.get("source", ""),
             payload=event_data.get("payload", {}),

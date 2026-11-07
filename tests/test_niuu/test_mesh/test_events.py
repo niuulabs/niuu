@@ -4,83 +4,83 @@ from __future__ import annotations
 
 import pytest
 
-from ravn.domain.events import RavnEvent, RavnEventType
+from niuu.mesh.events import MeshEvent, MeshEventType
 
 _SRC = "ravn-test"
 _CID = "corr-1"
 _SID = "sess-1"
 
 
-class TestRavnEventType:
+class TestMeshEventType:
     def test_values(self) -> None:
-        assert RavnEventType.THOUGHT == "thought"
-        assert RavnEventType.TOOL_START == "tool_start"
-        assert RavnEventType.TOOL_RESULT == "tool_result"
-        assert RavnEventType.RESPONSE == "response"
-        assert RavnEventType.ERROR == "error"
-        assert RavnEventType.DECISION == "decision"
-        assert RavnEventType.TASK_COMPLETE == "task_complete"
-        assert RavnEventType.USAGE == "usage"
+        assert MeshEventType.THOUGHT == "thought"
+        assert MeshEventType.TOOL_START == "tool_start"
+        assert MeshEventType.TOOL_RESULT == "tool_result"
+        assert MeshEventType.RESPONSE == "response"
+        assert MeshEventType.ERROR == "error"
+        assert MeshEventType.DECISION == "decision"
+        assert MeshEventType.TASK_COMPLETE == "task_complete"
+        assert MeshEventType.USAGE == "usage"
 
     def test_member_count(self) -> None:
         # 12 types: THOUGHT, TOOL_START, TOOL_RESULT, RESPONSE, ERROR,
         # DECISION, TASK_COMPLETE, TASK_STARTED, TASK_STUCK, OUTCOME, HELP_NEEDED, USAGE
-        assert len(RavnEventType) == 12
+        assert len(MeshEventType) == 12
 
 
-class TestRavnEvent:
+class TestMeshEvent:
     def test_thought_factory(self) -> None:
-        ev = RavnEvent.thought(_SRC, "thinking...", _CID, _SID)
-        assert ev.type == RavnEventType.THOUGHT
+        ev = MeshEvent.thought(_SRC, "thinking...", _CID, _SID)
+        assert ev.type == MeshEventType.THOUGHT
         assert ev.payload["text"] == "thinking..."
         assert ev.source == _SRC
         assert ev.session_id == _SID
 
     def test_thinking_factory(self) -> None:
-        ev = RavnEvent.thinking(_SRC, "deep thought", _CID, _SID)
-        assert ev.type == RavnEventType.THOUGHT
+        ev = MeshEvent.thinking(_SRC, "deep thought", _CID, _SID)
+        assert ev.type == MeshEventType.THOUGHT
         assert ev.payload["text"] == "deep thought"
         assert ev.payload["thinking"] is True
 
     def test_tool_start_factory(self) -> None:
-        ev = RavnEvent.tool_start(_SRC, "echo", {"message": "hi"}, _CID, _SID)
-        assert ev.type == RavnEventType.TOOL_START
+        ev = MeshEvent.tool_start(_SRC, "echo", {"message": "hi"}, _CID, _SID)
+        assert ev.type == MeshEventType.TOOL_START
         assert ev.payload["tool_name"] == "echo"
         assert ev.payload["input"] == {"message": "hi"}
 
     def test_tool_start_with_diff(self) -> None:
-        ev = RavnEvent.tool_start(_SRC, "edit", {"file": "a.py"}, _CID, _SID, diff="+ new")
+        ev = MeshEvent.tool_start(_SRC, "edit", {"file": "a.py"}, _CID, _SID, diff="+ new")
         assert ev.payload["diff"] == "+ new"
 
     def test_tool_result_factory(self) -> None:
-        ev = RavnEvent.tool_result(_SRC, "echo", "pong", _CID, _SID)
-        assert ev.type == RavnEventType.TOOL_RESULT
+        ev = MeshEvent.tool_result(_SRC, "echo", "pong", _CID, _SID)
+        assert ev.type == MeshEventType.TOOL_RESULT
         assert ev.payload["result"] == "pong"
         assert ev.payload["is_error"] is False
         assert ev.payload["tool_name"] == "echo"
 
     def test_tool_result_error(self) -> None:
-        ev = RavnEvent.tool_result(_SRC, "fail", "boom", _CID, _SID, is_error=True)
+        ev = MeshEvent.tool_result(_SRC, "fail", "boom", _CID, _SID, is_error=True)
         assert ev.payload["is_error"] is True
 
     def test_response_factory(self) -> None:
-        ev = RavnEvent.response(_SRC, "Hello there!", _CID, _SID)
-        assert ev.type == RavnEventType.RESPONSE
+        ev = MeshEvent.response(_SRC, "Hello there!", _CID, _SID)
+        assert ev.type == MeshEventType.RESPONSE
         assert ev.payload["text"] == "Hello there!"
 
     def test_error_factory(self) -> None:
-        ev = RavnEvent.error(_SRC, "something went wrong", _CID, _SID)
-        assert ev.type == RavnEventType.ERROR
+        ev = MeshEvent.error(_SRC, "something went wrong", _CID, _SID)
+        assert ev.type == MeshEventType.ERROR
         assert ev.payload["message"] == "something went wrong"
 
     def test_decision_required_factory(self) -> None:
-        ev = RavnEvent.decision_required(_SRC, "approve?", _CID, _SID)
-        assert ev.type == RavnEventType.DECISION
+        ev = MeshEvent.decision_required(_SRC, "approve?", _CID, _SID)
+        assert ev.type == MeshEventType.DECISION
         assert ev.payload["prompt"] == "approve?"
         assert ev.urgency == 0.9
 
     def test_help_needed_factory(self) -> None:
-        ev = RavnEvent.help_needed(
+        ev = MeshEvent.help_needed(
             source=_SRC,
             persona="reviewer",
             reason="blocked",
@@ -92,7 +92,7 @@ class TestRavnEvent:
             task_id="task-123",
             context={"file": "auth.py", "line": 47},
         )
-        assert ev.type == RavnEventType.HELP_NEEDED
+        assert ev.type == MeshEventType.HELP_NEEDED
         assert ev.payload["persona"] == "reviewer"
         assert ev.payload["reason"] == "blocked"
         assert ev.payload["summary"] == "Cannot determine if change is safe"
@@ -103,7 +103,7 @@ class TestRavnEvent:
         assert ev.task_id == "task-123"
 
     def test_help_needed_caps_attempted_at_three(self) -> None:
-        ev = RavnEvent.help_needed(
+        ev = MeshEvent.help_needed(
             source=_SRC,
             persona="coder",
             reason="needs_context",
@@ -116,12 +116,12 @@ class TestRavnEvent:
         assert len(ev.payload["attempted"]) == 3
 
     def test_task_complete_factory(self) -> None:
-        ev = RavnEvent.task_complete(_SRC, True, _CID, _SID)
-        assert ev.type == RavnEventType.TASK_COMPLETE
+        ev = MeshEvent.task_complete(_SRC, True, _CID, _SID)
+        assert ev.type == MeshEventType.TASK_COMPLETE
         assert ev.payload["success"] is True
 
     def test_usage_factory(self) -> None:
-        ev = RavnEvent.usage(
+        ev = MeshEvent.usage(
             _SRC,
             model="gpt-5.5",
             input_tokens=10,
@@ -136,7 +136,7 @@ class TestRavnEvent:
             session_id=_SID,
             task_id="task-123",
         )
-        assert ev.type == RavnEventType.USAGE
+        assert ev.type == MeshEventType.USAGE
         assert ev.payload["model"] == "gpt-5.5"
         assert ev.payload["inputTokens"] == 10
         assert ev.payload["outputTokens"] == 5
@@ -149,14 +149,14 @@ class TestRavnEvent:
         assert ev.task_id == "task-123"
 
     def test_frozen(self) -> None:
-        ev = RavnEvent.thought(_SRC, "test", _CID, _SID)
+        ev = MeshEvent.thought(_SRC, "test", _CID, _SID)
         with pytest.raises(Exception):
             ev.source = "other"  # type: ignore[misc]
 
     def test_timestamp_present(self) -> None:
-        ev = RavnEvent.response(_SRC, "hi", _CID, _SID)
+        ev = MeshEvent.response(_SRC, "hi", _CID, _SID)
         assert ev.timestamp is not None
 
     def test_task_id_optional(self) -> None:
-        ev = RavnEvent.thought(_SRC, "t", _CID, _SID, task_id="sub-1")
+        ev = MeshEvent.thought(_SRC, "t", _CID, _SID, task_id="sub-1")
         assert ev.task_id == "sub-1"

@@ -138,7 +138,7 @@ async def main():
 
     print("=== Publishing code.changed event ===")
 
-    # IMPORTANT: Must be RavnEventType.OUTCOME format with proper payload structure
+    # IMPORTANT: Must be MeshEventType.OUTCOME format with proper payload structure
     event = SleipnirEvent(
         event_type="ravn.mesh.code.changed",
         source="ravn:test-publisher",

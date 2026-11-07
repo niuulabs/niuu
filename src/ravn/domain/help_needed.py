@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from ravn.domain.events import RavnEvent
+from niuu.mesh.events import MeshEvent
 
 
 def build_help_needed_event(
@@ -21,9 +21,9 @@ def build_help_needed_event(
     task_id: str = "",
     context: Mapping[str, Any] | None = None,
     trace_context: Mapping[str, str] | None = None,
-) -> RavnEvent:
+) -> MeshEvent:
     """Build the canonical event emitted when Ravn needs human input."""
-    return RavnEvent.help_needed(
+    return MeshEvent.help_needed(
         source=source,
         persona=persona,
         reason=reason,

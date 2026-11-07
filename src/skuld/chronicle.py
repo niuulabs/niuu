@@ -252,7 +252,7 @@ class ChronicleMixin:
         if self._mesh_adapter is None or self._settings.mesh.flock_broker:
             return
 
-        from ravn.domain.events import RavnEvent, RavnEventType
+        from niuu.mesh.events import MeshEvent, MeshEventType
 
         diff_summary = await self._git_diff_summary()
 
@@ -280,8 +280,8 @@ class ChronicleMixin:
         if self._artifacts.files_changed:
             outcome_payload["files_changed"] = list(self._artifacts.files_changed)
 
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source=f"skuld:{self._mesh_adapter.peer_id}",
             payload=outcome_payload,
             timestamp=datetime.now(UTC),

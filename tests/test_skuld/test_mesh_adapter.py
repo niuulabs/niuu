@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ravn.domain.events import RavnEvent, RavnEventType
+from niuu.mesh.events import MeshEvent, MeshEventType
 from skuld.config import MeshConfig, SkuldSettings
 from skuld.mesh_adapter import SkuldMeshAdapter
 
@@ -255,8 +255,8 @@ class TestSkuldMeshAdapterLifecycle:
 
     @pytest.mark.asyncio
     async def test_publish_forwards_event_to_mesh(self, adapter, mock_mesh):
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="skuld:test",
             payload={"event_type": "code.requested"},
             timestamp=datetime.now(UTC),
@@ -633,8 +633,8 @@ class TestOutcomeEventHandling:
 
     @pytest.mark.asyncio
     async def test_non_outcome_event_ignored(self, adapter):
-        event = RavnEvent(
-            type=RavnEventType.THOUGHT,
+        event = MeshEvent(
+            type=MeshEventType.THOUGHT,
             source="other-ravn",
             payload={"text": "thinking..."},
             timestamp=datetime.now(UTC),
@@ -647,8 +647,8 @@ class TestOutcomeEventHandling:
 
     @pytest.mark.asyncio
     async def test_outcome_without_prompt_ignored(self, adapter):
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="other-ravn",
             payload={"event_type": "code.requested"},
             timestamp=datetime.now(UTC),
@@ -673,8 +673,8 @@ class TestOutcomeEventHandling:
 
         mock_transport.send_message = fake_send
 
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="ravn-coder",
             payload={
                 "event_type": "code.requested",
@@ -692,7 +692,7 @@ class TestOutcomeEventHandling:
         mock_mesh.publish.assert_awaited_once()
         call_args = mock_mesh.publish.call_args
         published_event = call_args[0][0]
-        assert published_event.type == RavnEventType.OUTCOME
+        assert published_event.type == MeshEventType.OUTCOME
         assert published_event.source == "skuld-test-01"
         assert published_event.payload["persona"] == "coder"
         assert published_event.payload["output"] == "Fixed the code"
@@ -724,8 +724,8 @@ class TestOutcomeEventHandling:
 
         mock_transport.send_message = fake_send
 
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="peer",
             payload={"event_type": "code.requested", "prompt": "test"},
             timestamp=datetime.now(UTC),
@@ -751,8 +751,8 @@ class TestOutcomeEventHandling:
 
         mock_transport.send_message = exploding_send
 
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="ravn-coder",
             payload={
                 "event_type": "code.requested",
@@ -784,7 +784,7 @@ class TestMeshRoundTrip:
     @pytest.mark.asyncio
     async def test_rpc_round_trip_with_in_process_bus(self):
         """Publish work_request via mesh RPC, verify response."""
-        from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
+        from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
         from sleipnir.adapters.in_process import InProcessBus
 
         bus = InProcessBus()
@@ -848,7 +848,7 @@ class TestMeshRoundTrip:
     @pytest.mark.asyncio
     async def test_publish_subscribe_round_trip(self):
         """Subscribe to topic, publish event, verify handler fires."""
-        from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
+        from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
         from sleipnir.adapters.in_process import InProcessBus
 
         bus = InProcessBus()
@@ -859,16 +859,16 @@ class TestMeshRoundTrip:
             rpc_timeout_s=5.0,
         )
 
-        received: list[RavnEvent] = []
+        received: list[MeshEvent] = []
 
-        async def handler(event: RavnEvent) -> None:
+        async def handler(event: MeshEvent) -> None:
             received.append(event)
 
         await mesh.start()
         await mesh.subscribe("test.topic", handler)
 
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="test-source",
             payload={"event_type": "test.topic", "data": "hello"},
             timestamp=datetime.now(UTC),
@@ -1080,7 +1080,7 @@ class TestBrokerMeshIntegration:
                 return_value=mock_nng,
             ),
             patch(
-                "ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter",
+                "niuu.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter",
                 return_value=mock_mesh,
             ) as mock_mesh_cls,
             patch("skuld.broker.build_discovery_adapters", return_value=None),
@@ -1202,7 +1202,7 @@ class TestBrokerMeshIntegration:
         with (
             patch("niuu.mesh.transport_builder.build_nng_transport", return_value=MagicMock()),
             patch(
-                "ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter",
+                "niuu.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter",
                 return_value=mock_mesh,
             ),
             patch("skuld.broker.build_discovery_adapters", return_value=mock_discovery),

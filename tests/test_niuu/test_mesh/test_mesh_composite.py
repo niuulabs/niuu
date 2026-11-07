@@ -17,19 +17,19 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from ravn.adapters.mesh.composite import CompositeMeshAdapter
-from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
-from ravn.adapters.mesh.webhook import WebhookMeshAdapter
-from ravn.domain.events import RavnEvent
-from ravn.ports.mesh import PeerNotFoundError
+from niuu.adapters.mesh.composite import CompositeMeshAdapter
+from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
+from niuu.adapters.mesh.webhook import WebhookMeshAdapter
+from niuu.mesh.events import MeshEvent
+from niuu.ports.mesh import PeerNotFoundError
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _event() -> RavnEvent:
-    return RavnEvent.thought(
+def _event() -> MeshEvent:
+    return MeshEvent.thought(
         source="peer-a",
         text="hello mesh",
         correlation_id="cid-1",
@@ -43,7 +43,7 @@ class _Transport:
     def __init__(self, name: str, *, reply: dict | None = None) -> None:
         self.name = name
         self.reply = reply if reply is not None else {"via": name}
-        self.published: list[tuple[RavnEvent, str]] = []
+        self.published: list[tuple[MeshEvent, str]] = []
         self.subscribed: list[str] = []
         self.unsubscribed: list[str] = []
         self.sent: list[str] = []
@@ -56,11 +56,11 @@ class _Transport:
         if operation in self.fail:
             raise self.fail[operation]
 
-    async def publish(self, event: RavnEvent, topic: str) -> None:
+    async def publish(self, event: MeshEvent, topic: str) -> None:
         self._maybe_fail("publish")
         self.published.append((event, topic))
 
-    async def subscribe(self, topic: str, handler: Callable[[RavnEvent], Awaitable[None]]) -> None:
+    async def subscribe(self, topic: str, handler: Callable[[MeshEvent], Awaitable[None]]) -> None:
         self._maybe_fail("subscribe")
         self.subscribed.append(topic)
 
@@ -344,7 +344,7 @@ class TestStop:
 class TestSetRpcHandler:
     def test_skips_transports_without_rpc_support(self):
         class _PublishOnly:
-            async def publish(self, event: RavnEvent, topic: str) -> None:
+            async def publish(self, event: MeshEvent, topic: str) -> None:
                 return None
 
         alpha = _AlphaTransport("alpha")

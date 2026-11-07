@@ -27,8 +27,8 @@ def test_shared_collaboration_has_no_runtime_or_surface_dependency() -> None:
 
 
 def test_semantic_projection_and_surface_adapter_do_not_cross_import() -> None:
-    ravn_projection = ROOT / "src/ravn/adapters/collaboration/projection.py"
+    mesh_projection = ROOT / "src/niuu/mesh/projection.py"
     skuld_surface = ROOT / "src/skuld/collaboration_adapter.py"
 
-    assert all(not name.startswith("skuld") for name in _imports(ravn_projection))
+    assert all(not name.startswith("skuld") for name in _imports(mesh_projection))
     assert all(not name.startswith("ravn") for name in _imports(skuld_surface))

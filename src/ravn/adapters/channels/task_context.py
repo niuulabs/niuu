@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from ravn.domain.events import RavnEvent
+from niuu.mesh.events import MeshEvent
 from ravn.ports.channel import ChannelPort
 
 
@@ -32,7 +32,7 @@ class TaskContextChannel(ChannelPort):
         self._task_id = task_id
         self._root_correlation_id = root_correlation_id
 
-    async def emit(self, event: RavnEvent) -> None:
+    async def emit(self, event: MeshEvent) -> None:
         await self._channel.emit(
             replace(
                 event,

@@ -1,4 +1,4 @@
-"""Sleipnir channel adapter — publishes RavnEvents to RabbitMQ (NIU-438).
+"""Sleipnir channel adapter — publishes MeshEvents to RabbitMQ (NIU-438).
 
 Events are wrapped in a SleipnirEnvelope and published to the ``ravn.events``
 topic exchange with routing key ``ravn.<event_type>.<agent_id>``.
@@ -16,8 +16,8 @@ import socket
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.channels._rabbitmq_base import RabbitMQPublishMixin
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.models import SleipnirEnvelope
 from ravn.ports.channel import ChannelPort
 
@@ -30,24 +30,24 @@ logger = logging.getLogger(__name__)
 # Urgency mapping (set by the adapter, not by the event factories)
 # ---------------------------------------------------------------------------
 
-_URGENCY: dict[RavnEventType, float] = {
-    RavnEventType.THOUGHT: 0.1,
-    RavnEventType.TOOL_START: 0.1,
-    RavnEventType.TOOL_RESULT: 0.1,
-    RavnEventType.RESPONSE: 0.2,
-    RavnEventType.ERROR: 0.6,
-    RavnEventType.DECISION: 0.9,
-    RavnEventType.TASK_COMPLETE: 0.2,  # overridden for failures below
+_URGENCY: dict[MeshEventType, float] = {
+    MeshEventType.THOUGHT: 0.1,
+    MeshEventType.TOOL_START: 0.1,
+    MeshEventType.TOOL_RESULT: 0.1,
+    MeshEventType.RESPONSE: 0.2,
+    MeshEventType.ERROR: 0.6,
+    MeshEventType.DECISION: 0.9,
+    MeshEventType.TASK_COMPLETE: 0.2,  # overridden for failures below
 }
 
 
-def _urgency_for(event: RavnEvent) -> float:
+def _urgency_for(event: MeshEvent) -> float:
     """Return the Sleipnir urgency hint for *event*.
 
     TASK_COMPLETE urgency is elevated to 0.7 when the task failed (detected
     via the ``success`` key in the event payload).
     """
-    if event.type == RavnEventType.TASK_COMPLETE:
+    if event.type == MeshEventType.TASK_COMPLETE:
         return 0.2 if event.payload.get("success", True) else 0.7
     return _URGENCY.get(event.type, 0.2)
 
@@ -87,7 +87,7 @@ def _serialise_envelope(envelope: SleipnirEnvelope) -> bytes:
 
 
 class SleipnirChannel(RabbitMQPublishMixin, ChannelPort):
-    """Publishes RavnEvents to RabbitMQ via the Sleipnir event backbone.
+    """Publishes MeshEvents to RabbitMQ via the Sleipnir event backbone.
 
     Parameters
     ----------
@@ -119,7 +119,7 @@ class SleipnirChannel(RabbitMQPublishMixin, ChannelPort):
     # ChannelPort interface
     # ------------------------------------------------------------------
 
-    async def emit(self, event: RavnEvent) -> None:
+    async def emit(self, event: MeshEvent) -> None:
         """Emit *event* to RabbitMQ. Never raises — failures are logged."""
         envelope = SleipnirEnvelope(
             event=event,

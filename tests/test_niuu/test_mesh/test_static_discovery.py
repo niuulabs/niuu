@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from ravn.adapters.discovery.static import StaticDiscoveryAdapter
-from ravn.domain.models import RavnIdentity
+from niuu.adapters.discovery.static import StaticDiscoveryAdapter
+from niuu.mesh.identity import MeshIdentity
 
 
-def _identity(peer_id: str = "self") -> RavnIdentity:
-    return RavnIdentity(
+def _identity(peer_id: str = "self") -> MeshIdentity:
+    return MeshIdentity(
         peer_id=peer_id,
         realm_id="realm",
         persona="self",

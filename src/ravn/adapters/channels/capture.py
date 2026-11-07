@@ -5,7 +5,7 @@ Writes to a shared TaskResultStore keyed by task_id so that task_collect
 and task_status(include_progress=True) can return real output and event history.
 
 Sleipnir streaming extension path (NIU-545, future work):
-    SleipnirChannel (NIU-438) already tags every RavnEvent with task_id in the
+    SleipnirChannel (NIU-438) already tags every MeshEvent with task_id in the
     SleipnirEnvelope, so when a subtask runs on a daemon with Sleipnir enabled
     every THOUGHT/TOOL_START/TOOL_RESULT/RESPONSE event is already landing on
     ``ravn.events`` with the task_id in the payload — no publishing changes needed.
@@ -32,8 +32,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.channels.silent import _SURFACE_PREFIX
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.ports.channel import ChannelPort
 
 logger = logging.getLogger(__name__)
@@ -163,26 +163,26 @@ class TaskResultStore:
         )
 
 
-def _summarise_event(event: RavnEvent) -> str:
+def _summarise_event(event: MeshEvent) -> str:
     """Produce a human-readable one-liner for each event type."""
     match event.type:
-        case RavnEventType.THOUGHT:
+        case MeshEventType.THOUGHT:
             text = event.payload.get("text", "")
             return f"thinking: {text[:80]}"
-        case RavnEventType.TOOL_START:
+        case MeshEventType.TOOL_START:
             tool_name = event.payload.get("tool_name", "")
             tool_input = event.payload.get("input", {})
             args_summary = ", ".join(
                 f"{k}={str(v)[:20]!r}" for k, v in list(tool_input.items())[:3]
             )
             return f"tool: {tool_name}({args_summary})"
-        case RavnEventType.TOOL_RESULT:
+        case MeshEventType.TOOL_RESULT:
             result = event.payload.get("result", "")
             return f"→ {result[:80]}"
-        case RavnEventType.RESPONSE:
+        case MeshEventType.RESPONSE:
             text = event.payload.get("text", "")
             return f"response: {text[:120]}"
-        case RavnEventType.ERROR:
+        case MeshEventType.ERROR:
             message = event.payload.get("message", "")
             return f"error: {message}"
         case _:
@@ -190,15 +190,15 @@ def _summarise_event(event: RavnEvent) -> str:
     raise AssertionError("Unreachable _summarise_event fallthrough")
 
 
-def _capture_details(event: RavnEvent) -> dict[str, object] | None:
+def _capture_details(event: MeshEvent) -> dict[str, object] | None:
     """Retain bounded structured tool facts for live runtime projections."""
-    if event.type == RavnEventType.TOOL_START:
+    if event.type == MeshEventType.TOOL_START:
         tool_input = event.payload.get("input")
         return {
             "tool_name": str(event.payload.get("tool_name") or ""),
             "input": _bounded_mapping(tool_input) if isinstance(tool_input, dict) else {},
         }
-    if event.type == RavnEventType.TOOL_RESULT:
+    if event.type == MeshEventType.TOOL_RESULT:
         result = str(event.payload.get("result") or "")
         try:
             parsed: object = json.loads(result)
@@ -248,7 +248,7 @@ class CaptureChannel(ChannelPort):
         self._response_text: str = ""
         self._surface_triggered: bool = False
 
-    async def emit(self, event: RavnEvent) -> None:
+    async def emit(self, event: MeshEvent) -> None:
         """Accumulate event into the store; update output/status on terminal events."""
         summary = _summarise_event(event)
         captured = CapturedEvent(
@@ -259,13 +259,13 @@ class CaptureChannel(ChannelPort):
         )
         self._store.append_event(self._task_id, captured)
 
-        if event.type == RavnEventType.RESPONSE:
+        if event.type == MeshEventType.RESPONSE:
             text = event.payload.get("text", "")
             self._response_text = text
             self._surface_triggered = text.startswith(_SURFACE_PREFIX)
             self._store.set_output(self._task_id, text)
 
-        if event.type == RavnEventType.ERROR:
+        if event.type == MeshEventType.ERROR:
             self._store.set_status(self._task_id, "failed")
 
     @property

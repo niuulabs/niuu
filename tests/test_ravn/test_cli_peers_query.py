@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 from ravn.cli.mesh_runtime import _query_adapters_config
 
-_MDNS = "ravn.adapters.discovery.mdns.MdnsDiscoveryAdapter"
-_STATIC = "ravn.adapters.discovery.static.StaticDiscoveryAdapter"
+_MDNS = "niuu.adapters.discovery.mdns.MdnsDiscoveryAdapter"
+_STATIC = "niuu.adapters.discovery.static.StaticDiscoveryAdapter"
 
 
 def _settings(adapters: list[dict]) -> SimpleNamespace:

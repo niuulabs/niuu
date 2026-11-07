@@ -6,14 +6,14 @@ from datetime import UTC, datetime
 
 import pytest
 
+from niuu.mesh.events import MeshEvent, MeshEventType
+from niuu.mesh.projection import project_mesh_event
+from niuu.mesh.surface import strip_surface_marker
 from ravn.adapters.channels.silent import SilentChannel
-from ravn.adapters.collaboration import project_ravn_event
-from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.domain.surface import strip_surface_marker
 
 
-def _event(event_type: RavnEventType, payload: dict) -> RavnEvent:
-    return RavnEvent(
+def _event(event_type: MeshEventType, payload: dict) -> MeshEvent:
+    return MeshEvent(
         type=event_type,
         source="ravn",
         payload=payload,
@@ -39,17 +39,17 @@ def test_the_marker_comes_off_the_start_of_a_line(text: str, expected: str) -> N
 
 
 def test_a_room_message_never_shows_the_marker() -> None:
-    projected = project_ravn_event(
-        _event(RavnEventType.RESPONSE, {"text": "[SURFACE] The gate is open."})
+    projected = project_mesh_event(
+        _event(MeshEventType.RESPONSE, {"text": "[SURFACE] The gate is open."})
     )
 
     assert projected[0]["content"] == "The gate is open."
 
 
 def test_an_outcome_summary_never_shows_the_marker() -> None:
-    projected = project_ravn_event(
+    projected = project_mesh_event(
         _event(
-            RavnEventType.OUTCOME,
+            MeshEventType.OUTCOME,
             {
                 "event_type": "code.changed",
                 "summary": "[SURFACE] Changed the README",
@@ -68,6 +68,6 @@ def test_an_outcome_summary_never_shows_the_marker() -> None:
 async def test_ravn_still_sees_the_marker_so_escalation_keeps_working() -> None:
     channel = SilentChannel()
 
-    await channel.emit(_event(RavnEventType.RESPONSE, {"text": "[SURFACE] Needs a person"}))
+    await channel.emit(_event(MeshEventType.RESPONSE, {"text": "[SURFACE] Needs a person"}))
 
     assert channel.surface_triggered is True

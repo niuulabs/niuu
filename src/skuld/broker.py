@@ -1084,7 +1084,7 @@ class Broker(
                 environment_id=mesh_cfg.realm_id,
             )
         else:
-            from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter  # noqa: PLC0415
+            from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter  # noqa: PLC0415
 
             if mesh_cfg.transport == "nng":
                 nng_cfg = getattr(mesh_cfg, "nng", None)
@@ -1613,7 +1613,7 @@ class Broker(
         extra_payload: dict[str, Any] | None = None,
     ) -> str:
         """Publish one task event through Skuld's configured mesh adapter."""
-        from ravn.domain.events import RavnEvent, RavnEventType
+        from niuu.mesh.events import MeshEvent, MeshEventType
 
         if event_type.strip() in self._evidence_gate_outputs:
             raise ValueError("Only the evidence verifier can publish evidence gate output events")
@@ -1629,9 +1629,9 @@ class Broker(
             "task_description": task_description,
             "trigger_source": source,
         }
-        event = RavnEvent(
+        event = MeshEvent(
             event_id=event_id,
-            type=RavnEventType.OUTCOME,
+            type=MeshEventType.OUTCOME,
             source=f"skuld:{self._mesh_adapter.peer_id}",
             payload=payload,
             timestamp=datetime.now(UTC),
@@ -2674,10 +2674,10 @@ class Broker(
                 "notes": state.notes,
             },
         }
-        from ravn.domain.events import RavnEvent, RavnEventType
+        from niuu.mesh.events import MeshEvent, MeshEventType
 
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source=f"workflow-gate:{state.node_id}",
             payload=payload,
             timestamp=now,
@@ -2815,10 +2815,10 @@ class Broker(
             "summary": f"{node.label}: evidence {'accepted' if accepted else 'rejected'}",
             "fields": {"evidence_report": report},
         }
-        from ravn.domain.events import RavnEvent, RavnEventType
+        from niuu.mesh.events import MeshEvent, MeshEventType
 
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source=outcome["peer_id"],
             payload=outcome,
             timestamp=datetime.now(UTC),

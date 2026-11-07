@@ -1,7 +1,7 @@
 """HTTP gateway — FastAPI server for local/LAN access to Ravn.
 
 Endpoints:
-  POST /chat    — send a message; response is an SSE stream of RavnEvents.
+  POST /chat    — send a message; response is an SSE stream of MeshEvents.
   GET  /status  — JSON: active session IDs and count.
   GET  /events  — SSE broadcast of *all* events across all sessions.
   WS   /ws      — WebSocket chat with CLI-format translation.
@@ -23,9 +23,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from niuu.mesh.events import MeshEvent
 from ravn.adapters.channels.gateway import RavnGateway
 from ravn.config import HttpChannelConfig
-from ravn.domain.events import RavnEvent
 from ravn.ports.event_translator import EventTranslatorPort
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ class ChatRequest(BaseModel):
 class HttpGateway:
     """FastAPI-based HTTP gateway for Ravn.
 
-    Each call to ``POST /chat`` streams :class:`~ravn.domain.events.RavnEvent`
+    Each call to ``POST /chat`` streams :class:`~niuu.mesh.events.MeshEvent`
     objects as Server-Sent Events so callers can display streaming output.
 
     ``WS /ws`` accepts WebSocket connections and translates events using the
@@ -119,7 +119,7 @@ class HttpGateway:
 
         @app.websocket("/ws")
         async def websocket_chat(ws: WebSocket) -> None:
-            """WebSocket chat — translates RavnEvents to CLI stream-json."""
+            """WebSocket chat — translates MeshEvents to CLI stream-json."""
             await ws.accept()
             session_id = f"ws:{id(ws)}"
             translator = self._translator_cls()
@@ -148,8 +148,8 @@ class HttpGateway:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _serialise_event(event: RavnEvent) -> str:
-        """Serialise a :class:`RavnEvent` as a JSON string for SSE delivery."""
+    def _serialise_event(event: MeshEvent) -> str:
+        """Serialise a :class:`MeshEvent` as a JSON string for SSE delivery."""
         return json.dumps(
             {
                 "type": str(event.type),

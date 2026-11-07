@@ -211,7 +211,7 @@ class TestEnvelope:
 
 class TestUnknownFrames:
     def test_unknown_event_types_are_preserved(self) -> None:
-        """Only 5 of 12 RavnEventType members reach this path today."""
+        """Only 5 of 12 MeshEventType members reach this path today."""
         tr = TurnTranslator(session_key="k", run_id="r")
         events = tr.ingest({"type": "task_stuck", "payload": {"why": "waiting"}})
         block = events[0]["message"]["blocks"][0]

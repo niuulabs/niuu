@@ -1,14 +1,14 @@
-"""Event translator port — translates RavnEvents into wire-format dicts."""
+"""Event translator port — translates MeshEvents into wire-format dicts."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from ravn.domain.events import RavnEvent
+from niuu.mesh.events import MeshEvent
 
 
 class EventTranslatorPort(ABC):
-    """Translates :class:`RavnEvent` objects into wire-format dicts for a
+    """Translates :class:`MeshEvent` objects into wire-format dicts for a
     specific protocol (e.g. Claude CLI stream-json, plain JSON, etc.).
 
     Implementations are stateful per-turn: call :meth:`reset` before each new
@@ -16,7 +16,7 @@ class EventTranslatorPort(ABC):
     """
 
     @abstractmethod
-    def translate(self, event: RavnEvent) -> list[dict]:
+    def translate(self, event: MeshEvent) -> list[dict]:
         """Return zero or more wire-format event dicts for *event*."""
         raise NotImplementedError
 

@@ -382,7 +382,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
             env["SKULD__MESH__ADAPTERS"] = json.dumps(
                 [
                     {
-                        "adapter": "ravn.adapters.discovery.static.StaticDiscoveryAdapter",
+                        "adapter": "niuu.adapters.discovery.static.StaticDiscoveryAdapter",
                         "cluster_file": str(flock_dir / "cluster.yaml"),
                         "poll_interval_s": 5,
                     }

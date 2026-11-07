@@ -151,7 +151,7 @@ The browser sends `targetPeerId` (camelCase) to the broker, which routes via
 - `/tmp/ravn-mesh/cluster.yaml` — static peer definitions with display names
 - `/tmp/ravn-mesh/ravn-mesh-{1,2,3}.yaml` — per-node config (generated)
 - `/tmp/ravn-mesh/ravn-mesh-{1,2,3}.log` — per-node logs
-- `src/ravn/adapters/collaboration/projection.py` — Ravn→neutral collaboration projection
+- `src/niuu/mesh/projection.py` — Ravn→neutral collaboration projection
 - `src/skuld/collaboration_adapter.py` — collaboration→browser/channel adaptation
 - `src/skuld/broker.py` — WebSocket broker, ravn registration, directed messages
 - `src/ravn/adapters/channels/skuld_channel.py` — ravn→Skuld WebSocket channel

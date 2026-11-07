@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from niuu.domain.tool import ToolResult
+from niuu.mesh.events import MeshEvent
 from niuu.observability import get_observability
 from niuu.ports.mimir import MimirPort
 from niuu.ports.tool import ToolPort
@@ -26,7 +27,6 @@ from ravn.domain.checkpoint import (
     Checkpoint,
     InterruptReason,
 )
-from ravn.domain.events import RavnEvent
 from ravn.domain.exceptions import (
     MaxIterationsError,
     PermissionDeniedError,
@@ -631,7 +631,7 @@ class RavnAgent:
                 if llm_response.stop_reason != StopReason.TOOL_USE:
                     if llm_response.content:
                         await self._channel.emit(
-                            RavnEvent.response(
+                            MeshEvent.response(
                                 source=self._source_id,
                                 text=llm_response.content,
                                 correlation_id=self._session.id,
@@ -1623,7 +1623,7 @@ class RavnAgent:
                             self._last_ttft_ms = (time.monotonic() - stream_started) * 1_000
                         accumulated_text += event.text
                         await self._channel.emit(
-                            RavnEvent.thought(
+                            MeshEvent.thought(
                                 self._source_id,
                                 event.text,
                                 self._session.id,
@@ -1634,7 +1634,7 @@ class RavnAgent:
                     if event.text:
                         accumulated_reasoning += event.text
                         await self._channel.emit(
-                            RavnEvent.thinking(
+                            MeshEvent.thinking(
                                 self._source_id,
                                 event.text,
                                 self._session.id,
@@ -1666,7 +1666,7 @@ class RavnAgent:
                     # after this stream ends, so discarding here is sufficient.
                     if accumulated_text or accumulated_reasoning:
                         await self._channel.emit(
-                            RavnEvent.thought(
+                            MeshEvent.thought(
                                 self._source_id,
                                 _STREAM_RESTART_NOTICE,
                                 self._session.id,
@@ -1749,7 +1749,7 @@ class RavnAgent:
                 is_error=True,
             )
             await self._channel.emit(
-                RavnEvent.tool_result(
+                MeshEvent.tool_result(
                     self._source_id,
                     tool_call.name,
                     result.content,
@@ -1762,7 +1762,7 @@ class RavnAgent:
 
         diff = tool.diff_preview(tool_call.input)
         await self._channel.emit(
-            RavnEvent.tool_start(
+            MeshEvent.tool_start(
                 self._source_id,
                 tool_call.name,
                 tool_call.input,
@@ -1781,7 +1781,7 @@ class RavnAgent:
                 is_error=True,
             )
             await self._channel.emit(
-                RavnEvent.tool_result(
+                MeshEvent.tool_result(
                     self._source_id,
                     tool_call.name,
                     result.content,
@@ -1820,7 +1820,7 @@ class RavnAgent:
         # result is larger than a NATS message, and the channel loses it.
         result = self._truncate_oversized_tool_result(tool_call, result, batch_size=batch_size)
         await self._channel.emit(
-            RavnEvent.tool_result(
+            MeshEvent.tool_result(
                 self._source_id,
                 tool_call.name,
                 result.content,
@@ -1840,7 +1840,7 @@ class RavnAgent:
         """
         question = tool_call.input.get("question", "")
         await self._channel.emit(
-            RavnEvent.tool_start(
+            MeshEvent.tool_start(
                 self._source_id,
                 _ASK_USER_TOOL_NAME,
                 tool_call.input,
@@ -1856,7 +1856,7 @@ class RavnAgent:
                 is_error=True,
             )
             await self._channel.emit(
-                RavnEvent.tool_result(
+                MeshEvent.tool_result(
                     self._source_id,
                     _ASK_USER_TOOL_NAME,
                     result.content,
@@ -1870,7 +1870,7 @@ class RavnAgent:
         answer = await self._user_input_fn(question)
         result = ToolResult(tool_call_id=tool_call.id, content=answer)
         await self._channel.emit(
-            RavnEvent.tool_result(
+            MeshEvent.tool_result(
                 self._source_id,
                 _ASK_USER_TOOL_NAME,
                 answer,

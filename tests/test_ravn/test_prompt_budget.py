@@ -9,11 +9,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from niuu.domain.tool import ToolResult
+from niuu.mesh.events import MeshEventType
 from niuu.ports.tool import ToolPort
 from ravn.agent import RavnAgent
 from ravn.budget import _CHARS_PER_TOKEN
 from ravn.cap_telemetry import cap_hit_counts
-from ravn.domain.events import RavnEventType
 from ravn.domain.exceptions import PromptBudgetExceededError
 from ravn.domain.models import StreamEvent, StreamEventType, TokenUsage, ToolCall
 from ravn.ports.llm import LLMPort
@@ -248,7 +248,7 @@ class TestToolResultCap:
         emitted = [
             event.payload["result"]
             for event in agent._channel.events
-            if event.type == RavnEventType.TOOL_RESULT
+            if event.type == MeshEventType.TOOL_RESULT
         ]
         assert emitted == [result.tool_results[0].content]
         assert len(emitted[0]) < 2_000

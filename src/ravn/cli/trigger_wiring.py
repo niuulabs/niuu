@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 
-from ravn.domain.events import RavnEvent, RavnEventType
+from niuu.mesh.events import MeshEvent, MeshEventType
 
 # Dependencies are supplied by the CLI compatibility facade immediately before
 # invocation so established command patch points remain effective.
@@ -652,9 +652,9 @@ def _wire_cascade(
             else _consumer_fan_in_strategy(persona_config.fan_in)
         )
 
-        async def _handle_outcome_event(event: RavnEvent) -> None:
+        async def _handle_outcome_event(event: MeshEvent) -> None:
             """Handle incoming outcome events, respecting fan-in accumulation."""
-            if event.type != RavnEventType.OUTCOME:
+            if event.type != MeshEventType.OUTCOME:
                 return
 
             from ravn.cli.runtime_builders import _resolve_workspace

@@ -19,7 +19,7 @@ in Swift at all.
 What else this module owns
 --------------------------
 * **Synthesizing terminals Ravn never sends.** ``RavnAgent`` has zero
-  ``RavnEvent.error`` call sites and ``_run_and_signal`` has no ``except``, so a
+  ``MeshEvent.error`` call sites and ``_run_and_signal`` has no ``except``, so a
   failed turn emits nothing and the stream simply ends. There is also no
   end-of-turn frame at all: "closed without a response" and "still streaming"
   are indistinguishable at the transport layer. A turn that ends without a
@@ -30,7 +30,7 @@ What else this module owns
   We pair to the most recent *unmatched* start of the same name, which is
   correct while the per-session lock serialises turns, and mint our own
   ``tool_use`` ids so the client's cross-block pairing works.
-* **Tolerating the unknown.** Only 5 of ``RavnEventType``'s 12 members can reach
+* **Tolerating the unknown.** Only 5 of ``MeshEventType``'s 12 members can reach
   this path today; the rest come from DriveLoop/Watchdog and could start
   arriving. Unknown types are preserved rather than dropped.
 """

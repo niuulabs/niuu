@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.channels.capture import (
     CaptureChannel,
     CapturedEvent,
@@ -27,7 +28,6 @@ from ravn.adapters.channels.capture import (
 )
 from ravn.adapters.tools.cascade_tools import TaskCollectTool, TaskStatusTool
 from ravn.config import InitiativeConfig
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.drive_loop import DriveLoop
 
@@ -36,8 +36,8 @@ from ravn.drive_loop import DriveLoop
 # ---------------------------------------------------------------------------
 
 
-def _make_event(event_type: RavnEventType, payload: dict) -> RavnEvent:
-    return RavnEvent(
+def _make_event(event_type: MeshEventType, payload: dict) -> MeshEvent:
+    return MeshEvent(
         type=event_type,
         source="test",
         payload=payload,
@@ -192,7 +192,7 @@ class TestCaptureChannel:
         store = TaskResultStore()
         store.start("t1", "tester")
         ch = CaptureChannel("t1", store)
-        event = _make_event(RavnEventType.THOUGHT, {"text": "I am thinking about this"})
+        event = _make_event(MeshEventType.THOUGHT, {"text": "I am thinking about this"})
         await ch.emit(event)
         result = store.get("t1")
         assert len(result.events) == 1
@@ -204,7 +204,7 @@ class TestCaptureChannel:
         store.start("t1", "tester")
         ch = CaptureChannel("t1", store)
         event = _make_event(
-            RavnEventType.TOOL_START, {"tool_name": "bash", "input": {"command": "ls -la"}}
+            MeshEventType.TOOL_START, {"tool_name": "bash", "input": {"command": "ls -la"}}
         )
         await ch.emit(event)
         result = store.get("t1")
@@ -215,7 +215,7 @@ class TestCaptureChannel:
         store = TaskResultStore()
         store.start("t1", "tester")
         ch = CaptureChannel("t1", store)
-        event = _make_event(RavnEventType.TOOL_RESULT, {"result": "file1.txt\nfile2.txt"})
+        event = _make_event(MeshEventType.TOOL_RESULT, {"result": "file1.txt\nfile2.txt"})
         await ch.emit(event)
         result = store.get("t1")
         assert result.events[0].summary.startswith("→ ")
@@ -225,7 +225,7 @@ class TestCaptureChannel:
         store = TaskResultStore()
         store.start("t1", "tester")
         ch = CaptureChannel("t1", store)
-        event = _make_event(RavnEventType.RESPONSE, {"text": "Here is the answer."})
+        event = _make_event(MeshEventType.RESPONSE, {"text": "Here is the answer."})
         await ch.emit(event)
         result = store.get("t1")
         assert result.output == "Here is the answer."
@@ -237,7 +237,7 @@ class TestCaptureChannel:
         store = TaskResultStore()
         store.start("t1", "tester")
         ch = CaptureChannel("t1", store)
-        event = _make_event(RavnEventType.ERROR, {"message": "something went wrong"})
+        event = _make_event(MeshEventType.ERROR, {"message": "something went wrong"})
         await ch.emit(event)
         result = store.get("t1")
         assert result.status == "failed"
@@ -248,7 +248,7 @@ class TestCaptureChannel:
         store.start("t1", "tester")
         ch = CaptureChannel("t1", store)
         assert not ch.surface_triggered
-        event = _make_event(RavnEventType.RESPONSE, {"text": "[SURFACE] Important update!"})
+        event = _make_event(MeshEventType.RESPONSE, {"text": "[SURFACE] Important update!"})
         await ch.emit(event)
         assert ch.surface_triggered
         assert ch.response_text == "[SURFACE] Important update!"
@@ -258,7 +258,7 @@ class TestCaptureChannel:
         store = TaskResultStore()
         store.start("t1", "tester")
         ch = CaptureChannel("t1", store)
-        event = _make_event(RavnEventType.RESPONSE, {"text": "Normal response"})
+        event = _make_event(MeshEventType.RESPONSE, {"text": "Normal response"})
         await ch.emit(event)
         assert not ch.surface_triggered
 
@@ -268,10 +268,10 @@ class TestCaptureChannel:
         store.start("t1", "tester")
         ch = CaptureChannel("t1", store)
         events = [
-            _make_event(RavnEventType.THOUGHT, {"text": "step 1"}),
-            _make_event(RavnEventType.TOOL_START, {"tool_name": "bash", "input": {}}),
-            _make_event(RavnEventType.TOOL_RESULT, {"result": "ok"}),
-            _make_event(RavnEventType.RESPONSE, {"text": "done"}),
+            _make_event(MeshEventType.THOUGHT, {"text": "step 1"}),
+            _make_event(MeshEventType.TOOL_START, {"tool_name": "bash", "input": {}}),
+            _make_event(MeshEventType.TOOL_RESULT, {"result": "ok"}),
+            _make_event(MeshEventType.RESPONSE, {"text": "done"}),
         ]
         for e in events:
             await ch.emit(e)
@@ -333,7 +333,7 @@ class TestDriveLoopCaptureIntegration:
             # Emit a RESPONSE event through the channel that was captured
             if captured_channels:
                 ch = captured_channels[0]
-                event = _make_event(RavnEventType.RESPONSE, {"text": "task output"})
+                event = _make_event(MeshEventType.RESPONSE, {"text": "task output"})
                 await ch.emit(event)
             response_sent.set()
 
@@ -682,8 +682,8 @@ async def test_integration_two_local_tasks_progress_and_collect():
         ch1 = channel_map[task_1]
         ch2 = channel_map[task_2]
 
-        await ch1.emit(_make_event(RavnEventType.THOUGHT, {"text": "task1 thinking"}))
-        await ch2.emit(_make_event(RavnEventType.THOUGHT, {"text": "task2 thinking"}))
+        await ch1.emit(_make_event(MeshEventType.THOUGHT, {"text": "task1 thinking"}))
+        await ch2.emit(_make_event(MeshEventType.THOUGHT, {"text": "task2 thinking"}))
 
         # Poll progress on task 1 while it's running
         progress1 = dl.task_status(task_1, include_progress=True)
@@ -701,7 +701,7 @@ async def test_integration_two_local_tasks_progress_and_collect():
         assert progress2["events"][0]["type"] == "task_started"
 
         # Complete task 1 first — emit RESPONSE then release barrier
-        await ch1.emit(_make_event(RavnEventType.RESPONSE, {"text": "task1 completed output"}))
+        await ch1.emit(_make_event(MeshEventType.RESPONSE, {"text": "task1 completed output"}))
         t1_barrier.set()
 
         # Wait for task 1 to be removed from active tasks
@@ -722,7 +722,7 @@ async def test_integration_two_local_tasks_progress_and_collect():
         assert dl.task_status(task_2) == "running"
 
         # Now complete task 2
-        await ch2.emit(_make_event(RavnEventType.RESPONSE, {"text": "task2 final output"}))
+        await ch2.emit(_make_event(MeshEventType.RESPONSE, {"text": "task2 final output"}))
         t2_barrier.set()
 
         # Wait for task 2 to finish

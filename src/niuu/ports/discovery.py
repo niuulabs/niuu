@@ -18,9 +18,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
-from ravn.domain.models import RavnCandidate, RavnIdentity, RavnPeer
+from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer
 
-PeerCallback = Callable[[RavnPeer], None]
+PeerCallback = Callable[[MeshPeer], None]
 
 
 @runtime_checkable
@@ -47,7 +47,7 @@ class DiscoveryPort(Protocol):
         """(Re-)announce this Ravn's presence to the network."""
         raise NotImplementedError
 
-    async def scan(self) -> list[RavnCandidate]:
+    async def scan(self) -> list[MeshCandidate]:
         """Return unverified candidates visible on the network right now."""
         raise NotImplementedError
 
@@ -59,15 +59,15 @@ class DiscoveryPort(Protocol):
         """
         raise NotImplementedError
 
-    async def handshake(self, candidate: RavnCandidate) -> RavnPeer | None:
+    async def handshake(self, candidate: MeshCandidate) -> MeshPeer | None:
         """Run the trust handshake with *candidate*.
 
-        Returns a verified ``RavnPeer`` on success, ``None`` if the candidate
+        Returns a verified ``MeshPeer`` on success, ``None`` if the candidate
         is from a different realm (silently ignored — no error, DEBUG log only).
         """
         raise NotImplementedError
 
-    def peers(self) -> dict[str, RavnPeer]:
+    def peers(self) -> dict[str, MeshPeer]:
         """Return the current verified peer table, keyed by ``peer_id``.
 
         Synchronous — returns the cached in-memory table.  Updated by
@@ -75,6 +75,6 @@ class DiscoveryPort(Protocol):
         """
         raise NotImplementedError
 
-    async def own_identity(self) -> RavnIdentity:
+    async def own_identity(self) -> MeshIdentity:
         """Return this Ravn instance's own identity."""
         raise NotImplementedError

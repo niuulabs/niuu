@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import io
 
+from niuu.mesh.events import MeshEventType
 from ravn.adapters.cli_channel import CliChannel
 from ravn.adapters.permission.allow_deny import AllowAllPermission
 from ravn.agent import RavnAgent
-from ravn.domain.events import RavnEventType
 from ravn.domain.models import (
     LLMResponse,
     StopReason,
@@ -38,8 +38,8 @@ class TestBasicConversation:
         await agent.run_turn("Hello")
 
         event_types = [e.type for e in ch.events]
-        assert RavnEventType.THOUGHT in event_types
-        assert RavnEventType.RESPONSE in event_types
+        assert MeshEventType.THOUGHT in event_types
+        assert MeshEventType.RESPONSE in event_types
 
     async def test_response_rendered_to_cli_channel(self) -> None:
         """Full rendering pipeline: agent → CliChannel → stdout."""

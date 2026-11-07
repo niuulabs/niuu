@@ -33,6 +33,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from niuu.domain.tool import ToolResult
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.tools.cascade_tools import (
     TaskCollectTool,
     TaskCreateTool,
@@ -43,7 +44,6 @@ from ravn.adapters.tools.cascade_tools import (
     build_cascade_tools,
 )
 from ravn.budget import IterationBudget
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.models import AgentTask, OutputMode, SharedContext
 from ravn.ports.spawn import SpawnConfig
 from tests.test_ravn.conftest import (
@@ -65,12 +65,12 @@ class _RecordingPublisher:
     """Collects all published events for inspection."""
 
     def __init__(self) -> None:
-        self.events: list[RavnEvent] = []
+        self.events: list[MeshEvent] = []
 
     async def publish(self, event: object) -> None:
         self.events.append(event)  # type: ignore[arg-type]
 
-    def of_type(self, event_type: RavnEventType) -> list[RavnEvent]:
+    def of_type(self, event_type: MeshEventType) -> list[MeshEvent]:
         return [e for e in self.events if e.type == event_type]
 
 
@@ -296,7 +296,7 @@ class TestDriveLoopEventPublishing:
             loop_task.cancel()
             await asyncio.gather(loop_task, return_exceptions=True)
 
-        assert publisher.of_type(RavnEventType.TASK_STARTED)
+        assert publisher.of_type(MeshEventType.TASK_STARTED)
 
     @pytest.mark.asyncio
     async def test_task_complete_event_published_on_success(self):
@@ -324,7 +324,7 @@ class TestDriveLoopEventPublishing:
             loop_task.cancel()
             await asyncio.gather(loop_task, return_exceptions=True)
 
-        assert publisher.of_type(RavnEventType.TASK_COMPLETE)
+        assert publisher.of_type(MeshEventType.TASK_COMPLETE)
 
     @pytest.mark.asyncio
     async def test_task_complete_success_payload(self):
@@ -352,7 +352,7 @@ class TestDriveLoopEventPublishing:
             loop_task.cancel()
             await asyncio.gather(loop_task, return_exceptions=True)
 
-        complete = publisher.of_type(RavnEventType.TASK_COMPLETE)
+        complete = publisher.of_type(MeshEventType.TASK_COMPLETE)
         assert complete
         assert complete[0].payload["success"] is True
 
@@ -383,7 +383,7 @@ class TestDriveLoopEventPublishing:
             loop_task.cancel()
             await asyncio.gather(loop_task, return_exceptions=True)
 
-        complete = publisher.of_type(RavnEventType.TASK_COMPLETE)
+        complete = publisher.of_type(MeshEventType.TASK_COMPLETE)
         assert complete
         assert complete[0].payload["success"] is False
 
@@ -481,7 +481,7 @@ class TestDriveLoopLifecycle:
             loop_task.cancel()
             await asyncio.gather(loop_task, return_exceptions=True)
 
-        complete = publisher.of_type(RavnEventType.TASK_COMPLETE)
+        complete = publisher.of_type(MeshEventType.TASK_COMPLETE)
         assert complete
         assert complete[0].payload["success"] is False
 
@@ -504,8 +504,8 @@ class TestDriveLoopSurfaceEscalation:
             async def _run(prompt: str) -> None:
                 # Emit a [SURFACE]-prefixed RESPONSE event through the channel
                 await channel.emit(
-                    RavnEvent(
-                        type=RavnEventType.RESPONSE,
+                    MeshEvent(
+                        type=MeshEventType.RESPONSE,
                         source="test",
                         payload={"text": "[SURFACE] Final answer!"},
                         timestamp=datetime.now(UTC),
@@ -531,7 +531,7 @@ class TestDriveLoopSurfaceEscalation:
             loop_task.cancel()
             await asyncio.gather(loop_task, return_exceptions=True)
 
-        response_events = publisher.of_type(RavnEventType.RESPONSE)
+        response_events = publisher.of_type(MeshEventType.RESPONSE)
         surface_events = [e for e in response_events if e.payload.get("surface_escalation")]
         assert surface_events, "Expected a surface escalation RESPONSE event"
 

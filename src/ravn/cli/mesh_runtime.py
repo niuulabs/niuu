@@ -47,8 +47,8 @@ def _build_mesh(settings: Settings, discovery: Any = None) -> Any:
     # Legacy single-adapter mode for backward compatibility
     legacy_adapter = mesh_cfg.adapter or "nng"
 
+    from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter  # noqa: PLC0415
     from niuu.mesh.transport_builder import build_transport  # noqa: PLC0415
-    from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter  # noqa: PLC0415
 
     transport = build_transport(
         legacy_adapter, **_resolve_transport_kwargs(settings, legacy_adapter)
@@ -82,12 +82,12 @@ def _build_discovery(
     """Build the discovery adapter from config, wiring the own identity."""
     import importlib.metadata
 
-    from ravn.adapters.discovery._identity import (
+    from niuu.adapters.discovery._identity import (
         load_or_create_peer_id,
         load_or_create_realm_key,
         realm_id_from_key,
     )
-    from ravn.domain.models import RavnIdentity
+    from niuu.mesh.identity import MeshIdentity
 
     peer_id = settings.mesh.own_peer_id or load_or_create_peer_id()
     realm_key = load_or_create_realm_key()
@@ -113,7 +113,7 @@ def _build_discovery(
     if persona_config is not None and hasattr(persona_config, "consumes"):
         consumes_event_types = list(persona_config.consumes.event_types or [])
 
-    identity = RavnIdentity(
+    identity = MeshIdentity(
         peer_id=peer_id,
         realm_id=realm_id,
         persona=persona_name,
@@ -162,12 +162,12 @@ def _query_adapters_config(settings: Settings) -> list[dict[str, Any]]:
 
 async def _run_peers(settings: Settings, *, verbose: bool, force_scan: bool) -> None:
     """Build a discovery adapter, optionally scan, and print the peer table."""
-    from ravn.adapters.discovery._identity import (
+    from niuu.adapters.discovery._identity import (
         load_or_create_peer_id,
         load_or_create_realm_key,
         realm_id_from_key,
     )
-    from ravn.domain.models import RavnIdentity
+    from niuu.mesh.identity import MeshIdentity
 
     peer_id = load_or_create_peer_id()
     realm_key = load_or_create_realm_key()
@@ -180,7 +180,7 @@ async def _run_peers(settings: Settings, *, verbose: bool, force_scan: bool) -> 
     except Exception:
         version = "0.0.0"
 
-    identity = RavnIdentity(
+    identity = MeshIdentity(
         peer_id=peer_id,
         realm_id=realm_id,
         persona=settings.agent.system_prompt[:30] if settings.agent.system_prompt else "ravn",

@@ -19,8 +19,8 @@ from typing import Any
 
 import pytest
 
-from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
-from ravn.domain.events import RavnEvent, RavnEventType
+from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
+from niuu.mesh.events import MeshEvent, MeshEventType
 
 # ---------------------------------------------------------------------------
 # Fake Sleipnir transport (same as test_mesh.py)
@@ -136,14 +136,14 @@ class TestMeshOutcomeFlow:
         )
 
         # Track what the reviewer receives
-        received_events: list[RavnEvent] = []
+        received_events: list[MeshEvent] = []
         tasks_created: list[dict] = []
 
-        async def reviewer_outcome_handler(event: RavnEvent) -> None:
+        async def reviewer_outcome_handler(event: MeshEvent) -> None:
             """Simulates commands.py _handle_outcome_event."""
             received_events.append(event)
 
-            if event.type != RavnEventType.OUTCOME:
+            if event.type != MeshEventType.OUTCOME:
                 return
 
             payload = event.payload
@@ -165,8 +165,8 @@ class TestMeshOutcomeFlow:
 
         # --- CODER PUBLISHES OUTCOME ---
         # This simulates DriveLoop._emit_mesh_outcome_event()
-        outcome_event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        outcome_event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="drive_loop",
             payload={
                 "event_type": coder_persona.produces.event_type,
@@ -189,7 +189,7 @@ class TestMeshOutcomeFlow:
         # --- VERIFY ---
         # Reviewer should have received the event
         assert len(received_events) == 1
-        assert received_events[0].type == RavnEventType.OUTCOME
+        assert received_events[0].type == MeshEventType.OUTCOME
         assert received_events[0].payload["event_type"] == "code.changed"
         assert received_events[0].payload["persona"] == "coder"
         assert received_events[0].payload["outcome"]["commit_sha"] == "abc123"
@@ -215,8 +215,8 @@ class TestMeshOutcomeFlow:
         )
 
         # Two consumers
-        reviewer1_received: list[RavnEvent] = []
-        reviewer2_received: list[RavnEvent] = []
+        reviewer1_received: list[MeshEvent] = []
+        reviewer2_received: list[MeshEvent] = []
 
         reviewer1_mesh = SleipnirMeshAdapter(
             publisher=transport,
@@ -229,18 +229,18 @@ class TestMeshOutcomeFlow:
             own_peer_id="reviewer-002",
         )
 
-        async def handler1(event: RavnEvent) -> None:
+        async def handler1(event: MeshEvent) -> None:
             reviewer1_received.append(event)
 
-        async def handler2(event: RavnEvent) -> None:
+        async def handler2(event: MeshEvent) -> None:
             reviewer2_received.append(event)
 
         await reviewer1_mesh.subscribe("code.changed", handler1)
         await reviewer2_mesh.subscribe("code.changed", handler2)
 
         # Publish
-        outcome_event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        outcome_event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="drive_loop",
             payload={"event_type": "code.changed", "persona": "coder"},
             timestamp=datetime.now(UTC),
@@ -274,11 +274,11 @@ class TestMeshOutcomeFlow:
         chain_log: list[str] = []
 
         # Reviewer listens to code.changed, publishes review.passed
-        async def reviewer_handler(event: RavnEvent) -> None:
+        async def reviewer_handler(event: MeshEvent) -> None:
             chain_log.append(f"reviewer received: {event.payload.get('event_type')}")
             # Simulate reviewer completing and publishing
-            review_outcome = RavnEvent(
-                type=RavnEventType.OUTCOME,
+            review_outcome = MeshEvent(
+                type=MeshEventType.OUTCOME,
                 source="reviewer",
                 payload={
                     "event_type": "review.passed",
@@ -294,15 +294,15 @@ class TestMeshOutcomeFlow:
             await reviewer_mesh.publish(review_outcome, topic="review.passed")
 
         # Deployer listens to review.passed
-        async def deployer_handler(event: RavnEvent) -> None:
+        async def deployer_handler(event: MeshEvent) -> None:
             chain_log.append(f"deployer received: {event.payload.get('event_type')}")
 
         await reviewer_mesh.subscribe("code.changed", reviewer_handler)
         await deployer_mesh.subscribe("review.passed", deployer_handler)
 
         # Coder publishes
-        code_outcome = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        code_outcome = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="coder",
             payload={"event_type": "code.changed", "persona": "coder"},
             timestamp=datetime.now(UTC),
@@ -333,10 +333,10 @@ class TestMeshOutcomeFlow:
 
         chain_log: list[str] = []
 
-        async def reviewer_handler(event: RavnEvent) -> None:
+        async def reviewer_handler(event: MeshEvent) -> None:
             chain_log.append(f"reviewer received: {event.payload.get('event_type')}")
-            changes_requested = RavnEvent(
-                type=RavnEventType.OUTCOME,
+            changes_requested = MeshEvent(
+                type=MeshEventType.OUTCOME,
                 source="reviewer",
                 payload={
                     "event_type": "review.changes_requested",
@@ -352,14 +352,14 @@ class TestMeshOutcomeFlow:
             )
             await reviewer_mesh.publish(changes_requested, topic="review.changes_requested")
 
-        async def coder_handler(event: RavnEvent) -> None:
+        async def coder_handler(event: MeshEvent) -> None:
             chain_log.append(f"coder received: {event.payload.get('event_type')}")
 
         await reviewer_mesh.subscribe("code.changed", reviewer_handler)
         await coder_mesh.subscribe("review.changes_requested", coder_handler)
 
-        code_outcome = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        code_outcome = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="coder",
             payload={"event_type": "code.changed", "persona": "coder"},
             timestamp=datetime.now(UTC),
@@ -390,10 +390,10 @@ class TestMeshOutcomeFlow:
         reviewer_received: list[str] = []
         deployer_received: list[str] = []
 
-        async def reviewer_handler(event: RavnEvent) -> None:
+        async def reviewer_handler(event: MeshEvent) -> None:
             reviewer_received.append(event.payload.get("event_type", ""))
 
-        async def deployer_handler(event: RavnEvent) -> None:
+        async def deployer_handler(event: MeshEvent) -> None:
             deployer_received.append(event.payload.get("event_type", ""))
 
         # Reviewer subscribes to code.changed only
@@ -406,8 +406,8 @@ class TestMeshOutcomeFlow:
             publisher=transport, subscriber=transport, own_peer_id="coder"
         )
         await coder_mesh.publish(
-            RavnEvent(
-                type=RavnEventType.OUTCOME,
+            MeshEvent(
+                type=MeshEventType.OUTCOME,
                 source="coder",
                 payload={"event_type": "code.changed"},
                 timestamp=datetime.now(UTC),

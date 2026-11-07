@@ -269,7 +269,7 @@ def test_announce_url_startup_does_not_reach_for_sleipnir(
     Mímir announce event, so the path is gone rather than repaired. Making the
     module unimportable proves startup no longer depends on it at all.
     """
-    monkeypatch.setitem(sys.modules, "ravn.adapters.mesh.sleipnir_mesh", None)
+    monkeypatch.setitem(sys.modules, "niuu.adapters.mesh.sleipnir_mesh", None)
     config = MimirServiceConfig(
         path=str(tmp_path / "mimir"),
         announce_url="https://mimir.example.test",

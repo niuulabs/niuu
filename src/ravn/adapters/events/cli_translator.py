@@ -1,6 +1,6 @@
-"""CLI format translator — converts RavnEvents to Claude CLI stream-json.
+"""CLI format translator — converts MeshEvents to Claude CLI stream-json.
 
-Translates :class:`~ravn.domain.events.RavnEvent` objects into the event
+Translates :class:`~niuu.mesh.events.MeshEvent` objects into the event
 format emitted by ``claude --output-format stream-json``, so that the
 existing ``useSkuldChat`` browser hook can consume Ravn output without
 modification.
@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import json
 
-from ravn.domain.events import RavnEvent, RavnEventType
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.ports.event_translator import EventTranslatorPort
 
 
 class CliFormatTranslator(EventTranslatorPort):
-    """Translates :class:`RavnEvent` into Claude CLI stream-json events."""
+    """Translates :class:`MeshEvent` into Claude CLI stream-json events."""
 
     def __init__(self) -> None:
         self.reset()
@@ -36,7 +36,7 @@ class CliFormatTranslator(EventTranslatorPort):
     # Public API
     # ------------------------------------------------------------------
 
-    def translate(self, event: RavnEvent) -> list[dict]:
+    def translate(self, event: MeshEvent) -> list[dict]:
         """Return a list of CLI-format event dicts for *event*."""
         out: list[dict] = []
 
@@ -46,17 +46,17 @@ class CliFormatTranslator(EventTranslatorPort):
             self._turn_started = True
 
         match event.type:
-            case RavnEventType.THOUGHT:
+            case MeshEventType.THOUGHT:
                 out.extend(self._translate_thought(event))
-            case RavnEventType.TOOL_START:
+            case MeshEventType.TOOL_START:
                 out.extend(self._translate_tool_start(event))
-            case RavnEventType.TOOL_RESULT:
+            case MeshEventType.TOOL_RESULT:
                 pass  # Skipped — results fed back to LLM, not streamed to UI
-            case RavnEventType.RESPONSE:
+            case MeshEventType.RESPONSE:
                 out.extend(self._translate_response(event))
-            case RavnEventType.ERROR:
+            case MeshEventType.ERROR:
                 out.extend(self._translate_error(event))
-            case RavnEventType.TASK_COMPLETE:
+            case MeshEventType.TASK_COMPLETE:
                 out.extend(self._translate_task_complete(event))
             case _:
                 pass  # DECISION and unknown types are silently skipped
@@ -81,7 +81,7 @@ class CliFormatTranslator(EventTranslatorPort):
     # THOUGHT → text or thinking deltas
     # ------------------------------------------------------------------
 
-    def _translate_thought(self, event: RavnEvent) -> list[dict]:
+    def _translate_thought(self, event: MeshEvent) -> list[dict]:
         is_thinking = event.payload.get("thinking", False)
         text = event.payload["text"]
         out: list[dict] = []
@@ -119,7 +119,7 @@ class CliFormatTranslator(EventTranslatorPort):
     # TOOL_START → tool_use block (start + input + stop)
     # ------------------------------------------------------------------
 
-    def _translate_tool_start(self, event: RavnEvent) -> list[dict]:
+    def _translate_tool_start(self, event: MeshEvent) -> list[dict]:
         out: list[dict] = []
 
         # Close any open text/thinking blocks.
@@ -171,7 +171,7 @@ class CliFormatTranslator(EventTranslatorPort):
     # RESPONSE → result event
     # ------------------------------------------------------------------
 
-    def _translate_response(self, event: RavnEvent) -> list[dict]:
+    def _translate_response(self, event: MeshEvent) -> list[dict]:
         out: list[dict] = []
         out.extend(self._close_text_block())
         out.extend(self._close_thinking_block())
@@ -190,7 +190,7 @@ class CliFormatTranslator(EventTranslatorPort):
     # ERROR → error event
     # ------------------------------------------------------------------
 
-    def _translate_error(self, event: RavnEvent) -> list[dict]:
+    def _translate_error(self, event: MeshEvent) -> list[dict]:
         out: list[dict] = []
         out.extend(self._close_text_block())
         out.extend(self._close_thinking_block())
@@ -206,7 +206,7 @@ class CliFormatTranslator(EventTranslatorPort):
     # TASK_COMPLETE → result event
     # ------------------------------------------------------------------
 
-    def _translate_task_complete(self, event: RavnEvent) -> list[dict]:
+    def _translate_task_complete(self, event: MeshEvent) -> list[dict]:
         out: list[dict] = []
         out.extend(self._close_text_block())
         out.extend(self._close_thinking_block())

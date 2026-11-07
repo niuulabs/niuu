@@ -8,8 +8,8 @@ import socket
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from niuu.mesh.events import MeshEvent
 from ravn.adapters.channels._rabbitmq_base import RabbitMQPublishMixin
-from ravn.domain.events import RavnEvent
 from ravn.ports.event_publisher import EventPublisherPort
 
 if TYPE_CHECKING:
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _serialise_event(event: RavnEvent) -> bytes:
+def _serialise_event(event: MeshEvent) -> bytes:
     """Serialise *event* to UTF-8 JSON bytes."""
     data = {
         "type": event.type,
@@ -54,7 +54,7 @@ class RabbitMQEventPublisher(RabbitMQPublishMixin, EventPublisherPort):
         self._agent_id = config.agent_id or socket.gethostname()
         self._init_publish_state()
 
-    async def publish(self, event: RavnEvent) -> None:
+    async def publish(self, event: MeshEvent) -> None:
         """Publish *event* to RabbitMQ. Never raises — failures are logged."""
         routing_key = f"ravn.system.{event.type}.{self._agent_id}"
         body = _serialise_event(event)

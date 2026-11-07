@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.config import BudgetConfig, InitiativeConfig, Settings
 from ravn.domain.budget import DailyBudgetTracker
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.models import AgentTask, OutputMode, TokenUsage
 from ravn.drive_loop import DriveLoop
 
@@ -21,7 +21,7 @@ from ravn.drive_loop import DriveLoop
 def _make_drive_loop_with_mock_settings(
     tmp_path: Path,
     budget: DailyBudgetTracker | None = None,
-) -> tuple[DriveLoop, MagicMock, list[RavnEvent]]:
+) -> tuple[DriveLoop, MagicMock, list[MeshEvent]]:
     """Build DriveLoop with a MagicMock settings object rather than a real
     ``Settings`` instance — DriveLoop must not require ``isinstance(settings,
     Settings)`` to work, any object with the right attributes suffices, so
@@ -46,7 +46,7 @@ def _make_drive_loop_with_mock_settings(
     settings.budget.pricing_overrides = {}
     settings.budget.input_token_cost_per_million = 3.0
     settings.budget.output_token_cost_per_million = 15.0
-    published: list[RavnEvent] = []
+    published: list[MeshEvent] = []
 
     mock_publisher = AsyncMock()
     mock_publisher.publish = AsyncMock(side_effect=lambda e: published.append(e))
@@ -84,7 +84,7 @@ def _make_task(title: str = "test task") -> AgentTask:
 def _make_drive_loop(
     tmp_path: Path,
     budget: DailyBudgetTracker | None = None,
-) -> tuple[DriveLoop, MagicMock, list[RavnEvent]]:
+) -> tuple[DriveLoop, MagicMock, list[MeshEvent]]:
     journal = tmp_path / "queue.json"
     config = InitiativeConfig(
         enabled=True,
@@ -93,7 +93,7 @@ def _make_drive_loop(
     )
     settings = Settings()
     factory = MagicMock(return_value=MagicMock())
-    published: list[RavnEvent] = []
+    published: list[MeshEvent] = []
 
     mock_publisher = AsyncMock()
     mock_publisher.publish = AsyncMock(side_effect=lambda e: published.append(e))
@@ -365,7 +365,7 @@ async def test_drive_loop_publishes_warning_at_threshold(tmp_path: Path) -> None
         await loop._run_task(task)
 
     warning_events = [
-        e for e in published if e.type == RavnEventType.DECISION and e.payload.get("budget_warning")
+        e for e in published if e.type == MeshEventType.DECISION and e.payload.get("budget_warning")
     ]
     assert len(warning_events) == 1
     assert warning_events[0].urgency == 0.5
@@ -393,7 +393,7 @@ async def test_drive_loop_no_warning_below_threshold(tmp_path: Path) -> None:
         await loop._run_task(task)
 
     warning_events = [
-        e for e in published if e.type == RavnEventType.DECISION and e.payload.get("budget_warning")
+        e for e in published if e.type == MeshEventType.DECISION and e.payload.get("budget_warning")
     ]
     assert len(warning_events) == 0
 
@@ -423,7 +423,7 @@ async def test_drive_loop_warning_emitted_only_once_per_day(tmp_path: Path) -> N
         await loop._run_task(task2)
 
     warning_events = [
-        e for e in published if e.type == RavnEventType.DECISION and e.payload.get("budget_warning")
+        e for e in published if e.type == MeshEventType.DECISION and e.payload.get("budget_warning")
     ]
     assert len(warning_events) == 1
 

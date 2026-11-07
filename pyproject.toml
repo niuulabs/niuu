@@ -257,9 +257,9 @@ omit = [
     "src/sleipnir/adapters/rabbitmq.py",
     "src/ravn/adapters/checkpoint/postgres.py",
     "src/ravn/adapters/checkpoint/sleipnir_trigger.py",
-    "src/ravn/adapters/discovery/mdns.py",
-    "src/ravn/adapters/mesh/webhook.py",
-    "src/ravn/adapters/mesh/composite.py",
+    "src/niuu/adapters/discovery/mdns.py",
+    "src/niuu/adapters/mesh/webhook.py",
+    "src/niuu/adapters/mesh/composite.py",
     "src/ravn/adapters/spawn/kubernetes_spawn.py",
 ]
 

@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.events.noop_publisher import NoOpEventPublisher
 from ravn.adapters.events.rabbitmq_publisher import RabbitMQEventPublisher
 from ravn.config import InitiativeConfig, Settings
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.drive_loop import DriveLoop
 from ravn.ports.event_publisher import EventPublisherPort
@@ -23,8 +23,8 @@ from ravn.ports.event_publisher import EventPublisherPort
 # ---------------------------------------------------------------------------
 
 
-def _make_event(event_type: RavnEventType = RavnEventType.TASK_STARTED) -> RavnEvent:
-    return RavnEvent(
+def _make_event(event_type: MeshEventType = MeshEventType.TASK_STARTED) -> MeshEvent:
+    return MeshEvent(
         type=event_type,
         source="drive_loop",
         payload={"task_id": "task_abc", "heartbeat": True},
@@ -61,7 +61,7 @@ def test_event_publisher_port_close_is_optional() -> None:
     """close() has a default no-op implementation."""
 
     class ConcretePublisher(EventPublisherPort):
-        async def publish(self, event: RavnEvent) -> None:
+        async def publish(self, event: MeshEvent) -> None:
             pass
 
     pub = ConcretePublisher()
@@ -78,7 +78,7 @@ def test_event_publisher_port_close_is_optional() -> None:
 async def test_noop_publisher_accepts_any_event() -> None:
     """NoOpEventPublisher.publish() accepts any event without raising."""
     pub = NoOpEventPublisher()
-    for event_type in RavnEventType:
+    for event_type in MeshEventType:
         event = _make_event(event_type)
         # Must not raise
         await pub.publish(event)
@@ -158,7 +158,7 @@ async def test_rabbitmq_publisher_uses_system_routing_key() -> None:
 
     # Patch the module-level aio_pika reference in the shared base
     with patch("ravn.adapters.channels._rabbitmq_base.aio_pika", mock_pika):
-        await pub.publish(_make_event(RavnEventType.TASK_STARTED))
+        await pub.publish(_make_event(MeshEventType.TASK_STARTED))
 
     mock_exchange.publish.assert_called_once()
     call_kwargs = mock_exchange.publish.call_args
@@ -272,8 +272,8 @@ async def test_drive_loop_run_task_calls_publish_twice(tmp_path: Path) -> None:
 
     assert mock_publisher.publish.call_count == 2
     calls = mock_publisher.publish.call_args_list
-    assert calls[0][0][0].type == RavnEventType.TASK_STARTED
-    assert calls[1][0][0].type == RavnEventType.TASK_COMPLETE
+    assert calls[0][0][0].type == MeshEventType.TASK_STARTED
+    assert calls[1][0][0].type == MeshEventType.TASK_COMPLETE
 
 
 @pytest.mark.asyncio
@@ -298,7 +298,7 @@ async def test_drive_loop_run_task_publishes_task_complete_on_failure(tmp_path: 
 
     assert mock_publisher.publish.call_count == 2
     complete_event = mock_publisher.publish.call_args_list[1][0][0]
-    assert complete_event.type == RavnEventType.TASK_COMPLETE
+    assert complete_event.type == MeshEventType.TASK_COMPLETE
     assert complete_event.payload["success"] is False
 
 
@@ -334,6 +334,6 @@ async def test_drive_loop_re_deliver_surface_publishes_response(tmp_path: Path) 
 
     mock_publisher.publish.assert_called_once()
     event = mock_publisher.publish.call_args[0][0]
-    assert event.type == RavnEventType.RESPONSE
+    assert event.type == MeshEventType.RESPONSE
     assert event.payload["surface_escalation"] is True
     assert "disk at 90%" in event.payload["text"]

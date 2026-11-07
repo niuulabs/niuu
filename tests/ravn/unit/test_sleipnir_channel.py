@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.channels.composite import CompositeChannel
 from ravn.adapters.channels.sleipnir import SleipnirChannel, _serialise_envelope, _urgency_for
 from ravn.config import SleipnirConfig
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.models import SleipnirEnvelope
 
 # ---------------------------------------------------------------------------
@@ -20,11 +20,11 @@ from ravn.domain.models import SleipnirEnvelope
 
 
 def _event(
-    event_type: RavnEventType = RavnEventType.RESPONSE,
+    event_type: MeshEventType = MeshEventType.RESPONSE,
     payload: dict | None = None,
     urgency: float = 0.2,
-) -> RavnEvent:
-    return RavnEvent(
+) -> MeshEvent:
+    return MeshEvent(
         type=event_type,
         source="test-agent",
         payload=payload or {"text": "hello"},
@@ -56,31 +56,31 @@ def _config(**kwargs) -> SleipnirConfig:
 
 class TestUrgencyMapping:
     def test_thought_urgency(self) -> None:
-        assert _urgency_for(_event(RavnEventType.THOUGHT)) == 0.1
+        assert _urgency_for(_event(MeshEventType.THOUGHT)) == 0.1
 
     def test_tool_start_urgency(self) -> None:
-        assert _urgency_for(_event(RavnEventType.TOOL_START)) == 0.1
+        assert _urgency_for(_event(MeshEventType.TOOL_START)) == 0.1
 
     def test_tool_result_urgency(self) -> None:
-        assert _urgency_for(_event(RavnEventType.TOOL_RESULT)) == 0.1
+        assert _urgency_for(_event(MeshEventType.TOOL_RESULT)) == 0.1
 
     def test_response_urgency(self) -> None:
-        assert _urgency_for(_event(RavnEventType.RESPONSE)) == 0.2
+        assert _urgency_for(_event(MeshEventType.RESPONSE)) == 0.2
 
     def test_error_urgency(self) -> None:
-        assert _urgency_for(_event(RavnEventType.ERROR)) == 0.6
+        assert _urgency_for(_event(MeshEventType.ERROR)) == 0.6
 
     def test_task_complete_success_urgency(self) -> None:
-        e = _event(RavnEventType.TASK_COMPLETE, payload={"success": True})
+        e = _event(MeshEventType.TASK_COMPLETE, payload={"success": True})
         assert _urgency_for(e) == 0.2
 
     def test_task_complete_failure_urgency(self) -> None:
-        e = _event(RavnEventType.TASK_COMPLETE, payload={"success": False})
+        e = _event(MeshEventType.TASK_COMPLETE, payload={"success": False})
         assert _urgency_for(e) == 0.7
 
     def test_task_complete_defaults_to_success(self) -> None:
         # No 'success' key → treated as success
-        e = _event(RavnEventType.TASK_COMPLETE, payload={})
+        e = _event(MeshEventType.TASK_COMPLETE, payload={})
         assert _urgency_for(e) == 0.2
 
 
@@ -345,7 +345,7 @@ class TestSleipnirChannelPublishFailure:
         fake_aio_pika = MagicMock()
         fake_aio_pika.Message = FakeMessage
 
-        event = _event(RavnEventType.THOUGHT)
+        event = _event(MeshEventType.THOUGHT)
         with patch.object(base_mod, "aio_pika", fake_aio_pika):
             await channel.emit(event)
 
@@ -399,14 +399,14 @@ class TestCompositeChannel:
 
     @pytest.mark.asyncio
     async def test_preserves_event_across_channels(self) -> None:
-        received: list[RavnEvent] = []
+        received: list[MeshEvent] = []
 
         class _Capture:
-            async def emit(self, event: RavnEvent) -> None:
+            async def emit(self, event: MeshEvent) -> None:
                 received.append(event)
 
         composite = CompositeChannel([_Capture(), _Capture()])
-        event = _event(RavnEventType.ERROR)
+        event = _event(MeshEventType.ERROR)
         await composite.emit(event)
 
         assert len(received) == 2

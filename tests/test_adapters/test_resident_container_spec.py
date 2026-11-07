@@ -71,11 +71,11 @@ def _flock_values() -> dict:
         "resident": {
             "flock": {
                 "mesh": {
-                    "adapters": ["ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter"],
+                    "adapters": ["niuu.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter"],
                     "nats": {"servers": ["nats://nats:4222"]},
                 },
                 "discovery": {
-                    "adapters": ["ravn.adapters.discovery.event_bus.EventBusDiscoveryAdapter"]
+                    "adapters": ["niuu.adapters.discovery.event_bus.EventBusDiscoveryAdapter"]
                 },
             }
         }
@@ -135,22 +135,22 @@ def test_profile_selected_transport_configures_ravn_and_skuld() -> None:
     resident_flock_skuld_config(skuld_config, runtime, values)
 
     assert ravn_config["mesh"] == {
-        "adapters": ["ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter"],
+        "adapters": ["niuu.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter"],
         "nats": {"servers": ["nats://nats:4222"]},
         "own_peer_id": "ravn-coordinator",
     }
     assert ravn_config["discovery"] == {
         "adapters": [
             "local",
-            "ravn.adapters.discovery.event_bus.EventBusDiscoveryAdapter",
+            "niuu.adapters.discovery.event_bus.EventBusDiscoveryAdapter",
         ],
         "realm_id": str(runtime.flock_id),
     }
     assert skuld_config["mesh"] == {
-        "adapters": ["ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter"],
+        "adapters": ["niuu.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter"],
         "discovery_adapters": [
             "local",
-            "ravn.adapters.discovery.event_bus.EventBusDiscoveryAdapter",
+            "niuu.adapters.discovery.event_bus.EventBusDiscoveryAdapter",
         ],
         "nats": {"servers": ["nats://nats:4222"]},
         "realm_id": str(runtime.flock_id),

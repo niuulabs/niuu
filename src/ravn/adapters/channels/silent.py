@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.domain.surface import SURFACE_PREFIX as _SURFACE_PREFIX
+from niuu.mesh.events import MeshEvent, MeshEventType
+from niuu.mesh.surface import SURFACE_PREFIX as _SURFACE_PREFIX
 from ravn.ports.channel import ChannelPort
 
 
@@ -19,8 +19,8 @@ class SilentChannel(ChannelPort):
         self._response_text: str = ""
         self.surface_triggered: bool = False
 
-    async def emit(self, event: RavnEvent) -> None:
-        if event.type != RavnEventType.RESPONSE:
+    async def emit(self, event: MeshEvent) -> None:
+        if event.type != MeshEventType.RESPONSE:
             return
         self._response_text = event.payload.get("text", "")
         self.surface_triggered = self._response_text.startswith(_SURFACE_PREFIX)

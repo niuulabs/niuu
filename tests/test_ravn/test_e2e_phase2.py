@@ -16,11 +16,11 @@ from pathlib import Path
 
 import pytest
 
+from niuu.mesh.events import MeshEventType
 from ravn.adapters.permission.allow_deny import AllowAllPermission, DenyAllPermission
 from ravn.adapters.permission.enforcer import PermissionEnforcer
 from ravn.adapters.tools.file_tools import EditFileTool, ReadFileTool, WriteFileTool
 from ravn.config import PermissionConfig
-from ravn.domain.events import RavnEventType
 from ravn.domain.exceptions import MaxIterationsError
 from ravn.domain.models import (
     LLMResponse,
@@ -398,5 +398,5 @@ class TestBudgetExhaustion:
         await agent.run_turn("Echo")
 
         event_types = [e.type for e in ch.events]
-        assert RavnEventType.TOOL_START in event_types
-        assert RavnEventType.TOOL_RESULT in event_types
+        assert MeshEventType.TOOL_START in event_types
+        assert MeshEventType.TOOL_RESULT in event_types

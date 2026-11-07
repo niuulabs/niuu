@@ -4,7 +4,7 @@
 #
 # What you get:
 #   - All daemon features (gateway, drive loop, triggers)
-#   - Sleipnir pub/sub: every RavnEvent published to RabbitMQ topic exchange
+#   - Sleipnir pub/sub: every MeshEvent published to RabbitMQ topic exchange
 #   - Other systems (Valkyrie, Ting, monitoring) consume events without coupling
 #   - Task dispatch: `ravn listen` instances pick up work from the exchange
 #   - Agent ID auto-detected from hostname (or set explicitly)

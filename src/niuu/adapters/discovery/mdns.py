@@ -20,8 +20,8 @@ Registers ``{peer_id}._ravn._tcp.local`` with TXT records:
     A → B:  HELLO peer_id_A nonce_A
     B → A:  CHALLENGE HMAC(realm_key, "ravn-handshake|nonce_A|peer_id_A|peer_id_B") nonce_B
     A → B:  VERIFY HMAC(realm_key, "ravn-handshake|nonce_B|peer_id_B|peer_id_A")
-            + full RavnIdentity JSON
-    B → A:  ACCEPT + full RavnIdentity JSON   OR   REJECT
+            + full MeshIdentity JSON
+    B → A:  ACCEPT + full MeshIdentity JSON   OR   REJECT
 
 **Liveness**
 
@@ -43,15 +43,15 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from ravn.adapters.discovery._identity import (
+from niuu.adapters.discovery._identity import (
     load_or_create_realm_key,
     realm_id_hash,
 )
-from ravn.domain.models import RavnCandidate, RavnIdentity, RavnPeer
-from ravn.ports.discovery import PeerCallback
+from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer
+from niuu.ports.discovery import PeerCallback
 
 if TYPE_CHECKING:
-    from ravn.config import DiscoveryConfig
+    from niuu.mesh.config import DiscoveryConfig
 
 try:
     from zeroconf import ServiceInfo
@@ -95,7 +95,7 @@ class MdnsDiscoveryAdapter:
     Parameters
     ----------
     own_identity:
-        Pre-built ``RavnIdentity`` for this instance (peer_id, realm_id,
+        Pre-built ``MeshIdentity`` for this instance (peer_id, realm_id,
         persona, capabilities, etc.).  ``rep_address`` and ``pub_address``
         should be populated by the mesh adapter before ``start()`` is called.
     handshake_port:
@@ -114,7 +114,7 @@ class MdnsDiscoveryAdapter:
 
     def __init__(
         self,
-        own_identity: RavnIdentity,
+        own_identity: MeshIdentity,
         *,
         handshake_port: int = 7482,
         service_type: str = "_ravn._tcp.local.",
@@ -142,8 +142,8 @@ class MdnsDiscoveryAdapter:
         # Derive realm key — used only for HMAC, never transmitted raw.
         self._realm_key: bytes = load_or_create_realm_key()
 
-        self._peers: dict[str, RavnPeer] = {}
-        self._candidates: dict[str, RavnCandidate] = {}
+        self._peers: dict[str, MeshPeer] = {}
+        self._candidates: dict[str, MeshCandidate] = {}
         self._on_join: list[PeerCallback] = []
         self._on_leave: list[PeerCallback] = []
 
@@ -214,7 +214,7 @@ class MdnsDiscoveryAdapter:
             return
         await self._register_service()
 
-    async def scan(self) -> list[RavnCandidate]:
+    async def scan(self) -> list[MeshCandidate]:
         """Return the current set of discovered candidates (snapshot)."""
         return list(self._candidates.values())
 
@@ -223,10 +223,10 @@ class MdnsDiscoveryAdapter:
         self._on_join.append(on_join)
         self._on_leave.append(on_leave)
 
-    async def handshake(self, candidate: RavnCandidate) -> RavnPeer | None:
+    async def handshake(self, candidate: MeshCandidate) -> MeshPeer | None:
         """Run HMAC handshake with *candidate* as the initiating side (A).
 
-        Returns a verified ``RavnPeer`` on success, ``None`` on realm mismatch.
+        Returns a verified ``MeshPeer`` on success, ``None`` on realm mismatch.
         """
         if pynng is None:  # pragma: no cover
             logger.debug("mdns_discovery: pynng not installed — handshake skipped")
@@ -251,18 +251,18 @@ class MdnsDiscoveryAdapter:
             logger.debug("mdns_discovery: handshake with %s failed: %s", candidate.peer_id, exc)
             return None
 
-    def peers(self) -> dict[str, RavnPeer]:
+    def peers(self) -> dict[str, MeshPeer]:
         """Return the cached verified peer table (synchronous)."""
         return dict(self._peers)
 
-    def find_peer_for_event_type(self, event_type: str) -> RavnPeer | None:
+    def find_peer_for_event_type(self, event_type: str) -> MeshPeer | None:
         """Find the first idle peer that consumes the given event type.
 
         Returns None if no matching peer is found or all matching peers are busy.
         Prefers idle peers over busy ones.
         """
-        idle_match: RavnPeer | None = None
-        busy_match: RavnPeer | None = None
+        idle_match: MeshPeer | None = None
+        busy_match: MeshPeer | None = None
 
         for peer in self._peers.values():
             if event_type in peer.consumes_event_types:
@@ -274,7 +274,7 @@ class MdnsDiscoveryAdapter:
 
         return idle_match or busy_match
 
-    async def own_identity(self) -> RavnIdentity:
+    async def own_identity(self) -> MeshIdentity:
         """Return this Ravn's identity."""
         return self._identity
 
@@ -410,7 +410,7 @@ class MdnsDiscoveryAdapter:
         addresses = info.parsed_addresses()  # type: ignore[attr-defined]
         host = addresses[0] if addresses else ""
         port = info.port  # type: ignore[attr-defined]
-        candidate = RavnCandidate(
+        candidate = MeshCandidate(
             peer_id=peer_id,
             realm_id_hash=rid_hash,
             host=host,
@@ -436,7 +436,7 @@ class MdnsDiscoveryAdapter:
     # Internal — handshake initiator (side A)
     # ------------------------------------------------------------------
 
-    async def _initiate_handshake(self, candidate: RavnCandidate) -> None:
+    async def _initiate_handshake(self, candidate: MeshCandidate) -> None:
         """Initiate handshake with retry and jitter to handle PAIR socket contention.
 
         PAIR sockets are 1-to-1, so when multiple peers discover each other
@@ -481,10 +481,10 @@ class MdnsDiscoveryAdapter:
 
     def _run_handshake_initiator(
         self,
-        candidate: RavnCandidate,
+        candidate: MeshCandidate,
         addr: str,
         timeout_ms: int,
-    ) -> RavnPeer | None:
+    ) -> MeshPeer | None:
         """Blocking HMAC handshake — runs in executor."""
         sock = pynng.Pair0(recv_timeout=timeout_ms, send_timeout=timeout_ms)  # type: ignore[attr-defined]
         try:
@@ -627,7 +627,7 @@ class MdnsDiscoveryAdapter:
     # Internal — peer table management
     # ------------------------------------------------------------------
 
-    def _add_peer(self, peer: RavnPeer) -> None:
+    def _add_peer(self, peer: MeshPeer) -> None:
         is_new = peer.peer_id not in self._peers
         self._peers[peer.peer_id] = peer
         if is_new:
@@ -638,10 +638,10 @@ class MdnsDiscoveryAdapter:
     def _peer_from_identity_dict(
         self,
         raw: dict,
-        candidate: RavnCandidate | None,
-    ) -> RavnPeer:
+        candidate: MeshCandidate | None,
+    ) -> MeshPeer:
         now = datetime.now(UTC)
-        peer = RavnPeer(
+        peer = MeshPeer(
             peer_id=raw.get("peer_id", ""),
             realm_id=raw.get("realm_id", ""),
             persona=raw.get("persona", ""),
@@ -703,7 +703,7 @@ class MdnsDiscoveryAdapter:
         if peer is None:
             return
         now = datetime.now(UTC)
-        # RavnPeer is a dataclass, reassign fields
+        # MeshPeer is a dataclass, reassign fields
         peer.last_seen = now
         peer.last_heartbeat = now
         peer.status = status  # type: ignore[assignment]

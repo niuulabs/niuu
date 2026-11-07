@@ -1,7 +1,7 @@
 """SkuldChannel — WebSocket channel for browser delivery via the Skuld broker.
 
 Connects to the Skuld broker WebSocket endpoint and projects
-:class:`~ravn.domain.events.RavnEvent` objects into transport-neutral
+:class:`~niuu.mesh.events.MeshEvent` objects into transport-neutral
 collaboration frames before delivery.
 
 The channel reconnects automatically on disconnect so ephemeral network
@@ -26,9 +26,9 @@ import websockets.exceptions
 from websockets.protocol import State as WsState
 
 from niuu.collaboration.room import matches_subscription
+from niuu.mesh.events import MeshEvent
+from niuu.mesh.projection import project_mesh_event
 from niuu.observability import get_observability
-from ravn.adapters.collaboration import project_ravn_event
-from ravn.domain.events import RavnEvent
 from ravn.ports.channel import ChannelPort
 
 logger = logging.getLogger(__name__)
@@ -100,12 +100,12 @@ class SkuldChannel(ChannelPort):
         self._auth_token_provider = auth_token_provider
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._connect_lock = asyncio.Lock()
-        self._buffer: list[RavnEvent] = []
+        self._buffer: list[MeshEvent] = []
         self._on_directed_message: DirectedMessageHandler | None = None
         self._recv_task: asyncio.Task | None = None
         self._connect_gave_up = False
 
-    async def emit(self, event: RavnEvent) -> None:
+    async def emit(self, event: MeshEvent) -> None:
         """Emit *event* to the Skuld broker as an NDJSON frame."""
         telemetry = get_observability()
         with telemetry.span(
@@ -328,7 +328,7 @@ class SkuldChannel(ChannelPort):
 
     def _serialise(
         self,
-        event: RavnEvent,
+        event: MeshEvent,
         *,
         trace_context: dict[str, str] | None = None,
     ) -> str:
@@ -337,7 +337,7 @@ class SkuldChannel(ChannelPort):
         Ravn owns interpretation of its events. Skuld receives only the
         resulting transport-neutral collaboration event kinds.
         """
-        events = project_ravn_event(event, persona=self._persona or "")
+        events = project_mesh_event(event, persona=self._persona or "")
         propagated_context = trace_context or event.trace_context
         if propagated_context:
             for projected in events:

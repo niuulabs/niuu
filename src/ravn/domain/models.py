@@ -6,28 +6,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from niuu.domain.mimir import (  # noqa: F401 — re-exported for existing importers
-    MimirLintReport,
-    MimirPage,
-    MimirPageMeta,
-    MimirQueryResult,
-    MimirSource,
-)
 from niuu.domain.tool import ToolResult
 
-__all__ = [
-    "MimirLintReport",
-    "MimirPage",
-    "MimirPageMeta",
-    "MimirQueryResult",
-    "MimirSource",
-]
-
 if TYPE_CHECKING:
-    from ravn.domain.events import RavnEvent
+    from niuu.mesh.events import MeshEvent
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -369,9 +354,9 @@ class Session:
 
 @dataclass(frozen=True)
 class SleipnirEnvelope:
-    """Routing envelope for publishing RavnEvents to the ODIN event backbone.
+    """Routing envelope for publishing MeshEvents to the ODIN event backbone.
 
-    Wraps the existing RavnEvent unchanged and adds routing metadata required
+    Wraps the existing MeshEvent unchanged and adds routing metadata required
     by the Valkyrie attention model and downstream consumers.
 
     Attributes:
@@ -384,7 +369,7 @@ class SleipnirEnvelope:
         published_at:   UTC timestamp of publication.
     """
 
-    event: RavnEvent
+    event: MeshEvent
     source_agent: str
     session_id: str
     task_id: str | None
@@ -446,70 +431,3 @@ class AgentTask:
 
     def __post_init__(self) -> None:
         self.session_id = f"daemon_{self.task_id}"
-
-
-# ---------------------------------------------------------------------------
-# Flock discovery models (NIU-538)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class RavnCandidate:
-    """Pre-handshake peer candidate discovered via mDNS or K8s (unverified).
-
-    Carries enough information to attempt a handshake but has not yet proven
-    realm membership.  ``realm_id_hash`` is SHA-256(realm_key)[:16] — the raw
-    secret is never transmitted.
-    """
-
-    peer_id: str
-    realm_id_hash: str  # SHA-256(realm_key)[:16] — not the raw secret
-    host: str
-    rep_address: str | None  # nng REP address
-    pub_address: str | None  # nng PUB address
-    handshake_port: int | None  # temp nng PAIR port for HMAC exchange
-    metadata: dict = field(default_factory=dict)  # raw TXT records / pod annotations
-
-
-@dataclass
-class RavnIdentity:
-    """This Ravn instance's own identity — announced to the flock.
-
-    ``rep_address`` and ``pub_address`` are set by the active mesh adapter
-    on startup so that peers know where to connect.
-    """
-
-    peer_id: str
-    realm_id: str  # raw realm secret (never transmitted — hashed before announcing)
-    persona: str
-    capabilities: list[str]
-    permission_mode: str  # read_only | workspace_write | full_access
-    version: str
-    consumes_event_types: list[str] = field(
-        default_factory=list
-    )  # event types this persona handles
-    emits_event_types: list[str] = field(default_factory=list)
-    rep_address: str | None = None  # nng REP address for mesh.send()
-    pub_address: str | None = None  # nng PUB address for mesh.send()
-    spiffe_id: str | None = None  # infra mode only
-    display_name: str = ""
-    participant_type: str = "ravn"
-    sleipnir_routing_key: str | None = None  # for SleipnirMeshAdapter routing
-
-
-@dataclass
-class RavnPeer(RavnIdentity):
-    """A verified (or pending/rejected) flock member.
-
-    Extends ``RavnIdentity`` with trust metadata and liveness state.
-    ``status`` and ``task_count`` are updated via heartbeat so that the
-    cascade coordinator can pick idle peers.
-    """
-
-    trust_level: Literal["verified", "unverified", "rejected"] = "unverified"
-    first_seen: datetime = field(default_factory=lambda: datetime.now(UTC))
-    last_seen: datetime = field(default_factory=lambda: datetime.now(UTC))
-    last_heartbeat: datetime = field(default_factory=lambda: datetime.now(UTC))
-    latency_ms: float | None = None
-    status: Literal["idle", "busy"] = "idle"
-    task_count: int = 0

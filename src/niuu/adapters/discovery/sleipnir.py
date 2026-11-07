@@ -9,7 +9,7 @@ SPIFFE JWT-SVID validation is used for trust — no separate handshake socket.
       "event_type": "ravn.mesh.announce",
       "source": "ravn:{peer_id}",
       "payload": {
-        "identity": { <RavnIdentity fields> },
+        "identity": { <MeshIdentity fields> },
         "action": "join | leave | heartbeat",
         "status": "idle | busy",
         "task_count": 2
@@ -33,11 +33,11 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from ravn.domain.models import RavnCandidate, RavnIdentity, RavnPeer
-from ravn.ports.discovery import PeerCallback
+from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer
+from niuu.ports.discovery import PeerCallback
 
 if TYPE_CHECKING:
-    from ravn.config import DiscoveryConfig, SleipnirConfig
+    from niuu.mesh.config import DiscoveryConfig
 
 try:
     import aio_pika  # type: ignore[import-untyped]
@@ -56,7 +56,7 @@ class SleipnirDiscoveryAdapter:
     Parameters
     ----------
     own_identity:
-        Pre-built ``RavnIdentity`` for this instance.
+        Pre-built ``MeshIdentity`` for this instance.
     amqp_url_env:
         Environment variable name containing the AMQP connection URL.
     convergence_wait_s:
@@ -73,7 +73,7 @@ class SleipnirDiscoveryAdapter:
 
     def __init__(
         self,
-        own_identity: RavnIdentity,
+        own_identity: MeshIdentity,
         *,
         amqp_url_env: str = "SLEIPNIR_AMQP_URL",
         convergence_wait_s: float = 5.0,
@@ -82,7 +82,6 @@ class SleipnirDiscoveryAdapter:
         peer_ttl_s: float = 90.0,
         # Legacy: accept config objects for backward compatibility
         config: DiscoveryConfig | None = None,
-        sleipnir_config: SleipnirConfig | None = None,
         **kwargs: Any,
     ) -> None:
         self._identity = own_identity
@@ -98,10 +97,8 @@ class SleipnirDiscoveryAdapter:
             self._heartbeat_interval_s = config.sleipnir.heartbeat_interval_s
             self._spiffe_audience_env = config.sleipnir.spiffe_audience_env
             self._peer_ttl_s = config.peer_ttl_s
-        if sleipnir_config is not None:
-            self._amqp_url_env = sleipnir_config.amqp_url_env
 
-        self._peers: dict[str, RavnPeer] = {}
+        self._peers: dict[str, MeshPeer] = {}
         self._on_join: list[PeerCallback] = []
         self._on_leave: list[PeerCallback] = []
 
@@ -160,7 +157,7 @@ class SleipnirDiscoveryAdapter:
         """Publish a join announce event."""
         await self._publish_announce("join")
 
-    async def scan(self) -> list[RavnCandidate]:
+    async def scan(self) -> list[MeshCandidate]:
         """Return empty list — Sleipnir discovery is push-only (pub/sub)."""
         return []
 
@@ -169,15 +166,15 @@ class SleipnirDiscoveryAdapter:
         self._on_join.append(on_join)
         self._on_leave.append(on_leave)
 
-    async def handshake(self, candidate: RavnCandidate) -> RavnPeer | None:
+    async def handshake(self, candidate: MeshCandidate) -> MeshPeer | None:
         """No handshake in Sleipnir mode — trust is delegated to SPIFFE."""
         return None
 
-    def peers(self) -> dict[str, RavnPeer]:
+    def peers(self) -> dict[str, MeshPeer]:
         """Return the cached verified peer table (synchronous)."""
         return dict(self._peers)
 
-    async def own_identity(self) -> RavnIdentity:
+    async def own_identity(self) -> MeshIdentity:
         """Return this Ravn's identity."""
         return self._identity
 
@@ -293,7 +290,7 @@ class SleipnirDiscoveryAdapter:
             peer.task_count = task_count
             return
 
-        peer = RavnPeer(
+        peer = MeshPeer(
             peer_id=peer_id,
             realm_id=identity_raw.get("realm_id", ""),
             persona=identity_raw.get("persona", ""),

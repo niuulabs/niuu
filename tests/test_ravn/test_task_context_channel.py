@@ -7,13 +7,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.channels.task_context import TaskContextChannel
-from ravn.domain.events import RavnEvent, RavnEventType
 
 
-def _make_event() -> RavnEvent:
-    return RavnEvent(
-        type=RavnEventType.THOUGHT,
+def _make_event() -> MeshEvent:
+    return MeshEvent(
+        type=MeshEventType.THOUGHT,
         source="ravn-test",
         payload={"text": "hello"},
         timestamp=datetime.now(UTC),

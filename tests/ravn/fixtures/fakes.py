@@ -7,8 +7,8 @@ so there is a single authoritative definition of each fake.
 from __future__ import annotations
 
 from niuu.domain.tool import ToolResult
+from niuu.mesh.events import MeshEvent
 from niuu.ports.tool import ToolPort
-from ravn.domain.events import RavnEvent
 from ravn.ports.channel import ChannelPort
 
 
@@ -16,9 +16,9 @@ class InMemoryChannel(ChannelPort):
     """Records every event emitted by the agent for inspection in tests."""
 
     def __init__(self) -> None:
-        self.events: list[RavnEvent] = []
+        self.events: list[MeshEvent] = []
 
-    async def emit(self, event: RavnEvent) -> None:
+    async def emit(self, event: MeshEvent) -> None:
         self.events.append(event)
 
 

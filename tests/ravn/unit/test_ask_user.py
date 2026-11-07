@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from niuu.mesh.events import MeshEventType
 from ravn.adapters.tools.ask_user import AskUserTool
-from ravn.domain.events import RavnEventType
 from ravn.domain.models import LLMResponse, StopReason, TokenUsage, ToolCall
 from tests.ravn.conftest import MockLLM, make_agent, make_text_response
 
@@ -93,10 +93,10 @@ class TestAgentInterceptsAskUser:
 
         assert "Paris" in result.response
         # The agent should have emitted a TOOL_START for ask_user.
-        start_events = [e for e in channel.events if e.type == RavnEventType.TOOL_START]
+        start_events = [e for e in channel.events if e.type == MeshEventType.TOOL_START]
         assert any(e.payload.get("tool_name") == "ask_user" for e in start_events)
         # And a TOOL_RESULT with the answer.
-        result_events = [e for e in channel.events if e.type == RavnEventType.TOOL_RESULT]
+        result_events = [e for e in channel.events if e.type == MeshEventType.TOOL_RESULT]
         assert any("Paris" in e.payload.get("result", "") for e in result_events)
 
     async def test_intercepts_without_tool_in_registry(self) -> None:
@@ -134,7 +134,7 @@ class TestAgentInterceptsAskUser:
         result_events = [
             e
             for e in channel.events
-            if e.type == RavnEventType.TOOL_RESULT and e.payload.get("tool_name") == "ask_user"
+            if e.type == MeshEventType.TOOL_RESULT and e.payload.get("tool_name") == "ask_user"
         ]
         assert result_events
         assert result_events[0].payload["is_error"] is True

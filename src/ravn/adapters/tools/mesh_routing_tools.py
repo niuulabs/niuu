@@ -23,8 +23,8 @@ from niuu.domain.tool import ToolResult
 from niuu.ports.tool import ToolPort
 
 if TYPE_CHECKING:
-    from ravn.ports.discovery import DiscoveryPort
-    from ravn.ports.mesh import MeshPort
+    from niuu.ports.discovery import DiscoveryPort
+    from niuu.ports.mesh import MeshPort
 
 logger = logging.getLogger(__name__)
 

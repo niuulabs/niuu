@@ -13,12 +13,12 @@ from uuid import uuid4
 
 import pytest
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.channels.silent import SilentChannel
 from ravn.adapters.triggers.condition_poll import ConditionPollTrigger
 from ravn.adapters.triggers.cron import CronJob, CronTrigger, _cron_matches, parse_schedule
 from ravn.cap_telemetry import degraded_counts
 from ravn.config import InitiativeConfig, Settings, TriggerAdapterConfig
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.drive_loop import DriveLoop
 from ravn.prompt_builder import build_initiative_prompt
@@ -103,7 +103,7 @@ def test_agent_task_created_at_defaults_to_utc_now() -> None:
 @pytest.mark.asyncio
 async def test_silent_channel_discards_non_response_events() -> None:
     channel = SilentChannel()
-    event = RavnEvent.thought("agent", "thinking...", "c1", "s1")
+    event = MeshEvent.thought("agent", "thinking...", "c1", "s1")
     await channel.emit(event)
     assert channel.response_text == ""
     assert not channel.surface_triggered
@@ -112,7 +112,7 @@ async def test_silent_channel_discards_non_response_events() -> None:
 @pytest.mark.asyncio
 async def test_silent_channel_captures_response_text() -> None:
     channel = SilentChannel()
-    event = RavnEvent.response("agent", "All systems normal.", "c1", "s1")
+    event = MeshEvent.response("agent", "All systems normal.", "c1", "s1")
     await channel.emit(event)
     assert channel.response_text == "All systems normal."
     assert not channel.surface_triggered
@@ -121,7 +121,7 @@ async def test_silent_channel_captures_response_text() -> None:
 @pytest.mark.asyncio
 async def test_silent_channel_detects_surface_prefix() -> None:
     channel = SilentChannel()
-    event = RavnEvent.response("agent", "[SURFACE] Something needs attention!", "c1", "s1")
+    event = MeshEvent.response("agent", "[SURFACE] Something needs attention!", "c1", "s1")
     await channel.emit(event)
     assert channel.surface_triggered
     assert channel.response_text.startswith("[SURFACE]")
@@ -130,7 +130,7 @@ async def test_silent_channel_detects_surface_prefix() -> None:
 @pytest.mark.asyncio
 async def test_silent_channel_no_surface_for_bare_response() -> None:
     channel = SilentChannel()
-    event = RavnEvent.response("agent", "Everything is fine.", "c1", "s1")
+    event = MeshEvent.response("agent", "Everything is fine.", "c1", "s1")
     await channel.emit(event)
     assert not channel.surface_triggered
 
@@ -794,23 +794,23 @@ def test_silent_trigger_satisfies_trigger_port() -> None:
 
 
 # ---------------------------------------------------------------------------
-# RavnEventType — TASK_STARTED
+# MeshEventType — TASK_STARTED
 # ---------------------------------------------------------------------------
 
 
 def test_task_started_event_type_exists() -> None:
-    assert RavnEventType.TASK_STARTED == "task_started"
+    assert MeshEventType.TASK_STARTED == "task_started"
 
 
 def test_task_started_factory() -> None:
-    event = RavnEvent.task_started(
+    event = MeshEvent.task_started(
         source="drive_loop",
         task_id="task_abc",
         title="morning check",
         correlation_id="task_abc",
         session_id="daemon_task_abc",
     )
-    assert event.type == RavnEventType.TASK_STARTED
+    assert event.type == MeshEventType.TASK_STARTED
     assert event.payload["task_id"] == "task_abc"
     assert event.payload["title"] == "morning check"
 
@@ -1363,7 +1363,7 @@ async def test_run_task_logs_response_and_redelivers_surface_output(tmp_path: Pa
 
         async def _run_turn(prompt: str) -> None:
             await channel.emit(
-                RavnEvent.response(
+                MeshEvent.response(
                     "agent",
                     "[SURFACE] Show this to the user",
                     correlation_id=task_id or "task",

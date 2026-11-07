@@ -1,4 +1,4 @@
-"""Domain events for Ravn — emitted to output channels."""
+"""The mesh event envelope: what a mesh participant emits to its output channels and the mesh."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from enum import StrEnum
 from uuid import uuid4
 
 
-class RavnEventType(StrEnum):
+class MeshEventType(StrEnum):
     THOUGHT = "thought"
     TOOL_START = "tool_start"
     TOOL_RESULT = "tool_result"
@@ -24,11 +24,11 @@ class RavnEventType(StrEnum):
 
 
 @dataclass(frozen=True)
-class RavnEvent:
-    """An event emitted by the Ravn agent to its output channel."""
+class MeshEvent:
+    """An event a mesh participant (Ravn, Skuld, a resident) emits to its output channel."""
 
     # THOUGHT, TOOL_START, TOOL_RESULT, RESPONSE, ERROR, DECISION, TASK_COMPLETE, TASK_STARTED
-    type: RavnEventType
+    type: MeshEventType
     source: str  # Agent instance ID
     payload: dict  # Event-specific data
     timestamp: datetime  # ISO8601 timestamp
@@ -48,9 +48,9 @@ class RavnEvent:
         correlation_id: str,
         session_id: str,
         task_id: str | None = None,
-    ) -> RavnEvent:
+    ) -> MeshEvent:
         return cls(
-            type=RavnEventType.THOUGHT,
+            type=MeshEventType.THOUGHT,
             source=source,
             payload={"text": text},
             timestamp=datetime.now(UTC),
@@ -68,10 +68,10 @@ class RavnEvent:
         correlation_id: str,
         session_id: str,
         task_id: str | None = None,
-    ) -> RavnEvent:
+    ) -> MeshEvent:
         """Emit an extended-thinking block — rendered dimmed/collapsed in CLI."""
         return cls(
-            type=RavnEventType.THOUGHT,
+            type=MeshEventType.THOUGHT,
             source=source,
             payload={"text": text, "thinking": True},
             timestamp=datetime.now(UTC),
@@ -91,12 +91,12 @@ class RavnEvent:
         session_id: str,
         task_id: str | None = None,
         diff: str | None = None,
-    ) -> RavnEvent:
+    ) -> MeshEvent:
         payload = {"tool_name": tool_name, "input": tool_input}
         if diff is not None:
             payload["diff"] = diff
         return cls(
-            type=RavnEventType.TOOL_START,
+            type=MeshEventType.TOOL_START,
             source=source,
             payload=payload,
             timestamp=datetime.now(UTC),
@@ -116,9 +116,9 @@ class RavnEvent:
         session_id: str,
         task_id: str | None = None,
         is_error: bool = False,
-    ) -> RavnEvent:
+    ) -> MeshEvent:
         return cls(
-            type=RavnEventType.TOOL_RESULT,
+            type=MeshEventType.TOOL_RESULT,
             source=source,
             payload={"tool_name": tool_name, "result": result, "is_error": is_error},
             timestamp=datetime.now(UTC),
@@ -136,9 +136,9 @@ class RavnEvent:
         correlation_id: str,
         session_id: str,
         task_id: str | None = None,
-    ) -> RavnEvent:
+    ) -> MeshEvent:
         return cls(
-            type=RavnEventType.RESPONSE,
+            type=MeshEventType.RESPONSE,
             source=source,
             payload={"text": text},
             timestamp=datetime.now(UTC),
@@ -157,12 +157,12 @@ class RavnEvent:
         session_id: str,
         task_id: str | None = None,
         failure_kind: str = "",
-    ) -> RavnEvent:
+    ) -> MeshEvent:
         payload = {"message": message}
         if failure_kind:
             payload["failure_kind"] = failure_kind
         return cls(
-            type=RavnEventType.ERROR,
+            type=MeshEventType.ERROR,
             source=source,
             payload=payload,
             timestamp=datetime.now(UTC),
@@ -180,9 +180,9 @@ class RavnEvent:
         correlation_id: str,
         session_id: str,
         task_id: str | None = None,
-    ) -> RavnEvent:
+    ) -> MeshEvent:
         return cls(
-            type=RavnEventType.DECISION,
+            type=MeshEventType.DECISION,
             source=source,
             payload={"prompt": prompt},
             timestamp=datetime.now(UTC),
@@ -195,9 +195,9 @@ class RavnEvent:
     @classmethod
     def task_started(
         cls, source: str, task_id: str, title: str, correlation_id: str, session_id: str
-    ) -> RavnEvent:
+    ) -> MeshEvent:
         return cls(
-            type=RavnEventType.TASK_STARTED,
+            type=MeshEventType.TASK_STARTED,
             source=source,
             payload={"task_id": task_id, "title": title},
             timestamp=datetime.now(UTC),
@@ -215,9 +215,9 @@ class RavnEvent:
         correlation_id: str,
         session_id: str,
         task_id: str | None = None,
-    ) -> RavnEvent:
+    ) -> MeshEvent:
         return cls(
-            type=RavnEventType.TASK_COMPLETE,
+            type=MeshEventType.TASK_COMPLETE,
             source=source,
             payload={"success": success},
             timestamp=datetime.now(UTC),
@@ -241,7 +241,7 @@ class RavnEvent:
         task_id: str | None = None,
         context: dict | None = None,
         trace_context: dict[str, str] | None = None,
-    ) -> RavnEvent:
+    ) -> MeshEvent:
         """Emit when a persona needs human input to proceed.
 
         Parameters
@@ -260,7 +260,7 @@ class RavnEvent:
             Optional additional context (file paths, error messages, etc.).
         """
         return cls(
-            type=RavnEventType.HELP_NEEDED,
+            type=MeshEventType.HELP_NEEDED,
             source=source,
             payload={
                 "persona": persona,
@@ -295,7 +295,7 @@ class RavnEvent:
         correlation_id: str,
         session_id: str,
         task_id: str | None = None,
-    ) -> RavnEvent:
+    ) -> MeshEvent:
         payload = {
             "model": model,
             "inputTokens": input_tokens,
@@ -309,7 +309,7 @@ class RavnEvent:
         if cost_usd is not None:
             payload["costUSD"] = cost_usd
         return cls(
-            type=RavnEventType.USAGE,
+            type=MeshEventType.USAGE,
             source=source,
             payload=payload,
             timestamp=datetime.now(UTC),

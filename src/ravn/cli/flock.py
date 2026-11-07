@@ -300,7 +300,7 @@ def _write_node_config(
             f"discovery:\n"
             f"  enabled: true\n"
             f"  adapters:\n"
-            f"    - adapter: ravn.adapters.discovery.static.StaticDiscoveryAdapter\n"
+            f"    - adapter: niuu.adapters.discovery.static.StaticDiscoveryAdapter\n"
             f'      cluster_file: "{flock_dir}/cluster.yaml"\n'
             f"      poll_interval_s: 5\n"
         )
@@ -312,7 +312,7 @@ def _write_node_config(
             f"discovery:\n"
             f"  enabled: true\n"
             f"  adapters:\n"
-            f"    - adapter: ravn.adapters.discovery.mdns.MdnsDiscoveryAdapter\n"
+            f"    - adapter: niuu.adapters.discovery.mdns.MdnsDiscoveryAdapter\n"
             f"      handshake_port: {node.handshake_port}\n"
         )
 

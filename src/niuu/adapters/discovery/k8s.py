@@ -20,11 +20,11 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from ravn.domain.models import RavnCandidate, RavnIdentity, RavnPeer
-from ravn.ports.discovery import PeerCallback
+from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer
+from niuu.ports.discovery import PeerCallback
 
 if TYPE_CHECKING:
-    from ravn.config import DiscoveryConfig
+    from niuu.mesh.config import DiscoveryConfig
 
 try:
     from kubernetes import client as k8s_client  # type: ignore[import-untyped]
@@ -48,7 +48,7 @@ class K8sDiscoveryAdapter:
     Parameters
     ----------
     own_identity:
-        Pre-built ``RavnIdentity`` for this instance.
+        Pre-built ``MeshIdentity`` for this instance.
     namespace:
         K8s namespace to query (empty = all namespaces).
     label_selector:
@@ -61,7 +61,7 @@ class K8sDiscoveryAdapter:
 
     def __init__(
         self,
-        own_identity: RavnIdentity,
+        own_identity: MeshIdentity,
         *,
         namespace: str = "",
         label_selector: str = "ravn.niuu.world/role=agent",
@@ -81,7 +81,7 @@ class K8sDiscoveryAdapter:
             self._label_selector = config.k8s.label_selector
             self._heartbeat_interval_s = config.heartbeat_interval_s
 
-        self._peers: dict[str, RavnPeer] = {}
+        self._peers: dict[str, MeshPeer] = {}
         self._on_join: list[PeerCallback] = []
         self._on_leave: list[PeerCallback] = []
         self._poll_task: asyncio.Task | None = None
@@ -119,7 +119,7 @@ class K8sDiscoveryAdapter:
     async def announce(self) -> None:
         """No-op — K8s identity is declared via pod labels/annotations."""
 
-    async def scan(self) -> list[RavnCandidate]:
+    async def scan(self) -> list[MeshCandidate]:
         """Query K8s for Ravn pods and return as candidates (no handshake)."""
         return await asyncio.get_running_loop().run_in_executor(None, self._list_candidates)
 
@@ -128,15 +128,15 @@ class K8sDiscoveryAdapter:
         self._on_join.append(on_join)
         self._on_leave.append(on_leave)
 
-    async def handshake(self, candidate: RavnCandidate) -> RavnPeer | None:
+    async def handshake(self, candidate: MeshCandidate) -> MeshPeer | None:
         """No handshake — trust is via K8s RBAC + SPIFFE."""
         return None
 
-    def peers(self) -> dict[str, RavnPeer]:
+    def peers(self) -> dict[str, MeshPeer]:
         """Return the cached verified peer table (synchronous)."""
         return dict(self._peers)
 
-    async def own_identity(self) -> RavnIdentity:
+    async def own_identity(self) -> MeshIdentity:
         """Return this Ravn's identity."""
         return self._identity
 
@@ -157,7 +157,7 @@ class K8sDiscoveryAdapter:
                 self._peers[peer_id].last_seen = now
                 continue
 
-            peer = RavnPeer(
+            peer = MeshPeer(
                 peer_id=peer_id,
                 realm_id=candidate.metadata.get("realm_id", ""),
                 persona=candidate.metadata.get("persona", ""),
@@ -187,7 +187,7 @@ class K8sDiscoveryAdapter:
                     with suppress(Exception):
                         cb(peer)
 
-    def _list_candidates(self) -> list[RavnCandidate]:
+    def _list_candidates(self) -> list[MeshCandidate]:
         if k8s_client is None:
             return []
         try:
@@ -208,7 +208,7 @@ class K8sDiscoveryAdapter:
                 peer_id = annotations.get(_ANN_PEER_ID, "")
                 if not peer_id or peer_id == self._identity.peer_id:
                     continue
-                candidate = RavnCandidate(
+                candidate = MeshCandidate(
                     peer_id=peer_id,
                     realm_id_hash="",  # K8s doesn't transmit the hash
                     host=pod.status.pod_ip or "",

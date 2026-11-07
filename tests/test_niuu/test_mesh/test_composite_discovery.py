@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ravn.adapters.discovery.composite import CompositeDiscoveryAdapter
-from ravn.domain.models import RavnCandidate, RavnIdentity, RavnPeer
+from niuu.adapters.discovery.composite import CompositeDiscoveryAdapter
+from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer
 
 
-def _peer(peer_id: str = "peer-1") -> RavnPeer:
-    return RavnPeer(
+def _peer(peer_id: str = "peer-1") -> MeshPeer:
+    return MeshPeer(
         peer_id=peer_id,
         realm_id="test-realm",
         persona="local",
@@ -21,8 +21,8 @@ def _peer(peer_id: str = "peer-1") -> RavnPeer:
     )
 
 
-def _candidate(peer_id: str = "cand-1") -> RavnCandidate:
-    return RavnCandidate(
+def _candidate(peer_id: str = "cand-1") -> MeshCandidate:
+    return MeshCandidate(
         peer_id=peer_id,
         realm_id_hash="abc123",
         host="127.0.0.1",
@@ -32,8 +32,8 @@ def _candidate(peer_id: str = "cand-1") -> RavnCandidate:
     )
 
 
-def _identity() -> RavnIdentity:
-    return RavnIdentity(
+def _identity() -> MeshIdentity:
+    return MeshIdentity(
         peer_id="self",
         realm_id="test-realm",
         persona="local",
@@ -213,7 +213,7 @@ class TestCompositeDiscoveryCallbacks:
         b1 = _mock_backend()
         b2 = _mock_backend()
         adapter = CompositeDiscoveryAdapter([b1, b2])
-        fired: list[RavnPeer] = []
+        fired: list[MeshPeer] = []
         adapter._on_join.append(lambda p: fired.append(p))
 
         peer = _peer("x")
@@ -236,7 +236,7 @@ class TestCompositeDiscoveryCallbacks:
         """Leave fires when count reaches zero (covers lines 139-150)."""
         b1 = _mock_backend()
         adapter = CompositeDiscoveryAdapter([b1])
-        fired: list[RavnPeer] = []
+        fired: list[MeshPeer] = []
         adapter._on_leave.append(lambda p: fired.append(p))
 
         peer = _peer("z")
@@ -263,7 +263,7 @@ class TestCompositeDiscoveryCallbacks:
         b1 = _mock_backend()
         b2 = _mock_backend()
         adapter = CompositeDiscoveryAdapter([b1, b2])
-        fired: list[RavnPeer] = []
+        fired: list[MeshPeer] = []
         adapter._on_leave.append(lambda p: fired.append(p))
 
         peer = _peer("multi")

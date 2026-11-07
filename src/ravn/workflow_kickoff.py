@@ -19,10 +19,10 @@ from niuu.domain.workflow_kickoff import (
     WORKFLOW_TRIGGER_NODE_ID_KEY,
     is_workflow_kickoff_payload,
 )
-from ravn.domain.events import RavnEvent, RavnEventType
+from niuu.mesh.events import MeshEvent, MeshEventType
 
 if TYPE_CHECKING:
-    from ravn.ports.mesh import MeshPort
+    from niuu.ports.mesh import MeshPort
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +45,12 @@ class WorkflowKickoffAcknowledger:
         self._seen_kickoff_keys: set[str] = set()
 
     @staticmethod
-    def is_kickoff(event: RavnEvent) -> bool:
+    def is_kickoff(event: MeshEvent) -> bool:
         """Return True when *event* is a Skuld workflow kickoff dispatch."""
         return is_workflow_kickoff_payload(event.payload)
 
     @staticmethod
-    def _kickoff_key(event: RavnEvent) -> str:
+    def _kickoff_key(event: MeshEvent) -> str:
         """Identity of one logical kickoff, stable across redeliveries.
 
         Skuld stamps each dispatch (and its redeliveries) with a unique
@@ -64,7 +64,7 @@ class WorkflowKickoffAcknowledger:
             return kickoff_id
         return str(event.correlation_id or event.root_correlation_id or "").strip()
 
-    async def acknowledge(self, event: RavnEvent) -> bool:
+    async def acknowledge(self, event: MeshEvent) -> bool:
         """Publish the kickoff ack; return True when this is the first delivery.
 
         The ack is published on every delivery — a redelivery means Skuld
@@ -78,8 +78,8 @@ class WorkflowKickoffAcknowledger:
             self._seen_kickoff_keys.add(key)
 
         correlation_id = str(event.correlation_id or event.root_correlation_id or "")
-        ack = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        ack = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source=self._peer_id,
             payload={
                 "event_type": WORKFLOW_KICKOFF_ACK_EVENT_TYPE,

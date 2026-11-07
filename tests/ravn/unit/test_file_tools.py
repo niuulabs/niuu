@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.cli_channel import CliChannel
 from ravn.adapters.tools.file_tools import (
     EditFileTool,
@@ -14,7 +15,6 @@ from ravn.adapters.tools.file_tools import (
     WriteFileTool,
     _unified_diff,
 )
-from ravn.domain.events import RavnEvent, RavnEventType
 
 # ---------------------------------------------------------------------------
 # _unified_diff helper
@@ -191,7 +191,7 @@ class TestEditFileToolDiffPreview:
 
 
 # ---------------------------------------------------------------------------
-# RavnEvent.tool_start — diff in payload
+# MeshEvent.tool_start — diff in payload
 # ---------------------------------------------------------------------------
 
 _SRC = "ravn-test"
@@ -199,15 +199,15 @@ _CID = "corr-1"
 _SID = "sess-1"
 
 
-class TestRavnEventToolStart:
+class TestMeshEventToolStart:
     def test_no_diff_key_when_diff_is_none(self) -> None:
-        event = RavnEvent.tool_start(
+        event = MeshEvent.tool_start(
             _SRC, "write_file", {"path": "f.py", "content": "x"}, _CID, _SID
         )
         assert "diff" not in event.payload
 
     def test_diff_key_present_when_diff_provided(self) -> None:
-        event = RavnEvent.tool_start(
+        event = MeshEvent.tool_start(
             _SRC,
             "write_file",
             {"path": "f.py"},
@@ -219,15 +219,15 @@ class TestRavnEventToolStart:
         assert event.payload["diff"] == "--- f.py\n+++ f.py\n@@ -1 +1 @@\n-old\n+new\n"
 
     def test_input_always_in_payload(self) -> None:
-        event = RavnEvent.tool_start(_SRC, "read_file", {"path": "x.py"}, _CID, _SID)
+        event = MeshEvent.tool_start(_SRC, "read_file", {"path": "x.py"}, _CID, _SID)
         assert event.payload["input"] == {"path": "x.py"}
 
     def test_event_type_is_tool_start(self) -> None:
-        event = RavnEvent.tool_start(_SRC, "t", {}, _CID, _SID)
-        assert event.type == RavnEventType.TOOL_START
+        event = MeshEvent.tool_start(_SRC, "t", {}, _CID, _SID)
+        assert event.type == MeshEventType.TOOL_START
 
     def test_tool_name_in_payload(self) -> None:
-        event = RavnEvent.tool_start(_SRC, "write_file", {}, _CID, _SID)
+        event = MeshEvent.tool_start(_SRC, "write_file", {}, _CID, _SID)
         assert event.payload["tool_name"] == "write_file"
 
 
@@ -240,7 +240,7 @@ class TestCliChannelDiffRendering:
     async def test_renders_diff_separator_and_content(self) -> None:
         buf = io.StringIO()
         cli = CliChannel(file=buf)
-        event = RavnEvent.tool_start(
+        event = MeshEvent.tool_start(
             _SRC,
             "write_file",
             {"path": "f.py"},
@@ -257,7 +257,7 @@ class TestCliChannelDiffRendering:
     async def test_no_separator_when_no_diff(self) -> None:
         buf = io.StringIO()
         cli = CliChannel(file=buf)
-        event = RavnEvent.tool_start(_SRC, "read_file", {"path": "f.py"}, _CID, _SID)
+        event = MeshEvent.tool_start(_SRC, "read_file", {"path": "f.py"}, _CID, _SID)
         await cli.emit(event)
         output = buf.getvalue()
         assert "─" not in output
@@ -265,7 +265,7 @@ class TestCliChannelDiffRendering:
     async def test_tool_name_rendered_with_rotation_symbol(self) -> None:
         buf = io.StringIO()
         cli = CliChannel(file=buf)
-        event = RavnEvent.tool_start(_SRC, "write_file", {"path": "f.py"}, _CID, _SID)
+        event = MeshEvent.tool_start(_SRC, "write_file", {"path": "f.py"}, _CID, _SID)
         await cli.emit(event)
         output = buf.getvalue()
         assert "⟳" in output
@@ -275,7 +275,7 @@ class TestCliChannelDiffRendering:
         buf = io.StringIO()
         cli = CliChannel(file=buf)
         diff = "--- f.py\n+++ f.py\n@@ -1 +1 @@\n-a\n+b\n"
-        event = RavnEvent.tool_start(_SRC, "write_file", {}, _CID, _SID, diff=diff)
+        event = MeshEvent.tool_start(_SRC, "write_file", {}, _CID, _SID, diff=diff)
         await cli.emit(event)
         output = buf.getvalue()
         sep = "─" * 33

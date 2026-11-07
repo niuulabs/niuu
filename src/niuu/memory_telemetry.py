@@ -3,7 +3,7 @@
 Ravn reads from two stores with very different contracts, and each one can
 fail silently in its own way:
 
-* **episodic memory** (:class:`ravn.ports.memory.MemoryPort`) — ranked, lossy;
+* **episodic memory** (Ravn's ``MemoryPort``) — ranked, lossy;
   a miss costs answer quality;
 * **Mímir** (:class:`niuu.ports.mimir.MimirPort`) — the shared knowledge base
   reached over HTTP.
@@ -13,8 +13,8 @@ from a healthy one. Metric names live here so the Grafana dashboard, the
 adapters, and ``tests/test_ravn/test_valkyrie_grafana_dashboard.py`` cannot
 drift apart.
 
-Names follow the OTel dotted convention already used by
-``ravn.tool_observability``; the Prometheus exporter renders
+Names follow the OTel dotted convention already used by Ravn's tool
+observability; the Prometheus exporter renders
 ``ravn.memory.operations`` as ``ravn_memory_operations_total``.
 
 The candidate funnel deserves a note. ``CANDIDATES`` counts what the search

@@ -28,8 +28,8 @@ from typing import Any
 
 import httpx
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.channels.skuld_channel import AuthTokenProvider, SkuldChannel
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.exceptions import ConfigurationError
 from ravn.ports.channel import ChannelPort
 
@@ -200,7 +200,7 @@ class SessionJoinManager:
             return
         try:
             await self._status_channel.emit(
-                RavnEvent.response(
+                MeshEvent.response(
                     self._peer_id,
                     text,
                     correlation_id=session_id,
@@ -288,8 +288,8 @@ class SessionJoinManager:
         entry = self._joined.get(session_id.strip())
         if entry is None:
             return False
-        event = RavnEvent(
-            type=RavnEventType.RESPONSE,
+        event = MeshEvent(
+            type=MeshEventType.RESPONSE,
             source=self._peer_id,
             payload={"text": text},
             timestamp=datetime.now(UTC),

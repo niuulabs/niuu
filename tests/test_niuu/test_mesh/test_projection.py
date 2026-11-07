@@ -2,12 +2,12 @@
 
 from datetime import UTC, datetime
 
-from ravn.adapters.collaboration import project_ravn_event
-from ravn.domain.events import RavnEvent, RavnEventType
+from niuu.mesh.events import MeshEvent, MeshEventType
+from niuu.mesh.projection import project_mesh_event
 
 
-def _event(event_type: RavnEventType, payload: dict) -> RavnEvent:
-    return RavnEvent(
+def _event(event_type: MeshEventType, payload: dict) -> MeshEvent:
+    return MeshEvent(
         type=event_type,
         source="ravn-1",
         payload=payload,
@@ -21,9 +21,9 @@ def _event(event_type: RavnEventType, payload: dict) -> RavnEvent:
 
 
 def test_help_projection_carries_exact_resume_context() -> None:
-    projected = project_ravn_event(
+    projected = project_mesh_event(
         _event(
-            RavnEventType.HELP_NEEDED,
+            MeshEventType.HELP_NEEDED,
             {
                 "reason": "missing_authority",
                 "summary": "Approval required",
@@ -42,9 +42,9 @@ def test_help_projection_carries_exact_resume_context() -> None:
 
 
 def test_help_without_optional_context_still_accepts_an_operator_reply() -> None:
-    projected = project_ravn_event(
+    projected = project_mesh_event(
         _event(
-            RavnEventType.HELP_NEEDED,
+            MeshEventType.HELP_NEEDED,
             {"reason": "uncertain", "summary": "I need clarification"},
         )
     )[0]
@@ -55,8 +55,8 @@ def test_help_without_optional_context_still_accepts_an_operator_reply() -> None
 
 
 def test_error_projection_preserves_failure_kind() -> None:
-    projected = project_ravn_event(
-        RavnEvent.error(
+    projected = project_mesh_event(
+        MeshEvent.error(
             source="ravn-1",
             message="Backend unavailable",
             correlation_id="task-1",
@@ -69,7 +69,7 @@ def test_error_projection_preserves_failure_kind() -> None:
 
 
 def test_error_projection_names_the_failing_workflow_node() -> None:
-    event = RavnEvent.error(
+    event = MeshEvent.error(
         source="ravn-1",
         message="RuntimeError: Persona requires durable workflow execution tools",
         correlation_id="task-1",
@@ -79,7 +79,7 @@ def test_error_projection_names_the_failing_workflow_node() -> None:
     event.payload["workflow_node_id"] = "research-coordinate"
     event.payload["persona"] = "research-coordinator"
 
-    projected = project_ravn_event(event)[0]
+    projected = project_mesh_event(event)[0]
 
     assert projected["error"] is True
     assert projected["metadata"] == {
@@ -90,9 +90,9 @@ def test_error_projection_names_the_failing_workflow_node() -> None:
 
 
 def test_tool_projection_exposes_activity_and_delegation_without_skuld_logic() -> None:
-    projected = project_ravn_event(
+    projected = project_mesh_event(
         _event(
-            RavnEventType.TOOL_START,
+            MeshEventType.TOOL_START,
             {
                 "tool_name": "route_work",
                 "input": {"event_type": "code.review", "prompt": "Review it"},
@@ -111,9 +111,9 @@ def test_tool_projection_exposes_activity_and_delegation_without_skuld_logic() -
 
 
 def test_outcome_projection_is_structured_and_instruction_free() -> None:
-    projected = project_ravn_event(
+    projected = project_mesh_event(
         _event(
-            RavnEventType.OUTCOME,
+            MeshEventType.OUTCOME,
             {
                 "event_type": "printer.release_overcount",
                 "fields": {"observed": 4, "expected": 3},
@@ -130,9 +130,9 @@ def test_outcome_projection_is_structured_and_instruction_free() -> None:
 
 
 def test_collaboration_delivery_marker_does_not_hide_direct_outcome() -> None:
-    projected = project_ravn_event(
+    projected = project_mesh_event(
         _event(
-            RavnEventType.OUTCOME,
+            MeshEventType.OUTCOME,
             {
                 "event_type": "review.completed",
                 "verdict": "approved",
@@ -147,9 +147,9 @@ def test_collaboration_delivery_marker_does_not_hide_direct_outcome() -> None:
 
 
 def test_routing_only_outcome_is_explicit_in_collaboration_contract() -> None:
-    projected = project_ravn_event(
+    projected = project_mesh_event(
         _event(
-            RavnEventType.OUTCOME,
+            MeshEventType.OUTCOME,
             {
                 "event_type": "review.changes_requested",
                 "routing_only": True,

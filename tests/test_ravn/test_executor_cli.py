@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from niuu.domain.tool import ToolResult
+from niuu.mesh.events import MeshEvent
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from niuu.ports.tool import ToolPort
 from ravn.adapters.executors.cli import (
@@ -16,16 +17,15 @@ from ravn.adapters.executors.cli import (
     _TransportBinding,
 )
 from ravn.domain.checkpoint import InterruptReason
-from ravn.domain.events import RavnEvent
 from ravn.domain.models import Message, Session
 from ravn.domain.notification_channel import current_notification_channel
 
 
 class _CollectingChannel:
     def __init__(self) -> None:
-        self.events: list[RavnEvent] = []
+        self.events: list[MeshEvent] = []
 
-    async def emit(self, event: RavnEvent) -> None:
+    async def emit(self, event: MeshEvent) -> None:
         self.events.append(event)
 
 

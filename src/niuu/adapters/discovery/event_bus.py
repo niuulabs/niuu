@@ -8,8 +8,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from niuu.mesh import mesh_event_prefix
-from ravn.domain.models import RavnCandidate, RavnPeer
-from ravn.ports.discovery import PeerCallback
+from niuu.mesh.identity import MeshCandidate, MeshPeer
+from niuu.ports.discovery import PeerCallback
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher, SleipnirSubscriber, Subscription
 
@@ -38,7 +38,7 @@ class EventBusDiscoveryAdapter:
         self._announce_event_type = (
             f"{mesh_event_prefix(str(getattr(own_identity, 'realm_id', '') or ''))}.announce"
         )
-        self._peers: dict[str, RavnPeer] = {}
+        self._peers: dict[str, MeshPeer] = {}
         self._on_join: list[PeerCallback] = []
         self._on_leave: list[PeerCallback] = []
         self._subscription: Subscription | None = None
@@ -84,17 +84,17 @@ class EventBusDiscoveryAdapter:
     async def announce(self) -> None:
         await self._publish("join")
 
-    async def scan(self) -> list[RavnCandidate]:
+    async def scan(self) -> list[MeshCandidate]:
         return []
 
     async def watch(self, on_join: PeerCallback, on_leave: PeerCallback) -> None:
         self._on_join.append(on_join)
         self._on_leave.append(on_leave)
 
-    async def handshake(self, candidate: RavnCandidate) -> RavnPeer | None:
+    async def handshake(self, candidate: MeshCandidate) -> MeshPeer | None:
         return self._peers.get(candidate.peer_id)
 
-    def peers(self) -> dict[str, RavnPeer]:
+    def peers(self) -> dict[str, MeshPeer]:
         self._evict_stale()
         return dict(self._peers)
 
@@ -174,7 +174,7 @@ class EventBusDiscoveryAdapter:
             if payload.get("action") == "join":
                 await self._publish("heartbeat")
             return
-        peer = RavnPeer(
+        peer = MeshPeer(
             peer_id=peer_id,
             realm_id=self._identity.realm_id,
             persona=str(identity.get("persona") or ""),

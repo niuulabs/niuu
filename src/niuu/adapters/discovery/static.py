@@ -38,11 +38,11 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from ravn.domain.models import RavnCandidate, RavnIdentity, RavnPeer
-from ravn.ports.discovery import PeerCallback
+from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer
+from niuu.ports.discovery import PeerCallback
 
 if TYPE_CHECKING:
-    from ravn.config import DiscoveryConfig
+    from niuu.mesh.config import DiscoveryConfig
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ class StaticDiscoveryAdapter:
     Parameters
     ----------
     own_identity:
-        Pre-built ``RavnIdentity`` for this instance.
+        Pre-built ``MeshIdentity`` for this instance.
     cluster_file:
         Path to the cluster.yaml peer definition file.
     peers:
@@ -71,7 +71,7 @@ class StaticDiscoveryAdapter:
 
     def __init__(
         self,
-        own_identity: RavnIdentity,
+        own_identity: MeshIdentity,
         *,
         cluster_file: str = "~/.ravn/cluster.yaml",
         peers: list[dict[str, Any]] | None = None,
@@ -87,7 +87,7 @@ class StaticDiscoveryAdapter:
         self._inline_peers = list(peers or [])
         self._poll_interval_s = poll_interval_s
 
-        self._peers: dict[str, RavnPeer] = {}
+        self._peers: dict[str, MeshPeer] = {}
         self._on_join: list[PeerCallback] = []
         self._on_leave: list[PeerCallback] = []
 
@@ -125,10 +125,10 @@ class StaticDiscoveryAdapter:
     async def announce(self) -> None:
         """No-op — static discovery doesn't announce."""
 
-    async def scan(self) -> list[RavnCandidate]:
+    async def scan(self) -> list[MeshCandidate]:
         """Return all peers as candidates (they're pre-verified by being in the file)."""
         return [
-            RavnCandidate(
+            MeshCandidate(
                 peer_id=peer.peer_id,
                 realm_id_hash="",  # Static peers don't have realm hash
                 host=peer.rep_address.split("://")[1].split(":")[0] if peer.rep_address else "",
@@ -145,15 +145,15 @@ class StaticDiscoveryAdapter:
         self._on_join.append(on_join)
         self._on_leave.append(on_leave)
 
-    async def handshake(self, candidate: RavnCandidate) -> RavnPeer | None:
+    async def handshake(self, candidate: MeshCandidate) -> MeshPeer | None:
         """Return the pre-verified peer if it exists in our table."""
         return self._peers.get(candidate.peer_id)
 
-    def peers(self) -> dict[str, RavnPeer]:
+    def peers(self) -> dict[str, MeshPeer]:
         """Return the current peer table (synchronous)."""
         return dict(self._peers)
 
-    async def own_identity(self) -> RavnIdentity:
+    async def own_identity(self) -> MeshIdentity:
         """Return this Ravn's identity."""
         return self._identity
 
@@ -181,7 +181,7 @@ class StaticDiscoveryAdapter:
             logger.warning("static_discovery: invalid cluster file format (missing 'peers' key)")
             return
 
-        new_peers: dict[str, RavnPeer] = {}
+        new_peers: dict[str, MeshPeer] = {}
         now = datetime.now(UTC)
 
         for entry in data.get("peers", []):
@@ -192,7 +192,7 @@ class StaticDiscoveryAdapter:
             if not peer_id or peer_id == self._identity.peer_id:
                 continue  # Skip self and invalid entries
 
-            peer = RavnPeer(
+            peer = MeshPeer(
                 peer_id=peer_id,
                 realm_id=self._identity.realm_id,  # Assume same realm
                 persona=entry.get("persona", "unknown"),

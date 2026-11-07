@@ -36,8 +36,8 @@ import logging
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
-from ravn.domain.events import RavnEvent
-from ravn.ports.mesh import PeerNotFoundError
+from niuu.mesh.events import MeshEvent
+from niuu.ports.mesh import PeerNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ class CompositeMeshAdapter:
     # MeshPort interface
     # ------------------------------------------------------------------
 
-    async def publish(self, event: RavnEvent, topic: str) -> None:
+    async def publish(self, event: MeshEvent, topic: str) -> None:
         """Broadcast *event* on every transport concurrently.
 
         Raises an ``ExceptionGroup`` when any transport failed, even if others
@@ -101,7 +101,7 @@ class CompositeMeshAdapter:
     async def subscribe(
         self,
         topic: str,
-        handler: Callable[[RavnEvent], Awaitable[None]],
+        handler: Callable[[MeshEvent], Awaitable[None]],
     ) -> None:
         """Register *handler* on every transport."""
         await self._on_every_transport(

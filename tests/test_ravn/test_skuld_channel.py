@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.channels.skuld_channel import SkuldChannel
-from ravn.domain.events import RavnEvent, RavnEventType
 
 _SRC = "ravn-test"
 _CID = "corr-1"
@@ -41,7 +41,7 @@ def _event_of_kind(data: dict, kind: str) -> dict:
 
 def test_serialise_response_event():
     ch = _make_channel()
-    event = RavnEvent.response(_SRC, "Hello!", _CID, _SID)
+    event = MeshEvent.response(_SRC, "Hello!", _CID, _SID)
     line = ch._serialise(event)
     data = json.loads(line.strip())
     assert data["type"] == "collaboration.events"
@@ -51,7 +51,7 @@ def test_serialise_response_event():
 
 def test_serialise_tool_start_event():
     ch = _make_channel()
-    event = RavnEvent.tool_start(_SRC, "BashTool", {"command": "ls"}, _CID, _SID)
+    event = MeshEvent.tool_start(_SRC, "BashTool", {"command": "ls"}, _CID, _SID)
     line = ch._serialise(event)
     data = json.loads(line.strip())
     assert data["type"] == "collaboration.events"
@@ -62,7 +62,7 @@ def test_serialise_tool_start_event():
 
 def test_serialise_error_event():
     ch = _make_channel()
-    event = RavnEvent.error(_SRC, "boom", _CID, _SID)
+    event = MeshEvent.error(_SRC, "boom", _CID, _SID)
     line = ch._serialise(event)
     data = json.loads(line.strip())
     message = _event_of_kind(data, "message")
@@ -72,7 +72,7 @@ def test_serialise_error_event():
 
 def test_serialise_thought_event():
     ch = _make_channel()
-    event = RavnEvent.thought(_SRC, "thinking...", _CID, _SID)
+    event = MeshEvent.thought(_SRC, "thinking...", _CID, _SID)
     line = ch._serialise(event)
     data = json.loads(line.strip())
     assert _event_of_kind(data, "activity")["detail"] == "thinking..."
@@ -81,7 +81,7 @@ def test_serialise_thought_event():
 
 def test_serialise_thinking_event():
     ch = _make_channel()
-    event = RavnEvent.thinking(_SRC, "deep thought", _CID, _SID)
+    event = MeshEvent.thinking(_SRC, "deep thought", _CID, _SID)
     line = ch._serialise(event)
     data = json.loads(line.strip())
     assert _event_of_kind(data, "activity")["detail"] == "deep thought"
@@ -90,7 +90,7 @@ def test_serialise_thinking_event():
 
 def test_serialise_tool_result_event():
     ch = _make_channel()
-    event = RavnEvent.tool_result(_SRC, "echo", "output", _CID, _SID)
+    event = MeshEvent.tool_result(_SRC, "echo", "output", _CID, _SID)
     line = ch._serialise(event)
     data = json.loads(line.strip())
     agent_event = _event_of_kind(data, "agent_event")["event"]
@@ -101,7 +101,7 @@ def test_serialise_tool_result_event():
 
 def test_serialise_tool_start_with_diff():
     ch = _make_channel()
-    event = RavnEvent.tool_start(_SRC, "Edit", {"file": "a.py"}, _CID, _SID, diff="- old\n+ new")
+    event = MeshEvent.tool_start(_SRC, "Edit", {"file": "a.py"}, _CID, _SID, diff="- old\n+ new")
     line = ch._serialise(event)
     data = json.loads(line.strip())
     agent_event = _event_of_kind(data, "agent_event")["event"]
@@ -110,14 +110,14 @@ def test_serialise_tool_start_with_diff():
 
 def test_serialise_ends_with_newline():
     ch = _make_channel()
-    line = ch._serialise(RavnEvent.response(_SRC, "hi", _CID, _SID))
+    line = ch._serialise(MeshEvent.response(_SRC, "hi", _CID, _SID))
     assert line.endswith("\n")
 
 
 def test_serialise_outcome_includes_task_id_from_payload_or_event() -> None:
     ch = _make_channel()
-    event = RavnEvent(
-        type=RavnEventType.OUTCOME,
+    event = MeshEvent(
+        type=MeshEventType.OUTCOME,
         source=_SRC,
         payload={"event_type": "review.completed", "task_id": "payload-task"},
         timestamp=datetime.now(UTC),
@@ -134,8 +134,8 @@ def test_serialise_outcome_includes_task_id_from_payload_or_event() -> None:
 
 def test_serialise_outcome_prefers_event_task_id() -> None:
     ch = _make_channel()
-    event = RavnEvent(
-        type=RavnEventType.OUTCOME,
+    event = MeshEvent(
+        type=MeshEventType.OUTCOME,
         source=_SRC,
         payload={"event_type": "review.completed", "task_id": "payload-task"},
         timestamp=datetime.now(UTC),
@@ -151,7 +151,7 @@ def test_serialise_outcome_prefers_event_task_id() -> None:
 
 def test_serialise_preserves_trace_context() -> None:
     ch = _make_channel()
-    event = RavnEvent.help_needed(
+    event = MeshEvent.help_needed(
         source=_SRC,
         persona="ivaldi",
         summary="Operator input required",
@@ -180,7 +180,7 @@ async def test_emit_sends_serialised_payload():
     mock_ws.closed = False
     ch._ws = mock_ws
 
-    await ch.emit(RavnEvent.response(_SRC, "test response", _CID, _SID))
+    await ch.emit(MeshEvent.response(_SRC, "test response", _CID, _SID))
 
     mock_ws.send.assert_awaited_once()
     sent = mock_ws.send.call_args[0][0]
@@ -198,10 +198,10 @@ async def test_emit_buffers_event_on_failure():
 
     ch._send = _fail  # type: ignore[method-assign]
 
-    await ch.emit(RavnEvent.thought(_SRC, "thinking", _CID, _SID))
+    await ch.emit(MeshEvent.thought(_SRC, "thinking", _CID, _SID))
 
     assert len(ch._buffer) == 1
-    assert ch._buffer[0].type == RavnEventType.THOUGHT
+    assert ch._buffer[0].type == MeshEventType.THOUGHT
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +212,7 @@ async def test_emit_buffers_event_on_failure():
 @pytest.mark.asyncio
 async def test_flush_buffer_sends_buffered_events():
     ch = _make_channel()
-    ch._buffer = [RavnEvent.response(_SRC, "buffered", _CID, _SID)]
+    ch._buffer = [MeshEvent.response(_SRC, "buffered", _CID, _SID)]
 
     mock_ws = AsyncMock()
     mock_ws.closed = False
@@ -466,7 +466,7 @@ async def test_disconnect_exception_swallowed():
 async def test_flush_buffer_exception_requeues_event():
     """Flush failure requeues the event (covers lines 110-112)."""
     ch = _make_channel()
-    event = RavnEvent.response(_SRC, "buffered", _CID, _SID)
+    event = MeshEvent.response(_SRC, "buffered", _CID, _SID)
     ch._buffer = [event]
 
     async def _fail(payload: str) -> None:
@@ -552,11 +552,11 @@ def test_serialise_task_complete_event():
     """TASK_COMPLETE and other events use the default case (covers lines 192-194)."""
     from datetime import UTC, datetime
 
-    from ravn.domain.events import RavnEvent, RavnEventType
+    from niuu.mesh.events import MeshEvent, MeshEventType
 
     ch = _make_channel()
-    event = RavnEvent(
-        type=RavnEventType.TASK_COMPLETE,
+    event = MeshEvent(
+        type=MeshEventType.TASK_COMPLETE,
         source=_SRC,
         payload={"success": True},
         correlation_id=_CID,
@@ -581,14 +581,14 @@ def test_serialise_includes_source_when_peer_id_provided():
         session_id="sess-1",
         peer_id="ravn-agent-1",
     )
-    line = ch._serialise(RavnEvent.response(_SRC, "Hello", _CID, _SID))
+    line = ch._serialise(MeshEvent.response(_SRC, "Hello", _CID, _SID))
     data = json.loads(line.strip())
     assert data["source"] == "ravn-agent-1"
 
 
 def test_serialise_usage_preserves_structured_payload():
     ch = _make_channel()
-    event = RavnEvent.usage(
+    event = MeshEvent.usage(
         _SRC,
         model="gpt-5.6-sol",
         input_tokens=10,
@@ -613,21 +613,21 @@ def test_serialise_includes_persona_when_provided():
         peer_id="ravn-agent-1",
         persona="Aria",
     )
-    line = ch._serialise(RavnEvent.response(_SRC, "Hello", _CID, _SID))
+    line = ch._serialise(MeshEvent.response(_SRC, "Hello", _CID, _SID))
     data = json.loads(line.strip())
     assert data["persona"] == "Aria"
 
 
 def test_serialise_omits_source_when_peer_id_not_provided():
     ch = _make_channel()  # no peer_id
-    line = ch._serialise(RavnEvent.response(_SRC, "Hello", _CID, _SID))
+    line = ch._serialise(MeshEvent.response(_SRC, "Hello", _CID, _SID))
     data = json.loads(line.strip())
     assert "source" not in data
 
 
 def test_serialise_omits_persona_when_not_provided():
     ch = _make_channel()  # no persona
-    line = ch._serialise(RavnEvent.response(_SRC, "Hello", _CID, _SID))
+    line = ch._serialise(MeshEvent.response(_SRC, "Hello", _CID, _SID))
     data = json.loads(line.strip())
     assert "persona" not in data
 
@@ -639,7 +639,7 @@ def test_serialise_with_peer_id_preserves_existing_fields():
         peer_id="agent-x",
         persona="Ravn",
     )
-    event = RavnEvent.tool_start(_SRC, "BashTool", {"command": "ls"}, _CID, _SID)
+    event = MeshEvent.tool_start(_SRC, "BashTool", {"command": "ls"}, _CID, _SID)
     line = ch._serialise(event)
     data = json.loads(line.strip())
     assert data["type"] == "collaboration.events"

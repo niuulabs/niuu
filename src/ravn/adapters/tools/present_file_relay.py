@@ -30,7 +30,7 @@ from niuu.domain.presented_files import PRESENT_FILE_RPC_TYPE
 from ravn.cap_telemetry import record_cap_hit
 
 if TYPE_CHECKING:
-    from ravn.ports.mesh import MeshPort
+    from niuu.ports.mesh import MeshPort
 
 logger = logging.getLogger(__name__)
 

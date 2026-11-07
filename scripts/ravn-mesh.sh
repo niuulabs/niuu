@@ -103,7 +103,7 @@ llm:
 discovery:
   enabled: true
   adapters:
-    - adapter: ravn.adapters.discovery.static.StaticDiscoveryAdapter
+    - adapter: niuu.adapters.discovery.static.StaticDiscoveryAdapter
       cluster_file: "${CONFIG_DIR}/cluster.yaml"
       poll_interval_s: 10
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from ravn.domain.events import RavnEvent, RavnEventType
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.ports.channel import ChannelPort
 
 
@@ -28,20 +28,20 @@ class CliChannel(ChannelPort):
         self._result_truncation_limit = result_truncation_limit
         self._input_value_limit = input_value_limit
 
-    async def emit(self, event: RavnEvent) -> None:
+    async def emit(self, event: MeshEvent) -> None:
         match event.type:
-            case RavnEventType.THOUGHT:
+            case MeshEventType.THOUGHT:
                 # Stream text deltas inline without a newline.
                 print(event.payload["text"], end="", flush=True, file=self._file)
                 self._in_response = True
 
-            case RavnEventType.RESPONSE:
+            case MeshEventType.RESPONSE:
                 # Final complete response — just print a newline to end the stream.
                 if self._in_response:
                     print(file=self._file)
                     self._in_response = False
 
-            case RavnEventType.TOOL_START:
+            case MeshEventType.TOOL_START:
                 tool_name = event.payload["tool_name"]
                 tool_input = event.payload.get("input", {})
                 diff = event.payload.get("diff")
@@ -58,7 +58,7 @@ class CliChannel(ChannelPort):
                     print(diff.rstrip(), file=self._file)
                     print(separator, file=self._file)
 
-            case RavnEventType.TOOL_RESULT:
+            case MeshEventType.TOOL_RESULT:
                 tool_name = event.payload.get("tool_name", "")
                 is_error = event.payload.get("is_error", False)
                 prefix = "✗" if is_error else "✓"
@@ -68,7 +68,7 @@ class CliChannel(ChannelPort):
                     content = content[: self._result_truncation_limit] + "…"
                 print(f"{prefix} {tool_name}: {content}", file=self._file)
 
-            case RavnEventType.ERROR:
+            case MeshEventType.ERROR:
                 print(f"\n[error] {event.payload['message']}", file=self._file)
 
     def finish(self) -> None:

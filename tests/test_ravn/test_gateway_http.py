@@ -10,10 +10,10 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from niuu.mesh.events import MeshEvent
 from ravn.adapters.channels.gateway import RavnGateway
 from ravn.adapters.channels.gateway_http import ChatRequest, HttpGateway
 from ravn.config import HttpChannelConfig
-from ravn.domain.events import RavnEvent
 
 _SRC = "ravn-test"
 _CID = "corr-1"
@@ -38,9 +38,9 @@ def _make_gateway_mock(response: str = "agent reply") -> RavnGateway:
     gw.session_ids.return_value = ["http:default"]
     gw.get_status.return_value = {"session_count": 1, "active_sessions": ["http:default"]}
 
-    async def handle_stream(session_id: str, message: str) -> AsyncIterator[RavnEvent]:
-        yield RavnEvent.thought(_SRC, "thinking...", _CID, _SID)
-        yield RavnEvent.response(_SRC, response, _CID, _SID)
+    async def handle_stream(session_id: str, message: str) -> AsyncIterator[MeshEvent]:
+        yield MeshEvent.thought(_SRC, "thinking...", _CID, _SID)
+        yield MeshEvent.response(_SRC, response, _CID, _SID)
 
     gw.handle_message_stream = handle_stream
 
@@ -137,9 +137,9 @@ def test_chat_endpoint_default_session_id():
     gw = MagicMock(spec=RavnGateway)
     gw.session_ids.return_value = []
 
-    async def handle_stream(session_id: str, message: str) -> AsyncIterator[RavnEvent]:
+    async def handle_stream(session_id: str, message: str) -> AsyncIterator[MeshEvent]:
         assert session_id == "http:default"
-        yield RavnEvent.response(_SRC, "ok", _CID, _SID)
+        yield MeshEvent.response(_SRC, "ok", _CID, _SID)
 
     gw.handle_message_stream = handle_stream
 
@@ -243,7 +243,7 @@ async def test_broadcast_stream_yields_events_from_queue():
     ht = HttpGateway(_make_http_config(), gw)
 
     # Push one event then the sentinel None.
-    event = RavnEvent.response(_SRC, "broadcast msg", _CID, _SID)
+    event = MeshEvent.response(_SRC, "broadcast msg", _CID, _SID)
     await q.put(event)
     await q.put(None)
 
@@ -311,7 +311,7 @@ async def test_run_starts_and_cancels_cleanly(monkeypatch):
 
 
 def test_ws_endpoint_streams_cli_format_events():
-    """WebSocket /ws returns CLI stream-json events translated from RavnEvents."""
+    """WebSocket /ws returns CLI stream-json events translated from MeshEvents."""
     ht = _make_http_gateway()
     client = TestClient(ht.app)
 
@@ -357,10 +357,10 @@ def test_ws_endpoint_tool_produces_tool_use_block():
     gw = MagicMock(spec=RavnGateway)
     gw.session_ids.return_value = []
 
-    async def handle_stream(session_id: str, message: str) -> AsyncIterator[RavnEvent]:
-        yield RavnEvent.tool_start(_SRC, "Bash", {"command": "ls"}, _CID, _SID)
-        yield RavnEvent.tool_result(_SRC, "Bash", "file.py", _CID, _SID)
-        yield RavnEvent.response(_SRC, "Done", _CID, _SID)
+    async def handle_stream(session_id: str, message: str) -> AsyncIterator[MeshEvent]:
+        yield MeshEvent.tool_start(_SRC, "Bash", {"command": "ls"}, _CID, _SID)
+        yield MeshEvent.tool_result(_SRC, "Bash", "file.py", _CID, _SID)
+        yield MeshEvent.response(_SRC, "Done", _CID, _SID)
 
     gw.handle_message_stream = handle_stream
 

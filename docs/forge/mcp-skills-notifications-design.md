@@ -137,7 +137,7 @@ fails explicitly until it is committed; it must not disappear after a success AC
 
 Reuse the neutral collaboration envelope in `src/niuu/collaboration/models.py`.
 Ravn already projects HELP_NEEDED and OUTCOME in
-`src/ravn/adapters/collaboration/projection.py`; DECISION/TASK_COMPLETE need explicit
+`src/niuu/mesh/projection.py`; DECISION/TASK_COMPLETE need explicit
 mapping. Preserve source/correlation identifiers. Skuld's current
 `_handle_notification` broadcasts `room_notification` directly, unlike the durable
 `_emit_broker_frame` path. Bridge it through persistence; do not create a second

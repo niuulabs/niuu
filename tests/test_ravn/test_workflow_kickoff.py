@@ -25,9 +25,9 @@ from niuu.domain.workflow_kickoff import (
     is_workflow_kickoff_ack_payload,
     is_workflow_kickoff_payload,
 )
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes
 from ravn.config import Settings
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.workflow_kickoff import WorkflowKickoffAcknowledger
 from tests.test_ravn.conftest import _make_drive_loop
 
@@ -38,7 +38,7 @@ def _kickoff_event(
     redelivery: int = 0,
     correlation_id: str = "session-123",
     with_kickoff_id: bool = True,
-) -> RavnEvent:
+) -> MeshEvent:
     payload: dict = {
         "event_type": "code.requested",
         "persona": "skuld",
@@ -48,8 +48,8 @@ def _kickoff_event(
     }
     if with_kickoff_id:
         payload[WORKFLOW_KICKOFF_ID_KEY] = kickoff_id
-    return RavnEvent(
-        type=RavnEventType.OUTCOME,
+    return MeshEvent(
+        type=MeshEventType.OUTCOME,
         source="skuld",
         payload=payload,
         timestamp=datetime.now(UTC),
@@ -99,7 +99,7 @@ class TestWorkflowKickoffAcknowledger:
         mesh.publish.assert_awaited_once()
         ack = mesh.publish.await_args.args[0]
         assert mesh.publish.await_args.kwargs["topic"] == WORKFLOW_KICKOFF_ACK_EVENT_TYPE
-        assert ack.type == RavnEventType.OUTCOME
+        assert ack.type == MeshEventType.OUTCOME
         assert ack.correlation_id == "session-123"
         assert ack.root_correlation_id == "session-123"
         assert ack.payload["event_type"] == WORKFLOW_KICKOFF_ACK_EVENT_TYPE
@@ -212,8 +212,8 @@ async def test_non_kickoff_outcome_is_not_acked(tmp_path):
     dl, handler = _wire_kickoff_handler(mesh, str(tmp_path / "queue.json"))
 
     await handler(
-        RavnEvent(
-            type=RavnEventType.OUTCOME,
+        MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="skuld",
             payload={"event_type": "code.requested", "persona": "skuld"},
             timestamp=datetime.now(UTC),

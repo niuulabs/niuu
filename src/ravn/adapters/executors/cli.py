@@ -18,12 +18,12 @@ from typing import Any
 
 from niuu.adapters.cli import CliTurnRunner
 from niuu.domain.tool import ToolResult
+from niuu.mesh.events import MeshEvent
 from niuu.observability import get_observability
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
 from ravn.adapters.executors.cli_threads import CliThreadStore
 from ravn.domain.checkpoint import InterruptReason
-from ravn.domain.events import RavnEvent
 from ravn.domain.harness_telemetry import HarnessStepTelemetryRecord
 from ravn.domain.models import Episode, Message, Outcome, Session, TokenUsage, ToolCall, TurnResult
 from ravn.domain.notification_channel import current_notification_channel
@@ -530,7 +530,7 @@ class CliTransportAgent(ExecutionAgentPort):
         self._session.record_turn(usage)
 
         await self._channel.emit(
-            RavnEvent.response(
+            MeshEvent.response(
                 source=self._source_id,
                 text=response_text,
                 correlation_id=correlation_id,
@@ -803,7 +803,7 @@ class CliTransportAgent(ExecutionAgentPort):
         if event_type == "error":
             message = str(data.get("content") or data.get("message") or data)
             await self._channel.emit(
-                RavnEvent.error(
+                MeshEvent.error(
                     source=self._source_id,
                     message=message,
                     correlation_id=correlation_id,
@@ -821,7 +821,7 @@ class CliTransportAgent(ExecutionAgentPort):
         if isinstance(text, str) and text:
             self._record_first_output()
             await self._channel.emit(
-                RavnEvent.thought(
+                MeshEvent.thought(
                     source=self._source_id,
                     text=text,
                     correlation_id=correlation_id,
@@ -834,7 +834,7 @@ class CliTransportAgent(ExecutionAgentPort):
         thinking = delta.get("thinking")
         if isinstance(thinking, str) and thinking:
             await self._channel.emit(
-                RavnEvent.thinking(
+                MeshEvent.thinking(
                     source=self._source_id,
                     text=thinking,
                     correlation_id=correlation_id,
@@ -852,7 +852,7 @@ class CliTransportAgent(ExecutionAgentPort):
         if isinstance(content, str) and content:
             self._record_first_output()
             await self._channel.emit(
-                RavnEvent.thought(
+                MeshEvent.thought(
                     source=self._source_id,
                     text=content,
                     correlation_id=correlation_id,
@@ -892,7 +892,7 @@ class CliTransportAgent(ExecutionAgentPort):
         if not is_error:
             await self._join_launched_workflow_session(tool_name, result)
         await self._channel.emit(
-            RavnEvent.tool_result(
+            MeshEvent.tool_result(
                 source=self._source_id,
                 tool_name=tool_name,
                 result=result,
@@ -942,7 +942,7 @@ class CliTransportAgent(ExecutionAgentPort):
             if isinstance(text, str) and text:
                 self._record_first_output()
                 await self._channel.emit(
-                    RavnEvent.thought(
+                    MeshEvent.thought(
                         source=self._source_id,
                         text=text,
                         correlation_id=correlation_id,
@@ -978,7 +978,7 @@ class CliTransportAgent(ExecutionAgentPort):
                 description="Explicit cross-process and restart trace boundaries.",
             )
         await self._channel.emit(
-            RavnEvent.tool_start(
+            MeshEvent.tool_start(
                 source=self._source_id,
                 tool_name=tool_name,
                 tool_input=normalized_input,

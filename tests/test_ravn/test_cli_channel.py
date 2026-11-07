@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import io
 
+from niuu.mesh.events import MeshEvent
 from ravn.adapters.cli_channel import CliChannel, _format_input
-from ravn.domain.events import RavnEvent
 
 _SRC = "ravn-test"
 _CID = "corr-1"
@@ -20,40 +20,40 @@ def make_channel() -> tuple[CliChannel, io.StringIO]:
 class TestCliChannel:
     async def test_thought_emitted_inline(self) -> None:
         ch, buf = make_channel()
-        await ch.emit(RavnEvent.thought(_SRC, "hello ", _CID, _SID))
-        await ch.emit(RavnEvent.thought(_SRC, "world", _CID, _SID))
+        await ch.emit(MeshEvent.thought(_SRC, "hello ", _CID, _SID))
+        await ch.emit(MeshEvent.thought(_SRC, "world", _CID, _SID))
         output = buf.getvalue()
         assert "hello world" in output
 
     async def test_response_adds_newline(self) -> None:
         ch, buf = make_channel()
-        await ch.emit(RavnEvent.thought(_SRC, "text", _CID, _SID))
-        await ch.emit(RavnEvent.response(_SRC, "text", _CID, _SID))
+        await ch.emit(MeshEvent.thought(_SRC, "text", _CID, _SID))
+        await ch.emit(MeshEvent.response(_SRC, "text", _CID, _SID))
         output = buf.getvalue()
         assert output.endswith("\n")
 
     async def test_tool_start_printed(self) -> None:
         ch, buf = make_channel()
-        await ch.emit(RavnEvent.tool_start(_SRC, "echo", {"message": "hi"}, _CID, _SID))
+        await ch.emit(MeshEvent.tool_start(_SRC, "echo", {"message": "hi"}, _CID, _SID))
         output = buf.getvalue()
         assert "echo" in output
 
     async def test_tool_result_success(self) -> None:
         ch, buf = make_channel()
-        await ch.emit(RavnEvent.tool_result(_SRC, "echo", "pong", _CID, _SID))
+        await ch.emit(MeshEvent.tool_result(_SRC, "echo", "pong", _CID, _SID))
         output = buf.getvalue()
         assert "\u2713" in output
         assert "pong" in output
 
     async def test_tool_result_error(self) -> None:
         ch, buf = make_channel()
-        await ch.emit(RavnEvent.tool_result(_SRC, "fail", "boom", _CID, _SID, is_error=True))
+        await ch.emit(MeshEvent.tool_result(_SRC, "fail", "boom", _CID, _SID, is_error=True))
         output = buf.getvalue()
         assert "\u2717" in output
 
     async def test_error_event(self) -> None:
         ch, buf = make_channel()
-        await ch.emit(RavnEvent.error(_SRC, "bad thing", _CID, _SID))
+        await ch.emit(MeshEvent.error(_SRC, "bad thing", _CID, _SID))
         output = buf.getvalue()
         assert "bad thing" in output
         assert "error" in output
@@ -61,7 +61,7 @@ class TestCliChannel:
     async def test_long_tool_result_truncated(self) -> None:
         ch, buf = make_channel()
         long_content = "x" * 600
-        await ch.emit(RavnEvent.tool_result(_SRC, "tool", long_content, _CID, _SID))
+        await ch.emit(MeshEvent.tool_result(_SRC, "tool", long_content, _CID, _SID))
         output = buf.getvalue()
         assert "\u2026" in output
         assert len(output) < 600
@@ -80,8 +80,8 @@ class TestCliChannel:
 
     async def test_tool_start_after_thought_adds_newline(self) -> None:
         ch, buf = make_channel()
-        await ch.emit(RavnEvent.thought(_SRC, "thinking", _CID, _SID))
-        await ch.emit(RavnEvent.tool_start(_SRC, "echo", {}, _CID, _SID))
+        await ch.emit(MeshEvent.thought(_SRC, "thinking", _CID, _SID))
+        await ch.emit(MeshEvent.tool_start(_SRC, "echo", {}, _CID, _SID))
         output = buf.getvalue()
         assert "thinking" in output
         assert "echo" in output
@@ -89,7 +89,7 @@ class TestCliChannel:
     async def test_custom_result_truncation_limit(self) -> None:
         buf = io.StringIO()
         ch = CliChannel(file=buf, result_truncation_limit=10)
-        await ch.emit(RavnEvent.tool_result(_SRC, "tool", "x" * 20, _CID, _SID))
+        await ch.emit(MeshEvent.tool_result(_SRC, "tool", "x" * 20, _CID, _SID))
         output = buf.getvalue()
         assert "\u2026" in output
         assert len(output) < 30
@@ -97,7 +97,7 @@ class TestCliChannel:
     async def test_custom_input_value_limit(self) -> None:
         buf = io.StringIO()
         ch = CliChannel(file=buf, input_value_limit=5)
-        await ch.emit(RavnEvent.tool_start(_SRC, "t", {"k": "v" * 10}, _CID, _SID))
+        await ch.emit(MeshEvent.tool_start(_SRC, "t", {"k": "v" * 10}, _CID, _SID))
         output = buf.getvalue()
         assert "\u2026" in output
 

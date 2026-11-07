@@ -7,7 +7,7 @@ Why it exists
 -------------
 The OpenClaw adapter's ``TurnTranslator`` has to map Ravn's event frames onto
 OpenClaw chat blocks. Those frame shapes were originally read out of
-``ravn.domain.events`` rather than observed, which means the tool and thinking
+``niuu.mesh.events`` rather than observed, which means the tool and thinking
 paths were written against a guess. This tool records what the gateway
 *actually* emits so the translator can be tested against real bytes.
 

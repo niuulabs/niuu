@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from ravn.domain.events import RavnEvent
+from niuu.mesh.events import MeshEvent
 from ravn.ports.event_publisher import EventPublisherPort
 
 
 class NoOpEventPublisher(EventPublisherPort):
     """Silently discards all events. Default when Sleipnir is not configured."""
 
-    async def publish(self, event: RavnEvent) -> None:
+    async def publish(self, event: MeshEvent) -> None:
         pass

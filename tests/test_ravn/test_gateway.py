@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from niuu.mesh.events import MeshEvent, MeshEventType
 from ravn.adapters.channels.gateway import (
     AgentFactory,
     GatewayChannel,
@@ -14,7 +15,6 @@ from ravn.adapters.channels.gateway import (
     RavnGateway,
 )
 from ravn.config import GatewayConfig
-from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.ports.channel import ChannelPort
 
 _SRC = "ravn-test"
@@ -37,7 +37,7 @@ def _make_agent_factory(response: str = "Hello from agent") -> AgentFactory:
         agent = MagicMock()
 
         async def run_turn(text: str):
-            await channel.emit(RavnEvent.response(_SRC, response, _CID, _SID))
+            await channel.emit(MeshEvent.response(_SRC, response, _CID, _SID))
 
         agent.run_turn = run_turn
         return agent
@@ -52,8 +52,8 @@ def _make_agent_factory_with_thought(thought: str, response: str) -> AgentFactor
         agent = MagicMock()
 
         async def run_turn(text: str):
-            await channel.emit(RavnEvent.thought(_SRC, thought, _CID, _SID))
-            await channel.emit(RavnEvent.response(_SRC, response, _CID, _SID))
+            await channel.emit(MeshEvent.thought(_SRC, thought, _CID, _SID))
+            await channel.emit(MeshEvent.response(_SRC, response, _CID, _SID))
 
         agent.run_turn = run_turn
         return agent
@@ -68,7 +68,7 @@ def _make_agent_factory_error(error_msg: str) -> AgentFactory:
         agent = MagicMock()
 
         async def run_turn(text: str):
-            await channel.emit(RavnEvent.error(_SRC, error_msg, _CID, _SID))
+            await channel.emit(MeshEvent.error(_SRC, error_msg, _CID, _SID))
 
         agent.run_turn = run_turn
         return agent
@@ -84,7 +84,7 @@ def _make_agent_factory_error(error_msg: str) -> AgentFactory:
 @pytest.mark.asyncio
 async def test_gateway_channel_emit_and_collect_response():
     ch = GatewayChannel()
-    await ch.emit(RavnEvent.response(_SRC, "Hello!", _CID, _SID))
+    await ch.emit(MeshEvent.response(_SRC, "Hello!", _CID, _SID))
 
     result = await ch.collect_response()
     assert result == "Hello!"
@@ -93,7 +93,7 @@ async def test_gateway_channel_emit_and_collect_response():
 @pytest.mark.asyncio
 async def test_gateway_channel_collect_response_on_error():
     ch = GatewayChannel()
-    await ch.emit(RavnEvent.error(_SRC, "boom", _CID, _SID))
+    await ch.emit(MeshEvent.error(_SRC, "boom", _CID, _SID))
 
     result = await ch.collect_response()
     assert result == "[error] boom"
@@ -112,8 +112,8 @@ async def test_gateway_channel_collect_response_sentinel():
 async def test_gateway_channel_collect_response_skips_thought():
     """THOUGHT events are consumed but the RESPONSE data is used as the final answer."""
     ch = GatewayChannel()
-    await ch.emit(RavnEvent.thought(_SRC, "thinking...", _CID, _SID))
-    await ch.emit(RavnEvent.response(_SRC, "Final answer", _CID, _SID))
+    await ch.emit(MeshEvent.thought(_SRC, "thinking...", _CID, _SID))
+    await ch.emit(MeshEvent.response(_SRC, "Final answer", _CID, _SID))
 
     result = await ch.collect_response()
     assert result == "Final answer"
@@ -122,41 +122,41 @@ async def test_gateway_channel_collect_response_skips_thought():
 @pytest.mark.asyncio
 async def test_gateway_channel_stream_yields_events_until_response():
     ch = GatewayChannel()
-    await ch.emit(RavnEvent.thought(_SRC, "step 1", _CID, _SID))
-    await ch.emit(RavnEvent.thought(_SRC, "step 2", _CID, _SID))
-    await ch.emit(RavnEvent.response(_SRC, "Done", _CID, _SID))
+    await ch.emit(MeshEvent.thought(_SRC, "step 1", _CID, _SID))
+    await ch.emit(MeshEvent.thought(_SRC, "step 2", _CID, _SID))
+    await ch.emit(MeshEvent.response(_SRC, "Done", _CID, _SID))
 
-    events: list[RavnEvent] = []
+    events: list[MeshEvent] = []
     async for event in ch.stream():
         events.append(event)
 
     assert len(events) == 3
-    assert events[0].type == RavnEventType.THOUGHT
-    assert events[1].type == RavnEventType.THOUGHT
-    assert events[2].type == RavnEventType.RESPONSE
+    assert events[0].type == MeshEventType.THOUGHT
+    assert events[1].type == MeshEventType.THOUGHT
+    assert events[2].type == MeshEventType.RESPONSE
 
 
 @pytest.mark.asyncio
 async def test_gateway_channel_stream_stops_on_error():
     ch = GatewayChannel()
-    await ch.emit(RavnEvent.error(_SRC, "oops", _CID, _SID))
-    await ch.emit(RavnEvent.thought(_SRC, "should not appear", _CID, _SID))
+    await ch.emit(MeshEvent.error(_SRC, "oops", _CID, _SID))
+    await ch.emit(MeshEvent.thought(_SRC, "should not appear", _CID, _SID))
 
-    events: list[RavnEvent] = []
+    events: list[MeshEvent] = []
     async for event in ch.stream():
         events.append(event)
 
     assert len(events) == 1
-    assert events[0].type == RavnEventType.ERROR
+    assert events[0].type == MeshEventType.ERROR
 
 
 @pytest.mark.asyncio
 async def test_gateway_channel_stream_stops_on_sentinel():
     ch = GatewayChannel()
-    await ch.emit(RavnEvent.thought(_SRC, "t", _CID, _SID))
+    await ch.emit(MeshEvent.thought(_SRC, "t", _CID, _SID))
     await ch.signal_done()
 
-    events: list[RavnEvent] = []
+    events: list[MeshEvent] = []
     async for event in ch.stream():
         events.append(event)
 
@@ -165,13 +165,13 @@ async def test_gateway_channel_stream_stops_on_sentinel():
 
 @pytest.mark.asyncio
 async def test_gateway_channel_broadcast_callback_called():
-    received: list[RavnEvent] = []
+    received: list[MeshEvent] = []
 
-    async def cb(event: RavnEvent) -> None:
+    async def cb(event: MeshEvent) -> None:
         received.append(event)
 
     ch = GatewayChannel(broadcast_cb=cb)
-    evt = RavnEvent.response(_SRC, "hi", _CID, _SID)
+    evt = MeshEvent.response(_SRC, "hi", _CID, _SID)
     await ch.emit(evt)
 
     assert received == [evt]
@@ -181,7 +181,7 @@ async def test_gateway_channel_broadcast_callback_called():
 async def test_gateway_channel_no_broadcast_callback():
     """Channel without callback must not raise."""
     ch = GatewayChannel()
-    await ch.emit(RavnEvent.response(_SRC, "ok", _CID, _SID))
+    await ch.emit(MeshEvent.response(_SRC, "ok", _CID, _SID))
     result = await ch.collect_response()
     assert result == "ok"
 
@@ -253,7 +253,7 @@ async def test_gateway_handle_message_serialises_concurrent_calls():
         async def run_turn(text: str):
             order.append(f"start:{text}")
             await asyncio.sleep(0)
-            await channel.emit(RavnEvent.response(_SRC, f"resp:{text}", _CID, _SID))
+            await channel.emit(MeshEvent.response(_SRC, f"resp:{text}", _CID, _SID))
             order.append(f"end:{text}")
 
         agent.run_turn = run_turn
@@ -281,13 +281,13 @@ async def test_gateway_handle_message_stream_yields_events():
         _make_config(),
         _make_agent_factory_with_thought("t", "r"),
     )
-    events: list[RavnEvent] = []
+    events: list[MeshEvent] = []
     async for event in gw.handle_message_stream("s1", "go"):
         events.append(event)
 
     types = [e.type for e in events]
-    assert RavnEventType.THOUGHT in types
-    assert RavnEventType.RESPONSE in types
+    assert MeshEventType.THOUGHT in types
+    assert MeshEventType.RESPONSE in types
 
 
 # ---------------------------------------------------------------------------

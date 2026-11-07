@@ -1,7 +1,7 @@
 """Transport-neutral Sleipnir flock discovery tests."""
 
+from niuu.adapters.discovery.event_bus import EventBusDiscoveryAdapter
 from niuu.mesh.identity import MeshIdentity
-from ravn.adapters.discovery.event_bus import EventBusDiscoveryAdapter
 from sleipnir.adapters.in_process import InProcessBus
 
 

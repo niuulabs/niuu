@@ -1231,7 +1231,7 @@ class LocalProcessPodManager(PodManager):
             env["SKULD__MESH__ADAPTERS"] = json.dumps(
                 [
                     {
-                        "adapter": "ravn.adapters.discovery.static.StaticDiscoveryAdapter",
+                        "adapter": "niuu.adapters.discovery.static.StaticDiscoveryAdapter",
                         "cluster_file": cluster_file,
                         "poll_interval_s": 5,
                     }
