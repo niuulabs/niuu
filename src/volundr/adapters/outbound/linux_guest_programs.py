@@ -29,7 +29,8 @@ IMAGE_CACHE = "/var/lib/niuu/host-images"
 #: description (``host.json``): digest, config (env, user, workdir, entrypoint, cmd) and,
 #: for the session image, its relocatable Python.
 IMAGE = r"""
-import hashlib, json, os, pathlib, platform, re, shlex, shutil, subprocess, sys, tarfile
+import atexit, hashlib, json, os, pathlib, platform, re, shlex, shutil, subprocess, sys
+import tarfile
 import tempfile
 reference, cache, session = sys.argv[1], pathlib.Path(sys.argv[2]), json.loads(sys.argv[3])
 if not hasattr(tarfile, 'tar_filter'):
@@ -59,6 +60,8 @@ else:
 cache.mkdir(parents=True, exist_ok=True)
 os.chmod(str(cache), 0o755)
 work = pathlib.Path(tempfile.mkdtemp(dir=str(cache), prefix='.fetch-'))
+# Whatever fails, nothing half-fetched stays (a finished unpack has moved it in place).
+atexit.register(shutil.rmtree, str(work), True)
 token = ['']
 INDEX = ('application/vnd.oci.image.index.v1+json',
     'application/vnd.docker.distribution.manifest.list.v2+json')

@@ -723,7 +723,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 )
             ),
         ]
-        payload = json.dumps(launch)
+        payload = json.dumps(self._shape_launch(session, launch))
         return machine.model_copy(
             update={
                 "files": (
@@ -733,6 +733,15 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 )
             }
         )
+
+    def _shape_launch(self, session: Session, launch: dict) -> dict:
+        """The launch payload as this runtime runs it; checks or changes it before it is stored.
+
+        A container session runs the payload as built. A runtime that runs the session
+        on the machine itself gives it the machine's environment, or refuses what it
+        cannot run, before anything is kept.
+        """
+        return launch
 
     def machine_bootstrap(self, defaults: MachineBootstrap) -> MachineBootstrap:
         if any(
@@ -1090,32 +1099,31 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             "SKULD__PREVIEW__ROUTER_AUTH": json.dumps(self._preview_router_auth),
         }
 
-    async def target(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> SessionProxyTarget:
-        layout = self._layout(lease)
+    def _tunnel_ends(self, layout) -> dict:
+        """Where the broker listens and where its callbacks to Forge arrive, on the guest."""
         if layout is None:
-            target = await self._guest_access.open_tunnel(
-                lease,
-                bootstrap,
-                remote_port=self._broker_port,
-                reverse_bind_host=self._guest_platform_bind_host,
-                reverse_port=self._guest_platform_port,
-                controller_host=self._platform_host,
-                controller_port=self._platform_port,
-            )
-        else:
-            # The slot's broker listens on the slot's address; its callbacks reach
-            # the slot's own loopback port, where its gateway forwards them.
-            target = await self._guest_access.open_tunnel(
-                lease,
-                bootstrap,
-                remote_port=self._broker_port,
-                remote_host=layout.address,
-                reverse_bind_host="127.0.0.1",
-                reverse_port=layout.platform_forward_port,
-                controller_host=self._platform_host,
-                controller_port=self._platform_port,
-                key=layout.key,
-            )
+            return {
+                "reverse_bind_host": self._guest_platform_bind_host,
+                "reverse_port": self._guest_platform_port,
+            }
+        # The slot's broker listens on the slot's address; its callbacks reach the slot's
+        # own loopback port, where its gateway forwards them.
+        return {
+            "remote_host": layout.address,
+            "reverse_bind_host": "127.0.0.1",
+            "reverse_port": layout.platform_forward_port,
+            "key": layout.key,
+        }
+
+    async def target(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> SessionProxyTarget:
+        target = await self._guest_access.open_tunnel(
+            lease,
+            bootstrap,
+            remote_port=self._broker_port,
+            controller_host=self._platform_host,
+            controller_port=self._platform_port,
+            **self._tunnel_ends(self._layout(lease)),
+        )
         await self._resume_delivery(lease, bootstrap)
         return target
 
@@ -1195,8 +1203,12 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             if grants is not None:
                 payload["environment"][FORGE_MCP_GRANTS_ENV] = ",".join(grants)
         if layout is not None:
-            payload = layout.launch(payload, platform_port=self._guest_platform_port)
+            payload = self._place_launch(layout, payload)
         await self._launch_skuld(lease, bootstrap, payload)
+
+    def _place_launch(self, layout, payload: dict) -> dict:
+        """The launch payload placed in the session's slot."""
+        return layout.launch(payload, platform_port=self._guest_platform_port)
 
     async def _launch_skuld(
         self, lease: SlotLease, bootstrap: MachineBootstrap, payload: dict
@@ -1261,8 +1273,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             return False
         return response.status_code == 200
 
-    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
-        layout = self._layout(lease)
+    async def _stop_session(self, lease: SlotLease, bootstrap: MachineBootstrap, layout) -> int:
+        """Stop Skuld, then its agents; the exit code is 42 when storage was never prepared."""
         arguments = [str(lease.id), str(self._stop_timeout)]
         if layout is not None:
             arguments.append(json.dumps(layout.stop_spec()))
@@ -1272,15 +1284,21 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             self._python(_STOP, *arguments),
             expected_exit_codes=(0, 42),
         )
+        return result.exit_code
+
+    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
+        layout = self._layout(lease)
+        exit_code = await self._stop_session(lease, bootstrap, layout)
         if self._credential_delivery is not None:
             await self._credential_delivery.stop(lease, bootstrap)
         # Exit 42: cancelled before storage restore; retain any previous local archive.
-        if result.exit_code != 42:
+        if exit_code != 42:
             await self._archive_data(lease, bootstrap)
         if layout is not None:
             # Archived: the slot's user, directories, namespaces and cgroup go,
             # and the supervisor fails unless nothing of them is left.
-            await self._report_slot_limits(lease, bootstrap, layout)
+            if isinstance(layout, SlotLayout):
+                await self._report_slot_limits(lease, bootstrap, layout)
             await self._supervise(lease, bootstrap, layout, "down")
         await self._close_tunnel(layout.key if layout else str(lease.id))
 
@@ -1369,3 +1387,65 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
     async def close(self) -> None:
         if self._owns_guest_access:
             await self._guest_access.close()
+
+
+class HostModeRuntime(SshContainerVmRuntime):
+    """A session that runs on the machine itself as its slot's user, with no session container.
+
+    What every host-mode runtime shares (Linux slots, Macs): no root daemon on the
+    machine, reuse of a slot once it is proven clean (``recycle`` runs the registered-host
+    audit ``_audit_program`` for that slot), the session's absolute links restored as it
+    left them (Nix makes its profiles that way), the ``nix`` flag (the host recipe
+    installs a multi-user Nix; a session is refused when the daemon is missing) and how
+    long the session may take to start.
+    """
+
+    #: The registered-host audit of this runtime's platform (``host_checks``).
+    _audit_program: str = ""
+
+    def __init__(
+        self, *, nix: bool = True, session_start_timeout_seconds: float = 30, **kwargs
+    ) -> None:
+        if session_start_timeout_seconds <= 0:
+            raise ValueError("session_start_timeout_seconds must be positive")
+        super().__init__(**kwargs)
+        self._nix = nix
+        self._session_start_timeout = session_start_timeout_seconds
+
+    @classmethod
+    def _release_image(
+        cls, own: str | None, released: str | None, *, kwarg: str, setting: str
+    ) -> str:
+        """The image a runtime runs: its own ``kwarg``, or the release's; never both, or none."""
+        if released and own:
+            raise ValueError(
+                f"{kwarg} is set and Forge hands this runtime the release's session image "
+                f"too; remove {kwarg} to run the release's"
+            )
+        image = released or own
+        if not image:
+            raise ValueError(
+                f"{cls.__name__} needs a session image: set {kwarg}, or {setting} for the "
+                "built-in host execution"
+            )
+        return image
+
+    @property
+    def session_runtime(self) -> SessionRuntimeKind | None:
+        return SessionRuntimeKind.HOST
+
+    @property
+    def requires_root_daemon(self) -> bool:
+        return False
+
+    @property
+    def supports_reuse(self) -> bool:
+        """``stop`` removes the slot and proves it gone; ``recycle`` audits it again."""
+        return True
+
+    async def recycle(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
+        """Prove the slot ``stop`` removed is clean before it takes another session."""
+        await self._audit_slot(lease, bootstrap, self._audit_program, slot_index(lease))
+
+    def _prepare_arguments(self, lease: SlotLease, mode: str) -> tuple[str, ...]:
+        return (*super()._prepare_arguments(lease, mode), "absolute-links")

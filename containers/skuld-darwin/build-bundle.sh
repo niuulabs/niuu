@@ -10,7 +10,7 @@
 #   node/        Node.js, for the npm CLIs
 #   tools/       the agent CLIs from containers/skuld/npm-tools (package-lock integrity)
 #   bin/         the agent CLIs; fallback/ uv and node; libexec/ Skuld, its Python, bao
-#   bundle.json  what is in it, read by the darwin host runtime
+#   bundle.json  its format and platform, which the darwin install checks
 #
 # Every download is pinned by version and SHA-256; npm and uv verify the lockfiles' hashes.
 # Nothing auto-updates. The versions follow the Linux Skuld and OpenShell images; bump
@@ -102,7 +102,7 @@ chmod 0755 "$B/bin/muse"
 # Wrappers: each finds the bundle from its own path, so the bundle runs wherever it is
 # unpacked, and never picks an interpreter from the Mac's PATH. bin/ holds the agent CLIs
 # (first on a session's PATH), fallback/ the tools Nix or the Mac may provide instead (last
-# on it), and libexec/ what only Forge's own programs run: Skuld, its Python, OpenBao.
+# on it), and libexec/ what only Forge's own programs run: the Python Skuld runs on, OpenBao.
 mkdir -p "$B/fallback" "$B/libexec"
 wrapper() {  # directory, name, command line
   {
@@ -117,8 +117,10 @@ mv "$B/bin/bao" "$B/libexec/"
 for name in python python3; do
   wrapper libexec "$name" 'PYTHONPATH="$here/site${PYTHONPATH:+:$PYTHONPATH}" exec "$here/python/bin/python3" "$@"'
 done
-wrapper libexec skuld 'PYTHONPATH="$here/site" exec "$here/python/bin/python3" -m skuld "$@"'
-for agent in claude codex opencode grok pi; do
+# The agent CLIs a host session runs (host_session_programs, the list both host runtimes
+# put first on a session's PATH); muse is a download of its own, above.
+AGENTS=$("$B/libexec/python" -c 'from volundr.adapters.outbound.host_session_programs import AGENT_COMMANDS; print(" ".join(a for a in AGENT_COMMANDS if a != "muse"))')
+for agent in $AGENTS; do
   [ -e "$B/tools/node_modules/.bin/$agent" ] || { echo "the npm tools give no $agent" >&2; exit 1; }
   wrapper bin "$agent" "PATH=\"\$here/node/bin:\$PATH\" exec \"\$here/tools/node_modules/.bin/$agent\" \"\$@\""
 done
@@ -127,30 +129,15 @@ for tool in node npm npx; do
 done
 
 # Every advertised command runs here, as the Linux image's build checks.
-for command in bin/claude bin/codex bin/opencode bin/grok bin/pi bin/muse libexec/bao \
+for command in $(for a in $AGENTS muse; do echo "bin/$a"; done) libexec/bao \
     fallback/uv fallback/node; do
   "$B/$command" --version >/dev/null || { echo "$command does not run" >&2; exit 1; }
 done
 "$B/libexec/python" -c 'import skuld.broker, volundr.guest_agent'
 
+# What the darwin runtime's install checks before it unpacks the bundle on a Mac.
 SOURCE=$(git -C "$ROOT" rev-parse HEAD)
-"$PYTHON" - "$B/bundle.json" "$SOURCE" "$PYTHON_VERSION" "$NODE_VERSION" "$BAO_VERSION" <<'EOF'
-import json, sys
-path, source, python, node, bao = sys.argv[1:]
-json.dump({
-    "format": 1,
-    "platform": "darwin-arm64",
-    "source": source,
-    "python": python,
-    "node": node,
-    "bao": bao,
-    # Where things are; the darwin host runtime puts bin/ first and fallback/ last on a
-    # session's PATH, and libexec/ only on the PATH of Forge's own agents.
-    "bin": ["claude", "codex", "opencode", "grok", "pi", "muse"],
-    "fallback": ["uv", "uvx", "node", "npm", "npx"],
-    "libexec": ["skuld", "python", "python3", "bao"],
-}, open(path, "w"), indent=2)
-EOF
+"$PYTHON" -c 'import json, sys; json.dump({"format": 1, "platform": "darwin-arm64", "source": sys.argv[2]}, open(sys.argv[1], "w"), indent=2)' "$B/bundle.json" "$SOURCE"
 
 # A stable archive: sorted, no owners or times of this machine.
 find "$B" -exec touch -h -t 202601010000 {} +

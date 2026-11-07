@@ -38,15 +38,14 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from uuid import UUID
 
 from volundr.adapters.outbound import darwin_guest_programs as programs
 from volundr.adapters.outbound.host_checks import DARWIN_AUDIT_SH
+from volundr.adapters.outbound.host_session_programs import SESSION_BOOT
 from volundr.adapters.outbound.ssh_guest_access import SshGuestAccess
-from volundr.adapters.outbound.ssh_vm_runtime import SshContainerVmRuntime
+from volundr.adapters.outbound.ssh_vm_runtime import HostModeRuntime
 from volundr.adapters.outbound.vm_slot_layout import (
     FORGE_SESSION_DIRECTORY,
     GUEST_AGENT_DIRECTORY,
@@ -54,18 +53,18 @@ from volundr.adapters.outbound.vm_slot_layout import (
     SESSION_LAUNCH,
     SESSION_RUNTIME,
     SESSION_SECRETS,
-    SLOT_DATA_BASE,
+    SlotPlace,
     slot_index,
 )
-from volundr.domain.compute import AllocationRef, BootstrapFile, MachineBootstrap, SlotLease
+from volundr.adapters.outbound.vm_slot_supervisor import DETAIL_PREFIX, STAGE_PREFIX
+from volundr.domain.compute import AllocationRef, MachineBootstrap, SlotLease
 from volundr.domain.compute_hosts import HostPlatform
-from volundr.domain.models import Session, SessionSpec
-from volundr.domain.session_runtimes import SessionRuntimeKind
+from volundr.domain.models import Session
 from volundr.domain.vm_runtime import SessionImages, SlotLimits
 
 #: Where bundles are unpacked on the Mac, one directory per digest.
 BUNDLE_CACHE = "/var/lib/niuu/host-bundles"
-#: The bundle's layer in its OCI artifact (the ``darwin-bundle`` jobs of ``.github/workflows/dev.yaml``).
+#: The bundle's layer in its OCI artifact (the ``darwin-bundle`` jobs of the Dev workflow).
 BUNDLE_MEDIA_TYPE = "application/vnd.niuu.skuld-darwin.bundle.v1.tar+gzip"
 #: Root-owned per slot: what root and Forge's agents write for the session.
 SLOT_RUNTIME_BASE = "/var/run/niuu/slots"
@@ -113,12 +112,10 @@ def translate(text: str, places: dict[str, str]) -> str:
     return pattern.sub(lambda match: places[match.group(1)], text)
 
 
-@dataclass(frozen=True)
-class DarwinSlotLayout:
+@dataclass(frozen=True, kw_only=True)
+class DarwinSlotLayout(SlotPlace):
     """The one slot of a Mac, at the paths the darwin audit checks."""
 
-    allocation_id: UUID
-    slot: int
     uid_base: int
 
     def __post_init__(self) -> None:
@@ -129,29 +126,8 @@ class DarwinSlotLayout:
             )
 
     @property
-    def name(self) -> str:
-        return f"niuu-slot-{self.slot}"
-
-    @property
-    def uid(self) -> int:
-        return self.uid_base + self.slot
-
-    @property
-    def key(self) -> str:
-        # Slot 0 keeps the allocation's own key (vm_slot_layout.state_key).
-        return str(self.allocation_id)
-
-    @property
     def label(self) -> str:
         return f"{SESSION_LABEL}.{self.slot}"
-
-    @property
-    def data_root(self) -> str:
-        return f"{SLOT_DATA_BASE}/{self.slot}"
-
-    @property
-    def session_data(self) -> str:
-        return f"{self.data_root}/session"
 
     @property
     def home(self) -> str:
@@ -189,19 +165,6 @@ class DarwinSlotLayout:
             (SESSION_RUNTIME, f"{self.run_root}/run"),
         )
 
-    def relocate(self, path: str) -> str:
-        """The slot's place for a session guest path; other paths are the Mac's own."""
-        candidate = PurePosixPath(path)
-        for legacy, slot in self._roots():
-            root = PurePosixPath(legacy)
-            if candidate == root or root in candidate.parents:
-                return str(PurePosixPath(slot) / candidate.relative_to(root))
-        return path
-
-    def launch(self, payload: dict, *, platform_port: int) -> dict:
-        """The payload as the shared start hands it over; ``_place`` gives it its places."""
-        return payload
-
     def relocations(self) -> dict[str, str]:
         return dict(self._roots())
 
@@ -222,7 +185,7 @@ class DarwinSlotLayout:
             "tmp": self.tmp,
             "run_root": self.run_root,
             "state_root": self.state_root,
-            "labels": [self.label],
+            "label": self.label,
             "links": list(links),
             "metadata_address": metadata_address,
             "stop_timeout": stop_timeout,
@@ -238,21 +201,18 @@ def _group_mode(mode: str) -> str:
     return f"0{(value & 0o700) | group << 3:o}"
 
 
-class SshDarwinHostRuntime(SshContainerVmRuntime):
+class SshDarwinHostRuntime(HostModeRuntime):
     """Run each session on a Mac as a fresh macOS user, from the pinned session bundle.
 
     ``skuld_bundle`` is the digest-pinned bundle (``ghcr.io/niuulabs/skuld-darwin@sha256:…``),
-    which replaces the Linux runtimes' ``skuld_image``. ``native_images`` names pod images
-    whose containers run natively from the bundle's commands instead (OpenBao's agent
-    image, whose ``bao`` the bundle carries). ``uid_base`` is the slot user's uid, free on
-    the Mac (macOS gives its own users 501 and up, Nix's build users 351 and up).
-
-    ``nix`` says the host recipe installs a multi-user Nix: the session gets Nix's profiles
-    on its PATH and the agent is told how to install with it. A session is refused when
-    the daemon is missing.
+    which replaces the Linux runtimes' ``skuld_image``; Forge hands the built-in host
+    execution the release's (``session_images``). ``native_images`` names pod images whose
+    containers run natively from the bundle's commands instead (OpenBao's agent image,
+    whose ``bao`` the bundle carries). ``uid_base`` is the slot user's uid, free on the Mac
+    (macOS gives its own users 501 and up, Nix's build users 351 and up).
     """
 
-    _runs_pod_containers = True
+    _audit_program = DARWIN_AUDIT_SH
 
     def __init__(
         self,
@@ -261,8 +221,6 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
         session_images: SessionImages | None = None,
         native_images: list[str] | None = None,
         uid_base: int = 61000,
-        nix: bool = True,
-        session_start_timeout_seconds: float = 30,
         **kwargs,
     ):
         if "slot_isolation" in kwargs:
@@ -274,19 +232,13 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
             raise ValueError(
                 "Macs run Skuld from the session bundle, not an image; set skuld_bundle"
             )
-        if session_images is not None and session_images.darwin:
-            if skuld_bundle is not None:
-                raise ValueError(
-                    "skuld_bundle is set and Forge hands this runtime the release's session "
-                    "bundle too; remove skuld_bundle to run the release's"
-                )
-            skuld_bundle = session_images.darwin
-        if skuld_bundle is None:
-            raise ValueError(
-                "SshDarwinHostRuntime needs a session bundle: set skuld_bundle, or "
-                "compute.session_images.darwin for the built-in host execution"
-            )
-        match = _BUNDLE.fullmatch(skuld_bundle)
+        bundle = self._release_image(
+            skuld_bundle,
+            session_images.darwin if session_images is not None else None,
+            kwarg="skuld_bundle",
+            setting="compute.session_images.darwin",
+        )
+        match = _BUNDLE.fullmatch(bundle)
         if match is None:
             raise ValueError(
                 "skuld_bundle must be a digest-pinned reference, "
@@ -294,43 +246,17 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
             )
         if not 1000 <= uid_base <= 2**31 - 2:
             raise ValueError("uid_base must lie between 1000 and 2147483646")
-        if session_start_timeout_seconds <= 0:
-            raise ValueError("session_start_timeout_seconds must be positive")
         if any(not image or _BUNDLE.fullmatch(image) is None for image in native_images or ()):
             raise ValueError("native_images must be digest-pinned image references")
-        super().__init__(skuld_image=skuld_bundle, **kwargs)
+        super().__init__(skuld_image=bundle, **kwargs)
         self._bundle_digest = match.group(1)
         self._bundle_root = f"{BUNDLE_CACHE}/{self._bundle_digest}"
         self._native_images = frozenset(native_images or ())
         self._uid_base = uid_base
-        self._nix = nix
-        self._session_start_timeout = session_start_timeout_seconds
-
-    @property
-    def session_runtime(self) -> SessionRuntimeKind | None:
-        return SessionRuntimeKind.HOST
-
-    @property
-    def requires_root_daemon(self) -> bool:
-        return False
 
     @property
     def host_platforms(self) -> frozenset[HostPlatform]:
         return frozenset({HostPlatform.DARWIN})
-
-    @property
-    def supports_slots(self) -> bool:
-        # One session per Mac: nothing but a user keeps two sessions apart there.
-        return False
-
-    @property
-    def supports_reuse(self) -> bool:
-        """``stop`` deletes the slot user and fails unless the darwin audit finds nothing."""
-        return True
-
-    async def recycle(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
-        """Audit the slot again before the Mac takes its next session; any finding raises."""
-        await self._audit_slot(lease, bootstrap, DARWIN_AUDIT_SH, self._layout(lease).slot)
 
     @property
     def slot_limits(self) -> SlotLimits | None:
@@ -345,10 +271,9 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
 
     def _python(self, program: str, *args: str) -> str:  # type: ignore[override]
         """A guest program under the bundle's Python, as root; isolated from the Mac's."""
-        _, *program_args = shlex.split(
-            SshGuestAccess.python_command(program, *args, principal="user")
+        return SshGuestAccess.python_command(
+            program, *args, principal="user", interpreter=("sudo", "-n", self._python_binary, "-I")
         )
-        return shlex.join(["sudo", "-n", self._python_binary, "-I", *program_args])
 
     @property
     def _python_binary(self) -> str:
@@ -365,21 +290,9 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
             [f"{bundle}/bin", *(nix if self._nix else []), _SYSTEM_PATH, f"{bundle}/fallback"]
         )
 
-    def session_bootstrap(
-        self, session: Session, spec: SessionSpec, machine: MachineBootstrap
-    ) -> MachineBootstrap:
-        placed = super().session_bootstrap(session, spec, machine)
-        files = []
-        for item in placed.files:
-            if item.path == SESSION_LAUNCH:
-                launch = json.loads(item.content)
-                self._require_native(launch)
-                launch["environment"] = self._mac_environment(session, launch["environment"])
-                item = BootstrapFile(
-                    path=item.path, content=json.dumps(launch), permissions=item.permissions
-                )
-            files.append(item)
-        return placed.model_copy(update={"files": tuple(files)})
+    def _shape_launch(self, session: Session, launch: dict) -> dict:
+        self._require_native(launch)
+        return {**launch, "environment": self._mac_environment(session, launch["environment"])}
 
     def _require_native(self, launch: dict) -> None:
         """Refuse a container the Mac cannot run natively, before anything is stored."""
@@ -400,8 +313,8 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
             "SHELL": "/bin/zsh",
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONUNBUFFERED": "1",
-            "NIUU_PYTHON": self._python_binary,
-            "NIUU_SKULD": f"{self._bundle_root}/libexec/skuld",
+            # The bundle's Python with the bundle's packages (its libexec wrapper).
+            "NIUU_SKULD_PYTHON": f"{self._bundle_root}/libexec/python",
         }
         if self._nix:
             updated.update(
@@ -429,21 +342,15 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
         updated["SKULD__SESSION__SYSTEM_PROMPT"] = f"{prompt}\n\n{hint}" if prompt else hint
         return updated
 
-    def _prepare_arguments(self, lease: SlotLease, mode: str) -> tuple[str, ...]:
-        # The session's links into its secrets are absolute by design: restore them as left.
-        return (*super()._prepare_arguments(lease, mode), "absolute-links")
-
-    async def _install(self, lease, bootstrap: MachineBootstrap) -> dict:
-        """Unpack the pinned bundle on the Mac (once per digest) and describe it."""
-        result = await self._guest_access.execute(
+    async def _install(self, lease, bootstrap: MachineBootstrap) -> None:
+        """Unpack the pinned bundle on the Mac, once per digest."""
+        await self._guest_access.execute(
             lease,
             bootstrap,
             SshGuestAccess.python_command(
                 programs.INSTALL, self._image, BUNDLE_CACHE, BUNDLE_MEDIA_TYPE
             ),
-            capture_stdout=True,
         )
-        return json.loads(result.stdout)
 
     async def warm(self, lease, bootstrap: MachineBootstrap) -> None:
         await self.prepare(lease, bootstrap)
@@ -452,34 +359,30 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
     async def _supervise(  # type: ignore[override]
         self, lease: SlotLease, bootstrap: MachineBootstrap, layout: DarwinSlotLayout, action: str
     ) -> bytes:
-        launch = self._launch(bootstrap) or {}
+        launch = self._launch(bootstrap)
+        if launch is None:
+            raise ValueError(
+                f"Allocation {lease.id} has no session launch in its bootstrap, so the Mac's "
+                "slot cannot be set up or removed with what the session was given"
+            )
         result = await self._guest_access.execute(
             lease,
             bootstrap,
             self._python(programs.SLOT, action),
             data=json.dumps(self._slot_spec(layout, launch)).encode(),
             capture_stdout=True,
-            safe_error_prefix="NIUU_SLOT_STAGE:",
-            safe_detail_prefix="NIUU_SLOT_DETAIL:",
+            safe_error_prefix=STAGE_PREFIX,
+            safe_detail_prefix=DETAIL_PREFIX,
         )
         return result.stdout
 
     def _slot_spec(self, layout: DarwinSlotLayout, launch: dict) -> dict:
-        spec = layout.spec(
+        return layout.spec(
             stop_timeout=self._stop_timeout,
             poll=self._poll,
             links=[item["target"] for item in self._root_links(layout, launch)],
             metadata_address=launch.get("metadata_address"),
         )
-        spec["labels"] = self._labels(layout, launch)
-        return spec
-
-    @staticmethod
-    def _labels(layout: DarwinSlotLayout, launch: dict) -> list[str]:
-        return [
-            layout.label,
-            *(f"{layout.label}.{container['name']}" for container in launch.get("sidecars", [])),
-        ]
 
     def _session_mounts(self, layout: DarwinSlotLayout, launch: dict) -> list[dict]:
         return [
@@ -520,24 +423,16 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
         ]
         await super().write_files(lease, bootstrap, items)
 
-    async def target(self, lease: AllocationRef, bootstrap: MachineBootstrap):
-        layout = self._layout(lease)
+    def _tunnel_ends(self, layout: DarwinSlotLayout) -> dict:  # type: ignore[override]
         # One session per Mac and no namespaces: the broker listens on the Mac's loopback
         # and its callbacks reach the Mac's loopback port Forge forwards.
-        target = await self._guest_access.open_tunnel(
-            lease,
-            bootstrap,
-            remote_port=self._broker_port,
-            reverse_bind_host="127.0.0.1",
-            reverse_port=self._guest_platform_port,
-            controller_host=self._platform_host,
-            controller_port=self._platform_port,
-            key=layout.key,
-        )
-        await self._resume_delivery(lease, bootstrap)
-        return target
+        return {
+            "reverse_bind_host": self._guest_platform_bind_host,
+            "reverse_port": self._guest_platform_port,
+            "key": layout.key,
+        }
 
-    def _place(self, layout: DarwinSlotLayout, payload: dict) -> dict:
+    def _place_launch(self, layout: DarwinSlotLayout, payload: dict) -> dict:  # type: ignore[override]
         """The launch payload with every container path given its place on the Mac."""
         placed = json.loads(json.dumps(payload))
         session_mounts = self._session_mounts(layout, placed)
@@ -600,7 +495,7 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
             "links": self._root_links(layout, payload),
             "nix": self._nix,
             "init": programs.INIT,
-            "boot": programs.BOOT,
+            "boot": SESSION_BOOT,
             "stop_timeout": self._stop_timeout,
             "poll": self._poll,
             "start_timeout": self._session_start_timeout,
@@ -610,17 +505,16 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
     async def _launch_skuld(
         self, lease: SlotLease, bootstrap: MachineBootstrap, payload: dict
     ) -> None:
-        layout = self._layout(lease)
         self._require_native(payload)
-        placed = self._place(layout, payload)
-        self._step(lease, "guest_host", f"Starting Skuld as {layout.name}")
+        self._step(lease, "guest_host", f"Starting Skuld as {self._layout(lease).name}")
         await self._guest_access.execute(
-            lease, bootstrap, self._python(programs.START), data=json.dumps(placed).encode()
+            lease, bootstrap, self._python(programs.START), data=json.dumps(payload).encode()
         )
 
-    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
-        layout = self._layout(lease)
-        launch = self._launch(bootstrap) or {}
+    async def _stop_session(  # type: ignore[override]
+        self, lease: SlotLease, bootstrap: MachineBootstrap, layout: DarwinSlotLayout
+    ) -> int:
+        """The session's job, then its agents' jobs, whatever the launch still names."""
         result = await self._guest_access.execute(
             lease,
             bootstrap,
@@ -628,7 +522,7 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
                 programs.STOP,
                 json.dumps(
                     {
-                        "labels": self._labels(layout, launch),
+                        "label": layout.label,
                         "state_root": layout.state_root,
                         "data_root": layout.session_data,
                         "marker": layout.key,
@@ -639,12 +533,4 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
             ),
             expected_exit_codes=(0, 42),
         )
-        if self._credential_delivery is not None:
-            await self._credential_delivery.stop(lease, bootstrap)
-        # Exit 42: cancelled before storage restore; retain any previous local archive.
-        if result.exit_code != 42:
-            await self._archive_data(lease, bootstrap)
-        # Archived: the slot's user, jobs, files and directories go, and the slot program
-        # fails unless the darwin audit finds nothing of them left.
-        await self._supervise(lease, bootstrap, layout, "down")
-        await self._close_tunnel(layout.key)
+        return result.exit_code

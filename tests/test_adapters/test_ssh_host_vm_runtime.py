@@ -324,7 +324,7 @@ async def test_start_runs_the_slot_agents_unpacks_skuld_then_starts_it_as_the_sl
     ]
     assert host_spec["masked"] == ["/etc/niuu"]
     assert host_spec["bin"] == "/usr/local/lib/niuu/host-bin"
-    assert host_spec["init"] == module._HOST_INIT and host_spec["boot"] == module._BOOT
+    assert host_spec["init"] == module._HOST_INIT and host_spec["boot"] == module.SESSION_BOOT
     mounts = {item["target"]: item for item in host_spec["mounts"]}
     assert mounts["/opt/niuu-skuld"] == {
         "source": f"/var/lib/niuu/host-images/{DIGEST}",

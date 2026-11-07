@@ -13,9 +13,12 @@ what root writes for it in ``/var/run/niuu/slots/0``, and the session's launchd 
 
 from __future__ import annotations
 
+from volundr.adapters.outbound.host_session_programs import SLOT_STORAGE
+from volundr.adapters.outbound.vm_slot_supervisor import DETAIL_PREFIX, STAGE_PREFIX
+
 #: Fetch the session bundle by digest from its OCI registry and unpack it once per digest.
-#: argv: the digest-pinned reference, the bundle root, the layer media type. Prints the
-#: bundle's ``bundle.json``. Anonymous registry pulls only: the bundle is public.
+#: argv: the digest-pinned reference, the bundle root, the layer media type. Anonymous
+#: registry pulls only: the bundle is public.
 INSTALL = r"""
 import hashlib, json, os, pathlib, re, shutil, subprocess, sys, tempfile
 reference, cache, media_type = sys.argv[1], pathlib.Path(sys.argv[2]), sys.argv[3]
@@ -27,7 +30,6 @@ registry, repository, digest = match.groups()
 repository = repository.rsplit(':', 1)[0] if ':' in repository.rsplit('/', 1)[-1] else repository
 root = cache / digest
 if (root / 'bundle.json').exists():
-    print((root / 'bundle.json').read_text())
     sys.exit(0)
 cache.mkdir(parents=True, exist_ok=True)
 os.chmod(str(cache), 0o755)
@@ -102,7 +104,6 @@ except OSError:
         raise
 finally:
     shutil.rmtree(str(work), ignore_errors=True)
-print((root / 'bundle.json').read_text())
 """
 
 #: Remove every unpacked bundle but the current one, while no session job is loaded.
@@ -119,9 +120,14 @@ for entry in cache.iterdir():
 """
 
 #: Shared by the slot programs: the slot's processes, launchd jobs and leftovers.
-_SLOT_COMMON = r"""
+_SLOT_COMMON = (
+    "STAGE, DETAIL = "
+    + repr(STAGE_PREFIX)
+    + ", "
+    + repr(DETAIL_PREFIX)
+    + "\n"
+    + r"""
 import json, os, pathlib, plistlib, signal, subprocess, sys, time
-STAGE, DETAIL = 'NIUU_SLOT_STAGE:', 'NIUU_SLOT_DETAIL:'
 def fail(stage, detail):
     print(STAGE + stage, file=sys.stderr)
     print(DETAIL + detail, file=sys.stderr)
@@ -138,6 +144,23 @@ def bootout(label, timeout, poll):
         time.sleep(poll)
     if loaded(label):
         raise RuntimeError('launchd job ' + label + ' is still loaded after bootout')
+def jobs(label):
+    # The slot's session job and its agents' jobs (label.<name>), loaded or only on disk,
+    # found on the Mac itself: what a lost launch file no longer names still stops.
+    listed = subprocess.run(['launchctl', 'list'], check=True, capture_output=True,
+        text=True).stdout.splitlines()[1:]
+    found = {line.split()[-1] for line in listed if line.split()}
+    found = {name for name in found if name == label or name.startswith(label + '.')}
+    for plist in pathlib.Path('/Library/LaunchDaemons').glob(label + '*.plist'):
+        name = plist.name[:-len('.plist')]
+        if name == label or name.startswith(label + '.'):
+            found.add(name)
+    # The session first, so Skuld can still flush through its agents.
+    return sorted(found, key=lambda name: (name != label, name))
+def stop_jobs(label, timeout, poll):
+    for job in jobs(label):
+        bootout(job, timeout, poll)
+        pathlib.Path('/Library/LaunchDaemons/' + job + '.plist').unlink(missing_ok=True)
 def processes(uid):
     out = subprocess.run(['ps', '-axo', 'uid=,pid='], check=True, capture_output=True,
         text=True).stdout.split()
@@ -151,6 +174,7 @@ def write_plist(path, job):
     os.chown(str(temporary), 0, 0)
     os.replace(str(temporary), str(path))
 """
+)
 
 #: The slot's user, group and directories. argv: ``up`` or ``down``. Stdin: the slot spec.
 #: ``down`` ends everything the user ran, removes everything it owned and the user itself,
@@ -206,9 +230,7 @@ if action == 'up':
 if action != 'down':
     raise RuntimeError('Unknown slot action ' + action)
 timeout, poll = s['stop_timeout'], s['poll']
-for label in s['labels']:
-    bootout(label, timeout, poll)
-    pathlib.Path('/Library/LaunchDaemons/' + label + '.plist').unlink(missing_ok=True)
+stop_jobs(s['label'], timeout, poll)
 for domain in ('gui/', 'user/'):
     # launchd keeps a user's domain after its last process.
     subprocess.run(['launchctl', 'bootout', domain + str(uid)], capture_output=True)
@@ -254,7 +276,7 @@ if record('Users', user) is not None:
 if record('Groups', user) is not None:
     ds('-delete', '/Groups/' + user)
 subprocess.run(['dscacheutil', '-flushcache'], check=True)
-audit = subprocess.run(['sh', '-s', '--', str(s['uid_base']), '1', '', '0', 'check'],
+audit = subprocess.run(['sh', '-s', '--', str(s['uid_base']), '1', '', '0', 'check', '0'],
     input=s['audit'], check=True, capture_output=True, text=True).stdout
 findings = [line[len('finding '):] for line in audit.splitlines() if line.startswith('finding ')]
 if findings:
@@ -267,6 +289,7 @@ if findings:
 #: jobs, and exits 0 once the session's process runs.
 START = (
     _SLOT_COMMON
+    + SLOT_STORAGE
     + r"""
 p = json.load(sys.stdin)
 s, d = p['slot'], p['darwin']
@@ -286,43 +309,8 @@ if loaded(label):
         sys.exit(0)
     # A new launch replaced the Forge session credential the running broker read.
     bootout(label, d['stop_timeout'], d['poll'])
-def owned(path, mode):
-    # The slot owns the parent and could have left a link here: never follow one.
-    parent = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        try:
-            os.mkdir(os.path.basename(path), mode, dir_fd=parent)
-        except FileExistsError:
-            pass
-        fd = os.open(os.path.basename(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-            dir_fd=parent)
-        try:
-            os.fchown(fd, uid, uid)
-            os.fchmod(fd, mode)
-        finally:
-            os.close(fd)
-    finally:
-        os.close(parent)
 root = pathlib.Path(s['data_root'])
-marker = root / '.allocation'
-if not marker.exists():
-    raise RuntimeError('Session storage was not prepared')
-if marker.read_text() != s['marker']:
-    raise RuntimeError('Workspace allocation mismatch')
-workspace, home = root / 'workspace', root / 'home'
-owned(str(workspace), 0o700)
-owned(str(home), 0o700)
-if p['repo'] and not os.path.lexists(str(workspace / '.git')):
-    # As the slot's user: root never writes into storage the slot owns.
-    args = ['/usr/bin/git', 'clone']
-    if p['branch']:
-        args += ['--branch', p['branch']]
-    subprocess.run([*args, '--', p['repo'], str(workspace)], check=True,
-        stdout=subprocess.DEVNULL, user=uid, group=uid, extra_groups=[], cwd=str(home),
-        env={'PATH': '/usr/bin:/bin', 'HOME': str(home)})
-# -h: a link the session left in its storage names its own path, never a target.
-subprocess.run(['find', str(root), '-exec', 'chown', '-h', '%d:%d' % (uid, uid), '{}', '+'],
-    check=True)
+workspace, home = prepare_storage(root, s['marker'], uid, p['repo'], p['branch'])
 for item in p.get('directories', []):
     # Written by root and the Forge's agents, read by the session (its group); a volume the
     # session writes to is its group's too.
@@ -332,9 +320,8 @@ for item in p.get('directories', []):
     path.mkdir(parents=True, exist_ok=True)
     os.chown(str(path), 0, uid)
     os.chmod(str(path), int(item['mode'], 8))
-if d['nix'] and not os.path.exists('/nix/var/nix/daemon-socket/socket'):
-    raise RuntimeError('This Mac has no Nix daemon; install Nix through the host recipe '
-        'or set compute.runtime.kwargs.nix: false')
+if d['nix']:
+    require_nix('Mac')
 address = p.get('metadata_address')
 if address:
     shown = subprocess.run(['ifconfig', 'lo0', 'inet'], check=True, capture_output=True,
@@ -432,10 +419,7 @@ STOP = (
     _SLOT_COMMON
     + r"""
 h = json.loads(sys.argv[1])
-for label in h['labels']:
-    # The session first, so Skuld can still flush through its agents.
-    bootout(label, h['stop_timeout'], h['poll'])
-    pathlib.Path('/Library/LaunchDaemons/' + label + '.plist').unlink(missing_ok=True)
+stop_jobs(h['label'], h['stop_timeout'], h['poll'])
 pathlib.Path(h['state_root'], 'session.json').unlink(missing_ok=True)
 marker = pathlib.Path(h['data_root']) / '.allocation'
 if not marker.exists():
@@ -444,60 +428,3 @@ if marker.read_text() != h['marker']:
     raise RuntimeError('Workspace allocation mismatch')
 """
 )
-
-#: What the session's job runs as the slot's user: the secrets the delivery rendered become
-#: environment and files, then Skuld runs from the bundle. On Linux the secrets are mounted
-#: at their targets; here the manifest's targets in the session's home and workspace
-#: become links into the rendered secrets.
-BOOT = r"""
-set -eu
-if [ -n "${NIUU_SECRETS_DIR:-}" ] && [ -f "$NIUU_SECRETS_DIR/manifest.json" ] && \
-    [ -d "$NIUU_SECRETS_DIR/user" ]; then
-    # Assigned first: under set -e a failing substitution inside eval would go unnoticed.
-    exports=$("$NIUU_PYTHON" -I -c '
-import json, os, shlex
-secrets = os.environ["NIUU_SECRETS_DIR"]
-places = json.loads(os.environ["NIUU_SESSION_PLACES"])
-def place(target):
-    for container, here in sorted(places.items(), key=lambda item: -len(item[0])):
-        if target == container or target.startswith(container + "/"):
-            return here + target[len(container):]
-    return None
-manifest = json.load(open(os.path.join(secrets, "manifest.json")))
-for name, spec in manifest.get("env", {}).items():
-    path = os.path.join(secrets, "user", spec["file"])
-    if os.path.exists(path):
-        value = json.load(open(path)).get(spec.get("key", ""), "")
-        print("export " + name + "=" + shlex.quote(value))
-for target, spec in manifest.get("files", {}).items():
-    source = os.path.join(secrets, "user", spec["file"])
-    where = place(target)
-    if where is None:
-        raise SystemExit("niuu: secret file " + target + " lies outside the session home and "
-            "workspace, where a macOS session has no mounts")
-    if os.path.exists(source) and not os.path.lexists(where):
-        os.makedirs(os.path.dirname(where), exist_ok=True)
-        os.symlink(source, where)
-')
-    eval "$exports"
-fi
-if [ -n "${NIUU_SECRETS_DIR:-}" ] && [ -f "$NIUU_SECRETS_DIR/env.sh" ]; then
-    . "$NIUU_SECRETS_DIR/env.sh"
-fi
-"$NIUU_PYTHON" -I -c '
-import json, os
-for item in json.loads(os.environ["NIUU_SESSION_LINKS"]):
-    target = item["target"]
-    if os.path.islink(target) and os.readlink(target) == item["source"]:
-        continue
-    if os.path.lexists(target):
-        raise SystemExit("niuu: " + target + " is in the way of what the session mounts there")
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    os.symlink(item["source"], target)
-'
-skuld=$NIUU_SKULD
-unset NIUU_SESSION_LINKS NIUU_SESSION_PLACES NIUU_SECRETS_DIR NIUU_PYTHON NIUU_SKULD
-export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-mkdir -p "$CLAUDE_CONFIG_DIR" "$WORKSPACE_DIR" "$TMPDIR"
-exec "$skuld"
-"""

@@ -39,7 +39,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from volundr.adapters.outbound import linux_guest_programs as programs
 from volundr.adapters.outbound.host_checks import AUDIT_SH
-from volundr.adapters.outbound.ssh_vm_runtime import SshContainerVmRuntime
+from volundr.adapters.outbound.host_session_programs import (
+    AGENT_COMMANDS,
+    FALLBACK_TOOLS,
+    SESSION_BOOT,
+    SLOT_STORAGE,
+)
+from volundr.adapters.outbound.ssh_vm_runtime import HostModeRuntime
 from volundr.adapters.outbound.vm_slot_layout import (
     FORGE_SESSION_DIRECTORY,
     GUEST_AGENT_DIRECTORY,
@@ -49,9 +55,8 @@ from volundr.adapters.outbound.vm_slot_layout import (
     SESSION_SECRETS,
     SlotLayout,
 )
-from volundr.domain.compute import AllocationRef, BootstrapFile, MachineBootstrap, SlotLease
-from volundr.domain.models import Session, SessionSpec
-from volundr.domain.session_runtimes import SessionRuntimeKind
+from volundr.domain.compute import AllocationRef, MachineBootstrap, SlotLease
+from volundr.domain.models import Session
 from volundr.domain.vm_runtime import SessionImages
 
 #: Where pod images are unpacked on the machine, one directory per digest.
@@ -68,10 +73,6 @@ HOST_POD_WORK = "/run/niuu/host-pods"
 _RESOLV_CONF = "/run/systemd/resolve/resolv.conf"
 #: What the pod program needs of an unpacked image to run a container from it.
 _POD_IMAGE_KEYS = ("rootfs", "env", "user", "workdir", "entrypoint", "cmd")
-#: Agent CLIs the session uses from the pinned image, ahead of everything else on PATH.
-AGENT_COMMANDS = ("claude", "codex", "opencode", "grok", "pi", "muse")
-#: Tools taken from the image only where neither Nix nor the VM provides them.
-FALLBACK_TOOLS = ("gh", "glab", "uv", "uvx", "node", "npm", "npx")
 _SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 _HOME = "/home/skuld"
 _WORKSPACE = "/workspace"
@@ -174,37 +175,11 @@ while True:
         os._exit(0)
 """
 
-# What Skuld's container entrypoint does before it starts the broker: secrets the
-# delivery rendered become environment, then Skuld runs from the image's venv.
-_BOOT = r"""
-set -eu
-if [ -f /run/secrets/manifest.json ] && [ -d /run/secrets/user ]; then
-    eval "$(python3 -c '
-import json, os, shlex
-manifest = json.load(open("/run/secrets/manifest.json"))
-for name, spec in manifest.get("env", {}).items():
-    path = os.path.join("/run/secrets/user", spec["file"])
-    if os.path.exists(path):
-        value = json.load(open(path)).get(spec.get("key", ""), "")
-        print("export " + name + "=" + shlex.quote(value))
-for target, spec in manifest.get("files", {}).items():
-    source = os.path.join("/run/secrets/user", spec["file"])
-    if os.path.exists(source) and not os.path.lexists(target):
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        os.symlink(source, target)
-')"
-fi
-if [ -f /run/secrets/env.sh ]; then
-    . /run/secrets/env.sh
-fi
-export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-mkdir -p "$CLAUDE_CONFIG_DIR" "$WORKSPACE_DIR"
-exec "$NIUU_SKULD_PYTHON" -m skuld
-"""
-
 # Start (or keep) the slot's host session. Stdin: the placed launch payload with
 # its ``host`` section. Exit 0 once the session's PID 1 runs.
-_HOST_START = r"""
+_HOST_START = (
+    SLOT_STORAGE
+    + r"""
 import json, os, pathlib, signal, subprocess, sys, time
 p = json.load(sys.stdin)
 s, h = p['slot'], p['host']
@@ -226,23 +201,6 @@ def end(pid):
         if not os.path.exists('/proc/%d' % pid):
             return
     raise RuntimeError('The previous host session survived SIGKILL')
-def owned(path, mode):
-    # The slot owns the parent and could have left a link here: never follow one.
-    parent = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        try:
-            os.mkdir(os.path.basename(path), mode, dir_fd=parent)
-        except FileExistsError:
-            pass
-        fd = os.open(os.path.basename(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-            dir_fd=parent)
-        try:
-            os.fchown(fd, s['uid'], s['uid'])
-            os.fchmod(fd, mode)
-        finally:
-            os.close(fd)
-    finally:
-        os.close(parent)
 current = running()
 if current and not p.get('relaunch'):
     sys.exit(0)
@@ -250,29 +208,9 @@ if current:
     # A new launch replaced the Forge session credential the running broker read.
     end(current)
 root = pathlib.Path(s['data_root'])
-marker = root / '.allocation'
-if not marker.exists():
-    raise RuntimeError('Session storage was not prepared')
-if marker.read_text() != s['marker']:
-    raise RuntimeError('Workspace allocation mismatch')
-workspace, home = root / 'workspace', root / 'home'
-owned(str(workspace), 0o700)
-owned(str(home), 0o700)
-if p['repo'] and not os.path.lexists(workspace / '.git'):
-    # As the slot's user: root never writes into storage the slot owns.
-    args = ['setpriv', '--reuid', str(s['uid']), '--regid', str(s['uid']), '--clear-groups',
-        '--', 'git', 'clone']
-    if p['branch']:
-        args += ['--branch', p['branch']]
-    subprocess.run([*args, '--', p['repo'], str(workspace)], check=True, stdout=subprocess.DEVNULL,
-        env={'PATH': '/usr/bin:/bin', 'HOME': str(home)}, cwd=str(home))
-owner = '%d:%d' % (s['uid'], s['uid'])
-# -h: a link the session left in its storage names its own path, never a target.
-# Container storage keeps the owners its subordinate ids gave it.
-prune = [a for path in h['keep_owners'] for a in ('-path', str(root / path), '-prune', '-o')]
-subprocess.run(['find', str(root), *prune, '-exec', 'chown', '-h', owner, '{}', '+'], check=True)
+prepare_storage(root, s['marker'], s['uid'], p['repo'], p['branch'], h['keep_owners'])
 for directory in h['private']:
-    owned(directory, 0o700)
+    owned(directory, 0o700, s['uid'])
 c = h['containers']
 if c:
     if not os.path.exists('/usr/bin/podman') or not os.path.exists('/usr/bin/newuidmap'):
@@ -304,9 +242,8 @@ if c:
         temporary.write_text('#!/bin/sh\nexec podman "$@"\n')
         temporary.chmod(0o755)
         os.replace(temporary, shim)
-if h['nix'] and not os.path.exists('/nix/var/nix/daemon-socket/socket'):
-    raise RuntimeError('This VM has no Nix daemon; install Nix through the machine profile '
-        'or set compute.runtime.kwargs.nix: false')
+if h['nix']:
+    require_nix('machine')
 for item in h['mounts']:
     target = pathlib.Path(item['target'])
     # Mountpoints only: in the VM's own tree they stay empty and root-owned.
@@ -342,6 +279,7 @@ init.communicate(json.dumps(spec).encode(), timeout=h['start_timeout'])
 if init.returncode or not running():
     raise RuntimeError('The host session did not start; see ' + h['log'] + ' on the VM')
 """
+)
 
 # Stop the slot's host session and withdraw its subordinate ids. argv: the stop spec
 # (JSON). Skuld gets SIGTERM and ``stop_timeout`` to flush, then everything in
@@ -435,7 +373,7 @@ class RootlessContainers(BaseModel):
     )
 
 
-class SshHostVmRuntime(SshContainerVmRuntime):
+class SshHostVmRuntime(HostModeRuntime):
     """Run each session directly on its machine, in its slot's user, namespaces and cgroup.
 
     ``skuld_image`` is the digest-pinned session image Skuld, the agent CLIs and
@@ -454,28 +392,23 @@ class SshHostVmRuntime(SshContainerVmRuntime):
     uidmap and passt; the runtime refuses to start a session without them.
     """
 
+    _audit_program = AUDIT_SH
+
     def __init__(
         self,
         *,
-        nix: bool = True,
         containers: dict | None = {},  # noqa: B006 - read-only; the defaults of RootlessContainers
-        session_start_timeout_seconds: float = 30,
         session_images: SessionImages | None = None,
+        skuld_image: str | None = None,
         **kwargs,
     ):
-        if session_images is not None and session_images.linux:
-            if "skuld_image" in kwargs:
-                raise ValueError(
-                    "skuld_image is set and Forge hands this runtime the release's session "
-                    "image too; remove skuld_image to run the release's"
-                )
-            kwargs["skuld_image"] = session_images.linux
-        elif "skuld_image" not in kwargs:
-            raise ValueError(
-                "SshHostVmRuntime needs a session image: set skuld_image, or "
-                "compute.session_images.linux for the built-in host execution"
-            )
-        super().__init__(**kwargs)
+        image = self._release_image(
+            skuld_image,
+            session_images.linux if session_images is not None else None,
+            kwarg="skuld_image",
+            setting="compute.session_images.linux",
+        )
+        super().__init__(skuld_image=image, **kwargs)
         if self._slot_isolation is None:
             raise ValueError(
                 "Host-mode sessions run in a slot of their VM; configure "
@@ -483,11 +416,7 @@ class SshHostVmRuntime(SshContainerVmRuntime):
             )
         if not _DIGEST.search(self._image):
             raise ValueError("Host mode unpacks the session image by digest; pin skuld_image")
-        if session_start_timeout_seconds <= 0:
-            raise ValueError("session_start_timeout_seconds must be positive")
-        self._nix = nix
         self._containers = RootlessContainers(**containers) if containers is not None else None
-        self._session_start_timeout = session_start_timeout_seconds
         if self._containers is not None:
             slots = self._slot_isolation.slot_capacity
             ids = self._containers
@@ -510,31 +439,14 @@ class SshHostVmRuntime(SshContainerVmRuntime):
 
     _layout_class = HostSlotLayout
 
-    @property
-    def session_runtime(self) -> SessionRuntimeKind | None:
-        return SessionRuntimeKind.HOST
-
-    @property
-    def requires_root_daemon(self) -> bool:
-        # Pod containers are systemd units and the session runs on the machine itself.
-        return False
-
-    @property
-    def supports_reuse(self) -> bool:
-        """A stopped slot is torn down and proven gone (``down``), then audited by recycle."""
-        return True
-
     async def recycle(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
-        """Prove the slot ``stop`` removed is clean before it takes another session.
+        """The supervisor checks the slot is gone, then the audit checks the slot's user.
 
-        ``stop`` already removed the slot and checked nothing of it is left; this runs
-        the registered-host audit for this slot too (its user's processes and files
-        anywhere it could write, IPC objects, crontab, linger), and fails, naming every
-        finding, when it finds anything.
+        The audit covers the user's processes and files anywhere it could write, IPC
+        objects, crontab and linger; any finding raises, naming it.
         """
-        layout = self._slot(lease)
-        await self._supervise(lease, bootstrap, layout, "verify")
-        await self._audit_slot(lease, bootstrap, AUDIT_SH, layout.slot)
+        await self._supervise(lease, bootstrap, self._slot(lease), "verify")
+        await super().recycle(lease, bootstrap)
 
     def _slot(self, lease) -> SlotLayout:
         layout = self._layout(lease)
@@ -542,20 +454,8 @@ class SshHostVmRuntime(SshContainerVmRuntime):
             raise ValueError("Host-mode sessions need slot_isolation")
         return layout
 
-    def session_bootstrap(
-        self, session: Session, spec: SessionSpec, machine: MachineBootstrap
-    ) -> MachineBootstrap:
-        placed = super().session_bootstrap(session, spec, machine)
-        files = []
-        for item in placed.files:
-            if item.path == SESSION_LAUNCH:
-                launch = json.loads(item.content)
-                launch["environment"] = self._host_environment(launch["environment"])
-                item = BootstrapFile(
-                    path=item.path, content=json.dumps(launch), permissions=item.permissions
-                )
-            files.append(item)
-        return placed.model_copy(update={"files": tuple(files)})
+    def _shape_launch(self, session: Session, launch: dict) -> dict:
+        return {**launch, "environment": self._host_environment(launch["environment"])}
 
     def _host_environment(self, environment: dict[str, str]) -> dict[str, str]:
         """The container session's environment, for a session on the VM itself."""
@@ -589,11 +489,6 @@ class SshHostVmRuntime(SshContainerVmRuntime):
         prompt = updated.get("SKULD__SESSION__SYSTEM_PROMPT", "")
         updated["SKULD__SESSION__SYSTEM_PROMPT"] = f"{prompt}\n\n{hint}" if prompt else hint
         return updated
-
-    def _prepare_arguments(self, lease: SlotLease, mode: str) -> tuple[str, ...]:
-        # The session lives on the VM, where Nix's profiles and caches are links to
-        # absolute paths by design: restore them as the session left them.
-        return (*super()._prepare_arguments(lease, mode), "absolute-links")
 
     async def warm(self, lease, bootstrap: MachineBootstrap) -> None:
         # No container daemon to pull into: the session image is unpacked from its registry.
@@ -681,7 +576,7 @@ class SshHostVmRuntime(SshContainerVmRuntime):
             "masked": list(MASKED_GUEST_PATHS),
             "private": private,
             "workdir": _WORKSPACE,
-            "boot": _BOOT,
+            "boot": SESSION_BOOT,
             "init": _HOST_INIT,
             "environment": environment,
             "stop_timeout": self._stop_timeout,
@@ -737,8 +632,10 @@ class SshHostVmRuntime(SshContainerVmRuntime):
             data=json.dumps({**payload, "environment": environment, "host": host}).encode(),
         )
 
-    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
-        layout = self._slot(lease)
+    async def _stop_session(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, layout: SlotLayout
+    ) -> int:
+        """Skuld first (SIGTERM, its flush time, then SIGKILL), then the slot's agents."""
         await self._guest_access.execute(
             lease,
             bootstrap,
@@ -772,13 +669,4 @@ class SshHostVmRuntime(SshContainerVmRuntime):
             ),
             expected_exit_codes=(0, 42),
         )
-        if self._credential_delivery is not None:
-            await self._credential_delivery.stop(lease, bootstrap)
-        # Exit 42: cancelled before storage restore; retain any previous local archive.
-        if result.exit_code != 42:
-            await self._archive_data(lease, bootstrap)
-        # Archived: the slot's user, directories, namespace, units and cgroup go, and
-        # the supervisor fails unless nothing of them is left.
-        await self._report_slot_limits(lease, bootstrap, layout)
-        await self._supervise(lease, bootstrap, layout, "down")
-        await self._close_tunnel(layout.key)
+        return result.exit_code

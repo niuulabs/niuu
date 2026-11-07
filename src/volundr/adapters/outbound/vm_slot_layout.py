@@ -102,13 +102,52 @@ def _key(allocation_id: UUID, slot: int) -> str:
     return str(allocation_id) if slot == 0 else f"{allocation_id}-slot-{slot}"
 
 
-@dataclass(frozen=True)
-class SlotLayout:
+@dataclass(frozen=True, kw_only=True)
+class SlotPlace:
+    """What every slot of a machine is, whatever separates it: its user and its storage.
+
+    Each layout provides ``uid_base``, the uid of slot 0. The session's guest paths move
+    into the slot's directories by the layout's ``_roots`` (``relocate``).
+    """
+
+    allocation_id: UUID
+    slot: int
+
+    @property
+    def name(self) -> str:
+        return f"niuu-slot-{self.slot}"
+
+    @property
+    def uid(self) -> int:
+        return self.uid_base + self.slot
+
+    @property
+    def key(self) -> str:
+        return _key(self.allocation_id, self.slot)
+
+    @property
+    def data_root(self) -> str:
+        return f"{SLOT_DATA_BASE}/{self.slot}"
+
+    @property
+    def session_data(self) -> str:
+        return f"{self.data_root}/session"
+
+    def relocate(self, path: str) -> str:
+        """The slot's place for a session guest path; other guest paths are the machine's."""
+        candidate = PurePosixPath(path)
+        for legacy, slot in self._roots():
+            root = PurePosixPath(legacy)
+            if candidate == root or root in candidate.parents:
+                return str(PurePosixPath(slot) / candidate.relative_to(root))
+        return path
+
+
+@dataclass(frozen=True, kw_only=True)
+class SlotLayout(SlotPlace):
     """Slot ``slot`` of allocation ``allocation_id`` under ``config``."""
 
     config: SlotIsolation
-    allocation_id: UUID
-    slot: int
 
     def __post_init__(self) -> None:
         if self.slot >= self.config.slot_capacity:
@@ -129,16 +168,8 @@ class SlotLayout:
         return cls(config=config, allocation_id=lease.id, slot=slot_index(lease))
 
     @property
-    def name(self) -> str:
-        return f"niuu-slot-{self.slot}"
-
-    @property
-    def uid(self) -> int:
-        return self.config.uid_base + self.slot
-
-    @property
-    def key(self) -> str:
-        return _key(self.allocation_id, self.slot)
+    def uid_base(self) -> int:
+        return self.config.uid_base
 
     def _address(self, offset: int) -> str:
         network = self.config.subnet.network_address
@@ -157,20 +188,12 @@ class SlotLayout:
         return self.config.platform_forward_port_base + self.slot
 
     @property
-    def data_root(self) -> str:
-        return f"{SLOT_DATA_BASE}/{self.slot}"
-
-    @property
     def run_root(self) -> str:
         return f"{SLOT_RUNTIME_BASE}/{self.slot}"
 
     @property
     def agent_root(self) -> str:
         return f"{SLOT_AGENT_BASE}/{self.slot}"
-
-    @property
-    def session_data(self) -> str:
-        return f"{self.data_root}/session"
 
     @property
     def launch_path(self) -> str:
@@ -204,15 +227,6 @@ class SlotLayout:
             (GUEST_AGENT_DIRECTORY, f"{self.agent_root}/guest-agent"),
             (SESSION_RUNTIME, self.run_root),
         )
-
-    def relocate(self, path: str) -> str:
-        """The slot's place for a session guest path; other guest paths are the VM's own."""
-        candidate = PurePosixPath(path)
-        for legacy, slot in self._roots():
-            root = PurePosixPath(legacy)
-            if candidate == root or root in candidate.parents:
-                return str(PurePosixPath(slot) / candidate.relative_to(root))
-        return path
 
     def supervisor_spec(self, *, image: str, platform_port: int) -> dict:
         """The slot as ``vm_slot_supervisor`` creates it."""

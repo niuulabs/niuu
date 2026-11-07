@@ -343,8 +343,11 @@ _LEFTOVERS = {
     "dscl": 'case "$3" in /Users) printf "root\\nniuu-slot-0\\n" ;; '
     '/Groups) printf "admin\\nniuu-slot-0\\n" ;; esac',
     "ps": 'printf "    0     1 /sbin/launchd\\n61000  4242 /opt/agent/bin/my tool\\n"',
-    "launchctl": 'case "$2" in\n'
-    "  system/world.niuu.slot.0) exit 0 ;;\n"
+    # The session's job and an agent's job are the slot's; slot 01's is another slot's.
+    "launchctl": 'if [ "$1" = list ]; then printf "PID\\tStatus\\tLabel\\n'
+    "17\\t0\\tworld.niuu.slot.0\\n18\\t0\\tworld.niuu.slot.0.openbao-agent\\n"
+    '19\\t0\\tworld.niuu.slot.01\\n"; exit 0; fi\n'
+    'case "$2" in\n'
     f'  user/61000) printf "user/61000 = {{\\n{_TAB}services = {{\\n'
     f"{_TAB}{_TAB}   0  - {_TAB}com.apple.trustd.agent\\n"
     f"{_TAB}{_TAB}   0  - {_TAB}com.example.left.behind\\n"
@@ -380,6 +383,7 @@ class TestMacAudit:
             "group niuu-slot-0 still exists",
             "process /opt/agent/bin/my tool (pid 4242) still runs as uid 61000",
             "launchd job world.niuu.slot.0 is still loaded",
+            "launchd job world.niuu.slot.0.openbao-agent is still loaded",
             "launchd job com.example.left.behind is still loaded in user/61000",
             "IPC objects created by uid 61000 still exist",
             "niuu-slot-0 is in group admin",

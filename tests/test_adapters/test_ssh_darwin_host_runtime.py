@@ -22,6 +22,7 @@ import pytest
 from tests.test_adapters.test_ssh_vm_runtime_slots import SlotView, _keys
 from volundr.adapters.outbound import darwin_guest_programs as programs
 from volundr.adapters.outbound.host_checks import DARWIN_AUDIT_SH
+from volundr.adapters.outbound.host_session_programs import SESSION_BOOT
 from volundr.adapters.outbound.ssh_darwin_host_runtime import (
     BUNDLE_MEDIA_TYPE,
     DarwinSlotLayout,
@@ -263,8 +264,7 @@ def test_the_slot_layout_is_where_the_darwin_audit_looks():
     assert layout.relocate("/etc/ssh/ssh_host_ed25519_key") == "/etc/ssh/ssh_host_ed25519_key"
     spec = layout.spec(stop_timeout=30, poll=2)
     assert spec["audit"] == DARWIN_AUDIT_SH
-    assert spec["labels"] == ["world.niuu.slot.0"]
-    assert layout.launch({"a": 1}, platform_port=1) == {"a": 1}
+    assert spec["label"] == "world.niuu.slot.0"
 
 
 # -- translation -------------------------------------------------------------------------------
@@ -325,8 +325,7 @@ def test_the_session_runs_the_bundles_agents_first_then_nix_then_the_mac(tmp_pat
         "/sbin",
         f"{ROOT}/fallback",
     ]
-    assert environment["NIUU_SKULD"] == f"{ROOT}/libexec/skuld"
-    assert environment["NIUU_PYTHON"] == f"{ROOT}/python/bin/python3"
+    assert environment["NIUU_SKULD_PYTHON"] == f"{ROOT}/libexec/python"
     assert environment["NIX_REMOTE"] == "daemon"
     prompt = environment["SKULD__SESSION__SYSTEM_PROMPT"]
     assert prompt.startswith("Be brief.\n\n")
@@ -387,7 +386,7 @@ async def test_start_fetches_the_bundle_makes_the_slot_then_starts_the_session(m
     assert commands[2] == runtime._python(programs.SLOT, "up")
     slot = json.loads(calls[2].kwargs["data"])
     assert (slot["name"], slot["uid"]) == ("niuu-slot-0", 61000)
-    assert slot["labels"] == ["world.niuu.slot.0", "world.niuu.slot.0.openbao-agent"]
+    assert slot["label"] == "world.niuu.slot.0"
     assert calls[2].kwargs["safe_error_prefix"] == "NIUU_SLOT_STAGE:"
     assert commands[-1] == runtime._python(programs.START)
     placed = json.loads(calls[-1].kwargs["data"])
@@ -425,7 +424,7 @@ async def test_start_fetches_the_bundle_makes_the_slot_then_starts_the_session(m
     assert darwin["label"] == "world.niuu.slot.0"
     assert darwin["python"] == f"{ROOT}/python/bin/python3"
     assert darwin["native_path"].startswith(f"{ROOT}/libexec:{ROOT}/bin:")
-    assert darwin["init"] == programs.INIT and darwin["boot"] == programs.BOOT
+    assert darwin["init"] == programs.INIT and darwin["boot"] == SESSION_BOOT
     assert darwin["links"] == []
     assert placed["slot"] == {
         "index": 0,
@@ -464,7 +463,7 @@ async def test_mounts_at_fixed_paths_become_links_of_the_session_or_of_root(tmp_
         "directories": [{"path": "/run/niuu/session/tokens/workload", "mode": "0755"}],
     }
 
-    placed = runtime._place(layout, payload)
+    placed = runtime._place_launch(layout, payload)
 
     tokens = "/var/run/niuu/slots/0/run/tokens/workload"
     assert placed["environment"]["TOKEN"] == f"{tokens}/token"
@@ -534,7 +533,7 @@ async def test_stop_ends_the_jobs_archives_then_removes_the_slot_verified(mac):
         programs.STOP,
         json.dumps(
             {
-                "labels": ["world.niuu.slot.0", "world.niuu.slot.0.openbao-agent"],
+                "label": "world.niuu.slot.0",
                 "state_root": "/var/run/niuu/host-sessions/0",
                 "data_root": "/var/lib/niuu/slots/0/session",
                 "marker": str(lease.id),
@@ -672,7 +671,7 @@ def test_install_fetches_the_bundle_anonymously_verifies_and_unpacks_it(registry
     result = _install(env, digest, cache)
 
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == description
+    assert result.stdout == ""
     assert json.loads((cache / digest / "bundle.json").read_text()) == description
     assert [path.name for path in cache.iterdir()] == [digest]
     log = (tmp_path / "log").read_text().split("\n")
@@ -740,102 +739,39 @@ def test_install_needs_a_digest_pinned_reference(registry):
     assert "must be pinned by digest" in result.stderr
 
 
-# -- the boot script, against a fake Skuld -----------------------------------------------------
+async def test_the_slot_is_never_touched_without_the_sessions_launch(mac):
+    runtime, _, lease = mac
+
+    with pytest.raises(ValueError, match="no session launch in its bootstrap"):
+        await runtime._supervise(lease, MachineBootstrap(), runtime._layout(lease), "down")
 
 
-def test_boot_turns_secrets_into_environment_and_links_then_runs_skuld(tmp_path):
-    secrets = tmp_path / "secrets"
-    (secrets / "user").mkdir(parents=True)
-    (secrets / "user" / "claude.json").write_text(json.dumps({"token": "sk-oauth"}))
-    (secrets / "user" / "gh.yml").write_text("hosts")
-    (secrets / "manifest.json").write_text(
-        json.dumps(
-            {
-                "env": {"CLAUDE_CODE_OAUTH_TOKEN": {"file": "claude.json", "key": "token"}},
-                "files": {"/home/skuld/.config/gh/hosts.yml": {"file": "gh.yml"}},
-            }
-        )
+def test_the_slot_programs_find_every_job_of_the_slot_on_the_mac(tmp_path):
+    shims = tmp_path / "bin"
+    shims.mkdir()
+    (shims / "launchctl").write_text(
+        '#!/bin/sh\nprintf "PID\\tStatus\\tLabel\\n1\\t0\\tworld.niuu.slot.0.agent\\n'
+        '2\\t0\\tworld.niuu.slot.01\\n3\\t0\\tworld.niuu.slot.0\\n"\n'
     )
-    (secrets / "env.sh").write_text("export FROM_ENV_SH=yes\n")
-    home, workspace = tmp_path / "home", tmp_path / "workspace"
-    home.mkdir()
-    skuld = tmp_path / "skuld"
-    skuld.write_text('#!/bin/sh\nenv > "$HOME/env.txt"\n')
-    skuld.chmod(0o755)
-    source = tmp_path / "token"
-    source.write_text("t")
-    env = {
-        "PATH": "/usr/bin:/bin",
-        "HOME": str(home),
-        "WORKSPACE_DIR": str(workspace),
-        "TMPDIR": str(tmp_path / "tmp"),
-        "NIUU_PYTHON": sys.executable,
-        "NIUU_SKULD": str(skuld),
-        "NIUU_SECRETS_DIR": str(secrets),
-        "NIUU_SESSION_PLACES": json.dumps({"/home/skuld": str(home), "/workspace": str(workspace)}),
-        "NIUU_SESSION_LINKS": json.dumps(
-            [{"target": str(home / ".kube" / "token"), "source": str(source)}]
-        ),
-    }
-
+    (shims / "launchctl").chmod(0o755)
+    daemons = tmp_path / "LaunchDaemons"
+    daemons.mkdir()
+    (daemons / "world.niuu.slot.0.left.plist").write_text("")
+    program = (
+        programs._SLOT_COMMON.replace("/Library/LaunchDaemons", str(daemons))
+        + "\nprint(json.dumps(jobs('world.niuu.slot.0')))\n"
+    )
     result = subprocess.run(
-        ["/bin/sh", "-c", programs.BOOT], env=env, capture_output=True, text=True
+        [sys.executable, "-c", program],
+        env={"PATH": f"{shims}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
     )
 
     assert result.returncode == 0, result.stderr
-    seen = dict(
-        line.split("=", 1) for line in (home / "env.txt").read_text().splitlines() if "=" in line
-    )
-    assert seen["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-oauth"
-    assert seen["FROM_ENV_SH"] == "yes"
-    assert seen["CLAUDE_CONFIG_DIR"] == f"{home}/.claude"
-    assert not {"NIUU_SESSION_LINKS", "NIUU_SECRETS_DIR", "NIUU_SKULD"} & set(seen)
-    assert os.readlink(home / ".config" / "gh" / "hosts.yml") == str(secrets / "user" / "gh.yml")
-    assert os.readlink(home / ".kube" / "token") == str(source)
-    assert workspace.is_dir()
-
-
-def test_boot_refuses_a_secret_file_outside_the_sessions_storage(tmp_path):
-    secrets = tmp_path / "secrets"
-    (secrets / "user").mkdir(parents=True)
-    (secrets / "user" / "x").write_text("x")
-    (secrets / "manifest.json").write_text(json.dumps({"files": {"/etc/x": {"file": "x"}}}))
-    env = {
-        "PATH": "/usr/bin:/bin",
-        "HOME": str(tmp_path),
-        "WORKSPACE_DIR": str(tmp_path / "w"),
-        "TMPDIR": str(tmp_path / "t"),
-        "NIUU_PYTHON": sys.executable,
-        "NIUU_SKULD": "/usr/bin/true",
-        "NIUU_SECRETS_DIR": str(secrets),
-        "NIUU_SESSION_PLACES": json.dumps({"/home/skuld": str(tmp_path)}),
-        "NIUU_SESSION_LINKS": "[]",
-    }
-
-    result = subprocess.run(
-        ["/bin/sh", "-c", programs.BOOT], env=env, capture_output=True, text=True
-    )
-
-    assert result.returncode != 0
-    assert "lies outside the session home and workspace" in result.stderr
-
-
-def test_boot_refuses_a_file_in_the_way_of_a_mount(tmp_path):
-    (tmp_path / "taken").write_text("mine")
-    env = {
-        "PATH": "/usr/bin:/bin",
-        "HOME": str(tmp_path),
-        "WORKSPACE_DIR": str(tmp_path / "w"),
-        "TMPDIR": str(tmp_path / "t"),
-        "NIUU_PYTHON": sys.executable,
-        "NIUU_SKULD": "/usr/bin/true",
-        "NIUU_SESSION_PLACES": "{}",
-        "NIUU_SESSION_LINKS": json.dumps([{"target": str(tmp_path / "taken"), "source": "/x"}]),
-    }
-
-    result = subprocess.run(
-        ["/bin/sh", "-c", programs.BOOT], env=env, capture_output=True, text=True
-    )
-
-    assert result.returncode != 0
-    assert "is in the way" in result.stderr
+    # The session first; another slot's job is never the slot's.
+    assert json.loads(result.stdout) == [
+        "world.niuu.slot.0",
+        "world.niuu.slot.0.agent",
+        "world.niuu.slot.0.left",
+    ]

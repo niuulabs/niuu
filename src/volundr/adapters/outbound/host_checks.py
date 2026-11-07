@@ -193,10 +193,17 @@ while [ "$n" -lt "$slots" ]; do
     done
     [ -e "/var/lib/niuu/slots/$n" ] && echo "finding /var/lib/niuu/slots/$n still exists"
     [ -e "/var/run/niuu/slots/$n" ] && echo "finding /var/run/niuu/slots/$n still exists"
-    launchctl print "system/world.niuu.slot.$n" >/dev/null 2>&1 && \
-      echo "finding launchd job world.niuu.slot.$n is still loaded"
-    [ -e "/Library/LaunchDaemons/world.niuu.slot.$n.plist" ] && \
-      echo "finding /Library/LaunchDaemons/world.niuu.slot.$n.plist still exists"
+    [ -e "/var/run/niuu/host-sessions/$n" ] && \
+      echo "finding /var/run/niuu/host-sessions/$n still exists"
+    # The session's job and its agents' root jobs (world.niuu.slot.<n>.<name>).
+    launchctl list 2>/dev/null | awk -v n="$n" 'NR > 1 {
+      label = $NF; prefix = "world.niuu.slot." n
+      if (label == prefix || index(label, prefix ".") == 1)
+        print "finding launchd job " label " is still loaded" }'
+    for plist in /Library/LaunchDaemons/world.niuu.slot."$n".plist \
+        /Library/LaunchDaemons/world.niuu.slot."$n".*.plist; do
+      [ -e "$plist" ] && echo "finding $plist still exists"
+    done
     # launchd keeps a user's domain after its last process; only Apple's own jobs may be in it.
     for domain in "user/$uid" "gui/$uid"; do
       launchctl print "$domain" 2>/dev/null | awk -v d="$domain" '
