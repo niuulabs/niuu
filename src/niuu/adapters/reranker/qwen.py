@@ -28,7 +28,7 @@ import math
 
 import httpx
 
-from ravn.ports.reranker import RerankerPort
+from niuu.ports.reranker import RerankerPort
 
 _DEFAULT_MODEL = "qwen3-reranker"
 _DEFAULT_BASE_URL = "http://127.0.0.1:8078/v1"

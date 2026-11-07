@@ -262,7 +262,7 @@ class TestBuildMemory:
         settings.memory.backend = "sqlite"
         settings.memory.path = str(tmp_path / "memory.db")
         settings.embedding.enabled = True
-        settings.embedding.adapter = "ravn.adapters.embedding.nope.MissingAdapter"
+        settings.embedding.adapter = "niuu.adapters.embedding.nope.MissingAdapter"
 
         with pytest.raises(RuntimeError, match="embedding.enabled is true"):
             _build_memory(settings)

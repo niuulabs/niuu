@@ -71,7 +71,7 @@ from niuu.domain.models import Principal
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 from niuu.ports.mimir import MimirPort
-from ravn.adapters.tools._url_security import check_ssrf
+from niuu.utils.url_security import check_ssrf
 from ravn.domain.exceptions import MimirUnavailableError
 
 logger = logging.getLogger(__name__)

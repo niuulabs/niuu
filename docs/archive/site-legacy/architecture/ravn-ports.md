@@ -528,7 +528,7 @@ Built-in adapters: `AllowAllPermission`, `DenyAllPermission`, `PermissionEnforce
 
 ### EmbeddingPort
 
-**File:** `src/ravn/ports/embedding.py`
+**File:** `src/niuu/ports/embedding.py`
 **Config key:** `embedding.adapter`
 **Cardinality:** exactly one (required when memory is enabled)
 

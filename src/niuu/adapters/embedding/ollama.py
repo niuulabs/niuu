@@ -20,7 +20,7 @@ import logging
 
 import httpx
 
-from ravn.ports.embedding import EmbeddingPort
+from niuu.ports.embedding import EmbeddingPort
 
 logger = logging.getLogger(__name__)
 

@@ -5,7 +5,7 @@ All network and model calls are mocked — no real models or HTTP required.
 
 from __future__ import annotations
 
-from ravn.ports.embedding import EmbeddingPort
+from niuu.ports.embedding import EmbeddingPort
 
 # ---------------------------------------------------------------------------
 # Test double

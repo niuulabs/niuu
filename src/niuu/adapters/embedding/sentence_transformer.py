@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from ravn.ports.embedding import EmbeddingPort
+from niuu.ports.embedding import EmbeddingPort
 
 _DEFAULT_MODEL = "all-MiniLM-L6-v2"
 

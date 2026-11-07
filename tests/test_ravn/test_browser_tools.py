@@ -80,9 +80,7 @@ class TestValidateBrowserUrl:
             # Return a benign public IP for any hostname lookup.
             return [(2, 1, 6, "", ("93.184.216.34", 0))]
 
-        monkeypatch.setattr(
-            "ravn.adapters.tools._url_security.socket.getaddrinfo", _fake_getaddrinfo
-        )
+        monkeypatch.setattr("niuu.utils.url_security.socket.getaddrinfo", _fake_getaddrinfo)
 
     def test_http_allowed(self) -> None:
         assert _validate_browser_url("http://example.com", [], []) is None

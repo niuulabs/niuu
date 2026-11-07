@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import pytest
 
-from ravn.adapters.reranker.qwen import QwenRerankerAdapter
+from niuu.adapters.reranker.qwen import QwenRerankerAdapter
 
 
 class _FakeClient:

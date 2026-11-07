@@ -57,7 +57,7 @@ def _build_embed_fn(model_name: str, *, base_url: str = "", api_key: str = ""): 
     to choose FTS-only deliberately. See .claude/rules/no-fallbacks.md.
     """
     if base_url:
-        from ravn.adapters.embedding.openai import OpenAIEmbeddingAdapter
+        from niuu.adapters.embedding.openai import OpenAIEmbeddingAdapter
 
         adapter = OpenAIEmbeddingAdapter(api_key, model=model_name, base_url=base_url)
 

@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from ravn.adapters.tools._url_security import is_private_ip as _is_private_ip
+from niuu.utils.url_security import is_private_ip as _is_private_ip
 from ravn.adapters.tools.web_fetch import (
     _INJECTION_WARNING,
     WebFetchTool,

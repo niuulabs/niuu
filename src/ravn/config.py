@@ -478,7 +478,7 @@ class RerankerConfig(BaseModel):
         description="Rerank retrieved episodes before admitting them to the prompt.",
     )
     adapter: str = Field(
-        default="ravn.adapters.reranker.qwen.QwenRerankerAdapter",
+        default="niuu.adapters.reranker.qwen.QwenRerankerAdapter",
         description="Fully-qualified class path for the reranker adapter.",
     )
     kwargs: dict[str, Any] = Field(
@@ -495,7 +495,7 @@ class EmbeddingConfig(BaseModel):
         description="Enable embedding-based semantic search in episodic memory.",
     )
     adapter: str = Field(
-        default="ravn.adapters.embedding.sentence_transformer.SentenceTransformerEmbeddingAdapter",
+        default="niuu.adapters.embedding.sentence_transformer.SentenceTransformerEmbeddingAdapter",
         description="Fully-qualified class path for the embedding adapter.",
     )
     kwargs: dict[str, Any] = Field(

@@ -8,7 +8,7 @@ import pytest
 import respx
 from httpx import HTTPStatusError, Response
 
-from ravn.adapters.embedding.openai import (
+from niuu.adapters.embedding.openai import (
     _DEFAULT_DIMENSION,
     _DEFAULT_MODEL,
     OpenAIEmbeddingAdapter,

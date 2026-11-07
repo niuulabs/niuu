@@ -19,7 +19,7 @@ import logging
 from typing import Any
 from urllib.parse import urlparse
 
-from ravn.adapters.tools._url_security import check_ssrf
+from niuu.utils.url_security import check_ssrf
 from ravn.domain.models import ToolResult
 from ravn.ports.browser import BrowserPort, PageSummary
 from ravn.ports.tool import ToolPort

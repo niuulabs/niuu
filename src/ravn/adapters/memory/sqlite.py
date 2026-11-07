@@ -28,6 +28,8 @@ from pathlib import Path
 from time import monotonic
 
 from niuu.adapters.search.sqlite import SqliteSearchAdapter
+from niuu.ports.embedding import EmbeddingPort
+from niuu.ports.reranker import RerankerPort
 from ravn.adapters.memory.scoring import (
     _AVG_EPISODE_CHARS,
     _CHARS_PER_TOKEN,
@@ -53,9 +55,7 @@ from ravn.memory_telemetry import (
     record_memory_operation,
     result_for,
 )
-from ravn.ports.embedding import EmbeddingPort
 from ravn.ports.memory import MemoryPort
-from ravn.ports.reranker import RerankerPort
 
 # ---------------------------------------------------------------------------
 # Schema

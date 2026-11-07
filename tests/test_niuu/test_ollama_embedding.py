@@ -6,7 +6,7 @@ import pytest
 import respx
 from httpx import Response
 
-from ravn.adapters.embedding.ollama import (
+from niuu.adapters.embedding.ollama import (
     _DEFAULT_BASE_URL,
     _DEFAULT_DIMENSION,
     _DEFAULT_MODEL,

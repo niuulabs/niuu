@@ -43,7 +43,7 @@ Enable embeddings for semantic (meaning-based) search alongside keyword search:
 ```yaml
 embedding:
   enabled: true
-  adapter: "ravn.adapters.embedding.sentence_transformer.SentenceTransformerEmbeddingAdapter"
+  adapter: "niuu.adapters.embedding.sentence_transformer.SentenceTransformerEmbeddingAdapter"
   rrf_k: 60
   semantic_candidate_limit: 50
 ```

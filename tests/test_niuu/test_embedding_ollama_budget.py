@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 import pytest
 
-from ravn.adapters.embedding.ollama import OllamaEmbeddingAdapter
+from niuu.adapters.embedding.ollama import OllamaEmbeddingAdapter
 
 
 class _FakeClient:

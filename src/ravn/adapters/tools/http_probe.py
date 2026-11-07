@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from ravn.adapters.tools._url_security import check_ssrf
+from niuu.utils.url_security import check_ssrf
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
 

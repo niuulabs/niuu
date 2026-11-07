@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ravn.adapters.embedding.sentence_transformer import (
+from niuu.adapters.embedding.sentence_transformer import (
     _DEFAULT_MODEL,
     SentenceTransformerEmbeddingAdapter,
 )
