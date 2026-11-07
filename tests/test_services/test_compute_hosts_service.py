@@ -42,7 +42,9 @@ ADMIN = Principal(user_id="admin", email="a@x", tenant_id="tenant", roles=["volu
 USER = Principal(user_id="user", email="u@x", tenant_id="tenant", roles=["volundr:developer"])
 
 
-def _service(*hosts, issuer=None, inspector=None, connector=None, ledger=None, executions=None):
+def _service(
+    *hosts, issuer=None, inspector=None, connector=None, ledger=None, executions=None, pin=None
+):
     repository = HostRepository(*hosts)
     connector = connector or Connector()
     inspector = inspector or Inspector()
@@ -65,6 +67,7 @@ def _service(*hosts, issuer=None, inspector=None, connector=None, ledger=None, e
         },
         token_issuer=issuer or Issuer(),
         join_url="https://forge.example",
+        join_pin=pin,
         pairing_code_ttl_seconds=600,
         check_interval_seconds=300,
         pending_check_interval_seconds=5,
@@ -157,6 +160,33 @@ class TestMint:
         assert minted.code in minted.command
         assert minted.command_wget.startswith("wget -qO- --header=")
         assert await service.pairing_codes() == [stored]
+
+    async def test_a_pinned_join_command_uses_curl_with_the_pin_and_offers_no_wget(self):
+        service, _, _, _ = _service(pin="sha256//pinned+key/A=")
+
+        minted = await service.mint(
+            ADMIN, execution="host@1", connector="direct-ssh", tags=[], slots=None
+        )
+
+        assert service.join_pin == "sha256//pinned+key/A="
+        assert minted.command.startswith(
+            "curl -fsSL -k --pinnedpubkey sha256//pinned+key/A= -H 'Authorization: Bearer "
+        )
+        assert minted.command.endswith(
+            "https://forge.example/api/v1/forge/compute/hosts/join.sh | sudo sh"
+        )
+        assert minted.command_wget is None
+
+    async def test_an_unpinned_join_has_no_pin_and_no_insecure_flag(self):
+        service, _, _, _ = _service()
+
+        minted = await service.mint(
+            ADMIN, execution="host@1", connector="direct-ssh", tags=[], slots=None
+        )
+
+        assert service.join_pin is None
+        assert " -k " not in minted.command
+        assert "pinnedpubkey" not in minted.command
 
     async def test_code_expiry_is_the_shorter_of_token_and_ttl(self):
         service, repository, _, _ = _service(issuer=Issuer(ttl_seconds=30))

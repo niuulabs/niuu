@@ -348,6 +348,8 @@ export function createMockComputeHosts(
         code: token,
         command: `curl -fsSL -H 'Authorization: Bearer ${token}' https://forge.example/api/v1/forge/compute/hosts/join.sh | sudo sh`,
         commandWget: `wget -qO- --header='Authorization: Bearer ${token}' https://forge.example/api/v1/forge/compute/hosts/join.sh | sudo sh`,
+        joinUrl: 'https://forge.example',
+        pin: null,
       };
     },
     revokePairingCode: async (_instanceId, codeId) => {
