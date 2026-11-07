@@ -5,51 +5,32 @@ import {
   type SessionGrant,
   type SessionRuntimeOffer,
 } from '../domain/sessionRuntimes';
-import './RunsAsChoice.css';
+import './RunsAs.css';
 
 /**
- * "Runs as": the runtimes the host offers, as cards, and the extra access the chosen one
- * can give. Renders nothing for a host that offers no choice.
+ * "Runs as": what the host runs every session as, read-only, and the extra access its
+ * runtime can give. The runtime is the server's, so nothing here picks it. Renders
+ * nothing for a host that declares none.
  */
-export function RunsAsChoice({
-  offers,
+export function RunsAs({
   offer,
   grants,
-  onSelect,
   onGrantsChange,
 }: {
-  offers: readonly SessionRuntimeOffer[];
   offer: SessionRuntimeOffer | undefined;
   grants: readonly SessionGrant[];
-  onSelect: (offer: SessionRuntimeOffer) => void;
   onGrantsChange: (grants: SessionGrant[]) => void;
 }) {
-  if (!offers.length || !offer) return null;
+  if (!offer) return null;
+  const label = RUNTIME_LABELS[offer.runtime];
   return (
     <div className="vol-runs-as" data-testid="runs-as">
-      <span className="vol-runs-as__title" id="runs-as-title">
-        Runs as
-      </span>
-      <div className="vol-runs-as__cards" role="group" aria-labelledby="runs-as-title">
-        {offers.map((candidate) => {
-          const label = RUNTIME_LABELS[candidate.runtime];
-          return (
-            <button
-              key={candidate.executionProfile}
-              type="button"
-              className="vol-runs-as__card"
-              aria-pressed={candidate.executionProfile === offer.executionProfile}
-              onClick={() => onSelect(candidate)}
-            >
-              <strong>{label.name}</strong>
-              <span>{label.summary}</span>
-            </button>
-          );
-        })}
-      </div>
+      <p className="vol-runs-as__line" title={label.summary}>
+        <span className="vol-runs-as__title">Runs as:</span> <strong>{label.name}</strong>
+      </p>
       {offer.grants.length > 0 && (
         <fieldset className="vol-runs-as__grants">
-          <legend>{RUNTIME_LABELS[offer.runtime].name}: extra access</legend>
+          <legend>{label.name}: extra access</legend>
           <div className="vol-runs-as__grant-row">
             {offer.grants.map((grant) => (
               <label key={grant} className="vol-runs-as__grant">
@@ -77,7 +58,7 @@ export function RunsAsChoice({
   );
 }
 
-/** How soon a session with the chosen runtime starts, for the launch button's side. */
+/** How soon a session on this host starts, for the launch button's side. */
 export function RunsAsReadiness({ offer }: { offer: SessionRuntimeOffer | undefined }) {
   if (!offer) return null;
   return (

@@ -4,32 +4,35 @@ COPY containers/python-security/ /security/
 RUN apt-get update && apt-get install -y --no-install-recommends patch \
     && python /security/build.py /patched-stdlib
 
-# Compose's published v5.5.1 binary embeds vulnerable containerd v2.3.4 and
-# golang.org/x/net v0.58.0 (GO-2026-6603/6611/6612); v5.6.0 still pins that x/net.
-# Build the release with the patched modules and Go 1.27.3 until upstream ships them.
+# Compose v5.7.0 already requires the patched containerd v2.4.2 and golang.org/x/net
+# v0.60.0 (GO-2026-6603/6611/6612) but still pins klauspost/compress v1.20.0
+# (GO-2026-6865, fixed in v1.20.2), and its published binary is built with Go 1.26.10.
+# Build the release with Go 1.27.3 and klauspost/compress v1.20.3 (the version gh
+# v2.103.3 ships) until upstream moves past v1.20.0.
 FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS compose-build
 ARG TARGETARCH
 WORKDIR /src
-RUN wget -q https://github.com/docker/compose/archive/refs/tags/v5.5.1.tar.gz -O /tmp/compose.tar.gz \
-    && echo "311077662698fd8e34769a894f9d5240befb1730990efa8ed58e0fa8725d2d84  /tmp/compose.tar.gz" | sha256sum -c - \
+RUN wget -q https://github.com/docker/compose/archive/refs/tags/v5.7.0.tar.gz -O /tmp/compose.tar.gz \
+    && echo "98f5b7dd4a66d8a2d9289e918fa0f63e5ff9821623950e53e633571a78b30d63  /tmp/compose.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/compose.tar.gz --strip-components=1 \
-    && go get github.com/containerd/containerd/v2@v2.3.6 golang.org/x/net@v0.60.0 \
+    && go get github.com/klauspost/compress@v1.20.3 \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -tags e2e \
-        -ldflags '-w -X github.com/docker/compose/v5/internal.Version=v5.5.1-niuu.2' \
+        -ldflags '-w -X github.com/docker/compose/v5/internal.Version=v5.7.0-niuu.1' \
         -o /out/docker-compose ./cmd
 
-# gh v2.102.0 (the latest release) is built with Go 1.27.1 and golang.org/x/net
-# v0.58.0 (GO-2026-6603/6604/6611/6612). Build the same release with Go 1.27.3 and
-# the patched module; return to GitHub's apt package once a release ships them.
+# gh v2.103.3 requires klauspost/compress v1.20.3 in its go.mod
+# (GO-2026-6865, fixed in v1.20.2) and golang.org/x/net v0.60.0 (GO-2026-6603/6604/
+# 6611/6612), so no module override is needed. Build it from the checksum-verified
+# source with Go 1.27.3, which satisfies its `toolchain go1.27.3`, to keep the
+# version pinned and the toolchain current.
 FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS gh-build
 ARG TARGETARCH
 WORKDIR /src
-RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.102.0.tar.gz -O /tmp/gh.tar.gz \
-    && echo "08bf0ef8b4409893889175e0f5279d30d6edd96465816042c0d7c72eac598158  /tmp/gh.tar.gz" | sha256sum -c - \
+RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.103.3.tar.gz -O /tmp/gh.tar.gz \
+    && echo "bb148138a3a2fe023e57c78042fe3b42fc09171c0e8fff4cf983b227b7a2eade  /tmp/gh.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/gh.tar.gz --strip-components=1 \
-    && go get golang.org/x/net@v0.60.0 \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath \
-        -ldflags '-s -w -X github.com/cli/cli/v2/internal/build.Version=2.102.0-niuu.1 -X github.com/cli/cli/v2/internal/build.Date=2026-09-30' \
+        -ldflags '-s -w -X github.com/cli/cli/v2/internal/build.Version=2.103.3-niuu.1 -X github.com/cli/cli/v2/internal/build.Date=2026-10-26' \
         -o /out/gh ./cmd/gh
 
 # BuildKit keeps the native wheel in its existing per-platform CI cache.
@@ -46,10 +49,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
-    UV_VERSION="0.13.5"; \
+    UV_VERSION="0.13.7"; \
     case "${TARGETARCH}" in \
-      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f" ;; \
-      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="4bb69cf95ed13f23713bb7bc09f241896ea0c75b7c557e615a20604b82f9c403" ;; \
+      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83" ;; \
+      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="71279f8d3c67241e807b9d8db872d1bf541579fb9f08b7d1eb1682196d1e57dc" ;; \
       *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}" -o "/tmp/${UV_ARCHIVE}"; \
@@ -141,10 +144,17 @@ ARG OS_PACKAGES_REFRESH=
 # git: the platform clones session workspaces before a sandbox container starts.
 # openssh-client: VM-backed sessions bootstrap and tunnel to their guest over SSH.
 # curl: fetches the docker CLI below.
+# openssh-server: the volundr chart's host connect endpoint (hostConnect) runs this image's
+# sshd as a sidecar; registered hosts behind NAT log in as niuu-connect, which has no
+# password and no shell ('*' rather than a locked '!', which sshd would refuse). No sshd
+# runs otherwise, and the image carries no host keys: the endpoint mounts its own.
 RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
-        git openssh-client libnss-wrapper ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/*
+        git openssh-client openssh-server libnss-wrapper ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub \
+    && useradd --system --no-create-home --home-dir /nonexistent \
+        --shell /usr/sbin/nologin niuu-connect \
+    && usermod -p '*' niuu-connect
 
 # docker CLI + compose plugin: in docker mode this image is also the host-side
 # CLI (`niuu up` runs from a container against the host's Docker socket, see
@@ -182,7 +192,8 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
 COPY --from=builder --chown=65532:65532 /dist-root/data /data
 
-RUN --network=none ssh -V
+RUN --network=none ssh -V && test -x /usr/sbin/sshd && id niuu-connect \
+    && test -z "$(ls /etc/ssh/ssh_host_* 2>/dev/null)"
 
 USER 65532:65532
 

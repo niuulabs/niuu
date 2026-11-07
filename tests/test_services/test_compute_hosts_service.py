@@ -15,6 +15,7 @@ from tests.compute_host_fakes import (
     HOST_KEY,
     POOL,
     Connector,
+    HostPool,
     HostRepository,
     Inspector,
     Issuer,
@@ -44,15 +45,25 @@ USER = Principal(user_id="user", email="u@x", tenant_id="tenant", roles=["volund
 
 
 def _service(
-    *hosts, issuer=None, inspector=None, connector=None, ledger=None, executions=None, pin=None
+    *hosts,
+    issuer=None,
+    inspector=None,
+    connector=None,
+    ledger=None,
+    executions=None,
+    pin=None,
+    pool=None,
 ):
     repository = HostRepository(*hosts)
+    if pool is not None:
+        pool.repository = repository
     connector = connector or Connector()
     inspector = inspector or Inspector()
     service = ComputeHostService(
         pool_id=POOL,
         repository=repository,
         compute_repository=ledger or SlotLedger(),
+        compute_pool=pool or HostPool(repository),
         connectors={"direct-ssh": connector},
         inspector=inspector,
         executions=executions
@@ -410,12 +421,65 @@ class TestOperatorActions:
         observe.return_value.count.assert_called_once()
         assert repository.hosts == {}
 
+    async def test_reprepare_ends_the_idle_hold_then_checks(self):
+        allocation = uuid4()
+        host = make_host(allocation_id=allocation, health=HostHealth.QUARANTINED)
+        ledger = SlotLedger({allocation: [_binding(allocation, state=SlotState.RELEASED)]})
+        pool = HostPool()
+        service, repository, _, inspector = _service(host, ledger=ledger, pool=pool)
+        reprepared = await service.reprepare(ADMIN, host.id)
+        assert pool.disposed == [allocation]
+        assert reprepared.allocation_id is None
+        assert (reprepared.service, reprepared.health) == (HostService.ACTIVE, HostHealth.HEALTHY)
+        assert inspector.audits == [(host.id, (), False)]
+
+    async def test_reprepare_an_unheld_host_only_checks_it(self):
+        host = make_host(service=HostService.OUT)
+        pool = HostPool()
+        service, _, _, inspector = _service(host, pool=pool)
+        reprepared = await service.reprepare(ADMIN, host.id)
+        assert pool.disposed == []
+        assert reprepared.service is HostService.OUT
+        assert len(inspector.audits) == 1
+
+    async def test_reprepare_refuses_while_sessions_run(self):
+        allocation = uuid4()
+        host = make_host(allocation_id=allocation)
+        ledger = SlotLedger({allocation: [_binding(allocation)]})
+        pool = HostPool()
+        service, *_ = _service(host, ledger=ledger, pool=pool)
+        with pytest.raises(ComputeHostStateError, match="drain it"):
+            await service.reprepare(ADMIN, host.id)
+        assert pool.disposed == []
+
+    async def test_reprepare_refuses_a_host_being_removed(self):
+        host = make_host(allocation_id=uuid4(), service=HostService.REMOVING)
+        service, *_ = _service(host)
+        with pytest.raises(ComputeHostStateError, match="being removed"):
+            await service.reprepare(ADMIN, host.id)
+
+    @pytest.mark.parametrize(
+        ("error", "reason"),
+        [
+            (ValueError("Stop the session"), "placed on this host meanwhile"),
+            (RuntimeError("ssh 255"), "could not end the host's current preparation: Runtime"),
+        ],
+    )
+    async def test_reprepare_reports_a_disposal_that_fails(self, error, reason):
+        host = make_host(allocation_id=uuid4())
+        pool = HostPool()
+        pool.error = error
+        service, *_ = _service(host, pool=pool)
+        with pytest.raises(ComputeHostStateError, match=reason):
+            await service.reprepare(ADMIN, host.id)
+
     async def test_admin_only(self):
         host = make_host()
         service, *_ = _service(host)
         for call in (
             service.drain(USER, host.id, remove=False),
             service.resume(USER, host.id),
+            service.reprepare(USER, host.id),
             service.remove(USER, host.id),
             service.check_now(USER, host.id),
         ):
@@ -646,3 +710,74 @@ class TestMacHosts:
         observe.return_value.count.assert_called_once_with(
             "volundr.compute.host.quarantined", attributes={"pool": POOL}
         )
+
+
+class EndpointConnector(Connector):
+    """A connector with a connect endpoint, admitting its hosts as one user."""
+
+    def endpoint_key_options(self, host, user):
+        return 'restrict,permitlisten="127.0.0.1:20000"' if user == "niuu-connect" else None
+
+
+class TestConnectEndpoint:
+    async def test_a_registered_hosts_key_gets_its_connectors_line(self):
+        host = make_host()
+        service, *_ = _service(host, connector=EndpointConnector())
+        key_type, key = HOST_KEY.split()
+        answer = await service.endpoint_key(user="niuu-connect", key_type=key_type, key=key)
+        assert answer.host_id == host.id
+        assert answer.line == f'restrict,permitlisten="127.0.0.1:20000" {HOST_KEY}'
+
+    async def test_nothing_for_a_user_the_connector_does_not_admit(self):
+        service, *_ = _service(make_host(), connector=EndpointConnector())
+        key_type, key = HOST_KEY.split()
+        assert await service.endpoint_key(user="root", key_type=key_type, key=key) is None
+
+    async def test_nothing_for_a_connector_without_an_endpoint(self):
+        service, *_ = _service(make_host())
+        key_type, key = HOST_KEY.split()
+        assert await service.endpoint_key(user="niuu-connect", key_type=key_type, key=key) is None
+
+    async def test_nothing_for_an_unknown_malformed_or_foreign_key(self):
+        foreign = make_host(pool_id="other-pool", host_public_key=other_host_key(9))
+        service, *_ = _service(foreign, connector=EndpointConnector())
+        assert await service.endpoint_key(user="niuu-connect", key_type="ssh-rsa", key="x") is None
+        key_type, key = other_host_key(8).split()
+        assert await service.endpoint_key(user="niuu-connect", key_type=key_type, key=key) is None
+        key_type, key = other_host_key(9).split()
+        assert await service.endpoint_key(user="niuu-connect", key_type=key_type, key=key) is None
+
+    async def test_a_removed_host_is_not_admitted_any_more(self):
+        host = make_host()
+        service, repository, *_ = _service(host, connector=EndpointConnector())
+        await service.remove(ADMIN, host.id)
+        key_type, key = HOST_KEY.split()
+        assert host.id not in repository.hosts
+        assert await service.endpoint_key(user="niuu-connect", key_type=key_type, key=key) is None
+
+
+class TestDroppedConnections:
+    async def test_a_dropped_tunnel_is_checked_at_once_and_goes_unreachable(self):
+        now = datetime.now(UTC)
+        host = make_host(last_checked_at=now)
+        connector = Connector(connected=False)
+        inspector = Inspector(error=RuntimeError("tunnel down"))
+        service, repository, *_ = _service(host, connector=connector, inspector=inspector)
+
+        with patch("volundr.domain.services.compute_hosts.get_observability"):
+            await service.maintain()
+
+        assert repository.hosts[host.id].health is HostHealth.UNREACHABLE
+        assert "tunnel down" in repository.hosts[host.id].findings[0]
+
+    async def test_a_connected_host_waits_for_its_interval(self):
+        host = make_host(last_checked_at=datetime.now(UTC))
+        service, _, _, inspector = _service(host)
+        await service.maintain()
+        assert inspector.audits == []
+
+    async def test_an_unreachable_host_is_retried_on_its_own_interval(self):
+        host = make_host(health=HostHealth.UNREACHABLE, last_checked_at=datetime.now(UTC))
+        service, _, _, inspector = _service(host, connector=Connector(connected=False))
+        await service.maintain()
+        assert inspector.audits == []

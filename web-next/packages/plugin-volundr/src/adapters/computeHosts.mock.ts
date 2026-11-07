@@ -29,6 +29,7 @@ export type MockComputeHostMethods = Pick<
   | 'updateComputeHost'
   | 'drainComputeHost'
   | 'resumeComputeHost'
+  | 'reprepareComputeHost'
   | 'checkComputeHost'
   | 'removeComputeHost'
 >;
@@ -38,6 +39,26 @@ const MOCK_EXECUTION = 'host@2026-11-07';
 const MOCK_CONNECTOR = 'direct-ssh';
 const MOCK_CODE_TTL_MS = 10 * 60 * 1000;
 const MOCK_CLEANUP_COMMAND = 'sudo niuu-host-leave';
+const MOCK_JOIN_URL = 'https://forge.example/api/v1/forge/compute/hosts/join.sh';
+const MOCK_SCRIPT_FILENAME = 'niuu-join.sh';
+
+/** A short stand-in for the script Forge renders for one code. */
+function mockJoinScript(token: string): string {
+  return [
+    '#!/bin/sh',
+    '# Join this machine to a Niuu Forge as compute (mock).',
+    'set -eu',
+    "FORGE_URL='https://forge.example'",
+    `CODE='${token}'`,
+    'echo "niuu: registering with $FORGE_URL"',
+    '',
+  ].join('\n');
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
 function facts(cpus: number, memoryGib: number, gpus = 0): HostFacts {
   return {
@@ -210,6 +231,20 @@ export function seedComputeHosts(): ComputeHost[] {
         lastError: null,
       },
     }),
+    host({
+      id: 'host-hofvarpnir',
+      name: 'hofvarpnir',
+      state: 'out_of_service',
+      service: 'out',
+      slots: 8,
+      connection: {
+        kind: 'direct_ssh',
+        target: '192.168.90.37:22',
+        connected: true,
+        since: '2026-11-06T09:00:00Z',
+        lastError: null,
+      },
+    }),
   ];
 }
 
@@ -343,13 +378,26 @@ export function createMockComputeHosts(
       };
       codes.set(code.id, { code, request });
       const token = `eyJhbGciOiJIUzI1NiJ9.mock-${counter}.signature`;
+      const content = mockJoinScript(token);
+      const sha256 = await sha256Hex(content);
       return {
         ...code,
         code: token,
-        command: `curl -fsSL -H 'Authorization: Bearer ${token}' https://forge.example/api/v1/forge/compute/hosts/join.sh | sudo sh`,
-        commandWget: `wget -qO- --header='Authorization: Bearer ${token}' https://forge.example/api/v1/forge/compute/hosts/join.sh | sudo sh`,
         joinUrl: 'https://forge.example',
         pin: null,
+        command: `curl -fsSL -H 'Authorization: Bearer ${token}' ${MOCK_JOIN_URL} | sudo sh`,
+        commandWget: `wget -qO- --header='Authorization: Bearer ${token}' ${MOCK_JOIN_URL} | sudo sh`,
+        script: {
+          filename: MOCK_SCRIPT_FILENAME,
+          sha256,
+          content,
+          commands: [
+            `curl -fsSL -o ${MOCK_SCRIPT_FILENAME} -H 'Authorization: Bearer ${token}' ${MOCK_JOIN_URL}`,
+            `echo '${sha256}  ${MOCK_SCRIPT_FILENAME}' | sha256sum -c -`,
+            `less ${MOCK_SCRIPT_FILENAME}`,
+            `sudo sh ${MOCK_SCRIPT_FILENAME}`,
+          ],
+        },
       };
     },
     revokePairingCode: async (_instanceId, codeId) => {
@@ -385,8 +433,27 @@ export function createMockComputeHosts(
     },
     resumeComputeHost: async (_instanceId, hostId) => {
       const found = hostOrThrow(hostId);
-      if (found.state !== 'out_of_service') throw conflict('Only an out-of-service host resumes.');
+      if (found.state === 'draining' && !found.removeWhenEmpty) {
+        return withState(
+          { ...found, service: 'active' },
+          found.sessions.length ? 'in_service' : 'ready',
+        );
+      }
+      if (found.state !== 'out_of_service') {
+        throw conflict('Only a draining or out-of-service host can resume.');
+      }
       return withState({ ...found, service: 'active' }, 'ready');
+    },
+    reprepareComputeHost: async (_instanceId, hostId) => {
+      const found = hostOrThrow(hostId);
+      if (found.sessions.length > 0) {
+        throw conflict('Sessions run on this host; drain it, and re-prepare once it is empty.');
+      }
+      // The idle hold ends, so the next claim runs the current recipe; then it is checked.
+      return withState(
+        { ...found, lastCheckedAt: new Date(now()).toISOString() },
+        found.state === 'in_service' ? 'ready' : found.state,
+      );
     },
     checkComputeHost: async (_instanceId, hostId) =>
       save({ ...hostOrThrow(hostId), lastCheckedAt: new Date(now()).toISOString() }),

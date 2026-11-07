@@ -14,7 +14,12 @@ from __future__ import annotations
 
 import shlex
 
-from volundr.adapters.outbound.host_checks import DARWIN_FACTS_SH, FACTS_SH, LEAVE_PATH
+from volundr.adapters.outbound.host_checks import (
+    DARWIN_FACTS_SH,
+    FACTS_SH,
+    LEAVE_HOOKS_DIR,
+    LEAVE_PATH,
+)
 
 #: The host's Forge configuration, read by niuu-host-leave.
 HOST_CONFIG_PATH = "/etc/niuu/compute-host.env"
@@ -174,7 +179,12 @@ if [ -n "$HOME_DIR" ] && [ -f "$KEYS" ]; then
   chown "$SSH_USER" "$KEYS.niuu-tmp"
   mv "$KEYS.niuu-tmp" "$KEYS"
 fi
+# A connector's hooks undo what it started, while its files are still there.
+for hook in __LEAVE_HOOKS__/*.sh; do
+  if [ -e "$hook" ]; then sh -eu "$hook"; fi
+done
 for path in $SETUP_FILES; do rm -f "$path"; done
+rmdir __LEAVE_HOOKS__ 2>/dev/null || true
 rm -f __NIUU_KEY__ __NIUU_KEY__.pub "$CONFIG"
 echo "niuu: $HOST_NAME left the Forge at $FORGE_URL"
 rm -f "$0"
@@ -185,8 +195,8 @@ rm -f "$0"
 # script runs it with the code and paths in the environment, so the code is in the script
 # once.
 _DARWIN_BRANCH = r"""if [ "$(uname -s)" = Darwin ]; then
-  FORGE_URL="$FORGE_URL" CODE="$CODE" PIN="$PIN" CONFIG="$CONFIG" LEAVE="$LEAVE" \
-    NIUU_KEY="$NIUU_KEY" sh -s <<'NIUU_JOIN_DARWIN'
+  FORGE_URL="$FORGE_URL" CODE="$CODE" PIN="$PIN" CONFIG="$CONFIG" LEAVE="$LEAVE" NIUU_KEY="$NIUU_KEY" \
+    sh -s <<'NIUU_JOIN_DARWIN'
 __DARWIN_JOIN__
 NIUU_JOIN_DARWIN
   exit
@@ -211,17 +221,16 @@ for tool in sh ssh-keygen python3 sudo launchctl dscl dseditgroup route ipconfig
   command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 [ -x /usr/sbin/sshd ] || command -v sshd >/dev/null 2>&1 || missing="$missing sshd"
-command -v curl >/dev/null 2>&1 || missing="$missing curl"
-# A pinned Forge (its own join listener) is reached with its certificate's key pinned.
-post() {
-  if [ -z "$PIN" ]; then
-    curl -fsS --fail-with-body -H "Authorization: Bearer $CODE" \
-      -H 'Content-Type: application/json' --data "$1" "$2"
-  else
-    curl -fsS --fail-with-body -k --pinnedpubkey "$PIN" -H "Authorization: Bearer $CODE" \
-      -H 'Content-Type: application/json' --data "$1" "$2"
-  fi
-}
+if ! command -v curl >/dev/null 2>&1; then
+  missing="$missing curl"
+elif [ -n "$PIN" ]; then
+  # The Forge's certificate is pinned: -k skips the CA, the pin is the trust.
+  post() { curl -fsS --fail-with-body -k --pinnedpubkey "$PIN" -H "Authorization: Bearer $CODE" \
+    -H 'Content-Type: application/json' --data "$1" "$2"; }
+else
+  post() { curl -fsS --fail-with-body -H "Authorization: Bearer $CODE" \
+    -H 'Content-Type: application/json' --data "$1" "$2"; }
+fi
 [ -z "$missing" ] || fail "missing:$missing; these come with macOS and its Command Line Tools (xcode-select --install)"
 # /usr/bin/python3 is a stub until the Command Line Tools are installed.
 python3 -c 'import json' >/dev/null 2>&1 || \
@@ -352,8 +361,10 @@ rm -f "$0"
 
 
 def render_leave_script() -> str:
-    return _LEAVE.replace("__CONFIG__", shlex.quote(HOST_CONFIG_PATH)).replace(
-        "__NIUU_KEY__", shlex.quote(NIUU_HOST_KEY_PATH)
+    return (
+        _LEAVE.replace("__CONFIG__", shlex.quote(HOST_CONFIG_PATH))
+        .replace("__NIUU_KEY__", shlex.quote(NIUU_HOST_KEY_PATH))
+        .replace("__LEAVE_HOOKS__", shlex.quote(LEAVE_HOOKS_DIR))
     )
 
 

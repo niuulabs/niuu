@@ -375,6 +375,64 @@ guestMetadata:
   # (SpiffeGuestIdentity); requires spire-controller-manager.
   spiffeRegistration: false
 
+# Host connect endpoint for registered hosts behind NAT (ReverseSshConnector): an OpenSSH
+# sidecar in the Forge pod. Each host keeps one `ssh -N -R` to it and forwards a port on
+# the pod's loopback to its own sshd, which Forge dials. Its AuthorizedKeysCommand asks
+# Forge on a socket in a volume only Forge and the sidecar mount; only keys of
+# registered reverse-SSH hosts are admitted, each to listen on its own loopback port and
+# nothing else. See docs/operator/compute-hosts.md ("Hosts behind NAT").
+hostConnect:
+  # -- Run the endpoint. Needs one Forge pod (replicaCount 1, strategy Recreate, no
+  # autoscaling) and a namespace that admits a root container (Pod Security baseline):
+  # sshd separates privileges per connection.
+  enabled: false
+  # -- Port sshd listens on in the pod, and the Service's port.
+  port: 2222
+  # -- The volume Forge and the sidecar share: the key-lookup socket, the connection
+  # records and the revoke pipe. Must equal the connector's `runtime_dir` kwarg.
+  runtimeDir: /run/niuu-connect
+  # -- The account hosts log in as; must equal the connector's `connect_user` kwarg.
+  # The image creates it with no password and no shell.
+  user: niuu-connect
+  # -- Existing Secret with the endpoint's own Ed25519 host key (OpenSSH format). Hosts
+  # pin its public half: put that in the connector's `endpoint_host_key` kwarg.
+  # Create it once: ssh-keygen -t ed25519 -N '' -f key && kubectl create secret generic
+  # <name> --from-file=ssh_host_ed25519_key=key
+  hostKeySecret:
+    name: ""
+    key: ssh_host_ed25519_key
+  # -- Bound on one key lookup from sshd to Forge; past it the connection is refused
+  # and the host retries.
+  keyLookupTimeoutSeconds: 5
+  # -- The image's Python, which runs the key command (root-owned, as sshd requires).
+  python: /usr/local/bin/python3
+  # -- Keepalive from the endpoint: a host silent for interval × countMax is dropped,
+  # which frees its port for its reconnect.
+  clientAliveIntervalSeconds: 15
+  clientAliveCountMax: 3
+  # -- Bound on a connection's authentication.
+  loginGraceTimeSeconds: 20
+  # -- Public-key attempts per connection; a host offers exactly one key.
+  maxAuthTries: 2
+  resources: {}
+  # -- How hosts reach the endpoint: a LoadBalancer Service, or a Gateway TCPRoute to
+  # a ClusterIP Service.
+  service:
+    type: LoadBalancer
+    port: 2222
+    annotations: {}
+    loadBalancerIP: ""
+    loadBalancerSourceRanges: []
+    externalTrafficPolicy: ""
+  tcpRoute:
+    enabled: false
+    # -- Gateway listeners (TCP) the route attaches to.
+    parentRefs: []
+    annotations: {}
+  # -- NetworkPolicy ingress to the endpoint (networkPolicy.enabled); empty admits any
+  # source, since hosts are wherever their NAT is.
+  networkPolicyFrom: []
+
 podManager:
   # -- Explicit contributor backend identity; set vm for VmPodManager
   runtimeBackend: ""

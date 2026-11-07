@@ -42,6 +42,10 @@ from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.external_modules import load_external_module_manifests
 
 if TYPE_CHECKING:
+    from volundr.adapters.inbound.host_connect_keys import (
+        EndpointKeyAnswer,
+        HostConnectKeyServer,
+    )
     from volundr.domain.execution_catalog import ResolvedExecutionPlan
     from volundr.domain.guest_access import GuestAccess
     from volundr.domain.host_preparation import HostPreparation
@@ -120,6 +124,7 @@ def build_registered_hosts(
         raise ValueError(
             "Registered hosts need compute.execution_catalog: each host runs one catalog execution"
         )
+    repository = PostgresRegisteredHostRepository(database_pool)
     connectors: dict[str, HostConnector] = {}
     for binding in hosts.connectors:
         connector = import_class(binding.adapter)(
@@ -127,6 +132,7 @@ def build_registered_hosts(
         )
         if not isinstance(connector, HostConnector):
             raise TypeError(f"Connector {binding.binding_id} must implement HostConnector")
+        connector.attach(repository)
         connectors[binding.binding_id] = connector
     executions: dict[str, HostExecution] = {}
     accesses: dict[str, GuestAccess] = {}
@@ -170,11 +176,23 @@ def build_registered_hosts(
         command_timeout_seconds=hosts.command_timeout_seconds,
     )
     return RegisteredHostComponents(
-        repository=PostgresRegisteredHostRepository(database_pool),
+        repository=repository,
         connectors=connectors,
         inspector=inspector,
         executions=executions,
     )
+
+
+def build_host_connect_key_servers(
+    connectors: Mapping[str, HostConnector], answer: EndpointKeyAnswer
+) -> list[HostConnectKeyServer]:
+    """One key-lookup socket per connect endpoint the connectors use; usually none."""
+    from volundr.adapters.inbound.host_connect_keys import HostConnectKeyServer
+
+    sockets = sorted(
+        {c.endpoint_socket for c in connectors.values() if c.endpoint_socket is not None}
+    )
+    return [HostConnectKeyServer(socket_path=path, answer=answer) for path in sockets]
 
 
 #: What the Add host form calls each runtime a host can run.

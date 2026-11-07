@@ -23,7 +23,7 @@ import {
 } from './launchEngines';
 import { useForgePreference } from './useForgePreference';
 import { useRunsAs } from './hooks/useRunsAs';
-import { RunsAsChoice, RunsAsReadiness } from './RunsAsChoice';
+import { RunsAs, RunsAsReadiness } from './RunsAs';
 import './QuickLaunch.css';
 
 type RepoCatalog = {
@@ -90,7 +90,7 @@ export function QuickLaunch({
     placeholderData: keepPreviousData,
   });
   const localMountsEnabled = Boolean(features.data?.localMountsEnabled);
-  // A VM Forge offers what its sessions run as; other hosts offer no choice.
+  // A VM Forge says what it runs every session as; other hosts say nothing.
   const runsAs = useRunsAs(host?.id);
   const [pickedSource, setPickedSource] = useState<'git' | 'local_mount' | null>(null);
   const sourceType =
@@ -190,7 +190,7 @@ export function QuickLaunch({
                 paths: [{ host_path: folder.trim(), mount_path: '/workspace', read_only: false }],
               }
             : { type: 'git', repo: repo.trim(), branch: branch.trim() },
-        ...(effort || runsAs.offer
+        ...(effort || runsAs.grants.length
           ? {
               workloadConfig: {
                 ...(effort ? { reasoningEffort: effort } : {}),
@@ -348,13 +348,7 @@ export function QuickLaunch({
               )}
             </>
           )}
-          <RunsAsChoice
-            offers={runsAs.offers}
-            offer={runsAs.offer}
-            grants={runsAs.grants}
-            onSelect={runsAs.select}
-            onGrantsChange={runsAs.setGrants}
-          />
+          <RunsAs offer={runsAs.offer} grants={runsAs.grants} onGrantsChange={runsAs.setGrants} />
         </section>
         <section className="vol-quick__section">
           <h2>{standard.name} standard</h2>

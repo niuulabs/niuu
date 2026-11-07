@@ -1374,3 +1374,113 @@ class TestModelServerSeeds:
         assert seeds[1].config["token"] == OPEN_GATEWAY_TOKEN
         assert seeds[1].credential is not None
         assert seeds[1].credential.data == {"provider": "local"}
+
+
+class TestHostsSwitch:
+    """``hosts: {enabled: true}`` adds a registered-hosts pool next to local sessions."""
+
+    def _settings(self, tmp_path: Path, **hosts: object) -> CLISettings:
+        return CLISettings(
+            mode="mini",
+            hosts={
+                "enabled": True,
+                "execution_catalog": str(tmp_path / "catalog"),
+                "join_url": "http://192.168.1.10:8080",
+                "allow_plaintext_join": True,
+                **hosts,
+            },
+        )
+
+    def test_renders_the_placement_pod_manager_and_the_hosts_pool(self, tmp_path) -> None:
+        env = _resolve_local_pod_manager_env(self._settings(tmp_path))
+
+        assert "POD_MANAGER__ADAPTER" not in env
+        pod_manager = json.loads(env["POD_MANAGER"])
+        assert pod_manager["adapter"].endswith("PlacementPodManager")
+        assert "runtime_backend" not in pod_manager
+        local = pod_manager["kwargs"]["local"]
+        assert local["adapter"].endswith("LocalProcessPodManager")
+        assert local["kwargs"]["max_concurrent"] == 4
+        assert pod_manager["kwargs"]["pool"] == {
+            "adapter": "volundr.adapters.outbound.vm_pod_manager.VmPodManager",
+            "kwargs": {"profile": "host", "pool_id": "local-hosts", "max_machines": 16},
+        }
+        compute = json.loads(env["COMPUTE"])
+        assert compute["pool_id"] == compute["provider_binding"] == "local-hosts"
+        assert compute["reuse_policy"] == "reuse"
+        assert compute["provider"]["adapter"].endswith("RegisteredHostMachineProvider")
+        assert compute["provider"]["kwargs"]["profiles"] == {"host": {"label": "Registered host"}}
+        assert compute["execution_catalog"]["kwargs"]["root"] == str(tmp_path / "catalog")
+        hosts = compute["hosts"]
+        assert hosts["connectors"] == [
+            {
+                "binding_id": "direct-ssh",
+                "adapter": "volundr.adapters.outbound.host_connectors.DirectSshConnector",
+                "kwargs": {"allowed_sources": []},
+                "secret_kwargs_env": {},
+            }
+        ]
+        assert (hosts["reserved_cpu"], hosts["reserved_memory_mib"]) == (2, 4096)
+        assert hosts["min_free_disk_mib"] == 20480
+        assert hosts["pairing_signing_key_file"] == "~/.niuu/forge-host-pairing-key.pem"
+
+    def test_forge_composes_local_and_hosts_from_the_rendered_env(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from volundr.adapters.outbound.local_process import LocalProcessPodManager
+        from volundr.adapters.outbound.placement_pod_manager import PlacementPodManager
+        from volundr.adapters.outbound.vm_pod_manager import VmPodManager
+        from volundr.composition_builders import _create_pod_manager, _runtime_backend
+        from volundr.config import Settings as VolundrSettings
+
+        env = _resolve_local_pod_manager_env(
+            self._settings(tmp_path, allowed_sources=["192.168.1.0/24"])
+        )
+        for key in ("POD_MANAGER", "COMPUTE"):
+            monkeypatch.setenv(key, env[key])
+        settings = VolundrSettings()
+        pod_manager = _create_pod_manager(settings)
+
+        assert isinstance(pod_manager, PlacementPodManager)
+        assert isinstance(pod_manager._local, LocalProcessPodManager)
+        assert isinstance(pod_manager._pool, VmPodManager)
+        assert pod_manager.profile == "host"
+        assert _runtime_backend(settings, pod_manager) == "process"
+        assert settings.compute.hosts.connectors[0].kwargs == {
+            "allowed_sources": ["192.168.1.0/24"]
+        }
+
+    def test_is_off_by_default(self) -> None:
+        env = _resolve_local_pod_manager_env(CLISettings(mode="mini"))
+        assert "COMPUTE" not in env
+        assert env["POD_MANAGER__ADAPTER"].endswith("LocalProcessPodManager")
+
+    def test_needs_an_execution_catalog(self, tmp_path) -> None:
+        with pytest.raises(ValueError, match="hosts.execution_catalog"):
+            self._settings(tmp_path, execution_catalog="")
+
+    def test_refuses_a_second_compute_pool(self, tmp_path) -> None:
+        with pytest.raises(ValueError, match="both define this Forge's compute pool"):
+            CLISettings(
+                mode="mini",
+                hosts={"enabled": True, "execution_catalog": str(tmp_path)},
+                compute={
+                    "pool_id": "vms",
+                    "max_machines": 1,
+                    "provider": {"adapter": "private.Provider", "kwargs": {}},
+                    "runtime": {"adapter": "private.Runtime", "kwargs": {}},
+                },
+            )
+
+    @pytest.mark.parametrize("mode", ["docker", "cluster", "openshell"])
+    def test_is_for_mini_mode_only(self, tmp_path, mode) -> None:
+        with pytest.raises(ValueError, match="hosts.enabled is for mini mode"):
+            CLISettings(mode=mode, hosts={"enabled": True, "execution_catalog": str(tmp_path)})
+
+    def test_refuses_a_plaintext_join_url_unless_allowed(self, tmp_path) -> None:
+        with pytest.raises(ValueError, match="allow_plaintext_join"):
+            self._settings(tmp_path, allow_plaintext_join=False)
+
+    def test_refuses_unknown_keys(self, tmp_path) -> None:
+        with pytest.raises(ValueError, match="reserved_gpu"):
+            self._settings(tmp_path, reserved_gpu=1)

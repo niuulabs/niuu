@@ -38,6 +38,9 @@ from volundr.domain.guest_access import GuestAccess
 #: Installed by join.sh; removes Forge's key, the sshd drop-in, the host key and the host's
 #: Forge configuration.
 LEAVE_PATH = "/usr/local/sbin/niuu-host-leave"
+#: Connector hooks niuu-host-leave runs before it removes the files join set up; each is a
+#: setup file of its connector, so leave removes it too.
+LEAVE_HOOKS_DIR = "/etc/niuu/leave.d"
 
 #: Reads what the capacity step and the host list show. Shared with join.sh, which sends the
 #: same facts at join.
@@ -360,6 +363,7 @@ class SshHostInspector(HostInspector):
         )
 
     async def leave(self, host: RegisteredHost) -> None:
+        await self._connectors[host.connector].require_connection(host)
         await self._access_for(host).execute(
             self._ref(host),
             MachineBootstrap(),
@@ -373,6 +377,7 @@ class SshHostInspector(HostInspector):
         )
 
     async def _run(self, host: RegisteredHost, program: str, args: tuple[str, ...]) -> CheckOutput:
+        await self._connectors[host.connector].require_connection(host)
         ref = self._ref(host)
         command = shlex.join(["sudo", "-n", "sh", "-s", "--", *args])
         result = await self._access_for(host).execute(

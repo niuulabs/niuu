@@ -652,7 +652,7 @@ class TestRoomGatewayExposure:
         (ingress,) = of_kind(render(tmp_path), "Ingress")
 
         annotations = ingress["metadata"]["annotations"]
-        assert not [key for key in annotations if key.startswith("cert-manager.io")]
+        assert not [key for key in annotations if key.split("/", 1)[0] == "cert-manager.io"]
 
     def test_operator_annotations_and_middleware_chain_are_kept(self, tmp_path):
         docs = render(

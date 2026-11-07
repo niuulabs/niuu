@@ -50,8 +50,16 @@ def test_install_validates_all_modules_before_changing_anything(tmp_path):
     assert not list(cache.iterdir())
 
 
+def _mitigated(manifest):
+    return [item["cve"] for item in manifest["mitigations"]]
+
+
 def _claimed(manifest):
-    return [*manifest["cves"], *(item["cve"] for item in manifest["upstream_fixes"])]
+    return [
+        *manifest["cves"],
+        *(item["cve"] for item in manifest["upstream_fixes"]),
+        *_mitigated(manifest),
+    ]
 
 
 @pytest.fixture
@@ -64,6 +72,7 @@ def vex_inputs():
         "python_version": manifest["python_version"],
         "files": {name: item["patched"] for name, item in manifest["files"].items()},
         "cves": manifest["cves"],
+        "mitigations": _mitigated(manifest),
         "executable": "/usr/local/bin/python3.14",
         "library": "/usr/local/lib/libpython3.14.so.1.0",
         "image": image,
@@ -107,7 +116,8 @@ def test_vex_is_limited_to_verified_image_component_and_its_cves(vex_inputs, lib
     assert {s["vulnerability"]["name"] for s in result["statements"]} == set(_claimed(manifest))
     assert len(result["statements"]) == len(_claimed(manifest))
     for statement in result["statements"]:
-        assert statement["status"] == "fixed"
+        mitigated = statement["vulnerability"]["name"] in _mitigated(manifest)
+        assert statement["status"] == ("not_affected" if mitigated else "fixed")
         assert image.split("@", 1)[1] in statement["products"][0]["@id"]
         assert statement["products"][0]["subcomponents"] == [
             {"@id": f"pkg:generic/python@{manifest['python_version']}"}
@@ -121,6 +131,7 @@ def test_vex_is_limited_to_verified_image_component_and_its_cves(vex_inputs, lib
         "hash",
         "version",
         "cves",
+        "mitigations",
         "upstream",
         "scan",
         "runtime",
@@ -140,6 +151,8 @@ def test_vex_rejects_unverified_evidence(vex_inputs, invalid):
         evidence["python_version"] = "3.14.6"
     elif invalid == "cves":
         evidence["cves"] = []
+    elif invalid == "mitigations":
+        evidence["mitigations"] = []
     elif invalid == "upstream":
         evidence["upstream_fixes"] = {cve: "wrong" for cve in evidence["upstream_fixes"]}
     elif invalid == "scan":
@@ -172,3 +185,65 @@ def test_vex_tells_upstream_fixes_apart_from_backports(vex_inputs):
         assert notes[item["cve"]].startswith(
             f"Fixed upstream in CPython {manifest['python_version']}"
         )
+
+
+def test_vex_does_not_claim_a_fix_for_mitigated_cves(vex_inputs):
+    _, _, _, manifest = vex_inputs
+    statements = {
+        s["vulnerability"]["name"]: s for s in load("vex").document(*vex_inputs)["statements"]
+    }
+    assert manifest["mitigations"]
+    for item in manifest["mitigations"]:
+        statement = statements[item["cve"]]
+        assert statement["status"] == "not_affected"
+        assert statement["justification"] == "inline_mitigations_already_exist"
+        assert statement["impact_statement"] == item["impact_statement"]
+        assert statement["status_notes"].startswith("Mitigated, not fixed")
+
+
+def test_vex_rejects_a_mitigation_for_an_unverified_module(vex_inputs):
+    image, evidence, scan, manifest = vex_inputs
+    manifest["mitigations"][0]["file"] = "unlisted.py"
+    with pytest.raises(ValueError, match="unverified module"):
+        load("vex").document(image, evidence, scan, manifest)
+
+
+def test_every_pinned_patch_and_declared_adaptation_verifies():
+    import json
+
+    builder = load("build")
+    manifest = json.loads((ROOT / "manifest.json").read_text())
+    adapted = [item for item in manifest["patches"] if "adapted" in item]
+    assert adapted
+    for item in manifest["patches"]:
+        expected = ROOT / (
+            item["adapted"]["patch"] if "adapted" in item else f"{item['commit']}.patch"
+        )
+        assert builder.checked_patch(item) == expected
+
+
+def _adaptation():
+    import json
+
+    builder = load("build")
+    manifest = json.loads((ROOT / "manifest.json").read_text())
+    item = next(item for item in manifest["patches"] if "adapted" in item)
+    upstream = (ROOT / f"{item['commit']}.patch").read_text(encoding="utf-8")
+    adapted = (ROOT / item["adapted"]["patch"]).read_text(encoding="utf-8")
+    return builder, upstream, adapted, item["adapted"]
+
+
+@pytest.mark.parametrize("tamper", ["upstream_section", "extra_file", "undeclared_drop"])
+def test_adapted_patch_must_match_upstream_outside_declared_files(tamper):
+    builder, upstream, adapted, adaptation = _adaptation()
+    builder.check_adaptation(upstream, adapted, adaptation)
+    if tamper == "upstream_section":
+        adapted = adapted.replace(
+            "Null characters are now rejected", "Null characters are rejected", 1
+        )
+    elif tamper == "extra_file":
+        adapted += "diff --git a/Lib/os.py b/Lib/os.py\n--- a/Lib/os.py\n+++ b/Lib/os.py\n"
+    elif tamper == "undeclared_drop":
+        adaptation = {**adaptation, "dropped_files": []}
+    with pytest.raises(RuntimeError):
+        builder.check_adaptation(upstream, adapted, adaptation)

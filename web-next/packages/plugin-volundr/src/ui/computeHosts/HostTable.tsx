@@ -20,7 +20,9 @@ const ACTION_LABEL: Record<HostAction, string> = {
   check: 'Check now',
   drain: 'Drain',
   drain_remove: 'Drain and remove',
+  cancel_drain: 'Cancel drain',
   resume: 'Resume',
+  reprepare: 'Re-prepare',
   remove: 'Remove',
 };
 

@@ -11,12 +11,12 @@ function service(options: Parameters<typeof createMockComputeHosts>[0] = {}) {
 describe('mock compute hosts', () => {
   it('is part of the mock Forge service', async () => {
     const overview = await createMockVolundrService().getComputeHosts('forge');
-    expect(overview?.hosts).toHaveLength(7);
+    expect(overview?.hosts).toHaveLength(8);
   });
 
   it('summarises hosts by state, free slots and tag set', async () => {
     const overview = await service().getComputeHosts('forge');
-    expect(overview?.summary.hosts).toBe(7);
+    expect(overview?.summary.hosts).toBe(8);
     expect(overview?.summary.byState).toMatchObject({ in_service: 3, draining: 1, pending: 1 });
     expect(overview?.summary.slotsFree).toBe(8);
     expect(overview?.summary.warmTargets.map((target) => target.met)).toEqual([true, false]);
@@ -47,6 +47,14 @@ describe('mock compute hosts', () => {
     });
     expect(code.command).toContain(code.code);
     expect(code.commandWget).toContain('wget');
+    expect(code.script.content).toContain(code.code);
+    expect(code.script.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(code.script.commands).toEqual([
+      expect.stringContaining(`-o niuu-join.sh -H 'Authorization: Bearer ${code.code}'`),
+      `echo '${code.script.sha256}  niuu-join.sh' | sha256sum -c -`,
+      'less niuu-join.sh',
+      'sudo sh niuu-join.sh',
+    ]);
     expect((await hosts.getComputeHosts('forge'))?.pairingCodes.map((item) => item.id)).toEqual([
       code.id,
     ]);
@@ -85,6 +93,35 @@ describe('mock compute hosts', () => {
     });
     await expect(hosts.resumeComputeHost('forge', skinfaxi.id)).rejects.toMatchObject({
       status: 409,
+    });
+  });
+
+  it('cancels a drain that does not remove the host', async () => {
+    const hosts = service();
+    const skinfaxi = seedComputeHosts()[1]!;
+    await hosts.drainComputeHost('forge', skinfaxi.id, false);
+    expect(await hosts.resumeComputeHost('forge', skinfaxi.id)).toMatchObject({
+      state: 'in_service',
+      service: 'active',
+    });
+    const glad = seedComputeHosts()[6]!;
+    const empty = service({ hosts: [{ ...glad, state: 'draining', service: 'draining' }] });
+    expect(await empty.resumeComputeHost('forge', glad.id)).toMatchObject({ state: 'ready' });
+  });
+
+  it('re-prepares only an empty host', async () => {
+    const hosts = service();
+    const [hrimfaxi, , , , , , , hofvarpnir] = seedComputeHosts();
+    await expect(hosts.reprepareComputeHost('forge', hrimfaxi!.id)).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(await hosts.reprepareComputeHost('forge', hofvarpnir!.id)).toMatchObject({
+      state: 'out_of_service',
+      lastCheckedAt: '2026-11-06T12:00:00.000Z',
+    });
+    const idle = { ...hrimfaxi!, sessions: [] };
+    expect(await service({ hosts: [idle] }).reprepareComputeHost('forge', idle.id)).toMatchObject({
+      state: 'ready',
     });
   });
 

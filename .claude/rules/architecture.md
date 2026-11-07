@@ -109,6 +109,49 @@ fatal at startup (`_create_host_pairing_signer`). A joined host calls no
 other route: Forge reaches it over SSH and reads its health itself, so the
 node-signing exception below is not extended to hosts.
 
+### Exception: the host connect endpoint (`ReverseSshConnector`)
+
+A registered host behind NAT keeps one outbound SSH connection to an OpenSSH
+sidecar of the Forge pod (the volundr chart's `hostConnect`) and forwards a port
+on the pod's loopback to its own sshd. That endpoint is an authenticated entry
+point that is not HTTP: SSH public-key authentication of a *machine* by the
+Ed25519 key it registered with its `compute_host_join` pairing code. It is
+sanctioned for the same reason as node signing: there is no OIDC principal for a
+machine, and the key never leaves the host.
+
+Limits of this exception, enforced together, not individually:
+
+- **Only keys of registered, not-removed hosts whose connector is the reverse
+  SSH connector are admitted, looked up live on every connection.** sshd has no
+  authorized_keys file (`AuthorizedKeysFile none`); its `AuthorizedKeysCommand`
+  asks Forge, on a Unix socket in a volume only Forge and the sidecar mount
+  (`volundr.adapters.inbound.host_connect_keys`), never an HTTP route.
+  `ComputeHostService.endpoint_key` answers only for a host of this pool whose
+  connector admits it, and only for the connect user (`AllowUsers`). Removing a
+  host takes effect at once (the connector stops answering before the row goes),
+  and revoke also ends a live connection: the key command records sshd's
+  per-connection monitor process, and the sidecar's reaper kills it when Forge
+  writes the host's id to its pipe. A revoke that cannot end it is an error,
+  never "done".
+- **Each key may only listen on its own assigned loopback port and nothing
+  else**: `restrict,port-forwarding,permitlisten="127.0.0.1:<port>",command="/usr/sbin/nologin"`,
+  with `AllowTcpForwarding remote` and `PermitOpen none` in the endpoint's
+  `sshd_config` so no key can open a connection anywhere (authorized_keys has no
+  `permitopen="none"`; OpenSSH drops a line that carries it). No shell, PTY,
+  agent, X11 or stream-local forwarding. The port is unique on the Forge
+  (`idx_compute_hosts_tunnel_port`), from the connector's `port_range`; a full
+  range refuses the join.
+- **The endpoint listens in the Forge pod's network namespace only for this**,
+  in one pod (`replicaCount: 1`, `Recreate`, no autoscaling; the chart refuses
+  anything else), with its own pinned Ed25519 host key from a Secret.
+- **What crosses it is an SSH session from Forge to the host's sshd, pinned to
+  the same registered key**, so the endpoint never carries trust of its own:
+  anything else answering on a port fails the pin.
+- **Exactly one way in.** Do not extend this endpoint to another account,
+  another kind of forwarding or an HTTP route without adding it to the same
+  enforcement points: the connector's `endpoint_key_options`, the service's
+  `endpoint_key`, and the chart's `sshd_config`.
+
 ### Exception: session-bound Forge credentials (`forge_session`)
 
 Forge mints a second kind of scoped workload token itself, each time it
@@ -288,9 +331,11 @@ Limits of this exception, enforced together:
   launch held. An allocation's identity vouches for every slot of the machine, so
   a process that holds it can ask for any slot: more than one slot per machine
   needs a runtime that keeps that identity out of the slots' reach (own user,
-  network namespace and credential files per slot). Until a runtime declares
-  that (`VmRuntime.supports_slots`), Forge refuses a pool with more than one slot
-  per machine.
+  network namespace and credential files per slot; the identity mounted into the
+  slot's guest agent only). A runtime declares that with
+  `VmRuntime.supports_slots`; `SshContainerVmRuntime` does only with
+  `slot_isolation` and a credential delivery that serves slots. Forge refuses
+  more than one slot per machine unless every configured runtime declares it.
 - **Exactly one route.** Do not extend either identity to another route without
   adding it to the same enforcement points this one touches: the router, the
   Volundr chart's Envoy `jwt_authn` bypass and Cedar `ext_authz` skip
@@ -302,3 +347,28 @@ Limits of this exception, enforced together:
 - **Forge's authority to mint is narrow.** The ServiceAccount tokens come from
   the Kubernetes TokenRequest API under a namespaced Role allowing only `create`
   on `serviceaccounts/token` (`guestMetadata` in the Volundr chart).
+
+### Containers in host-mode slots are rootless
+
+A host-mode session (`SshHostVmRuntime`) runs on its VM as its slot's user, in
+the slot's network namespace and cgroup (`vm_slot_supervisor`). Sessions on one
+VM are kept apart by those boundaries alone, so nothing a slot is given may be
+root on the machine:
+
+- **Never the guest's Docker daemon.** No slot user joins the `docker` group
+  and its socket is never mounted into a slot: either is root, and reads
+  every other slot. The guest's Docker runs only the platform's own
+  containers (the slot holder, the credential agents).
+- **No sudo** for a slot user, and no other root-equivalent capability (a
+  privileged container, `CAP_SYS_ADMIN`, a host mount).
+- **Containers are rootless Podman**, inside the slot: subordinate ids per
+  slot that overlap no other slot and no VM account, a cgroup delegated from
+  the slot's own (so every container sits under the slot's limits), the
+  slot's network namespace, and the session's PID namespace.
+- **The VM's own credentials are hidden from the session's view** (an empty
+  tmpfs over `/etc/niuu`), whatever their modes, because the session runs on
+  the VM's filesystem.
+
+There is no grant that lifts this, and no "machine to itself" path for a host
+session. A session that needs root runs on a container runtime
+(`SshContainerVmRuntime`), where root is its container's.

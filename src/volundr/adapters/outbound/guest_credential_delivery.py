@@ -20,7 +20,11 @@ from uuid import UUID
 
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.observability import get_observability
-from volundr.adapters.outbound.vm_slot_layout import GUEST_AGENT_DIRECTORY, state_key
+from volundr.adapters.outbound.vm_slot_layout import (
+    GUEST_AGENT_DIRECTORY,
+    slot_index,
+    state_key,
+)
 from volundr.domain.compute import MachineBootstrap, SlotLease
 from volundr.domain.guest_credentials import (
     METADATA_ADDRESS,
@@ -267,6 +271,12 @@ class MetadataCredentialDelivery(GuestCredentialDelivery):
     def identity(self) -> GuestIdentity:
         return self._identity
 
+    @property
+    def serves_slots(self) -> bool:
+        # Each slot runs its own agent, which names its slot; the identity it proves
+        # with must survive any one slot's stop.
+        return self._identity.serves_slots
+
     def machine_bootstrap(self, defaults: MachineBootstrap) -> MachineBootstrap:
         return self._identity.machine_bootstrap(defaults)
 
@@ -333,6 +343,7 @@ class MetadataCredentialDelivery(GuestCredentialDelivery):
         config = {
             "metadata_url": self._url,
             "allocation_id": str(lease.id),
+            "slot": slot_index(lease),
             "auth": self._identity.agent_auth(lease.id),
             "token_volumes": [
                 {

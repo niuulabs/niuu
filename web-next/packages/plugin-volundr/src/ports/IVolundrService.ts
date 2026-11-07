@@ -165,8 +165,9 @@ export interface IVolundrService {
    */
   getLivePreviewConfig(instanceId?: string): Promise<LivePreviewConfig>;
   /**
-   * What a launch on the host may run as ("Runs as"), with warm readiness. Empty when the
-   * host offers no choice. Each Forge host offers its own, so ask the one that will run it.
+   * What the host runs every session as ("Runs as"), with warm readiness: one offer, or
+   * none when the host declares none. A host runs exactly one runtime and sessions never
+   * choose, so ask the host that will run the session.
    */
   getSessionRuntimes(instanceId?: string): Promise<SessionRuntimeOffer[]>;
 
@@ -200,8 +201,16 @@ export interface IVolundrService {
    * the host once it is empty.
    */
   drainComputeHost(instanceId: string, hostId: string, remove: boolean): Promise<ComputeHost>;
-  /** Returns an out-of-service host to service after a clean audit. */
+  /**
+   * Returns an out-of-service host to service after a clean audit; on a draining host it
+   * cancels the drain.
+   */
   resumeComputeHost(instanceId: string, hostId: string): Promise<ComputeHost>;
+  /**
+   * Has the next claim run the current recipe again on an empty host, then checks it;
+   * rejects while sessions run there (drain it first).
+   */
+  reprepareComputeHost(instanceId: string, hostId: string): Promise<ComputeHost>;
   /** Runs the probe and the audit now. */
   checkComputeHost(instanceId: string, hostId: string): Promise<ComputeHost>;
   /** Removes an empty host; rejects while sessions still run on it (drain and remove). */

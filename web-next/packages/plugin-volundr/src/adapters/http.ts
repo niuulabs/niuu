@@ -488,8 +488,6 @@ type InstanceTargetPayload = {
 
 type SessionRuntimePayload = {
   runtime: SessionRuntimeOffer['runtime'];
-  execution_profile: string;
-  default: boolean;
   grants: SessionRuntimeOffer['grants'];
   readiness: SessionRuntimeOffer['readiness'];
 };
@@ -1418,6 +1416,7 @@ type ComputeHostMethods = Pick<
   | 'updateComputeHost'
   | 'drainComputeHost'
   | 'resumeComputeHost'
+  | 'reprepareComputeHost'
   | 'checkComputeHost'
   | 'removeComputeHost'
 >;
@@ -1456,6 +1455,7 @@ function computeHostMethods(client: HttpClient): ComputeHostMethods {
           computeHostsPath(instanceId, '/pairing-codes'),
           pairingCodeBody(request),
         ),
+        instanceId,
       ),
     revokePairingCode: async (instanceId, codeId) => {
       await client.delete<void>(
@@ -1475,6 +1475,11 @@ function computeHostMethods(client: HttpClient): ComputeHostMethods {
     resumeComputeHost: async (instanceId, hostId) =>
       toComputeHostResponse(
         await client.post<ComputeHostPayload>(hostPath(instanceId, hostId, '/resume')),
+        instanceId,
+      ),
+    reprepareComputeHost: async (instanceId, hostId) =>
+      toComputeHostResponse(
+        await client.post<ComputeHostPayload>(hostPath(instanceId, hostId, '/reprepare')),
         instanceId,
       ),
     checkComputeHost: async (instanceId, hostId) =>
@@ -2057,10 +2062,14 @@ export function buildVolundrHttpAdapter(
       if (!Array.isArray(payload?.runtimes)) {
         throw new Error(`Invalid session runtimes from ${instanceId ?? 'the default host'}`);
       }
+      if (payload.runtimes.length > 1) {
+        throw new Error(
+          `${instanceId ?? 'The default host'} offered ${payload.runtimes.length} session ` +
+            'runtimes; a host runs exactly one',
+        );
+      }
       return payload.runtimes.map((offer) => ({
         runtime: offer.runtime,
-        executionProfile: offer.execution_profile,
-        isDefault: offer.default,
         grants: offer.grants,
         readiness: offer.readiness,
       }));

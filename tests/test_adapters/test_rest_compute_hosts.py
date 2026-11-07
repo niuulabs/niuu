@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -15,6 +16,7 @@ from tests.compute_host_fakes import (
     HOST_KEY,
     POOL,
     Connector,
+    HostPool,
     HostRepository,
     Inspector,
     Issuer,
@@ -54,6 +56,7 @@ def _client(*hosts, principal=ADMIN, issuer=None, pin=None):
         pool_id=POOL,
         repository=repository,
         compute_repository=SlotLedger(),
+        compute_pool=HostPool(repository),
         connectors={"direct-ssh": Connector()},
         inspector=Inspector(),
         executions={
@@ -165,6 +168,7 @@ class TestAdmin:
         assert client.post(f"{base}/drain", json={}).json()["state"] == "out_of_service"
         assert client.post(f"{base}/resume").json()["state"] == "ready"
         assert client.post(f"{base}/check").json()["health"] == "healthy"
+        assert client.post(f"{base}/reprepare").json()["health"] == "healthy"
         removed = client.delete(base).json()
         assert removed == {"removed": True, "host_cleanup_command": None}
         assert client.post(f"{base}/check").status_code == 404
@@ -177,6 +181,7 @@ class TestAdmin:
         drained = client.post(f"/api/v1/forge/compute/hosts/{host.id}/drain", json={"remove": True})
         assert drained.json()["remove_when_empty"] is True
         assert client.post(f"/api/v1/forge/compute/hosts/{host.id}/resume").status_code == 409
+        assert client.post(f"/api/v1/forge/compute/hosts/{host.id}/reprepare").status_code == 409
 
     def test_unknown_host_is_404(self):
         client, *_ = _client()
@@ -238,8 +243,9 @@ class TestHostFacing:
             create_compute_hosts_router(
                 ComputeHostService(
                     pool_id=POOL,
-                    repository=HostRepository(),
+                    repository=(repository := HostRepository()),
                     compute_repository=SlotLedger(),
+                    compute_pool=HostPool(repository),
                     connectors={"direct-ssh": Connector()},
                     inspector=Inspector(),
                     executions={"host@1": make_execution()},
@@ -259,6 +265,22 @@ class TestHostFacing:
         assert "/api/v1/forge/compute/hosts/pairing-codes" in paths
         assert "/api/v1/forge/compute/hosts/join.sh" not in paths
         assert "/api/v1/forge/compute/hosts/join" not in paths
+
+    def test_mint_offers_the_script_to_read_first_with_its_digest(self):
+        client, *_ = _client()
+        minted = client.post(
+            "/api/v1/forge/compute/hosts/pairing-codes",
+            json={"execution": "host@1", "connector": "direct-ssh"},
+        ).json()
+        script = minted["script"]
+        served = client.get("/api/v1/forge/compute/hosts/join.sh", headers=_scoped(minted["code"]))
+        assert script["content"] == served.text
+        assert script["sha256"] == hashlib.sha256(served.content).hexdigest()
+        download, verify, read, run = script["commands"]
+        assert download.startswith("curl -fsSL -o niuu-join.sh -H ")
+        assert minted["code"] in download
+        assert verify == f"echo '{script['sha256']}  niuu-join.sh' | sha256sum -c -"
+        assert (read, run) == ("less niuu-join.sh", "sudo sh niuu-join.sh")
 
     def test_join_registers_and_answers_what_join_sh_needs(self):
         client, repository, _ = _client()

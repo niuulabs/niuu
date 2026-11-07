@@ -21,7 +21,12 @@ from volundr.adapters.outbound.host_checks import (
 )
 from volundr.adapters.outbound.host_connectors import DirectSshConnector
 from volundr.domain.compute import MachineState
-from volundr.domain.compute_hosts import HostHealth, HostPlatform, HostService
+from volundr.domain.compute_hosts import (
+    HostDisconnectedError,
+    HostHealth,
+    HostPlatform,
+    HostService,
+)
 from volundr.domain.guest_access import GuestCommandResult
 
 
@@ -332,3 +337,31 @@ def test_direct_ssh_sets_up_linux_and_macos_alike():
         HostPlatform.LINUX,
         HostPlatform.DARWIN,
     }
+
+
+class DisconnectedConnector(Connector):
+    async def require_connection(self, host):
+        raise HostDisconnectedError("the host's tunnel is down")
+
+
+class TestDisconnectedHosts:
+    def _inspector(self, access):
+        return SshHostInspector(
+            access_for=lambda host: access,
+            uid_base_for=lambda host: 61000,
+            connectors={"direct-ssh": DisconnectedConnector()},
+            min_free_disk_mib=2048,
+            command_timeout_seconds=30,
+        )
+
+    async def test_a_check_says_the_tunnel_is_down_without_dialing(self):
+        access = Access()
+        with pytest.raises(HostDisconnectedError, match="tunnel is down"):
+            await self._inspector(access).facts(make_host())
+        assert access.calls == []
+
+    async def test_leave_says_the_tunnel_is_down_without_dialing(self):
+        access = Access()
+        with pytest.raises(HostDisconnectedError):
+            await self._inspector(access).leave(make_host())
+        assert access.calls == []

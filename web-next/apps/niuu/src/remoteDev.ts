@@ -111,7 +111,8 @@ export function forwardSessionHost(domain: string): Connect.NextHandleFunction {
     const target = sessionHostTarget(url, domain);
     if (!target) {
       response.statusCode = 403;
-      response.end(`${url} does not name a session host under ${domain}.`);
+      response.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      response.end(`The request does not name a session host under ${domain}.`);
       return;
     }
     const method = request.method ?? 'GET';
@@ -132,6 +133,7 @@ export function forwardSessionHost(domain: string): Connect.NextHandleFunction {
       })
       .catch((error: unknown) => {
         response.statusCode = 502;
+        response.setHeader('Content-Type', 'text/plain; charset=utf-8');
         response.end(`Forwarding to ${target.origin} failed: ${String(error)}`);
       });
   };
