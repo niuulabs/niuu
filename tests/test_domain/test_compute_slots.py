@@ -20,7 +20,6 @@ from volundr.domain.compute import (
     MachineState,
     SlotLease,
     SlotState,
-    can_bind,
     display_state,
     machine_expired,
     next_free_slot,
@@ -387,36 +386,3 @@ def test_busy_outranks_failed_outranks_starting_across_slots():
     assert display_state(lease, [starting, failed, busy]) is LeaseState.BUSY
     assert display_state(lease, [starting, failed]) is LeaseState.FAILED
     assert display_state(lease, [starting]) is LeaseState.READY
-
-
-# -- root-equivalent grants -------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("state", [SlotState.BUSY, SlotState.RETIRED, SlotState.RELEASED])
-def test_a_machine_that_ever_held_an_exclusive_session_offers_no_slot(state):
-    lease = machine(slots=4)
-
-    held = [binding(lease, state=state, exclusive=True)]
-
-    assert usable_slots(lease, held, policy(reuse_policy="reuse"), NOW) == 0
-    assert not can_bind(lease, held, policy(reuse_policy="reuse"), NOW, exclusive=False)
-
-
-def test_an_exclusive_session_needs_a_machine_no_one_has_used():
-    lease = machine(slots=4)
-    neighbour = [binding(lease, state=SlotState.RELEASED)]
-
-    assert can_bind(lease, [], policy(), NOW, exclusive=True)
-    assert not can_bind(lease, neighbour, policy(reuse_policy="reuse"), NOW, exclusive=True)
-    assert can_bind(lease, neighbour, policy(reuse_policy="reuse"), NOW, exclusive=False)
-
-
-def test_a_binding_from_before_grants_existed_is_not_exclusive():
-    lease = machine()
-    stored = binding(lease).model_dump(mode="json")
-    stored.pop("exclusive")
-
-    loaded = ComputeSlot.model_validate(stored)
-
-    assert loaded.exclusive is False
-    assert SlotLease(allocation=lease, binding=loaded).exclusive is False

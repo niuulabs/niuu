@@ -14,6 +14,11 @@ starts the session over SSH, as every other guest step, never as a service:
   private ``/tmp``) and runs Skuld as the slot's user. It is PID 1 of that
   namespace, so ending it ends every process of the session.
 
+Every slot can run containers rootless with Podman: the slot's user gets its own
+subordinate uid and gid range, a delegated cgroup inside the slot's (so a
+container's limits sit under the slot's), its own runtime directory, and its
+storage in its home. It never gets the guest's Docker or sudo, which are root.
+
 Skuld comes from the digest-pinned session image, unpacked once per digest on
 the VM (``docker create`` and ``export``; no container runs it) and bind-mounted
 read-only at its own paths in the session's mount namespace. Its Python must be
@@ -27,11 +32,13 @@ import json
 import re
 from pathlib import PurePosixPath
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from volundr.adapters.outbound.ssh_vm_runtime import _START, SshContainerVmRuntime
 from volundr.adapters.outbound.vm_slot_layout import SESSION_LAUNCH, SlotLayout
 from volundr.domain.compute import BootstrapFile, MachineBootstrap, SlotLease
 from volundr.domain.models import Session, SessionSpec
-from volundr.domain.session_runtimes import SessionGrant, SessionRuntimeKind, requested_grants
+from volundr.domain.session_runtimes import SessionRuntimeKind
 
 #: Where the session image is unpacked on the VM, one directory per digest.
 HOST_IMAGE_CACHE = "/var/lib/niuu/host-images"
@@ -50,19 +57,30 @@ _WORKSPACE = "/workspace"
 _DIGEST = re.compile(r"@sha256:([a-f0-9]{64})$")
 
 #: What the agent is told about the machine it runs on.
-NIX_HINT = (
-    "You are running directly on a Linux VM as the unprivileged user {user}, not in a "
-    "container. apt and sudo are not available{grant_note}. Install software with Nix, "
-    "which is shared by every session on this VM: `nix profile install nixpkgs#<package>` "
-    "keeps it on your PATH, `nix shell nixpkgs#<package> -c <command>` uses it once, and "
-    "`nix search nixpkgs <name>` finds packages. A package another session already "
-    "installed is ready at once. Language tools install into your home as usual "
-    "(npm prefixes, `uv tool`, `go install`, `pip --user`)."
-)
 HOST_HINT = (
     "You are running directly on a Linux VM as the unprivileged user {user}, not in a "
-    "container{grant_note}."
+    "container; apt and sudo are not available."
 )
+NIX_HINT = (
+    "Install software with Nix, which every session on this VM shares: "
+    "`nix profile install nixpkgs#<package>` keeps it on your PATH, "
+    "`nix shell nixpkgs#<package> -c <command>` uses it once, and "
+    "`nix search nixpkgs <name>` finds packages; one another session installed is ready at "
+    "once. Language tools install into your home as usual (npm prefixes, `uv tool`, "
+    "`go install`, `pip --user`)."
+)
+CONTAINERS_HINT = (
+    "Containers run rootless with Podman: `podman build`, `podman run` (`docker` runs "
+    "podman). Published ports are yours alone and open as previews."
+)
+#: Rootless container state in a slot's home: the machine's, never archived.
+_CONTAINER_STATE = ("home/.local/share/containers", "home/.cache/containers")
+#: The VM's own credentials, hidden from every host session (and its containers): the
+#: guest identity token, Forge's SSH host key and the whole-VM session files.
+MASKED_GUEST_PATHS = ("/etc/niuu",)
+#: Commands every host session may use, from the VM: ``docker`` runs rootless Podman.
+HOST_BIN = "/usr/local/lib/niuu/host-bin"
+_MAX_ID = 2**32 - 2
 
 # Unpack the session image once per digest. argv: image, cache root. Prints the
 # unpack's description (host.json). The image's own PATH finds the commands.
@@ -172,7 +190,7 @@ print((root / 'host.json').read_text())
 # signals to it and reaps whatever it leaves. When Skuld ends, so does this
 # process, and with it every process left in the namespace.
 _HOST_INIT = r"""
-import grp, json, os, pathlib, signal, subprocess, sys
+import json, os, pathlib, signal, subprocess, sys
 spec = json.load(sys.stdin)
 def mount(*args):
     subprocess.run(['mount', *args], check=True)
@@ -181,7 +199,9 @@ fd = os.open('/run/netns/' + spec['netns'], os.O_RDONLY)
 os.setns(fd, os.CLONE_NEWNET)
 os.close(fd)
 os.unshare(os.CLONE_NEWNS)
-mount('--make-rprivate', '/')
+# Slave: nothing mounted here reaches the VM. Shared again within: rootless
+# Podman propagates its containers' mounts.
+mount('--make-rslave', '/')
 # Last: the next process this one starts is PID 1 of the new namespace.
 os.unshare(os.CLONE_NEWPID)
 child = os.fork()
@@ -192,12 +212,17 @@ if child:
     os.replace(temporary, pidfile)
     os._exit(0)
 mount('-t', 'proc', 'proc', '/proc')
+for path in spec['masked']:
+    # The VM's own credentials (its identity token, Forge's host key): an empty,
+    # read-only tree in their place, whatever their modes on the VM.
+    if os.path.isdir(path):
+        mount('-t', 'tmpfs', '-o', 'ro,mode=0755', 'tmpfs', path)
 for item in spec['mounts']:
     mount('--bind', *(['-o', 'ro'] if item['readonly'] else []), item['source'], item['target'])
-groups = [spec['uid']] + [grp.getgrnam(name).gr_gid for name in spec['groups']]
+mount('--make-rshared', '/')
 session = os.fork()
 if not session:
-    os.setgroups(groups)
+    os.setgroups([spec['uid']])
     os.setgid(spec['uid'])
     os.setuid(spec['uid'])
     os.umask(0o022)
@@ -285,20 +310,45 @@ if p['repo'] and not (workspace / '.git').exists():
     subprocess.run([*args, '--', p['repo'], str(workspace)], check=True, stdout=subprocess.DEVNULL)
 owner = '%d:%d' % (s['uid'], s['uid'])
 # -h: a link the session left in its storage names its own path, never a target.
-subprocess.run(['chown', '-R', '-h', owner, str(root)], check=True)
+# Container storage keeps the owners its subordinate ids gave it.
+prune = [a for path in h['keep_owners'] for a in ('-path', str(root / path), '-prune', '-o')]
+subprocess.run(['find', str(root), *prune, '-exec', 'chown', '-h', owner, '{}', '+'], check=True)
 for directory in h['private']:
     path = pathlib.Path(directory)
     path.mkdir(parents=True, exist_ok=True)
     os.chown(path, s['uid'], s['uid'])
     path.chmod(0o700)
-sudoers = pathlib.Path(h['sudoers'])
-if 'sudo' in h['grants']:
-    # Root-equivalent: the runtime only gets here on a machine the session has to itself.
-    temporary = sudoers.with_name('.' + sudoers.name)
-    temporary.write_text(h['user'] + ' ALL=(ALL:ALL) NOPASSWD: ALL\n')
-    temporary.chmod(0o440)
-    subprocess.run(['visudo', '-cqf', str(temporary)], check=True)
-    os.replace(temporary, sudoers)
+c = h['containers']
+if c:
+    if not os.path.exists('/usr/bin/podman') or not os.path.exists('/usr/bin/newuidmap'):
+        raise RuntimeError('Rootless containers need podman and uidmap on the VM; install '
+            'them through the machine profile or set compute.runtime.kwargs.containers: null')
+    first, last = c['first'], c['first'] + c['count'] - 1
+    present = []
+    for name in ('/etc/subuid', '/etc/subgid'):
+        entries = [line.split(':') for line in pathlib.Path(name).read_text().split()]
+        ours = [e for e in entries if e[0] == h['user']]
+        for e in entries:
+            start, end = int(e[1]), int(e[1]) + int(e[2]) - 1
+            if e[0] != h['user'] and start <= last and first <= end:
+                raise RuntimeError(name + ' gives ' + e[0] + ' ids overlapping slot ' + h['user']
+                    + '; move compute.runtime.kwargs.containers.subordinate_id_base')
+        if ours and ours != [[h['user'], str(first), str(c['count'])]]:
+            raise RuntimeError(name + ' holds other ids for ' + h['user'])
+        present.append(bool(ours))
+    if present == [True, False] or present == [False, True]:
+        raise RuntimeError('/etc/subuid and /etc/subgid disagree for ' + h['user'])
+    if not any(present):
+        span = '%d-%d' % (first, last)
+        subprocess.run(['usermod', '--add-subuids', span, '--add-subgids', span, h['user']],
+            check=True)
+    shim = pathlib.Path(h['bin']) / 'docker'
+    if not shim.exists():
+        shim.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+        temporary = shim.with_name('.docker')
+        temporary.write_text('#!/bin/sh\nexec podman "$@"\n')
+        temporary.chmod(0o755)
+        os.replace(temporary, shim)
 if h['nix'] and not os.path.exists('/nix/var/nix/daemon-socket/socket'):
     raise RuntimeError('This VM has no Nix daemon; install Nix through the machine profile '
         'or set compute.runtime.kwargs.nix: false')
@@ -312,17 +362,35 @@ for item in h['mounts']:
         target.touch()
 holder = subprocess.run(['docker', 'inspect', '--format', '{{.State.Pid}}', s['holder']],
     check=True, capture_output=True, text=True).stdout.strip()
-cgroup = pathlib.Path('/proc/%s/cgroup' % holder).read_text().strip().rsplit('::', 1)[1]
+# The holder's cgroup (its delegated Docker scope in the slot's slice) becomes a
+# tree: the holder in a leaf, and the session's own subtree, delegated to the
+# slot's user, where its containers get cgroups of their own under the slot's limits.
+scope = pathlib.Path('/sys/fs/cgroup' + pathlib.Path('/proc/%s/cgroup' % holder).read_text()
+    .strip().rsplit('::', 1)[1])
+if scope.name == 'holder':
+    scope = scope.parent
+leaf, session = scope / 'holder', scope / 'session'
+leaf.mkdir(exist_ok=True)
+for pid in (scope / 'cgroup.procs').read_text().split():
+    (leaf / 'cgroup.procs').write_text(pid)
+available = (scope / 'cgroup.controllers').read_text().split()
+wanted = ' '.join('+' + name for name in ('cpu', 'memory', 'pids') if name in available)
+(scope / 'cgroup.subtree_control').write_text(wanted)
+(session / 'init').mkdir(parents=True, exist_ok=True)
+for path in (session, session / 'cgroup.procs', session / 'cgroup.subtree_control',
+        session / 'cgroup.threads', session / 'init', session / 'init' / 'cgroup.procs'):
+    os.chown(path, s['uid'], s['uid'])
+(session / 'cgroup.subtree_control').write_text(wanted)
 for directory in (pidfile.parent, pathlib.Path(h['log']).parent):
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
 pidfile.unlink(missing_ok=True)
 spec = {
-    'cgroup_procs': '/sys/fs/cgroup' + cgroup + '/cgroup.procs',
+    'cgroup_procs': str(session / 'init' / 'cgroup.procs'),
     'netns': s['netns'],
     'pidfile': str(pidfile),
     'mounts': h['mounts'],
     'uid': s['uid'],
-    'groups': ['docker'] if 'docker' in h['grants'] else [],
+    'masked': h['masked'],
     'workdir': h['workdir'],
     'boot': h['boot'],
     'environment': p['environment'],
@@ -337,7 +405,7 @@ if init.returncode or not running():
     raise RuntimeError('The host session did not start; see ' + h['log'] + ' on the VM')
 """
 
-# Stop the slot's host session and withdraw its grants. argv: the stop spec
+# Stop the slot's host session and withdraw its subordinate ids. argv: the stop spec
 # (JSON). Skuld gets SIGTERM and ``stop_timeout`` to flush, then everything in
 # its namespace is killed.
 _HOST_STOP = r"""
@@ -363,8 +431,38 @@ if ours:
     if os.path.exists('/proc/%d' % pid):
         raise RuntimeError('The host session survived SIGKILL')
 pidfile.unlink(missing_ok=True)
-pathlib.Path(h['sudoers']).unlink(missing_ok=True)
+c = h['containers']
+if c:
+    span = '%d-%d' % (c['first'], c['first'] + c['count'] - 1)
+    ours = h['user'] + ':' + str(c['first']) + ':' + str(c['count'])
+    if ours in pathlib.Path('/etc/subuid').read_text().split():
+        subprocess.run(['usermod', '--del-subuids', span, '--del-subgids', span, h['user']],
+            check=True)
 """
+
+
+class RootlessContainers(BaseModel):
+    """``compute.runtime.kwargs.containers``: rootless Podman in every slot.
+
+    Slot ``n`` maps its containers' ids to ``subordinate_id_base + n *
+    subordinate_ids_per_slot`` onwards, so no two slots, and no slot and the VM,
+    share an id.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    subordinate_id_base: int = Field(
+        default=1_000_000,
+        ge=100_000,
+        description="First subordinate uid and gid of slot 0; the ranges of all slots must "
+        "be free on the VM image (Ubuntu gives its login user 100000-165535)",
+    )
+    subordinate_ids_per_slot: int = Field(
+        default=65536,
+        gt=0,
+        description="Subordinate uids and gids per slot; images that use ids up to 65534 "
+        "(nobody) need 65536",
+    )
 
 
 class SshHostVmRuntime(SshContainerVmRuntime):
@@ -379,17 +477,16 @@ class SshHostVmRuntime(SshContainerVmRuntime):
     Nix's profiles on its PATH and the agent is told how to install with it.
     The runtime refuses to start a session when the daemon is missing.
 
-    ``grants`` are the root-equivalent extras (``sudo``, ``docker``) a session may
-    ask for. A session with one gets a machine to itself, enforced by placement
-    (``ComputeSlot.exclusive``), and the runtime refuses to apply a grant on a
-    machine it shares.
+    ``containers`` (``RootlessContainers``) gives every slot rootless Podman; set it
+    to ``None`` for slots without containers. The machine profile installs podman,
+    uidmap and passt; the runtime refuses to start a session without them.
     """
 
     def __init__(
         self,
         *,
         nix: bool = True,
-        grants: list[str] | tuple[str, ...] = (),
+        containers: dict | None = {},  # noqa: B006 - read-only; the defaults of RootlessContainers
         session_start_timeout_seconds: float = 30,
         **kwargs,
     ):
@@ -404,8 +501,27 @@ class SshHostVmRuntime(SshContainerVmRuntime):
         if session_start_timeout_seconds <= 0:
             raise ValueError("session_start_timeout_seconds must be positive")
         self._nix = nix
-        self._grants = tuple(SessionGrant(grant) for grant in dict.fromkeys(grants))
+        self._containers = RootlessContainers(**containers) if containers is not None else None
         self._session_start_timeout = session_start_timeout_seconds
+        if self._containers is not None:
+            slots = self._slot_isolation.slot_capacity
+            ids = self._containers
+            end = ids.subordinate_id_base + slots * ids.subordinate_ids_per_slot
+            uids = range(self._slot_isolation.uid_base, self._slot_isolation.uid_base + slots)
+            if end > _MAX_ID:
+                raise ValueError(
+                    f"{slots} slots of {ids.subordinate_ids_per_slot} subordinate ids from "
+                    f"{ids.subordinate_id_base} end past {_MAX_ID}; lower "
+                    "containers.subordinate_id_base or slot_isolation.subnet's size"
+                )
+            if ids.subordinate_id_base < uids.stop and uids.start < end:
+                raise ValueError(
+                    "containers subordinate ids overlap the slots' own uids; move "
+                    "containers.subordinate_id_base or slot_isolation.uid_base"
+                )
+            # Container storage is the machine's: its files carry subordinate ids, and
+            # a session's images are pulled again on its next machine.
+            self._archive_excludes = (*self._archive_excludes, *_CONTAINER_STATE)
 
     @property
     def session_runtime(self) -> SessionRuntimeKind | None:
@@ -417,40 +533,27 @@ class SshHostVmRuntime(SshContainerVmRuntime):
             raise ValueError("Host-mode sessions need slot_isolation")
         return layout
 
-    @property
-    def session_grants(self) -> tuple[SessionGrant, ...]:
-        return self._grants
-
     def session_bootstrap(
         self, session: Session, spec: SessionSpec, machine: MachineBootstrap
     ) -> MachineBootstrap:
-        grants = requested_grants(session.workload_config)
-        refused = sorted(grant.value for grant in grants - set(self._grants))
-        if refused:
-            raise ValueError(
-                f"This host does not offer runtime_grants {refused}; add them to "
-                "compute.runtime.kwargs.grants or drop them from the session"
-            )
         placed = super().session_bootstrap(session, spec, machine)
         files = []
         for item in placed.files:
             if item.path == SESSION_LAUNCH:
                 launch = json.loads(item.content)
-                launch["grants"] = sorted(grant.value for grant in grants)
-                launch["environment"] = self._host_environment(launch["environment"], grants=grants)
+                launch["environment"] = self._host_environment(launch["environment"])
                 item = BootstrapFile(
                     path=item.path, content=json.dumps(launch), permissions=item.permissions
                 )
             files.append(item)
         return placed.model_copy(update={"files": tuple(files)})
 
-    def _host_environment(
-        self, environment: dict[str, str], *, grants: frozenset[SessionGrant]
-    ) -> dict[str, str]:
+    def _host_environment(self, environment: dict[str, str]) -> dict[str, str]:
         """The container session's environment, for a session on the VM itself."""
         nix_paths = [f"{_HOME}/.nix-profile/bin", "/nix/var/nix/profiles/default/bin"]
         path = [
             f"{HOST_IMAGE_VIEW}/agents",
+            *([HOST_BIN] if self._containers is not None else []),
             *(nix_paths if self._nix else []),
             _SYSTEM_PATH,
             f"{HOST_IMAGE_VIEW}/tools",
@@ -471,11 +574,9 @@ class SshHostVmRuntime(SshContainerVmRuntime):
                     "NIX_SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
                 }
             )
-        note = ""
-        if grants:
-            names = " and ".join(sorted(grant.value for grant in grants))
-            note = f", except that this session was granted {names} on a VM of its own"
-        hint = (NIX_HINT if self._nix else HOST_HINT).format(user="{slot_user}", grant_note=note)
+        hints = [HOST_HINT, *([NIX_HINT] if self._nix else [])]
+        hints += [CONTAINERS_HINT] if self._containers is not None else []
+        hint = " ".join(hints).format(user="{slot_user}")
         prompt = updated.get("SKULD__SESSION__SYSTEM_PROMPT", "")
         updated["SKULD__SESSION__SYSTEM_PROMPT"] = f"{prompt}\n\n{hint}" if prompt else hint
         return updated
@@ -505,6 +606,12 @@ class SshHostVmRuntime(SshContainerVmRuntime):
         )
         return json.loads(result.stdout)
 
+    def _subordinate_ids(self, layout: SlotLayout) -> dict | None:
+        if self._containers is None:
+            return None
+        count = self._containers.subordinate_ids_per_slot
+        return {"first": self._containers.subordinate_id_base + layout.slot * count, "count": count}
+
     def _host_spec(self, layout: SlotLayout, payload: dict, image: dict) -> dict:
         """Where the session's processes run and what they see, for _HOST_START."""
         session_data = PurePosixPath(layout.session_data)
@@ -515,7 +622,8 @@ class SshHostVmRuntime(SshContainerVmRuntime):
             {"source": f"{rootfs}{image['python_root']}", "target": image["python_root"]},
         ]
         mounts = [{**item, "readonly": True} for item in mounts]
-        private = [f"{layout.data_root}/tmp", f"{layout.run_root}/shm"]
+        runtime_directory = f"{layout.run_root}/xdg"
+        private = [f"{layout.data_root}/tmp", f"{layout.run_root}/shm", runtime_directory]
         mounts += [
             {"source": "/run/systemd/resolve/resolv.conf", "target": "/etc/resolv.conf"},
             {"source": private[0], "target": "/tmp"},
@@ -545,14 +653,19 @@ class SshHostVmRuntime(SshContainerVmRuntime):
         environment["SKULD__SESSION__SYSTEM_PROMPT"] = environment.get(
             "SKULD__SESSION__SYSTEM_PROMPT", ""
         ).replace("{slot_user}", layout.name)
+        if self._containers is not None:
+            # Podman's per-user runtime directory; there is no login session to make one.
+            environment["XDG_RUNTIME_DIR"] = runtime_directory
         return {
             "user": layout.name,
             "pidfile": f"{HOST_SESSION_STATE}/{layout.key}.pid",
             "log": f"{HOST_SESSION_LOGS}/{layout.key}.log",
-            "sudoers": f"/etc/sudoers.d/{layout.name}",
-            "grants": payload.get("grants", []),
             "nix": self._nix,
+            "containers": self._subordinate_ids(layout),
+            "bin": HOST_BIN,
+            "keep_owners": list(_CONTAINER_STATE) if self._containers is not None else [],
             "mounts": mounts,
+            "masked": list(MASKED_GUEST_PATHS),
             "private": private,
             "workdir": _WORKSPACE,
             "boot": _BOOT,
@@ -567,12 +680,6 @@ class SshHostVmRuntime(SshContainerVmRuntime):
         self, lease: SlotLease, bootstrap: MachineBootstrap, payload: dict
     ) -> None:
         layout = self._slot(lease)
-        if payload.get("grants") and not getattr(lease, "exclusive", False):
-            raise ValueError(
-                f"Session {lease.session_id} holds runtime_grants {payload['grants']} but "
-                f"shares VM allocation {lease.id}; root-equivalent grants need a machine "
-                "of their own"
-            )
         self._step(lease, "guest_skuld", "Starting the session's agents")
         await self._guest_access.execute(
             lease,
@@ -603,7 +710,8 @@ class SshHostVmRuntime(SshContainerVmRuntime):
                     {
                         "pidfile": f"{HOST_SESSION_STATE}/{layout.key}.pid",
                         "netns": layout.name,
-                        "sudoers": f"/etc/sudoers.d/{layout.name}",
+                        "user": layout.name,
+                        "containers": self._subordinate_ids(layout),
                         "stop_timeout": self._stop_timeout,
                         "poll": self._poll,
                     }

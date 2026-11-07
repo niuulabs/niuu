@@ -272,34 +272,27 @@ Limits of this exception, enforced together:
   the Kubernetes TokenRequest API under a namespaced Role allowing only `create`
   on `serviceaccounts/token` (`guestMetadata` in the Volundr chart).
 
-### Root-equivalent session grants (sudo, Docker) on shared VMs
+### Containers in host-mode slots are rootless
 
-A VM session runs in a slot whose user, namespaces and cgroup keep it from the
-machine's other slots (`vm_slot_supervisor`). A host-mode session
-(`SshHostVmRuntime`) may be **granted** `sudo` or access to the guest's Docker
-(`workload_config.runtime_grants`). Either is root on the machine: it can read
-every other slot's files and credentials, join its namespaces and leave
-anything behind for the next session. A grant is therefore never a permission
-inside a shared machine; it is a machine of the session's own. Enforced
-together, not individually:
+A host-mode session (`SshHostVmRuntime`) runs on its VM as its slot's user, in
+the slot's network namespace and cgroup (`vm_slot_supervisor`). Sessions on one
+VM are kept apart by those boundaries alone, so nothing a slot is given may be
+root on the machine:
 
-- **Only a runtime that declares a grant offers it** (`VmRuntime.session_grants`,
-  `SshHostVmRuntime(grants=[...])`); a request for any other grant is refused
-  before the session starts.
-- **Placement, not convention, gives the machine to the session.** The
-  session's binding is `exclusive` (`ComputeSlot.exclusive`). It is placed only
-  on a machine no binding has ever used (`can_bind`), and a cold start reserves a
-  machine of one slot. `usable_slots` is 0 for any machine that has ever held an
-  exclusive binding, live or ended, so no other session is placed there — then
-  or after — and the machine drains and is deleted once it is empty. Both
-  placement paths (`VmPodManager._claim_warm` and the repository's `bind`
-  re-check under the pool lock) go through these functions.
-- **The runtime refuses a grant on a shared machine.** `SshHostVmRuntime`
-  applies a grant (a `sudoers.d` drop-in for the slot user, or the `docker`
-  group on the session's processes) only when its lease is exclusive, and
-  withdraws it at stop.
+- **Never the guest's Docker daemon.** No slot user joins the `docker` group
+  and its socket is never mounted into a slot: either is root, and reads
+  every other slot. The guest's Docker runs only the platform's own
+  containers (the slot holder, the credential agents).
+- **No sudo** for a slot user, and no other root-equivalent capability (a
+  privileged container, `CAP_SYS_ADMIN`, a host mount).
+- **Containers are rootless Podman**, inside the slot: subordinate ids per
+  slot that overlap no other slot and no VM account, a cgroup delegated from
+  the slot's own (so every container sits under the slot's limits), the
+  slot's network namespace, and the session's PID namespace.
+- **The VM's own credentials are hidden from the session's view** (an empty
+  tmpfs over `/etc/niuu`), whatever their modes, because the session runs on
+  the VM's filesystem.
 
-Do not add a grant that bypasses this: a new root-equivalent capability (a
-privileged container, `CAP_SYS_ADMIN`, a host mount) is a grant, and gets the
-same exclusive placement.
-
+There is no grant that lifts this, and no "machine to itself" path for a host
+session. A session that needs root runs on a container runtime
+(`SshContainerVmRuntime`), where root is its container's.

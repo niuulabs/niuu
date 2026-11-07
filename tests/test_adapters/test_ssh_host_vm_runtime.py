@@ -24,7 +24,7 @@ from volundr.adapters.outbound.ssh_host_vm_runtime import SshHostVmRuntime
 from volundr.domain.compute import Machine, MachineBootstrap, MachineState
 from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
-from volundr.domain.session_runtimes import SessionGrant, SessionRuntimeKind
+from volundr.domain.session_runtimes import SessionRuntimeKind
 
 IMAGE = "ghcr.io/niuulabs/openshell@sha256:" + "a" * 64
 UNPACKED = {"venv": "/opt/niuu", "python_root": "/sandbox/.uv/python", "digest": "a" * 64}
@@ -43,14 +43,8 @@ def _runtime(tmp_path: Path, **kwargs) -> SshHostVmRuntime:
     return SshHostVmRuntime(**{**options, **kwargs})
 
 
-def _session(**grants) -> Session:
-    return Session(
-        name="test",
-        owner_id="owner",
-        tenant_id="tenant",
-        source=GitSource(),
-        workload_config=grants,
-    )
+def _session() -> Session:
+    return Session(name="test", owner_id="owner", tenant_id="tenant", source=GitSource())
 
 
 SPEC = SessionSpec(values={"session": {"systemPrompt": "Be brief."}}, pod_spec=PodSpecAdditions())
@@ -64,7 +58,7 @@ def _launch(bootstrap: MachineBootstrap) -> dict:
 
 @pytest.fixture
 def host(tmp_path):
-    runtime = _runtime(tmp_path, grants=["sudo", "docker"])
+    runtime = _runtime(tmp_path)
     allocation = uuid4()
     machine = Machine(
         allocation_id=allocation,
@@ -113,14 +107,34 @@ def test_host_mode_needs_a_positive_start_timeout(tmp_path):
         _runtime(tmp_path, session_start_timeout_seconds=0)
 
 
-def test_host_mode_offers_the_configured_grants_only(tmp_path):
-    runtime = _runtime(tmp_path, grants=["docker", "sudo", "docker"])
+def test_host_mode_offers_no_grants_and_runs_as_host(tmp_path):
+    runtime = _runtime(tmp_path)
 
     assert runtime.session_runtime is SessionRuntimeKind.HOST
-    assert runtime.session_grants == (SessionGrant.DOCKER, SessionGrant.SUDO)
-    assert _runtime(tmp_path).session_grants == ()
+    assert runtime.session_grants == ()
+    with pytest.raises(TypeError):
+        _runtime(tmp_path, grants=["sudo"])
+
+
+def test_container_storage_is_never_archived(tmp_path):
+    assert _runtime(tmp_path)._archive_excludes == (
+        "home/.codex/tmp",
+        "home/.local/share/containers",
+        "home/.cache/containers",
+    )
+    assert _runtime(tmp_path, containers=None)._archive_excludes == ("home/.codex/tmp",)
+
+
+def test_subordinate_ids_must_fit_and_miss_the_slots_own_uids(tmp_path):
+    isolation = {**ISOLATION, "image_user": "sandbox", "uid_base": 200_000}
+    with pytest.raises(ValueError, match="overlap the slots' own uids"):
+        _runtime(tmp_path, slot_isolation=isolation, containers={"subordinate_id_base": 150_000})
+    with pytest.raises(ValueError, match="end past"):
+        _runtime(tmp_path, containers={"subordinate_id_base": 2**32 - 2**20})
     with pytest.raises(ValueError):
-        _runtime(tmp_path, grants=["root"])
+        _runtime(tmp_path, containers={"subordinate_id_base": 99_999})
+    with pytest.raises(ValueError):
+        _runtime(tmp_path, containers={"subordinates": 1})
 
 
 # -- the session's bootstrap -------------------------------------------------------------------
@@ -134,6 +148,7 @@ def test_the_session_runs_with_pinned_agents_first_then_nix_then_the_vm(tmp_path
     environment = launch["environment"]
     assert environment["PATH"].split(":") == [
         "/opt/niuu-skuld/agents",
+        "/usr/local/lib/niuu/host-bin",
         "/home/skuld/.nix-profile/bin",
         "/nix/var/nix/profiles/default/bin",
         "/usr/local/sbin",
@@ -149,8 +164,9 @@ def test_the_session_runs_with_pinned_agents_first_then_nix_then_the_vm(tmp_path
     prompt = environment["SKULD__SESSION__SYSTEM_PROMPT"]
     assert prompt.startswith("Be brief.\n\n")
     assert "nix profile install nixpkgs#<package>" in prompt
-    assert "sudo are not available." in prompt
-    assert launch["grants"] == []
+    assert "apt and sudo are not available." in prompt
+    assert "rootless with Podman" in prompt
+    assert "grants" not in launch
 
 
 def test_without_nix_the_agent_is_only_told_where_it_runs(tmp_path):
@@ -163,6 +179,15 @@ def test_without_nix_the_agent_is_only_told_where_it_runs(tmp_path):
     assert "Nix" not in environment["SKULD__SESSION__SYSTEM_PROMPT"]
 
 
+def test_without_containers_there_is_no_docker_shim_or_hint(tmp_path):
+    runtime = _runtime(tmp_path, containers=None)
+
+    environment = _launch(runtime.bootstrap(_session(), SPEC, MachineBootstrap()))["environment"]
+
+    assert "/usr/local/lib/niuu/host-bin" not in environment["PATH"]
+    assert "Podman" not in environment["SKULD__SESSION__SYSTEM_PROMPT"]
+
+
 def test_a_session_without_a_system_prompt_gets_the_hint_alone(tmp_path):
     runtime = _runtime(tmp_path)
     spec = SessionSpec(values={"session": {}}, pod_spec=PodSpecAdditions())
@@ -170,23 +195,6 @@ def test_a_session_without_a_system_prompt_gets_the_hint_alone(tmp_path):
     environment = _launch(runtime.bootstrap(_session(), spec, MachineBootstrap()))["environment"]
 
     assert environment["SKULD__SESSION__SYSTEM_PROMPT"].startswith("You are running directly")
-
-
-def test_a_granted_session_carries_its_grants_and_says_so(tmp_path):
-    runtime = _runtime(tmp_path, grants=["sudo"])
-
-    launch = _launch(runtime.bootstrap(_session(runtime_grants=["sudo"]), SPEC, MachineBootstrap()))
-
-    assert launch["grants"] == ["sudo"]
-    prompt = launch["environment"]["SKULD__SESSION__SYSTEM_PROMPT"]
-    assert "granted sudo on a VM of its own" in prompt
-
-
-def test_a_grant_the_host_does_not_offer_is_refused(tmp_path):
-    runtime = _runtime(tmp_path, grants=["docker"])
-
-    with pytest.raises(ValueError, match=r"does not offer runtime_grants \['sudo'\]"):
-        runtime.bootstrap(_session(runtime_grants=["sudo"]), SPEC, MachineBootstrap())
 
 
 # -- start and stop ----------------------------------------------------------------------------
@@ -213,10 +221,15 @@ async def test_start_runs_the_slot_agents_unpacks_skuld_then_starts_it_as_the_sl
     key = f"{lease.id}-slot-2"
     assert host_spec["pidfile"] == f"/run/niuu/host-sessions/{key}.pid"
     assert host_spec["log"] == f"/var/log/niuu/host-sessions/{key}.log"
-    assert (host_spec["user"], host_spec["sudoers"]) == (
-        "niuu-slot-2",
-        "/etc/sudoers.d/niuu-slot-2",
-    )
+    assert host_spec["user"] == "niuu-slot-2"
+    # Slot 2's own subordinate ids, its runtime directory, and the VM's credentials hidden.
+    assert host_spec["containers"] == {"first": 1_000_000 + 2 * 65536, "count": 65536}
+    assert host_spec["keep_owners"] == [
+        "home/.local/share/containers",
+        "home/.cache/containers",
+    ]
+    assert host_spec["masked"] == ["/etc/niuu"]
+    assert host_spec["bin"] == "/usr/local/lib/niuu/host-bin"
     assert host_spec["init"] == module._HOST_INIT and host_spec["boot"] == module._BOOT
     mounts = {item["target"]: item for item in host_spec["mounts"]}
     assert mounts["/opt/niuu-skuld"] == {
@@ -230,8 +243,13 @@ async def test_start_runs_the_slot_agents_unpacks_skuld_then_starts_it_as_the_sl
     assert mounts["/home/skuld"]["readonly"] is False
     assert mounts["/tmp"]["source"] == mounts["/var/tmp"]["source"] == "/var/lib/niuu/slots/2/tmp"
     assert mounts["/dev/shm"]["source"] == "/run/niuu/slots/2/shm"
-    assert host_spec["private"] == ["/var/lib/niuu/slots/2/tmp", "/run/niuu/slots/2/shm"]
+    assert host_spec["private"] == [
+        "/var/lib/niuu/slots/2/tmp",
+        "/run/niuu/slots/2/shm",
+        "/run/niuu/slots/2/xdg",
+    ]
     environment = started["environment"]
+    assert environment["XDG_RUNTIME_DIR"] == "/run/niuu/slots/2/xdg"
     assert environment["NIUU_SKULD_PYTHON"] == "/opt/niuu/bin/python"
     assert "unprivileged user niuu-slot-2" in environment["SKULD__SESSION__SYSTEM_PROMPT"]
     assert environment["SKULD__HOST"] == "0.0.0.0"
@@ -269,32 +287,18 @@ async def test_the_pod_mounts_keep_their_targets_parents_first(host):
     ]
 
 
-async def test_a_granted_session_on_a_shared_machine_is_refused_before_anything_runs(tmp_path):
-    runtime = _runtime(tmp_path, grants=["sudo"])
+async def test_without_containers_a_slot_gets_no_subordinate_ids(tmp_path):
+    runtime = _runtime(tmp_path, containers=None)
     machine = Machine(allocation_id=uuid4(), resource_id="vm", state=MachineState.RUNNING)
-    session = _session(runtime_grants=["sudo"])
-    bootstrap = runtime.bootstrap(session, SPEC, MachineBootstrap())
-    lease = SlotView(machine.allocation_id, session.id, 0, machine)
-    runtime._guest_access.execute = AsyncMock(return_value=GuestCommandResult(0, b"{}"))
-    runtime._guest_access.open_tunnel = AsyncMock()
 
-    with pytest.raises(ValueError, match="need a machine of their own"):
-        await runtime._launch_skuld(lease, bootstrap, {**_launch(bootstrap), "slot": {}})
+    spec = runtime._host_spec(
+        runtime._slot(SlotView(machine.allocation_id, uuid4(), 1, machine)),
+        {"environment": {}},
+        UNPACKED,
+    )
 
-    runtime._guest_access.execute.assert_not_awaited()
-
-
-async def test_a_granted_session_on_its_own_machine_gets_its_grants(host):
-    runtime, _, lease = host
-    session = _session(runtime_grants=["sudo", "docker"])
-    bootstrap = runtime.bootstrap(session, SPEC, MachineBootstrap())
-    lease.session_id = session.id
-    lease.exclusive = True
-
-    await runtime.start(lease, bootstrap)
-
-    started = json.loads(_calls(runtime)[-1].kwargs["data"])
-    assert started["host"]["grants"] == ["docker", "sudo"]
+    assert (spec["containers"], spec["keep_owners"]) == (None, [])
+    assert "XDG_RUNTIME_DIR" not in spec["environment"]
 
 
 async def test_stop_ends_the_host_session_before_archiving_and_removing_the_slot(host):
@@ -310,7 +314,8 @@ async def test_stop_ends_the_host_session_before_archiving_and_removing_the_slot
             {
                 "pidfile": f"/run/niuu/host-sessions/{key}.pid",
                 "netns": "niuu-slot-2",
-                "sudoers": "/etc/sudoers.d/niuu-slot-2",
+                "user": "niuu-slot-2",
+                "containers": {"first": 1_000_000 + 2 * 65536, "count": 65536},
                 "stop_timeout": 30,
                 "poll": 2,
             }
@@ -469,7 +474,7 @@ async def test_a_host_session_restores_its_links_to_absolute_paths(host):
         ssh_vm_runtime._PREPARE,
         f"{lease.id}-slot-2",
         "empty",
-        '["home/.codex/tmp"]',
+        '["home/.codex/tmp", "home/.local/share/containers", "home/.cache/containers"]',
         "/var/lib/niuu/slots/2/session",
         "absolute-links",
     )
