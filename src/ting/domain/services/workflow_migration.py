@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Protocol
@@ -39,6 +39,7 @@ async def workflow_catalog_migration_is_current(
     *,
     legacy_count: int,
     legacy_max_updated_at: datetime | None,
+    retired_bundled_ids: Collection[UUID],
 ) -> bool:
     """Return whether the file catalog is a verified, current copy of PostgreSQL.
 
@@ -47,7 +48,8 @@ async def workflow_catalog_migration_is_current(
     --skip-if-migrated``): both need to know whether the configured file
     catalog already reflects the PostgreSQL ``workflows`` table exactly, given
     its row count and most recent ``updated_at``. An empty PostgreSQL table has
-    nothing to migrate and is trivially current.
+    nothing to migrate and is trivially current. A retired bundled id in the
+    inventory was served from the package, never stored, so it is not expected.
     """
     if not legacy_count:
         return True
@@ -68,6 +70,8 @@ async def workflow_catalog_migration_is_current(
             parsed_workflow_id = UUID(workflow_id)
         except (TypeError, ValueError):
             return False
+        if parsed_workflow_id in retired_bundled_ids:
+            continue
         if await workflow_repo.get_workflow(parsed_workflow_id) is None:
             return False
     return True
@@ -83,6 +87,7 @@ class WorkflowMigrationReport:
     errors: tuple[str, ...]
     applied: bool = False
     bundled_superseded: int = 0
+    bundled_retired: int = 0
 
     @property
     def can_apply(self) -> bool:
@@ -94,6 +99,7 @@ class WorkflowMigrationReport:
             "referenced_count": self.referenced_count,
             "bundled_matches": self.bundled_matches,
             "bundled_superseded": self.bundled_superseded,
+            "bundled_retired": self.bundled_retired,
             "create_count": self.create_count,
             "unchanged_count": self.unchanged_count,
             "errors": list(self.errors),
@@ -108,6 +114,7 @@ async def migrate_workflow_catalog(
     target: WorkflowMigrationTarget,
     persona_source_for_workflow: WorkflowPersonaSourceResolver,
     bundled_workflows: Sequence[WorkflowDefinition],
+    retired_bundled_ids: Collection[UUID],
     apply: bool = False,
     replace_divergent_bundled: bool = False,
 ) -> WorkflowMigrationReport:
@@ -115,7 +122,8 @@ async def migrate_workflow_catalog(
 
     The source intentionally exposes operator-only inventory methods outside the
     request repository port. No writes occur unless every definition, persona
-    pin, destination identity, and historical reference validates first.
+    pin, destination identity, and historical reference validates first. A
+    package-seeded row whose id the package has retired is not copied.
     """
     source_workflows = await source.list_all_workflows()
     referenced_ids = await source.referenced_workflow_ids()
@@ -123,6 +131,7 @@ async def migrate_workflow_catalog(
     prepared: list[WorkflowDefinition] = []
     bundled_matches = 0
     bundled_superseded = 0
+    bundled_retired = 0
     unchanged = 0
     errors: list[str] = []
     bundled_replacements: set[UUID] = set()
@@ -136,6 +145,9 @@ async def migrate_workflow_catalog(
         )
 
     for workflow in source_workflows:
+        if workflow.id in retired_bundled_ids and workflow.origin == "bundled":
+            bundled_retired += 1
+            continue
         packaged = bundled.get(workflow.id)
         # A package-seeded ('bundled', never operator-authored) row that no
         # longer matches the packaged definition is not divergence to
@@ -225,6 +237,7 @@ async def migrate_workflow_catalog(
         referenced_count=len(referenced_ids),
         bundled_matches=bundled_matches,
         bundled_superseded=bundled_superseded,
+        bundled_retired=bundled_retired,
         create_count=len(prepared),
         unchanged_count=unchanged,
         errors=tuple(errors),
@@ -240,7 +253,7 @@ async def migrate_workflow_catalog(
         migrated = await target.get_workflow(workflow.id)
         if migrated is None or not _same_stored_workflow(workflow, migrated):
             raise RuntimeError(f"Workflow migration verification failed for {workflow.id}")
-    for workflow_id in referenced_ids:
+    for workflow_id in referenced_ids - set(retired_bundled_ids):
         if await target.get_workflow(workflow_id) is None:
             raise RuntimeError(
                 f"Workflow migration lost referenced workflow identity {workflow_id}"
@@ -259,6 +272,7 @@ async def migrate_workflow_catalog(
             "referenced_count": len(referenced_ids),
             "bundled_matches": bundled_matches,
             "bundled_superseded": bundled_superseded,
+            "bundled_retired": bundled_retired,
             "migrated_count": len(prepared),
             "unchanged_count": unchanged,
         }

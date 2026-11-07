@@ -158,7 +158,7 @@ from ting.ports.workflow_wait import (
     WaitConditionObserver,
     WorkflowWaitRepository,
 )
-from ting.system_workflows import seed_system_workflows
+from ting.system_workflows import RETIRED_SYSTEM_WORKFLOW_IDS, seed_system_workflows
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +318,7 @@ async def _assert_workflow_catalog_migrated(
         workflow_repo,  # type: ignore[arg-type]
         legacy_count=legacy_count,
         legacy_max_updated_at=legacy_state["max_updated_at"],
+        retired_bundled_ids=RETIRED_SYSTEM_WORKFLOW_IDS,
     )
     if is_current:
         return
