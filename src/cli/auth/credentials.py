@@ -27,6 +27,8 @@ class StoredTokens:
     token_type: str = "Bearer"
     expires_at: float = 0.0
     issuer: str = ""
+    #: The OIDC client the tokens were issued to, so a refresh asks the same client.
+    client_id: str = ""
 
 
 def _derive_key() -> bytes:
@@ -68,6 +70,7 @@ class CredentialStore:
                 "token_type": tokens.token_type,
                 "expires_at": tokens.expires_at,
                 "issuer": tokens.issuer,
+                "client_id": tokens.client_id,
             }
         ).encode()
         encrypted = self._fernet().encrypt(payload)
@@ -90,6 +93,7 @@ class CredentialStore:
                 token_type=data.get("token_type", "Bearer"),
                 expires_at=data.get("expires_at", 0.0),
                 issuer=data.get("issuer", ""),
+                client_id=data.get("client_id", ""),
             )
         except Exception:
             logger.debug("failed to load credentials", exc_info=True)

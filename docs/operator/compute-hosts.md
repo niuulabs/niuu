@@ -177,16 +177,21 @@ The CLI mints a code as you, runs the same command the UI shows on the host
 until it is ready:
 
 ```text
-✓ minted pairing code 4f1c… for host-podman (expires 10:42)
+✓ minted pairing code for host-podman on Ymir (expires 2026-11-07T10:42:00+00:00)
 → admin@gpu-box: running join.sh
   ✓ Linux 6.8.0-49-generic, systemd, cgroup v2, OpenSSH, python3
   ✓ registered as gpu-box with the Forge's pool hosts
 ✓ joined       gpu-box
+… connected    key pinned
 ✓ connected    key pinned
+… preparing    recipe host-podman
 ✓ preparing    recipe host-podman
 ✓ audit
-✓ capacity     6 slots (suggested)
-✓ ready        target it with tags: gpu
+… capacity
+  set 6 slots (Forge's suggestion)
+✓ capacity     6 slots
+✓ ready        tags: gpu
+Next: `niuu remote hosts gpu-box` · leave with `niuu remote leave gpu-box`
 ```
 
 - **Which host:** any `ssh` destination: `user@host`, a `~/.ssh/config` alias, or
@@ -205,7 +210,9 @@ until it is ready:
   or unreachable (with Forge's findings), when the script fails, or when it is not
   ready within `--timeout` (default `remote.follow_timeout_seconds`).
 
-`niuu remote hosts` lists the pool (`--json` for scripts). `niuu remote leave <host>`
+`niuu remote hosts` lists the pool (`--json` for scripts), and `niuu remote hosts <host>`
+shows one host's steps and findings. `niuu remote slots <host> <n>` sets a slot count.
+`niuu remote leave <host>`
 drains and removes a host, waits until its sessions end and Forge has forgotten
 it, then runs `niuu-host-leave` on it over your SSH (`--ssh` when the host's name is
 not an SSH destination).
@@ -280,6 +287,10 @@ is retried. Capacity is never freed on a host nobody checked.
 | `compute.hosts.command_timeout_seconds` | 120 | One facts read or audit on a host | The check fails: the host is unreachable, with the reason |
 | `compute.hosts.reserved_cpu` / `reserved_memory_mib` | required | What slot sizing leaves for the host itself | Too many slots is refused (422) or quarantines the host, with the arithmetic |
 | `compute.hosts.min_free_disk_mib` | required | Free space on `/` | Quarantined until space is freed |
+| `remote.url` (CLI) | this machine's server | The Niuu host `niuu remote` talks to; `--url` per run | — |
+| `remote.follow_timeout_seconds` (CLI) | 900 | How long `niuu remote join` follows a host to ready; `--timeout` per run | Exit 1, naming the host's step; Forge goes on |
+| `remote.leave_timeout_seconds` (CLI) | 3600 | How long `niuu remote leave` waits for sessions to end; `--timeout` per run | Exit 1; Forge still removes the host once it is empty |
+| `remote.poll_interval_seconds` (CLI) | 2 | How often `niuu remote` re-reads the host | — |
 | `compute.hosts.pairing_signing_key_file` | `~/.niuu/forge-host-pairing-key.pem` | Used only without a workload-identity key, with the allow-all identity adapter | Unreadable or unwritable: startup fails, naming the knob |
 | `compute.hosts.join_listener.bind_host` / `port` | `0.0.0.0` / `8443` | Where the pinned join listener listens | Cannot bind: startup fails, naming the knob |
 | `compute.hosts.join_listener.cert_file` / `key_file` | `~/.niuu/forge-host-join-{cert,key}.pem` | The listener's certificate and the key the pin comes from | Unreadable, readable by others or not matching: startup fails |

@@ -311,6 +311,7 @@ niuu remote join DEST [-p PORT] [-J JUMP]
                       [--isolation measured|systemd|cgroupfs|none]
                       [--no-follow] [--timeout SECONDS]
 niuu remote hosts [HOST] [--url URL] [--forge FORGE] [--json]
+niuu remote slots HOST COUNT [--url URL] [--forge FORGE]
 niuu remote leave HOST [--ssh DEST] [-p PORT] [-J JUMP] [--url URL] [--forge FORGE]
                        [--timeout SECONDS]
 ```
@@ -352,7 +353,7 @@ niuu remote leave HOST [--ssh DEST] [-p PORT] [-J JUMP] [--url URL] [--forge FOR
   - **ready**, exit 0, with the next steps (`niuu remote hosts <name>`, targeting
     by its tags);
   - **needs capacity** (audited, no slot count), exit 0, with Forge's suggested
-    count and its arithmetic, plus the command to set it. `--slots suggested`
+    count and its arithmetic, plus `niuu remote slots <host> <n>`. `--slots suggested`
     accepts Forge's suggestion once the audit is done, through the same
     `PATCH …/hosts/{id}` the UI's *Put in service* sends;
   - **quarantined** or **unreachable**, exit 1, with Forge's findings or
@@ -360,6 +361,10 @@ niuu remote leave HOST [--ssh DEST] [-p PORT] [-J JUMP] [--url URL] [--forge FOR
     following it;
   - after `--timeout` (`remote.follow_timeout_seconds`), exit 1, naming the knob
     and the host's current step. Ctrl-C stops following and leaves the host as it is.
+  Forge reports an audited host without a slot count as `ready`, so the CLI
+  checks for a missing count before it treats `ready` as the end.
+- **`niuu remote slots HOST COUNT`** sets the slot count, the same `PATCH` as
+  *Put in service*.
 - **`niuu remote hosts`** prints the pool: one row per host (name, state, slots
   used/total, tags, execution, connection, last check), with findings under rows
   that need an operator. `--json` prints Forge's answer unchanged.
