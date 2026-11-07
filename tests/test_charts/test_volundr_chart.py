@@ -2697,3 +2697,137 @@ class TestGuestMetadataEndpoint:
     def test_no_role_without_rbac(self):
         docs = _rendered_documents(*GUEST_METADATA_ON, "--set", "rbac.create=false")
         assert not any(d["metadata"]["name"].endswith("-guest-metadata") for d in docs)
+
+
+class TestComputeHosts:
+    """computeHosts: a pool of registered hosts is one switch and the Forge's URL."""
+
+    ON = (
+        "--set",
+        "computeHosts.enabled=true",
+        "--set",
+        "computeHosts.joinUrl=https://forge-hosts.example",
+        "--set",
+        "image.tag=dev-abc123@sha256:" + "0" * 64,
+    )
+
+    @staticmethod
+    def _render(*extra: str, check: bool = True) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *extra],
+            check=check,
+            capture_output=True,
+            text=True,
+        )
+
+    def _config(self, *extra: str) -> dict:
+        documents = [doc for doc in yaml.safe_load_all(self._render(*extra).stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        return yaml.safe_load(configmap["data"]["config.yaml"])
+
+    def test_renders_the_pool_forge_validates(self):
+        from volundr.compute.config import ComputeConfig
+
+        config = self._config(*self.ON)
+        compute = ComputeConfig.model_validate(config["compute"])
+        assert compute.provider.adapter.endswith("RegisteredHostMachineProvider")
+        assert compute.execution_catalog is not None
+        assert compute.execution_catalog.adapter.endswith("BuiltinHostCatalog")
+        assert compute.reuse_policy == "reuse"
+        assert compute.hosts is not None
+        assert compute.hosts.join_url == "https://forge-hosts.example"
+        assert compute.session_images is not None
+        # The release's own images, from its image tag without the digest.
+        assert compute.session_images.linux == "ghcr.io/niuulabs/openshell:dev-abc123"
+        assert compute.session_images.darwin == "ghcr.io/niuulabs/skuld-darwin:dev-abc123"
+        assert config["pod_manager"]["adapter"].endswith("VmPodManager")
+        assert config["pod_manager"]["runtime_backend"] == "vm"
+        assert config["pod_manager"]["kwargs"]["pool_id"] == compute.pool_id
+        # Without guestMetadata there is no credential delivery to configure.
+        assert compute.credential_delivery is None
+
+    def test_the_catalog_it_renders_resolves(self, tmp_path):
+        from niuu.utils import import_class
+        from volundr.compute.config import ComputeConfig
+        from volundr.domain.services.execution_catalog import ExecutionPlanResolver
+
+        compute = ComputeConfig.model_validate(self._config(*self.ON)["compute"])
+        catalog_config = compute.execution_catalog
+        kwargs = {**catalog_config.kwargs, "data_dir": str(tmp_path)}
+        catalog = import_class(catalog_config.adapter)(**kwargs)
+        default, _ = ExecutionPlanResolver(catalog).resolve_all()
+        assert default.pool_id == compute.pool_id
+        assert default.provider_binding == compute.provider_binding
+
+    def test_guest_metadata_adds_the_credential_delivery(self):
+        config = self._config(*self.ON, "--set", "guestMetadata.enabled=true")
+        compute = config["compute"]
+        assert compute["credential_delivery"]["kwargs"]["metadata_url"] == (
+            "https://forge-hosts.example"
+        )
+        assert compute["guest_identity"]["kwargs"] == {"key_source": "registered"}
+        assert compute["service_account_tokens"]["kwargs"]["namespace"]
+
+    def test_platform_port_is_envoys_when_envoy_runs(self):
+        plain = self._config(*self.ON)["compute"]["execution_catalog"]["kwargs"]
+        assert plain["platform_port"] == 8080
+        envoy = self._config(*self.ON, "--set", "envoy.enabled=true", "--set", "envoy.port=8443")
+        assert envoy["compute"]["execution_catalog"]["kwargs"]["platform_port"] == 8443
+
+    def test_session_images_can_be_set(self):
+        config = self._config(
+            *self.ON,
+            "--set",
+            "computeHosts.platforms={linux}",
+            "--set",
+            "computeHosts.sessionImages.linux=registry.example/skuld:1",
+        )
+        assert config["compute"]["session_images"] == {
+            "linux": "registry.example/skuld:1",
+            "darwin": "",
+        }
+
+    def test_native_images_default_to_the_secret_injection_agent(self):
+        agent = "quay.io/openbao/openbao@sha256:" + "1" * 64
+        config = self._config(
+            *self.ON, "--set", f"secretInjection.kwargs.guest_agent_image={agent}"
+        )
+        assert config["compute"]["execution_catalog"]["kwargs"]["native_images"] == [agent]
+
+    @pytest.mark.parametrize(
+        ("extra", "message"),
+        [
+            (("--set", "computeHosts.joinUrl="), "computeHosts.joinUrl"),
+            (("--set", "image.tag="), "image.tag"),
+            (("--set", "storage.sessions.enabled=false"), "storage.sessions"),
+            (
+                ("--set", "compute.pool_id=vms", "--set", "compute.max_machines=1"),
+                "both define this Forge's compute pool",
+            ),
+        ],
+    )
+    def test_refuses_what_it_cannot_honour(self, extra, message):
+        result = self._render(*self.ON, *extra, check=False)
+        assert result.returncode != 0
+        assert message in result.stderr
+
+    def test_off_leaves_pod_manager_and_compute_alone(self):
+        config = self._config()
+        assert "compute" not in config
+        assert config["pod_manager"]["adapter"].endswith("FluxPodManager")
+
+    def test_rbac_follows_the_effective_pod_manager(self):
+        documents = [doc for doc in yaml.safe_load_all(self._render(*self.ON).stdout) if doc]
+        names = {doc["metadata"]["name"] for doc in documents if doc.get("kind") == "Role"}
+        flux = [
+            doc
+            for doc in documents
+            if doc.get("kind") in {"Role", "ClusterRole"}
+            and any("helmreleases" in rule.get("resources", []) for rule in doc.get("rules", []))
+        ]
+        assert not flux, names

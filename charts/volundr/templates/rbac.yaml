@@ -1,4 +1,4 @@
-{{- $hasFluxController := contains "FluxPodManager" .Values.podManager.adapter -}}
+{{- $hasFluxController := contains "FluxPodManager" (include "volundr.podManagerAdapter" .) -}}
 {{- range .Values.residentRuntimeControllers -}}
 {{- if contains "FluxPodManager" .adapter -}}
 {{- $hasFluxController = true -}}
@@ -192,7 +192,7 @@ writes cluster-wide.
 {{- end -}}
 {{- end -}}
 {{- $residentNamespace := "" -}}
-{{- if contains "FluxPodManager" .Values.podManager.adapter -}}
+{{- if contains "FluxPodManager" (include "volundr.podManagerAdapter" .) -}}
 {{- $residentNamespace = (.Values.podManager.kwargs).namespace | default .Release.Namespace -}}
 {{- end -}}
 {{- range .Values.residentRuntimeControllers -}}

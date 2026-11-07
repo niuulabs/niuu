@@ -418,3 +418,98 @@ Live preview domain (defaults to preview.{domain}).
   {{- printf "preview.%s" (required "sessionPreview.domain or global.domain is required for live preview" (include "volundr.domain" .)) -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+The PodManager adapter this release runs: VmPodManager on the registered-hosts pool when
+computeHosts is on, podManager.adapter otherwise.
+*/}}
+{{- define "volundr.podManagerAdapter" -}}
+{{- if .Values.computeHosts.enabled -}}
+volundr.adapters.outbound.vm_pod_manager.VmPodManager
+{{- else -}}
+{{- .Values.podManager.adapter -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+The release's own session images for registered hosts: computeHosts.sessionImages, else
+the session image and macOS bundle published with this release's image tag (image.tag,
+without its digest). Forge pins each to its digest at startup.
+*/}}
+{{- define "volundr.computeHostsSessionImages" -}}
+{{- $c := .Values.computeHosts -}}
+{{- /* This release's own image, without its digest: <prefix>/<repository>:<tag>. */ -}}
+{{- $own := (splitList "@" (include "volundr.image" .)) | first -}}
+{{- $tag := regexFind ":[^:/]+$" $own | trimPrefix ":" -}}
+{{- $registry := regexReplaceAll "/[^/]+$" (regexReplaceAll ":[^:/]+$" $own "") "" -}}
+{{- if not (.Values.image.tag | default (((.Values.global).image).tag)) -}}
+{{- /* Chart.AppVersion is a chart version, not an image tag of the session images. */ -}}
+{{- $tag = "" -}}
+{{- end -}}
+{{- $linux := $c.sessionImages.linux -}}
+{{- $darwin := $c.sessionImages.darwin -}}
+{{- if and (not $linux) (has "linux" $c.platforms) -}}
+{{- if not $tag -}}{{- fail "computeHosts: set image.tag (the release's image tag) or computeHosts.sessionImages.linux" -}}{{- end -}}
+{{- $linux = printf "%s/openshell:%s" $registry $tag -}}
+{{- end -}}
+{{- if and (not $darwin) (has "darwin" $c.platforms) -}}
+{{- if not $tag -}}{{- fail "computeHosts: set image.tag (the release's image tag) or computeHosts.sessionImages.darwin" -}}{{- end -}}
+{{- $darwin = printf "%s/skuld-darwin:%s" $registry $tag -}}
+{{- end -}}
+{{- dict "linux" $linux "darwin" $darwin | toJson -}}
+{{- end }}
+
+{{/*
+Forge's compute section for a pool of registered hosts (computeHosts): the registered-host
+provider, Niuu's built-in host execution (Linux and macOS), the release's session images,
+the join and connector settings, and with guestMetadata the guest credential delivery.
+*/}}
+{{- define "volundr.computeHosts" -}}
+{{- $c := .Values.computeHosts -}}
+{{- if not $c.joinUrl -}}
+{{- fail "computeHosts.enabled needs computeHosts.joinUrl: this Forge's https URL as hosts reach it" -}}
+{{- end -}}
+{{- if not .Values.storage.sessions.enabled -}}
+{{- fail "computeHosts keeps SSH pins, its host key and archives under computeHosts.dataDir on the sessions volume; enable storage.sessions" -}}
+{{- end -}}
+{{- $platformPort := ternary .Values.envoy.port (.Values.service.targetPort | default 8080) .Values.envoy.enabled -}}
+{{- $catalog := dict
+  "pool_id" $c.poolId
+  "provider_binding" $c.poolId
+  "profile" $c.profile
+  "data_dir" $c.dataDir
+  "platform_port" $platformPort
+  "platforms" $c.platforms
+  "slot_cpu" $c.slot.cpu
+  "slot_memory_mib" $c.slot.memoryMib
+  "slot_pids" $c.slot.pids
+  "native_images" ($c.nativeImages | default (compact (list ((.Values.secretInjection).kwargs).guest_agent_image)))
+-}}
+{{- if $c.defaultServiceAccount -}}
+{{- $_ := set $catalog "default_service_account" $c.defaultServiceAccount -}}
+{{- end -}}
+{{- if $c.previewRouterAuth -}}
+{{- $_ := set $catalog "preview_router_auth" $c.previewRouterAuth -}}
+{{- end -}}
+{{- $compute := dict
+  "pool_id" $c.poolId
+  "max_machines" $c.maxHosts
+  "reuse_policy" "reuse"
+  "provider_binding" $c.poolId
+  "provider" (dict "adapter" "volundr.adapters.outbound.registered_hosts.RegisteredHostMachineProvider" "kwargs" (dict "profiles" (dict $c.profile (dict "label" "Registered host"))))
+  "execution_catalog" (dict "adapter" "volundr.adapters.outbound.builtin_host_catalog.BuiltinHostCatalog" "kwargs" $catalog)
+  "session_images" (include "volundr.computeHostsSessionImages" . | fromJson)
+  "hosts" (dict
+    "join_url" $c.joinUrl
+    "connectors" (list (dict "binding_id" "direct-ssh" "adapter" "volundr.adapters.outbound.host_connectors.DirectSshConnector" "kwargs" (dict "allowed_sources" $c.allowedSources)))
+    "reserved_cpu" $c.reservedCpu
+    "reserved_memory_mib" $c.reservedMemoryMib
+    "min_free_disk_mib" $c.minFreeDiskMib)
+-}}
+{{- if .Values.guestMetadata.enabled -}}
+{{- $_ := set $compute "service_account_tokens" (dict "adapter" "volundr.adapters.outbound.k8s_service_account_tokens.KubernetesServiceAccountTokenIssuer" "kwargs" (dict "namespace" (include "volundr.guestMetadataNamespace" .))) -}}
+{{- $_ := set $compute "credential_delivery" (dict "adapter" "volundr.adapters.outbound.guest_credential_delivery.MetadataCredentialDelivery" "kwargs" (dict "metadata_url" $c.joinUrl)) -}}
+{{- $_ := set $compute "guest_identity" (dict "adapter" "volundr.adapters.outbound.guest_identity_host_key.HostKeyGuestIdentity" "kwargs" (dict "key_source" "registered")) -}}
+{{- end -}}
+{{- $compute | toJson -}}
+{{- end }}

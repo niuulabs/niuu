@@ -350,15 +350,18 @@ Limits of this exception, enforced together:
 
 ### Containers in host-mode slots are rootless
 
-A host-mode session (`SshHostVmRuntime`) runs on its VM as its slot's user, in
-the slot's network namespace and cgroup (`vm_slot_supervisor`). Sessions on one
-VM are kept apart by those boundaries alone, so nothing a slot is given may be
-root on the machine:
+A host-mode session (`SshHostVmRuntime`) runs on its VM or registered host as
+its slot's user, in the slot's network namespace and cgroup
+(`vm_slot_supervisor`). Sessions on one machine are kept apart by those
+boundaries alone, so nothing a slot is given may be root on the machine:
 
-- **Never the guest's Docker daemon.** No slot user joins the `docker` group
-  and its socket is never mounted into a slot: either is root, and reads
-  every other slot. The guest's Docker runs only the platform's own
-  containers (the slot holder, the credential agents).
+- **No container daemon at all.** The runtime needs none: the slot is a named
+  network namespace and a systemd slice, the session runs in a delegated scope
+  of that slice, and the pod's credential agents are systemd units on overlay
+  roots of their unpacked images (`linux_guest_programs`). A guest's Docker, if
+  the machine has one, is never reached: no slot user joins the `docker` group
+  and its socket is never mounted into a slot, since either is root and reads
+  every other slot.
 - **No sudo** for a slot user, and no other root-equivalent capability (a
   privileged container, `CAP_SYS_ADMIN`, a host mount).
 - **Containers are rootless Podman**, inside the slot: subordinate ids per

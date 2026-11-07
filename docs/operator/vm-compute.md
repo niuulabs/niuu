@@ -588,21 +588,29 @@ compute:
       # … SSH, platform and preview settings as for SshContainerVmRuntime
 ```
 
-How a session runs, all over SSH as every other guest step, never as a service:
+How a session runs, all over SSH as every other guest step. Host mode needs **no
+container daemon** on the machine, which is why it also runs on registered hosts
+([compute-hosts.md](compute-hosts.md)); the machine needs systemd, cgroup v2,
+iproute2, iptables, curl and a `python3` with tarfile extraction filters:
 
-1. The slot supervisor creates the slot exactly as for Docker sessions (user
-   `niuu-slot-<n>`, its directories, the holder container that keeps the slot's
-   network namespace and cgroup, the veth, the rules and the slice). The
-   credential agents (guest agent, OpenBao's agent) run beside the holder in
-   the guest's Docker, as for `SshContainerVmRuntime`.
-2. The session image is unpacked once per digest under
-   `/var/lib/niuu/host-images/<digest>` (`docker create` and `docker export`; no
-   container runs it), with wrappers for the agent CLIs (`claude`, `codex`,
+1. The slot supervisor creates the slot (user `niuu-slot-<n>`, its directories,
+   the named network namespace `niuu-slot-<n>`, the veth, the rules and the slice
+   `niuu_slot_<n>.slice` with the slot's limits). There is no holder container.
+2. Images are fetched from their registries with an anonymous pull, every blob
+   checked against its digest, and unpacked once per digest under
+   `/var/lib/niuu/host-images/<digest>`, applying the layers' whiteouts. For the
+   session image this adds wrappers for the agent CLIs (`claude`, `codex`,
    `opencode`, `grok`, `pi`, `muse`) and fallback tools (`gh`, `glab`, `uv`,
-   `node`, `npm`). `warm` does this ahead of sessions.
-3. A guest program joins the slot's network namespace and the holder's cgroup
-   (so the slot's limits apply), opens its own mount and PID namespaces and
-   becomes PID 1 there. In that mount namespace it binds, read-only, the
+   `node`, `npm`); `warm` does it ahead of sessions. Pod images must be public.
+3. The pod's init containers run to completion and its sidecars (the guest
+   agent, OpenBao's agent) start, each as a systemd unit
+   `niuu-slot-<n>-{init,sidecar}-<name>` in the slot's slice: in the slot's
+   network namespace, their own mount and PID namespaces, on an overlay of their
+   image whose writable layer is a fresh tmpfs, with the pod's mounts at their
+   targets. Logs go to `/var/log/niuu/host-sessions/<slot key>/`.
+4. A guest program, started in a delegated systemd scope of the slot's slice (so
+   the slot's limits apply), joins the slot's network namespace, opens its own
+   mount and PID namespaces and becomes PID 1 there. In that mount namespace it binds, read-only, the
    unpacked image at `/opt/niuu-skuld` and the image's venv and Python at their
    own paths, then the workspace at `/workspace`, the home at `/home/skuld`, the
    launch's secret and volume mounts at their targets, a private `/tmp`,
@@ -637,12 +645,18 @@ distribution's: `ghcr.io/niuulabs/openshell` is built on uv's
 python-build-standalone and declares `VIRTUAL_ENV` and `UV_PYTHON_INSTALL_DIR`.
 The Skuld image's Python is Ubuntu's and runs only inside its own root; the
 unpack refuses such an image, naming the remedy. One digest serves the
-holder, the credential agents and Skuld.
+credential agents and Skuld.
 
 Stopping a session sends Skuld `SIGTERM` (then `SIGKILL` after
 `stop_timeout_seconds`), which ends its containers with it, removes its
-subordinate ids, and then stops, archives and
-removes the slot as for Docker sessions. A host session's links to absolute
+subordinate ids, stops the slot's units, archives the workspace and removes the
+slot; the supervisor fails unless nothing of it (user, directories, namespace,
+units, slice, rules) is left. The runtime declares **reuse**: with
+`reuse_policy: reuse` the stopped slot takes the next session once `recycle` has
+checked it again and the registered-host audit for that slot alone finds nothing.
+A slot that cannot be proven clean is retired instead, logged at error and counted
+on `volundr.compute.slot.recycle_failures`; when it was the machine's last
+session, the machine drains. A host session's links to absolute
 paths (Nix makes `~/.nix-profile` and its caches that way) are restored as
 written; they are never followed, and a member whose own path resolves outside
 the session still fails the restore. Docker sessions keep refusing them.
@@ -705,9 +719,9 @@ For each slot the runtime adds:
   1000000 and 65536) in `/etc/subuid` and `/etc/subgid`, and removes them at
   stop. Forge refuses ranges that run past the id space or overlap the slots'
   own uids; the start refuses one another VM user holds.
-- **A delegated cgroup inside the slot's.** The holder's Docker scope in the
-  slot's slice becomes a tree: the holder in a leaf, and a `session` subtree
-  owned by the slot's user, with the `cpu`, `memory` and `pids` controllers.
+- **A delegated cgroup inside the slot's.** The session's systemd scope in the
+  slot's slice (`Delegate=yes`) becomes a tree: a `session` subtree owned by the
+  slot's user, with the `cpu`, `memory` and `pids` controllers.
   The session runs in its `init` leaf, and Podman (`cgroupfs`) puts each
   container in a cgroup of its own under `session`, so `--memory` and
   `--pids-limit` work and every container stays under the slot's limits.
@@ -723,10 +737,9 @@ listens in the slot as the slot's user, so two slots can publish the same port
 and the preview offers it. Their processes are in the session's PID namespace
 and end with it.
 
-What a slot never gets: the guest's Docker daemon (its socket is
-`root:docker`, and no slot user is in `docker`), sudo, or any other
-root-equivalent access. The guest's Docker runs only the platform's holder and
-credential agents. See `.claude/rules/architecture.md` ("Containers in
+What a slot never gets: a container daemon (host mode runs none; a machine's own
+Docker socket is `root:docker`, and no slot user is in `docker`), sudo, or any
+other root-equivalent access. See `.claude/rules/architecture.md` ("Containers in
 host-mode slots are rootless").
 
 ## VM session credentials

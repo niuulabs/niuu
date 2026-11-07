@@ -355,6 +355,54 @@ bifrost:
 
 compute: null
 
+# Bring your own machines: a pool of registered hosts (Linux machines and Macs) that join
+# this Forge with one command (Add host, or `niuu remote join`). Turning it on is the whole
+# configuration: Forge runs Niuu's built-in host execution, generates its own host SSH key
+# under dataDir, pins the release's session images (from image.tag) at startup, and with
+# guestMetadata delivers session credentials to the hosts. It replaces podManager and
+# compute for this release. See docs/operator/compute-hosts.md.
+computeHosts:
+  # -- Serve a pool of registered hosts
+  enabled: false
+  # -- This Forge's https URL as hosts reach it (its ingress): the join command, join.sh
+  # and the guest agents' metadata calls go there
+  joinUrl: ""
+  # -- Compute pool id (also its provider binding)
+  poolId: hosts
+  # -- The registered-host provider's profile
+  profile: host
+  # -- How many hosts the pool may hold at once; a host beyond it waits as ready
+  maxHosts: 16
+  # -- Host platforms that may join: linux, darwin
+  platforms: [linux, darwin]
+  # -- Forge's own directory for the hosts (its generated SSH key, pinned host keys,
+  # session archives); must be on the sessions volume
+  dataDir: /volundr/sessions/hosts
+  # -- Source networks Forge's SSH key is accepted from on a host (from=); [] accepts any
+  allowedSources: []
+  # -- What slot sizing leaves for each host itself
+  reservedCpu: 2
+  reservedMemoryMib: 4096
+  # -- Free space on a host's / below which the audit quarantines it
+  minFreeDiskMib: 20480
+  # -- What one Linux slot may use (null: no limit); slot counts are suggested from these
+  slot:
+    cpu: 2
+    memoryMib: 8192
+    pids: 16384
+  # -- Session images; empty: <image.registry>/openshell:<image.tag> and
+  # <image.registry>/skuld-darwin:<image.tag>, the ones published with this release
+  sessionImages:
+    linux: ""
+    darwin: ""
+  # -- ServiceAccount sessions run as, for their projected token volumes
+  defaultServiceAccount: ""
+  # -- Images a Mac runs natively from its session bundle; empty: secretInjection's
+  # guest_agent_image (OpenBao's agent), when set
+  nativeImages: []
+  # -- Skuld preview.router_auth for live preview on hosts ({adapter, kwargs}); {} is off
+  previewRouterAuth: {}
+
 # VM guest metadata endpoint (POST /api/v1/internal/compute/metadata/credentials). A VM
 # session's guest agent pulls its ServiceAccount tokens and Forge session credential
 # there, authenticated by the guest identity configured under `compute` (an Ed25519

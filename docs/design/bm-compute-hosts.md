@@ -630,10 +630,19 @@ There is no "ignore": a finding clears when the audit stops seeing it.
 One runtime per host, from its execution. Only runtimes that need **no root
 daemon in a slot** run on registered hosts:
 
-- **Host** (Nix + rootless Podman per slot, being built in session
-  vm-host-mode-nix). This is the primary runtime for hosts. Sidecars and per-slot
-  containers run in the slot user's rootless Podman, inside the slot's
-  namespaces.
+- **Host** (Nix + rootless Podman per slot, `SshHostVmRuntime`). This is the primary
+  runtime for Linux hosts, and it runs no container daemon: the slot is a named
+  network namespace and a systemd slice, the pod's credential agents are systemd
+  units on overlay roots of their images (fetched from the registry by digest), and
+  the session runs in a delegated scope of the slice. The same runtime runs on VMs.
+- **Platform routing** (`PlatformHostRuntime`): one execution for every platform. It
+  holds one runtime per platform (Linux: host mode; macOS: `SshDarwinHostRuntime`) and
+  hands each call for a claimed host to its platform's runtime, by `Machine.platform`
+  (the provider records the platform the host joined with). A session's bootstrap is
+  built before a host is claimed, so it holds each platform's launch
+  (`encode_platform_bootstraps`); a runtime that refuses the session leaves its
+  platform without one, and a host of that platform fails the start with the reason.
+  `host_platforms` is the union, so a platform with no runtime is refused at join.
 - **Container via rootless Podman**: a later mode of the container runtime. Today
   `SshContainerVmRuntime` runs root Docker, so it declares a new
   `requires_root_daemon`, and a registered-host pool refuses it at startup.
@@ -1051,6 +1060,25 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
   serves it for that code, so no extra route was needed.
 - The macOS join, facts, audit and one-slot rule are built, and so is the darwin runtime
   (`SshDarwinHostRuntime`) with its session bundle; see macOS hosts.
+
+### Bring your own machine (2026-11-07)
+
+- **Forge makes its own host SSH key** under the access binding's `data_dir`
+  (`host-access/id_ed25519`, 0600, never overwritten), so no secret store is needed.
+- **A built-in host execution** (`BuiltinHostCatalog`) ships with Niuu: the
+  registered-host profile, SSH access with registered-host-key trust, the Nix and
+  Linux-tools recipe, and `PlatformHostRuntime`. Its settings are the deployment's own.
+- **Session images are the release's**, outside the plan digest:
+  `compute.session_images`, rendered by the chart from its image tag and by the CLI,
+  pinned to digests at startup, and handed to host runtimes as a collaborator. A bump
+  moves them without invalidating running sessions' pins.
+- **Slot reuse** is declared by the host runtimes: stop tears the slot down and proves
+  it gone; recycle checks it again and runs the audit for that slot alone. A slot that
+  cannot be proven clean is retired (logged, counted), never reused.
+- **Two commands**: `niuu platform up` serves the hosts pool by default in mini mode
+  (pinned join listener at `server.external_host` or the default route's address), and
+  the chart's `computeHosts.enabled` + `joinUrl` is a cluster Forge's whole hosts
+  configuration.
 
 ## Decisions (settled 2026-11-07)
 

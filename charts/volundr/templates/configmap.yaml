@@ -185,7 +185,7 @@ data:
     {{- /* These pod managers hand the broker its credential themselves
     (delivers_forge_session_token); every other one needs the projection. */}}
     {{- $selfDelivering := list "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager" "volundr.adapters.outbound.local_process.LocalProcessPodManager" }}
-    {{- if and (not (get $sessionTokens "projection_adapter")) (not (has .Values.podManager.adapter $selfDelivering)) }}
+    {{- if and (not (get $sessionTokens "projection_adapter")) (not (has (include "volundr.podManagerAdapter" .) $selfDelivering)) }}
     {{- fail "presentedFiles.enabled needs sessionCredentialProjection.enabled: session pods must hold their Forge credential to upload presented files" }}
     {{- end }}
     {{- end }}
@@ -193,6 +193,20 @@ data:
 
     forge_mcp: {{ toJson $forgeMcp }}
 
+    {{- if .Values.computeHosts.enabled }}
+    {{- if .Values.compute }}
+    {{- fail "computeHosts and compute both define this Forge's compute pool; remove compute, or set computeHosts.enabled: false" }}
+    {{- end }}
+    pod_manager:
+      adapter: {{ include "volundr.podManagerAdapter" . | quote }}
+      runtime_backend: vm
+      room_role_source: {{ .Values.podManager.roomRoleSource | default "deployment" | quote }}
+      room_role_cache_ttl_seconds: {{ .Values.podManager.roomRoleCacheTtlSeconds | default 5.0 }}
+      kwargs: {{ dict "pool_id" .Values.computeHosts.poolId "max_machines" .Values.computeHosts.maxHosts "profile" .Values.computeHosts.profile "server_port" (.Values.service.targetPort | default 8080) "public_origin" .Values.computeHosts.joinUrl | toJson }}
+      secret_kwargs_env: {}
+
+    compute: {{ include "volundr.computeHosts" . }}
+    {{- else }}
     pod_manager:
       adapter: {{ .Values.podManager.adapter | quote }}
       {{- if .Values.podManager.runtimeBackend }}
@@ -212,6 +226,7 @@ data:
 
     {{- if .Values.compute }}
     compute: {{ .Values.compute | toJson }}
+    {{- end }}
     {{- end }}
 
     codex_credential_broker:

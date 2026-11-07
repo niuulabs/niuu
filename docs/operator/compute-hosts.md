@@ -10,10 +10,78 @@ allocation and **audits** it when the allocation ends. A clean host is ready aga
 a host with anything a session left behind is quarantined and shown with what was
 found.
 
-## Configure the Forge
+## Two commands
 
-A registered-host Forge uses the registered-host provider, an execution catalog
-(each host runs one catalog execution), and a `compute.hosts` section:
+Bringing your own machines needs no configuration of its own:
+
+1. **Bring the stack up.** `niuu platform up` on one machine (mini mode), or a Forge
+   from the volundr chart with `computeHosts.enabled: true` and its `joinUrl`.
+2. **Join a machine.** `niuu remote join <ssh destination>` from your terminal, or
+   **Forge → Compute → Hosts → Add host** and the command it shows. Linux machines and
+   Macs join the same pool; each runs sessions the way its platform needs.
+
+Forge generates the SSH key it reaches hosts with (below), runs Niuu's **built-in host
+execution** and pins the release's own session images. There is no secret store to
+fill and no execution catalog to write.
+
+### The built-in host execution
+
+`volundr.adapters.outbound.builtin_host_catalog.BuiltinHostCatalog` is the execution
+catalog for a pool of registered hosts. It holds one execution, `host`:
+
+- **Machine:** the registered-host provider's profile.
+- **Access:** `SshGuestAccess` as `root`, `bootstrap_delivery: registered`, trust
+  `registered_host_key`: the host's own sshd key, registered at join, is pinned, and
+  nothing is trusted on first use. Forge's key is its own generated one.
+- **Host recipe:** Nix (the pinned release of `deploy/nix/install-nix.sh`) on every
+  platform, and on Linux the slot tools and rootless Podman (`iproute2`, `iptables`,
+  `podman`, `uidmap`, `passt`, installed with apt or dnf). The scripts ship with Niuu.
+- **Runtime:** `PlatformHostRuntime`, which holds `SshHostVmRuntime` for Linux and
+  `SshDarwinHostRuntime` for macOS and hands each session to the runtime of its
+  host's platform (recorded at join). A Linux host runs several sessions at once, each
+  in its own slot (user, network namespace, cgroup), with **no container daemon**; a
+  Mac runs one, as a fresh macOS user. Both reuse a slot in place once it is proven
+  clean (see Slots and reuse).
+
+Its settings are the deployment's own: pool and provider binding, the provider
+profile, `data_dir` (Forge's durable directory for pins, its key and archives),
+`platform_port` (where Skuld calls back through its SSH tunnel), which `platforms`
+may join, the per-slot limits (`slot_cpu` 2, `slot_memory_mib` 8192, `slot_pids`
+16384; `null` for none), and optionally `default_service_account`,
+`preview_router_auth` and `native_images`.
+
+**Session images** are not catalog content. Forge hands the host runtimes the
+release's own (`compute.session_images.linux`, the OpenShell image, whose Python is
+relocatable, and `.darwin`, the macOS session bundle) and pins each tag to its digest
+when it starts. A release bump therefore moves them without changing the plan running
+sessions are pinned to. A tag the registry does not have, or a registry Forge cannot
+reach, stops startup with the reference and the reason. Images must be public.
+
+### On a cluster: `computeHosts`
+
+```yaml
+computeHosts:
+  enabled: true
+  joinUrl: https://forge-hosts.valhalla.asgard.niuu.world   # this Forge's ingress
+  allowedSources: ["192.168.90.0/24"]                      # Forge's egress; [] for any
+guestMetadata:
+  enabled: true              # session credentials (OpenBao, ServiceAccount tokens)
+```
+
+That is the whole hosts configuration. The chart renders `podManager` (a `VmPodManager`
+on the pool) and `compute` (the registered-host provider, the built-in catalog, the
+direct-SSH connector, and with `guestMetadata` the metadata credential delivery and
+host-key guest identity), and refuses `compute` beside it. The session images default
+to `<image.registry>/openshell:<image.tag>` and `<image.registry>/skuld-darwin:<image.tag>`,
+the ones published with this release; `computeHosts.sessionImages` replaces them.
+`platformPort` is the pod's Envoy port when Envoy is on. Forge's data lives under
+`computeHosts.dataDir` on the sessions volume, so its key and pins survive restarts.
+
+### Your own catalog
+
+A pool can run executions you write instead. It then uses the registered-host provider,
+an execution catalog (each host runs one catalog execution), and a `compute.hosts`
+section:
 
 ```yaml
 compute:
@@ -66,7 +134,9 @@ Startup fails if any of these hold:
 - There is no execution catalog.
 - A configured runtime needs a root daemon on the machine. `SshContainerVmRuntime`
   and the OpenShell runtimes run under root Docker, so registered hosts use the host
-  runtime, which uses rootless Podman per slot.
+  runtime, which runs no daemon.
+- A host runtime has no session image: neither its own `skuld_image` (or
+  `skuld_bundle`) nor `compute.session_images`.
 
 Pairing codes are short-lived scoped JWTs. Which key signs them:
 
@@ -81,24 +151,26 @@ Any other combination fails at startup and names the fix.
 
 ### Mini mode: hosts next to this machine's sessions
 
-On one machine running `niuu platform up`, set this in `~/.niuu/config.yaml`:
-
-```yaml
-hosts:
-  enabled: true
-  execution_catalog: ~/.niuu/hosts/execution-catalog
-  join_url: http://192.168.1.10:8080
-  allow_plaintext_join: true
-```
-
-This machine keeps running its own sessions. The CLI wraps the configured pod
+`niuu platform up` serves a pool of registered hosts by default, with nothing in
+`~/.niuu/config.yaml`. This machine keeps running its own sessions. The CLI wraps the configured pod
 manager in `PlacementPodManager` as `local` and adds a `VmPodManager` on the
 registered-host pool as `pool`. It also renders the `compute:` section above with
 these defaults: pool `local-hosts`, profile `host`, `max_hosts: 16`,
 `reuse_policy: reuse`, one `direct-ssh` connector (`allowed_sources: []`),
 `reserved_cpu: 2`, `reserved_memory_mib: 4096`, `min_free_disk_mib: 20480`, and the
-pairing key file under `~/.niuu`. Each of these is a `hosts.*` key. If `compute:` is
-also set, or the mode is not mini, the CLI refuses the config.
+pairing key file under `~/.niuu`, and Forge's host data (its key, the hosts' pins,
+archives) in `hosts.data_dir` (`~/.niuu/hosts`). Each of these is a `hosts.*` key.
+
+- **Where hosts join:** the pinned join listener at `hosts.join_host`, else
+  `server.external_host`, else the address of this machine's default route. A loopback
+  address is refused, and so is a machine with no default route; both name the fix.
+  `hosts.join_url` replaces the listener.
+- **What hosts run:** the built-in host execution, with `hosts.session_images`
+  (`ghcr.io/niuulabs/openshell:dev` and `ghcr.io/niuulabs/skuld-darwin:dev` by default,
+  pinned when Forge starts, so starting needs the registry). `hosts.execution_catalog`
+  names a catalog directory to run instead.
+- **Off:** `hosts.enabled: false`. With `compute:` set, or in another mode, the pool is
+  off unless `hosts.enabled: true`, which the CLI then refuses.
 
 A session runs on a host only when it asks for one, with
 `workload_config.host_selector` or an `execution_profile` of the hosts catalog. Every
@@ -106,9 +178,8 @@ other session runs on this machine. The session keeps that placement for life,
 through the execution pin. A host session that cannot be placed waits or fails, and
 never runs locally. The reverse also holds.
 
-Until Niuu ships a default host-mode execution, `hosts.execution_catalog` is required.
-It is a catalog whose execution's machine names profile `host` and whose runtime is
-the rootless host runtime.
+A catalog of your own (`hosts.execution_catalog`) needs an execution whose machine
+names profile `host` and whose runtime runs no root daemon.
 
 ## Where hosts join
 
@@ -348,6 +419,37 @@ sets, satisfy the selector. It forwards the part the Forge's tags do not cover a
 host. If no host of the pool carries the tags, session create fails with the tag sets
 the pool has. `GET /api/v1/forge/compute/hosts/tag-sets` lists them.
 
+## Linux hosts
+
+A Linux host runs sessions in host mode (`SshHostVmRuntime`; the details are in
+[vm-compute.md](vm-compute.md#host-mode)): Skuld and the agent CLI run as the slot's
+user on the host's own filesystem, toolchain and Nix store. Nothing on the host runs as
+a daemon for Forge:
+
+- each slot is a user `niuu-slot-<n>`, a named network namespace with its own veth and
+  NAT, and a systemd slice `niuu_slot_<n>.slice` with the slot's limits;
+- the session image (the OpenShell image) and the credential agents' images are fetched
+  from their registries by digest and unpacked under `/var/lib/niuu/host-images`;
+- the credential agents are systemd units `niuu-slot-<n>-sidecar-<name>` in the slot's
+  slice, and the session runs in a delegated systemd scope there, with rootless Podman
+  for the containers it builds and runs.
+
+The host needs systemd, cgroup v2, `iproute2`, `iptables`, `curl` and a `python3` with
+tarfile extraction filters (3.10.12, 3.11.4, 3.12 or later); the host recipe installs
+the packages it can with apt or dnf. No Docker is needed, and one that is there is
+never given to a slot.
+
+## Slots and reuse
+
+A stopped session's slot is torn down at stop: its processes, units, namespace, rules,
+slice, user and directories go, and the stop fails, naming what is left, unless nothing
+of the slot remains. With `reuse_policy: reuse` (the built-in pool's), the slot then
+takes the next session in place: before that, Forge checks the slot again and runs the
+audit (below) for that slot alone. A finding, or a slot Forge cannot check, retires the
+slot instead: it takes no other session, the failure is logged at error and counted on
+`volundr.compute.slot.recycle_failures`, and when it held the host's last session, the
+host's allocation drains and the host is audited as a whole.
+
 ## Checks and the audit
 
 When a host registers, every `check_interval_seconds` and when an allocation ends,
@@ -388,6 +490,10 @@ is retried. Capacity is never freed on a host nobody checked.
 | `compute.hosts.join_listener.bind_host` / `port` | `0.0.0.0` / `8443` | Where the pinned join listener listens | Cannot bind: startup fails, naming the knob |
 | `compute.hosts.join_listener.cert_file` / `key_file` | `~/.niuu/forge-host-join-{cert,key}.pem` | The listener's certificate and the key the pin comes from | Unreadable, readable by others or not matching: startup fails |
 | `compute.hosts.join_listener.key_bits` | 2048 | Size of a generated key | — |
+| `compute.session_images.linux` / `.darwin` | chart: the release's tag; mini: `…:dev` | What host runtimes without an image of their own run; a tag is pinned at startup | A tag the registry lacks or a registry Forge cannot reach: startup fails, naming the reference |
+| `compute.session_images.resolve_timeout_seconds` | 30 | One registry request while pinning a tag at startup | Startup fails with the reference |
+| built-in catalog `slot_cpu` / `slot_memory_mib` / `slot_pids` | 2 / 8192 / 16384 | What one Linux slot may use (`null`: no limit); slot counts are suggested from them | The slot's cgroup holds the session to them; a hit is counted on `volundr.compute.slot.limit_hits` |
+| `hosts.join_host` (CLI) | `server.external_host`, else the default route's address | Where other machines reach this one to join | Loopback, or no default route: `niuu platform up` stops, naming the knob |
 
 ## Hosts behind NAT: the reverse SSH connector
 
@@ -487,8 +593,9 @@ use Apple's `python3` and `git`), and make sure Forge's login is allowed by Remo
 Login. The darwin execution logs in as `root` with its key, which macOS's default
 `PermitRootLogin prohibit-password` allows.
 
-**The execution.** Its runtime is `SshDarwinHostRuntime`, the only runtime that names
-`darwin`:
+**The execution.** The built-in host execution runs Macs with no setting of its own.
+In a catalog of your own, the runtime is `SshDarwinHostRuntime`, the only runtime that
+names `darwin` (alone, or as the `darwin` child of a `PlatformHostRuntime`):
 
 ```yaml
 runtime:
