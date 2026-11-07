@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compute Hosts Mockup</title>
+<!-- Static mockup for docs/design/bm-compute-hosts.md. Not wired to anything; all data is illustrative. -->
+<style>
+  :root {
+    --bg-primary: #09090b; --bg-secondary: #18181b; --bg-tertiary: #27272a; --bg-elevated: #3f3f46;
+    --border: #27272a; --border-strong: #3f3f46;
+    --text-primary: #fafafa; --text-secondary: #a1a1aa; --text-muted: #71717a; --text-faint: #52525b;
+    --brand: #38bdf8; --brand-bg: color-mix(in srgb, #38bdf8 14%, transparent); --brand-bo: color-mix(in srgb, #38bdf8 35%, transparent);
+    --ok: #22c55e; --ok-bg: color-mix(in srgb, #22c55e 14%, transparent);
+    --warn: #f59e0b; --warn-bg: color-mix(in srgb, #f59e0b 14%, transparent);
+    --crit: #ef4444; --crit-fg: #fca5a5; --crit-bg: color-mix(in srgb, #ef4444 13%, transparent); --crit-bo: color-mix(in srgb, #ef4444 35%, transparent);
+    --font: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: 'JetBrainsMono NF', ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg-primary); color: var(--text-primary); font: 14px/1.45 var(--font); }
+  .shell { display: grid; grid-template-columns: 56px 1fr; min-height: 100vh; }
+  .rail { background: var(--bg-secondary); border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; padding: 14px 0; gap: 14px; }
+  .rail span { width: 30px; height: 30px; border-radius: 8px; background: var(--bg-tertiary); display: grid; place-items: center; color: var(--text-muted); font-size: 12px; }
+  .rail span.on { background: var(--brand-bg); color: var(--brand); outline: 1px solid var(--brand-bo); }
+  main { padding: 20px 28px 48px; min-width: 0; }
+  .crumbs { color: var(--text-muted); font-size: 12px; }
+  .crumbs b { color: var(--text-secondary); font-weight: 500; }
+  h1 { font-size: 20px; font-weight: 600; margin: 4px 0 2px; }
+  .sub { color: var(--text-secondary); margin: 0 0 16px; }
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
+  .tabs button { background: none; border: 0; color: var(--text-muted); padding: 8px 14px; font: inherit; cursor: pointer; border-bottom: 2px solid transparent; }
+  .tabs button.on { color: var(--text-primary); border-color: var(--brand); }
+  .note { font-size: 12px; color: var(--text-faint); margin: 0 0 14px; }
+  .switch { display: inline-flex; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 3px; margin-bottom: 18px; }
+  .switch button { background: none; border: 0; color: var(--text-secondary); padding: 6px 12px; border-radius: 6px; font: inherit; font-size: 13px; cursor: pointer; }
+  .switch button.on { background: var(--bg-tertiary); color: var(--text-primary); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .card .k { color: var(--text-muted); font-size: 12px; }
+  .card .v { font-size: 22px; font-weight: 600; margin-top: 2px; }
+  .card .d { color: var(--text-secondary); font-size: 12px; margin-top: 2px; }
+  .bar { height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden; margin-top: 8px; }
+  .bar i { display: block; height: 100%; background: var(--brand); }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+  .toolbar h2 { font-size: 15px; font-weight: 600; margin: 0; }
+  .btn { background: var(--bg-tertiary); border: 1px solid var(--border-strong); color: var(--text-primary); border-radius: 7px; padding: 6px 11px; font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .btn.primary { background: var(--brand); border-color: var(--brand); color: #04121b; font-weight: 600; }
+  .btn.ghost { background: none; border-color: transparent; color: var(--text-secondary); padding: 4px 8px; }
+  .btn.danger { color: var(--crit-fg); }
+  .btn[disabled] { opacity: .45; cursor: not-allowed; }
+  .tablewrap { border: 1px solid var(--border); border-radius: 10px; overflow-x: auto; background: var(--bg-secondary); }
+  table { width: 100%; border-collapse: collapse; min-width: 900px; }
+  th { text-align: left; font-weight: 500; font-size: 12px; color: var(--text-muted); padding: 9px 12px; border-bottom: 1px solid var(--border); }
+  td { padding: 11px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  .name { font-weight: 500; }
+  .mono { font-family: var(--mono); font-size: 12px; color: var(--text-secondary); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--bg-tertiary); color: var(--text-secondary); white-space: nowrap; }
+  .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); }
+  .pill.brand { background: var(--brand-bg); color: var(--brand); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.crit { background: var(--crit-bg); color: var(--crit-fg); }
+  .slots { display: flex; gap: 2px; flex-wrap: wrap; max-width: 170px; }
+  .slots i { width: 9px; height: 14px; border-radius: 2px; background: var(--bg-elevated); }
+  .slots i.b { background: var(--brand); }
+  .slots i.s { background: var(--warn); }
+  .slots i.q { background: var(--crit); }
+  .muted { color: var(--text-muted); font-size: 12px; }
+  .finding { margin-top: 8px; background: var(--crit-bg); border: 1px solid var(--crit-bo); border-radius: 7px; padding: 7px 10px; font-size: 12px; color: var(--crit-fg); }
+  .finding code { font-family: var(--mono); color: var(--text-primary); }
+  .actions { display: flex; gap: 2px; justify-content: flex-end; flex-wrap: wrap; }
+  .legend { display: flex; gap: 14px; margin-top: 10px; font-size: 12px; color: var(--text-muted); flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend i { width: 9px; height: 12px; border-radius: 2px; display: inline-block; }
+
+  /* Add host */
+  .add { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+  .panel { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .panel h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+  .panel p { margin: 0 0 12px; color: var(--text-secondary); font-size: 13px; }
+  .step { display: flex; gap: 10px; align-items: baseline; margin: 18px 0 8px; }
+  .step:first-child { margin-top: 0; }
+  .step b { width: 20px; height: 20px; border-radius: 50%; background: var(--brand-bg); color: var(--brand); display: inline-grid; place-items: center; font-size: 11px; flex: none; }
+  .opt { display: flex; gap: 10px; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 8px; margin-bottom: 8px; }
+  .opt.on { border-color: var(--brand-bo); background: var(--brand-bg); }
+  .opt.off { opacity: .55; }
+  .opt .radio { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--text-muted); margin-top: 3px; flex: none; }
+  .opt.on .radio { border-color: var(--brand); background: radial-gradient(var(--brand) 40%, transparent 45%); }
+  .opt small { display: block; color: var(--text-muted); font-size: 12px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .input { background: var(--bg-primary); border: 1px solid var(--border-strong); border-radius: 7px; padding: 6px 10px; color: var(--text-primary); font: inherit; width: 90px; }
+  .cmd { background: var(--bg-primary); border: 1px solid var(--border-strong); border-radius: 8px; padding: 10px 12px; font-family: var(--mono); font-size: 12px; color: var(--text-primary); overflow-x: auto; white-space: pre; }
+  .cmdbar { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 10px; flex-wrap: wrap; }
+  .timeline { list-style: none; margin: 0; padding: 0; }
+  .timeline li { display: grid; grid-template-columns: 22px 1fr; gap: 8px; padding: 6px 0; }
+  .timeline .dot { width: 14px; height: 14px; border-radius: 50%; margin-top: 3px; border: 2px solid var(--text-faint); }
+  .timeline .done .dot { background: var(--ok); border-color: var(--ok); }
+  .timeline .now .dot { border-color: var(--brand); box-shadow: 0 0 0 4px var(--brand-bg); }
+  .timeline .title { font-weight: 500; }
+  .timeline .todo .title { color: var(--text-muted); }
+  .timeline .detail { color: var(--text-muted); font-size: 12px; }
+  .stages { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12px; }
+  .stages li { display: flex; justify-content: space-between; padding: 2px 0; color: var(--text-secondary); }
+  .stages li.r { color: var(--brand); }
+  .stages li.p { color: var(--text-faint); }
+  .facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 8px 0 12px; }
+  .facts div { background: var(--bg-primary); border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; }
+  .facts .k { color: var(--text-muted); font-size: 11px; }
+  .math { font-family: var(--mono); font-size: 12px; color: var(--text-secondary); background: var(--bg-primary); border: 1px dashed var(--border-strong); border-radius: 7px; padding: 8px 10px; margin-bottom: 10px; line-height: 1.6; }
+  .math b { color: var(--text-primary); font-weight: 500; }
+  [hidden] { display: none !important; }
+
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: 1fr; }
+    .rail { display: none; }
+    main { padding: 16px; }
+    .add { grid-template-columns: 1fr; }
+    .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav class="rail" aria-hidden="true"><span>N</span><span>H</span><span class="on">F</span><span>T</span><span>R</span></nav>
+  <main>
+    <div class="crumbs">Platform › Forges › <b>Valhalla Hosts</b> › Compute</div>
+    <h1>Valhalla Hosts</h1>
+    <p class="sub">Bare-metal hosts registered as compute for this Forge. Sessions are placed in free slots; hosts are cleaned, never deleted.</p>
+    <div class="tabs"><button>Pool</button><button class="on">Hosts</button><button>Settings</button></div>
+
+    <p class="note">Mockup for review (docs/design/bm-compute-hosts.md). Switch screens:</p>
+    <div class="switch" role="tablist">
+      <button class="on" data-screen="list">Host list</button>
+      <button data-screen="add">Add host · in progress</button>
+      <button data-screen="capacity">Add host · set capacity</button>
+    </div>
+
+    <!-- Screen 1: host list -->
+    <section data-view="list">
+      <div class="cards">
+        <div class="card"><div class="k">Hosts</div><div class="v">7</div><div class="d">3 in service · 1 draining · 1 preparing · 2 need attention</div></div>
+        <div class="card"><div class="k">Free slots</div><div class="v">8 <span class="muted">of 40</span></div><div class="bar"><i style="width:80%"></i></div></div>
+        <div class="card"><div class="k">Warm target</div><div class="v">4 free</div><div class="d"><span class="pill ok">met</span></div></div>
+        <div class="card"><div class="k">Runtime</div><div class="v" style="font-size:16px;margin-top:6px">Host · Nix + Podman</div><div class="d mono">host@2026-11-07</div></div>
+      </div>
+
+      <div class="toolbar">
+        <h2>Hosts</h2>
+        <div class="row"><button class="btn">Check all</button><button class="btn primary" data-go="add">Add host</button></div>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Host</th><th>State</th><th>Slots</th><th>Size</th><th>Last check</th><th style="text-align:right">Actions</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><div class="name">hrimfaxi</div><div class="mono">192.168.90.31 · SHA256:q3Vf…9kT</div></td>
+              <td><span class="pill brand">In service</span></td>
+              <td><div class="slots"><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="s"></i><i></i><i></i><i></i></div><div class="muted">11 busy · 1 starting · 3 free of 15</div></td>
+              <td>64 CPU · 256 GiB<div class="muted">4 CPU · 16 GiB per slot</div></td>
+              <td>2 min ago<div class="muted">audit clean</div></td>
+              <td><div class="actions"><button class="btn ghost">Check now</button><button class="btn ghost">Drain</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="name">skinfaxi</div><div class="mono">192.168.90.32 · SHA256:Zx01…a7Q</div></td>
+              <td><span class="pill brand">In service</span></td>
+              <td><div class="slots"><i class="b"></i><i class="b"></i><i class="b"></i><i></i><i></i><i></i><i></i><i></i></div><div class="muted">3 busy · 5 free of 8</div></td>
+              <td>32 CPU · 128 GiB<div class="muted">4 CPU · 16 GiB per slot</div></td>
+              <td>1 min ago<div class="muted">audit clean</div></td>
+              <td><div class="actions"><button class="btn ghost">Check now</button><button class="btn ghost">Drain</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="name">gloi</div><div class="mono">192.168.90.36 · SHA256:pL2e…mE4</div></td>
+              <td><span class="pill brand">In service</span><div class="muted" style="margin-top:4px">exclusive</div></td>
+              <td><div class="slots"><i class="b"></i></div><div class="muted">1 busy of 1</div></td>
+              <td>24 CPU · 96 GiB · 1 GPU<div class="muted">whole host</div></td>
+              <td>4 min ago<div class="muted">audit clean</div></td>
+              <td><div class="actions"><button class="btn ghost">Check now</button><button class="btn ghost">Drain</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="name">arvak</div><div class="mono">192.168.90.33 · SHA256:9dGm…Ww2</div></td>
+              <td><span class="pill warn">Draining</span><div class="muted" style="margin-top:4px">2 sessions left; out of service when empty</div></td>
+              <td><div class="slots"><i class="b"></i><i class="b"></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="muted">2 busy · no new sessions</div></td>
+              <td>32 CPU · 128 GiB<div class="muted">4 CPU · 16 GiB per slot</div></td>
+              <td>3 min ago<div class="muted">audit clean</div></td>
+              <td><div class="actions"><button class="btn ghost">Resume</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="name">alsvin</div><div class="mono">192.168.90.34 · SHA256:Kp7r…3nB</div></td>
+              <td><span class="pill crit">Quarantined</span></td>
+              <td><div class="slots"><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="q"></i><i></i><i></i><i></i></div><div class="muted">4 busy · slot 4 failed cleanup · no new sessions</div></td>
+              <td>32 CPU · 128 GiB<div class="muted">4 CPU · 16 GiB per slot</div></td>
+              <td>40 s ago<div class="muted">2 findings</div></td>
+              <td><div class="actions"><button class="btn ghost">Check now</button><button class="btn ghost">Drain</button></div></td>
+            </tr>
+            <tr>
+              <td colspan="6" style="padding-top:0">
+                <div class="finding">
+                  Slot 4 cleanup left things behind, so the slot is held and the host takes no new sessions. The running sessions are not touched.<br>
+                  • process <code>node vite</code> (pid 48211) still running as <code>niuu-slot-4</code> (uid 61004)<br>
+                  • <code>/dev/shm/vite-61004.lock</code> owned by uid 61004<br>
+                  Fix it on the host, then <b>Check now</b>. The session's archive and stop intent are kept, and the stop is retried.
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td><div class="name">glad</div><div class="mono">192.168.90.35 · SHA256:Rr4a…0cX</div></td>
+              <td><span class="pill">Preparing</span><div class="muted" style="margin-top:4px">stage 3 of 6 · Nix daemon</div></td>
+              <td><div class="muted">set after first check</div></td>
+              <td>48 CPU · 192 GiB</td>
+              <td>now</td>
+              <td><div class="actions"><button class="btn ghost" data-go="add">Open</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="name">gullfaxi</div><div class="mono">192.168.90.37 · SHA256:Ee8u…tY1</div></td>
+              <td><span class="pill crit">Unreachable</span></td>
+              <td><div class="muted">0 · out of service</div></td>
+              <td>16 CPU · 64 GiB</td>
+              <td>12 min ago<div class="muted">failed</div></td>
+              <td><div class="actions"><button class="btn ghost">Check now</button><button class="btn ghost danger">Remove</button></div></td>
+            </tr>
+            <tr>
+              <td colspan="6" style="padding-top:0">
+                <div class="finding">
+                  The host's SSH key no longer matches the one registered at join (<code>SHA256:Ee8u…tY1</code>, now <code>SHA256:Mm0c…Lq9</code>). Forge will not connect to it.<br>
+                  If the host was reinstalled, remove it and join it again. Removing it here cannot reach the host, so afterwards run <code>sudo niuu leave --compute</code> on it.
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--brand)"></i>busy</span>
+        <span><i style="background:var(--warn)"></i>starting</span>
+        <span><i style="background:var(--bg-elevated)"></i>free</span>
+        <span><i style="background:var(--crit)"></i>cleanup failed</span>
+      </div>
+    </section>
+
+    <!-- Screen 2: add host, in progress -->
+    <section data-view="add" hidden>
+      <div class="toolbar"><h2>Add host</h2><button class="btn" data-go="list">Back to hosts</button></div>
+      <div class="add">
+        <div class="panel">
+          <div class="step"><b>1</b><h3>What the host runs</h3></div>
+          <p>One runtime per host. Only runtimes that need no root daemon in a slot can run on a registered host.</p>
+          <div class="opt on"><span class="radio"></span><div>Host · Nix + rootless Podman<small>Sessions run directly on the host, each as its own user with its own network, processes and limits. Shared Nix store.</small></div></div>
+          <div class="opt"><span class="radio"></span><div>OpenShell<small>One sandbox per host; exclusive hosts only (1 slot).</small></div></div>
+          <div class="opt off"><span class="radio"></span><div>Container (Docker)<small>Not available on registered hosts: it needs root Docker.</small></div></div>
+
+          <div class="step"><b>2</b><h3>Sessions at once</h3></div>
+          <p>Leave it open to choose after Forge has measured the host, or set it now. 1 makes it an exclusive machine.</p>
+          <div class="row"><label class="row" style="gap:6px"><span class="opt on" style="margin:0;padding:6px 10px;border-radius:7px"><span class="radio"></span>Decide after first check</span></label><span class="opt" style="margin:0;padding:6px 10px;border-radius:7px"><span class="radio"></span>Set now <input class="input" value="" placeholder="slots" disabled></span></div>
+
+          <div class="step"><b>3</b><h3>Run on the host, as root, once</h3></div>
+          <p>It checks the prerequisites first and prints any that are missing. Forge then connects over SSH and prepares the host.</p>
+          <div class="cmd">sudo niuu join https://forge-hosts.valhalla.asgard.niuu.world \
+  --code nh_7KQ2-4XWP-9MDA --as-compute --address &lt;host address&gt;</div>
+          <div class="cmdbar"><span class="muted">Single use · expires in 4:12</span><span class="row"><button class="btn ghost danger">Revoke code</button><button class="btn">Copy</button></span></div>
+        </div>
+
+        <div class="panel">
+          <h3>glad</h3>
+          <p class="mono">192.168.90.35 · SHA256:Rr4a…0cX</p>
+          <ol class="timeline">
+            <li class="done"><span class="dot"></span><div><div class="title">Joined</div><div class="detail">Code used 11:42:06 · host key received · Forge key installed for root, from 192.168.90.240 only</div></div></li>
+            <li class="done"><span class="dot"></span><div><div class="title">Reached, key pinned</div><div class="detail">SSH to 192.168.90.35:22 matches the registered host key</div></div></li>
+            <li class="now"><span class="dot"></span><div><div class="title">Preparing · recipe host-nix@2026-11-07</div>
+              <ul class="stages">
+                <li><span>Prerequisites (cgroup v2, nftables, uidmap, userns)</span><span>✓ 2 s</span></li>
+                <li><span>Measure host</span><span>✓ 1 s</span></li>
+                <li class="r"><span>Nix multi-user daemon</span><span>running · 48 s</span></li>
+                <li class="p"><span>Rootless Podman + pasta</span><span>—</span></li>
+                <li class="p"><span>Slot supervisor and Skuld host artifacts</span><span>—</span></li>
+                <li class="p"><span>Pull session images into the shared store</span><span>—</span></li>
+              </ul></div></li>
+            <li class="todo"><span class="dot"></span><div><div class="title">Audit</div><div class="detail">No slot users, processes, files, namespaces, rules or slices left; nobody in sudo/docker; Nix trusted-users is root only</div></div></li>
+            <li class="todo"><span class="dot"></span><div><div class="title">Set capacity</div><div class="detail">Choose sessions at once from the measured size</div></div></li>
+            <li class="todo"><span class="dot"></span><div><div class="title">Ready</div><div class="detail">Takes sessions</div></div></li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <!-- Screen 3: add host, set capacity -->
+    <section data-view="capacity" hidden>
+      <div class="toolbar"><h2>Add host · glad</h2><button class="btn" data-go="list">Back to hosts</button></div>
+      <div class="add">
+        <div class="panel">
+          <div class="step"><b>✓</b><h3>Prepared and audited</h3></div>
+          <p>Recipe host-nix@2026-11-07 finished in 3 min 10 s. The audit found nothing.</p>
+          <div class="step"><b>4</b><h3>Sessions at once</h3></div>
+          <div class="facts">
+            <div><div class="k">CPU</div>48 cores</div>
+            <div><div class="k">Memory</div>192 GiB</div>
+            <div><div class="k">Disk free</div>1.6 TiB</div>
+            <div><div class="k">Kernel</div>6.8 · cgroup v2</div>
+            <div><div class="k">Arch</div>x86_64</div>
+            <div><div class="k">GPU</div>none</div>
+          </div>
+          <div class="math">
+            per slot (runtime host@2026-11-07): <b>4 CPU · 16 GiB · 4096 pids</b><br>
+            reserved for the host: <b>4 CPU · 8 GiB</b><br>
+            CPU&nbsp;&nbsp;&nbsp;(48 − 4) ÷ 4 = <b>11</b><br>
+            memory (192 − 8) ÷ 16 = <b>11</b><br>
+            suggested: <b>11 slots</b>
+          </div>
+          <div class="row"><input class="input" value="11"> <span class="muted">sessions at once · 1 = exclusive machine</span></div>
+          <p class="muted" style="margin-top:10px">More than 11 is refused with this arithmetic, because the slot limits would not fit. Changing it later needs the host out of service.</p>
+          <div class="row" style="margin-top:6px"><button class="btn primary">Put in service</button><button class="btn">Keep out of service</button></div>
+        </div>
+        <div class="panel">
+          <h3>What happens next</h3>
+          <ol class="timeline">
+            <li class="done"><span class="dot"></span><div><div class="title">Joined · reached · prepared · audited</div></div></li>
+            <li class="now"><span class="dot"></span><div><div class="title">Set capacity</div><div class="detail">Waiting for you</div></div></li>
+            <li class="todo"><span class="dot"></span><div><div class="title">Ready</div><div class="detail">Free slots count towards the warm target (4) at once; Launch shows “Host” as warm.</div></div></li>
+          </ol>
+          <h3 style="margin-top:18px">Each session gets</h3>
+          <p>Its own user (<span class="mono">niuu-slot-n</span>), network namespace with NAT out of the host, PID namespace, private /tmp, and a cgroup slice with the limits above. No sudo, no Docker group. LAN addresses are denied unless listed in the pool's allowed LAN ranges.</p>
+          <h3 style="margin-top:14px">When a session stops</h3>
+          <p>Its slot is archived and torn down, then checked: no process, file, namespace, rule or slice of that user may be left. Only then is the slot offered again. Anything left keeps the slot out and shows here.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<script>
+  const show = (name) => {
+    document.querySelectorAll('[data-view]').forEach((el) => { el.hidden = el.dataset.view !== name; });
+    document.querySelectorAll('[data-screen]').forEach((el) => el.classList.toggle('on', el.dataset.screen === name));
+  };
+  document.querySelectorAll('[data-screen]').forEach((el) => el.addEventListener('click', () => show(el.dataset.screen)));
+  document.querySelectorAll('[data-go]').forEach((el) => el.addEventListener('click', () => show(el.dataset.go)));
+</script>
+</body>
+</html>
