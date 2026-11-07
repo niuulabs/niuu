@@ -128,18 +128,26 @@ def _compute_fields(client) -> dict:
     return {f["key"]: f for f in section["fields"]}
 
 
-def test_slot_settings_are_labelled_and_unset_limits_are_not_posted_back_as_text(app):
+def test_slot_settings_are_labelled_and_unset_limits_post_back_as_null(app, setup):
     with TestClient(app) as client:
         fields = _compute_fields(client)
 
         assert fields["slots_per_machine"]["label"] == "Sessions per machine"
         assert fields["slots_per_machine"]["type"] == "number"
         assert fields["slots_per_machine"]["value"] == 1
-        # Unset optional limits have no number to show yet; they stay unset on save.
-        assert "max_sessions_per_machine" not in fields
-        assert "max_machine_age_seconds" not in fields
+        assert not fields["slots_per_machine"]["nullable"]
+        assert fields["warm_min"]["label"] == "Free warm slots"
+        # Unset optional limits are shown as empty numbers the form saves back as null.
+        for key in ("max_sessions_per_machine", "max_machine_age_seconds"):
+            assert fields[key]["type"] == "number"
+            assert fields[key]["nullable"] is True
+            assert fields[key]["value"] is None
+            assert fields[key]["placeholder"] == "Unset"
         body = {key: field["value"] for key, field in fields.items()}
         assert client.patch("/api/v1/forge/admin/settings/compute", json=body).status_code == 200
+        stored = setup[2].policies["pool"]
+        assert stored.max_sessions_per_machine is None
+        assert stored.max_machine_age_seconds is None
 
 
 def test_set_drain_limits_are_labelled_numbers(app, setup):
@@ -194,8 +202,45 @@ async def test_status_lists_each_machines_sessions_and_only_empty_machines_can_b
 
         status = {f["key"]: f for f in sections["compute-status"]["fields"]}
         assert status["counts"]["value"] == "ready: 2"
-        assert status[str(claim.id)]["value"].startswith("ready")
-        assert status[str(claim.id)]["description"] == (f"Slot 0: session {claim.session_id}")
-        assert status[str(spare.id)]["description"] == "Unbound machine"
+        assert status[str(claim.id)]["value"] == "ready · small · 1 of 1 slots"
+        assert status[str(claim.id)]["description"] == (
+            f"Slot 0 (starting): session {claim.session_id}"
+        )
+        assert status[str(spare.id)]["value"] == "ready · small · 0 of 1 slots"
+        assert status[str(spare.id)]["description"] == "No sessions"
+        # The spare machine's free slot counts towards the one warm slot the pool keeps.
+        assert status["capacity_shortfall"]["label"] == "Warm capacity"
+        assert status["capacity_shortfall"]["readOnly"]
+        assert status["capacity_shortfall"]["value"] == "1 free warm slots; 1 wanted"
         dispose = sections["compute-dispose"]["fields"][0]
         assert [option["value"] for option in dispose["options"]] == ["", str(spare.id)]
+
+
+async def test_a_failed_machine_shows_its_error_beside_its_sessions(app, setup):
+    from volundr.domain.compute import LeaseState
+
+    _, leases, repo, _, _, _ = setup
+    claim = await leases.acquire(session_id=uuid4(), owner_id="o", tenant_id="t", profile="small")
+    async with repo.operation(claim.id):
+        await repo.save(
+            repo.leases[claim.id].model_copy(update={"state": LeaseState.FAILED, "error": "boom"})
+        )
+    with TestClient(app) as client:
+        sections = {s["id"]: s for s in client.get("/api/v1/forge/settings").json()["sections"]}
+
+        status = {f["key"]: f for f in sections["compute-status"]["fields"]}
+
+        assert status[str(claim.id)]["description"] == (
+            f"boom; Slot 0 (starting): session {claim.session_id}"
+        )
+
+
+async def test_a_capacity_shortfall_is_shown_as_the_warm_capacity(app, setup):
+    pool = setup[0]
+    pool.capacity_shortfall = "0 of 1 free warm slots: the pool is at its maximum of 2 machines"
+    with TestClient(app) as client:
+        sections = {s["id"]: s for s in client.get("/api/v1/forge/settings").json()["sections"]}
+
+        status = {f["key"]: f for f in sections["compute-status"]["fields"]}
+
+        assert status["capacity_shortfall"]["value"] == pool.capacity_shortfall

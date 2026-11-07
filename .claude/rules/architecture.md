@@ -240,14 +240,23 @@ and Forge never tries another.
 
 Limits of this exception, enforced together:
 
-- **The endpoint only ever answers for the session currently bound to the
-  allocation.** Authentication yields an allocation, never a session. The lease
-  must be in the configured pool, `ready` or `busy`, with a bound session and no
-  stop requested, and the credentials come from that session's own launch
-  payload; anything else is a 409 with the reason (after authentication) or the
-  identical 401. A released, draining or unbound allocation gets nothing, and
-  the Forge session credential carries the session's *current* launch id, so a
-  restart revokes what the previous launch held.
+- **The endpoint only ever answers for the session currently bound to one slot
+  of the allocation.** Authentication yields an allocation, never a session or
+  a slot. The request body names the slot (`{"allocation_id": ..., "slot": n}`);
+  it may be omitted only on a single-slot allocation, and a missing, non-integer
+  or out-of-range `slot` is a 400 after authentication. The machine must be in
+  the configured pool and `ready` or `idle`, and the slot must hold a `starting`
+  or `busy` binding with no stop requested; the credentials come from that
+  session's own launch payload. Anything else is a 409 with the reason (after
+  authentication) or the identical 401. A released or draining machine, or a slot
+  with no bound session, gets nothing, and the Forge session credential carries
+  the session's *current* launch id, so a restart revokes what the previous
+  launch held. An allocation's identity vouches for every slot of the machine, so
+  a process that holds it can ask for any slot: more than one slot per machine
+  needs a runtime that keeps that identity out of the slots' reach (own user,
+  network namespace and credential files per slot). Until a runtime declares
+  that (`VmRuntime.supports_slots`), Forge refuses a pool with more than one slot
+  per machine.
 - **Exactly one route.** Do not extend either identity to another route without
   adding it to the same enforcement points this one touches: the router, the
   Volundr chart's Envoy `jwt_authn` bypass and Cedar `ext_authz` skip

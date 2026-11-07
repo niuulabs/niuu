@@ -13,7 +13,7 @@ const schema = {
       fields: [
         { key: 'profile', label: 'Machine profile', type: 'text', value: 'standard' },
         { key: 'max_machines', label: 'Maximum machines', type: 'number', value: 2 },
-        { key: 'warm_min', label: 'Ready spare machines', type: 'number', value: 1 },
+        { key: 'warm_min', label: 'Free warm slots', type: 'number', value: 1 },
         { key: 'paused', label: 'Pause new allocations', type: 'boolean', value: false },
       ],
     },
@@ -35,7 +35,7 @@ test('admin edits a provider-neutral pool in mounted settings', async ({ page })
   });
   await page.goto('/settings/volundr/compute?config=/config.live.json');
   await expect(page.getByRole('heading', { name: 'Compute pool', exact: true })).toBeVisible();
-  await page.getByRole('spinbutton', { name: 'Ready spare machines', exact: true }).fill('2');
+  await page.getByRole('spinbutton', { name: 'Free warm slots', exact: true }).fill('2');
   await page.getByRole('checkbox', { name: 'Pause new allocations', exact: true }).check();
   await page.getByRole('button', { name: 'Save pool settings', exact: true }).focus();
   await page.keyboard.press('Enter');
@@ -52,7 +52,7 @@ test('pool save failure leaves the form editable', async ({ page }) => {
     });
   });
   await page.goto('/settings/volundr/compute?config=/config.live.json');
-  await page.getByRole('spinbutton', { name: 'Ready spare machines', exact: true }).fill('3');
+  await page.getByRole('spinbutton', { name: 'Free warm slots', exact: true }).fill('3');
   await page.getByRole('button', { name: 'Save pool settings', exact: true }).click();
   await expect(page.getByTestId('settings-save-error')).toContainText('Warm minimum cannot exceed');
   await expect(page.getByRole('button', { name: 'Save pool settings', exact: true })).toBeEnabled();
