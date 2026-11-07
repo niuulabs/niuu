@@ -51,13 +51,16 @@ class SessionStartupRecorder:
         self._locks: dict[UUID, asyncio.Lock] = {}
         self._watches: dict[UUID, asyncio.Task] = {}
 
-    async def begin(self, session: Session) -> Session:
-        """Start a new launch record: Forge is preparing the launch."""
+    async def begin(self, session: Session) -> Session | None:
+        """Start a new launch record: Forge is preparing the launch.
+
+        Not broadcast: the caller announces the starting session that carries it.
+        """
         now = _now()
         startup = SessionStartup.begin(
             now, StartupStage(key=LAUNCH_STAGE, label="Preparing launch", started_at=now)
         )
-        return await self._store(session.id, lambda _: startup, replace=True)
+        return await self._store(session.id, lambda _: startup, replace=True, broadcast=False)
 
     async def handing_off(self, session_id: UUID) -> None:
         """The contributor pipeline is done and the runtime backend takes over.
@@ -138,6 +141,7 @@ class SessionStartupRecorder:
         change: Callable[[SessionStartup], SessionStartup],
         *,
         replace: bool = False,
+        broadcast: bool = True,
     ) -> Session | None:
         """Apply ``change`` to the stored record; ``replace`` starts one where none is."""
         async with self._locks.setdefault(session_id, asyncio.Lock()):
@@ -151,6 +155,6 @@ class SessionStartupRecorder:
             if updated == current:
                 return session
             stored = await self._repository.update_startup(session_id, updated)
-        if stored is not None and self._broadcaster is not None:
+        if broadcast and stored is not None and self._broadcaster is not None:
             await self._broadcaster.publish_session_updated(stored)
         return stored
