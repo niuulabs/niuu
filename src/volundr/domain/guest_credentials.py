@@ -24,7 +24,7 @@ from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
-from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.compute import AllocationRef, MachineBootstrap, SlotLease
 
 #: Where the guest agent serves credentials to the guest's own processes.
 METADATA_ADDRESS = "169.254.169.254"
@@ -194,14 +194,14 @@ class GuestIdentity(ABC):
         """Read-only guest paths the agent container needs (key files, sockets)."""
         return ()
 
-    async def register(self, lease: ComputeLease, machine: MachineBootstrap) -> None:
+    async def register(self, lease: AllocationRef, machine: MachineBootstrap) -> None:
         """Make the allocation's identity valid before its guest asks (idempotent).
 
         ``machine`` is the allocation's stored machine bootstrap, holding whatever
         ``machine_bootstrap`` added.
         """
 
-    async def unregister(self, lease: ComputeLease, machine: MachineBootstrap) -> None:
+    async def unregister(self, lease: AllocationRef, machine: MachineBootstrap) -> None:
         """Retire the allocation's identity when its session stops (idempotent)."""
 
     @abstractmethod
@@ -236,12 +236,12 @@ class GuestFiles(Protocol):
     """The runtime's authenticated file channel into one allocation's guest."""
 
     async def write_files(
-        self, lease: ComputeLease, bootstrap: MachineBootstrap, items: list[dict]
+        self, lease: AllocationRef, bootstrap: MachineBootstrap, items: list[dict]
     ) -> None:
         """Atomically write ``{"directory", "name", "content"}`` items (0644, dirs 0755)."""
 
     async def file_exists(
-        self, lease: ComputeLease, bootstrap: MachineBootstrap, path: str
+        self, lease: AllocationRef, bootstrap: MachineBootstrap, path: str
     ) -> bool:
         """Whether ``path`` is a regular file in the guest."""
 
@@ -270,7 +270,7 @@ class GuestCredentialDelivery(ABC):
     @abstractmethod
     async def start(
         self,
-        lease: ComputeLease,
+        lease: SlotLease,
         bootstrap: MachineBootstrap,
         plan: GuestCredentialPlan,
         launch: dict,
@@ -283,14 +283,14 @@ class GuestCredentialDelivery(ABC):
 
     async def resume(
         self,
-        lease: ComputeLease,
+        lease: SlotLease,
         bootstrap: MachineBootstrap,
         plan: GuestCredentialPlan,
         files: GuestFiles,
     ) -> None:
         """The runtime routes to a running guest: resume any refresh this delivery owns."""
 
-    async def stop(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         """The session stops: end refresh and retire what ``start`` set up."""
 
     async def close(self) -> None:

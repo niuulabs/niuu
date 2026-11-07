@@ -10,7 +10,7 @@ from uuid import UUID
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.session_proxy import SessionProxyTarget
-from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.compute import ComputeLease, MachineBootstrap, SlotLease
 from volundr.domain.guest_credentials import GuestCredentialDelivery
 from volundr.domain.models import Session, SessionSpec
 
@@ -123,29 +123,39 @@ class VmRuntime(ABC):
         """Validate the supported session contract and prepare first-boot content."""
 
     @abstractmethod
-    async def prepare(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def prepare(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         """Wait for authenticated guest control before touching session data."""
 
     @abstractmethod
-    async def start(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def start(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         """Idempotently restore retained data and start this allocation's runtime."""
 
     @abstractmethod
-    async def target(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> SessionProxyTarget:
+    async def target(self, lease: SlotLease, bootstrap: MachineBootstrap) -> SessionProxyTarget:
         """Resolve an authenticated transport to the guest, including after restart."""
 
     @abstractmethod
-    async def ready(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> bool: ...
+    async def ready(self, lease: SlotLease, bootstrap: MachineBootstrap) -> bool: ...
 
     @abstractmethod
-    async def stop(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         """Stop execution and durably preserve session data before machine disposal."""
+
+    @property
+    def supports_slots(self) -> bool:
+        """Whether one machine can serve several sessions at once.
+
+        The contract is a per-slot user, network namespace, cgroup and runtime state keyed
+        by (allocation, slot). No runtime declares it yet, so a pool with
+        ``slots_per_machine > 1`` is refused at startup and on an admin change.
+        """
+        return False
 
     @property
     def supports_reuse(self) -> bool:
         return False
 
-    async def recycle(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def recycle(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         """Remove stopped session resources after durable archival; idempotent."""
         raise NotImplementedError("This runtime does not support in-place guest reuse")
 

@@ -335,8 +335,9 @@ async def test_session_bootstrap_is_durable_before_first_provider_call(tmp_path:
     async def interrupted_create(request):
         lease = repository.leases[request.allocation_id]
         machine_value = await store.get_value("compute", lease.bootstrap_owner, lease.bootstrap_ref)
+        binding = next(iter(repository.bindings.values()))
         session_value = await store.get_value(
-            "compute", lease.bootstrap_owner, lease.session_bootstrap_ref
+            "compute", lease.bootstrap_owner, binding.session_bootstrap_ref
         )
         assert MachineBootstrap.model_validate_json(machine_value["bootstrap"]) == machine_bootstrap
         assert MachineBootstrap.model_validate_json(session_value["bootstrap"]) == session_bootstrap
@@ -356,9 +357,10 @@ async def test_session_bootstrap_is_durable_before_first_provider_call(tmp_path:
             execution_plan=plan,
         )
 
-    lease = next(iter(repository.leases.values()))
-    assert lease.session_bootstrap_ref is not None
-    assert await leases.bootstrap_for(lease) == session_bootstrap
+    binding = next(iter(repository.bindings.values()))
+    assert binding.session_bootstrap_ref is not None
+    view = await repository.active_for_session("pool", binding.session_id)
+    assert await leases.bootstrap_for(view) == session_bootstrap
 
 
 async def test_catalog_start_rejects_session_without_resolved_pin(tmp_path: Path):
@@ -415,3 +417,111 @@ async def test_reconcile_never_creates_while_referenced_session_bootstrap_is_mis
         await leases.reconcile(lease.id)
 
     assert not provider.created
+
+
+# --- The session's plan lives on its slot; the machine keeps its host-provisioning plan ---------
+
+
+async def test_a_cold_catalog_start_pins_the_plan_on_the_machine_and_on_the_slot(tmp_path: Path):
+    manager, _, repository, _, _, _, _, plan, session = _setup(tmp_path)
+
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    machine = next(iter(repository.leases.values()))
+    binding = next(iter(repository.bindings.values()))
+    assert machine.execution_plan == binding.execution_plan == plan
+    view = await repository.active_for_session("pool", session.id)
+    assert view.execution_plan == binding.execution_plan
+
+
+async def test_a_session_cannot_reacquire_its_claim_under_a_different_plan(tmp_path: Path):
+    _, leases, _, _, _, _, _, plan, session = _setup(tmp_path)
+    claim = {
+        "session_id": session.id,
+        "owner_id": "owner",
+        "tenant_id": "tenant",
+        "profile": "small",
+        "bootstrap": MachineBootstrap(commands=(("machine",),)),
+        "session_bootstrap": MachineBootstrap(commands=(("session",),)),
+    }
+    first = await leases.acquire(**claim, execution_plan=plan)
+    assert first.execution_plan == plan
+
+    # The same session with the same machine request but no plan is a different claim.
+    with pytest.raises(ValueError, match="different resolved execution plan"):
+        await leases.acquire(**{**claim, "bootstrap": MachineBootstrap(commands=(("machine",),))})
+
+
+async def test_a_claim_that_is_already_running_is_verified_not_rewritten(tmp_path: Path):
+    _, leases, repository, _, _, _, _, plan, session = _setup(tmp_path)
+    claim = {
+        "session_id": session.id,
+        "owner_id": "owner",
+        "tenant_id": "tenant",
+        "profile": "small",
+        "bootstrap": MachineBootstrap(commands=(("machine",),)),
+        "session_bootstrap": MachineBootstrap(commands=(("session",),)),
+        "execution_plan": plan,
+    }
+    first = await leases.acquire(**claim)
+    assert first.allocation.state.value == "ready"
+
+    again = await leases.acquire(**claim)
+
+    assert again.id == first.id and again.binding == first.binding
+    assert len(repository.leases) == 1
+
+
+async def test_a_standby_machine_is_verified_when_it_is_already_running(tmp_path: Path):
+    _, leases, _, _, _, _, _, plan, _ = _setup(tmp_path)
+    spare = await leases.acquire_standby(
+        profile="small", bootstrap=MachineBootstrap(commands=(("machine",),)), execution_plan=plan
+    )
+
+    assert spare.state.value == "ready"
+
+
+async def test_a_slot_whose_bootstrap_was_not_attached_yet_is_still_provisioning(tmp_path: Path):
+    manager, leases, repository, _, runtime, _, _, plan, session = _setup(tmp_path)
+    claim = await leases.acquire(
+        session_id=session.id,
+        owner_id="owner",
+        tenant_id="tenant",
+        profile="small",
+        bootstrap=MachineBootstrap(commands=(("machine-only",),)),
+        execution_plan=plan,
+    )
+    assert claim.binding.session_bootstrap_ref is None
+
+    assert await manager.status(session) == SessionStatus.PROVISIONING
+    runtime.calls.clear()
+
+    # Starting the session attaches its bootstrap to the slot it already holds, then runs it.
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    attached = (await repository.active_for_session("pool", session.id)).binding
+    assert attached.session_bootstrap_ref == f"{claim.id}-session-{session.id}"
+    assert runtime.calls[:3] == ["session_bootstrap", "prepare", "start"]
+
+
+async def test_a_legacy_standby_machine_cannot_take_a_catalog_session(tmp_path: Path):
+    manager, leases, repository, _, _, _, _, plan, session = _setup(tmp_path)
+    legacy = await leases.acquire_standby(profile="small", bootstrap=MachineBootstrap())
+    async with repository.operation(legacy.id):
+        with pytest.raises(ValueError, match="legacy standby lease"):
+            await leases.bind(
+                legacy, session.id, "owner", "tenant", MachineBootstrap(), 60, execution_plan=plan
+            )
+
+
+async def test_a_standby_host_must_match_the_sessions_plan(tmp_path: Path):
+    _, leases, repository, _, _, _, _, plan, session = _setup(tmp_path)
+    spare = await leases.acquire_standby(
+        profile="small", bootstrap=MachineBootstrap(), execution_plan=plan
+    )
+    other = plan.model_copy(update={"host_compatibility_digest": "sha256:another-host"})
+    async with repository.operation(spare.id):
+        with pytest.raises(ValueError, match="incompatible"):
+            await leases.bind(
+                spare, session.id, "owner", "tenant", MachineBootstrap(), 60, execution_plan=other
+            )
