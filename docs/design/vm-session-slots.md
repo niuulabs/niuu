@@ -179,7 +179,12 @@ own Forge and Guild host (for example "Valhalla VMs" for Docker and "Valhalla VM
 (host)" for host mode). A session picks the server, not a runtime, and carries
 no grants. The existing versioned execution catalog
 (`docs/operator/vm-compute.md`) carries the runtime's adapter bindings and host
-recipe; `ProfiledVmRuntime` stays for single-runtime pools.
+recipe; `ProfiledVmRuntime` stays for single-runtime pools. Launch shows the
+host's runtime read-only under the host ("Runs as: Container"), from
+`GET /api/v1/forge/session-runtimes`, which answers that one runtime; there is no
+per-session choice and no `launch_executions`. A pool runs more than one slot per
+machine only when its runtime declares slot support (`VmRuntime.supports_slots`);
+otherwise Forge refuses the policy.
 
 ## Live preview and progress
 
