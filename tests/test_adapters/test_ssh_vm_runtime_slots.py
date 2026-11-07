@@ -330,6 +330,22 @@ def test_slot_capacity_failures_name_the_knob(tmp_path):
         runtime._layout(SlotView(uuid4(), uuid4(), 2, None))
 
 
+def test_the_container_runtime_supports_slots_only_when_they_are_separated(tmp_path):
+    assert not _runtime(tmp_path).supports_slots
+
+    runtime = _runtime(tmp_path, slot_isolation=ISOLATION)
+    assert runtime.supports_slots
+
+    per_slot = AsyncMock(spec=SshPushCredentialDelivery)
+    per_slot.serves_slots = True
+    runtime.configure_credential_delivery(per_slot)
+    assert runtime.supports_slots
+
+    # One identity for the whole allocation would reach every slot.
+    runtime.configure_credential_delivery(_AllocationDelivery())
+    assert not runtime.supports_slots
+
+
 def test_only_deliveries_that_key_by_slot_serve_slots():
     delivery = SshPushCredentialDelivery(service_account_tokens=Mock(spec=ServiceAccountTokenPort))
 

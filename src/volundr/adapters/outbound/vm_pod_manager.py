@@ -694,7 +694,7 @@ class VmPodManager(PodManager):
                     execution_plan=plan,
                     timeout_seconds=timeout_seconds,
                     # Without a pool service there is no policy: machines are single-slot.
-                    slots=policy.slots_per_machine if policy else 1,
+                    slots=self._pool_service.new_machine_slots(policy, plan) if policy else 1,
                 )
                 if plan is not None:
                     bootstrap = await service.bootstrap_for(lease)

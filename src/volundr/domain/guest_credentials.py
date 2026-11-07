@@ -194,6 +194,17 @@ class GuestIdentity(ABC):
         """Read-only guest paths the agent container needs (key files, sockets)."""
         return ()
 
+    @property
+    def serves_slots(self) -> bool:
+        """Whether every slot of a VM can prove itself with this identity at once.
+
+        True only for an identity that belongs to the machine and is never
+        registered or retired per session: one slot stopping must not take the
+        identity from the others. Each slot's guest agent then names its slot, and
+        the runtime keeps the identity out of the slots' own reach.
+        """
+        return False
+
     async def register(self, lease: AllocationRef, machine: MachineBootstrap) -> None:
         """Make the allocation's identity valid before its guest asks (idempotent).
 

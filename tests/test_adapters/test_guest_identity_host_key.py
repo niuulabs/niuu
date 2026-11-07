@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import time
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -332,3 +333,10 @@ def test_the_clock_skew_must_be_positive_and_finite(skew):
         HostKeyGuestIdentity(
             machine_bootstrap_for=None, watermarks=InMemoryWatermarks(), clock_skew_seconds=skew
         )
+
+
+def test_the_host_key_identity_serves_every_slot_of_a_machine() -> None:
+    # The key belongs to the machine bootstrap; nothing is registered per session.
+    assert HostKeyGuestIdentity(
+        machine_bootstrap_for=AsyncMock(return_value=None), watermarks=AsyncMock()
+    ).serves_slots
