@@ -273,6 +273,13 @@ function formatFieldValue(field: RemoteSettingsField, value: unknown): string {
   return String(value);
 }
 
+/** The value an input's text stands for: an emptied nullable number is null, not 0. */
+function readFieldInput(field: RemoteSettingsField, text: string): unknown {
+  if (field.type !== 'number') return text;
+  if (field.nullable && text === '') return null;
+  return Number(text || 0);
+}
+
 function normalizeSections(
   schema: RemoteSettingsProviderSchema | null,
 ): NormalizedSettingsSection[] {
@@ -712,9 +719,7 @@ function SettingsField({
         value={String(value ?? '')}
         placeholder={field.placeholder}
         onChange={(event) => {
-          const nextValue =
-            field.type === 'number' ? Number(event.target.value || 0) : event.target.value;
-          onChange(nextValue);
+          onChange(readFieldInput(field, event.target.value));
         }}
         className="settings-field__control"
       />

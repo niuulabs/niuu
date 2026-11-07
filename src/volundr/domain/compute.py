@@ -422,6 +422,14 @@ def session_limit(policy: ComputePoolPolicy, machine: ComputeLease) -> int | Non
 _OFFERABLE_STATES = frozenset({LeaseState.PROVISIONING, LeaseState.READY, LeaseState.IDLE})
 
 
+def machine_expired(machine: ComputeLease, policy: ComputePoolPolicy, now: datetime) -> bool:
+    """Whether the machine reached ``max_machine_age_seconds`` and so takes no new sessions."""
+    age = policy.max_machine_age_seconds
+    if age is None:
+        return False
+    return (now - machine.created_at).total_seconds() >= age
+
+
 def usable_slots(
     machine: ComputeLease,
     bindings: Sequence[ComputeSlot],
@@ -437,8 +445,7 @@ def usable_slots(
         return 0
     if any(b.stop_requested for b in bindings if b.state in LIVE_SLOT_STATES):
         return 0
-    age = policy.max_machine_age_seconds
-    if age is not None and (now - machine.created_at).total_seconds() >= age:
+    if machine_expired(machine, policy, now):
         return 0
     free = machine.slots - sum(b.state is not SlotState.RELEASED for b in bindings)
     limit = session_limit(policy, machine)

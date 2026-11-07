@@ -22,6 +22,8 @@ export interface RemoteSettingsField {
   placeholder?: string;
   readOnly?: boolean;
   secret?: boolean;
+  /** A number field that may be left empty, which saves as null (an unset optional limit). */
+  nullable?: boolean;
   options?: RemoteSettingsOption[];
 }
 

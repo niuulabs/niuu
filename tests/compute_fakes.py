@@ -181,7 +181,7 @@ class Provider:
         return True
 
 
-def pool_setup():
+def pool_setup(max_machines: int = 2):
     from unittest.mock import AsyncMock
 
     from niuu.adapters.memory_credential_store import MemoryCredentialStore
@@ -197,7 +197,7 @@ def pool_setup():
         repo,
         provider,
         pool_id="pool",
-        max_machines=2,
+        max_machines=max_machines,
         bootstrap=MachineBootstrap(),
         bootstrap_store=store,
     )
@@ -207,7 +207,7 @@ def pool_setup():
         provider,
         runtime,
         pool_id="pool",
-        defaults=ComputePoolPolicy(profile="small", max_machines=2, warm_min=1),
+        defaults=ComputePoolPolicy(profile="small", max_machines=max_machines, warm_min=1),
         bootstrap=MachineBootstrap(),
         interval_seconds=0.001,
     )

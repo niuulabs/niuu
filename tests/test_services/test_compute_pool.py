@@ -663,7 +663,7 @@ async def test_a_pool_at_its_machine_cap_short_of_warm_slots_is_loud_and_counted
     # Logged once when the shortfall starts, not on every tick.
     assert sum("at its maximum" in record.getMessage() for record in caplog.records) == 1
     shortfall = (await pool.snapshot())["capacity_shortfall"]
-    assert shortfall.startswith("0 of 1 warm machines") and "raise the maximum" in shortfall
+    assert shortfall.startswith("0 of 1 free warm slots") and "raise the maximum" in shortfall
 
     pool.leases.acquire_standby = acquire
     await pool.maintain()
