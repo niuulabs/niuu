@@ -411,10 +411,14 @@ class TransportLifecycleMixin:
         if self._workflow_trigger_task is None and not self._startup_failure:
             self._startup_ready = True
             self._startup_state = "ready"
-            if self._is_room_routed_session() and self._activity_state == "provisioning":
-                # Room-routed sessions never start a CLI transport, so the
-                # ``system/init`` frame that normally leaves provisioning never
-                # arrives. Startup is complete; the room is ready for chat.
+            if self._activity_state == "provisioning" and (
+                self._is_room_routed_session() or not self._transport.capabilities.announces_ready
+            ):
+                # The ``system/init`` frame that normally leaves provisioning does
+                # not come on its own: room-routed sessions never start a CLI
+                # transport, and some CLIs announce themselves only after their
+                # first message. Startup is complete; the session takes that
+                # message now, so it is idle, not starting.
                 asyncio.create_task(self._report_activity_state("idle"))
 
     async def shutdown(self) -> None:

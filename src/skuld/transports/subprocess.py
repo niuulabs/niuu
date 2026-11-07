@@ -333,6 +333,8 @@ class SubprocessTransport(CLITransport):
             session_resume=True,
             slash_commands=True,
             skills=True,
+            # ``claude -p`` emits system/init only after reading its first message.
+            announces_ready=False,
         )
 
     @property
