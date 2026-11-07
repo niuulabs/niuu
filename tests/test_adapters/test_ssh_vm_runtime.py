@@ -966,3 +966,47 @@ class TestVmLivePreview:
         assert watcher is not None and forwarder is not None
         # The guest's root-owned services are never offered as previews.
         assert watcher._scanner._uid is not None
+
+
+def test_start_program_can_run_only_the_pod_containers(tmp_path: Path):
+    """Another runtime (OpenShell) starts Skuld itself, next to the credential agents."""
+    calls = tmp_path / "calls"
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    docker = binary / "docker"
+    docker.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n'
+        # No container exists yet, so every sidecar is created.
+        '[ "$1 $2" = "container inspect" ] && exit 1\nexit 0\n'
+    )
+    docker.chmod(0o755)
+    container = {
+        "image": "test/skuld@sha256:" + "a" * 64,
+        "command": [],
+        "args": [],
+        "environment": {},
+        "mounts": [],
+    }
+    payload = {
+        "allocation_id": str(uuid4()),
+        "directories": [{"path": str(tmp_path / "tokens"), "mode": "0755"}],
+        "init_containers": [{**container, "name": "agent-init"}],
+        "sidecars": [{**container, "name": "agent"}],
+        "containers_only": True,
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-c", module._START],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"CALLS": str(calls), "PATH": f"{binary}:/usr/bin:/bin"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    recorded = calls.read_text()
+    assert "run --rm" in recorded
+    assert "--name niuu-sidecar-agent" in recorded
+    assert "niuu-skuld" not in recorded
+    assert (tmp_path / "tokens").is_dir()
