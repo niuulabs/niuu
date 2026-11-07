@@ -157,6 +157,8 @@
       <button data-screen="live">3 · Joining</button>
       <button data-screen="capacity">4 · Set capacity</button>
       <button data-screen="remove">5 · Drain and remove</button>
+      <button data-screen="mini-launch">6 · Mini: where it runs</button>
+      <button data-screen="mini-hosts">7 · Mini: Hosts</button>
     </div>
 
     <!-- 1: host list -->
@@ -408,6 +410,88 @@ To undo: sudo niuu-host-leave</div>
         </div>
         <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" data-go="list">Cancel</button><button class="btn primary">Drain and remove</button></div>
         <p class="muted" style="margin-top:14px;margin-bottom:0">If Forge can no longer reach a host, removing it still cuts it off at once. To clean up the host itself, run <code class="mono">sudo niuu-host-leave</code> there.</p>
+      </div>
+    </section>
+
+    <!-- 6: mini mode, launch: this machine or a host -->
+    <section data-view="mini-launch" hidden>
+      <div class="toolbar"><h2>New session · on mac-studio (niuu platform up)</h2><button class="btn" data-go="mini-hosts">Hosts</button></div>
+      <div class="add">
+        <div class="panel">
+          <div class="field">
+            <label>Runs on</label>
+            <div class="opts">
+              <div class="opt on"><span class="radio"></span><div>This machine · mac-studio<small>As today: a process on this machine. 3 of 4 sessions free.</small></div></div>
+              <div class="opt"><span class="radio"></span><div>A host
+                <small>On a machine that joined this Forge. Each session gets its own user, network and limits there.</small>
+                <div class="selector" style="margin-top:8px"><span class="lbl">Tags</span><span class="chip sel">gpu ×</span><input placeholder="any host"><span class="seg"><span class="on">all</span><span>any</span></span></div>
+                <div class="kv" style="margin-top:6px"><span>1 host matches · <b>glad</b></span><span><span class="pill ok">1 free slot</span></span></div>
+              </div></div>
+            </div>
+            <div class="hint">No tags means any host. Leaving it on this machine is the default.</div>
+          </div>
+          <div class="field">
+            <label>Repository</label>
+            <div class="tagbox"><span class="chip">github.com/acme/shop</span></div>
+          </div>
+          <button class="btn primary">Launch</button>
+          <div class="finding warn" style="margin-top:14px">No host carries <code>gpu, arm64</code> (match all). The hosts here carry: <code>site:garage</code>; <code>site:garage, gpu</code>. Change the tags or add a host. The session is not created.</div>
+        </div>
+        <div class="panel">
+          <h3>Where a session runs is decided once</h3>
+          <p>The choice is saved on the session. Restart, stop, the session view and recovery go to the same place.</p>
+          <h3 style="margin-top:14px">It never moves</h3>
+          <p>If every matching host is busy, the session waits for a slot and shows why. It does not start on this machine instead. A full machine does not send sessions to a host either.</p>
+          <h3 style="margin-top:14px">No host yet</h3>
+          <div class="opt off" style="margin-top:6px"><span class="radio"></span><div>A host<small>No machine has joined this Forge yet. <a style="color:var(--brand)" data-go="mini-hosts">Add a host</a></small></div></div>
+          <h3 style="margin-top:14px">From a workflow or the API</h3>
+          <p>Target tags pick the host the same way: <code class="mono">workload_config.host_selector</code>. Nothing targeted stays on this machine.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7: mini mode, the Hosts page -->
+    <section data-view="mini-hosts" hidden>
+      <div class="toolbar"><h2>Forge · Compute · Hosts <span class="muted">(this machine: mac-studio)</span></h2><div class="row"><button class="btn" data-go="mini-launch">New session</button><button class="btn primary" data-go="add">Add host</button></div></div>
+      <div class="cards">
+        <div class="card"><div class="k">This machine</div><div class="v">3 <span class="muted">of 4</span></div><div class="d">mac-studio runs its own sessions · not a host</div><div class="bar"><i style="width:75%"></i></div></div>
+        <div class="card"><div class="k">Hosts</div><div class="v">2</div><div class="d">2 in service</div></div>
+        <div class="card"><div class="k">Free host slots</div><div class="v">5 <span class="muted">of 9</span></div><div class="bar"><i style="width:44%"></i></div></div>
+        <div class="card"><div class="k">Free slots by tags</div>
+          <div class="kv"><span><span class="chip">site:garage</span></span><span>5</span></div>
+          <div class="kv"><span><span class="chip">gpu</span></span><span>1</span></div>
+        </div>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Host</th><th>Tags</th><th>State</th><th>Slots</th><th>Size</th><th>Connection</th><th style="text-align:right">Actions</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><div class="name">old-thinkpad</div><div class="muted">Host · checked 1 min ago</div></td>
+              <td><div class="chips"><span class="chip">site:garage</span><span class="chip add">+</span></div></td>
+              <td><span class="pill brand">In service</span></td>
+              <td><div class="slots"><i class="b"></i><i class="b"></i><i class="b"></i><i></i><i></i><i></i></div><div class="muted">3 used · 3 free of 6</div></td>
+              <td>16 CPU · 64 GiB</td>
+              <td class="conn"><span class="dot"></span>SSH · 192.168.1.23</td>
+              <td><div class="actions"><button class="btn ghost">Check now</button><button class="btn ghost" data-go="remove">Drain</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="name">glad</div><div class="muted">Host · checked 30 s ago</div></td>
+              <td><div class="chips"><span class="chip">site:garage</span><span class="chip">gpu</span><span class="chip add">+</span></div></td>
+              <td><span class="pill brand">In service</span></td>
+              <td><div class="slots"><i class="b"></i><i></i><i></i></div><div class="muted">1 used · 2 free of 3</div></td>
+              <td>12 CPU · 48 GiB · 1 GPU</td>
+              <td class="conn"><span class="dot"></span>SSH · 192.168.1.40</td>
+              <td><div class="actions"><button class="btn ghost">Check now</button><button class="btn ghost" data-go="remove">Drain</button></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="panel" style="margin-top:18px;max-width:640px">
+        <h3>Before any host joins</h3>
+        <p>The page shows only this machine and <b>Add host</b>. The join command reaches mac-studio at <code class="mono">192.168.1.10</code>; Forge signs the code with its own key, so no identity setup is needed.</p>
+        <h3 style="margin-top:14px">Hosts are off</h3>
+        <p>Without <code class="mono">hosts: {enabled: true}</code> in <code class="mono">~/.niuu/config.yaml</code>, the Hosts tab says how to turn them on and the launch form has no "Runs on" choice.</p>
       </div>
     </section>
   </main>

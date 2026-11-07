@@ -68,6 +68,37 @@ Pairing codes are short-lived scoped JWTs. Which key signs them:
 
 Any other combination fails at startup and names the fix.
 
+### Mini mode: hosts next to this machine's sessions
+
+On one machine running `niuu platform up`, set this in `~/.niuu/config.yaml`:
+
+```yaml
+hosts:
+  enabled: true
+  execution_catalog: ~/.niuu/hosts/execution-catalog
+  join_url: http://192.168.1.10:8080
+  allow_plaintext_join: true
+```
+
+This machine keeps running its own sessions. The CLI wraps the configured pod
+manager in `PlacementPodManager` as `local` and adds a `VmPodManager` on the
+registered-host pool as `pool`. It also renders the `compute:` section above with
+these defaults: pool `local-hosts`, profile `host`, `max_hosts: 16`,
+`reuse_policy: reuse`, one `direct-ssh` connector (`allowed_sources: []`),
+`reserved_cpu: 2`, `reserved_memory_mib: 4096`, `min_free_disk_mib: 20480`, and the
+pairing key file under `~/.niuu`. Each of these is a `hosts.*` key. If `compute:` is
+also set, or the mode is not mini, the CLI refuses the config.
+
+A session runs on a host only when it asks for one, with
+`workload_config.host_selector` or an `execution_profile` of the hosts catalog. Every
+other session runs on this machine. The session keeps that placement for life,
+through the execution pin. A host session that cannot be placed waits or fails, and
+never runs locally. The reverse also holds.
+
+Until Niuu ships a default host-mode execution, `hosts.execution_catalog` is required.
+It is a catalog whose execution's machine names profile `host` and whose runtime is
+the rootless host runtime.
+
 ## Add a host
 
 In the UI, open **Forge → Compute → Hosts → Add host**. Choose the runtime, tags, how

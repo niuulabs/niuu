@@ -641,7 +641,7 @@ settles it: a narrowed root SSH login now, a forced-command agent later. In both
 
 ## Operator and UI flow
 
-The mockup shows four screens:
+The mockup shows these screens:
 
 1. **Hosts**: a pool summary (hosts by state, free slots, free slots per tag set,
    warm targets), a selector filter, and one row per host. Each row shows the
@@ -655,6 +655,91 @@ The mockup shows four screens:
    ready*.
 4. **Set capacity**: measured facts, the suggested slot count with its arithmetic,
    and *Put in service*.
+5. **Drain and remove**.
+6. **Mini: where it runs**: the launch form's *Runs on* choice, *This machine*
+   (the default) or *A host* with tags, and the 422 when no host carries the tags.
+7. **Mini: Hosts**: the same Hosts page on a `niuu platform up` machine, with the
+   machine's own sessions shown next to the hosts.
+
+## Hosts next to local sessions (mini mode)
+
+Someone with one machine running `niuu platform up` should add their other machines
+as easily as a cluster operator does. Jozef decided that **hosts add to the main
+machine**: it keeps running its own sessions, and joined hosts are extra capacity.
+A Forge has exactly one `PodManager`, so this needs the one Forge to place a session
+either on the main machine or in the hosts pool.
+
+### What exists, and why it does not fit
+
+- **Two Forges routed by Guild tags** (decision 2). It works on a cluster, but in
+  mini mode it means a second Forge process and the Hosts page on a second Forge
+  instance. That is the opposite of "as easy as".
+- **`ProfiledVmRuntime`** picks a `VmRuntime` per machine profile inside one
+  `VmPodManager`. Every choice is a VM runtime on a pool machine. A local process
+  session is not one.
+- **Registering the main machine as a host** would make local sessions host-mode
+  sessions: Linux only, root and the slot runtime on the user's own desktop. That
+  replaces local sessions instead of adding to them.
+
+### Design: a placement pod manager with two roles
+
+`volundr.adapters.outbound.placement_pod_manager.PlacementPodManager` is a dynamic
+adapter that holds two pod managers: `local` (the Forge's own sessions, for example
+`LocalProcessPodManager`) and `pool` (the compute pool's `VmPodManager`). The
+composition root builds both from their `adapter` + `kwargs`, the same way it builds
+nested VM runtimes. It does not use N named children with a routing table. Exactly
+two roles exist, and the rule between them is fixed.
+
+- **The placement record already exists.** A session the pool runs carries
+  `workload_config._compute_execution`, the execution pin that the session service
+  writes once, before anything runs. Restarts, stop, status, proxy, recovery and
+  delete follow that pin, so placement is sticky with no new column or field.
+- **A session goes to the pool only when it asks for it.** It names a
+  `host_selector`, an `execution_profile` or `compute_profile`, or
+  `runtime_grants`. A session that names none of these runs locally. The Guild sets
+  `host_selector` only when a selector is left over after the Forge's own tags, so
+  plain tag routing to the Forge keeps sessions local.
+- **No fallback, in either direction.** A pool session that cannot be placed fails
+  or waits, as on any pool, and never runs locally. A local session never goes to a
+  host when the main machine is full.
+- **Hooks.** Every `set_*` hook goes to each child that has it. The placement
+  manager has a hook only when a child does, so `hasattr` composition is unchanged.
+  `configure_compute`, `configure_execution`, `configure_pool` and `profile` go to
+  the pool child. `close` closes both.
+- **Whole-Forge answers.** `runtime_backend`, `capacity()` and `session_runtimes()`
+  come from the local child, the default placement. Forge mints a session
+  credential only when both children deliver it privately. The pool's "Runs as"
+  offers are not listed: today's launch form picks the first offer when there is no
+  default, which would send every launch to a host. The launch choice ships with the
+  UI in the mockup (screen 6). Until then, a launch reaches hosts through the API,
+  with `host_selector` or `execution_profile`.
+- **Durable compute is per session.** The session service treats a stop or delete
+  that the backend does not confirm as an error only for pool sessions
+  (`runs_on_compute`). A local session keeps local semantics.
+
+### `niuu platform up`
+
+One switch in `~/.niuu/config.yaml` renders the whole pool next to local sessions:
+
+```yaml
+hosts:
+  enabled: true
+  execution_catalog: ~/.niuu/hosts/execution-catalog   # until the default ships
+  join_url: http://192.168.1.10:8080                    # until it is derived
+  allow_plaintext_join: true
+```
+
+The CLI wraps the configured pod manager as `local` in the placement manager, and
+renders `compute:` with the registered-host provider, a `direct-ssh` connector, a
+reserve (`reserved_cpu: 2`, `reserved_memory_mib: 4096`, `min_free_disk_mib:
+20480`), and the pairing key file under `~/.niuu`. With `compute:` set as well, it
+fails, because both would define the pool.
+
+**Dependency:** the default host execution needs the rootless host-mode runtime
+(`SshHostVmRuntime`, niuulabs/niuu#1267). Until that runtime is on this branch,
+`hosts.execution_catalog` is required and names the operator's catalog. The join URL
+comes from `server_public_host` once the pinned-TLS join listener lands. Until then,
+`hosts.join_url` is passed through as it is.
 
 ## PR plan
 
@@ -740,7 +825,9 @@ Jozef accepted the recommendations:
    The forced-command host agent (`niuu-host-agent`, fixed verbs, no shell) is the
    hardening step once the first host works.
 2. **Which Forge:** a separate light "Valhalla Hosts" Forge (one pod) next to
-   "Valhalla VMs". A multi-pool Forge comes later, after hosts work.
+   "Valhalla VMs". A multi-pool Forge comes later, after hosts work. A mini-mode
+   Forge places sessions on its own machine or on hosts with a placement pod
+   manager (see "Hosts next to local sessions").
 3. **Hosts are Forge inventory, not Guild nodes.** Guild sees each Forge's host tag
    sets, never individual hosts.
 4. **Slot egress to the LAN** is denied for RFC 1918 by default, with
