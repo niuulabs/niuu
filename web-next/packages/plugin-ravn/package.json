@@ -1,7 +1,7 @@
 {
   "name": "@niuulabs/plugin-ravn",
   "version": "0.0.1",
-  "description": "Ravn plugin — personas, ravens, sessions, triggers, budget",
+  "description": "Ravn plugin — the persona library and triggers",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -34,9 +34,7 @@
   },
   "dependencies": {
     "@niuulabs/domain": "workspace:*",
-    "@niuulabs/plugin-bifrost": "workspace:*",
     "@niuulabs/plugin-sdk": "workspace:*",
-    "@niuulabs/plugin-volundr": "workspace:*",
     "@niuulabs/query": "workspace:*",
     "@niuulabs/shell": "workspace:*",
     "@niuulabs/ui": "workspace:*",

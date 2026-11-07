@@ -226,7 +226,7 @@ def _dev_settings() -> MagicMock:
     """Create mock settings with anonymous dev enabled for test apps."""
     s = MagicMock()
     s.auth = AuthConfig(allow_anonymous_dev=True)
-    s.dispatch.flock.default_workflow_name = "Ting Run Flow + Security + Memory Curation"
+    s.dispatch.flock.default_workflow_name = "Code & Review Flow"
     return s
 
 
@@ -889,7 +889,7 @@ class TestAssignWorkflow:
     ) -> None:
         workflow = WorkflowDefinition(
             id=uuid4(),
-            name="Ting Run Flow + Security + Memory Curation",
+            name="Code & Review Flow",
             description="",
             version="1.0.0",
             scope=WorkflowScope.SYSTEM,

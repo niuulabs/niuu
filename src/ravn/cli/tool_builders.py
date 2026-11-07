@@ -158,9 +158,6 @@ def _build_tools(
         # separately so it is repaired instead of silently missing.
         runtime_ctx["learned_tools_provider"] = resolver.list_loadable_artifacts
         runtime_ctx["refused_learned_tools"] = resolver.list_refused
-        runtime_ctx["retired_learned_tools"] = _retired_learned_tools(
-            _resident_ravn_state_dir(workspace, settings), runtime_ctx.get("skill_manager")
-        )
 
     if "workflow" in include_groups:
         workflow_sources = _build_workflow_capability_sources(settings)
@@ -353,11 +350,6 @@ def _build_tools(
                 workspace=workspace,
                 entity_extractor=entity_extractor,
                 event_emitter=mimir_event_emitter,
-                reserved_prefixes=(
-                    [settings.reflection.friction.ledger_prefix]
-                    if settings.reflection.friction.enabled
-                    else []
-                ),
             )
         )
 
@@ -472,28 +464,6 @@ def _build_learned_tool_resolver(settings: Settings, workspace: Path) -> Any:
 
     publish_learned_tool_inventory(resolver.list_loadable_artifacts())
     return resolver
-
-
-def _retired_learned_tools(state_dir: Path, skill_manager: Any | None) -> Any:
-    """List the retired learned tools under *state_dir*, read fresh each call."""
-    from ravn.valkyrie_evolution.learned_tools import learned_tool_storage  # noqa: PLC0415
-    from ravn.valkyrie_evolution.tool_curation import tool_inventory  # noqa: PLC0415
-
-    code_dir, artifacts_dir = learned_tool_storage(state_dir)
-
-    def retired() -> list[Any]:
-        return [
-            entry
-            for entry in tool_inventory(
-                tools_dir=code_dir,
-                artifacts_dir=artifacts_dir,
-                skills=skill_manager,
-                include_retired=True,
-            )
-            if entry.retired
-        ]
-
-    return retired
 
 
 def _load_resident_learned_tools(

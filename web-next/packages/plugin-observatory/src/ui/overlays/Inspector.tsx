@@ -231,7 +231,6 @@ const SHOWN_ELSEWHERE: ReadonlySet<string> = new Set([
  */
 const DETAIL_ORDER: readonly string[] = [
   'workload',
-  'warden',
   'service',
   'namespace',
   'chart',

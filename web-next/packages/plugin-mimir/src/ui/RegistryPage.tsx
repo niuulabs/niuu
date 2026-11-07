@@ -3,7 +3,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { IMimirService } from '../ports';
 import { usePluginCtx, useService } from '@niuulabs/plugin-sdk';
 import './RegistryPage.css';
-import { InstanceDeployments } from './InstanceDeployments';
 import { useState } from 'react';
 import {
   useCreateRegistryMount,
@@ -247,7 +246,6 @@ export function RegistryPage() {
     enabled: !!mounts.getDeployments,
     refetchInterval: 10000,
   });
-  const [deploying, setDeploying] = useState(false);
   const { data: registryMounts = [], isLoading, error } = useRegistryMounts();
   const createMount = useCreateRegistryMount();
   const updateMount = useUpdateRegistryMount();
@@ -341,35 +339,13 @@ export function RegistryPage() {
             <button
               className="registry-primary"
               type="button"
-              aria-expanded={deploying}
-              onClick={() => {
-                setDeploying(!deploying);
-                setAdding(false);
-              }}
-            >
-              + Deploy instance
-            </button>
-            <button
-              className="registry-primary"
-              type="button"
               aria-expanded={adding}
-              onClick={() => {
-                setAdding(!adding);
-                setDeploying(false);
-              }}
+              onClick={() => setAdding(!adding)}
             >
               + Add connection
             </button>
           </div>
         </div>
-        <Modal
-          open={deploying}
-          onOpenChange={setDeploying}
-          title="Deploy instance"
-          className="registry-modal registry-deploy-modal"
-        >
-          {deploying && <InstanceDeployments />}
-        </Modal>
         <Modal
           open={adding}
           onOpenChange={setAdding}

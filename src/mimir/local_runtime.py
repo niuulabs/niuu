@@ -1,4 +1,4 @@
-"""Local gbrain service and scheduled dreams, supervised by launchd/systemd."""
+"""Local gbrain service, supervised by launchd/systemd."""
 
 import asyncio
 import importlib
@@ -6,11 +6,8 @@ import json
 import os
 import signal
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
-
-from ravn.adapters.triggers.cron import CronJob, CronTrigger
 
 
 async def start_database(config: dict, directory: Path):
@@ -45,30 +42,7 @@ async def run(config_path: Path) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stopped.set)
 
-    async def dream(_task):
-        with (config_path.parent / "dream.log").open("a") as log:
-            log.write(json.dumps({"started_at": datetime.now(UTC).isoformat()}) + "\n")
-            log.flush()
-            args = [part for phase in config["dream"]["phases"] for part in ("--phase", phase)]
-            child = await asyncio.create_subprocess_exec(
-                *command, "dream", "--json", *args, env=env, stdout=log, stderr=log
-            )
-            children.add(child)
-            code = await child.wait()
-            children.discard(child)
-            log.write(
-                json.dumps({"finished_at": datetime.now(UTC).isoformat(), "exit_code": code}) + "\n"
-            )
-        return True
-
     tasks = [asyncio.create_task(server.wait()), asyncio.create_task(stopped.wait())]
-    if config["dream"]["enabled"]:
-        scheduler = CronTrigger(
-            [CronJob(name="dream", schedule=config["dream"]["schedule"], context="")],
-            state_path=config_path.parent / "dream-state.json",
-            lock_path=config_path.parent / "dream.lock",
-        )
-        tasks.append(asyncio.create_task(scheduler.run(dream)))
     done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for child in children:
         if child.returncode is None:

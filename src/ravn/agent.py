@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-import json
 import logging
 import re
 import time
@@ -54,7 +53,6 @@ from ravn.ports.native_compaction import NativeCompactionPort
 from ravn.ports.permission import PermissionPort
 from ravn.ports.tool import ToolPort
 from ravn.prompt_builder import PromptBuilder
-from ravn.resident_text import compact_line
 
 if TYPE_CHECKING:
     from niuu.domain.outcome import ParsedOutcome
@@ -151,27 +149,7 @@ class RavnAgent:
         sleipnir_publisher: object | None = None,
         persona: str = "",
         repo_slug: str = "",
-        # NIU-588: learnings injection at session start
         mimir: MimirPort | None = None,
-        # Learning injection budget. Configurable rather than hardcoded: a
-        # resident with two Mímir mounts and a flock's worth of promoted
-        # learnings needs a different budget from a one-shot coding session.
-        inject_learnings: bool = False,
-        max_learnings_injected: int = 5,
-        learning_token_budget: int = 500,
-        # Ranks injected learnings by meaning-relevance to the first turn's input
-        # when given (a ravn.adapters.reflection.lessons.LessonIndex); without
-        # one, learnings are injected by recency.
-        learning_index: Any | None = None,
-        learning_entry_max_chars: int = 0,
-        # Route recoveries (a tool failed, then succeeded with other input)
-        # carried on ravn.session.ended as first-hand evidence for reflection;
-        # 0 records none.
-        max_route_recoveries: int = 0,
-        route_excerpt_chars: int = 240,
-        # Tool-level friction (unrecovered failures, timeouts, retries) carried
-        # on ravn.session.ended for the friction ledger; 0 records none.
-        max_friction_signals: int = 0,
         # NIU-594: persona config for outcome block parsing
         persona_config: PersonaConfig | None = None,
         # Retained for constructor compatibility. A tool-use response is never
@@ -239,18 +217,6 @@ class RavnAgent:
         self._turn_count: int = 0
         self._session_wall_start: float = time.monotonic()
         self._session_ended_emitted: bool = False
-        # NIU-588: learnings injection at session start
-        self._mimir = mimir
-        self._inject_learnings_enabled = inject_learnings
-        self._max_learnings_injected = max_learnings_injected
-        self._learning_token_budget = learning_token_budget
-        self._learning_index = learning_index
-        self._learning_entry_max_chars = learning_entry_max_chars
-        self._max_route_recoveries = max(0, max_route_recoveries)
-        self._route_excerpt_chars = route_excerpt_chars
-        self._route_recoveries: list[dict[str, str]] = []
-        self._max_friction_signals = max(0, max_friction_signals)
-        self._friction: list[dict[str, str]] = []
         # NIU-594: persona config for outcome block parsing
         self._persona_config = persona_config
         self._context_window_tokens = max(0, context_window_tokens)
@@ -393,19 +359,6 @@ class RavnAgent:
             repo_slug=self._repo_slug,
             correlation_id=self._task_id,
         )
-        if self._route_recoveries:
-            event.payload["route_recoveries"] = [dict(item) for item in self._route_recoveries]
-        friction = [dict(item) for item in self._friction]
-        if (
-            self._max_friction_signals
-            and self._iteration_budget is not None
-            and self._iteration_budget.exhausted
-        ):
-            friction.append(
-                {"kind": "budget_exhausted", "tool": "", "input": "", "detail": outcome}
-            )
-        if friction:
-            event.payload["friction"] = friction
         return event
 
     async def emit_session_ended(self, outcome: str) -> None:
@@ -528,12 +481,6 @@ class RavnAgent:
         if self._turn_count == 0:
             await self._emit_session_started()
         self._turn_count += 1
-
-        # NIU-588: promoted learnings go in once, on the first turn. They are
-        # rules over many episodes, not per-turn context, so re-reading every
-        # turn would spend the budget without changing the content.
-        if self._turn_count == 1:
-            await self._inject_learnings(user_input)
 
         # Check budget before starting the turn.
         if self._iteration_budget is not None and self._iteration_budget.exhausted:
@@ -800,7 +747,6 @@ class RavnAgent:
 
         self._session.record_turn(cumulative_usage)
         duration_seconds = time.monotonic() - start_time
-        self._record_route_recoveries(turn_tool_calls, turn_tool_results)
 
         # NIU-594: build a partial result to pass into episode extraction
         partial_result = TurnResult(
@@ -1131,65 +1077,6 @@ class RavnAgent:
             content=content[:limit] + marker,
             is_error=result.is_error,
         )
-
-    def _record_route_recoveries(
-        self,
-        calls: list[ToolCall],
-        results: list[ToolResult],
-    ) -> None:
-        """Keep this turn's route recoveries and tool friction for the session-ended record."""
-        room = self._max_route_recoveries - len(self._route_recoveries)
-        if room > 0:
-            self._route_recoveries.extend(
-                _route_recoveries(
-                    calls, results, limit=room, excerpt_chars=self._route_excerpt_chars
-                )
-            )
-        room = self._max_friction_signals - len(self._friction)
-        if room > 0:
-            self._friction.extend(
-                _tool_friction(calls, results, limit=room, excerpt_chars=self._route_excerpt_chars)
-            )
-
-    async def _inject_learnings(self, query: str = "") -> None:
-        """Put promoted Mímir learnings into the system prompt for this session.
-
-        Restored from NIU-588, which added it and was then dropped in c1253e9d
-        — a large refactor whose message never mentions it. Everything it needs
-        survived the removal: fetch_relevant_learnings, set_learnings_context,
-        and both budget settings. Only the call was missing, and with it the
-        entire learning pipeline: 780 candidates and 167 promoted learnings on
-        one resident, reachable in principle by `mimir_search` and in practice
-        by nothing, because that tool has never been called once on any
-        resident.
-
-        Injection rather than a tool is deliberate. The comparison is direct:
-        episodic prefetch injects and hits on every turn; Mímir waits to be
-        elected and never is.
-
-        Not best-effort. The original logged a warning and continued, which is
-        how a dead learning pipeline stayed invisible for months.
-        """
-        if not self._inject_learnings_enabled:
-            return
-        if self._mimir is None or self._prompt_builder is None:
-            return
-
-        from ravn.adapters.reflection.post_session import (  # noqa: PLC0415
-            fetch_relevant_learnings,
-        )
-
-        learnings_text = await fetch_relevant_learnings(
-            self._mimir,
-            repo_slug=self._repo_slug,
-            max_pages=self._max_learnings_injected,
-            token_budget=self._learning_token_budget,
-            query=query,
-            lessons=self._learning_index,
-            entry_max_chars=self._learning_entry_max_chars,
-        )
-        if learnings_text:
-            self._prompt_builder.set_learnings_context(learnings_text)
 
     async def _maybe_compress(
         self,
@@ -2043,123 +1930,6 @@ def _infer_tags(tool_names: list[str]) -> list[str]:
     if not tags:
         tags.append("general")
     return tags
-
-
-def _route_recoveries(
-    calls: list[ToolCall],
-    results: list[ToolResult],
-    *,
-    limit: int,
-    excerpt_chars: int,
-) -> list[dict[str, str]]:
-    """Find tool calls that failed and were then recovered by a different route.
-
-    A recovery is a failed call followed, later in the same turn, by a
-    successful call to the same tool with different input — the agent hit a
-    wall and found a way round it. Each failure is paired with the first such
-    success. These come from the tool results themselves, so a lesson tied to
-    one is verified rather than the model's recollection.
-    """
-    if limit <= 0:
-        return []
-    pairs = list(zip(calls, results, strict=False))
-    recoveries: list[dict[str, str]] = []
-    for index, (failed_call, failed_result) in enumerate(pairs):
-        if not failed_result.is_error:
-            continue
-        failed_input = _tool_input_key(failed_call)
-        for later_call, later_result in pairs[index + 1 :]:
-            if later_call.name != failed_call.name or later_result.is_error:
-                continue
-            if _tool_input_key(later_call) == failed_input:
-                continue
-            recoveries.append(
-                {
-                    "tool": failed_call.name,
-                    "failed_input": compact_line(failed_input, limit=excerpt_chars),
-                    "failed_result": compact_line(failed_result.content, limit=excerpt_chars),
-                    "succeeded_input": compact_line(
-                        _tool_input_key(later_call), limit=excerpt_chars
-                    ),
-                    "succeeded_result": compact_line(later_result.content, limit=excerpt_chars),
-                }
-            )
-            break
-        if len(recoveries) >= limit:
-            break
-    return recoveries
-
-
-_TIMEOUT_MARKERS = ("timed out", "timeout")
-
-
-def _recovered_failures(pairs: list[tuple[ToolCall, ToolResult]]) -> set[int]:
-    """Indices of failed calls later recovered by the same tool with other input."""
-    recovered: set[int] = set()
-    for index, (call, result) in enumerate(pairs):
-        if not result.is_error:
-            continue
-        key = _tool_input_key(call)
-        if any(
-            later_call.name == call.name
-            and not later_result.is_error
-            and _tool_input_key(later_call) != key
-            for later_call, later_result in pairs[index + 1 :]
-        ):
-            recovered.add(index)
-    return recovered
-
-
-def _tool_friction(
-    calls: list[ToolCall],
-    results: list[ToolResult],
-    *,
-    limit: int,
-    excerpt_chars: int,
-) -> list[dict[str, str]]:
-    """Tool-level friction in one turn, read from its own tool results.
-
-    ``retry`` is a call repeated with the same input after it failed;
-    ``timeout`` and ``tool_failure`` are failures nothing later recovered (a
-    recovered failure is a route recovery, recorded separately as a
-    workaround). One signal per kind and call.
-    """
-    if limit <= 0:
-        return []
-    pairs = list(zip(calls, results, strict=False))
-    recovered = _recovered_failures(pairs)
-    failed: set[tuple[str, str]] = set()
-    seen: set[tuple[str, str, str]] = set()
-    signals: list[dict[str, str]] = []
-    for index, (call, result) in enumerate(pairs):
-        key = (call.name, _tool_input_key(call))
-        if key in failed:
-            kind = "retry"
-        elif result.is_error and index not in recovered:
-            lowered = result.content.casefold()
-            kind = "timeout" if any(m in lowered for m in _TIMEOUT_MARKERS) else "tool_failure"
-        else:
-            kind = ""
-        if result.is_error:
-            failed.add(key)
-        if not kind or (kind, *key) in seen:
-            continue
-        seen.add((kind, *key))
-        signals.append(
-            {
-                "kind": kind,
-                "tool": call.name,
-                "input": compact_line(key[1], limit=excerpt_chars),
-                "detail": compact_line(result.content, limit=excerpt_chars),
-            }
-        )
-        if len(signals) >= limit:
-            break
-    return signals
-
-
-def _tool_input_key(call: ToolCall) -> str:
-    return json.dumps(call.input, sort_keys=True, default=str)
 
 
 def _determine_outcome(tool_results: list[ToolResult]) -> Outcome:

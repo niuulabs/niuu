@@ -18,7 +18,6 @@ from sleipnir.domain.catalog import (
     github_pr_merged,
     github_pr_opened,
     github_push_main,
-    mimir_dream_completed,
     mimir_page_written,
     ravn_session_ended,
     ravn_session_started,
@@ -278,23 +277,6 @@ def test_mimir_page_written_fields():
 
 
 # ---------------------------------------------------------------------------
-# mimir.dream.completed
-# ---------------------------------------------------------------------------
-
-
-def test_mimir_dream_completed_fields():
-    evt = mimir_dream_completed(
-        pages_updated=5,
-        entities_created=2,
-        lint_fixes=1,
-        source="mimir",
-    )
-    assert evt.event_type == registry.MIMIR_DREAM_COMPLETED
-    assert evt.payload["pages_updated"] == 5
-    assert evt.urgency == pytest.approx(0.1)
-
-
-# ---------------------------------------------------------------------------
 # Integration: emit catalog event → InProcessBus → subscriber receives payload
 # ---------------------------------------------------------------------------
 
@@ -324,55 +306,6 @@ async def test_integration_ravn_session_started_via_in_process_bus():
     assert received[0].payload["session_id"] == "sess-integration"
     assert received[0].payload["repo_slug"] == "niuulabs/niuu"
     assert received[0].correlation_id == "sess-integration"
-
-
-async def test_integration_all_catalog_events_subscribed_via_wildcard():
-    """Subscribe to '*' and verify all 11 catalog factory events are received."""
-    bus = InProcessBus()
-    received_types: list[str] = []
-
-    async def handler(evt: SleipnirEvent) -> None:
-        received_types.append(evt.event_type)
-
-    await bus.subscribe(["*"], handler)
-
-    events = [
-        ravn_session_started(session_id="s", persona="p", repo_slug="r", source="t"),
-        ravn_session_ended(
-            session_id="s", persona="p", outcome="ok", token_count=0, duration_s=0.0, source="t"
-        ),
-        ravn_task_completed(task_id="t", persona="p", outcome="ok", source="t"),
-        volundr_session_started(session_id="s", user_id="u", repo="r", branch="b", source="t"),
-        volundr_session_failed(session_id="s", error="e", user_id="u", source="t"),
-        ting_saga_created(saga_id="s", template="tmpl", trigger_event="ev", source="t"),
-        ting_saga_completed(saga_id="s", outcome="ok", phases_completed=1, source="t"),
-        ting_run_needs_approval(run_id="r", saga_id="s", description="d", source="t"),
-        bifrost_budget_degraded(
-            tenant_id="t", current_spend=0.8, cap=1.0, downgraded_to="h", source="t"
-        ),
-        mimir_page_written(page_path="p.md", category="c", author="a", source="t"),
-        mimir_dream_completed(pages_updated=1, entities_created=0, lint_fixes=0, source="t"),
-    ]
-
-    for evt in events:
-        await bus.publish(evt)
-    await bus.flush()
-
-    assert len(received_types) == 11
-    expected_types = {
-        registry.RAVN_SESSION_STARTED,
-        registry.RAVN_SESSION_ENDED,
-        registry.RAVN_TASK_COMPLETED,
-        registry.VOLUNDR_SESSION_STARTED,
-        registry.VOLUNDR_SESSION_FAILED,
-        registry.TING_SAGA_CREATED,
-        registry.TING_SAGA_COMPLETED,
-        registry.TING_RUN_NEEDS_APPROVAL,
-        registry.BIFROST_BUDGET_DEGRADED,
-        registry.MIMIR_PAGE_WRITTEN,
-        registry.MIMIR_DREAM_COMPLETED,
-    }
-    assert set(received_types) == expected_types
 
 
 # ---------------------------------------------------------------------------

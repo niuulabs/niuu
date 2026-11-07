@@ -3,15 +3,7 @@ import { useNavigate, useSearch } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { IMimirService } from '@niuulabs/plugin-mimir';
-import {
-  ResidentDeployFields,
-  selectedResidentProfile,
-  useResidentProfiles,
-  type IPersonaStore,
-  type ResidentMemberDraft,
-} from '@niuulabs/plugin-ravn';
 import type { ITrackerBrowserService } from '@niuulabs/plugin-ting';
-import { useRealmTrustGrants, useRealms } from '@niuulabs/plugin-valkyrie';
 import {
   ConfirmRow,
   SectionCard,
@@ -31,13 +23,13 @@ import {
   Textarea,
 } from '@niuulabs/ui';
 import { useCreateRealm } from '../application/useCreateRealm';
+import { useRealmTrustGrants, useRealms } from '../application/useRealmGovernance';
 import { FIRST_REALM_WALKTHROUGH, useWalkthrough } from '../application/useWalkthrough';
 import { bindingFromGrants, latestGrants } from '../domain/join';
 import {
   ACTION_CLASSES,
   ACTION_CLASS_COPY,
   EMPTY_DRAFT,
-  personaNameFor,
   slugify,
   trustSettingForLevel,
   type RealmDraft,
@@ -117,9 +109,9 @@ function TemplateStep({
               <span className="niuu:grid niuu:grid-cols-2 niuu:gap-3 niuu:pt-1">
                 <span className="niuu:flex niuu:flex-col niuu:gap-1">
                   <span className="niuu:text-[10px] niuu:uppercase niuu:tracking-wider niuu:text-text-muted">
-                    It keeps doing
+                    It covers
                   </span>
-                  {template.keepsDoing.map((line) => (
+                  {template.covers.map((line) => (
                     <span key={line} className="niuu:text-xs niuu:text-text-secondary">
                       · {line}
                     </span>
@@ -227,7 +219,7 @@ function ConnectStep({
         title="Repository"
         description={
           template.needsRepo
-            ? 'Where the resident works. Cloned into a sandbox for every session.'
+            ? 'Cloned into a sandbox for every session.'
             : 'Optional for this template.'
         }
       >
@@ -272,7 +264,7 @@ function ConnectStep({
         title="Tracker board"
         description={
           template.needsBoard
-            ? 'Optional. Where work comes from: the resident reads the board and moves tickets as it works.'
+            ? 'Optional. Where work comes from: sessions read the board and move tickets as they work.'
             : 'Optional for this template.'
         }
       >
@@ -351,7 +343,7 @@ function ConnectStep({
 
       <SectionCard
         title="Workspace memory"
-        description="A memory mount is created for this workspace; the resident writes what it learns there."
+        description="A memory mount is created for this workspace; what is learned in it is written there."
       >
         {deployments.error ? (
           <ErrorState message={String(deployments.error)} />
@@ -379,34 +371,12 @@ function CharterStep({
   draft: RealmDraft;
   onChange: (next: RealmDraft) => void;
 }) {
-  const profiles = useResidentProfiles(true);
-  const memberDraft: ResidentMemberDraft = {
-    name: draft.slug,
-    instanceId: draft.instanceId,
-    profileId: draft.profileId,
-    personaName: '',
-    model: draft.model,
-    role: '',
-  };
-
-  useEffect(() => {
-    if (draft.profileId || !profiles.data?.[0]) return;
-    const first = profiles.data[0];
-    onChange({
-      ...draft,
-      profileId: first.id,
-      instanceId: first.instanceId,
-      model: first.defaultModel,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profiles.data]);
-
   return (
     <div className="niuu:grid niuu:grid-cols-2 niuu:gap-4" data-testid="wizard-step-charter">
       <div className="niuu:flex niuu:flex-col niuu:gap-4">
         <SectionCard
           title="Charter"
-          description="A seed, not a rulebook. The resident builds its own understanding from the code, the tickets and what happens."
+          description="A few sentences on what matters. It is written to the workspace's memory."
         >
           <div className="niuu:flex niuu:flex-col niuu:gap-3">
             <Field label="What matters">
@@ -432,7 +402,7 @@ function CharterStep({
                   data-testid="realm-title"
                 />
               </Field>
-              <Field label="Slug" hint="Names the resident and its memory">
+              <Field label="Slug" hint="Names the workspace and its memory">
                 <Input
                   value={draft.slug}
                   onChange={(event) => onChange({ ...draft, slug: slugify(event.target.value) })}
@@ -441,29 +411,6 @@ function CharterStep({
               </Field>
             </div>
           </div>
-        </SectionCard>
-        <SectionCard title="Runs on" description="The deployment profile the resident starts from.">
-          {profiles.error ? (
-            <ErrorState message={String(profiles.error)} />
-          ) : profiles.isLoading ? (
-            <LoadingState label="Loading profiles…" />
-          ) : (
-            <ResidentDeployFields
-              draft={memberDraft}
-              profiles={profiles.data ?? []}
-              personas={[]}
-              testIdPrefix="realm"
-              onChange={(next) => {
-                const profile = selectedResidentProfile(next, profiles.data ?? []);
-                onChange({
-                  ...draft,
-                  profileId: next.profileId,
-                  instanceId: next.instanceId || profile?.instanceId || '',
-                  model: next.model,
-                });
-              }}
-            />
-          )}
         </SectionCard>
       </div>
       <SectionCard
@@ -512,7 +459,6 @@ function LaunchStep({
   const optional = new Set<keyof RealmDraft>([
     'branch',
     'bugBoard',
-    'model',
     'trackerBoard',
     ...(template.needsRepo ? [] : (['repo'] as const)),
   ]);
@@ -527,7 +473,7 @@ function LaunchStep({
       {sentence ? (
         <SectionCard title="How I read that">
           <p className="niuu:m-0 niuu:text-sm niuu:text-text-secondary">
-            I will be a <strong className="niuu:text-text-primary">{template.name}</strong> for{' '}
+            This is a <strong className="niuu:text-text-primary">{template.name}</strong> for{' '}
             <strong className="niuu:text-text-primary">
               {draft.repo ||
                 (template.needsRepo ? 'a repository you still need to pick' : draft.name)}
@@ -539,8 +485,8 @@ function LaunchStep({
                 order
               </>
             ) : null}
-            . {draft.trust.deploy === 'ask' ? 'Deploying will ask you first.' : ''} Nothing starts
-            until you say go.
+            . {draft.trust.deploy === 'ask' ? 'Deploying will ask you first.' : ''} Nothing is
+            created until you say go.
           </p>
         </SectionCard>
       ) : null}
@@ -557,8 +503,6 @@ function LaunchStep({
               ['trackerBoard', draft.trackerBoard],
               ['bugBoard', draft.bugBoard || 'tracker board'],
               ['mountTarget', draft.mountTarget],
-              ['profileId', draft.profileId],
-              ['model', draft.model || 'profile default'],
             ] as Array<[keyof RealmDraft, string]>
           ).map(([key, value]) => (
             <div
@@ -576,9 +520,7 @@ function LaunchStep({
                           ? 'bug board'
                           : key === 'mountTarget'
                             ? 'memory'
-                            : key === 'profileId'
-                              ? 'runs on'
-                              : key
+                            : key
                   }
                   value={value || 'not set'}
                 />
@@ -620,7 +562,6 @@ function LaunchStep({
 export function NewRealmPage() {
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as NewRealmSearch;
-  const personas = useService<IPersonaStore>('ravn.personas');
   const walkthrough = useWalkthrough(FIRST_REALM_WALKTHROUGH);
   const { run, progress } = useCreateRealm();
 
@@ -629,11 +570,6 @@ export function NewRealmPage() {
   const fromSlug = search.from?.trim() || null;
   const fromGrants = useRealmTrustGrants(fromSlug ?? '', fromSlug !== null);
   const realms = useRealms();
-  const fromPersona = useQuery({
-    queryKey: ['ravn', 'personas', fromSlug ? personaNameFor(fromSlug) : ''],
-    queryFn: () => personas.getPersona(personaNameFor(fromSlug as string)),
-    enabled: fromSlug !== null,
-  });
 
   const [draft, setDraft] = useState<RealmDraft>(() => {
     const templateId =
@@ -662,10 +598,10 @@ export function NewRealmPage() {
   const [step, setStep] = useState<Step>(parsed ? 'launch' : 'template');
   const [launching, setLaunching] = useState(false);
 
-  // Clone: once the source realm's grants and persona have loaded, fill the draft from
+  // Clone: once the source realm's grants have loaded, fill the draft from
   // them and leave the blanks empty. Applied once per source, as derived state.
   const [appliedClone, setAppliedClone] = useState<string | null>(null);
-  if (fromSlug && fromGrants.data && fromPersona.data && appliedClone !== fromSlug) {
+  if (fromSlug && fromGrants.data && appliedClone !== fromSlug) {
     const sourceGrants = fromGrants.data;
     const binding = bindingFromGrants(sourceGrants);
     const trust: TrustPreset = { ...EMPTY_DRAFT.trust };
@@ -679,7 +615,6 @@ export function NewRealmPage() {
         trust[actionClass] = 'never';
     }
     trust.observe = 'auto';
-    const description = fromPersona.data.description;
     setAppliedClone(fromSlug);
     setDraft((current) => ({
       ...current,
@@ -687,7 +622,6 @@ export function NewRealmPage() {
         binding?.template && REALM_TEMPLATES.some((t) => t.id === binding.template)
           ? binding.template
           : current.templateId,
-      charter: description,
       mountTarget: binding?.mountTarget ?? current.mountTarget,
       projectId:
         realms.data?.find((realm) => realm.slug === fromSlug)?.project_id ?? current.projectId,
@@ -761,19 +695,19 @@ export function NewRealmPage() {
   const titles: Record<Step, [string, string]> = {
     template: [
       'What kind of workspace is this?',
-      'A template is a starting point, not a script. The resident learns the workspace and adjusts.',
+      'A template is a starting point, not a script. The workspace can be changed any time.',
     ],
     connect: [
       'Connect the workspace to its world.',
-      'Everything here is an integration you already have or add once. The resident reaches these through MCP; it never gets your raw credentials.',
+      'Everything here is an integration you already have or add once. Sessions reach these through MCP; they never get your raw credentials.',
     ],
     charter: [
       'Tell it what matters. Then say how far it may go.',
-      'The charter is a seed. A few sentences. The resident builds its own understanding from the code, the tickets and what happens.',
+      'The charter is a few sentences on what matters, kept in the memory of the workspace.',
     ],
     launch: [
       sentence ? 'Here is how I read that.' : 'Ready to start.',
-      'Say go and the resident starts. Its first triage lands in a few minutes, and it touches nothing before you have seen it.',
+      'Say go and the workspace is created: its memory, its trust and its board. Nothing runs until you start a session.',
     ],
   };
 

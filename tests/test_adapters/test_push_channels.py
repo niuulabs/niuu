@@ -255,8 +255,8 @@ class TestApnsCategory:
             notification_id="n-1",
             category="NIUU_RESIDENT_QUESTION",
             data={
-                "odin_review_id": "review:court_escalation:operator:abc",
-                "odin_review_decide_path": "/api/v1/ravn/odin/reviews/x/decide",
+                "question_id": "q-1",
+                "answer_path": "/api/v1/forge/questions/q-1/answer",
             },
         )
 
@@ -274,8 +274,8 @@ class TestApnsCategory:
             "kind": "attention",
             "request_id": "",
             "notification_id": "n-1",
-            "odin_review_id": "review:court_escalation:operator:abc",
-            "odin_review_decide_path": "/api/v1/ravn/odin/reviews/x/decide",
+            "question_id": "q-1",
+            "answer_path": "/api/v1/forge/questions/q-1/answer",
         }
 
     async def test_other_pushes_have_no_category_and_no_extra_keys(self):

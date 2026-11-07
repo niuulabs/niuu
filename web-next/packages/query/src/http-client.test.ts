@@ -441,7 +441,7 @@ describe('createApiClient', () => {
     'preserves HTTP errors for a non-JSON body: %s',
     async (body) => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { status: 500 })));
-      await expect(createApiClient(BASE).get('/dreams')).rejects.toMatchObject({
+      await expect(createApiClient(BASE).get('/status')).rejects.toMatchObject({
         name: 'ApiClientError',
         status: 500,
         detail: body || 'Unknown error',

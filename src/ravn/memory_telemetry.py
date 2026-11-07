@@ -1,16 +1,14 @@
-"""Shared telemetry for Ravn's three memory surfaces.
+"""Shared telemetry for Ravn's memory surfaces.
 
-Ravn reads from three stores with very different contracts, and each one can
+Ravn reads from two stores with very different contracts, and each one can
 fail silently in its own way:
 
 * **episodic memory** (:class:`ravn.ports.memory.MemoryPort`) — ranked, lossy;
   a miss costs answer quality;
-* **resident state** (:class:`ravn.domain.resident_state.ResidentStatePort`) —
-  typed, exact-read; a miss breaks continuation;
 * **Mímir** (:class:`ravn.ports.mimir.MimirPort`) — the shared knowledge base
   reached over HTTP.
 
-All three previously emitted nothing, so an empty result was indistinguishable
+Both previously emitted nothing, so an empty result was indistinguishable
 from a healthy one. Metric names live here so the Grafana dashboard, the
 adapters, and ``tests/test_ravn/test_valkyrie_grafana_dashboard.py`` cannot
 drift apart.
@@ -45,8 +43,6 @@ CORPUS_EPISODES = "ravn.memory.corpus.episodes"
 CORPUS_EMBEDDING_COVERAGE = "ravn.memory.corpus.embedding.coverage"
 CORPUS_INDEX_COVERAGE = "ravn.memory.corpus.index.coverage"
 
-RESIDENT_STATE_OPERATIONS = "ravn.resident_state.operations"
-
 MIMIR_OPERATIONS = "ravn.mimir.operations"
 MIMIR_RESULTS = "ravn.mimir.results"
 
@@ -55,8 +51,6 @@ MIMIR_RESULTS = "ravn.mimir.results"
 ATTR_BACKEND = "ravn.memory.backend"
 ATTR_OPERATION = "ravn.memory.operation"
 ATTR_RESULT = "ravn.memory.result"
-ATTR_ADAPTER = "ravn.resident_state.adapter"
-ATTR_RECORD_TYPE = "ravn.resident_state.record_type"
 ATTR_MIMIR_OPERATION = "ravn.mimir.operation"
 ATTR_COMPONENT = "ravn.runtime.component"
 ATTR_ENVIRONMENT = "ravn.environment.id"
@@ -216,29 +210,6 @@ def record_corpus(
     )
 
 
-def record_resident_state_operation(
-    *,
-    operation: str,
-    record_type: str,
-    adapter: str,
-    result: str,
-    component: str = "resident",
-    environment_id: str = "",
-) -> None:
-    """Emit one resident-state read or write."""
-    get_observability().count(
-        RESIDENT_STATE_OPERATIONS,
-        attributes={
-            ATTR_OPERATION: operation,
-            ATTR_RECORD_TYPE: record_type,
-            ATTR_ADAPTER: adapter,
-            ATTR_RESULT: result,
-            **_identity(component, environment_id),
-        },
-        description="Resident-state operations by record type and outcome.",
-    )
-
-
 def record_mimir_operation(
     *,
     operation: str,
@@ -278,13 +249,11 @@ def record_mimir_operation(
 
 __all__ = [
     "ADMITTED",
-    "ATTR_ADAPTER",
     "ATTR_BACKEND",
     "ATTR_COMPONENT",
     "ATTR_ENVIRONMENT",
     "ATTR_MIMIR_OPERATION",
     "ATTR_OPERATION",
-    "ATTR_RECORD_TYPE",
     "ATTR_RESULT",
     "CANDIDATES",
     "CANDIDATE_AGE_DAYS",
@@ -297,7 +266,6 @@ __all__ = [
     "MIMIR_RESULTS",
     "OPERATIONS",
     "RELEVANCE_SCORE",
-    "RESIDENT_STATE_OPERATIONS",
     "RESULT_EMPTY",
     "RESULT_ERROR",
     "RESULT_HIT",
@@ -306,6 +274,5 @@ __all__ = [
     "record_injected_chars",
     "record_memory_operation",
     "record_mimir_operation",
-    "record_resident_state_operation",
     "result_for",
 ]

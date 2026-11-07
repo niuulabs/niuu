@@ -112,7 +112,7 @@ describe('workflowSemantics', () => {
               budget: 20,
               consumesEventTypes: [],
             },
-            { personaId: 'mimir-memory-curator', model: '   ', budget: 20, consumesEventTypes: [] },
+            { personaId: 'postmortem-analyst', model: '   ', budget: 20, consumesEventTypes: [] },
           ],
         }),
       ],

@@ -49,12 +49,10 @@ it('shows a managed instance only once when it is also connected', async () => {
   expect(await screen.findByText(/mimir · Managed · local/)).toBeInTheDocument();
 });
 
-it('opens both forms in dialogs and closes them consistently', async () => {
+it('opens the connection form in a dialog and closes it', async () => {
   render(<RegistryPage />, createMimirMockAdapter());
-  fireEvent.click(await screen.findByRole('button', { name: '+ Deploy instance' }));
-  expect(screen.getByRole('dialog', { name: 'Deploy instance' })).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Close', exact: true }));
-  fireEvent.click(screen.getByRole('button', { name: '+ Add connection' }));
+  expect(screen.queryByRole('button', { name: '+ Deploy instance' })).not.toBeInTheDocument();
+  fireEvent.click(await screen.findByRole('button', { name: '+ Add connection' }));
   expect(screen.getByRole('dialog', { name: 'Add connection' })).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Close', exact: true }));
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();

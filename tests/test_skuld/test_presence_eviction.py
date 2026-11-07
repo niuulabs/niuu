@@ -205,7 +205,7 @@ async def test_approver_keeps_powers_when_environment_has_reviewable_actions() -
         display_name="Jozef",
         environment_id="cluster-a",
         role="approver",
-        environment_action_authorities=["autonomous", "court_required"],
+        environment_action_authorities=["autonomous", "human_review_required"],
     )
     assert "approve" in meta.capabilities
     assert "authorize_action" in meta.capabilities

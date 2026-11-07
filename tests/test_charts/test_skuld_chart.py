@@ -858,22 +858,6 @@ class TestResidentWorkloadIdentityConfigFirst:
         assert ravn_cfg["resident_budget"]["kwargs"]["workload_exchange_url"] == exchange
         assert broker_cfg["volundr_api_url"] == "https://volundr.example"
 
-    def test_resident_wakefulness_is_rendered(self, tmp_path):
-        values = dict(self.RESIDENT_VALUES)
-        values["resident"] = {
-            **values["resident"],
-            "wakefulness": {"enabled": True, "silence_threshold_seconds": 900},
-        }
-        rendered = _render_skuld_chart(tmp_path, values)
-        configmaps = self._configmaps(rendered)
-        ravn_cm = next(cm for name, cm in configmaps.items() if name.endswith("-ravn-config"))
-        ravn_cfg = yaml.safe_load(ravn_cm["data"]["config.yaml"])
-
-        assert ravn_cfg["wakefulness"] == {
-            "enabled": True,
-            "silence_threshold_seconds": 900,
-        }
-
     def test_default_render_has_no_workload_identity_config(self, tmp_path):
         rendered = _render_skuld_chart(tmp_path, {})
         assert "workload_identity" not in rendered
@@ -1225,46 +1209,6 @@ class TestResidentMemoryPersistence:
         config = _ravn_config_from_rendered(rendered)
         assert config["memory"]["path"] == "/volundr/home/.ravn/memory.db"
         assert config["memory"]["backend"] == "sqlite"
-
-
-class TestResidentRealmBinding:
-    """A realm-deployed resident must carry its realm_slug/charter/HUD/stewardship.
-
-    Before this, the chart's resident mode rendered only environment id/name;
-    a resident deployed for a realm had no way to know which realm's charter
-    to resolve, no HUD, and no configurable stewardship cadence.
-    """
-
-    def test_realm_fields_absent_by_default(self, tmp_path: Path) -> None:
-        rendered = _render_skuld_chart(
-            tmp_path, {"resident": {"enabled": True, "persona": "product-steward"}}
-        )
-        config = _ravn_config_from_rendered(rendered)
-        assert "charter_mimir_page" not in config["environment"]
-        assert "resident_state" not in config
-        assert "resident_evolution" not in config
-        assert config["gateway"]["channels"]["http"]["resident_hud_enabled"] is False
-
-    def test_realm_slug_renders_charter_page_and_hud_and_stewardship(self, tmp_path: Path) -> None:
-        rendered = _render_skuld_chart(
-            tmp_path,
-            {
-                "resident": {
-                    "enabled": True,
-                    "persona": "product-steward",
-                    "realm": {"slug": "workshop"},
-                    "hudEnabled": True,
-                    "stewardshipIntervalSeconds": 30,
-                    "platform": {"enabled": True, "baseUrl": "https://volundr.example.test"},
-                }
-            },
-        )
-        config = _ravn_config_from_rendered(rendered)
-        assert config["environment"]["charter_mimir_page"] == "realms/workshop/charter.md"
-        assert config["resident_evolution"]["realm_slug"] == "workshop"
-        assert config["resident_evolution"]["realm_api_base_url"] == "https://volundr.example.test"
-        assert config["gateway"]["channels"]["http"]["resident_hud_enabled"] is True
-        assert config["resident_state"]["stewardship_interval_seconds"] == 30
 
 
 class TestRavnHomeVolume:

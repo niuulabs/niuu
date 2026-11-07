@@ -10,10 +10,8 @@ from typing import Any
 
 import pytest
 
-from ravn.adapters.permission.allow_deny import AllowAllPermission
 from ravn.adapters.skill.file_registry import FileSkillRegistry
-from ravn.adapters.tools.learned_tool_run import LearnedToolRunTool
-from ravn.config import ResidentEvolutionConfig
+from ravn.config import LearnedToolsConfig
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.k8s_tool_runner import (
     DEFAULT_TOOL_RUN_IMAGE,
@@ -38,18 +36,9 @@ from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
     LearnedToolInfrastructureError,
     learned_tool_runner_for_backend,
-    learned_tool_storage,
-    load_learned_tool,
-    read_learned_tool_artifact,
 )
 from ravn.valkyrie_evolution.models import ToolReachGrant
 from ravn.valkyrie_evolution.reach_plan import EgressPlan, HostTarget, ServiceTarget
-from ravn.valkyrie_evolution.resident_learning import (
-    ResidentLearningArtifact,
-    ResidentLearningIdentity,
-    ResidentLearningRuntime,
-)
-from sleipnir.adapters.in_process import InProcessBus
 
 _DNS1123_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
@@ -1241,9 +1230,9 @@ def test_container_exit_code_reads_only_a_terminated_container() -> None:
 
 def test_k8s_backend_requires_explicit_verified_deployment_coordinates(tmp_path) -> None:
     with pytest.raises(ValueError, match="requires learned_tool_k8s"):
-        ResidentEvolutionConfig(learned_tool_execution_backend="k8s_job")
+        LearnedToolsConfig(learned_tool_execution_backend="k8s_job")
 
-    config = ResidentEvolutionConfig(
+    config = LearnedToolsConfig(
         learned_tool_execution_backend="k8s_job",
         learned_tool_k8s={
             "namespace": "ravn",
@@ -1902,196 +1891,6 @@ def _skill_manager(tmp_path, name: str) -> SkillManagementRegistry:
     return SkillManagementRegistry(
         registry, metadata_path=tmp_path / name / "skill_management.json"
     )
-
-
-def _peer_agent_tool_artifact(
-    *,
-    tool_code: str,
-    test_code: str,
-    manifest_name: str = "inspect_oomkilled_pod",
-    requirements: list[str] | None = None,
-) -> ResidentLearningArtifact:
-    return ResidentLearningArtifact(
-        learning_id=f"learn-{manifest_name}",
-        title=manifest_name,
-        summary="Inspect an OOMKilled pod signal.",
-        content="",
-        artifact_type="agent_tool",
-        scope="flock",
-        confidence=0.74,
-        source_environment_id="cluster-a",
-        source_valkyrie_id="valkyrie:k8s-a",
-        promotion_id=f"learn-{manifest_name}",
-        flock_id="k8s-valkyries",
-        domain="k8s",
-        redaction_status="none",
-        tool_code=tool_code,
-        tool_entry_point="run",
-        learned_tool_manifest={
-            "name": manifest_name,
-            "description": "Inspect an OOMKilled pod signal.",
-            "input_schema": {"type": "object"},
-            "required_permission": "k8s:read",
-        },
-        test_code=test_code,
-        canary_sample={"payload": {"reason": "OOMKilled"}},
-        requirements=requirements or [],
-    )
-
-
-def _peer_runtime(
-    tmp_path,
-    *,
-    runner: Any,
-    name: str = "cluster-k8s-peer",
-) -> tuple[ResidentLearningRuntime, Any]:
-    bus = InProcessBus()
-    peer_skills = _skill_manager(tmp_path, name)
-    peer = ResidentLearningRuntime(
-        identity=ResidentLearningIdentity(
-            environment_id=name,
-            valkyrie_id=f"valkyrie:{name}",
-            domain="k8s",
-            flock_ids=["k8s-valkyries"],
-            autonomy_mode="yolo",
-        ),
-        skills=peer_skills,
-        publisher=bus,
-        subscriber=bus,
-        tools_dir=tmp_path / "peer" / "tools",
-        learned_tool_runner=runner,
-    )
-    return peer, bus
-
-
-class TestPeerAdoptionThroughK8sJob:
-    async def test_peer_proposal_verifies_installs_and_then_runs_via_learned_tool_run(
-        self,
-        tmp_path,
-    ) -> None:
-        executor = _FakeE2EExecutor()
-        runner = KubernetesJobLearnedToolRunner(executor=executor)
-        peer, _bus = _peer_runtime(tmp_path, runner=runner)
-        artifact = _peer_agent_tool_artifact(tool_code=_OK_TOOL_CODE, test_code=_OK_TEST_CODE)
-
-        decision = await peer.evaluate_and_apply(artifact)
-
-        assert decision.action == "adopted"
-        assert decision.installed_skill_name
-        # Re-verification happened through k8s_job, never on the host.
-        assert len(executor.verify_calls) == 1
-        assert executor.verify_calls[0]["tool_code"] == artifact.tool_code
-        # The canary run that gates install also went through the same runner.
-        assert len(executor.run_calls) == 1
-
-        # The installed artifact now runs through learned_tool_run, using the
-        # SAME k8s_job runner/executor — the full peer-adoption loop the k8s_job
-        # backend previously could never complete.
-        state_dir = (tmp_path / "peer" / "tools").parent
-        code_dir, artifacts_dir = learned_tool_storage(state_dir)
-        installed_name = decision.installed_skill_name
-        installed_artifact = read_learned_tool_artifact(artifacts_dir / f"{installed_name}.json")
-        tool = load_learned_tool(
-            artifact=installed_artifact,
-            tool_path=code_dir / f"{installed_name}.py",
-            runner=runner,
-        )
-
-        class _FakeResolver:
-            def load(self, name: str, *, host_call=None):
-                assert name == installed_name
-                return tool
-
-        dispatch = LearnedToolRunTool(
-            resolver=_FakeResolver(),  # type: ignore[arg-type]
-            permission=AllowAllPermission(),
-        )
-        result = await dispatch.execute({"name": installed_name, "input": {"pod": "api-0"}})
-
-        assert not result.is_error
-        assert '"ok": true' in result.content
-        assert len(executor.run_calls) == 2
-
-    async def test_peer_proposal_whose_requirement_the_image_lacks_is_rejected(
-        self,
-        tmp_path,
-    ) -> None:
-        """Nothing is installed for a peer: its verification Job's gate finds
-        the requirement missing from the pinned image and declines it."""
-        gate = "ravn-k8s-job: runner image does not satisfy: absent_pkg==1.0 (not installed)"
-        batch = _FakeVerifyBatchV1({"succeeded": None, "failed": 1})
-        core = _FakeVerifyCoreV1(log=gate)
-        network = _FakeNetworkingV1()
-        executor = KubernetesJobExecutor(
-            namespace="ravn",
-            deny_policy_name="tool-deny",
-            allow_policy_name="tool-allow",
-            batch_v1=batch,
-            core_v1=core,
-            networking_v1=network,
-            in_cluster=False,
-        )
-        runner = KubernetesJobLearnedToolRunner(executor=executor)
-        peer, _bus = _peer_runtime(tmp_path, runner=runner, name="cluster-k8s-reqs")
-        artifact = _peer_agent_tool_artifact(
-            tool_code="import absent_pkg\n" + _OK_TOOL_CODE,
-            test_code=_OK_TEST_CODE,
-            manifest_name="net_probe",
-            requirements=["absent_pkg==1.0"],
-        )
-
-        decision = await peer.evaluate_and_apply(artifact)
-
-        assert decision.action == "rejected"
-        assert core.secrets[0]["stringData"]["requirements.txt"] == "absent_pkg==1.0"
-        # Verification only: the tool itself never ran.
-        assert len(batch.created) == 1
-
-    async def test_peer_adoption_end_to_end_through_a_real_executor_and_fake_k8s_client(
-        self,
-        tmp_path,
-    ) -> None:
-        """Same loop as above, but through the REAL KubernetesJobExecutor
-        (fake batch/core/networking clients only), not the coarser
-        `_FakeE2EExecutor` — exercises the actual Job/Secret bodies, the
-        NetworkPolicy check, and cleanup for both verify() and run()."""
-        batch = _FakeVerifyBatchV1()
-        # A real Job log: library warnings on stderr interleaved with the
-        # marked result line the bootstrap prints last.
-        core = _FakeVerifyCoreV1(
-            log=(
-                "InsecureRequestWarning: Unverified HTTPS request\n"
-                "ravn-k8s-job-result: " + json.dumps({"ok": True})
-            )
-        )
-        network = _FakeNetworkingV1()
-        executor = KubernetesJobExecutor(
-            namespace="ravn",
-            deny_policy_name="tool-deny",
-            allow_policy_name="tool-allow",
-            batch_v1=batch,
-            core_v1=core,
-            networking_v1=network,
-            in_cluster=False,
-        )
-        runner = KubernetesJobLearnedToolRunner(executor=executor)
-        peer, _bus = _peer_runtime(tmp_path, runner=runner, name="cluster-k8s-real")
-        artifact = _peer_agent_tool_artifact(
-            tool_code=_OK_TOOL_CODE, test_code=_OK_TEST_CODE, manifest_name="real_probe"
-        )
-
-        decision = await peer.evaluate_and_apply(artifact)
-
-        assert decision.action == "adopted"
-        # verify() Job + canary run() Job, each created and cleaned up.
-        assert len(batch.created) == 2
-        assert len(batch.deleted) == 2
-        assert len(core.deleted_secrets) == 2
-        verify_job, run_job = batch.created
-        assert verify_job["spec"]["template"]["spec"]["containers"][0]["command"][0] == "python"
-        assert "_verify_runner.py" in "".join(
-            verify_job["spec"]["template"]["spec"]["containers"][0]["command"]
-        )
 
 
 @pytest.mark.asyncio

@@ -644,9 +644,9 @@ describe('computeLayout', () => {
           status: 'healthy',
         },
         {
-          id: 'warden-a',
+          id: 'agent-a',
           typeId: 'ravn_long',
-          label: 'Warden A',
+          label: 'Agent A',
           parentId: 'cluster-platform',
           status: 'idle',
         },
@@ -664,17 +664,17 @@ describe('computeLayout', () => {
     const positions = computeLayout(topology);
     const cluster = positions.get('cluster-platform')!;
     const ravn = positions.get('service-ravn')!;
-    const warden = positions.get('warden-a')!;
+    const agent = positions.get('agent-a')!;
     const ting = positions.get('service-ting')!;
     const run = positions.get('run-a')!;
     const clusterRadius = cluster.zoneRadius ?? LAYOUT.CLUSTER_INNER_RADIUS;
 
-    for (const child of [ravn, warden, ting, run]) {
+    for (const child of [ravn, agent, ting, run]) {
       expect(Math.hypot(child.x - cluster.x, child.y - cluster.y)).toBeLessThanOrEqual(
         clusterRadius,
       );
     }
-    expect(Math.hypot(ravn.x - warden.x, ravn.y - warden.y)).toBeGreaterThan(0);
+    expect(Math.hypot(ravn.x - agent.x, ravn.y - agent.y)).toBeGreaterThan(0);
     expect(Math.hypot(ting.x - run.x, ting.y - run.y)).toBeGreaterThan(0);
   });
 
@@ -808,7 +808,7 @@ describe('computeLayout', () => {
     expect(positions.get('service-root')).toBeDefined();
   });
 
-  it('sizes namespace containers around discovered workloads and wardens', () => {
+  it('sizes namespace containers around discovered workloads and agents', () => {
     const topology: Topology = {
       timestamp: '2026-06-14T00:00:00Z',
       nodes: [
@@ -834,9 +834,9 @@ describe('computeLayout', () => {
           status: 'healthy',
         },
         {
-          id: 'k8s:ymir:volundr:deployment:mimir-shared-warden-agent',
+          id: 'k8s:ymir:volundr:deployment:mimir-shared-agent',
           typeId: 'ravn_long',
-          label: 'mimir-shared-warden-agent',
+          label: 'mimir-shared-agent',
           parentId: 'namespace-ymir-volundr',
           status: 'healthy',
         },
@@ -857,17 +857,17 @@ describe('computeLayout', () => {
       (namespace.containerWidth ?? 0) / 2,
       (namespace.containerHeight ?? 0) / 2,
     );
-    const warden = positions.get('k8s:ymir:volundr:deployment:mimir-shared-warden-agent')!;
+    const agent = positions.get('k8s:ymir:volundr:deployment:mimir-shared-agent')!;
     const mimir = positions.get('k8s:ymir:volundr:deployment:niuu-mimir-shared')!;
 
     expect(namespace.containerWidth).toBeGreaterThanOrEqual(LAYOUT.NAMESPACE_INNER_RADIUS * 2);
-    expect(Math.hypot(warden.x - namespace.x, warden.y - namespace.y)).toBeLessThanOrEqual(
+    expect(Math.hypot(agent.x - namespace.x, agent.y - namespace.y)).toBeLessThanOrEqual(
       namespaceRadius,
     );
     expect(Math.hypot(mimir.x - namespace.x, mimir.y - namespace.y)).toBeLessThanOrEqual(
       namespaceRadius,
     );
-    expect(Math.hypot(warden.x - mimir.x, warden.y - mimir.y)).toBeGreaterThan(0);
+    expect(Math.hypot(agent.x - mimir.x, agent.y - mimir.y)).toBeGreaterThan(0);
   });
 
   it('scatters fallback children around already-positioned non-container parents', () => {

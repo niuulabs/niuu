@@ -522,24 +522,6 @@ async def test_resolve_realm_slug_returns_the_bound_realms_slug(tmp_path, docker
     assert await controller._resolve_realm_slug(runtime) == "workshop"
 
 
-async def test_materialize_threads_the_resolved_realm_slug_into_the_container(
-    tmp_path,
-    docker_client,
-) -> None:
-    controller = LocalContainerResidentRuntimeController(
-        residents_dir=str(tmp_path), default_image="example.test/ravn"
-    )
-    realm = _realm("workshop")
-    controller.set_realm_repository(_FakeRealmRepository({realm.id: realm}))
-    runtime = _runtime().model_copy(update={"realm_id": realm.id})
-    spec = await controller._materialize(runtime, _profile())
-    import yaml
-
-    ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
-    assert ravn_config["resident_evolution"]["realm_slug"] == "workshop"
-    assert ravn_config["environment"]["charter_mimir_page"] == "realms/workshop/charter.md"
-
-
 def test_unreachable_docker_engine_fails_with_a_remedy(tmp_path, monkeypatch) -> None:
     def unreachable():
         raise local_runtime.DockerException("Error while fetching server API version")

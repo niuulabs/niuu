@@ -163,13 +163,6 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         settings = dict(config.deployment)
         module, name = settings.pop("adapter").rsplit(".", 1)
         deployment = getattr(importlib.import_module(module), name)(**settings)
-    resident_memory = None
-    if config.resident_memory is not None:
-        import importlib
-
-        directory = dict(config.resident_memory.directory)
-        module, name = directory.pop("adapter").rsplit(".", 1)
-        resident_memory = getattr(importlib.import_module(module), name)(**directory)
     # Shared between the REST router and the MCP server so a resident
     # reading/writing through either surface shows up in the same
     # GET /activity/live window (see .claude/rules/no-magic-numbers.md —
@@ -191,10 +184,6 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         auth=identity_adapter,
         auth_mode=auth_mode,
         live_activity=live_activity,
-        resident_memory=resident_memory,
-        resident_mount_auth=(
-            dict(config.resident_memory.mount_auth) if config.resident_memory else None
-        ),
     )
     mcp_server = MimirMcpServer(
         adapter=adapter,

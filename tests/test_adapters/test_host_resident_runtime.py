@@ -801,30 +801,6 @@ async def test_resolve_realm_slug_returns_the_bound_realms_slug(tmp_path: Path) 
     assert await controller._resolve_realm_slug(runtime) == "workshop"
 
 
-async def test_deploy_threads_the_resolved_realm_slug_into_the_container(
-    tmp_path: Path,
-    controller: HostProcessResidentRuntimeController,
-) -> None:
-    realm_id = uuid.uuid4()
-
-    class _FakeRealm:
-        slug = "workshop"
-
-    class _FakeRealmRepository:
-        async def get_realm(self, realm_ref):
-            return _FakeRealm() if realm_ref == realm_id else None
-
-    controller.set_realm_repository(_FakeRealmRepository())
-    runtime = _runtime(realm_id=realm_id)
-    profile = _profile()
-
-    await controller.deploy(runtime, profile)
-
-    ravn_config = yaml.safe_load((_root(tmp_path, runtime) / "config" / "ravn.yaml").read_text())
-    assert ravn_config["environment"]["charter_mimir_page"] == "realms/workshop/charter.md"
-    assert ravn_config["resident_evolution"]["realm_slug"] == "workshop"
-
-
 def test_spec_hash_changes_when_realm_id_changes(tmp_path: Path) -> None:
     controller = HostProcessResidentRuntimeController(residents_dir=str(tmp_path))
     profile = _profile()

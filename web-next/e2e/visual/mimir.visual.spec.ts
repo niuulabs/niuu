@@ -72,14 +72,6 @@ test('mimir entities matches web2', async ({ page }) => {
   await expect(page).toHaveScreenshot('mimir-entities.png');
 });
 
-// ── Ravns (Wardens) ───────────────────────────────────────────────────────────
-
-test('mimir ravns matches web2', async ({ page }) => {
-  await page.goto('/mimir/ravns');
-  await page.waitForLoadState('networkidle');
-  await expect(page).toHaveScreenshot('mimir-ravns.png');
-});
-
 // ── Lint ──────────────────────────────────────────────────────────────────────
 
 test('mimir lint matches web2', async ({ page }) => {
@@ -94,12 +86,4 @@ test('mimir ingest matches web2', async ({ page }) => {
   await page.goto('/mimir/ingest');
   await page.waitForLoadState('networkidle');
   await expect(page).toHaveScreenshot('mimir-ingest.png');
-});
-
-// ── Dreams (log / dream-cycle history in web2) ────────────────────────────────
-
-test('mimir dreams matches web2', async ({ page }) => {
-  await page.goto('/mimir/dreams');
-  await page.waitForLoadState('networkidle');
-  await expect(page).toHaveScreenshot('mimir-dreams.png');
 });

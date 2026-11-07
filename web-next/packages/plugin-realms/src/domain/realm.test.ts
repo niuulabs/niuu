@@ -6,9 +6,7 @@ import {
   deploymentNameFor,
   isValidSlug,
   mountNameFor,
-  personaNameFor,
   requiredDraftError,
-  residentNameFor,
   routingPrefixFor,
   routingRuleIdFor,
   slugify,
@@ -18,8 +16,6 @@ import {
 
 describe('realm naming conventions', () => {
   it('derives every part of a realm from its slug', () => {
-    expect(personaNameFor('lexi-api')).toBe('realm-lexi-api');
-    expect(residentNameFor('lexi-api')).toBe('lexi-api');
     expect(deploymentNameFor('lexi-api')).toBe('realm-lexi-api');
     expect(mountNameFor('lexi-api')).toBe('realm-lexi-api');
     expect(routingRuleIdFor('lexi-api')).toBe('realm-lexi-api');
@@ -52,8 +48,6 @@ describe('requiredDraftError', () => {
     charter: 'Keep it shippable.',
     repo: 'niuulabs/lexi-api',
     trackerBoard: 'board-1',
-    profileId: 'profile-1',
-    instanceId: 'instance-1',
     mountTarget: 'ymir',
     trust: BALANCED_TRUST,
   };
@@ -69,7 +63,6 @@ describe('requiredDraftError', () => {
     expect(requiredDraftError({ ...complete, repo: '' })).toMatch(/repository/);
     expect(requiredDraftError({ ...complete, repo: '' }, false)).toBeNull();
     expect(requiredDraftError({ ...complete, trackerBoard: '' })).toBeNull();
-    expect(requiredDraftError({ ...complete, profileId: '' })).toMatch(/runs/);
     expect(requiredDraftError({ ...complete, mountTarget: '' })).toMatch(/memory/);
   });
 });

@@ -56,16 +56,6 @@
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2, "showPoints": "never", "stacking": {"group": "A", "mode": "normal"}}, "unit": "ops"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
-      "id": 10,
-      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "sum by (ravn_valkyrie_decision,ravn_valkyrie_continuation) (rate(ravn_valkyrie_judgments{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "{{ravn_valkyrie_decision}} / {{ravn_valkyrie_continuation}}", "refId": "A"}],
-      "title": "Judgments and continuation choices",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "${metrics}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2, "showPoints": "never", "stacking": {"group": "A", "mode": "normal"}}, "unit": "ops"}, "overrides": []},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
       "id": 11,
       "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
@@ -84,16 +74,6 @@
         {"expr": "max(ravn_agent_active_tasks{job=~\"$job\",ravn_environment_id=~\"$environment\"})", "legendFormat": "active", "refId": "B"}
       ],
       "title": "Queue pressure and active work",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "${metrics}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "bars", "fillOpacity": 35, "lineWidth": 1, "showPoints": "never", "stacking": {"group": "A", "mode": "normal"}}, "unit": "ops"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
-      "id": 13,
-      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "sum by (ravn_signal_source,ravn_signal_type,ravn_signal_severity) (rate(ravn_environment_signals{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval]))", "legendFormat": "{{ravn_signal_source}} {{ravn_signal_type}} {{ravn_signal_severity}}", "refId": "A"}],
-      "title": "Accepted environment signals",
       "type": "timeseries"
     },
     {
@@ -152,19 +132,6 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 36},
-      "id": 31,
-      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [
-        {"expr": "sum by (ravn_signal_transport_outcome) (rate(ravn_signal_transport_messages{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "JetStream {{ravn_signal_transport_outcome}}", "refId": "A"},
-        {"expr": "sum by (ravn_queue_outcome,ravn_queue_reason) (rate(ravn_queue_admissions{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "queue {{ravn_queue_outcome}} / {{ravn_queue_reason}}", "refId": "B"}
-      ],
-      "title": "Durability handoff: receive, ACK/NAK, admission",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "${metrics}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "bars", "fillOpacity": 30, "lineWidth": 1, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 44},
       "id": 40,
@@ -190,19 +157,6 @@
         {"expr": "sum(rate(ravn_tool_build_flock_proposals{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "flock proposals", "refId": "H"}
       ],
       "title": "A2A and tool evolution",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "${metrics}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 52},
-      "id": 42,
-      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [
-        {"expr": "sum by (ravn_resident_disposition) (rate(ravn_resident_turns{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "resident / {{ravn_resident_disposition}}", "refId": "A"},
-        {"expr": "sum by (ravn_odin_decision,ravn_odin_tier) (rate(ravn_odin_decisions{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "ODIN / {{ravn_odin_decision}} / {{ravn_odin_tier}}", "refId": "B"}
-      ],
-      "title": "Continuation and ODIN decisions",
       "type": "timeseries"
     },
     {
@@ -258,7 +212,7 @@
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 90},
       "id": 70,
       "panels": [],
-      "title": "Agent memory (episodic, resident state, Mimir)",
+      "title": "Agent memory (episodic, Mimir)",
       "type": "row"
     },
     {
@@ -327,8 +281,8 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 103},
       "id": 77,
       "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "sum by (ravn_memory_operation, ravn_memory_result) (rate(ravn_memory_operations{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval]))", "legendFormat": "memory {{ravn_memory_operation}} {{ravn_memory_result}}", "refId": "A"}, {"expr": "sum by (ravn_resident_state_record_type, ravn_memory_result) (rate(ravn_resident_state_operations{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval]))", "legendFormat": "resident {{ravn_resident_state_record_type}} {{ravn_memory_result}}", "refId": "B"}, {"expr": "sum by (ravn_memory_result) (rate(ravn_mimir_operations{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval]))", "legendFormat": "mimir {{ravn_memory_result}}", "refId": "C"}],
-      "title": "Memory / resident-state / Mimir operations by outcome",
+      "targets": [{"expr": "sum by (ravn_memory_operation, ravn_memory_result) (rate(ravn_memory_operations{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval]))", "legendFormat": "memory {{ravn_memory_operation}} {{ravn_memory_result}}", "refId": "A"}],
+      "title": "Memory / Mimir operations by outcome",
       "type": "timeseries"
     },
     {

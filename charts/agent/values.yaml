@@ -13,7 +13,7 @@ nameOverride: ""
 fullnameOverride: ""
 
 agent:
-  persona: mimir-warden
+  persona: ""
   profile: ""
   configPath: /etc/ravn/config.yaml
   workspaceRoot: /workspace
@@ -40,11 +40,6 @@ config:
       channels:
         http:
           enabled: false
-    wakefulness:
-      enabled: false
-    dream_cycle:
-      enabled: false
-      state_dir: /home/agent/.ravn/daemon/state
     mimir:
       enabled: false
     {{- if .Values.learnedToolRunner.enabled }}

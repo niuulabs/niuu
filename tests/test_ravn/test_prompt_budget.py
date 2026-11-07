@@ -141,11 +141,11 @@ class TestPromptCompositionAudit:
         builder = PromptBuilder()
         builder.set_identity("identity text")
         builder.set_memory_context("")
-        builder.set_learnings_context("a lesson")
+        builder.set_shared_context("shared text")
 
         assert builder.section_texts() == {
             "identity": "identity text",
-            "learnings_context": "a lesson",
+            "shared_context": "shared text",
         }
 
 

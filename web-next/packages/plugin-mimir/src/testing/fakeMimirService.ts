@@ -354,9 +354,6 @@ export function createFakeMimirService(overrides: FakeMimirOverrides = {}): IMim
       async deleteRoutingRule() {
         // no-op in fake
       },
-      async listRavnBindings() {
-        return [];
-      },
       async getRecentWrites() {
         return [];
       },
@@ -496,12 +493,6 @@ export function createFakeMimirService(overrides: FakeMimirOverrides = {}): IMim
       },
       async runAutoFix() {
         return lintReport;
-      },
-      async reassignIssues() {
-        return lintReport;
-      },
-      async getDreamCycles() {
-        return [];
       },
       async getActivityLog() {
         return [];

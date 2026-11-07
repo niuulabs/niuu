@@ -244,7 +244,6 @@ def _serve_tool_mcp(settings: Settings, relay_socket: str) -> list:
         ),
         patch.object(commands_mod, "_build_tool_mcp_tools", return_value=[]),
         patch.object(commands_mod, "_tool_mcp_notification_outbox", return_value=None),
-        patch.object(commands_mod, "_attach_agent_build_tool"),
         patch("ravn.adapters.mcp.tool_port_server.ToolPortMcpServer", side_effect=server_for),
     ):
         commands_mod.tool_mcp(

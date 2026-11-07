@@ -21,7 +21,6 @@ def test_module_review_tracks_all_hardening_hotspots() -> None:
     expected = {
         "src/skuld/broker.py",
         "src/ravn/cli/commands.py",
-        "src/ravn/api/valkyries.py",
         "src/volundr/main.py",
         "src/niuu/app.py",
         "src/niuu/session_proxy.py",

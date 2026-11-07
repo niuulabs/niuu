@@ -16,7 +16,7 @@ export interface Walkthrough {
 export const FIRST_REALM_WALKTHROUGH: Walkthrough = {
   id: 'first-realm',
   title: 'Set up your first workspace',
-  tip: 'You are not managing tickets any more. You are managing one resident, and it manages the tickets.',
+  tip: 'A workspace brings the repository, the board and the memory of one job together, so you start sessions from one place.',
   steps: [
     { id: 'template', title: 'Pick a template', detail: 'Product resident fits most codebases.' },
     { id: 'connect', title: 'Connect repo, tracker, CI' },
@@ -26,11 +26,6 @@ export const FIRST_REALM_WALKTHROUGH: Walkthrough = {
       detail: 'A few sentences. It is a seed, not a rulebook.',
     },
     { id: 'trust', title: 'Set trust and where it runs' },
-    {
-      id: 'first-answer',
-      title: 'Answer its first question',
-      detail: 'Deciding the first review teaches it what you care about.',
-    },
   ],
 };
 

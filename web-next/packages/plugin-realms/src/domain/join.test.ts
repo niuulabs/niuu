@@ -1,25 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { Mount } from '@niuulabs/domain';
-import type { Ravn } from '@niuulabs/plugin-ravn';
 import type { ReviewItem as WorkReviewItem, Saga } from '@niuulabs/plugin-ting';
-import type {
-  RealmSummary,
-  RealmTrustGrant,
-  ReviewItem,
-  ValkyrieDashboard,
-  ValkyrieResident,
-} from '@niuulabs/plugin-valkyrie';
 import type { VolundrSession } from '@niuulabs/plugin-volundr';
+import type { RealmSummary, RealmTrustGrant } from './governance';
 import {
   activeSessionCount,
   bindingFromGrants,
   buildRealmView,
   latestGrants,
-  ravnForRealm,
-  residentForRealm,
-  residentMemory,
-  reviewsForRealm,
-  sessionsForRealm,
   waitingOnBoard,
   workProjectForBoard,
   workspaceSessions,
@@ -36,29 +23,6 @@ const realm: RealmSummary = {
   created_at: '2026-09-13T00:00:00Z',
   updated_at: '2026-09-13T00:00:00Z',
 };
-
-const resident = {
-  id: 'v1',
-  name: 'lexi-api',
-  environmentId: 'env-k8s-lexi-api',
-  persona: 'realm-lexi-api',
-  specialty: 'code',
-  wakefulness: 'wakeful',
-  autonomyMode: 'guarded',
-  status: 'online',
-  confidence: 0.7,
-  inboxSubjects: [],
-  toolCount: 3,
-} as unknown as ValkyrieResident;
-
-const dashboard = { valkyries: [resident], environments: [] } as unknown as ValkyrieDashboard;
-
-const ravn = {
-  id: 'ravn-1',
-  residentName: 'lexi-api',
-  personaName: '',
-  status: 'active',
-} as unknown as Ravn;
 
 const grants: RealmTrustGrant[] = [
   {
@@ -98,88 +62,13 @@ const grants: RealmTrustGrant[] = [
   },
 ];
 
-const reviews = [
-  { itemId: 'rv1', environmentId: 'env-k8s-lexi-api', status: 'pending' },
-  { itemId: 'rv2', environmentId: 'env-k8s-other', status: 'pending' },
-  { itemId: 'rv3', environmentId: 'env-k8s-lexi-api', status: 'approved' },
-] as unknown as ReviewItem[];
-
 const sessions = [
-  { id: 's1', personaName: 'realm-lexi-api', status: 'running' },
-  { id: 's2', personaName: 'realm-lexi-api', status: 'completed' },
-  { id: 's3', personaName: 'someone-else', status: 'running' },
+  { id: 's1', personaName: 'dev', status: 'running' },
+  { id: 's2', personaName: 'dev', status: 'completed' },
+  { id: 's3', personaName: 'dev', status: 'awaiting_input' },
 ] as unknown as VolundrSession[];
 
 describe('realm joins', () => {
-  it('finds the resident by environment id, then by name', () => {
-    expect(residentForRealm(dashboard, 'lexi-api')).toBe(resident);
-    expect(residentForRealm(dashboard, 'other')).toBeNull();
-    expect(residentForRealm(undefined, 'lexi-api')).toBeNull();
-  });
-
-  it('finds a resident whose display name is capitalised', () => {
-    const runa = { ...resident, id: 'a', name: 'Runa', environmentId: 'env-k8s-valhalla' };
-    expect(residentForRealm({ ...dashboard, valkyries: [runa] }, 'runa')).toBe(runa);
-    const ravnRuna = { ...ravn, residentName: 'Runa' } as unknown as Ravn;
-    expect(ravnForRealm([ravnRuna], 'runa')).toBe(ravnRuna);
-  });
-
-  it('prefers a resident by name when two share an environment', () => {
-    const shared = 'env-k8s-valhalla';
-    const runa = { ...resident, id: 'a', name: 'runa', environmentId: shared };
-    const regin = { ...resident, id: 'b', name: 'regin', environmentId: shared };
-    const both = { ...dashboard, valkyries: [runa, regin] };
-    expect(residentForRealm(both, 'regin')).toBe(regin);
-    expect(residentForRealm(both, 'valhalla')).toBe(runa);
-  });
-
-  it('finds the ravn by resident name, then by persona', () => {
-    expect(ravnForRealm([ravn], 'lexi-api')).toBe(ravn);
-    const byPersona = {
-      ...ravn,
-      residentName: undefined,
-      personaName: 'realm-lexi-api',
-    } as unknown as Ravn;
-    expect(ravnForRealm([byPersona], 'lexi-api')).toBe(byPersona);
-    expect(ravnForRealm(undefined, 'lexi-api')).toBeNull();
-  });
-
-  it('prefers the explicit realmId link over the naming convention', () => {
-    const linked = { ...ravn, id: 'ravn-2', residentName: 'not-lexi-api', realmId: 'r1' };
-    const byName = { ...ravn, id: 'ravn-3', residentName: 'lexi-api' };
-    expect(ravnForRealm([byName, linked], 'lexi-api', 'r1')).toBe(linked);
-  });
-
-  it('falls back to the naming convention only for a ravn with no realmId at all', () => {
-    const unlinked = { ...ravn, id: 'ravn-4', residentName: 'lexi-api', realmId: undefined };
-    expect(ravnForRealm([unlinked], 'lexi-api', 'r1')).toBe(unlinked);
-  });
-
-  it("finds an adopted workspace's ravn by the resident the dashboard names", () => {
-    // Regin runs as `regin` with a persona of its own, so no naming convention reaches it.
-    const regin = { ...ravn, id: 'regin', residentName: 'Regin', personaName: 'regin' };
-    expect(ravnForRealm([regin], 'niuu', 'r1')).toBeNull();
-    expect(ravnForRealm([regin], 'niuu', 'r1', 'regin')).toBe(regin);
-    const linkedElsewhere = { ...regin, realmId: 'r-other' };
-    expect(ravnForRealm([linkedElsewhere], 'niuu', 'r1', 'regin')).toBeNull();
-  });
-
-  it('never matches a ravn linked to a different realm, even by name/persona', () => {
-    const otherRealmsRavn = { ...ravn, id: 'ravn-5', residentName: 'lexi-api', realmId: 'r-other' };
-    expect(ravnForRealm([otherRealmsRavn], 'lexi-api', 'r1')).toBeNull();
-  });
-
-  it('keeps only the sessions the realm persona started', () => {
-    expect(sessionsForRealm(sessions, 'lexi-api').map((s) => s.id)).toEqual(['s1', 's2']);
-    expect(activeSessionCount(sessionsForRealm(sessions, 'lexi-api'))).toBe(1);
-    expect(sessionsForRealm(undefined, 'lexi-api')).toEqual([]);
-  });
-
-  it('keeps only the reviews addressed to the realm environment', () => {
-    expect(reviewsForRealm(reviews, resident).map((r) => r.itemId)).toEqual(['rv1', 'rv3']);
-    expect(reviewsForRealm(reviews, null)).toEqual([]);
-  });
-
   it('finds the Work link of a tracker board', () => {
     const link = { id: 'link-1', trackerId: 'board-1' } as Saga;
     expect(workProjectForBoard([link], 'board-1')).toBe(link);
@@ -197,14 +86,13 @@ describe('realm joins', () => {
       member('worker', { parent: { sessionId: 'coordinator', instanceId: 'x' } }),
       member('other-board', { labels: ['work-project:link-2'] }),
     ];
-    expect(workspaceSessions(all, 'lexi-api', 'link-1').map((s) => s.id)).toEqual([
-      's1',
-      's2',
-      'coordinator',
-      'worker',
-    ]);
-    expect(workspaceSessions(all, 'lexi-api', undefined).map((s) => s.id)).toEqual(['s1', 's2']);
-    expect(workspaceSessions(undefined, 'lexi-api', 'link-1')).toEqual([]);
+    expect(workspaceSessions(all, 'link-1').map((s) => s.id)).toEqual(['coordinator', 'worker']);
+    expect(workspaceSessions(all, undefined)).toEqual([]);
+    expect(workspaceSessions(undefined, 'link-1')).toEqual([]);
+  });
+
+  it('counts the sessions that are still going', () => {
+    expect(activeSessionCount(sessions)).toBe(2);
   });
 
   it('keeps only what is waiting on the board', () => {
@@ -240,79 +128,19 @@ describe('realm joins', () => {
   });
 
   it('builds the realm view from every part', () => {
-    const view = buildRealmView({ realm, dashboard, ravens: [ravn], grants, reviews, sessions });
-    expect(view).toMatchObject({
-      slug: 'lexi-api',
-      personaName: 'realm-lexi-api',
-      residentName: 'lexi-api',
-      environmentId: 'env-k8s-lexi-api',
-      wakefulness: 'wakeful',
-      ravnId: 'ravn-1',
-      pendingReviews: 1,
-      runningSessions: 1,
-    });
+    const view = buildRealmView({ realm, grants });
+    expect(view).toMatchObject({ slug: 'lexi-api', autonomyProfile: 'balanced' });
     expect(view.binding?.trackerBoard).toBe('board-1');
     expect(view.adopted).toBe(false);
   });
 
-  it("reads an adopted resident's own persona and charter, not the realm-<slug> ones", () => {
-    const regin = {
-      ...resident,
-      name: 'lexi-api',
-      persona: 'regin',
-      charter: 'Steward the **delivery**.',
-    };
+  it('marks a workspace with no memory target as having no memory mount of its own', () => {
     const boardOnly = grants.map((grant) =>
       grant.action_class === 'observe'
         ? { ...grant, limits: { tracker_board: 'board-1', mount_target: '' } }
         : grant,
     );
-    const view = buildRealmView({
-      realm,
-      dashboard: { valkyries: [regin], environments: [] } as unknown as ValkyrieDashboard,
-      ravens: [],
-      grants: boardOnly,
-      reviews,
-      sessions,
-    });
-    expect(view).toMatchObject({
-      adopted: true,
-      personaName: 'regin',
-      residentLabel: 'lexi-api',
-      residentCharter: 'Steward the **delivery**.',
-    });
-  });
-});
-
-describe('residentMemory', () => {
-  const regin = {
-    ...resident,
-    memory: [
-      { name: 'local', role: 'local', platformMount: 'regin' },
-      { name: 'mimir-yggdrasil', role: 'shared', platformMount: '' },
-      { name: 'research', role: 'domain', platformMount: 'research' },
-    ],
-  } as ValkyrieResident;
-  const reginMount = { name: 'regin', pages: 12, status: 'healthy' } as Mount;
-
-  it('opens each store only by the platform mount the resident names', () => {
-    expect(residentMemory(regin, [reginMount, { name: 'local' } as Mount])).toEqual([
-      { store: regin.memory![0], mount: reginMount },
-      { store: regin.memory![1], mount: null },
-      { store: regin.memory![2], mount: null },
-    ]);
-  });
-
-  it('is empty when the resident has not reported its memory', () => {
-    expect(residentMemory(resident, [reginMount])).toEqual([]);
-    expect(residentMemory(null, [reginMount])).toEqual([]);
-  });
-
-  it('leaves a named mount unopened until the mounts are known', () => {
-    expect(residentMemory(regin, undefined).map((entry) => entry.mount)).toEqual([
-      null,
-      null,
-      null,
-    ]);
+    const view = buildRealmView({ realm, grants: boardOnly });
+    expect(view.adopted).toBe(true);
   });
 });

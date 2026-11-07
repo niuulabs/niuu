@@ -1,13 +1,12 @@
 apiVersion: v2
 name: ravn
-description: "Ravn — agent runtime and warden API"
+description: "Ravn — agent runtime API"
 type: application
 version: 0.0.0-ting.159
 appVersion: "0.0.0-ting.159"
 keywords:
   - ravn
   - agents
-  - wardens
   - ai
 maintainers:
   - name: Niuu Labs

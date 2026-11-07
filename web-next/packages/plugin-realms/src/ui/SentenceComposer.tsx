@@ -6,7 +6,7 @@ import { Sparkles } from 'lucide-react';
 const PLACEHOLDER =
   'Keep niuulabs/lexi-api shippable, work the LXA board in priority order, and ask me before anything deploys.';
 
-/** One sentence is enough: it becomes a draft realm the resident fills in. */
+/** One sentence is enough: it becomes a draft workspace. */
 export function SentenceComposer({ rows = 1 }: { rows?: number } = {}) {
   const navigate = useNavigate();
   const [text, setText] = useState('');
@@ -38,8 +38,8 @@ export function SentenceComposer({ rows = 1 }: { rows?: number } = {}) {
           data-testid="sentence-input"
         />
         <span className="niuu:text-xs niuu:text-text-muted">
-          One sentence is enough. The resident reads it, fills in what it can, and asks for the rest
-          before anything starts.
+          One sentence is enough. It is read for a repository, a board and limits, and the rest is
+          asked for before anything starts.
         </span>
       </div>
       <button

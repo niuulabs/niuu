@@ -1,10 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { mountRavn, ravnServices } from '../../testing/mountRavn';
-import { makePersonaDetail, makePersonaSummary, makeRavn } from '../../testing/fixtures';
+import { makePersonaDetail, makePersonaSummary } from '../../testing/fixtures';
 import { describeFanIn } from './PersonaSheet';
-
-vi.mock('../workbench/LiveChat', () => ({ LiveChat: () => <div data-testid="live-chat" /> }));
 
 beforeEach(() => localStorage.clear());
 
@@ -41,13 +39,11 @@ describe('PersonaLibrary — list', () => {
     expect(screen.getByText('No personas match.')).toBeInTheDocument();
   });
 
-  it('filters to personas in use and to custom ones', async () => {
-    mountRavn('/ravn/personas', ravnServices({ ravens: [makeRavn()] }));
-    fireEvent.click(await screen.findByTestId('persona-filter-in-use'));
-    expect(screen.getByTestId('persona-row-reviewer')).toHaveTextContent('● 1');
-    expect(screen.queryByTestId('persona-row-research-framer')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('persona-filter-custom'));
+  it('filters to custom personas', async () => {
+    mountRavn('/ravn/personas', ravnServices());
+    fireEvent.click(await screen.findByTestId('persona-filter-custom'));
     expect(screen.getByText(/No custom personas yet/)).toBeInTheDocument();
+    expect(screen.queryByTestId('persona-filter-in-use')).not.toBeInTheDocument();
   });
 
   it('opens a persona into the URL', async () => {
@@ -62,7 +58,7 @@ describe('PersonaLibrary — list', () => {
 
 describe('PersonaLibrary — sheet', () => {
   it('reads as a character sheet', async () => {
-    mountRavn('/ravn/personas?persona=reviewer', ravnServices({ ravens: [makeRavn()] }));
+    mountRavn('/ravn/personas?persona=reviewer', ravnServices());
     const sheet = await screen.findByTestId('persona-sheet');
     const flow = within(sheet).getByTestId('persona-flow');
     expect(flow).toHaveTextContent('code.changed');
@@ -76,23 +72,6 @@ describe('PersonaLibrary — sheet', () => {
     expect(within(sheet).getByTestId('persona-prompt')).toHaveAttribute('data-open', 'false');
     fireEvent.click(within(sheet).getByRole('button', { name: 'Expand' }));
     expect(within(sheet).getByTestId('persona-prompt')).toHaveAttribute('data-open', 'true');
-  });
-
-  it('jumps to a ravn that uses it', async () => {
-    const router = mountRavn('/ravn/personas?persona=reviewer', ravnServices());
-    const usedBy = await screen.findByTestId('persona-used-by');
-    fireEvent.click(within(usedBy).getByRole('button', { name: /Muninn/ }));
-    await waitFor(() => expect(router.state.location.pathname).toBe('/ravn'));
-    expect(router.state.location.search).toMatchObject({ tab: 'chat' });
-  });
-
-  it('offers to deploy an unused persona', async () => {
-    const router = mountRavn('/ravn/personas?persona=research-framer', ravnServices());
-    const usedBy = await screen.findByTestId('persona-used-by');
-    fireEvent.click(within(usedBy).getByRole('button', { name: 'Deploy one' }));
-    await waitFor(() =>
-      expect(router.state.location.search).toMatchObject({ deploy: 'research-framer' }),
-    );
   });
 
   it('lists its triggers or says why it cannot', async () => {

@@ -43,7 +43,6 @@ const SERVICES: ReadonlySet<string> = new Set([
   'volundr',
   'skuld',
   'service',
-  'warden',
   'namespace',
 ]);
 

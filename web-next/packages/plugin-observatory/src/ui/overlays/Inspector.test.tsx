@@ -211,7 +211,7 @@ describe('Inspector detail rows', () => {
       parentId: null,
       status: 'healthy',
       cluster: 'ymir',
-      warden: 'mimir-shared-warden-agent 1/1',
+      replicas: '1/1',
       // Nothing in the UI names this key; a new adapter field must surface
       // rather than be silently dropped.
       compaction: 'nightly',
@@ -219,8 +219,8 @@ describe('Inspector detail rows', () => {
 
     render(<Inspector node={node} topology={null} registry={null} />);
 
-    expect(screen.getByText('warden')).toBeInTheDocument();
-    expect(screen.getByText('mimir-shared-warden-agent 1/1')).toBeInTheDocument();
+    expect(screen.getByText('replicas')).toBeInTheDocument();
+    expect(screen.getByText('1/1')).toBeInTheDocument();
     expect(screen.getByText('compaction')).toBeInTheDocument();
   });
 

@@ -37,7 +37,6 @@ from niuu.observability import get_observability
 from niuu.ports.mimir import MimirPort
 from ravn.adapters.channels.capture import (
     CaptureChannel,
-    CapturedEvent,
     TaskResult,
     TaskResultStore,
 )
@@ -49,7 +48,6 @@ from ravn.adapters.channels.task_context import TaskContextChannel
 from ravn.adapters.events.noop_publisher import NoOpEventPublisher
 from ravn.cap_telemetry import record_cap_hit, record_degraded, record_truncation
 from ravn.config import (
-    HttpChannelConfig,
     InitiativeConfig,
     Settings,
 )
@@ -58,53 +56,33 @@ from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.exceptions import (
     LLMError,
     PromptBudgetExceededError,
-    UnboundOperatorReplyError,
 )
 from ravn.domain.help_needed import build_help_needed_event
 from ravn.domain.models import (
-    IDLE_TRIAGE_TRIGGER,
-    RESIDENT_HOME_PRIORITY,
-    RESIDENT_HOME_TRIGGER,
     AgentTask,
     OutputMode,
     TurnResult,
 )
-from ravn.domain.resident_continuation import validate_resident_working_state
 from ravn.domain.surface import strip_surface_marker
-from ravn.domain.valkyrie_contracts import (
-    RESIDENT_ESCALATION_GUIDANCE,
-    VALKYRIE_CONTINUATION_ORDER,
-    VALKYRIE_JUDGMENT_REJECTED,
-    VALKYRIE_RUNTIME_OWNED_FIELDS,
-    is_valkyrie_outcome_event,
-    normalize_valkyrie_outcome,
-    validate_valkyrie_outcome,
-)
 from ravn.ports.channel import ChannelPort
 from ravn.ports.event_publisher import EventPublisherPort
 from ravn.ports.resident_budget import ResidentBudgetPort
 from ravn.ports.trigger import TriggerPort
 from ravn.prompt_builder import build_initiative_prompt
 from ravn.reflex import ReflexInjector, build_reflex_injector
-from ravn.signal_backlog import fold_signal_backlog, is_per_signal_task
 from ravn.workflow_runtime import _workflow_result_schema_for_event
 from sleipnir.domain.events import SleipnirEvent
 
 if TYPE_CHECKING:
     from ravn.adapters.personas.loader import PersonaConfig
     from ravn.ports.mesh import MeshPort
-    from ravn.resident_first_opinion import ResidentFirstOpinion
 
 try:
-    from sleipnir.domain.catalog import (
-        mimir_dream_completed as _sleipnir_mimir_dream_completed,
-    )
     from sleipnir.domain.catalog import (
         ravn_task_completed as _sleipnir_task_completed,
     )
 except ImportError:
     _sleipnir_task_completed = None  # type: ignore[assignment]
-    _sleipnir_mimir_dream_completed = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -130,216 +108,10 @@ _SUCCESS_VERDICT_PREFERENCE = (
     "clean",
 )
 _MIMIR_PAGE_WRITTEN_OUTCOME = "mimir.page.written"
-_DREAM_CYCLE_TRIGGER = "dream_cycle:cron"
-_DREAM_COUNT_FIELDS = ("pages_updated", "entities_created", "lint_fixes")
 _RAVN_TASK_STARTED = "ravn.task.started"
-_TRACEPARENT_PATTERN = re.compile(r"^[\da-fA-F]{2}-([\da-fA-F]{32})-[\da-fA-F]{16}-[\da-fA-F]{2}$")
-_A2A_TERMINAL_STATES = frozenset(
-    {
-        "TASK_STATE_CANCELED",
-        "TASK_STATE_CANCELLED",
-        "TASK_STATE_COMPLETED",
-        "TASK_STATE_FAILED",
-        "TASK_STATE_REJECTED",
-    }
-)
-_HTTP_DEFAULTS = HttpChannelConfig()
-
-
-def _bounded_hud_text(value: str, limit: int) -> str:
-    text = value.strip()
-    if len(text) <= limit:
-        return text
-    return f"{text[: max(0, limit - 1)].rstrip()}…"
-
-
-def _integer_setting(value: object, default: int) -> int:
-    """Use validated integer settings while tolerating loose test doubles."""
-    return value if isinstance(value, int) else default
-
-
-def _markdown_section(value: str, heading_prefix: str) -> str:
-    """Return one Markdown section without coupling the HUD to task semantics."""
-    collecting = False
-    collected: list[str] = []
-    wanted = heading_prefix.casefold()
-    for line in value.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            heading = stripped.lstrip("#").strip().casefold()
-            if collecting:
-                break
-            collecting = heading.startswith(wanted)
-            continue
-        if collecting:
-            collected.append(line)
-    return "\n".join(collected).strip()
-
-
-def _resident_hud_task_input(task: AgentTask, limit: int) -> dict[str, str]:
-    context = task.initiative_context.strip()
-    first_line = next((line.strip() for line in context.splitlines() if line.strip()), task.title)
-    summary = first_line.lstrip("#").strip() or task.title
-    observations = _markdown_section(context, "observed signals")
-    if not observations:
-        observations = _markdown_section(context, "signal")
-    if not observations:
-        observations = context
-    objective = _markdown_section(context, "your task")
-    return {
-        "summary": _bounded_hud_text(summary, limit),
-        "observations": _bounded_hud_text(observations, limit),
-        "objective": _bounded_hud_text(objective, limit),
-    }
-
-
-def _resident_hud_task_metadata(
-    task: AgentTask,
-    *,
-    context_limit: int,
-    persona: str,
-) -> dict[str, object]:
-    """Capture stable task facts needed after the live task object is released."""
-    return {
-        "resident_hud": True,
-        "title": task.title,
-        "persona": task.persona or persona,
-        "root_correlation_id": task.root_correlation_id or task.task_id,
-        "case_id": task.resident_case_id,
-        "turn_index": task.resident_turn_index,
-        "trace_id": _trace_id_from_carrier(task.trace_context),
-        "input": _resident_hud_task_input(task, context_limit),
-    }
-
-
-def _resident_hud_result(
-    result: TaskResult,
-    *,
-    iteration: int | None = None,
-    iteration_budget: int | None = None,
-    prompt_budget: dict[str, object] | None = None,
-) -> dict[str, object]:
-    """Project one captured task into the stable HUD task shape."""
-    metadata = result.metadata
-    failure_reason = str(metadata.get("failure_reason") or "")
-    validation_errors = metadata.get("validation_errors")
-    validation_errors = (
-        [str(error) for error in validation_errors] if isinstance(validation_errors, list) else []
-    )
-    return {
-        "task_id": result.task_id,
-        "title": str(metadata.get("title") or ""),
-        "triggered_by": result.triggered_by,
-        "persona": str(metadata.get("persona") or ""),
-        "root_correlation_id": str(metadata.get("root_correlation_id") or result.task_id),
-        "case_id": str(metadata.get("case_id") or ""),
-        "turn_index": int(metadata.get("turn_index") or 0),
-        "trace_id": str(metadata.get("trace_id") or ""),
-        "status": result.status,
-        **(
-            {"failure": {"reason": failure_reason, "errors": validation_errors}}
-            if failure_reason
-            else {}
-        ),
-        "started_at": result.started_at.isoformat(),
-        "completed_at": result.completed_at.isoformat() if result.completed_at else "",
-        "input": metadata.get("input") if isinstance(metadata.get("input"), dict) else {},
-        "progress": {
-            "iteration": int(metadata.get("iteration") or 0) if iteration is None else iteration,
-            "iteration_budget": (
-                int(metadata.get("iteration_budget") or 0)
-                if iteration_budget is None
-                else iteration_budget
-            ),
-            "tool_calls": sum(event.type == "tool_start" for event in result.events),
-            "warnings": sum(
-                event.type == "error" or "[warning]" in event.summary.casefold()
-                for event in result.events
-            )
-            + bool(failure_reason),
-            "prompt": (
-                dict(prompt_budget)
-                if prompt_budget is not None
-                else dict(metadata["prompt_budget"])
-                if isinstance(metadata.get("prompt_budget"), dict)
-                else {}
-            ),
-        },
-        "events": [
-            {
-                "type": event.type,
-                "summary": event.summary,
-                "timestamp": event.timestamp.isoformat(),
-            }
-            for event in result.events
-        ],
-    }
-
-
-def _resident_hud_a2a_tasks(
-    results: tuple[TaskResult, ...],
-    *,
-    active_parent_ids: set[str],
-) -> list[dict[str, object]]:
-    """Project the latest observed state of non-terminal A2A tasks."""
-    sessions: dict[str, dict[str, object]] = {}
-    for result in results:
-        for event in result.events:
-            if event.type != "a2a_task":
-                continue
-            details = event.details if isinstance(event.details, dict) else {}
-            task_id = str(details.get("task_id") or "")
-            if not task_id:
-                continue
-            state = str(details.get("state") or "TASK_STATE_UNSPECIFIED")
-            tracking_state = str(details.get("tracking_state") or "")
-            if state in _A2A_TERMINAL_STATES or tracking_state in {
-                "error",
-                "poll_exhausted",
-            }:
-                sessions.pop(task_id, None)
-                continue
-            prior = sessions.get(task_id, {})
-            sessions[task_id] = {
-                "agent_id": str(details.get("agent_id") or prior.get("agent_id") or ""),
-                "skill_id": str(details.get("skill_id") or prior.get("skill_id") or ""),
-                "task_id": task_id,
-                "state": state,
-                "operation": str(details.get("operation") or prior.get("operation") or ""),
-                "input_required": bool(details.get("input_required")),
-                "question": _bounded_hud_text(str(details.get("question") or ""), 500),
-                "prompt": _bounded_hud_text(
-                    str(details.get("prompt") or prior.get("prompt") or ""),
-                    500,
-                ),
-                "status_message": _bounded_hud_text(
-                    str(details.get("status_message") or ""),
-                    500,
-                ),
-                "source_tool": str(details.get("source_tool") or prior.get("source_tool") or ""),
-                "parent_task_id": result.task_id,
-                "parent_active": result.task_id in active_parent_ids,
-                "started_at": prior.get("started_at") or event.timestamp.isoformat(),
-                "observed_at": event.timestamp.isoformat(),
-            }
-    return sorted(
-        sessions.values(),
-        key=lambda item: str(item.get("observed_at") or ""),
-        reverse=True,
-    )
-
-
-def _trace_id_from_carrier(carrier: Mapping[str, str]) -> str:
-    direct = str(carrier.get("trace_id") or "").strip()
-    if re.fullmatch(r"[\da-fA-F]{32}", direct):
-        return direct.lower()
-    traceparent = str(carrier.get("traceparent") or "").strip()
-    match = _TRACEPARENT_PATTERN.fullmatch(traceparent)
-    return match.group(1).lower() if match else ""
 
 
 _RAVN_TASK_DROPPED = "ravn.task.dropped"
-_RESIDENT_VALKYRIE_SCHEMA_REPAIR_TRIGGER = "schema_repair:resident_valkyrie"
 
 
 def _build_workflow_outcome_repair_prompt(
@@ -575,13 +347,6 @@ def _parse_outcome_for_persona(
     schema_fields = getattr(produces, "schema", None)
     if schema_fields:
         try:
-            event_type = str(getattr(produces, "event_type", "") or "")
-            if is_valkyrie_outcome_event(event_type):
-                schema_fields = {
-                    name: field
-                    for name, field in schema_fields.items()
-                    if name not in VALKYRIE_RUNTIME_OWNED_FIELDS
-                }
             return parse_outcome_block(response_text, OutcomeSchema(fields=schema_fields))
         except Exception:
             logger.warning(
@@ -676,175 +441,6 @@ def _omit_optional_null_persona_fields(
     return normalized
 
 
-def _apply_authoritative_valkyrie_fields(
-    fields: dict[str, object],
-    authoritative_fields: Mapping[str, object] | None,
-) -> dict[str, object]:
-    """Attach runtime-owned identity and routing fields to a model judgment."""
-    if not authoritative_fields:
-        return fields
-    merged = dict(fields)
-    for key in ("environment_id", "environment_type", "valkyrie_id"):
-        value = authoritative_fields.get(key)
-        if str(value or "").strip():
-            merged[key] = value
-    correlations = merged.get("correlation_ids")
-    correlation_ids = dict(correlations) if isinstance(correlations, Mapping) else {}
-    authoritative_correlations = authoritative_fields.get("correlation_ids")
-    if isinstance(authoritative_correlations, Mapping):
-        correlation_ids.update(authoritative_correlations)
-    if correlation_ids:
-        merged["correlation_ids"] = correlation_ids
-    return merged
-
-
-def _resident_valkyrie_validation_result(
-    response_text: str,
-    persona_config: PersonaConfig | None,
-    *,
-    authoritative_fields: Mapping[str, object] | None = None,
-) -> tuple[str, dict[str, object], list[str]]:
-    """Parse and validate a resident Valkyrie response against its canonical contract."""
-    produces = getattr(persona_config, "produces", None)
-    canonical_event_type = str(getattr(produces, "event_type", "") or "")
-    if not canonical_event_type or not is_valkyrie_outcome_event(canonical_event_type):
-        return "", {}, []
-
-    parsed = _parse_outcome_for_persona(response_text, persona_config)
-    outcome_fields = dict(parsed.fields) if parsed is not None else {}
-    outcome_fields = normalize_valkyrie_outcome(canonical_event_type, outcome_fields)
-    outcome_fields = _omit_optional_null_persona_fields(outcome_fields, persona_config)
-    outcome_fields = _apply_authoritative_valkyrie_fields(
-        outcome_fields,
-        authoritative_fields,
-    )
-
-    validation_errors: list[str] = []
-    if parsed is None:
-        validation_errors.append("resident Valkyrie outcome block is missing")
-    elif not parsed.valid:
-        validation_errors.extend(_outcome_parse_errors(parsed.errors))
-    validation_errors.extend(_validate_normalized_persona_schema(outcome_fields, persona_config))
-    validation_errors.extend(validate_valkyrie_outcome(canonical_event_type, outcome_fields))
-    validation_errors.extend(_validate_resident_continuation_contract(outcome_fields))
-    if "working_state" in outcome_fields:
-        validation_errors.extend(validate_resident_working_state(outcome_fields["working_state"]))
-    return canonical_event_type, outcome_fields, _dedupe_errors(validation_errors)
-
-
-def _validate_resident_continuation_contract(fields: Mapping[str, object]) -> list[str]:
-    """Validate control-plane coherence without deciding the resident's next action."""
-    continuation = str(fields.get("continuation") or "").strip().casefold()
-    timing = str(fields.get("next_action_timing") or "").strip().casefold()
-    selected = fields.get("selected_next_action")
-    if isinstance(selected, Mapping):
-        action = str(
-            selected.get("action") or selected.get("next_step") or selected.get("description") or ""
-        ).strip()
-    else:
-        action = str(selected or "").strip()
-    if not continuation and action and action.casefold().rstrip(".!") != "none":
-        return ["selected_next_action requires explicit continuation control"]
-    if continuation == "continue":
-        return [
-            "continuation 'continue' is unsupported; call available tools before the final "
-            "outcome, or use sleep/ask_operator for a real wake source"
-        ]
-    # Any other unrecognised value used to fall straight through to a clean
-    # pass: the timing table below only constrains the three it knows, so a
-    # resident that answered 'retry' got a valid outcome with no wake source at
-    # all. A case that names no real way to be woken is a stalled case.
-    if continuation and continuation not in VALKYRIE_CONTINUATION_ORDER:
-        return [
-            f"continuation {continuation!r} is not a known continuation; "
-            f"use one of {sorted(VALKYRIE_CONTINUATION_ORDER)!r}"
-        ]
-    expected_timing = {
-        "ask_operator": {"operator_input"},
-        "sleep": {"external_event", "scheduled_time"},
-        "stop": {"none"},
-    }
-    if continuation in expected_timing:
-        allowed = expected_timing[continuation]
-        if timing not in allowed:
-            return [
-                f"continuation {continuation!r} requires next_action_timing in "
-                f"{sorted(allowed)!r}, got {timing!r}"
-            ]
-    return []
-
-
-def _build_resident_valkyrie_schema_repair_prompt(
-    *,
-    original_response: str,
-    validation_errors: list[str],
-    outcome_fields: dict[str, object],
-) -> str:
-    """Build a narrow repair instruction for malformed resident Valkyrie outcomes."""
-    working_state_shape = ""
-    if "working_state" in outcome_fields or any(
-        "working_state" in error for error in validation_errors
-    ):
-        working_state_shape = (
-            "working_state:\n"
-            "  objectives: []\n"
-            "  observations: []\n"
-            "  hypotheses: []\n"
-            "  unknowns: []\n"
-            "  capability_gaps: []\n"
-            "  attempts: []\n"
-            "# preserve valid prior entries and revise them with current evidence\n"
-        )
-    return (
-        "[SCHEMA REPAIR - resident Valkyrie outcome]\n"
-        "Your previous answer did not satisfy the resident Valkyrie outcome contract.\n"
-        "Do not call tools. Do not explain. Return exactly one valid YAML outcome block.\n\n"
-        "Use YAML block mappings/sequences. Represent an empty list as `field: []`, never "
-        "as a list containing an empty list. Double-quote scalar text containing `:`, `#`, "
-        "brackets, or braces. `working_state` must be a mapping, never a quoted string. "
-        "It is a compact current model, not a history: use at most five entries per list and "
-        "500 characters per entry.\n\n"
-        "Validation errors:\n"
-        f"{json.dumps(validation_errors, indent=2)}\n\n"
-        "Fields parsed from the invalid attempt, if any:\n"
-        f"{json.dumps(_json_safe(outcome_fields), indent=2)}\n\n"
-        "Use only the supplied response and parsed fields. Preserve decisions, evidence, "
-        "references and working-state entries; do not invent observations or actions.\n\n"
-        f"{RESIDENT_ESCALATION_GUIDANCE}\n\n"
-        # Whole: the outcome block sits at the end, and keeping only the head cut
-        # off exactly what is being repaired. The repair call's prompt budget is
-        # the bound (agent.repair_outcome raises PromptBudgetExceededError).
-        "Previous response:\n"
-        "<previous_response>\n"
-        f"{original_response}\n"
-        "</previous_response>\n\n"
-        "Required block shape:\n"
-        "---outcome---\n"
-        "decision: ignore | watch | investigate | propose_action | escalate | learn | blocked\n"
-        "signal_refs: [<signal event id or stable ref>]\n"
-        "tier: silent | ambient | present | urgent\n"
-        "confidence: <number from 0.0 to 1.0>\n"
-        "operational_state: nominal | watching | investigating | degraded | "
-        "remediating | blocked | dreaming\n"
-        "wakefulness: sleeping | watching | wakeful | dreaming\n"
-        "rationale: <concise reason grounded in evidence>\n"
-        "evidence: [{event_id: <id>, source_id: <source>, severity: <severity>}]\n"
-        "recommended_action: <specific next step, or none>\n"
-        "action_authority: autonomous | yolo_allowed | court_required | human_review_required\n"
-        "action_capability: <capability name, or none>\n"
-        "target_surfaces: []\n"
-        'expires_at: ""\n'
-        "dissent_refs: []\n"
-        "selected_next_action: <one concrete future action, or none>\n"
-        "continuation: ask_operator | sleep | stop\n"
-        "next_action_timing: external_event | scheduled_time | operator_input | none\n"
-        'question: ""\n'
-        "# call tools before this outcome; only a real event/time/operator answer wakes a turn\n"
-        f"{working_state_shape}"
-        "---end---"
-    )
-
-
 def _merge_repair_result(original: TurnResult, repair: TurnResult) -> TurnResult:
     """Keep executed work when a follow-up turn only repairs the final response."""
     return replace(
@@ -882,18 +478,6 @@ def _coerce_nonnegative_int(value: object) -> int | None:
     return parsed if parsed >= 0 else None
 
 
-def _coerce_float(value: object, *, default: float) -> float:
-    """Return *value* as a float, or *default* when it cannot be parsed."""
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, int | float):
-        return float(value)
-    try:
-        return float(str(value or "").strip())
-    except ValueError:
-        return default
-
-
 def _clean_string(value: object, *, default: str = "") -> str:
     """Return a useful string while avoiding mocked config object reprs in tests."""
     if value is None:
@@ -917,32 +501,6 @@ def _json_safe(value: object) -> object:
     if isinstance(value, list | tuple | set):
         return [_json_safe(item) for item in value]
     return value
-
-
-def _extract_mimir_dream_counts(
-    response_text: str,
-    persona_config: PersonaConfig | None,
-) -> dict[str, int]:
-    """Extract dream-cycle summary counts from a final outcome response."""
-    counts: dict[str, int] = {}
-    parsed = _parse_outcome_for_persona(response_text, persona_config) if response_text else None
-    fields = dict(getattr(parsed, "fields", {}) or {}) if parsed is not None else {}
-
-    for field in _DREAM_COUNT_FIELDS:
-        value = _coerce_nonnegative_int(fields.get(field))
-        if value is not None:
-            counts[field] = value
-
-    # Backward-compatible fallback for older warden prompts that only mention
-    # counts in the summary/log prose, e.g. ``pages_updated=0``.
-    for field in _DREAM_COUNT_FIELDS:
-        if field in counts:
-            continue
-        spaced = field.replace("_", r"[\s_-]")
-        match = re.search(rf"\b(?:{field}|{spaced})\b\s*[:=]\s*(\d+)", response_text)
-        counts[field] = int(match.group(1)) if match else 0
-
-    return counts
 
 
 # Type alias for the mesh RPC handler callable
@@ -1464,9 +1022,6 @@ class DriveLoop:
         self._source_id = "drive_loop"
         self._counter = 0
         self._rpc_handler: MeshRpcHandler | None = None
-        self._directed_message_interceptors: list[
-            Callable[[str, dict[str, Any] | None], Awaitable[bool]]
-        ] = []
         self._result_store: TaskResultStore = TaskResultStore()
         self._completion_events: dict[str, asyncio.Event] = {}
         self._mesh: MeshPort | None = None
@@ -1484,8 +1039,6 @@ class DriveLoop:
         # panel reads zero, so the heartbeat re-states them.
         self._telemetry_refreshers: list[Callable[[], None]] = []
         self._reflex_initialised = False
-        self._resident_runtime: object | None = None
-        self._first_opinion: ResidentFirstOpinion | None = None
         self._shutting_down = False
         self._current_task_var: contextvars.ContextVar[AgentTask | None] = contextvars.ContextVar(
             "ravn_current_task",
@@ -1551,13 +1104,6 @@ class DriveLoop:
     def operator_contact_channel(self) -> ChannelPort | None:
         """Return the daemon's existing outbound operator channel, when enabled."""
         return self._skuld_channel
-
-    def register_directed_message_interceptor(
-        self,
-        handler: Callable[[str, dict[str, Any] | None], Awaitable[bool]],
-    ) -> None:
-        """Register a handler that may consume directed user messages before enqueue."""
-        self._directed_message_interceptors.append(handler)
 
     async def enqueue(self, task: AgentTask) -> bool:
         """Add a task to the priority queue, honouring deadline and duplicates.
@@ -1643,9 +1189,6 @@ class DriveLoop:
 
         counter = self._next_counter()
         await self._queue.put((task.priority, counter, task))
-        track = getattr(self._resident_runtime, "track_task", None)
-        if track is not None:
-            track(task)
         self._persist_queue()
         logger.info(
             "drive_loop: enqueued task %s (%r) queue_size=%d active=%d",
@@ -1660,12 +1203,10 @@ class DriveLoop:
     def _recurring_key(task: AgentTask) -> str | None:
         """Return the stable identity shared by occurrences of a recurring producer.
 
-        Cron jobs, and idle-triage windows: at most one of each is queued or
-        running. A window that arrives while one is still waiting is refused,
-        and its producer keeps the observations for the next window, so a
-        backlog of windows cannot pile up ahead of lower-priority work.
+        Cron jobs: at most one of each is queued or running, so a backlog of
+        ticks cannot pile up ahead of lower-priority work.
         """
-        if task.triggered_by.startswith("cron:") or task.triggered_by == IDLE_TRIAGE_TRIGGER:
+        if task.triggered_by.startswith("cron:"):
             return task.triggered_by
         return None
 
@@ -1715,119 +1256,6 @@ class DriveLoop:
     def active_task_ids(self) -> list[str]:
         """Return task IDs that are currently executing."""
         return list(self._active_tasks.keys())
-
-    def resident_hud_status(self) -> dict[str, object]:
-        """Return factual, bounded-by-store runtime state for the resident HUD."""
-        http_config = self._settings.gateway.channels.http
-        context_limit = _integer_setting(
-            http_config.resident_hud_task_context_max_chars,
-            _HTTP_DEFAULTS.resident_hud_task_context_max_chars,
-        )
-        active_task_ids = self.active_task_ids()
-        active_parent_ids = set(active_task_ids)
-        active: list[dict[str, object]] = []
-        for task_id in active_task_ids:
-            task = self._inflight_tasks.get(task_id) or self._active_task_contexts.get(task_id)
-            result = self._result_store.get(task_id)
-            agent = self._active_agents.get(task_id)
-            iteration_budget = getattr(agent, "iteration_budget", None)
-            prompt_budget = getattr(agent, "prompt_budget_status", {})
-            if result is not None:
-                if task is not None and result.metadata.get("resident_hud") is not True:
-                    result.metadata.update(
-                        _resident_hud_task_metadata(
-                            task,
-                            context_limit=context_limit,
-                            persona=getattr(self._persona_config, "name", ""),
-                        )
-                    )
-                active.append(
-                    _resident_hud_result(
-                        result,
-                        iteration=int(getattr(iteration_budget, "consumed", 0) or 0),
-                        iteration_budget=int(getattr(iteration_budget, "total", 0) or 0),
-                        prompt_budget=(
-                            dict(prompt_budget) if isinstance(prompt_budget, dict) else {}
-                        ),
-                    )
-                )
-                continue
-            active.append(
-                {
-                    "task_id": task_id,
-                    "title": task.title if task is not None else "",
-                    "triggered_by": task.triggered_by if task is not None else "",
-                    "persona": (
-                        task.persona
-                        if task is not None and task.persona
-                        else getattr(self._persona_config, "name", "")
-                    ),
-                    "root_correlation_id": (
-                        task.root_correlation_id or task.task_id if task is not None else task_id
-                    ),
-                    "case_id": task.resident_case_id if task is not None else "",
-                    "turn_index": task.resident_turn_index if task is not None else 0,
-                    "trace_id": (
-                        _trace_id_from_carrier(task.trace_context) if task is not None else ""
-                    ),
-                    "status": "running",
-                    "started_at": task.created_at.isoformat() if task is not None else "",
-                    "completed_at": "",
-                    "input": (
-                        _resident_hud_task_input(task, context_limit) if task is not None else {}
-                    ),
-                    "progress": {
-                        "iteration": int(getattr(iteration_budget, "consumed", 0) or 0),
-                        "iteration_budget": int(getattr(iteration_budget, "total", 0) or 0),
-                        "tool_calls": 0,
-                        "warnings": 0,
-                        "prompt": (dict(prompt_budget) if isinstance(prompt_budget, dict) else {}),
-                    },
-                    "events": [],
-                }
-            )
-        recent_task_limit = _integer_setting(
-            http_config.resident_hud_recent_tasks,
-            _HTTP_DEFAULTS.resident_hud_recent_tasks,
-        )
-        recent = [
-            _resident_hud_result(result)
-            for result in reversed(self._result_store.results())
-            if result.status != "running"
-            and result.task_id not in active_parent_ids
-            and result.metadata.get("resident_hud") is True
-        ][:recent_task_limit]
-        queued = [
-            {
-                "task_id": task.task_id,
-                "title": task.title,
-                "triggered_by": task.triggered_by,
-                "root_correlation_id": task.root_correlation_id or task.task_id,
-                "created_at": task.created_at.isoformat(),
-                "input_summary": _resident_hud_task_input(task, context_limit)["summary"],
-            }
-            for _priority, _counter, task in sorted(
-                list(self._queue._queue)  # type: ignore[attr-defined]
-            )
-        ]
-        a2a_tasks = _resident_hud_a2a_tasks(
-            self._result_store.results(),
-            active_parent_ids=active_parent_ids,
-        )
-        health_snapshot = getattr(self._resident_runtime, "health_snapshot", None)
-        return {
-            "active_tasks": active,
-            "active_count": len(active),
-            "recent_tasks": recent,
-            "queued_count": self._queue.qsize(),
-            "queued_tasks": queued,
-            "a2a_tasks": a2a_tasks,
-            "a2a_count": len(a2a_tasks),
-            "model": self._settings.effective_model(),
-            # Durable-health counts (cases, wakes, inbox, decision streak) —
-            # one call answers "is this resident healthy" without Grafana.
-            "health": health_snapshot() if callable(health_snapshot) else {},
-        }
 
     def queued_task_ids(self) -> list[str]:
         """Return task IDs waiting in the priority queue (not yet started)."""
@@ -1966,17 +1394,6 @@ class DriveLoop:
             self._skuld_channel._tools = persona_config.allowed_tools
         if self._session_join_manager is not None and persona_config is not None:
             self._session_join_manager.set_subscribes_to(persona_config.consumes.event_types)
-
-    def set_resident_runtime(self, runtime: object | None) -> None:
-        """Attach the application service that persists/resumes resident cases."""
-        self._resident_runtime = runtime
-        bind = getattr(runtime, "bind_enqueue", None)
-        if bind is not None:
-            bind(self.enqueue)
-
-    def set_first_opinion(self, first_opinion: ResidentFirstOpinion | None) -> None:
-        """Attach the observe-only System One first opinion on resident turns."""
-        self._first_opinion = first_opinion
 
     def set_workflow_allowed_outcomes_resolver(
         self,
@@ -2218,79 +1635,6 @@ class DriveLoop:
         merged.update(fields)
         task.tool_outcomes[event_type] = merged
 
-    def record_a2a_activity(
-        self,
-        *,
-        parent_task_id: str,
-        activity: dict[str, object],
-    ) -> None:
-        """Capture an A2A task state already observed by a resident tool."""
-        task_id = str(activity.get("task_id") or "").strip()
-        if not parent_task_id or not task_id:
-            return
-        state = str(activity.get("state") or "TASK_STATE_UNSPECIFIED")
-        self._result_store.append_event(
-            parent_task_id,
-            CapturedEvent(
-                type="a2a_task",
-                summary=f"A2A task {task_id}: {state}",
-                timestamp=datetime.now(UTC),
-                details=dict(activity),
-            ),
-        )
-
-    def _authoritative_valkyrie_fields(self, task: AgentTask) -> dict[str, object]:
-        """Return identity/correlation data owned by runtime configuration."""
-        environment = getattr(self._settings, "environment", None)
-        mesh = getattr(self._settings, "mesh", None)
-        environment_id = _clean_string(getattr(environment, "id", None))
-        environment_type = _clean_string(getattr(environment, "type", None))
-        valkyrie_id = _clean_string(getattr(mesh, "own_peer_id", None), default=self._source_id)
-        correlations: dict[str, str] = {
-            "root": task.root_correlation_id or task.task_id,
-            "task": task.task_id,
-        }
-        trace_id = get_observability().trace_id()
-        if trace_id:
-            correlations["trace"] = trace_id
-        if environment_id:
-            correlations["environment"] = environment_id
-        if task.workflow_parent_event_id:
-            correlations["signal"] = task.workflow_parent_event_id
-        fields: dict[str, object] = {
-            "valkyrie_id": valkyrie_id,
-            "correlation_ids": correlations,
-        }
-        if environment_id:
-            fields["environment_id"] = environment_id
-        if environment_type:
-            fields["environment_type"] = environment_type
-        return fields
-
-    def _decorate_turn_result_outcome(
-        self,
-        task: AgentTask,
-        turn_result: object,
-        response_text: str,
-    ) -> tuple[dict[str, object], bool | None]:
-        """Parse resident control fields independently of episodic memory."""
-        canonical_event_type, outcome_fields, validation_errors = (
-            _resident_valkyrie_validation_result(
-                response_text,
-                self._task_persona_config(task),
-                authoritative_fields=self._authoritative_valkyrie_fields(task),
-            )
-        )
-        if not canonical_event_type:
-            return {}, None
-
-        outcome_valid = not validation_errors
-        episode = getattr(turn_result, "episode", None)
-        if episode is not None and outcome_fields:
-            episode.structured_outcome = outcome_fields
-            episode.outcome_valid = outcome_valid
-        return outcome_fields, outcome_valid
-
     def _default_mimir_mount_fields(self) -> dict[str, object]:
         """Infer the active Mimir mount names from runtime config when unambiguous."""
         mimir_cfg = getattr(self._settings, "mimir", None)
@@ -2458,21 +1802,9 @@ class DriveLoop:
         self,
         content: str,
         metadata: dict[str, Any] | None,
-        *,
-        unbound_case_id: str = "",
     ) -> str:
         """Render a directed human reply as initiative context for the target persona."""
         trimmed = content.strip()
-        if unbound_case_id:
-            return "\n".join(
-                [
-                    "This is a directed human reply to your question in resident case "
-                    f"{unbound_case_id}, which has no open operator question: it was "
-                    "answered, withdrawn or superseded, or never persisted. It was not "
-                    "applied as an answer to any case. Judge it as new operator input.",
-                    self._directed_message_context(content, metadata),
-                ]
-            )
         if not metadata:
             return "\n".join(
                 [
@@ -2589,62 +1921,17 @@ class DriveLoop:
         output_mode: OutputMode = OutputMode.SURFACE,
     ) -> bool:
         """Enqueue a directed message from the browser as an agent task."""
-        unbound_case_id = ""
-        for handler in list(self._directed_message_interceptors):
-            try:
-                if await handler(content, metadata):
-                    logger.info("drive_loop: directed message consumed by interceptor")
-                    return True
-            except UnboundOperatorReplyError as exc:
-                # The human's words still reach the resident, labelled as what
-                # they are: a reply whose question is no longer open.
-                record_degraded(
-                    "operator_reply.unbound",
-                    f"{exc}; delivering it as unbound operator input",
-                )
-                unbound_case_id = exc.case_id
-            except Exception as exc:
-                # Raising would drop the operator's message; it goes on as an
-                # ordinary task instead, and that is counted, not just logged.
-                logger.exception("drive_loop: directed message interceptor failed")
-                record_degraded(
-                    "operator_reply.persist",
-                    f"saving a directed message as an operator answer failed ({exc!r}); "
-                    "it is delivered as an ordinary task and its question stays open",
-                )
-
-        if (
-            not unbound_case_id
-            and output_mode == OutputMode.SURFACE
-            and await self._try_steer_active_agent(content)
-        ):
+        if output_mode == OutputMode.SURFACE and await self._try_steer_active_agent(content):
             return True
 
         import time
-
-        inbox_ref = ""
-        capture = getattr(self._resident_runtime, "capture_directed_message", None)
-        if capture is not None:
-            try:
-                inbox_ref = await capture(content, metadata)
-            except Exception as exc:
-                logger.exception(
-                    "drive_loop: failed to persist directed message; continuing live delivery"
-                )
-                record_degraded(
-                    "directed_message.persist",
-                    f"the directed message was not written to the durable inbox ({exc!r}); "
-                    "it is delivered live only and is lost if this task does not finish",
-                )
 
         task_id = f"task_{int(time.time() * 1000):x}_{self._next_counter()}"
         persona = self._persona_config.name if self._persona_config else None
         task = AgentTask(
             task_id=task_id,
             title="Directed message from user",
-            initiative_context=self._directed_message_context(
-                content, metadata, unbound_case_id=unbound_case_id
-            ),
+            initiative_context=self._directed_message_context(content, metadata),
             triggered_by="skuld:directed_message",
             output_mode=output_mode,
             persona=persona,
@@ -2652,7 +1939,6 @@ class DriveLoop:
             # start something precedes notices already waiting.
             priority=-1 if metadata and metadata.get("queue_first") else 0,
             human_initiated=True,
-            resident_inbox_refs=[inbox_ref] if inbox_ref else [],
         )
         if metadata:
             root_correlation_id = str(metadata.get("root_correlation_id") or "").strip()
@@ -3135,8 +2421,6 @@ class DriveLoop:
                 "title": task.title,
                 "triggered_by": task.triggered_by,
                 "root_correlation_id": task.root_correlation_id,
-                "resident_case_id": task.resident_case_id,
-                "resident_turn_index": task.resident_turn_index,
             },
         )
         # Budget pre-check: skip when daily cap is reached. budget.enabled
@@ -3165,30 +2449,12 @@ class DriveLoop:
                 attributes={"ravn.task.phase": "setup_started"},
             )
             # Track the capture channel separately for response_text access.
-            # Residents with cascade enabled already capture bounded activity;
-            # do not change channel behaviour merely to feed the HUD.
             capture_channel: CaptureChannel | None = None
             logger.info("drive_loop: task %s setting up channels", task.task_id)
             external_channel = self._external_task_channel(task)
 
             if self._settings.cascade.enabled:
-                http_config = self._settings.gateway.channels.http
-                metadata = None
-                if http_config.resident_hud_enabled is True:
-                    context_limit = _integer_setting(
-                        http_config.resident_hud_task_context_max_chars,
-                        _HTTP_DEFAULTS.resident_hud_task_context_max_chars,
-                    )
-                    metadata = _resident_hud_task_metadata(
-                        task,
-                        context_limit=context_limit,
-                        persona=getattr(self._persona_config, "name", ""),
-                    )
-                self._result_store.start(
-                    task.task_id,
-                    task.triggered_by,
-                    metadata=metadata,
-                )
+                self._result_store.start(task.task_id, task.triggered_by)
                 capture_channel = CaptureChannel(task.task_id, self._result_store)
                 if external_channel is not None:
                     channel: ChannelPort = CompositeChannel([capture_channel, external_channel])
@@ -3214,9 +2480,6 @@ class DriveLoop:
             )
             logger.info("drive_loop: task %s building prompt", task.task_id)
             prompt_task = task
-            if self._resident_runtime is not None:
-                resident_context = await self._resident_runtime.prepare_context(task)
-                prompt_task = replace(task, initiative_context=resident_context)
             if recovered_tool_results:
                 recovery_context = "\n\n".join(
                     (
@@ -3231,17 +2494,7 @@ class DriveLoop:
                     prompt_task,
                     initiative_context=(f"{prompt_task.initiative_context}\n\n{recovery_context}"),
                 )
-            prompt = build_initiative_prompt(
-                prompt_task,
-                produces_event_type=str(
-                    getattr(
-                        getattr(self._task_persona_config(task), "produces", None),
-                        "event_type",
-                        "",
-                    )
-                    or ""
-                ),
-            )
+            prompt = build_initiative_prompt(prompt_task)
             prompt = await self._apply_retrieval_reflex(prompt, task)
             telemetry.event(
                 "ravn.task.prompt",
@@ -3273,10 +2526,6 @@ class DriveLoop:
             # workflow failed; re-raising left it logged as "crashed before
             # completion handling" and nothing downstream ever heard of it.
             await self._report_task_failure(task, exc, channel=setup_channel)
-            if self._resident_runtime is not None:
-                release = getattr(self._resident_runtime, "release_failed_task", None)
-                if release is not None:
-                    release(task)
             close_agent = getattr(setup_agent, "close", None)
             if close_agent is not None and inspect.iscoroutinefunction(close_agent):
                 try:
@@ -3331,7 +2580,6 @@ class DriveLoop:
         success = False
         response_text = ""
         turn_result = None
-        resident_disposition = None
         token = self._current_task_var.set(task)
         self._active_task_contexts[task.task_id] = task
         self._active_agents[task.task_id] = agent
@@ -3342,11 +2590,6 @@ class DriveLoop:
                 # except a room message — so nothing that implements the old signature has to
                 # learn a keyword that would always be None.
                 recall_kwargs = {"recall_query": task.recall_query} if task.recall_query else {}
-                first_opinion = (
-                    await self._first_opinion.judge(task)
-                    if self._first_opinion is not None and self._first_opinion.applies_to(task)
-                    else None
-                )
                 turn_result = await agent.run_turn(prompt, **recall_kwargs)  # type: ignore[attr-defined]
                 success = True
                 telemetry.event(
@@ -3366,18 +2609,6 @@ class DriveLoop:
                     if capture_channel
                     else str(getattr(turn_result, "response", "") or "")
                 )
-                repair_result = await self._maybe_repair_resident_valkyrie_outcome(
-                    agent=agent,
-                    task=task,
-                    response_text=response_text,
-                )
-                if repair_result is not None:
-                    repair_cost_usd = await self._record_task_cost(task, repair_result, agent)
-                    await self._emit_task_usage(
-                        channel, task, repair_result, repair_cost_usd, agent
-                    )
-                    turn_result = _merge_repair_result(turn_result, repair_result)
-                    response_text = repair_result.response
                 workflow_repair_result = await self._maybe_repair_unroutable_workflow_outcome(
                     agent=agent,
                     task=task,
@@ -3392,77 +2623,6 @@ class DriveLoop:
                     )
                     turn_result = _merge_repair_result(turn_result, workflow_repair_result)
                     response_text = workflow_repair_result.response
-                structured_outcome, resident_outcome_valid = self._decorate_turn_result_outcome(
-                    task, turn_result, response_text
-                )
-                if isinstance(structured_outcome, Mapping):
-                    judgment_attributes = {
-                        "ravn.valkyrie.decision": _clean_string(structured_outcome.get("decision")),
-                        "ravn.valkyrie.continuation": _clean_string(
-                            structured_outcome.get("continuation")
-                        ),
-                        "ravn.valkyrie.selected_next_action": _clean_string(
-                            structured_outcome.get("selected_next_action")
-                        ),
-                        "ravn.valkyrie.tier": _clean_string(structured_outcome.get("tier")),
-                        "ravn.valkyrie.action_authority": _clean_string(
-                            structured_outcome.get("action_authority")
-                        ),
-                        "ravn.valkyrie.outcome_valid": bool(resident_outcome_valid),
-                    }
-                    confidence = structured_outcome.get("confidence")
-                    if isinstance(confidence, int | float):
-                        judgment_attributes["ravn.valkyrie.confidence"] = confidence
-                    telemetry.set_attributes(judgment_attributes)
-                    telemetry.event(
-                        "ravn.valkyrie.judgment",
-                        attributes=judgment_attributes,
-                        content=dict(structured_outcome),
-                    )
-                    telemetry.count(
-                        "ravn.valkyrie.judgments",
-                        attributes={
-                            key: judgment_attributes[key]
-                            for key in (
-                                "ravn.valkyrie.decision",
-                                "ravn.valkyrie.continuation",
-                                "ravn.valkyrie.tier",
-                                "ravn.valkyrie.action_authority",
-                                "ravn.valkyrie.outcome_valid",
-                            )
-                        },
-                    )
-                if first_opinion is not None and self._first_opinion is not None:
-                    self._first_opinion.compare(
-                        first_opinion,
-                        structured_outcome if isinstance(structured_outcome, Mapping) else None,
-                        outcome_valid=bool(resident_outcome_valid),
-                    )
-                if self._resident_runtime is not None:
-                    resident_disposition = await self._resident_runtime.handle_completed_turn(
-                        task=task,
-                        prompt=prompt,
-                        result=turn_result,
-                        response_text=response_text,
-                        outcome_fields=structured_outcome,
-                        outcome_valid=resident_outcome_valid,
-                    )
-                    if (
-                        str(getattr(resident_disposition, "kind", "")) == "ask_operator"
-                        and not task.resident_help_published
-                    ):
-                        await self._emit_resident_help_needed(task, resident_disposition)
-                    telemetry.event(
-                        "ravn.resident.disposition",
-                        attributes={
-                            "ravn.resident.disposition": str(
-                                getattr(resident_disposition, "kind", "")
-                            ),
-                            "ravn.resident.case_id": task.resident_case_id
-                            or task.root_correlation_id
-                            or task.task_id,
-                        },
-                    )
                 await self._maybe_publish_budget_warning(task)
                 self._save_task_output(task, capture_channel or channel)
                 if response_text:
@@ -3559,8 +2719,6 @@ class DriveLoop:
             if capture_channel is not None:
                 response_text = capture_channel.response_text
             await self._emit_sleipnir_task_completed(task, outcome, response_text=response_text)
-            if success:
-                await self._emit_sleipnir_mimir_dream_completed(task, response_text=response_text)
 
             await self._event_publisher.publish(
                 RavnEvent(
@@ -3608,10 +2766,6 @@ class DriveLoop:
                 prompt_budget = getattr(agent, "prompt_budget_status", {})
                 if isinstance(prompt_budget, dict) and prompt_budget:
                     result.metadata["prompt_budget"] = dict(prompt_budget)
-            if not success and self._resident_runtime is not None:
-                release = getattr(self._resident_runtime, "release_failed_task", None)
-                if release is not None:
-                    release(task)
             close_agent = getattr(agent, "close", None)
             if close_agent is not None and inspect.iscoroutinefunction(close_agent):
                 try:
@@ -3640,34 +2794,11 @@ class DriveLoop:
             )
         return f"{type(exc).__name__}: {exc}"
 
-    async def _emit_resident_help_needed(self, task: AgentTask, disposition: object) -> None:
-        """Surface one persisted resident question through existing transports."""
-        case_id = str(getattr(disposition, "case_id", "") or task.task_id)
-        event = build_help_needed_event(
-            source=self._source_id,
-            persona=task.persona or (self._persona_config.name if self._persona_config else ""),
-            reason=str(getattr(disposition, "reason", "") or "operator input required"),
-            summary=str(getattr(disposition, "question", "") or "Operator input required"),
-            recommendation="Answer this resident continuation with the requested guidance.",
-            correlation_id=task.task_id,
-            session_id=task.session_id,
-            task_id=task.task_id,
-            context={
-                "resident_case_id": case_id,
-                "continuation_id": case_id,
-                "root_correlation_id": task.root_correlation_id or case_id,
-                "operator_ref": str(getattr(disposition, "operator_ref", "")),
-            },
-            trace_context=get_observability().inject() or task.trace_context,
-        )
-        await self._publish_help_needed(task, event)
-
     async def _publish_help_needed(self, task: AgentTask, event: RavnEvent) -> None:
         """Publish an LLM-selected help request through the configured operator transports."""
         telemetry = get_observability()
         attributes = {
             "ravn.task.id": task.task_id,
-            "ravn.resident.case_id": task.resident_case_id or task.task_id,
             "ravn.operator.skuld_configured": self._skuld_channel is not None,
             "ravn.operator.mesh_configured": self._mesh is not None,
         }
@@ -3703,81 +2834,6 @@ class DriveLoop:
                 except Exception:
                     logger.warning("Failed to emit resident help_needed to skuld.", exc_info=True)
             await self._event_publisher.publish(event)
-            task.resident_help_published = True
-
-    async def _maybe_repair_resident_valkyrie_outcome(
-        self,
-        *,
-        agent: object,
-        task: AgentTask,
-        response_text: str,
-    ) -> object | None:
-        """Repair an invalid resident contract without replaying the agent's history."""
-        if task.triggered_by == _RESIDENT_VALKYRIE_SCHEMA_REPAIR_TRIGGER:
-            return None
-        persona_config = getattr(agent, "persona_config", None) or self._persona_config
-        canonical_event_type, outcome_fields, validation_errors = (
-            _resident_valkyrie_validation_result(
-                response_text,
-                persona_config,
-                authoritative_fields=self._authoritative_valkyrie_fields(task),
-            )
-        )
-        if not canonical_event_type or not validation_errors:
-            return None
-        # Repair reformats an answer; it cannot supply one. Given an empty turn
-        # it invented a whole outcome ("No previous outcome or supporting
-        # evidence was supplied"), closed the case and consumed the operator's
-        # reply, so every answer to a resumed question was lost.
-        if not response_text.strip():
-            raise RuntimeError(
-                f"resident task {task.task_id} produced no output, so there is no outcome "
-                "to repair; the model turn failed and must be diagnosed, not reformatted"
-            )
-        repair_outcome = getattr(agent, "repair_outcome", None)
-        if repair_outcome is None or not asyncio.iscoroutinefunction(repair_outcome):
-            return None
-
-        logger.warning(
-            "drive_loop: repairing invalid resident Valkyrie outcome "
-            "event_type=%s task_id=%s errors=%s",
-            canonical_event_type,
-            task.task_id,
-            validation_errors,
-        )
-        repair_prompt = _build_resident_valkyrie_schema_repair_prompt(
-            original_response=response_text,
-            validation_errors=validation_errors,
-            outcome_fields=outcome_fields,
-        )
-        try:
-            repair_result = await repair_outcome(repair_prompt)
-        except Exception:
-            logger.warning(
-                "drive_loop: resident Valkyrie schema repair failed; "
-                "continuing with original response",
-                exc_info=True,
-            )
-            return None
-
-        repaired_text = str(getattr(repair_result, "response", "") or "")
-        _, _, repaired_errors = _resident_valkyrie_validation_result(
-            repaired_text,
-            persona_config,
-            authoritative_fields=self._authoritative_valkyrie_fields(task),
-        )
-        if repaired_errors:
-            logger.warning(
-                "drive_loop: resident Valkyrie schema repair still invalid task_id=%s errors=%s",
-                task.task_id,
-                repaired_errors,
-            )
-        else:
-            logger.info(
-                "drive_loop: resident Valkyrie schema repair succeeded task_id=%s",
-                task.task_id,
-            )
-        return repair_result
 
     async def _maybe_repair_unroutable_workflow_outcome(
         self,
@@ -3793,7 +2849,7 @@ class DriveLoop:
         canonical_event_type = str(
             getattr(getattr(persona_config, "produces", None), "event_type", "") or ""
         )
-        if not canonical_event_type or is_valkyrie_outcome_event(canonical_event_type):
+        if not canonical_event_type:
             return None
         parsed = _parse_outcome_for_persona(response_text, persona_config)
         if parsed is None or not parsed.valid:
@@ -4131,20 +3187,8 @@ class DriveLoop:
             parsed = _parse_outcome_for_persona(response_text, task_persona_config)
             if parsed is not None:
                 fields = dict(parsed.fields)
-                canonical_event_type = str(
-                    getattr(getattr(task_persona_config, "produces", None), "event_type", "") or ""
-                )
-                if is_valkyrie_outcome_event(canonical_event_type):
-                    _, fields, validation_errors = _resident_valkyrie_validation_result(
-                        response_text,
-                        task_persona_config,
-                        authoritative_fields=self._authoritative_valkyrie_fields(task),
-                    )
-                    outcome_valid = not validation_errors
-                else:
-                    outcome_valid = parsed.valid
                 event.payload["structured_outcome"] = _json_safe(fields)
-                event.payload["outcome_valid"] = outcome_valid
+                event.payload["outcome_valid"] = parsed.valid
                 for key in (
                     "verdict",
                     "tests_passing",
@@ -4216,41 +3260,6 @@ class DriveLoop:
             tenant_id=payload.get("tenant_id") or None,
         )
         await self._publish_sleipnir_event(event, log_label=_RAVN_TASK_DROPPED)
-
-    async def _emit_sleipnir_mimir_dream_completed(
-        self,
-        task: AgentTask,
-        *,
-        response_text: str,
-    ) -> None:
-        """Publish mimir.dream.completed for dream-cycle tasks.
-
-        Dream completion is orchestration bookkeeping, so the drive loop emits
-        it deterministically from the final outcome instead of requiring the
-        Mímir warden persona to call an extra publish tool.
-        """
-        if task.triggered_by != _DREAM_CYCLE_TRIGGER:
-            return
-        if self._sleipnir_publisher is None or _sleipnir_mimir_dream_completed is None:
-            return
-
-        try:
-            counts = _extract_mimir_dream_counts(response_text, self._task_persona_config(task))
-            event = _sleipnir_mimir_dream_completed(
-                pages_updated=counts["pages_updated"],
-                entities_created=counts["entities_created"],
-                lint_fixes=counts["lint_fixes"],
-                source=self._source_id,
-                correlation_id=task.session_id or task.task_id,
-            )
-            event.payload["task_id"] = task.task_id
-            if task.persona:
-                event.payload["persona"] = task.persona
-            if task.session_id:
-                event.payload["session_id"] = task.session_id
-            await self._sleipnir_publisher.publish(event)
-        except Exception:
-            logger.warning("Failed to emit mimir.dream.completed; continuing.", exc_info=True)
 
     async def emit_tool_outcome_event(
         self,
@@ -4426,13 +3435,6 @@ class DriveLoop:
         if canonical_event_type == "mimir.source.ingested":
             for key, value in self._default_mimir_mount_fields().items():
                 outcome_fields.setdefault(key, value)
-        if is_valkyrie_outcome_event(canonical_event_type):
-            outcome_fields = normalize_valkyrie_outcome(canonical_event_type, outcome_fields)
-            outcome_fields = _apply_authoritative_valkyrie_fields(
-                outcome_fields,
-                self._authoritative_valkyrie_fields(task),
-            )
-
         event_type_map = persona_config.produces.event_type_map
         success_verdict = _default_success_verdict(persona_config.produces)
         synthesized_pass = False
@@ -4482,7 +3484,7 @@ class DriveLoop:
         schema_fields = getattr(persona_config.produces, "schema", None)
         has_persona_schema = isinstance(schema_fields, dict) and bool(schema_fields)
         result_schema = None
-        if task.workflow_node_id and not is_valkyrie_outcome_event(canonical_event_type):
+        if task.workflow_node_id:
             selected_event_type = str(event_type_map.get(verdict) or canonical_event_type)
             result_schema = _workflow_result_schema_for_event(
                 self._settings,
@@ -4547,82 +3549,6 @@ class DriveLoop:
                     schema_errors,
                 )
                 await self._emit_unacceptable_outcome_error(task, channel, schema_errors)
-                return False
-            valid = True
-
-        if is_valkyrie_outcome_event(canonical_event_type):
-            _, outcome_fields, validation_errors = _resident_valkyrie_validation_result(
-                response_text,
-                persona_config,
-                authoritative_fields=self._authoritative_valkyrie_fields(task),
-            )
-            if validation_errors:
-                self._result_store.set_failure(
-                    task.task_id,
-                    "The resident returned an invalid structured outcome.",
-                    validation_errors,
-                )
-                reject_payload: dict[str, object] = {
-                    "persona": persona_config.name,
-                    "success": False,
-                    "event_type": VALKYRIE_JUDGMENT_REJECTED,
-                    "canonical_event_type": canonical_event_type,
-                    "outcome": outcome_fields,
-                    "fields": outcome_fields,
-                    "valid": False,
-                    "errors": validation_errors,
-                    "task_id": task.task_id,
-                    "workflow_node_id": task.workflow_node_id,
-                    "bubble_up": True,
-                }
-                if self._skuld_channel is not None:
-                    reject_payload["collaboration_routing_only"] = True
-                if task.workflow_parent_event_id:
-                    reject_payload["workflow_parent_event_id"] = task.workflow_parent_event_id
-                reject_event = RavnEvent(
-                    type=RavnEventType.OUTCOME,
-                    source=self._source_id,
-                    payload=reject_payload,
-                    timestamp=datetime.now(UTC),
-                    urgency=0.8,
-                    correlation_id=task.task_id,
-                    session_id=task.session_id or "",
-                    task_id=task.task_id,
-                    root_correlation_id=root_corr,
-                )
-                logger.warning(
-                    "drive_loop: rejecting invalid resident Valkyrie outcome "
-                    "event_type=%s task_id=%s errors=%s",
-                    canonical_event_type,
-                    task.task_id,
-                    validation_errors,
-                )
-                if self._mesh is not None:
-                    try:
-                        await self._mesh.publish(reject_event, topic=VALKYRIE_JUDGMENT_REJECTED)
-                    except Exception:
-                        logger.warning(
-                            "Failed to publish resident Valkyrie rejected outcome; continuing.",
-                            exc_info=True,
-                        )
-                if self._skuld_channel is not None:
-                    try:
-                        await self._skuld_channel.emit(reject_event)
-                    except Exception:
-                        logger.warning(
-                            "Failed to emit resident Valkyrie rejected outcome to skuld; "
-                            "continuing.",
-                            exc_info=True,
-                        )
-                await self._emit_sleipnir_valkyrie_outcome(
-                    VALKYRIE_JUDGMENT_REJECTED,
-                    outcome_fields,
-                    task,
-                    root_corr,
-                    valid=False,
-                    errors=validation_errors,
-                    canonical_event_type=canonical_event_type,
-                )
                 return False
             valid = True
 
@@ -4843,19 +3769,10 @@ class DriveLoop:
         if canonical_authoritative_mesh_failed:
             return False
 
-        if is_valkyrie_outcome_event(canonical_event_type):
-            await self._emit_sleipnir_valkyrie_outcome(
-                canonical_event_type,
-                outcome_fields,
-                task,
-                root_corr,
-                valid=valid,
-            )
-
         if outcome_errors:
             self._result_store.set_failure(
                 task.task_id,
-                "The resident outcome could not be accepted.",
+                "The outcome could not be accepted.",
                 outcome_errors,
             )
             await self._emit_unacceptable_outcome_error(task, channel, outcome_errors)
@@ -4866,22 +3783,7 @@ class DriveLoop:
         else:
             mesh_available = True
 
-        # With a resident runtime, its disposition alone decides whether the
-        # operator is asked: it persists the question first, then publishes it
-        # with the case id. Publishing from the outcome as well sent questions
-        # the resident had not persisted, so their replies could never bind.
-        # The runtime only judges resident Valkyrie outcomes, though. A workflow
-        # persona's outcome reaches it empty, so it stops without asking; that
-        # question must still go out from here, or the workflow waits on an
-        # answer nobody was asked for.
-        resident_judges_outcome = self._resident_runtime is not None and (
-            is_valkyrie_outcome_event(canonical_event_type)
-        )
-        if (
-            verdict == "help_needed"
-            and not task.resident_help_published
-            and not resident_judges_outcome
-        ):
+        if verdict == "help_needed":
             attempted = outcome_fields.get("attempted")
             if not isinstance(attempted, list):
                 attempted = []
@@ -4997,85 +3899,6 @@ class DriveLoop:
         if alias_authoritative_mesh_failed:
             return False
         return True
-
-    async def _emit_sleipnir_valkyrie_outcome(
-        self,
-        event_type: str,
-        outcome_fields: dict[str, object],
-        task: AgentTask,
-        root_correlation_id: str,
-        *,
-        valid: bool,
-        errors: list[str] | None = None,
-        canonical_event_type: str = "",
-    ) -> None:
-        """Mirror validated resident Valkyrie outcomes onto Sleipnir/NATS."""
-        payload: dict[str, object] = {
-            **self._sleipnir_task_context_payload(task),
-            **outcome_fields,
-            "task_id": task.task_id,
-            "persona": task.persona or getattr(self._persona_config, "name", "") or "",
-            "valid": valid,
-        }
-        if errors:
-            payload["errors"] = errors
-        if canonical_event_type:
-            payload["canonical_event_type"] = canonical_event_type
-        payload = _json_safe(payload)  # type: ignore[assignment]
-
-        environment_id = str(payload.get("environment_id") or payload.get("environmentId") or "")
-        valkyrie_id = str(payload.get("valkyrie_id") or payload.get("valkyrieId") or "")
-        confidence = _coerce_float(payload.get("confidence"), default=0.5)
-        tier = str(payload.get("tier") or payload.get("attention_tier") or "ambient")
-        urgency = max(0.2, min(1.0, confidence if tier == "urgent" else confidence * 0.8))
-        event = SleipnirEvent(
-            event_type=event_type,
-            source=f"ravn:valkyrie:{environment_id or 'unknown'}",
-            payload=payload,
-            summary=self._valkyrie_outcome_summary(
-                event_type,
-                environment_id=environment_id,
-                valkyrie_id=valkyrie_id,
-                payload=payload,
-            ),
-            urgency=urgency if valid else 0.8,
-            domain="infrastructure",
-            timestamp=datetime.now(UTC),
-            correlation_id=root_correlation_id,
-            causation_id=task.workflow_parent_event_id,
-            tenant_id=str(payload.get("tenant_id") or "") or None,
-        )
-        await self._publish_sleipnir_event(event, log_label=event_type)
-
-    @staticmethod
-    def _valkyrie_outcome_summary(
-        event_type: str,
-        *,
-        environment_id: str,
-        valkyrie_id: str,
-        payload: dict[str, object],
-    ) -> str:
-        if event_type == VALKYRIE_JUDGMENT_REJECTED:
-            return f"Valkyrie {valkyrie_id or 'unknown'} judgment rejected"
-        if event_type.startswith("valkyrie.judgment."):
-            from sleipnir.domain.catalog import judgment_summary  # noqa: PLC0415
-
-            evidence = payload.get("evidence")
-            return judgment_summary(
-                valkyrie_id=valkyrie_id,
-                environment_id=environment_id,
-                attention_tier=str(
-                    payload.get("tier") or payload.get("attention_tier") or "ambient"
-                ),
-                recommended_action=str(payload.get("recommended_action") or ""),
-                evidence=evidence if isinstance(evidence, list) else None,
-            )
-        if event_type.startswith("valkyrie.action."):
-            capability = str(
-                payload.get("capability") or payload.get("recommended_action") or "action"
-            )
-            return f"Valkyrie {valkyrie_id or 'unknown'} action in {environment_id}: {capability}"
-        return f"Valkyrie {valkyrie_id or 'unknown'} outcome in {environment_id}"
 
     def _sleipnir_task_context_payload(self, task: AgentTask) -> dict[str, object]:
         """Return shared task/environment metadata for durable telemetry events."""
@@ -5467,22 +4290,6 @@ class DriveLoop:
             "gate_feedback": task.gate_feedback,
             "tool_outcomes": task.tool_outcomes,
             "human_initiated": task.human_initiated,
-            "resident_case_id": task.resident_case_id,
-            "resident_mandate": task.resident_mandate,
-            "resident_turn_index": task.resident_turn_index,
-            "resident_input_tokens": task.resident_input_tokens,
-            "resident_output_tokens": task.resident_output_tokens,
-            "resident_started_at": task.resident_started_at,
-            "resident_parent_turn_ref": task.resident_parent_turn_ref,
-            "resident_inbox_refs": task.resident_inbox_refs,
-            # What a queued home turn actually saw of each slot. Without it a
-            # restored turn would acknowledge observations that arrived after
-            # it was rendered, marking them judged when no turn read them.
-            "resident_inbox_expected": task.resident_inbox_expected,
-            "resident_slot_opinions": task.resident_slot_opinions,
-            "resident_answer_ref": task.resident_answer_ref,
-            "resident_wake_ref": task.resident_wake_ref,
-            "resident_help_published": task.resident_help_published,
             "trace_context": task.trace_context,
             "created_at": task.created_at.isoformat(),
         }
@@ -5597,19 +4404,6 @@ class DriveLoop:
                     gate_feedback=rec.get("gate_feedback", ""),
                     tool_outcomes=rec.get("tool_outcomes", {}) or {},
                     human_initiated=rec.get("human_initiated", False),
-                    resident_case_id=rec.get("resident_case_id", ""),
-                    resident_mandate=rec.get("resident_mandate", ""),
-                    resident_turn_index=rec.get("resident_turn_index", 0),
-                    resident_input_tokens=rec.get("resident_input_tokens", 0),
-                    resident_output_tokens=rec.get("resident_output_tokens", 0),
-                    resident_started_at=rec.get("resident_started_at", ""),
-                    resident_parent_turn_ref=rec.get("resident_parent_turn_ref", ""),
-                    resident_inbox_refs=rec.get("resident_inbox_refs", []) or [],
-                    resident_inbox_expected=dict(rec.get("resident_inbox_expected") or {}),
-                    resident_slot_opinions=dict(rec.get("resident_slot_opinions") or {}),
-                    resident_answer_ref=rec.get("resident_answer_ref", ""),
-                    resident_wake_ref=rec.get("resident_wake_ref", ""),
-                    resident_help_published=rec.get("resident_help_published", False),
                     trace_context=rec.get("trace_context", {}) or {},
                     created_at=created_at,
                 )
@@ -5622,11 +4416,6 @@ class DriveLoop:
                         task.task_id,
                     )
                     continue
-                if task.triggered_by == RESIDENT_HOME_TRIGGER:
-                    # Journals written before home turns had their own priority
-                    # carry the default; restored at it, a home turn waited
-                    # behind every signal task (16 hours on one resident).
-                    task.priority = min(task.priority, RESIDENT_HOME_PRIORITY)
                 restored_tasks.append((task, task.task_id in inflight_task_ids))
             except (KeyError, TypeError, ValueError) as exc:
                 raise RuntimeError(
@@ -5655,17 +4444,13 @@ class DriveLoop:
         if dropped:
             logger.warning(
                 "drive_loop: discarded %d superseded recurring task(s) from journal; only "
-                "the newest cron tick and idle-triage window of each producer is kept",
+                "the newest cron tick of each producer is kept",
                 dropped,
             )
-        selected, folded = self._fold_restored_signal_backlog(selected)
 
         for task, was_inflight in selected:
             counter = self._next_counter()
             self._queue.put_nowait((task.priority, counter, task))
-            track = getattr(self._resident_runtime, "track_task", None)
-            if track is not None:
-                track(task)
             if was_inflight:
                 self._restored_inflight_task_ids.add(task.task_id)
 
@@ -5680,74 +4465,5 @@ class DriveLoop:
                 "drive_loop: restored %d fan-in slot(s) from journal",
                 self._fan_in.pending_count,
             )
-        if dropped or folded:
+        if dropped:
             self._persist_queue()
-
-    def _fold_restored_signal_backlog(
-        self,
-        restored: list[tuple[AgentTask, bool]],
-    ) -> tuple[list[tuple[AgentTask, bool]], int]:
-        """Replace a restored backlog of per-observation signal tasks with one window.
-
-        Returns the tasks to queue and how many were folded. Only queued tasks
-        fold; one that was running at the restart resumes as restart recovery.
-        The original records are written beside the journal before anything
-        changes, so a failed write leaves the journal exactly as it was.
-        """
-        for task, _was_inflight in restored:
-            if is_per_signal_task(task) and task.resident_inbox_refs:
-                # Such a task names a shared, coalescing slot with no bound on
-                # what it saw; acknowledging it would mark every observation
-                # folded into that slot as judged. The slot stays pending for
-                # a home turn instead.
-                logger.warning(
-                    "drive_loop: restored signal task %s no longer acknowledges inbox slot(s) %s",
-                    task.task_id,
-                    ", ".join(task.resident_inbox_refs),
-                )
-                task.resident_inbox_refs = []
-        backlog = [
-            task for task, was_inflight in restored if not was_inflight and is_per_signal_task(task)
-        ]
-        if len(backlog) < 2:
-            return restored, 0
-        folded_at = datetime.now(UTC)
-        record_path = self._journal_path.with_name(
-            f"{self._journal_path.stem}.folded-{folded_at:%Y%m%dT%H%M%S%fZ}.json"
-        )
-        environment = self._settings.environment
-        window = fold_signal_backlog(
-            backlog,
-            record_ref=str(record_path),
-            sample_groups=environment.idle_triage_sample_signals,
-            max_signal_refs=environment.idle_triage_max_signal_refs,
-        )
-        record = {
-            "folded_at": folded_at.isoformat(),
-            "window_task_id": window.task_id,
-            "tasks": [self._task_journal_record(task) for task in backlog],
-        }
-        try:
-            record_path.write_text(json.dumps(record, indent=2))
-        except OSError as exc:
-            raise RuntimeError(
-                f"queue journal: could not record the {len(backlog)} signal task(s) to fold "
-                f"on restore at {record_path} ({exc}); fix the journal volume. Nothing was "
-                "folded and the journal is unchanged."
-            ) from exc
-        logger.warning(
-            "drive_loop: folded %d restored per-observation signal task(s) into window %s; "
-            "the original records are in %s",
-            len(backlog),
-            window.task_id,
-            record_path,
-        )
-        get_observability().count(
-            "ravn.queue.signal_backlog_folded",
-            len(backlog),
-            attributes={"ravn.environment.id": environment.id},
-            description="Restored per-observation signal tasks folded into one window.",
-        )
-        folded_ids = {task.task_id for task in backlog}
-        kept = [entry for entry in restored if entry[0].task_id not in folded_ids]
-        return [*kept, (window, False)], len(backlog)

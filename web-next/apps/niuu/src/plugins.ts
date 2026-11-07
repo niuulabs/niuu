@@ -110,14 +110,6 @@ const pluginLoaders: Record<string, () => Promise<PluginDescriptor>> = {
     ]);
     return module.mimirPlugin;
   },
-  valkyrie: async () => {
-    const [module] = await Promise.all([
-      import('@niuulabs/plugin-valkyrie'),
-      import('@niuulabs/plugin-valkyrie/styles.css'),
-      import('@niuulabs/plugin-valkyrie/index.css'),
-    ]);
-    return module.valkyriePlugin;
-  },
   observatory: async () => {
     const [module] = await Promise.all([
       import('@niuulabs/plugin-observatory'),

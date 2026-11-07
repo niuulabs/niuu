@@ -17,7 +17,6 @@
 # What's OFF:
 #   - No daemon / drive loop (interactive only)
 #   - No wakefulness / recap triggers
-#   - No dream cycle (run manually: ravn run --persona mimir-curator)
 #   - No gateway channels (no Telegram, no HTTP server)
 #
 # Prerequisites:
@@ -110,10 +109,6 @@ cascade:
   stuck_timeout_seconds: 60
   on_stuck: replan
 
-evolution:
-  enabled: true
-  min_new_outcomes: 5
-
 skill:
   enabled: true
   backend: sqlite
@@ -138,11 +133,7 @@ initiative:
   enabled: false
 thread:
   enabled: false
-wakefulness:
-  enabled: false
 recap:
-  enabled: false
-dream_cycle:
   enabled: false
 sleipnir:
   enabled: false

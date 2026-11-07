@@ -8,8 +8,7 @@ import { useDomainSessions, useHomeStatus } from '../application/useHome';
 import { orderCards, useRealmsHome, type RealmHomeCard } from '../application/useRealmsHome';
 import { greeting, stateSentence } from '../domain/homeCopy';
 import { continueSessions, isLive, needsYouSessions, sessionLabel } from '../domain/homeSessions';
-import { TemplateIcon, agoLabel } from '../ui/icons';
-import { NeedsYouRow } from '../ui/NeedsYouRow';
+import { TemplateIcon } from '../ui/icons';
 import { NeedsYouError, TicketReviewRow } from '../ui/TicketReviewRow';
 
 const CARD =
@@ -23,9 +22,8 @@ const ROW =
   'niuu:flex niuu:items-center niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2.5 niuu:last:border-b-0';
 
 const CONTINUE_LIMIT = 3;
-/** The panel is a prompt, not the inbox: the rest is one click away. */
+/** The panel is a prompt, not the full list: the rest is one click away. */
 const NEEDS_YOU_LIMIT = 5;
-const WAKEFUL = new Set(['wakeful', 'watching']);
 
 interface Choice {
   id: string;
@@ -73,9 +71,8 @@ const CHOICES: Choice[] = [
     step: '3',
     icon: <Boxes size={18} aria-hidden="true" />,
     title: 'Set up a workspace',
-    blurb:
-      'A resident that keeps an environment: the board, the sessions, the quality, the health.',
-    bullets: ['Starts from a template', 'Works while you are away', 'Asks you only what it must'],
+    blurb: 'A home for one project: its board, its sessions and its memory.',
+    bullets: ['Starts from a template', 'Works its tickets in sessions', 'Stops at gates for you'],
     action: 'Set up a workspace',
     to: '/realms/new',
   },
@@ -166,7 +163,6 @@ function SessionRow({ session, testId }: { session: Session; testId: string }) {
 }
 
 function RealmRow({ card }: { card: RealmHomeCard }) {
-  const acted = agoLabel(card.resident?.lastActionAt);
   return (
     <div className={ROW} data-testid={`home-continue-realm-${card.realm.slug}`}>
       <span className="niuu:flex niuu:h-7 niuu:w-7 niuu:shrink-0 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border niuu:border-brand/40 niuu:bg-brand/10 niuu:text-brand">
@@ -175,8 +171,7 @@ function RealmRow({ card }: { card: RealmHomeCard }) {
       <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col">
         <span className="niuu:truncate niuu:text-sm niuu:text-text-primary">{card.realm.name}</span>
         <span className="niuu:truncate niuu:text-xs niuu:text-text-muted">
-          {card.resident?.wakefulness ?? 'no resident'}
-          {acted ? ` · acted ${acted}` : ''}
+          {card.runningSessions} running of {card.totalSessions} sessions
         </span>
       </div>
       <Link to="/realms/$slug" params={{ slug: card.realm.slug }} className={LINK}>
@@ -225,14 +220,11 @@ export function HomePage() {
   // With Realms off its pages have no routes, so nothing here may point at them.
   const realmCards = realmsEnabled ? home.cards : [];
   const tickets = realmsEnabled ? home.waitingTickets : [];
-  // The summary count, not the list: the list is capped by the review API.
-  const waiting = home.pendingTotal + blocked.length + tickets.length;
+  const waiting = blocked.length + tickets.length;
   const choices = realmsEnabled ? CHOICES : CHOICES.filter((choice) => choice.id !== 'realm');
-  const wakefulRealms = orderCards(realmCards)
-    .filter((card) => WAKEFUL.has(card.resident?.wakefulness ?? ''))
+  const activeRealms = orderCards(realmCards)
+    .filter((card) => card.runningSessions > 0)
     .slice(0, CONTINUE_LIMIT);
-  const cardFor = (environmentId: string) =>
-    realmCards.find((card) => card.resident?.environmentId === environmentId) ?? null;
 
   return (
     <div
@@ -282,13 +274,16 @@ export function HomePage() {
             testId="home-needs-you"
             aside={
               <span className="niuu:text-xs niuu:text-text-muted">
-                {waiting} open ·{' '}
-                <Link
-                  to={(realmsEnabled ? '/realms/needs-you' : '/valkyrie/inbox') as never}
-                  className={LINK}
-                >
-                  inbox
-                </Link>
+                {waiting} open
+                {realmsEnabled ? (
+                  <>
+                    {' '}
+                    ·{' '}
+                    <Link to="/realms/needs-you" className={LINK}>
+                      see all
+                    </Link>
+                  </>
+                ) : null}
               </span>
             }
           >
@@ -302,14 +297,6 @@ export function HomePage() {
                 {tickets.slice(0, NEEDS_YOU_LIMIT).map(({ item, card }) => (
                   <TicketReviewRow key={item.taskId} item={item} workspace={card.realm.name} />
                 ))}
-                {home.pendingReviews.slice(0, NEEDS_YOU_LIMIT).map((item) => (
-                  <NeedsYouRow
-                    key={item.itemId}
-                    item={item}
-                    card={cardFor(item.environmentId)}
-                    testId={`home-needs-you-${item.itemId}`}
-                  />
-                ))}
                 {blocked.slice(0, NEEDS_YOU_LIMIT).map((session) => (
                   <SessionRow
                     key={session.id}
@@ -322,7 +309,7 @@ export function HomePage() {
           </Panel>
 
           <Panel title="Continue" testId="home-continue">
-            {recent.length === 0 && wakefulRealms.length === 0 ? (
+            {recent.length === 0 && activeRealms.length === 0 ? (
               <EmptyState
                 title="Nothing to go back to yet"
                 description="Whatever you start shows up here."
@@ -336,7 +323,7 @@ export function HomePage() {
                     testId={`home-continue-session-${session.id}`}
                   />
                 ))}
-                {wakefulRealms.map((card) => (
+                {activeRealms.map((card) => (
                   <RealmRow key={card.realm.slug} card={card} />
                 ))}
               </>

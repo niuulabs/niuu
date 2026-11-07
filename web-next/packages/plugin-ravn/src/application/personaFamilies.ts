@@ -17,7 +17,7 @@ export interface PersonaFamily {
   personas: PersonaSummary[];
 }
 
-export type PersonaSource = 'all' | 'in-use' | 'custom';
+export type PersonaSource = 'all' | 'custom';
 
 function prefixOf(name: string): string {
   return name.split('-')[0] ?? name;
@@ -93,16 +93,10 @@ export function matchesPersonaQuery(persona: PersonaSummary, query: string): boo
     .includes(needle);
 }
 
-export function matchesPersonaSource(
-  persona: PersonaSummary,
-  source: PersonaSource,
-  usage: (name: string) => number,
-): boolean {
+export function matchesPersonaSource(persona: PersonaSummary, source: PersonaSource): boolean {
   switch (source) {
     case 'all':
       return true;
-    case 'in-use':
-      return usage(persona.name) > 0;
     case 'custom':
       return isCustomPersona(persona);
   }

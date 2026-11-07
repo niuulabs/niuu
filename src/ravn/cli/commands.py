@@ -71,19 +71,12 @@ approvals_app = typer.Typer(
 )
 app.add_typer(approvals_app, name="approvals")
 
+from ravn.cli.flock import flock_app  # noqa: E402 — must be after app is defined
 from ravn.cli.runtime_config import (  # noqa: E402
     _configure_logging,
     _log_effective_config,
     _resolve_extended_thinking,
 )
-from ravn.cli.warden_commands import (  # noqa: E402, F401
-    _parse_deployment_kwargs,
-    warden_app,
-)
-
-app.add_typer(warden_app, name="warden")
-
-from ravn.cli.flock import flock_app  # noqa: E402 — must be after app is defined
 
 app.add_typer(flock_app, name="flock")
 
@@ -95,10 +88,6 @@ app.add_typer(profiles_app, name="profiles")
 from ravn.cli.room import room_app  # noqa: E402
 
 app.add_typer(room_app, name="room")
-
-from ravn.cli.resident_commands import resident_app  # noqa: E402
-
-app.add_typer(resident_app, name="resident")
 
 
 @app.command("join")
@@ -124,7 +113,7 @@ def join(
     autonomous: bool = typer.Option(
         False,
         "--autonomous",
-        help="Also enable the self-driving triggers (cron, staleness, wakefulness).",
+        help="Also enable the self-driving triggers (cron, staleness, recap, dream cycle).",
     ),
 ) -> None:
     """Put a persona-typed Ravn into a room as an addressable member.
@@ -175,16 +164,7 @@ def approvals_main() -> None:
 # Compatibility exports remain late because the Typer apps must exist first.
 # isort: off
 from ravn.cli.runtime_builders import (  # noqa: E402, F401
-    _REALM_CLIENT_CACHE,
-    _RealmBuildConfig,
-    _attach_agent_build_tool,
     _build_executor,
-    _build_friction_ledger,
-    _build_capability_matcher,
-    _build_peer_capability_matcher,
-    _build_learning_consolidation,
-    _build_learning_curator,
-    _build_self_improvement,
     _build_llm,
     _build_memory,
     _build_mimir,
@@ -198,12 +178,9 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _import_class,
     _inject_secrets,
     _mimir_workload_platform_defaults,
-    _realm_client_for,
     _resident_ravn_state_dir,
     _resolve_mimir_auth_token,
-    _resolve_realm_build_config,
     _resolve_workspace,
-    _run_coro_blocking,
     _runtime_cli_transport_kwargs,
     _transport_mcp_servers,
     _uses_cli_transport_executor,
@@ -543,7 +520,6 @@ def _build_agent(
     memory = _build_memory(settings, llm=llm)
     mimir = _build_mimir(settings)
     memory = _with_mimir_fact_capture(memory, mimir)
-    learning_consolidation = _build_learning_consolidation(settings, llm)
     iteration_budget = _build_iteration_budget(settings, max_iterations)
     tools = _build_tools(
         settings,
@@ -590,16 +566,6 @@ def _build_agent(
         user_input_fn=_cli_user_input,
         memory=memory,
         mimir=mimir,
-        inject_learnings=settings.reflection.inject_learnings,
-        max_learnings_injected=settings.reflection.max_learnings_injected,
-        learning_token_budget=settings.reflection.learning_token_budget,
-        learning_index=learning_consolidation.lessons if learning_consolidation else None,
-        learning_entry_max_chars=settings.reflection.learning_entry_max_chars,
-        max_route_recoveries=settings.reflection.verified_promotion.max_route_recoveries,
-        route_excerpt_chars=settings.reflection.verified_promotion.excerpt_chars,
-        max_friction_signals=(
-            settings.reflection.friction.max_signals if settings.reflection.friction.enabled else 0
-        ),
         episode_summary_max_chars=settings.agent.episode_summary_max_chars,
         episode_task_max_chars=settings.agent.episode_task_max_chars,
         iteration_budget=iteration_budget,
@@ -720,13 +686,6 @@ async def _run_with_signals(
             checkpoint_id=resume_checkpoint_id,
         )
 
-    # NIU-598: create in-process bus for post-session reflection (standalone CLI mode).
-    in_process_bus: Any | None = None
-    if settings.reflection.enabled:
-        from sleipnir.adapters.in_process import InProcessBus
-
-        in_process_bus = InProcessBus()
-
     agent, channel = _build_agent(
         settings,
         no_tools=no_tools,
@@ -734,30 +693,7 @@ async def _run_with_signals(
         profile=profile,
         session=restored_session,
         task_id=resume_task_id,
-        sleipnir_publisher=in_process_bus,
     )
-
-    # NIU-598: start post-session reflection service after agent is built.
-    reflection_svc: Any | None = None
-    if in_process_bus is not None:
-        _refl_mimir = _build_mimir(settings)
-        if _refl_mimir is not None:
-            from ravn.adapters.reflection.post_session import PostSessionReflectionService
-
-            _refl_llm = _build_llm(settings)
-            _refl_consolidation = _build_learning_consolidation(settings, _refl_llm)
-            reflection_svc = PostSessionReflectionService(
-                subscriber=in_process_bus,
-                mimir=_refl_mimir,
-                llm=_refl_llm,
-                config=settings.effective_post_session_reflection_config(),
-                lessons=_refl_consolidation.lessons if _refl_consolidation else None,
-                judge=_refl_consolidation.judge if _refl_consolidation else None,
-                friction=_build_friction_ledger(
-                    settings, mimir=_refl_mimir, consolidation=_refl_consolidation
-                ),
-            )
-            await reflection_svc.start()
 
     # Register signal handlers after agent is built so they can call agent.interrupt().
     def _on_signal(reason: InterruptReason) -> None:
@@ -788,12 +724,6 @@ async def _run_with_signals(
                 f"\n[ravn] State saved. Resume with: ravn --resume {agent.task_id}",
                 err=True,
             )
-        # NIU-598: flush pending events then tear down the reflection service.
-        if in_process_bus is not None:
-            with suppress(Exception):
-                await in_process_bus.flush()
-        if reflection_svc is not None:
-            await reflection_svc.stop()
 
 
 async def _load_checkpoint_session(
@@ -994,30 +924,6 @@ def tool_mcp(
                 if value
             },
         )
-        allowed_tools = _expand_allowed_tools(
-            set(persona_config.allowed_tools or []) if persona_config is not None else set()
-        )
-        build_tool_enabled = "build_tool" in allowed_tools
-        _attach_agent_build_tool(
-            server,
-            _resolve_workspace(settings),
-            enabled=build_tool_enabled,
-            settings=settings,
-            # Same lineage matching as a resident: with semantic lesson
-            # matching configured, a build is tied to the tool it repairs by
-            # meaning, not only by name.
-            capability_matcher=(
-                _build_capability_matcher(
-                    settings, _build_learning_consolidation(settings, _build_llm(settings))
-                )
-                if build_tool_enabled
-                and (
-                    settings.effective_post_session_reflection_config().matching.mode == "semantic"
-                    or settings.decision.capability_matching.enabled
-                )
-                else None
-            ),
-        )
         # What the agent notifies from this server names the channel its turn runs in;
         # asyncio.run copies this context into the server's task.
         channel_token = current_notification_channel.set(notification_channel or None)
@@ -1043,7 +949,7 @@ def _tool_mcp_notification_outbox(settings: Settings, persona_config: Any | None
     resident's outbox file directly; Forge reads it on its next pull.
     """
     from ravn.cli.daemon_runtime import _notify_tool_allowed
-    from ravn.cli.resident_runtime_wiring import build_resident_notification_outbox
+    from ravn.cli.voice_wiring import build_resident_notification_outbox
 
     if not _notify_tool_allowed(settings, persona_config):
         return None
@@ -1167,40 +1073,6 @@ def approvals_revoke(
 
 
 # ---------------------------------------------------------------------------
-# Resident inbox maintenance
-# ---------------------------------------------------------------------------
-
-
-@app.command("inbox-migrate")
-def inbox_migrate(
-    root: str = typer.Argument(help="Resident inbox root directory to migrate."),
-) -> None:
-    """Move flat resident inbox signal files into the archive and slot queue.
-
-    One-time, resumable and non-destructive: each record is archived and re-filed
-    before its original file is removed, so an interrupted run simply resumes.
-    Reports counts so the operator can reconcile before and after.
-    """
-
-    from ravn.resident_inbox import LocalResidentInbox  # noqa: PLC0415
-
-    inbox = LocalResidentInbox(root)
-    counts = asyncio.run(inbox.migrate_flat_layout())
-    archived = inbox.archive.count()
-    typer.echo(f"read       : {counts['read']}")
-    typer.echo(f"archived   : {counts['archived']}")
-    typer.echo(f"  pending  : {counts['pending']}")
-    typer.echo(f"  processed: {counts['processed']}")
-    typer.echo(f"unreadable : {counts['unreadable']}")
-    typer.echo(f"archive records now: {archived}")
-    if counts["unreadable"]:
-        typer.echo(
-            f"{counts['unreadable']} file(s) could not be parsed and were left in place.",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-
 @app.command("memory-backfill-embeddings")
 def memory_backfill_embeddings(
     config: str = typer.Option("", "--config", help="Path to the ravn config file."),
@@ -1242,73 +1114,6 @@ def memory_backfill_embeddings(
     )
     typer.echo(f"embedded  : {embedded}")
     typer.echo(f"remaining : {remaining}")
-
-
-@app.command("learnings-curate")
-def learnings_curate(
-    config: str = typer.Option("", "--config", help="Path to the ravn config file."),
-) -> None:
-    """Run one learning-curation pass now, outside the dream schedule.
-
-    The same pass the consolidation dream runs: every lesson not yet curated has
-    its neighbourhood judged once, paraphrases fold into one lesson, and the
-    lesson is marked ``curated``. Useful to consolidate a backlog at once rather
-    than over the next dream, and safe to repeat — a second run only judges
-    lessons recorded since. Every change is recorded on a Mímir audit page.
-    """
-
-    if config:
-        os.environ["RAVN_CONFIG"] = config
-    settings = Settings()
-    if not settings.reflection.curation.enabled:
-        typer.echo("reflection.curation.enabled is false; nothing to curate.", err=True)
-        raise typer.Exit(1)
-    mimir = _build_mimir(settings)
-    curator = _build_learning_curator(
-        settings,
-        mimir=mimir,
-        consolidation=_build_learning_consolidation(settings, _build_llm(settings)),
-    )
-    report = asyncio.run(curator.curate())
-    for key, value in report.summary().items():
-        shown = len(value) if isinstance(value, list) else value
-        typer.echo(f"{key:<21}: {shown}")
-
-
-@app.command("learned-tools-plan")
-def learned_tools_plan(
-    config: str = typer.Option("", "--config", help="Path to the ravn config file."),
-) -> None:
-    """Print what the next consolidation dream would retire from the learned tools.
-
-    Read-only: it computes the same plan the dream applies, with the same
-    lifecycle usage, capability judge and never-used window, and prints it as
-    JSON. Nothing is moved, archived or written; retirement happens only in
-    the dream, so the running resident's lifecycle registry stays the one
-    writer.
-    """
-
-    if config:
-        os.environ["RAVN_CONFIG"] = config
-    settings = Settings()
-    workspace = _resolve_workspace(settings)
-    consolidation = _build_learning_consolidation(settings, _build_llm(settings))
-    from ravn.valkyrie_evolution.tool_curation import LifecycleSnapshot  # noqa: PLC0415
-
-    curator = _build_learned_tool_curator(
-        settings,
-        workspace=workspace,
-        skills=LifecycleSnapshot(
-            _resident_ravn_state_dir(workspace, settings) / "skill_management.json"
-        ),
-        matcher=_build_capability_matcher(settings, consolidation),
-        persist=False,
-    )
-    if curator is None:
-        typer.echo("resident_evolution.tool_curation.enabled is false; nothing to plan.", err=True)
-        raise typer.Exit(1)
-    plan = asyncio.run(curator.plan())
-    typer.echo(json.dumps(plan.to_dict(), indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -1358,92 +1163,6 @@ def resume(
 # ---------------------------------------------------------------------------
 # Evolution CLI
 # ---------------------------------------------------------------------------
-
-
-evolve_app = typer.Typer(
-    name="evolve",
-    help="Self-improvement pattern extraction.",
-    add_completion=False,
-    invoke_without_command=True,
-)
-app.add_typer(evolve_app, name="evolve")
-
-
-@evolve_app.callback(invoke_without_command=True)
-def evolve(
-    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
-) -> None:
-    """Run the self-improvement pattern extraction pass.
-
-    Analyses accumulated task outcomes and episodic memory to surface
-    recurring tool sequences (skill suggestions), systematic errors
-    (warnings), and effective strategies.  Results are printed as a
-    human-readable diff — nothing is modified automatically.
-    """
-    if config:
-        os.environ["RAVN_CONFIG"] = config
-
-    settings = Settings()
-    _configure_logging(settings)
-
-    if not settings.evolution.enabled:
-        typer.echo("Evolution is disabled in config (evolution.enabled = false).")
-        raise typer.Exit(0)
-
-    asyncio.run(_run_evolve(settings))
-
-
-async def _run_evolve(settings: Settings) -> None:
-    from ravn.context.evolution import (
-        PatternExtractor,
-        load_state,
-        save_state,
-        should_run,
-    )
-
-    memory = _build_memory(settings)
-    if memory is None:
-        typer.echo("Memory backend not available — evolution requires memory.", err=True)
-        raise typer.Exit(1)
-
-    evo = settings.evolution
-    state_path = Path(evo.state_path).expanduser()
-    state = load_state(state_path)
-    current_count = await memory.count_episodes()
-
-    if not should_run(state, current_count, min_new=evo.min_new_outcomes):
-        typer.echo(
-            f"Not enough new episodes ({current_count - state.outcome_count_at_last_run} "
-            f"since last run, need {evo.min_new_outcomes})."
-        )
-        return
-
-    typer.echo(
-        f"Analysing {current_count} episodes "
-        f"({current_count - state.outcome_count_at_last_run} new)..."
-    )
-
-    extractor = PatternExtractor(
-        memory,
-        max_episodes_to_analyze=evo.max_episodes_to_analyze,
-        skill_suggestion_min_occurrences=evo.skill_suggestion_min_occurrences,
-        error_warning_min_occurrences=evo.error_warning_min_occurrences,
-        strategy_min_occurrences=evo.strategy_min_occurrences,
-        max_skill_suggestions=evo.max_skill_suggestions,
-        max_system_warnings=evo.max_system_warnings,
-        max_strategy_injections=evo.max_strategy_injections,
-    )
-    evolution = await extractor.extract()
-
-    if evolution.is_empty():
-        typer.echo("No patterns found.")
-    else:
-        typer.echo(evolution.as_diff())
-
-    state.outcome_count_at_last_run = current_count
-    state.last_run_at = datetime.now(UTC)
-    save_state(state_path, state)
-    typer.echo("Evolution state saved.")
 
 
 # ---------------------------------------------------------------------------
@@ -1707,12 +1426,7 @@ async def _run_gateway(
         tasks.append(asyncio.create_task(tg.run(), name="telegram"))
 
     if settings.gateway.channels.http.enabled:
-        http_cfg = settings.gateway.channels.http
-        ht = HttpGateway(
-            http_cfg,
-            gw,
-            mimir=_build_mimir(settings) if http_cfg.mimir_served_mount.strip() else None,
-        )
+        ht = HttpGateway(settings.gateway.channels.http, gw)
         tasks.append(asyncio.create_task(ht.run(), name="http"))
 
     def _voice_factory() -> Any:
@@ -1849,7 +1563,6 @@ from functools import wraps as _wraps  # noqa: E402
 
 from ravn.cli import daemon_runtime as _daemon_runtime  # noqa: E402
 from ravn.cli import mesh_runtime as _mesh_runtime  # noqa: E402
-from ravn.cli import resident_runtime_wiring as _resident_runtime_wiring  # noqa: E402
 from ravn.cli import trigger_wiring as _trigger_wiring  # noqa: E402
 
 _RUNTIME_WRAPPERS: dict[str, Any] = {}
@@ -1886,67 +1599,6 @@ def _runtime_wrapper(module: Any, name: str, own_names: frozenset[str]) -> Any:
 _DAEMON_RUNTIME_NAMES = frozenset(("_run_daemon",))
 _run_daemon = _runtime_wrapper(_daemon_runtime, "_run_daemon", _DAEMON_RUNTIME_NAMES)
 
-_RESIDENT_RUNTIME_WIRING_NAMES = frozenset(
-    (
-        "_build_environment_signal_runtime",
-        "_build_resident_inbox",
-        "_build_resident_state",
-        "_build_resident_runtime",
-        "_build_resident_learning_runtime",
-        "_build_realm_capability_sync",
-        "_build_resident_wakefulness",
-        "_build_learned_tool_curator",
-        "_build_odin_court",
-        "_run_odin_court_sweep",
-        "_build_feedback_recorder",
-        "_build_evolution_adapter",
-        "_build_environment_signal_publisher",
-        "_wire_triggers",
-    )
-)
-_build_resident_inbox = _runtime_wrapper(
-    _resident_runtime_wiring, "_build_resident_inbox", _RESIDENT_RUNTIME_WIRING_NAMES
-)
-_build_resident_state = _runtime_wrapper(
-    _resident_runtime_wiring, "_build_resident_state", _RESIDENT_RUNTIME_WIRING_NAMES
-)
-_build_resident_runtime = _runtime_wrapper(
-    _resident_runtime_wiring, "_build_resident_runtime", _RESIDENT_RUNTIME_WIRING_NAMES
-)
-_build_environment_signal_runtime = _runtime_wrapper(
-    _resident_runtime_wiring, "_build_environment_signal_runtime", _RESIDENT_RUNTIME_WIRING_NAMES
-)
-_build_resident_learning_runtime = _runtime_wrapper(
-    _resident_runtime_wiring, "_build_resident_learning_runtime", _RESIDENT_RUNTIME_WIRING_NAMES
-)
-_build_realm_capability_sync = _runtime_wrapper(
-    _resident_runtime_wiring, "_build_realm_capability_sync", _RESIDENT_RUNTIME_WIRING_NAMES
-)
-_build_resident_wakefulness = _runtime_wrapper(
-    _resident_runtime_wiring, "_build_resident_wakefulness", _RESIDENT_RUNTIME_WIRING_NAMES
-)
-_build_learned_tool_curator = _runtime_wrapper(
-    _resident_runtime_wiring, "_build_learned_tool_curator", _RESIDENT_RUNTIME_WIRING_NAMES
-)
-_build_odin_court = _runtime_wrapper(
-    _resident_runtime_wiring, "_build_odin_court", _RESIDENT_RUNTIME_WIRING_NAMES
-)
-_run_odin_court_sweep = _runtime_wrapper(
-    _resident_runtime_wiring, "_run_odin_court_sweep", _RESIDENT_RUNTIME_WIRING_NAMES
-)
-_build_feedback_recorder = _runtime_wrapper(
-    _resident_runtime_wiring, "_build_feedback_recorder", _RESIDENT_RUNTIME_WIRING_NAMES
-)
-_build_evolution_adapter = _runtime_wrapper(
-    _resident_runtime_wiring, "_build_evolution_adapter", _RESIDENT_RUNTIME_WIRING_NAMES
-)
-_build_environment_signal_publisher = _runtime_wrapper(
-    _resident_runtime_wiring, "_build_environment_signal_publisher", _RESIDENT_RUNTIME_WIRING_NAMES
-)
-_wire_triggers = _runtime_wrapper(
-    _resident_runtime_wiring, "_wire_triggers", _RESIDENT_RUNTIME_WIRING_NAMES
-)
-
 _TRIGGER_WIRING_NAMES = frozenset(
     (
         "_wire_mimir_triggers",
@@ -1955,8 +1607,10 @@ _TRIGGER_WIRING_NAMES = frozenset(
         "_wire_task_dispatch",
         "_derive_capabilities",
         "_wire_cascade",
+        "_wire_triggers",
     )
 )
+_wire_triggers = _runtime_wrapper(_trigger_wiring, "_wire_triggers", _TRIGGER_WIRING_NAMES)
 _wire_mimir_triggers = _runtime_wrapper(
     _trigger_wiring, "_wire_mimir_triggers", _TRIGGER_WIRING_NAMES
 )
@@ -1976,7 +1630,11 @@ _MESH_RUNTIME_NAMES = frozenset(
         "_resolve_transport_kwargs",
         "_build_discovery",
         "_run_peers",
+        "_build_environment_signal_publisher",
     )
+)
+_build_environment_signal_publisher = _runtime_wrapper(
+    _mesh_runtime, "_build_environment_signal_publisher", _MESH_RUNTIME_NAMES
 )
 _build_mesh = _runtime_wrapper(_mesh_runtime, "_build_mesh", _MESH_RUNTIME_NAMES)
 _resolve_transport_kwargs = _runtime_wrapper(
@@ -1990,7 +1648,6 @@ _RUNTIME_WRAPPERS.update(
         name: globals()[name]
         for names in (
             _DAEMON_RUNTIME_NAMES,
-            _RESIDENT_RUNTIME_WIRING_NAMES,
             _TRIGGER_WIRING_NAMES,
             _MESH_RUNTIME_NAMES,
         )
@@ -2118,10 +1775,6 @@ def gateway_main() -> None:
     gateway_app()
 
 
-def evolve_main() -> None:
-    evolve_app()
-
-
 # ---------------------------------------------------------------------------
 # Tool-build doctor CLI
 # ---------------------------------------------------------------------------
@@ -2173,10 +1826,7 @@ def tool_build_doctor(
 
 
 def _effective_workflow_selector(settings: Settings) -> dict[str, Any] | None:
-    """Effective tool-builder selector: realm grant overrides static config."""
-    realm_config = _resolve_realm_build_config(settings)
-    if realm_config.workflow_selector is not None:
-        return realm_config.workflow_selector
+    """The configured tool-builder workflow selector, or None when none is set."""
     static = settings.resident_evolution.tool_builder_workflow
     if static.names or static.tags:
         return static.model_dump()

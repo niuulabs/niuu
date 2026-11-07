@@ -19,7 +19,6 @@ import {
   stripLeadingTitle,
   stripSourceFooter,
   toActivityEvent,
-  toDreamCycle,
   toEmbeddingResult,
   toEntityMeta,
   toGraph,
@@ -230,7 +229,7 @@ Useful summary.
     expect(escapeRegExp('a+b?')).toBe('a\\+b\\?');
   });
 
-  it('maps lint, embedding, recent write, source, dream, and activity records', async () => {
+  it('maps lint, embedding, recent write, source, and activity records', async () => {
     expect(
       toLintIssue({
         id: 'L12',
@@ -305,18 +304,6 @@ Useful summary.
         compiled_into: ['/a'],
       }),
     ).toMatchObject({ id: 'src-1', originType: 'file', ingestAgent: 'mimir' });
-    expect(
-      toDreamCycle({
-        id: 'd1',
-        timestamp: '2026-05-01',
-        ravn: 'r1',
-        mounts: ['local'],
-        pages_updated: 2,
-        entities_created: 1,
-        lint_fixes: 3,
-        duration_ms: 5000,
-      }),
-    ).toMatchObject({ pagesUpdated: 2, entitiesCreated: 1, lintFixes: 3 });
     expect(
       toActivityEvent({
         id: 'a1',

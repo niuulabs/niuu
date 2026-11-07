@@ -619,9 +619,8 @@ class TestFlockRoomMembership:
             ],
         )
 
-        config = (tmp_path / "flock" / "node-coordinator.yaml").read_text()
-        assert "dream_cycle" in config
-        assert "resident_wakefulness" in config
+        config = yaml.safe_load((tmp_path / "flock" / "node-coordinator.yaml").read_text())
+        assert config["mimir"]["source_trigger"]["enabled"] is False
 
     def test_autonomous_room_nodes_keep_their_triggers(self, tmp_path: Path) -> None:
         rooms = self._room(tmp_path)
@@ -641,15 +640,15 @@ class TestFlockRoomMembership:
             ],
         )
 
-        config = (tmp_path / "flock" / "node-coordinator.yaml").read_text()
-        assert "dream_cycle" not in config
+        config = yaml.safe_load((tmp_path / "flock" / "node-coordinator.yaml").read_text())
+        assert "source_trigger" not in config.get("mimir", {})
 
     def test_a_roomless_flock_is_unchanged(self, tmp_path: Path) -> None:
         """Plain `flock init` keeps its long-standing autonomous behaviour."""
         runner.invoke(flock_app, ["init", "coordinator", "--flock-dir", str(tmp_path / "flock")])
 
-        config = (tmp_path / "flock" / "node-coordinator.yaml").read_text()
-        assert "dream_cycle" not in config
+        config = yaml.safe_load((tmp_path / "flock" / "node-coordinator.yaml").read_text())
+        assert "source_trigger" not in config.get("mimir", {})
 
     def test_roomless_flock_can_be_explicitly_responsive(self, tmp_path: Path) -> None:
         """Contained workflow flocks can disable autonomous resident triggers."""
@@ -666,5 +665,4 @@ class TestFlockRoomMembership:
 
         assert result.exit_code == 0, result.output
         config = (tmp_path / "flock" / "node-coordinator.yaml").read_text()
-        assert "resident_inbox:\n  enabled: false" in config
         assert "initiative:\n  enabled: true" in config

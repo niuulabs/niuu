@@ -1,84 +1,11 @@
-import type { Ravn } from '@niuulabs/plugin-ravn';
 import type { ReviewItem as WorkReviewItem, Saga } from '@niuulabs/plugin-ting';
-import type { Mount } from '@niuulabs/domain';
-import type {
-  RealmSummary,
-  RealmTrustGrant,
-  ResidentMemoryStore,
-  ReviewItem,
-  ValkyrieDashboard,
-  ValkyrieResident,
-} from '@niuulabs/plugin-valkyrie';
-import { realmSlugForEnvironment } from '@niuulabs/plugin-valkyrie';
 import type { VolundrSession } from '@niuulabs/plugin-volundr';
-import {
-  personaNameFor,
-  residentNameFor,
-  slugify,
-  type RealmBinding,
-  type RealmView,
-} from './realm';
+import type { RealmSummary, RealmTrustGrant } from './governance';
+import type { RealmBinding, RealmView } from './realm';
 import { sessionsWithDescendants } from './sessionTree';
 
 /** What Work stamps on the sessions it starts for a tracker link. */
 const WORK_PROJECT_LABEL = 'work-project:';
-
-/** The realm's own resident in the Valkyrie dashboard, by environment id. */
-export function residentForRealm(
-  dashboard: ValkyrieDashboard | undefined,
-  slug: string,
-): ValkyrieResident | null {
-  if (!dashboard) return null;
-  // By name first: one environment can hold two residents, and each has its own workspace.
-  return (
-    dashboard.valkyries.find((resident) => slugify(resident.name) === residentNameFor(slug)) ??
-    dashboard.valkyries.find(
-      (resident) => realmSlugForEnvironment(resident.environmentId) === slug,
-    ) ??
-    null
-  );
-}
-
-/**
- * The realm's own resident in the Ravn fleet.
- *
- * Prefers the explicit `realmId` link stored on the resident record at
- * deploy time (migration 000079). Falls back to the naming convention for
- * residents deployed before that link existed, or discovered residents that
- * carry no realm id at all. A workspace adopted around a running resident
- * names that resident (`residentId`, the dashboard's id), which is its ravn id.
- */
-export function ravnForRealm(
-  ravens: Ravn[] | undefined,
-  slug: string,
-  realmId?: string | null,
-  residentId?: string | null,
-): Ravn | null {
-  if (!ravens) return null;
-  if (realmId) {
-    const linked = ravens.find((ravn) => ravn.realmId === realmId);
-    if (linked) return linked;
-  }
-  // The naming-convention fallback is only for residents that carry no
-  // realmId at all (deployed before the link existed, or discovered rather
-  // than managed). A ravn that IS linked to a different realm must never
-  // match here just because it happens to share this realm's name/persona.
-  const unlinked = ravens.filter((ravn) => !ravn.realmId);
-  const adopted = residentId ? unlinked.find((ravn) => ravn.id === residentId) : undefined;
-  if (adopted) return adopted;
-  return (
-    unlinked.find((ravn) => slugify(ravn.residentName ?? '') === residentNameFor(slug)) ??
-    unlinked.find((ravn) => ravn.personaName === personaNameFor(slug)) ??
-    null
-  );
-}
-
-/** Sessions the realm's resident started (by its persona). */
-export function sessionsForRealm(sessions: VolundrSession[] | undefined, slug: string) {
-  if (!sessions) return [];
-  const persona = personaNameFor(slug);
-  return sessions.filter((session) => session.personaName === persona);
-}
 
 /** The Work link of a tracker board, which is how a workspace reaches its tickets. */
 export function workProjectForBoard(sagas: Saga[] | undefined, board: string | undefined) {
@@ -86,17 +13,13 @@ export function workProjectForBoard(sagas: Saga[] | undefined, board: string | u
   return sagas.find((saga) => saga.trackerId === board) ?? null;
 }
 
-/** A workspace's sessions: its resident's, Work's for its board, and all they started. */
+/** A workspace's sessions: the ones Work started for its board, and all they started. */
 export function workspaceSessions(
   sessions: VolundrSession[] | undefined,
-  slug: string,
   workProjectId: string | undefined,
 ) {
   const label = `${WORK_PROJECT_LABEL}${workProjectId}`;
-  const seeds = [
-    ...sessionsForRealm(sessions, slug),
-    ...(sessions ?? []).filter((session) => session.coordination?.labels?.includes(label)),
-  ];
+  const seeds = (sessions ?? []).filter((session) => session.coordination?.labels?.includes(label));
   return sessionsWithDescendants(
     sessions,
     seeds.map((session) => session.id),
@@ -116,15 +39,6 @@ const ACTIVE_SESSION_STATES = new Set(['running', 'provisioning', 'ready', 'awai
 
 export function activeSessionCount(sessions: VolundrSession[]): number {
   return sessions.filter((session) => ACTIVE_SESSION_STATES.has(session.status)).length;
-}
-
-/** Reviews addressed to the realm's environment (the resident asking you). */
-export function reviewsForRealm(
-  reviews: ReviewItem[] | undefined,
-  resident: ValkyrieResident | null,
-): ReviewItem[] {
-  if (!reviews || !resident) return [];
-  return reviews.filter((item) => item.environmentId === resident.environmentId);
 }
 
 /** Where the realm looks: read back from the observe grant's limits. */
@@ -156,62 +70,19 @@ export function latestGrants(grants: RealmTrustGrant[] | undefined) {
 
 export function buildRealmView(input: {
   realm: RealmSummary;
-  dashboard: ValkyrieDashboard | undefined;
-  ravens: Ravn[] | undefined;
   grants: RealmTrustGrant[] | undefined;
-  reviews: ReviewItem[] | undefined;
-  sessions: VolundrSession[] | undefined;
 }): RealmView {
   const { realm } = input;
-  const resident = residentForRealm(input.dashboard, realm.slug);
-  const ravn = ravnForRealm(input.ravens, realm.slug, realm.id, resident?.id);
-  const sessions = sessionsForRealm(input.sessions, realm.slug);
   const binding = bindingFromGrants(input.grants);
-  // The create recipe always names where the workspace memory goes; adopting names none.
+  // The create recipe always names where the workspace memory goes; a workspace made
+  // without it has no memory mount of its own.
   const adopted = !binding?.mountTarget;
   return {
     slug: realm.slug,
     name: realm.name,
     autonomyProfile: realm.autonomy_profile,
-    instanceId: realm.instance_id,
     binding,
     adopted,
-    personaName: adopted && resident ? resident.persona : personaNameFor(realm.slug),
-    residentName: residentNameFor(realm.slug),
-    residentLabel: resident?.name ?? null,
-    residentCharter: resident?.charter ?? '',
-    environmentId: resident?.environmentId ?? null,
-    wakefulness: resident?.wakefulness ?? null,
-    autonomyMode: resident?.autonomyMode ?? null,
-    confidence: resident?.confidence ?? null,
-    residentStatus: resident?.status ?? ravn?.status ?? null,
-    ravnId: ravn?.id ?? null,
     grants: latestGrants(input.grants),
-    pendingReviews: reviewsForRealm(input.reviews, resident).filter(
-      (item) => item.status === 'pending',
-    ).length,
-    runningSessions: activeSessionCount(sessions),
   };
-}
-
-/** A memory store the resident reports, with the platform mount serving it once discovered. */
-export interface ResidentMemoryEntry {
-  store: ResidentMemoryStore;
-  mount: Mount | null;
-}
-
-/**
- * The resident's own memory, joined to the mounts the platform's Mímir lists.
- * A store is opened only by the platform mount the resident names for it.
- */
-export function residentMemory(
-  resident: ValkyrieResident | null,
-  mounts: Mount[] | undefined,
-): ResidentMemoryEntry[] {
-  return (resident?.memory ?? []).map((store) => ({
-    store,
-    mount: store.platformMount
-      ? (mounts?.find((entry) => entry.name === store.platformMount) ?? null)
-      : null,
-  }));
 }

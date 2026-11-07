@@ -179,11 +179,6 @@ def resident_flock_profile_configured(
     return bool(mesh.get("adapters")) and bool(discovery.get("adapters"))
 
 
-def realm_charter_page_for(realm_slug: str) -> str:
-    """Mímir page path holding a realm's charter (mirrors web-next's charterPagePathFor)."""
-    return f"realms/{realm_slug}/charter.md"
-
-
 def realm_mount_name_for(realm_slug: str) -> str:
     """Mímir mount name carrying a realm's memory (mirrors web-next's mountNameFor)."""
     return f"realm-{realm_slug}"
@@ -640,9 +635,6 @@ def _resident_ravn_config(
                     "enabled": True,
                     "host": "0.0.0.0",
                     "port": 7781,
-                    "resident_hud_enabled": bool(
-                        resident.get("hudEnabled") or resident.get("hud_enabled") or False
-                    ),
                 }
             },
             "platform": {
@@ -681,19 +673,6 @@ def _resident_ravn_config(
         config["persona_source"] = resident["personaSource"]
     if llm:
         config["llm"] = llm
-    if isinstance(resident.get("wakefulness"), dict):
-        config["wakefulness"] = resident["wakefulness"]
-    stewardship_interval = resident.get("stewardshipIntervalSeconds") or resident.get(
-        "stewardship_interval_seconds"
-    )
-    if stewardship_interval:
-        config["resident_state"] = {"stewardship_interval_seconds": float(stewardship_interval)}
-    if realm_slug:
-        config["environment"]["charter_mimir_page"] = realm_charter_page_for(realm_slug)
-        config["resident_evolution"] = {
-            "realm_slug": realm_slug,
-            "realm_api_base_url": volundr_api_url,
-        }
     realm_mimir = resident.get("mimir") if isinstance(resident.get("mimir"), dict) else {}
     mimir_instances = realm_mimir.get("instances")
     if isinstance(mimir_instances, list) and mimir_instances:
@@ -704,9 +683,6 @@ def _resident_ravn_config(
                 realm_mimir, mimir_instances, realm_slug
             ),
         }
-    signal_sources = resident.get("signalSources") or resident.get("signal_sources")
-    if isinstance(signal_sources, list) and signal_sources:
-        config["environment"]["signal_sources"] = signal_sources
     resident_flock_runtime_config(config, runtime, values)
     return config
 

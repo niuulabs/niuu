@@ -566,7 +566,7 @@ def test_parse_outcome_block_salvages_yaml_colons_in_scalar_values() -> None:
             "action_authority": OutcomeField(
                 type="enum",
                 description="authority",
-                enum_values=["autonomous", "yolo_allowed", "court_required"],
+                enum_values=["autonomous", "yolo_allowed", "human_review_required"],
             ),
             "target_surfaces": OutcomeField(type="array", description="surfaces"),
             "expires_at": OutcomeField(type="string", description="expiry"),

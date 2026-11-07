@@ -112,20 +112,3 @@ class AllProvidersExhaustedError(RavnError):
         super().__init__(
             f"All {provider_count} LLM provider(s) failed; see provider logs for details."
         )
-
-
-class UnboundOperatorReplyError(RavnError):
-    """Raised when a human reply names a resident case that holds no open question.
-
-    The reply answers a question the resident no longer has open: it was
-    answered, withdrawn or superseded, or never persisted at all. Applying it to
-    some other case, or quietly treating it as fresh chat, would hide that the
-    question and its answer have come apart.
-    """
-
-    def __init__(self, case_id: str) -> None:
-        self.case_id = case_id
-        super().__init__(
-            f"operator reply names resident case {case_id}, which has no pending "
-            "question: it was answered, withdrawn or superseded, or never persisted"
-        )

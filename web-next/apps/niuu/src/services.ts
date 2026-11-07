@@ -3,19 +3,9 @@ import { buildBifrostHttpAdapter, createMockBifrostService } from '@niuulabs/plu
 import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import {
   createMockPersonaStore,
-  createMockRavenStream,
-  createMockSessionStream,
   createMockTriggerStore,
-  createMockBudgetStream,
-  createMockWardenStore,
   buildRavnPersonaAdapter,
-  buildRavnRavenAdapter,
-  buildRavnResidentControlAdapter,
-  buildRavnSessionAdapter,
   buildRavnTriggerAdapter,
-  buildRavnBudgetAdapter,
-  buildRavnWardenAdapter,
-  type IResidentControl,
 } from '@niuulabs/plugin-ravn';
 import {
   createMockTingService,
@@ -88,15 +78,10 @@ import {
   type VolundrSession,
 } from '@niuulabs/plugin-volundr';
 import {
-  buildOdinReviewHttpAdapter,
+  REALM_GOVERNANCE_SERVICE_KEY,
   buildRealmGovernanceHttpAdapter,
-  buildValkyrieHttpAdapter,
-  buildValkyrieSkillsHttpAdapter,
-  createMockOdinReviewService,
   createMockRealmGovernanceService,
-  createMockValkyrieService,
-  createMockValkyrieSkillsService,
-} from '@niuulabs/plugin-valkyrie';
+} from '@niuulabs/plugin-realms';
 import { createApiClient } from '@niuulabs/query';
 import {
   buildFeatureCatalogAdapter,
@@ -515,39 +500,9 @@ function resolveObservatoryServiceBase(
   return `${groupedBase}/events`;
 }
 
-function resolveValkyrieServiceBase(
-  config: Pick<NiuuConfig, 'services'>,
-  serviceKey: 'valkyrie' | 'valkyrie.reviews' | 'valkyrie.skills',
-): string | null {
-  const explicitBase = resolveDirectServiceBase(config, serviceKey);
-  if (explicitBase) return explicitBase;
-
-  const groupedBase = resolveDirectServiceBase(config, 'valkyrie');
-  if (!groupedBase) return null;
-  // The review queue lives beside the dashboard API under /ravn/odin;
-  // learned skills ride the dashboard base (`<valkyrieBase>/skills`).
-  return serviceKey === 'valkyrie.reviews'
-    ? groupedBase.replace(/\/valkyrie\/?$/, '/odin')
-    : groupedBase;
-}
-
-/**
- * Realm governance spans two backends: realms on the shared niuu host
- * (`<sharedApiBase>/realms`) and workflows on Ting (`<tingBase>/workflows`).
- * Live only when both are reachable.
- */
-function resolveRealmGovernanceBases(
-  config: Pick<NiuuConfig, 'services'>,
-): { realmsBase: string; workflowsBase: string } | null {
-  const realmsBase = resolveSharedApiBase(config);
-  const workflowsBase = resolveTingServiceBase(config, 'ting.workflows');
-  if (!realmsBase || !workflowsBase) return null;
-  return { realmsBase, workflowsBase };
-}
-
 function resolveRealmGovernanceStatus(config: Pick<NiuuConfig, 'services'>): ServiceBackendStatus {
-  const bases = resolveRealmGovernanceBases(config);
-  if (!bases) {
+  const realmsBase = resolveSharedApiBase(config);
+  if (!realmsBase) {
     return {
       mode: 'unavailable',
       transport: 'none',
@@ -558,7 +513,7 @@ function resolveRealmGovernanceStatus(config: Pick<NiuuConfig, 'services'>): Ser
   return {
     mode: 'live',
     transport: 'http',
-    target: bases.realmsBase,
+    target: realmsBase,
     source: 'shared-api',
   };
 }
@@ -613,13 +568,7 @@ export function resolveSettingsServiceBase(
 
 function resolveRavnServiceBase(
   config: Pick<NiuuConfig, 'services'>,
-  serviceKey:
-    | 'ravn.personas'
-    | 'ravn.ravens'
-    | 'ravn.sessions'
-    | 'ravn.triggers'
-    | 'ravn.budget'
-    | 'ravn.wardens',
+  serviceKey: 'ravn.personas' | 'ravn.triggers',
 ): string | null {
   const explicitBase =
     serviceKey === 'ravn.personas'
@@ -634,16 +583,8 @@ function resolveRavnServiceBase(
   switch (serviceKey) {
     case 'ravn.personas':
       return explicitBase.replace(/\/(?:ravn\/)?personas\/?$/, '');
-    case 'ravn.ravens':
-      return explicitBase.replace(/\/ravens\/?$/, '');
-    case 'ravn.sessions':
-      return explicitBase.replace(/\/sessions\/?$/, '');
     case 'ravn.triggers':
       return explicitBase.replace(/\/triggers\/?$/, '');
-    case 'ravn.budget':
-      return explicitBase.replace(/\/budget\/?$/, '');
-    case 'ravn.wardens':
-      return explicitBase.replace(/\/wardens\/?$/, '');
     default:
       return explicitBase;
   }
@@ -651,13 +592,7 @@ function resolveRavnServiceBase(
 
 function resolveRavnServiceStatus(
   config: Pick<NiuuConfig, 'services'>,
-  serviceKey:
-    | 'ravn.personas'
-    | 'ravn.ravens'
-    | 'ravn.sessions'
-    | 'ravn.triggers'
-    | 'ravn.budget'
-    | 'ravn.wardens',
+  serviceKey: 'ravn.personas' | 'ravn.triggers',
 ): ServiceBackendStatus {
   const explicit =
     serviceKey === 'ravn.personas'
@@ -666,15 +601,7 @@ function resolveRavnServiceStatus(
   if (explicit.mode === 'live' && explicit.target) {
     if (serviceKey === 'ravn.personas')
       return { ...explicit, target: explicit.target.replace(/\/(?:ravn\/)?personas\/?$/, '') };
-    if (serviceKey === 'ravn.ravens')
-      return { ...explicit, target: explicit.target.replace(/\/ravens\/?$/, '') };
-    if (serviceKey === 'ravn.sessions')
-      return { ...explicit, target: explicit.target.replace(/\/sessions\/?$/, '') };
-    if (serviceKey === 'ravn.triggers')
-      return { ...explicit, target: explicit.target.replace(/\/triggers\/?$/, '') };
-    if (serviceKey === 'ravn.wardens')
-      return { ...explicit, target: explicit.target.replace(/\/wardens\/?$/, '') };
-    return { ...explicit, target: explicit.target.replace(/\/budget\/?$/, '') };
+    return { ...explicit, target: explicit.target.replace(/\/triggers\/?$/, '') };
   }
 
   if (serviceKey === 'ravn.personas') {
@@ -783,16 +710,8 @@ export function buildServiceBackendStatus(
     'observatory.events': resolveObservatoryServiceStatus(config, 'observatory.events'),
     'observatory.agents': resolveObservatoryServiceStatus(config, 'observatory.agents'),
     'ravn.personas': resolveRavnServiceStatus(config, 'ravn.personas'),
-    'ravn.ravens': resolveRavnServiceStatus(config, 'ravn.ravens'),
-    'ravn.residents': resolveRavnServiceStatus(config, 'ravn.ravens'),
-    'ravn.sessions': resolveRavnServiceStatus(config, 'ravn.sessions'),
     'ravn.triggers': resolveRavnServiceStatus(config, 'ravn.triggers'),
-    'ravn.budget': resolveRavnServiceStatus(config, 'ravn.budget'),
-    'ravn.wardens': resolveRavnServiceStatus(config, 'ravn.wardens'),
-    valkyrie: resolveDirectServiceStatus(config, 'http', 'valkyrie'),
-    'valkyrie.reviews': resolveDirectServiceStatus(config, 'http', 'valkyrie.reviews', 'valkyrie'),
-    'valkyrie.skills': resolveDirectServiceStatus(config, 'http', 'valkyrie.skills', 'valkyrie'),
-    'valkyrie.realms': resolveRealmGovernanceStatus(config),
+    [REALM_GOVERNANCE_SERVICE_KEY]: resolveRealmGovernanceStatus(config),
     'niuu.repos': resolveRepoCatalogStatus(config),
     forge: resolveDirectServiceStatus(config, 'http', 'forge'),
     'forge.pty':
@@ -1462,34 +1381,15 @@ function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
 export function buildServices(config: NiuuConfig): ServicesMap {
   const mimirSvc = config.services['mimir'];
 
-  // ── Ravn: all five sub-services share one HTTP base URL when configured ──
+  // ── Ravn: personas and triggers ──
   const ravnPersonaBase = resolveRavnServiceBase(config, 'ravn.personas');
-  const ravnRavenBase = resolveRavnServiceBase(config, 'ravn.ravens');
-  const ravnSessionBase = resolveRavnServiceBase(config, 'ravn.sessions');
   const ravnTriggerBase = resolveRavnServiceBase(config, 'ravn.triggers');
-  const ravnBudgetBase = resolveRavnServiceBase(config, 'ravn.budget');
-  const ravnWardenBase = resolveRavnServiceBase(config, 'ravn.wardens');
   const ravnPersonas = ravnPersonaBase
     ? buildRavnPersonaAdapter(createApiClient(ravnPersonaBase))
     : demoService(config, 'ravn.personas', createMockPersonaStore);
-  const ravnRavens = ravnRavenBase
-    ? buildRavnRavenAdapter(createApiClient(ravnRavenBase))
-    : demoService(config, 'ravn.ravens', createMockRavenStream);
-  const ravnResidents: IResidentControl = ravnRavenBase
-    ? buildRavnResidentControlAdapter(createApiClient(ravnRavenBase))
-    : unavailableService<IResidentControl>('ravn.residents');
-  const ravnSessions = ravnSessionBase
-    ? buildRavnSessionAdapter(createApiClient(ravnSessionBase))
-    : demoService(config, 'ravn.sessions', createMockSessionStream);
   const ravnTriggers = ravnTriggerBase
     ? buildRavnTriggerAdapter(createApiClient(ravnTriggerBase))
     : demoService(config, 'ravn.triggers', createMockTriggerStore);
-  const ravnBudget = ravnBudgetBase
-    ? buildRavnBudgetAdapter(createApiClient(ravnBudgetBase))
-    : demoService(config, 'ravn.budget', createMockBudgetStream);
-  const ravnWardens = ravnWardenBase
-    ? buildRavnWardenAdapter(createApiClient(ravnWardenBase))
-    : demoService(config, 'ravn.wardens', createMockWardenStore);
 
   // ── First-launch setup wizard ──
   const setupBase = resolveSetupServiceBase(config);
@@ -1591,27 +1491,11 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const observatoryAgents = observatoryAgentsBase
     ? buildObservatoryAgentDirectoryHttpAdapter(createApiClient(observatoryAgentsBase))
     : demoService(config, 'observatory.agents', createMockAgentDirectory);
-  // ── Valkyrie ──
-  const valkyrieBase = resolveValkyrieServiceBase(config, 'valkyrie');
-  const valkyrieReviewsBase = resolveValkyrieServiceBase(config, 'valkyrie.reviews');
-  const valkyrie = valkyrieBase
-    ? buildValkyrieHttpAdapter(createApiClient(valkyrieBase))
-    : demoService(config, 'valkyrie', createMockValkyrieService);
-  const valkyrieReviews = valkyrieReviewsBase
-    ? buildOdinReviewHttpAdapter(createApiClient(valkyrieReviewsBase))
-    : demoService(config, 'valkyrie.reviews', createMockOdinReviewService);
-  const valkyrieSkillsBase = resolveValkyrieServiceBase(config, 'valkyrie.skills');
-  const valkyrieSkills = valkyrieSkillsBase
-    ? buildValkyrieSkillsHttpAdapter(createApiClient(valkyrieSkillsBase))
-    : demoService(config, 'valkyrie.skills', createMockValkyrieSkillsService);
-  const realmGovernanceBases = resolveRealmGovernanceBases(config);
-  const valkyrieRealms = realmGovernanceBases
-    ? buildRealmGovernanceHttpAdapter(
-        createApiClient(realmGovernanceBases.realmsBase),
-        createApiClient(realmGovernanceBases.workflowsBase),
-        realmGovernanceBases.realmsBase,
-      )
-    : demoService(config, 'valkyrie.realms', createMockRealmGovernanceService);
+  // ── Realms ──
+  const realmsBase = resolveSharedApiBase(config);
+  const realmGovernance = realmsBase
+    ? buildRealmGovernanceHttpAdapter(createApiClient(realmsBase), realmsBase)
+    : demoService(config, REALM_GOVERNANCE_SERVICE_KEY, createMockRealmGovernanceService);
   const featureCatalogService = buildSharedFeatureCatalogService(config);
   const identityService = buildSharedIdentityService(config);
 
@@ -1702,12 +1586,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'ting.settings': tingSettingsService,
     'ting.audit': tingAuditLogService,
     'ravn.personas': ravnPersonas,
-    'ravn.ravens': ravnRavens,
-    'ravn.residents': ravnResidents,
-    'ravn.sessions': ravnSessions,
     'ravn.triggers': ravnTriggers,
-    'ravn.budget': ravnBudget,
-    'ravn.wardens': ravnWardens,
     setup,
     mimir,
     bifrost,
@@ -1730,9 +1609,6 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'observatory.topology': observatoryTopology,
     'observatory.events': observatoryEvents,
     'observatory.agents': observatoryAgents,
-    valkyrie,
-    'valkyrie.reviews': valkyrieReviews,
-    'valkyrie.skills': valkyrieSkills,
-    'valkyrie.realms': valkyrieRealms,
+    [REALM_GOVERNANCE_SERVICE_KEY]: realmGovernance,
   };
 }

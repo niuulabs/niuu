@@ -11,8 +11,6 @@ from volundr.adapters.outbound.resident_container_spec import (
     image_from_values,
     materialize_resident_container,
     materialize_resident_runtime,
-    realm_charter_page_for,
-    realm_mount_name_for,
     resident_attribution_headers,
     resident_flock_environment,
     resident_flock_labels,
@@ -393,7 +391,6 @@ def test_materialize_ravn_container_extends_shared_mesh_configuration() -> None:
         "resident": {
             **_flock_values()["resident"],
             "llm": {"temperature": 0.2},
-            "wakefulness": {"enabled": True},
             "platform": {"baseUrl": "http://platform"},
         },
         "runtime": {"service": {"name": "skuld", "port": 9200}},
@@ -413,7 +410,6 @@ def test_materialize_ravn_container_extends_shared_mesh_configuration() -> None:
 
     assert [process.name for process in spec.processes] == ["skuld", "ravn"]
     assert ravn_config["llm"] == {"temperature": 0.2}
-    assert ravn_config["wakefulness"] == {"enabled": True}
     assert ravn_config["mesh"]["own_peer_id"] == runtime.flock_peer_id
     assert skuld_config["mesh"]["realm_id"] == str(runtime.flock_id)
 
@@ -438,13 +434,6 @@ def test_materialize_ravn_container_passes_the_profile_persona_source() -> None:
     assert yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])["persona_source"] == source
 
 
-def test_naming_convention_helpers_match_web_next_realm_ts() -> None:
-    # Mirrors web-next/packages/plugin-realms/src/domain/realm.ts
-    # charterPagePathFor / mountNameFor — keep these in lockstep.
-    assert realm_charter_page_for("workshop") == "realms/workshop/charter.md"
-    assert realm_mount_name_for("workshop") == "realm-workshop"
-
-
 def test_materialize_ravn_container_without_realm_slug_omits_realm_binding() -> None:
     runtime = _runtime()
     spec = materialize_resident_container(
@@ -458,9 +447,6 @@ def test_materialize_ravn_container_without_realm_slug_omits_realm_binding() -> 
     )
     ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
     assert "realm_slug" not in ravn_config["environment"]
-    assert "charter_mimir_page" not in ravn_config["environment"]
-    assert "resident_state" not in ravn_config
-    assert ravn_config["gateway"]["channels"]["http"]["resident_hud_enabled"] is False
 
 
 def test_materialize_ravn_container_renders_realm_binding() -> None:
@@ -470,8 +456,6 @@ def test_materialize_ravn_container_renders_realm_binding() -> None:
         **_flock_values(),
         "resident": {
             **_flock_values()["resident"],
-            "hudEnabled": True,
-            "stewardshipIntervalSeconds": 45,
             "mimir": {
                 "instances": [
                     {"name": "realm-workshop", "adapter": "mimir.adapters.markdown"},
@@ -493,11 +477,6 @@ def test_materialize_ravn_container_renders_realm_binding() -> None:
     )
     ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
 
-    assert ravn_config["environment"]["charter_mimir_page"] == "realms/workshop/charter.md"
-    assert ravn_config["resident_evolution"]["realm_slug"] == "workshop"
-    assert ravn_config["resident_evolution"]["realm_api_base_url"] == "http://volundr"
-    assert ravn_config["gateway"]["channels"]["http"]["resident_hud_enabled"] is True
-    assert ravn_config["resident_state"]["stewardship_interval_seconds"] == 45
     assert [inst["name"] for inst in ravn_config["mimir"]["instances"]] == [
         "realm-workshop",
         "other-mount",
@@ -576,40 +555,6 @@ def test_materialize_ravn_container_raises_when_no_mimir_write_target_resolves()
             sandbox_command=("skuld", "serve"),
             realm_slug="workshop",
         )
-
-
-def test_materialize_ravn_container_renders_signal_sources_when_supplied() -> None:
-    runtime = _runtime()
-    signal_sources = [
-        {
-            "id": "workshop-events",
-            "name": "Workshop events",
-            "kind": "generic",
-            "adapter": "ravn.adapters.environment_signals_nats.NatsJetStreamSignalAdapter",
-            "enabled": True,
-            "kwargs": {"subject": "workshop.events.>"},
-        }
-    ]
-    values = {
-        "image": "example.test/ravn@sha256:123",
-        **_flock_values(),
-        "resident": {
-            **_flock_values()["resident"],
-            "signalSources": signal_sources,
-        },
-    }
-
-    spec = materialize_resident_container(
-        runtime,
-        values,
-        default_image="",
-        default_service_name="resident",
-        default_service_port=9000,
-        volundr_api_url="http://volundr",
-        sandbox_command=("skuld", "serve"),
-    )
-    ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
-    assert ravn_config["environment"]["signal_sources"] == signal_sources
 
 
 @pytest.mark.parametrize(
@@ -691,26 +636,6 @@ def test_ravn_processes_are_identical_with_and_without_an_image() -> None:
         "exec /opt/niuu/bin/python -m ravn daemon --config /sandbox/.volundr/ravn.yaml "
         "--persona 'night watch'",
     )
-
-
-def test_materialize_resident_runtime_threads_realm_slug_directly() -> None:
-    """The host-process path calls materialize_resident_runtime directly
-    (no image), so it must accept and render realm_slug just like
-    materialize_resident_container does."""
-    runtime = _runtime(flock=False)
-    spec = materialize_resident_runtime(
-        runtime,
-        {"runtime": {"service": {"name": "skuld", "port": 9200}}},
-        default_service_name="resident",
-        default_service_port=9000,
-        volundr_api_url="http://volundr",
-        sandbox_command=("skuld", "serve"),
-        realm_slug="workshop",
-    )
-    ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
-    assert ravn_config["environment"]["charter_mimir_page"] == "realms/workshop/charter.md"
-    assert ravn_config["resident_evolution"]["realm_slug"] == "workshop"
-    assert ravn_config["resident_evolution"]["realm_api_base_url"] == "http://volundr"
 
 
 class TestResidentOpenClawShim:

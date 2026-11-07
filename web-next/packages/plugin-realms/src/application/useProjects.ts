@@ -1,12 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
-import {
-  REALMS_QUERY_KEY,
-  type IRealmGovernanceService,
-  type ValkyrieResident,
-} from '@niuulabs/plugin-valkyrie';
 import type { ForgeProject, ForgeProjectChanges, IVolundrService } from '@niuulabs/plugin-volundr';
-import { NEW_PROJECT, slugForResident, type ProjectChoice } from '../domain/projects';
+import { NEW_PROJECT, type ProjectChoice } from '../domain/projects';
+import type { IRealmGovernanceService } from '../ports';
+import { REALMS_QUERY_KEY, REALM_GOVERNANCE_SERVICE_KEY } from './useRealmGovernance';
 
 export const PROJECTS_QUERY_KEY = ['volundr', 'projects'] as const;
 
@@ -50,43 +47,13 @@ export function useUpdateProject() {
 
 /** Move a workspace into the chosen project, or out of its project. */
 export function useSetRealmProject(slug: string, workspaceName: string) {
-  const realms = useService<IRealmGovernanceService>('valkyrie.realms');
+  const realms = useService<IRealmGovernanceService>(REALM_GOVERNANCE_SERVICE_KEY);
   const volundr = useService<IVolundrService>('volundr');
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (choice: ProjectChoice) => {
       const projectId = await resolveProjectChoice(volundr, choice, workspaceName);
       return realms.setRealmProject(slug, projectId);
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: REALMS_QUERY_KEY });
-      await queryClient.invalidateQueries({ queryKey: PROJECTS_QUERY_KEY });
-    },
-  });
-}
-
-export interface AdoptResidentRequest {
-  resident: ValkyrieResident;
-  name: string;
-  choice: ProjectChoice;
-}
-
-/**
- * Give a resident that is already running a workspace. Nothing is deployed and the
- * resident is not touched: only the workspace record is created around it.
- */
-export function useAdoptResident() {
-  const realms = useService<IRealmGovernanceService>('valkyrie.realms');
-  const volundr = useService<IVolundrService>('volundr');
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ resident, name, choice }: AdoptResidentRequest) => {
-      const projectId = await resolveProjectChoice(volundr, choice, name);
-      return realms.createRealm({
-        slug: slugForResident(resident),
-        name: name.trim(),
-        project_id: projectId,
-      });
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: REALMS_QUERY_KEY });

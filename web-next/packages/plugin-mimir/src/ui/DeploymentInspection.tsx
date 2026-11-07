@@ -39,12 +39,10 @@ export function DeploymentInspection({
   if (!deployment) return null;
   const runtime = query.data;
   const ready = runtime?.ready ?? deployment.ready;
-  const streams = Object.keys(runtime?.logs ?? {}).filter((name) => name !== 'dream');
+  const streams = Object.keys(runtime?.logs ?? {});
   const activeStream = streams.includes(stream)
     ? stream
     : (streams.find((key) => runtime?.logs[key]?.trim()) ?? streams[0]);
-  const results = runtime?.dream_results ?? [];
-  const latest = [...results].sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0];
   const streamLabel = (name: string) =>
     name === 'stderr'
       ? 'Process output (stderr)'
@@ -55,9 +53,7 @@ export function DeploymentInspection({
     <section className="mimir-panel instance-runtime" aria-label="Instance runtime">
       <header className="instance-runtime-heading">
         <div>
-          <h4>
-            {deployment.backend === 'gbrain' ? 'gbrain runtime & dream cycles' : 'Memory runtime'}
-          </h4>
+          <h4>{deployment.backend === 'gbrain' ? 'gbrain runtime' : 'Memory runtime'}</h4>
           <p>
             {deployment.target === 'local' ? 'Local deployment' : 'Cluster deployment'} ·{' '}
             {ready ? 'Ready' : 'Not ready'}
@@ -104,66 +100,6 @@ export function DeploymentInspection({
       )}
       {query.error && <p role="alert">Runtime inspection failed: {query.error.message}</p>}
       {query.isPending && <p role="status">Loading runtime details…</p>}
-      {runtime && deployment.backend === 'gbrain' && (
-        <section className="instance-dreams" aria-label="Native dream cycles">
-          <div className="instance-runtime-heading">
-            <div>
-              <h4>Native dream cycles</h4>
-              <p>Background maintenance performed by gbrain.</p>
-            </div>
-            <span>{runtime.dream?.enabled ? 'Scheduled' : 'Not scheduled'}</span>
-          </div>
-          {runtime.dream?.enabled && (
-            <dl className="instance-runtime-facts">
-              <div>
-                <dt>Schedule (UTC)</dt>
-                <dd>{runtime.dream.schedule}</dd>
-              </div>
-              <div>
-                <dt>Enabled phases</dt>
-                <dd>{runtime.dream.phases.join(', ')}</dd>
-              </div>
-            </dl>
-          )}
-          {latest ? (
-            <>
-              <div className="instance-runtime-heading">
-                <h4>Latest recorded cycle</h4>
-                <span>
-                  {new Date(latest.timestamp).toLocaleString()} · {latest.status}
-                  {latest.duration_ms !== undefined ? ` · ${latest.duration_ms} ms` : ''}
-                </span>
-              </div>
-              <ul className="instance-dream-phases">
-                {latest.phases.map((phase) => (
-                  <li key={phase.phase}>
-                    <div>
-                      <strong>{phase.phase}</strong>
-                      <span data-status={phase.status}>{phase.status}</span>
-                    </div>
-                    <p>
-                      {phase.details?.reason === 'no_brain_dir'
-                        ? 'Skipped: no filesystem checkout is attached to this instance.'
-                        : phase.summary}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : (
-            <p>
-              No completed dream result has been recorded in the available logs.
-              {runtime.dream?.enabled ? ' Results will appear after a cycle runs.' : ''}
-            </p>
-          )}
-          {runtime.logs.dream && (
-            <details>
-              <summary>Raw dream output</summary>
-              <pre role="log">{runtime.logs.dream}</pre>
-            </details>
-          )}
-        </section>
-      )}
       {runtime && (
         <details className="instance-process-logs">
           <summary>

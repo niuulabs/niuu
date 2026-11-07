@@ -112,7 +112,6 @@ export function nodeColour(typeId: string): readonly [number, number, number] {
       return C.indigo;
     case 'volundr':
     case 'ravn_long':
-    case 'warden':
     case 'mimir':
       return C.moon;
     case 'valkyrie':
@@ -144,8 +143,6 @@ export function nodeColour(typeId: string): readonly [number, number, number] {
 }
 
 export function identityRune(typeId: string): string {
-  if (typeId === 'warden') return 'ᚹ';
-
   const direct = SERVICE_RUNES[typeId as keyof typeof SERVICE_RUNES];
   if (direct) return direct;
 

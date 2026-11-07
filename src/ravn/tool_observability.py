@@ -206,11 +206,6 @@ def tool_argument_attributes(name: str, arguments: dict[str, Any]) -> dict[str, 
         if isinstance(learned_name, str) and learned_name:
             attributes["ravn.learned_tool.name"] = learned_name
 
-    manifest = arguments.get("manifest")
-    if name == "build_tool" and isinstance(manifest, dict):
-        tool_name = manifest.get("name")
-        if isinstance(tool_name, str) and tool_name:
-            attributes["ravn.tool_build.name"] = tool_name
     return attributes
 
 

@@ -55,11 +55,6 @@ describe('MimirTopbar', () => {
     await waitFor(() => expect(screen.getByText('pages')).toBeInTheDocument());
   });
 
-  it('renders wardens stat label', async () => {
-    wrap();
-    await waitFor(() => expect(screen.getByText('wardens')).toBeInTheDocument());
-  });
-
   it('renders lint stat label', async () => {
     wrap();
     await waitFor(() => expect(screen.getByText('lint')).toBeInTheDocument());

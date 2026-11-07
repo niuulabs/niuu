@@ -1,14 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import {
-  createMockOdinReviewService,
-  createSeedReviewItems,
-  type ReviewItem,
-} from '@niuulabs/plugin-valkyrie';
 import type { ISessionStore, Session, SessionState } from '@niuulabs/plugin-volundr';
 import { homePlugin } from './plugin';
-import { createCallLog, workspaceWithWaitingTicket } from '../testing/fakes';
+import { createCallLog, fakeVolundr, workspaceWithWaitingTicket } from '../testing/fakes';
 import { renderRealms } from '../testing/renderRealms';
 
 function session(id: string, state: SessionState, lastActivityAt: string): Session {
@@ -58,11 +52,6 @@ function fakeSessionStore(sessions: Session[] = SESSIONS): ISessionStore {
   };
 }
 
-function pendingReview(overrides: Partial<ReviewItem>): ReviewItem {
-  const [seed] = createSeedReviewItems();
-  return { ...seed!, ...overrides };
-}
-
 const withSessions = { sessionStore: fakeSessionStore() };
 
 describe('homePlugin', () => {
@@ -103,8 +92,8 @@ describe('HomePage', () => {
     await screen.findByTestId('home-choice-session');
 
     expect(screen.queryByTestId('home-choice-realm')).toBeNull();
-    const inbox = await screen.findByRole('link', { name: 'inbox' });
-    expect(inbox).toHaveAttribute('href', '/valkyrie/inbox');
+    await screen.findByTestId('home-needs-you');
+    expect(screen.queryByRole('link', { name: 'see all' })).toBeNull();
     expect(document.querySelector('a[href^="/realms"]')).toBeNull();
   });
 
@@ -146,43 +135,20 @@ describe('HomePage', () => {
     );
   });
 
-  it('answers an ask and drops the row before the server replies', async () => {
-    const user = userEvent.setup();
-    const reviews = createMockOdinReviewService([
-      pendingReview({
-        itemId: 'ask-1',
-        title: 'Install the OOM probe',
-        environmentId: 'env-k8s-valhalla',
-      }),
-      pendingReview({ itemId: 'ask-2', title: 'Raise the budget', environmentId: 'env-nowhere' }),
-    ]);
-    renderRealms('/home', { ...withSessions, 'valkyrie.reviews': reviews });
-    await screen.findByTestId('home-needs-you-ask-1');
-    expect(screen.getByTestId('home-needs-you-ask-1')).toHaveTextContent('Valhalla');
-    expect(screen.getByTestId('home-needs-you-ask-2').querySelector('a')).toHaveAttribute(
-      'href',
-      '/valkyrie/inbox',
-    );
-    await user.click(screen.getByTestId('home-needs-you-ask-1').querySelector('button')!);
-    expect(screen.queryByTestId('home-needs-you-ask-1')).not.toBeInTheDocument();
-    expect(screen.getByTestId('home-needs-you-ask-2')).toBeInTheDocument();
-  });
-
-  it('puts the row back when the decision fails', async () => {
-    const user = userEvent.setup();
-    const reviews = createMockOdinReviewService([pendingReview({ itemId: 'ask-1' })]);
-    reviews.decideReview = vi.fn(async () => {
-      throw new Error('reviews endpoint is down');
-    });
-    renderRealms('/home', { ...withSessions, 'valkyrie.reviews': reviews });
-    await screen.findByTestId('home-needs-you-ask-1');
-    await user.click(screen.getByTestId('home-needs-you-ask-1').querySelector('button')!);
-    await screen.findByText(/reviews endpoint is down/);
-    expect(screen.getByTestId('home-needs-you-ask-1')).toBeInTheDocument();
-  });
-
   it('lists the sessions blocked on you and what to continue', async () => {
-    renderRealms('/home', withSessions);
+    const log = createCallLog();
+    const services = await workspaceWithWaitingTicket(log, 'valhalla');
+    const volundr = {
+      ...fakeVolundr(log),
+      getSessions: async () => [
+        {
+          id: 'ws-1',
+          status: 'running',
+          coordination: { labels: ['work-project:link-1'] },
+        },
+      ],
+    };
+    renderRealms('/home', { ...withSessions, ...services, volundr }, log);
     await screen.findByTestId('home-needs-you-session-blocked-1');
     const cont = await screen.findByTestId('home-continue');
     expect(cont).toHaveTextContent('session live-1');
@@ -195,10 +161,7 @@ describe('HomePage', () => {
   });
 
   it('says so plainly when nothing is waiting or running', async () => {
-    renderRealms('/home', {
-      sessionStore: fakeSessionStore([]),
-      'valkyrie.reviews': createMockOdinReviewService([]),
-    });
+    renderRealms('/home', { sessionStore: fakeSessionStore([]) });
     await screen.findByText('Nothing is waiting on you.');
     expect(await screen.findByTestId('home-continue')).toBeInTheDocument();
   });

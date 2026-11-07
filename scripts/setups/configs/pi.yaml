@@ -81,16 +81,6 @@ thread:
   enricher_poll_interval_seconds: 900    # every 15 min (conserve compute)
   enricher_llm_alias: fast
 
-# ── Wakefulness: relaxed timing for Pi ────────────────────────────────────
-wakefulness:
-  enabled: true
-  silence_threshold_seconds: 3600        # 1 hour (more patient)
-  reflection_cooldown_seconds: 7200      # one reflection per 2 hours
-  deep_reflection_threshold_seconds: 14400
-  deep_reflection_cooldown_seconds: 28800
-  llm_alias: fast
-  max_intents_per_reflection: 3          # fewer intents to save tokens
-
 # ── Recap ──────────────────────────────────────────────────────────────────
 recap:
   enabled: true
