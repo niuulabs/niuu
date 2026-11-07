@@ -285,6 +285,10 @@ class VmPodManager(PodManager):
             await self._validate_lease_plan(existing, selected)
         return selected
 
+    def runs_on_compute(self, session: Session) -> bool:
+        """Every session of this pod manager runs in its compute pool."""
+        return True
+
     async def has_legacy_allocation(self, session: Session) -> bool:
         _, repository, _ = self._configured()
         lease = await repository.active_for_session(self._pool_id, session.id)
