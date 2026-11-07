@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import shutil
 import socket
 import ssl
@@ -14,6 +15,7 @@ import httpx
 import pytest
 from cryptography import x509
 
+from niuu.domain.models import Principal
 from tests.compute_host_fakes import (
     HOST_KEY,
     POOL,
@@ -37,6 +39,7 @@ from volundr.adapters.inbound.host_join_listener import (
 from volundr.domain.services.compute_hosts import ComputeHostService
 
 KEY_BITS = 2048
+ADMIN = Principal(user_id="admin", email="a@x", tenant_id="tenant", roles=["volundr:admin"])
 JOIN_SH = "/api/v1/forge/compute/hosts/join.sh"
 
 
@@ -319,3 +322,124 @@ class TestListener:
 
         assert counted == []
         assert "stopped (" not in caplog.text
+
+
+# -- a real code, minted and fetched the way an operator and a host do --------------------------
+
+
+def _mini_settings(tmp_path):
+    from volundr.config import Settings
+
+    return Settings(
+        compute={
+            "pool_id": POOL,
+            "max_machines": 1,
+            "provider": {"adapter": "x.Y"},
+            "hosts": {
+                "connectors": [{"adapter": "x.Connector", "binding_id": "direct-ssh"}],
+                "reserved_cpu": 1,
+                "reserved_memory_mib": 1024,
+                "min_free_disk_mib": 1024,
+                "pairing_signing_key_file": str(tmp_path / "pairing.pem"),
+            },
+        }
+    )
+
+
+def _mini_signer(tmp_path):
+    """The signer a mini-mode Forge composes: no workload identity, its own key file."""
+    from niuu.service_runtime import create_workload_identity_service
+    from volundr.composition_builders import _create_host_pairing_signer
+
+    settings = _mini_settings(tmp_path)
+    workload = create_workload_identity_service(settings.workload_identity)
+    assert workload.enabled is False
+    return _create_host_pairing_signer(settings, workload)
+
+
+def _real_service(tls: JoinTls, signer, repository: HostRepository) -> ComputeHostService:
+    return ComputeHostService(
+        pool_id=POOL,
+        repository=repository,
+        compute_repository=SlotLedger(),
+        compute_pool=HostPool(repository),
+        connectors={"direct-ssh": Connector()},
+        inspector=Inspector(),
+        executions={"host@1": make_execution()},
+        token_issuer=signer,
+        join_url="https://127.0.0.1:{port}",
+        join_pin=tls.pin,
+        pairing_code_ttl_seconds=600,
+        check_interval_seconds=300,
+        pending_check_interval_seconds=5,
+        reserved_cpu=4,
+        reserved_memory_mib=8192,
+    )
+
+
+@pytest.mark.skipif(shutil.which("curl") is None, reason="needs curl")
+class TestMintThenFetch:
+    async def _mint(self, service: ComputeHostService):
+        return await service.mint(
+            ADMIN, execution="host@1", connector="direct-ssh", tags=[], slots=None
+        )
+
+    async def _fetch(self, tls, service, command: str, out) -> subprocess.CompletedProcess:
+        """Run the minted download command against a listener serving ``service``."""
+        listener = HostJoinListener(
+            create_host_join_app(service), bind_host="127.0.0.1", port=0, tls=tls
+        )
+        await listener.start()
+        try:
+            argv = shlex.split(command.replace("{port}", str(listener.port)))
+            argv[argv.index("-o") + 1] = str(out)
+            return await asyncio.to_thread(
+                subprocess.run, [*argv, "-w", "%{http_code}"], capture_output=True, text=True
+            )
+        finally:
+            await listener.stop()
+
+    async def test_the_minted_command_fetches_the_join_script(self, tmp_path, shared_tls):
+        service = _real_service(shared_tls, _mini_signer(tmp_path), HostRepository())
+        minted = await self._mint(service)
+
+        fetched = await self._fetch(shared_tls, service, minted.command_download, tmp_path / "j")
+
+        assert fetched.returncode == 0, fetched.stderr
+        assert fetched.stdout == "200"
+        script = (tmp_path / "j").read_text()
+        assert script.startswith("#!")
+        assert minted.code in script
+
+    async def test_a_code_minted_before_a_restart_still_fetches_after_it(
+        self, tmp_path, shared_tls
+    ):
+        repository = HostRepository()
+        minted = await self._mint(_real_service(shared_tls, _mini_signer(tmp_path), repository))
+        restarted = _real_service(shared_tls, _mini_signer(tmp_path), repository)
+
+        fetched = await self._fetch(shared_tls, restarted, minted.command_download, tmp_path / "j")
+
+        assert (fetched.returncode, fetched.stdout) == (0, "200"), fetched.stderr
+
+    async def test_a_code_another_forge_signed_is_refused(self, tmp_path, shared_tls):
+        repository = HostRepository()
+        minted = await self._mint(
+            _real_service(shared_tls, _mini_signer(tmp_path / "other"), repository)
+        )
+        ours = _real_service(shared_tls, _mini_signer(tmp_path), repository)
+
+        fetched = await self._fetch(shared_tls, ours, minted.command_download, tmp_path / "j")
+
+        assert fetched.stdout == "401"
+        assert fetched.returncode == 22  # curl -f
+
+    async def test_a_code_this_forge_has_no_record_of_is_refused(self, tmp_path, shared_tls):
+        # A stack restarted on a fresh database keeps its key but not the code.
+        signer = _mini_signer(tmp_path)
+        minted = await self._mint(_real_service(shared_tls, signer, HostRepository()))
+        fresh = _real_service(shared_tls, signer, HostRepository())
+
+        fetched = await self._fetch(shared_tls, fresh, minted.command_download, tmp_path / "j")
+
+        assert fetched.stdout == "401"
