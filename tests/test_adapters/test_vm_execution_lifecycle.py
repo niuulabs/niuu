@@ -525,3 +525,50 @@ async def test_a_standby_host_must_match_the_sessions_plan(tmp_path: Path):
             await leases.bind(
                 spare, session.id, "owner", "tenant", MachineBootstrap(), 60, execution_plan=other
             )
+
+
+async def test_a_session_whose_revision_a_release_retired_is_stopped_by_its_successor(
+    tmp_path: Path, caplog
+):
+    manager, leases, repository, provider, runtime, preparation, resolver, plan, session = _setup(
+        tmp_path
+    )
+    pool = ComputePoolService(
+        repository,
+        leases,
+        provider,
+        RecordingPlanRuntime("legacy-pool"),
+        pool_id="pool",
+        defaults=ComputePoolPolicy(profile="small", max_machines=2, warm_min=0),
+        bootstrap=MachineBootstrap(),
+        interval_seconds=0.001,
+    )
+    pool.configure_execution(resolver, {plan.plan_digest: runtime}, {plan.plan_digest: preparation})
+    manager.configure_pool(pool)
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    # The release offers the execution under a new revision only, as the built-in host
+    # catalog does when its content changes.
+    execution_path = tmp_path / "executions" / "vm.yaml"
+    execution = yaml.safe_load(execution_path.read_text(encoding="utf-8"))
+    execution["revision"] = "next-release"
+    _yaml(execution_path, execution)
+    catalog_path = tmp_path / "catalog.yaml"
+    catalog = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
+    catalog["default_execution"] = {"id": "vm", "revision": "next-release"}
+    catalog["legacy_compute_profiles"] = {"small": {"id": "vm", "revision": "next-release"}}
+    _yaml(catalog_path, catalog)
+    successor_plan = resolver.resolve()
+    successor = RecordingPlanRuntime("successor")
+    # The restarted Forge composes only what its catalog offers.
+    pool.configure_execution(
+        resolver,
+        {successor_plan.plan_digest: successor},
+        {successor_plan.plan_digest: preparation},
+    )
+
+    assert await manager.stop(session)
+
+    assert "stop" in successor.calls
+    assert "stop" not in runtime.calls
+    assert "runs vm@2026-09-18, which this Forge no longer offers" in caplog.text
+    assert "vm@next-release stops it" in caplog.text

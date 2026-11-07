@@ -32,7 +32,7 @@ from volundr.domain.compute import (
     session_limit,
     usable_slots,
 )
-from volundr.domain.execution_catalog import ResolvedExecutionPlan
+from volundr.domain.execution_catalog import ExecutionPlanMismatchError, ResolvedExecutionPlan
 from volundr.domain.host_preparation import HostPreparation
 from volundr.domain.services.compute_leases import ComputeLeaseService
 from volundr.domain.services.execution_catalog import ExecutionPlanResolver
@@ -535,7 +535,7 @@ class ComputePoolService:
         is not reused drains the machine.
         """
         view = SlotLease(allocation=lease, binding=binding)
-        runtime = self._runtime_for_slot(view)
+        runtime = self._stopping_runtime(view)
         if binding.runtime_data_started:
             await runtime.stop(view, await self.leases.bootstrap_for(view))
         policy = await self.policy()
@@ -614,6 +614,47 @@ class ComputePoolService:
     def _runtime_for_slot(self, view: SlotLease) -> VmRuntime:
         """The runtime of the plan the session was started with."""
         return self._runtime_for(view.execution_plan, view.allocation)
+
+    def _stopping_runtime(self, view: SlotLease) -> VmRuntime:
+        """The runtime that stops a session: its own, or after a release, its successor's.
+
+        A Forge release can retire the revision a running session is pinned to (the
+        built-in host catalog's revision follows its content). The session must still be
+        stopped, not left running on the machine, so the one revision of the same execution
+        now offered stops it; the slot is then audited like any other and retired unless
+        proven clean. A pinned revision still offered with other content is not retired
+        but changed in place, and stays refused.
+        """
+        try:
+            return self._runtime_for_slot(view)
+        except ExecutionPlanMismatchError:
+            pinned = view.execution_plan
+            if pinned is None or self._execution_resolver is None:
+                raise
+            offered = self._execution_resolver.plans()
+            if any(plan.execution == pinned.execution for plan in offered):
+                raise
+            successors = [plan for plan in offered if plan.execution.id == pinned.execution.id]
+            runtime = (
+                self._execution_runtimes.get(successors[0].plan_digest)
+                if len(successors) == 1
+                else None
+            )
+            if runtime is None:
+                raise
+        logger.error(
+            "Slot %d of allocation %s in pool %s runs %s, which this Forge no longer offers; "
+            "%s stops it",
+            view.slot,
+            view.id,
+            self.pool_id,
+            pinned.execution,
+            successors[0].execution,
+        )
+        get_observability().count(
+            "volundr.compute.slot.stopped_by_successor", attributes={"pool": self.pool_id}
+        )
+        return runtime
 
     def _warm_eligible(
         self,

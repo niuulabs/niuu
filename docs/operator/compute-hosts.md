@@ -65,7 +65,10 @@ setting), which gives it a new revision. Every host follows it: on its next main
 pass Forge moves a host whose revision is no longer offered onto the one revision of the
 same execution it now offers, logs `Host … now runs …` and counts
 `volundr.compute.host.execution_followed`. The host's allocation still pins the old
-plan, so the pool re-prepares it with the new one once it is idle. A host whose
+plan, so the pool re-prepares it with the new one once it is idle. A session still
+running on a revision a release retired is stopped by its successor (logged, counted on
+`volundr.compute.slot.stopped_by_successor`), and its slot is audited before reuse like
+any other; a revision changed in place under the same name is refused instead. A host whose
 execution is offered under no revision, or several, is quarantined with the finding
 "its execution … is no longer offered"; remove it and join it again.
 
