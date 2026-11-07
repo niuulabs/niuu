@@ -69,8 +69,6 @@ spec:
                   name: {{ required "database.existingSecret is required when database.enabled=true" .Values.database.existingSecret | quote }}
                   key: {{ .Values.database.secretKey | quote }}
             {{- end }}
-            - name: RAVN_WARDENS_DIR
-              value: {{ printf "%s/wardens" (.Values.persistence.mountPath | default "/home/niuu/.ravn") | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

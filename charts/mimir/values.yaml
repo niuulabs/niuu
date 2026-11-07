@@ -262,35 +262,7 @@ config:
   # (buffer_size: 2000, window_seconds: 900). Fields match
   # mimir.config.LiveActivityConfig.
   liveActivity: {}
-  # Mount the memory residents serve from their own gateways
-  # (gateway.channels.http.mimir_served_mount). The directory says which stores
-  # are served and where; each is opened by name only (resident-<id>), never in
-  # merged reads. Fields match mimir.config.ResidentMemoryConfig:
-  #   directory:
-  #     adapter: mimir.adapters.valkyrie_memory.ValkyrieMemoryDirectory
-  #     base_url: http://<host serving /api/v1/ravn/valkyrie>
-  #     auth_adapter: niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter
-  #     auth_kwargs: {exchange_url: ..., token_file: ..., audiences: [volundr-api]}
-  #     timeout_seconds: 10
-  #   mount_auth: {type: workload, exchange_url: ..., token_file: ..., audiences: [resident-memory]}
-  residentMemory: null
 
 # Optional dynamic Flux deployment adapter configuration. Disabled by default.
 # Supply namespace, source_name, chart_versions, images and cluster in this map.
 knowledgeDeployment: null
-
-# Optional resident attached to this knowledge instance. Configure the existing
-# Ravn runtime and provider credentials at the deployment target.
-warden:
-  enabled: false
-  image: ""
-  # Same fields as a manually created WardenSpec: model, persona, profile,
-  # features, schedules, console and broker. Instance binding is supplied by the chart.
-  spec:
-    console:
-      host: "127.0.0.1"
-      port: 8764
-  # Advanced Ravn Settings overrides; credentials remain in envFrom Secrets.
-  config: {}
-  envFrom: []
-  resources: {}

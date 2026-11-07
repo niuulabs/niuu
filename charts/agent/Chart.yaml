@@ -7,7 +7,6 @@ appVersion: "0.0.0-ting.159"
 keywords:
   - agent
   - ravn
-  - warden
   - valkyrie
   - ai
 maintainers:

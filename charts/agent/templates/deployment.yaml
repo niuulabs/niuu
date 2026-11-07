@@ -55,7 +55,7 @@ spec:
             - name: RAVN_CONFIG
               value: {{ .Values.agent.configPath | default "/etc/ravn/config.yaml" | quote }}
             - name: RAVN_PERSONA
-              value: {{ .Values.agent.persona | default "mimir-warden" | quote }}
+              value: {{ required "agent.persona is required" .Values.agent.persona | quote }}
             - name: RAVN_PROFILE
               value: {{ .Values.agent.profile | default "" | quote }}
             - name: RAVN_PERMISSION__WORKSPACE_ROOT
