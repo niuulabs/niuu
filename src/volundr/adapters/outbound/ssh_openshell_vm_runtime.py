@@ -25,6 +25,7 @@ from volundr.adapters.outbound.ssh_vm_runtime import (
 )
 from volundr.domain.compute import AllocationRef, ComputeLease, MachineBootstrap, SlotLease
 from volundr.domain.models import Session, SessionSpec
+from volundr.domain.session_runtimes import SessionRuntimeKind
 
 _OPEN_SHELL_ERROR_PREFIX = "NIIU_OPEN_SHELL_STAGE:"
 _OPEN_SHELL_DETAIL_PREFIX = "NIIU_OPEN_SHELL_DETAIL:"
@@ -705,6 +706,10 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
 
     # Each session is an OpenShell sandbox, whose policy is its boundary.
     _separates_slots = False
+
+    @property
+    def session_runtime(self) -> SessionRuntimeKind | None:
+        return SessionRuntimeKind.OPENSHELL
 
     def __init__(
         self,

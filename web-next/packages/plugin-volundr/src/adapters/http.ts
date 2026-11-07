@@ -75,6 +75,7 @@ import type {
 } from '../models/volundr.model';
 import { normalizeSecretRequest, type SecretRequestPayload } from './secretRequestWire';
 import { SessionForkError, SessionReadStateConflictError } from '../domain/session';
+import type { SessionRuntimeOffer } from '../domain/sessionRuntimes';
 
 /** Minimal HTTP client — structurally compatible with ApiClient from @niuulabs/query. */
 export interface HttpClient {
@@ -472,6 +473,14 @@ type InstanceTargetPayload = {
   is_default?: boolean;
   visibility?: string;
   tags?: string[];
+};
+
+type SessionRuntimePayload = {
+  runtime: SessionRuntimeOffer['runtime'];
+  execution_profile: string;
+  default: boolean;
+  grants: SessionRuntimeOffer['grants'];
+  readiness: SessionRuntimeOffer['readiness'];
 };
 
 type SessionDefinitionPayload = {
@@ -1936,6 +1945,21 @@ export function buildVolundrHttpAdapter(
         `/settings/live-preview${instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : ''}`,
       );
       return { enabled: payload.enabled, originTemplate: payload.origin_template };
+    },
+    getSessionRuntimes: async (instanceId) => {
+      const payload = await forgeClient.get<{ runtimes?: SessionRuntimePayload[] }>(
+        `/session-runtimes${instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : ''}`,
+      );
+      if (!Array.isArray(payload?.runtimes)) {
+        throw new Error(`Invalid session runtimes from ${instanceId ?? 'the default host'}`);
+      }
+      return payload.runtimes.map((offer) => ({
+        runtime: offer.runtime,
+        executionProfile: offer.execution_profile,
+        isDefault: offer.default,
+        grants: offer.grants,
+        readiness: offer.readiness,
+      }));
     },
     getSessionDefinitions: async () => {
       const payload = await catalogClient.get<SessionDefinitionPayload[]>('/session-definitions');

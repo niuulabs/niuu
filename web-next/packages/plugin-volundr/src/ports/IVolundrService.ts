@@ -7,6 +7,7 @@
  */
 import type { SecretFulfillment, SecretRequest } from '@niuulabs/domain';
 import type { LivePreviewConfig } from '../domain/livePreview';
+import type { SessionRuntimeOffer } from '../domain/sessionRuntimes';
 import type {
   VolundrFeatures,
   VolundrSession,
@@ -155,6 +156,11 @@ export interface IVolundrService {
    * host has its own preview domain, so ask the one that runs the session.
    */
   getLivePreviewConfig(instanceId?: string): Promise<LivePreviewConfig>;
+  /**
+   * What a launch on the host may run as ("Runs as"), with warm readiness. Empty when the
+   * host offers no choice. Each Forge host offers its own, so ask the one that will run it.
+   */
+  getSessionRuntimes(instanceId?: string): Promise<SessionRuntimeOffer[]>;
 
   // Session definitions
   getSessionDefinitions(): Promise<SessionDefinition[]>;

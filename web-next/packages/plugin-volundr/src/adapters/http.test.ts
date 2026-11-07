@@ -1506,6 +1506,46 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.get).toHaveBeenCalledWith('/settings/live-preview?instance_id=host%2Fa');
   });
 
+  it('getSessionRuntimes reads what a launch on the host may run as', async () => {
+    const client = makeClient();
+    vi.mocked(client.get).mockResolvedValue({
+      runtimes: [
+        {
+          runtime: 'openshell',
+          execution_profile: 'vm-openshell@1',
+          default: false,
+          grants: ['sudo'],
+          readiness: { state: 'boot', warm: 0, remedy: null },
+        },
+      ],
+    });
+    expect(await buildVolundrHttpAdapter(client).getSessionRuntimes('host/a')).toEqual([
+      {
+        runtime: 'openshell',
+        executionProfile: 'vm-openshell@1',
+        isDefault: false,
+        grants: ['sudo'],
+        readiness: { state: 'boot', warm: 0, remedy: null },
+      },
+    ]);
+    expect(client.get).toHaveBeenCalledWith('/session-runtimes?instance_id=host%2Fa');
+  });
+
+  it('getSessionRuntimes refuses an answer that lists no runtimes', async () => {
+    const client = makeClient();
+    vi.mocked(client.get).mockResolvedValue([]);
+    await expect(buildVolundrHttpAdapter(client).getSessionRuntimes('vms')).rejects.toThrow(
+      'Invalid session runtimes from vms',
+    );
+  });
+
+  it('getSessionRuntimes asks the default host without an instance', async () => {
+    const client = makeClient();
+    vi.mocked(client.get).mockResolvedValue({ runtimes: [] });
+    expect(await buildVolundrHttpAdapter(client).getSessionRuntimes()).toEqual([]);
+    expect(client.get).toHaveBeenCalledWith('/session-runtimes');
+  });
+
   it('getCredentials forwards the optional secret type and applies the fallback type', async () => {
     const client = makeClientWithBase('http://localhost:8080/api/v1');
     const service = buildVolundrHttpAdapter(client);

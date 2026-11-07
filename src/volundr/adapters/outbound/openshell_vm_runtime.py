@@ -27,6 +27,7 @@ from volundr.adapters.outbound.ssh_vm_runtime import (
 )
 from volundr.domain.compute import BootstrapFile, MachineBootstrap, SlotLease
 from volundr.domain.models import PodSpecAdditions, Session, SessionSpec
+from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.domain.vm_runtime import VmRuntimeUnavailableError
 
 _SPEC = "/etc/niuu/openshell-session.json"
@@ -77,6 +78,10 @@ class OpenShellVmRuntime(SshContainerVmRuntime):
     _runs_pod_containers = False
     # The OpenShell sandbox and its policy are the session's boundary.
     _separates_slots = False
+
+    @property
+    def session_runtime(self) -> SessionRuntimeKind | None:
+        return SessionRuntimeKind.OPENSHELL
 
     @property
     def delivers_forge_session_token(self) -> bool:

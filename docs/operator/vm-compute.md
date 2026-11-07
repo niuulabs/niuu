@@ -175,7 +175,7 @@ The root is a versioned package with this layout:
 
 | Path | Required fields and purpose |
 | --- | --- |
-| `catalog.yaml` | Exact `default_execution` reference (`id`, `revision`) and optional `legacy_compute_profiles` mapping from old `compute_profile` names to exact execution references. |
+| `catalog.yaml` | Exact `default_execution` reference (`id`, `revision`), optional `legacy_compute_profiles` mapping from old `compute_profile` names to exact execution references, and optional `launch_executions`: the exact executions Launch offers as a "Runs as" choice, in order. |
 | `machines/*.yaml` | `id`, `revision`, provider-owned `provider_profile` name, and declared `host_requirements`. Provider-specific image, network, placement and sizing remain in `compute.provider.kwargs.profiles`. |
 | `host-recipes/*.yaml` | `id`, `revision`, `preparation` adapter binding, pinned `artifacts`, and ordered `stages`. |
 | `access/*.yaml` | `id`, `revision`, `transport` adapter binding, guest `principal`, and `trust` contract. |
@@ -199,6 +199,37 @@ An execution request uses exact `id@revision` syntax in
 `catalog.yaml`. The legacy `workload_config.compute_profile` field works only when
 `legacy_compute_profiles` explicitly maps it; specifying old and new fields with
 different results is an error.
+
+### Launch runtime choice
+
+`launch_executions` lists the executions a person may choose between when they
+launch a session on this Forge ("Runs as" in Quick and Advanced launch):
+
+```yaml
+default_execution: {id: vm-container, revision: "1"}
+launch_executions:
+  - {id: vm-container, revision: "1"}
+  - {id: vm-openshell, revision: "1"}
+```
+
+What each one runs as comes from its runtime adapter, not from the YAML:
+`SshContainerVmRuntime` is **Container**, `SshOpenShellVmRuntime` and
+`OpenShellVmRuntime` are **OpenShell**. Forge refuses to start when an offered
+execution's runtime cannot be offered (it declares no kind) or when two offered
+executions run as the same kind. Omit the list, or leave it empty, and the host
+offers no choice: Launch shows none and sessions run `default_execution`. The list
+is not part of any plan digest, so changing it never blocks a pinned lease.
+
+`GET /api/v1/forge/session-runtimes` (and the Guild facade's
+`?instance_id=` form) reports each offer: its `runtime`, the `execution_profile`
+to send, whether it is the `default`, the `grants` it can give, and its
+`readiness`: `warm` with the number of free prepared machines whose host matches
+the execution, `boot` when a new machine must boot first, or `full` with the
+remedy. Launch sends the choice as `workload_config.execution_profile`.
+
+Grants (`sudo`, `docker`) are offered only by a runtime adapter that declares them
+and are sent as `workload_config.runtime_grants`. No shipped runtime declares any
+yet, so a session that asks for a grant is refused with 422 before it starts.
 
 Revisions are immutable. Changing any entry or repinning an artifact under the same
 `id`/`revision` changes the resolved plan digest and blocks recovery of a lease pinned
