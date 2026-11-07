@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { UserMessage, AssistantMessage, StreamingMessage, SystemMessage } from './ChatMessages';
+import {
+  UserMessage,
+  AssistantMessage,
+  StreamingMessage,
+  SystemMessage,
+  messageTime,
+} from './ChatMessages';
 import type { ChatMessage } from '../../types';
 
 // The per-message action bar (copy/regenerate/bookmark) is opt-in and hidden by
@@ -110,6 +116,17 @@ describe('AssistantMessage', () => {
     expect(onRegenerate).toHaveBeenCalledWith('a1');
   });
 
+  it('shows Forward… only when onForward is given and passes the message', () => {
+    const { unmount } = render(<AssistantMessage message={assistantMsg} />);
+    expect(screen.queryByRole('button', { name: 'Forward…' })).toBeNull();
+    unmount();
+
+    const onForward = vi.fn();
+    render(<AssistantMessage message={assistantMsg} onForward={onForward} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Forward…' }));
+    expect(onForward).toHaveBeenCalledWith(assistantMsg);
+  });
+
   it('toggles reasoning section when present', () => {
     const msgWithReasoning: ChatMessage = {
       ...assistantMsg,
@@ -138,7 +155,7 @@ describe('StreamingMessage', () => {
 
   it('shows model badge when model provided', () => {
     render(<StreamingMessage content="Streaming..." model="claude-opus-4-6" />);
-    expect(screen.getByText('claude-opus-4-6')).toBeInTheDocument();
+    expect(screen.getByText('Claude Opus 4.6')).toBeInTheDocument();
   });
 
   it('shows reasoning content when parts contain reasoning', () => {
@@ -150,14 +167,14 @@ describe('StreamingMessage', () => {
   it('renders tool blocks when parts contain tool_use', () => {
     const parts = [{ type: 'tool_use' as const, id: 't1', name: 'Bash', input: { command: 'ls' } }];
     render(<StreamingMessage content="partial" parts={parts} />);
-    expect(screen.getByTestId('tool-block')).toBeInTheDocument();
+    expect(screen.getByTestId('tool-group-block')).toBeInTheDocument();
   });
 
   it('renders tool blocks while streaming before text content arrives', () => {
     const parts = [{ type: 'tool_use' as const, id: 't1', name: 'Bash', input: { command: 'ls' } }];
     render(<StreamingMessage content="" parts={parts} />);
     expect(screen.getByText('Using tools...')).toBeInTheDocument();
-    expect(screen.getByTestId('tool-block')).toBeInTheDocument();
+    expect(screen.getByTestId('tool-group-block')).toBeInTheDocument();
   });
 });
 
@@ -170,7 +187,7 @@ describe('AssistantMessage — extended', () => {
       ],
     };
     render(<AssistantMessage message={msg} />);
-    expect(screen.getByTestId('tool-block')).toBeInTheDocument();
+    expect(screen.getByTestId('tool-group-block')).toBeInTheDocument();
   });
 
   it('calls onBookmark when bookmark button clicked', () => {
@@ -366,5 +383,59 @@ describe('Forge notification turns', () => {
     );
     expect(screen.getByTestId('tool-block')).toHaveTextContent('Notification failed');
     expect(screen.getByTestId('tool-block')).toHaveTextContent('Need a decision');
+  });
+});
+
+describe('messageTime', () => {
+  const now = new Date(2026, 10, 5, 18, 0);
+  it('dates a message as Lexi does: today, yesterday, then the day', () => {
+    expect(messageTime(new Date(2026, 10, 5, 13, 8), now)).toBe('Today at 1:08 PM');
+    expect(messageTime(new Date(2026, 10, 4, 9, 54), now)).toBe('Yesterday at 9:54 AM');
+    expect(messageTime(new Date(2026, 9, 31, 9, 54), now)).toBe('Oct 31, 2026 at 9:54 AM');
+  });
+});
+
+describe('secret request turns', () => {
+  const secretTurn: ChatMessage = {
+    id: 'sr_1',
+    role: 'assistant',
+    content: 'Secret requested: GITLAB_TOKEN',
+    createdAt: now,
+    status: 'done',
+    parts: [
+      {
+        type: 'tool_use',
+        id: 'sr_1',
+        name: 'secret_request',
+        input: {
+          request_id: 'r-1',
+          name: 'GITLAB_TOKEN',
+          purpose: 'Push the branch',
+          target: 'gitlab.niuu.world',
+        },
+      },
+    ],
+  };
+
+  it('renders a read-only card without a host and does not repeat the content as prose', () => {
+    render(<AssistantMessage message={secretTurn} />);
+    const card = screen.getByTestId('secret-request-card');
+    expect(card).toHaveTextContent('Push the branch');
+    expect(card).toHaveTextContent('Answer this in Forge');
+    expect(screen.queryByText('Secret requested: GITLAB_TOKEN')).toBeNull();
+    expect(screen.queryByTestId('tool-block')).toBeNull();
+  });
+
+  it('falls back to a generic tool block when the input is unreadable', () => {
+    render(
+      <AssistantMessage
+        message={{
+          ...secretTurn,
+          parts: [{ type: 'tool_use', id: 'sr_2', name: 'secret_request', input: {} }],
+        }}
+      />,
+    );
+    expect(screen.queryByTestId('secret-request-card')).toBeNull();
+    expect(screen.getByTestId('tool-block')).toBeInTheDocument();
   });
 });

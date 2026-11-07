@@ -9,6 +9,7 @@ export default defineConfig({
   clean: true,
   external: [
     'react',
+    'react-dom',
     '@tanstack/react-query',
     '@tanstack/react-router',
     '@niuulabs/plugin-sdk',

@@ -42,6 +42,8 @@ import {
 import { AdvancedRuntimeSection } from './LaunchWizardAdvancedRuntime';
 import { EngineSelect } from './EngineSelect';
 import { availableEngines, providerModels, withEngineProvider } from './launchEngines';
+import { RunsAs, RunsAsReadiness } from './RunsAs';
+import type { useRunsAs } from './hooks/useRunsAs';
 import './LaunchWizard.css';
 
 export function RuntimeStep({
@@ -62,6 +64,7 @@ export function RuntimeStep({
   providerError = null,
   onApplyPreset,
   onSavePreset,
+  runsAs,
 }: {
   form: WizardForm;
   update: (patch: Partial<WizardForm>) => void;
@@ -82,6 +85,8 @@ export function RuntimeStep({
   providerError?: Error | null;
   onApplyPreset: (launchSpecRef: string) => void;
   onSavePreset: (name: string) => Promise<void>;
+  /** What the chosen host runs every session as; absent says nothing. */
+  runsAs?: ReturnType<typeof useRunsAs>;
 }) {
   const engines = useMemo(
     () => availableEngines(sessionDefinitions, integrations, integrationCatalog),
@@ -354,6 +359,21 @@ export function RuntimeStep({
                 )}
               </div>
             </Field>
+          ) : null}
+          {runsAs?.error ? (
+            <p role="alert" className="niuu:text-xs niuu:text-danger">
+              Could not read how this host runs sessions: {runsAs.error.message}
+            </p>
+          ) : null}
+          {runsAs?.offer ? (
+            <div className="niuu:flex niuu:flex-col niuu:gap-2">
+              <RunsAs
+                offer={runsAs.offer}
+                grants={runsAs.grants}
+                onGrantsChange={runsAs.setGrants}
+              />
+              <RunsAsReadiness offer={runsAs.offer} />
+            </div>
           ) : null}
           <RuntimePanel
             title="Prompting"

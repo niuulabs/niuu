@@ -1,19 +1,10 @@
-import { useState } from 'react';
-import { CheckCircle, XCircle, AlertTriangle, RotateCcw, ArrowUpCircle } from 'lucide-react';
+import { useState, type CSSProperties } from 'react';
 import { cn } from '../../../utils/cn';
-import type { MeshVerdict } from '../../types';
+import { verdictLabel, verdictTone, type WorkerOutcome } from '../../workers';
 import { MarkdownContent } from '../MarkdownContent';
+import { VerdictPill } from '../VerdictPill';
+import { useOutcomeSpeaker, type OutcomeSpeaker } from './OutcomeSpeaker';
 import './OutcomeCard.css';
-
-const VERDICT_ICONS: Record<MeshVerdict, typeof CheckCircle> = {
-  approve: CheckCircle,
-  pass: CheckCircle,
-  retry: RotateCcw,
-  escalate: ArrowUpCircle,
-  fail: XCircle,
-  needs_changes: AlertTriangle,
-  needs_review: AlertTriangle,
-};
 
 const WRAPPED_OUTCOME_START = /---\s*o\s*u\s*t\s*c\s*o\s*m\s*e\s*---/i;
 const WRAPPED_OUTCOME_END = /---\s*e\s*n\s*d\s*---/i;
@@ -201,7 +192,8 @@ function jsonFields(value: Record<string, unknown>): Record<string, string> {
   return fields;
 }
 
-function parseFields(raw: string): Record<string, string> {
+/** An outcome block's fields, from JSON or `key: value` lines. */
+export function parseOutcomeFields(raw: string): Record<string, string> {
   const json = parseJsonObject(raw);
   if (json) return jsonFields(json);
   const normalizedRaw = normalizeSoftWrappedOutcomeRaw(raw);
@@ -383,48 +375,86 @@ function restoreInlineMarkdownBreaks(value: string): string {
   ).trim();
 }
 
-interface OutcomeCardProps {
-  raw: string;
+/** Fields the card shows in its own slots rather than as facts. */
+const SLOT_FIELDS = new Set(['verdict', 'status', 'summary', 'result', 'event_type', 'eventType']);
+
+/**
+ * A field that is one short plain line reads as a fact chip next to the others; a longer
+ * one, a multi-line one or one written in markdown keeps its own block below, rendered in
+ * full. This sorts fields, it never drops one.
+ */
+const FACT_MAX_LENGTH = 48;
+const MARKDOWN_SYNTAX = /[`*[\]#]|^\s*(?:[-+>]|\d+[.)])\s/;
+
+function isFact(value: string): boolean {
+  return value.length <= FACT_MAX_LENGTH && !value.includes('\n') && !MARKDOWN_SYNTAX.test(value);
 }
 
-export function OutcomeCard({ raw }: OutcomeCardProps) {
+interface OutcomeCardProps {
+  raw: string;
+  /** The worker who reported it; defaults to the one speaking the message that carries it. */
+  speaker?: OutcomeSpeaker;
+}
+
+interface OutcomeViewProps {
+  raw: string;
+  fields: Readonly<Record<string, string>>;
+  speaker: OutcomeSpeaker | null;
+}
+
+function OutcomeView({ raw, fields, speaker }: OutcomeViewProps) {
   const [showRaw, setShowRaw] = useState(false);
-  const fields = parseFields(raw);
-  const verdict = (fields.verdict ?? fields.status ?? '') as MeshVerdict | '';
+  const verdict = fields.verdict ?? fields.status ?? '';
   const summary = fields.summary ?? fields.result ?? '';
-  const Icon = verdict && VERDICT_ICONS[verdict] ? VERDICT_ICONS[verdict] : CheckCircle;
+  const eventType = fields.event_type ?? fields.eventType ?? '';
+  const tone = verdictTone(verdict || undefined);
+  const rest = Object.entries(fields).filter(([key]) => !SLOT_FIELDS.has(key));
+  const facts = rest.filter(([, value]) => isFact(value));
+  const blocks = rest.filter(([, value]) => !isFact(value));
 
   return (
     <div
-      className={cn('niuu-chat-outcome', verdict && `niuu-chat-outcome--${verdict}`)}
+      className={cn(
+        'niuu-chat-outcome',
+        `niuu-chat-outcome--tone-${tone}`,
+        verdict && `niuu-chat-outcome--${verdict}`,
+      )}
+      style={speaker ? ({ '--niuu-worker-color': speaker.color } as CSSProperties) : undefined}
       data-testid="outcome-card"
     >
       <div className="niuu-chat-outcome-header">
-        <Icon className="niuu-chat-outcome-icon" />
         <span className="niuu-chat-outcome-label">Outcome</span>
-        {verdict && (
-          <span className={`niuu-chat-outcome-badge niuu-chat-outcome-badge--${verdict}`}>
-            {verdict}
-          </span>
-        )}
+        {speaker && <b className="niuu-chat-outcome-worker">{speaker.name}</b>}
+        {verdict && <VerdictPill label={verdictLabel(verdict)} tone={tone} />}
+        {eventType && <span className="niuu-chat-outcome-event">{eventType}</span>}
       </div>
       {summary && (
         <div className="niuu-chat-outcome-summary">
           <MarkdownContent content={restoreInlineMarkdownBreaks(summary)} />
         </div>
       )}
-      <div className="niuu-chat-outcome-fields">
-        {Object.entries(fields)
-          .filter(([k]) => k !== 'verdict' && k !== 'status' && k !== 'summary' && k !== 'result')
-          .map(([k, v]) => (
-            <div key={k} className="niuu-chat-outcome-field">
-              <span className="niuu-chat-outcome-field-key">{k.replace(/_/g, ' ')}</span>
+      {facts.length > 0 && (
+        <div className="niuu-chat-outcome-facts">
+          {facts.map(([key, value]) => (
+            <span key={key} className="niuu-chat-outcome-fact">
+              <b>{key.replace(/_/g, ' ')}</b>
+              {value}
+            </span>
+          ))}
+        </div>
+      )}
+      {blocks.length > 0 && (
+        <div className="niuu-chat-outcome-fields">
+          {blocks.map(([key, value]) => (
+            <div key={key} className="niuu-chat-outcome-field">
+              <span className="niuu-chat-outcome-field-key">{key.replace(/_/g, ' ')}</span>
               <div className="niuu-chat-outcome-field-value">
-                <MarkdownContent content={restoreInlineMarkdownBreaks(v)} />
+                <MarkdownContent content={restoreInlineMarkdownBreaks(value)} />
               </div>
             </div>
           ))}
-      </div>
+        </div>
+      )}
       <button
         type="button"
         className="niuu-chat-outcome-toggle"
@@ -435,6 +465,45 @@ export function OutcomeCard({ raw }: OutcomeCardProps) {
       {showRaw && <pre className="niuu-chat-outcome-raw">{raw}</pre>}
     </div>
   );
+}
+
+export function OutcomeCard({ raw, speaker }: OutcomeCardProps) {
+  const fromMessage = useOutcomeSpeaker();
+  return (
+    <OutcomeView raw={raw} fields={parseOutcomeFields(raw)} speaker={speaker ?? fromMessage} />
+  );
+}
+
+function fieldText(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value);
+}
+
+/**
+ * The same card for an outcome that arrived only as a live event, with no transcript message
+ * to carry it. Its fields are the event's own; nothing is invented to fill the card.
+ */
+export function WorkerOutcomeCard({
+  outcome,
+  speaker,
+}: {
+  outcome: WorkerOutcome;
+  speaker: OutcomeSpeaker;
+}) {
+  const fields: Record<string, string> = {};
+  for (const [key, value] of Object.entries(outcome.fields)) {
+    const text = fieldText(value);
+    if (text) fields[key] = text;
+  }
+  if (outcome.verdict) fields.verdict = outcome.verdict;
+  if (outcome.summary) fields.summary = outcome.summary;
+  fields.event_type = outcome.eventType;
+  const raw = Object.entries(fields)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join('\n');
+  return <OutcomeView raw={raw} fields={fields} speaker={speaker} />;
 }
 
 /**

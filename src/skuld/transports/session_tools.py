@@ -28,6 +28,7 @@ from skuld.transports.mcp_config import build_claude_mcp_payload
 
 PRESENT_FILE_URL_ENV = "FORGE_PRESENT_FILE_URL"
 FORGE_DESCRIBE_URL_ENV = "FORGE_DESCRIBE_URL"
+FORGE_REQUEST_SECRET_URL_ENV = "FORGE_REQUEST_SECRET_URL"
 BROKER_TOKEN_FILE_ENV = "FORGE_BROKER_TOKEN_FILE"
 CLAUDE_MCP_CONFIG_FILE = "claude-mcp.json"
 
@@ -65,6 +66,18 @@ opening the session would want. The `{server}` MCP server's `describe_session` t
 same."""
 
 
+SECRETS_INSTRUCTION = """\
+SECRETS: when you need a secret (an API key, token or password), NEVER ask the user to paste it \
+into the chat and never read one from the conversation. Run `request-secret NAME --purpose "…" \
+[--target host]` (NAME is UPPER_SNAKE_CASE, e.g. GITLAB_TOKEN), or call the `{server}` MCP \
+server's `request_secret` tool: the user gets a masked field in the chat, the value goes \
+straight to Forge, and it reaches you only as a file whose path is printed (or returned as \
+`path`). It waits for the user; if the wait ends with the request still open, call it again \
+with the same name. Use the secret by path inside a command, e.g. `curl -H "Authorization: \
+Bearer $(cat <path>)" …`. Never echo, print or log the value, and never copy it into a file you \
+present or commit."""
+
+
 FLOCK_BROKER_INSTRUCTION = """\
 RAVN FLOCK: this session brokers a flock of Ravn agents, and they, not you, do the flock's work. \
 When the user asks a flock member (by persona, e.g. "the coder", "the reviewer") to do something, \
@@ -81,13 +94,14 @@ member's."""
 def capability_instructions(*, forge_mcp_server: str | None, flock_broker: bool = False) -> str:
     """The capability text for a session.
 
-    present-file always; notify and descriptions when the MCP is on; flock
+    present-file always; notify, descriptions and secret requests when the MCP is on; flock
     delegation when the MCP is on and the session brokers a Ravn flock.
     """
     parts = [PRESENT_FILE_INSTRUCTION]
     if forge_mcp_server:
         parts.append(FORGE_NOTIFY_INSTRUCTION.format(server=forge_mcp_server))
         parts.append(SESSION_DESCRIPTION_INSTRUCTION.format(server=forge_mcp_server))
+        parts.append(SECRETS_INSTRUCTION.format(server=forge_mcp_server))
     if forge_mcp_server and flock_broker:
         parts.append(FLOCK_BROKER_INSTRUCTION.format(server=forge_mcp_server))
     return "\n\n".join(parts)

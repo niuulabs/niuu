@@ -91,9 +91,15 @@ class TestSessionServiceBroadcaster:
         # Wait for background provisioning + readiness task to complete
         await asyncio.sleep(0.5)
 
-        # After background task, should have provisioning and running updates
-        assert len(broadcaster.session_updated_events) == 3
-        assert broadcaster.session_updated_events[2].status == SessionStatus.RUNNING
+        # After background task, should have provisioning and running updates;
+        # launch-stage updates ride on the same event between them.
+        statuses = [event.status for event in broadcaster.session_updated_events]
+        assert list(dict.fromkeys(statuses)) == [
+            SessionStatus.STARTING,
+            SessionStatus.PROVISIONING,
+            SessionStatus.RUNNING,
+        ]
+        assert broadcaster.session_updated_events[0].startup is not None
 
     @pytest.mark.asyncio
     async def test_start_session_persists_and_reuses_definition(self, service, repository):

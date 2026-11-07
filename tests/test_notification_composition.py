@@ -169,12 +169,14 @@ def test_image_worker_is_built_from_config():
         },
     )
     lookup = AsyncMock(return_value=None)
+    broker_target = AsyncMock(return_value=None)
     notifications, images, broadcaster = MagicMock(), MagicMock(), MagicMock()
     worker = create_notification_image_worker(
         settings,
         notifications=notifications,
         images=images,
         session_lookup=lookup,
+        broker_target=broker_target,
         broadcaster=broadcaster,
     )
     assert worker._images is images and worker._notifications is notifications
@@ -189,6 +191,7 @@ def test_image_worker_is_built_from_config():
         1,
     )
     assert fetcher._allow_private_networks is True and fetcher._session_lookup is lookup
+    assert fetcher._broker_target is broker_target
     processor = worker._processor
     assert isinstance(processor, PillowNotificationImageProcessor)
     assert (processor._thumbnail_side, processor._jpeg_quality) == (200, 70)

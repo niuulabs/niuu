@@ -1,0 +1,121 @@
+/* ── The side chat: a second conversation in the right dock ── */
+
+.forge-side-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.forge-side-chat__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.forge-side-chat__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.forge-side-chat__name b {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.forge-side-chat__open {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.forge-side-chat__open:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.forge-side-chat__open svg {
+  width: 13px;
+  height: 13px;
+}
+
+.forge-side-chat__start {
+  display: grid;
+  gap: 14px;
+  padding: 18px 16px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.forge-side-chat__start p {
+  margin: 0;
+}
+
+.forge-side-chat__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.forge-side-chat__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: none;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.forge-side-chat__action--primary {
+  border-color: var(--color-brand);
+  background: var(--color-brand);
+  color: var(--color-bg-primary);
+}
+
+.forge-side-chat__action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.forge-side-chat__action svg {
+  width: 14px;
+  height: 14px;
+}
+
+.forge-side-chat__status,
+.forge-side-chat__error {
+  margin: 0;
+  padding: 14px 16px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.forge-side-chat__error {
+  color: var(--color-critical-fg);
+}
+
+.forge-side-chat__chat {
+  flex: 1;
+  min-height: 0;
+}

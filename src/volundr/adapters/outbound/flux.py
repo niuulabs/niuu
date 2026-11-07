@@ -24,6 +24,7 @@ from niuu.adapters.flux import (
 )
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
+from volundr.adapters.outbound.k8s_startup_stages import pod_startup_stages
 from volundr.adapters.outbound.k8s_storage_adapter import build_pvc_manifest
 from volundr.adapters.outbound.local_resident_storage import LOG_LEVELS, resident_log_level
 from volundr.adapters.outbound.resident_container_spec import (
@@ -66,6 +67,7 @@ from volundr.domain.ports import (
     ResidentRuntimeObservation,
     SecretInjectionPort,
 )
+from volundr.domain.session_startup import StartupStage
 
 logger = logging.getLogger(__name__)
 
@@ -166,9 +168,13 @@ class FluxPodManager(
         resident_workspace_size: str = "2Gi",
         resident_storage_class: str = "",
         resident_access_mode: str = "ReadWriteOnce",
+        session_service_port: int = 8080,
         **_extra: object,
     ):
+        """``session_service_port`` is the skuld chart's ``service.port``: the
+        session Service's single entry point (Envoy when enabled)."""
         self._namespace = namespace
+        self._session_service_port = session_service_port
         self._chart_name = chart_name
         self._chart_version = chart_version
         self._source_ref_kind = source_ref_kind
@@ -437,13 +443,51 @@ class FluxPodManager(
             parts.append(f"HelmRelease {ready.get('reason') or 'NotReady'}: {ready['message']}")
         return "; ".join(parts) or None
 
-    async def _latest_pod_warning(self, release_name: str) -> str | None:
+    @property
+    def reports_startup_stages(self) -> bool:
+        return True
+
+    async def startup_stages(self, session: Session) -> tuple[StartupStage, ...] | None:
+        """The launch's stages from its HelmRelease, its pod and the pod's events."""
+        release_name = self._release_name(session)
+        release = await self._get_helmrelease(release_name)
+        if release is None:
+            return ()
         core = await self._get_core_api()
-        try:
-            events = await core.list_namespaced_event(
-                self._namespace,
-                field_selector="type=Warning,involvedObject.kind=Pod",
+        pod = await self._session_pod(core, release_name)
+        events = []
+        if pod is not None:
+            listed = await self._read_events(
+                core,
+                field_selector=(f"involvedObject.kind=Pod,involvedObject.name={pod.metadata.name}"),
             )
+            events = list(listed.items or [])
+        return pod_startup_stages(release, pod, events)
+
+    async def _session_pod(self, core, release_name: str):
+        """The newest live pod of the session's Deployment (not its room gateway)."""
+        pods = await core.list_namespaced_pod(
+            self._namespace,
+            label_selector=f"app.kubernetes.io/instance={release_name}",
+        )
+        mine = []
+        for pod in pods.items or []:
+            if pod.metadata.deletion_timestamp is not None:
+                continue
+            template_hash = (pod.metadata.labels or {}).get("pod-template-hash")
+            owners = pod.metadata.owner_references or []
+            if template_hash and any(
+                owner.kind == "ReplicaSet" and owner.name == f"{release_name}-{template_hash}"
+                for owner in owners
+            ):
+                mine.append(pod)
+        if not mine:
+            return None
+        return max(mine, key=lambda pod: pod.metadata.creation_timestamp)
+
+    async def _read_events(self, core, *, field_selector: str):
+        try:
+            return await core.list_namespaced_event(self._namespace, field_selector=field_selector)
         except Exception as exc:
             if getattr(exc, "status", None) != 403:
                 raise
@@ -452,6 +496,12 @@ class FluxPodManager(
                 "reads to say why a session did not start; grant events get/list there "
                 "(the volundr chart's Role, or its ClusterRole with rbac.clusterWide)"
             ) from exc
+
+    async def _latest_pod_warning(self, release_name: str) -> str | None:
+        core = await self._get_core_api()
+        events = await self._read_events(
+            core, field_selector="type=Warning,involvedObject.kind=Pod"
+        )
         prefix = f"{release_name}-"
         mine = [
             event
@@ -993,6 +1043,22 @@ class FluxPodManager(
             runtime,
             values if isinstance(values, dict) else {},
             tokens_provisioned=self._resident_openclaw_tokens is not None,
+        )
+
+    def session_proxy_target(self, session: Session) -> SessionProxyTarget | None:
+        """The session pod's own Service, for in-cluster hops to its Skuld.
+
+        The browser reaches a session through the gateway; Forge-side hops (the
+        live-preview router) dial this Service, where the pod's Envoy still
+        authenticates every request. Only a running session has one.
+        """
+        if session.status is not SessionStatus.RUNNING:
+            return None
+        host = f"{self._release_name(session)}.{self._namespace}.svc.cluster.local"
+        return SessionProxyTarget(
+            service_url=f"http://{host}:{self._session_service_port}/",
+            connect_host=host,
+            connect_port=self._session_service_port,
         )
 
     def resident_openclaw_target(

@@ -1,0 +1,305 @@
+/* ── Lexi's File pane: a folder tree and the chosen file's preview ── */
+
+.niuu-files-pane {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.niuu-files-pane__tree {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--color-border-subtle);
+}
+
+.niuu-files-pane__tree-head {
+  padding: 8px;
+}
+
+.niuu-files-pane__quick {
+  display: flex;
+  white-space: nowrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.niuu-files-pane__quick svg {
+  width: 13px;
+  height: 13px;
+}
+
+.niuu-files-pane__quick kbd {
+  margin-left: auto;
+  padding: 0 4px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 10.5px;
+}
+
+.niuu-files-pane__list,
+.niuu-files-pane__list ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.niuu-files-pane__list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 4px 8px;
+}
+
+.niuu-files-pane__node {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  min-height: 26px;
+  padding-right: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.niuu-files-pane__node:hover {
+  background: color-mix(in srgb, var(--color-text-primary) 6%, transparent);
+}
+
+.niuu-files-pane__node.is-selected {
+  background: color-mix(in srgb, var(--color-brand) 16%, transparent);
+  color: var(--color-text-primary);
+}
+
+.niuu-files-pane__node svg {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  color: var(--color-text-muted);
+}
+
+.niuu-files-pane__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.niuu-files-pane__touched,
+.niuu-quick-open__touched {
+  margin-left: auto;
+  font-size: 9px;
+  color: var(--color-brand);
+}
+
+.niuu-files-pane__manage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 8px 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.niuu-files-pane__manage:hover {
+  background: color-mix(in srgb, var(--color-text-primary) 6%, transparent);
+  color: var(--color-text-primary);
+}
+
+.niuu-files-pane__manage svg {
+  width: 13px;
+  height: 13px;
+}
+
+.niuu-files-pane__view {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.niuu-files-pane__crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+.niuu-files-pane__crumbs span + span::before {
+  content: '/';
+  margin-right: 4px;
+  color: var(--color-text-faint);
+}
+
+.niuu-files-pane__crumbs span[aria-current='true'] {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.niuu-files-pane__preview {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* An image's viewer takes the column's whole height, its actions as icons on one row. */
+.niuu-files-pane__preview > .niuu-image-preview {
+  flex: 1 1 auto;
+}
+
+.niuu-files-pane__preview .niuu-image-preview-toolbar {
+  flex-wrap: nowrap;
+  gap: 4px;
+  padding: 4px 8px;
+}
+
+.niuu-files-pane__preview .niuu-image-preview-toolbar :is(button, a) {
+  min-height: 30px;
+  padding: 4px 7px;
+}
+
+.niuu-files-pane__preview .niuu-image-preview-actions :is(button, a) {
+  gap: 0;
+  font-size: 0;
+}
+
+.niuu-files-pane__hint,
+.niuu-files-pane__loading {
+  margin: 0;
+  padding: 12px;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+.niuu-files-pane__error {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: var(--color-critical);
+}
+
+/* ── Quick open ── */
+
+.niuu-quick-open {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.niuu-quick-open__input {
+  padding: 9px 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 14px;
+}
+
+.niuu-quick-open__list {
+  max-height: 50vh;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.niuu-quick-open__item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.niuu-quick-open__item.is-active {
+  background: color-mix(in srgb, var(--color-brand) 16%, transparent);
+}
+
+.niuu-quick-open__dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.niuu-quick-open__empty {
+  margin: 0;
+  padding: 8px 2px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.niuu-quick-open__error {
+  margin: 0;
+  padding: 6px 2px 0;
+  font-size: 12.5px;
+  color: var(--color-critical-fg);
+}
+
+/* The preview in the dock: a quieter header and the document without a second frame. */
+.niuu-files-pane__preview .forge-resource-toolbar {
+  gap: 6px;
+  padding: 6px 12px;
+  border-top: 0;
+}
+
+.niuu-files-pane__preview .forge-resource-toolbar :is(button, a) {
+  min-height: 28px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.niuu-files-pane__preview .forge-resource-preview {
+  padding: 0;
+}
+
+.niuu-files-pane__preview .forge-resource-document {
+  padding: 16px 18px 32px;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.niuu-files-pane__preview .forge-resource-document .niuu-chat-md {
+  font-size: 14px;
+  line-height: 1.65;
+}

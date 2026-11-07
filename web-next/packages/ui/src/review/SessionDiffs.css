@@ -2,3 +2,124 @@
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
 }
+
+/* ── Lexi's Changes pane for the dock: summary, a tab per file, the open file's diff ── */
+
+.niuu-session-diffs--dock {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.niuu-diffs-dock__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+}
+
+.niuu-diffs-dock__summary {
+  display: inline-flex;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.niuu-diffs-dock__ins {
+  color: var(--state-ok, var(--status-green));
+  font-weight: 500;
+}
+
+.niuu-diffs-dock__del {
+  color: var(--color-critical);
+  font-weight: 500;
+}
+
+.niuu-diffs-dock__bases {
+  display: inline-flex;
+  margin-left: auto;
+  padding: 2px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+}
+
+.niuu-diffs-dock__bases button {
+  padding: 3px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.niuu-diffs-dock__bases button[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--color-text-primary) 10%, transparent);
+  color: var(--color-text-primary);
+}
+
+.niuu-diffs-dock__files {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--color-border-subtle);
+  scrollbar-width: none;
+}
+
+.niuu-diffs-dock__files button {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.niuu-diffs-dock__files button[aria-selected='true'] {
+  border-bottom-color: var(--color-brand);
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.niuu-diffs-dock__viewer {
+  flex: 1;
+  min-height: 0;
+}
+
+.niuu-diffs-dock__note,
+.niuu-diffs-dock__error {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+.niuu-diffs-dock__error {
+  color: var(--color-critical);
+}
+
+/* Added and removed lines in green and red, the hunk header a quiet pill. */
+.niuu-session-diffs--dock [data-line='add'] {
+  background: color-mix(in srgb, var(--state-ok, var(--status-green)) 12%, transparent);
+}
+
+.niuu-session-diffs--dock [data-line='remove'] {
+  background: color-mix(in srgb, var(--color-critical) 12%, transparent);
+}
+
+.niuu-session-diffs--dock .niuu-diff-hunk-head {
+  display: inline-block;
+  margin: 8px 12px 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--color-brand);
+}

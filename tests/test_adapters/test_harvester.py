@@ -386,6 +386,85 @@ async def test_vm_failure_condition_overrides_ready_guest_state(provider, api):
     await provider.close()
 
 
+async def _machine_with(provider, api, *, printable=None, vmi_status=None):
+    request = MachineRequest(allocation_id=uuid4(), profile="small")
+    await provider.create(request)
+    vm_path = next(k for k in api.objects if "/virtualmachines/" in k)
+    vm = api.objects[vm_path]
+    if printable is not None:
+        vm["status"] = {"printableStatus": printable}
+    if vmi_status is not None:
+        api.objects[vm_path.replace("/virtualmachines/", "/virtualmachineinstances/")] = {
+            "metadata": copy.deepcopy(vm["metadata"]),
+            "status": vmi_status,
+        }
+    return await provider.get(request.allocation_id)
+
+
+async def test_phase_is_the_printable_status_on_the_node_the_instance_runs_on(provider, api):
+    machine = await _machine_with(
+        provider,
+        api,
+        printable="Starting",
+        vmi_status={"phase": "Scheduled", "nodeName": "hnoss"},
+    )
+
+    assert machine.phase == "Starting on hnoss"
+    assert machine.state == MachineState.PROVISIONING
+    assert machine.status_detail is None
+    await provider.close()
+
+
+async def test_phase_is_the_printable_status_alone_before_the_instance_names_a_node(provider, api):
+    pending = await _machine_with(provider, api, printable="Provisioning")
+
+    assert pending.phase == "Provisioning"
+    assert pending.status_detail is None
+    await provider.close()
+
+
+async def test_phase_is_the_printable_status_when_the_instance_has_no_node_yet(provider, api):
+    machine = await _machine_with(
+        provider, api, printable="WaitingForVolumeBinding", vmi_status={"phase": "Pending"}
+    )
+
+    assert machine.phase == "WaitingForVolumeBinding"
+    await provider.close()
+
+
+async def test_phase_is_absent_when_the_virtual_machine_reports_no_status(provider, api):
+    machine = await _machine_with(
+        provider, api, vmi_status={"phase": "Scheduled", "nodeName": "hnoss"}
+    )
+
+    assert machine.phase is None
+    assert machine.state == MachineState.PROVISIONING
+    await provider.close()
+
+
+async def test_a_running_vm_keeps_its_phase_alongside_its_state(provider, api):
+    request = MachineRequest(allocation_id=uuid4(), profile="small")
+    await provider.create(request)
+    vm_path = next(k for k in api.objects if "/virtualmachines/" in k)
+    vm = api.objects[vm_path]
+    vm["status"] = {"ready": True, "printableStatus": "Running"}
+    api.objects[vm_path.replace("/virtualmachines/", "/virtualmachineinstances/")] = {
+        "metadata": copy.deepcopy(vm["metadata"]),
+        "status": {
+            "phase": "Running",
+            "nodeName": "hnoss",
+            "interfaces": [{"ipAddresses": ["10.20.0.3"]}],
+        },
+    }
+
+    machine = await provider.get(request.allocation_id)
+
+    assert machine.state == MachineState.RUNNING
+    assert machine.phase == "Running on hnoss"
+    assert machine.addresses == ("10.20.0.3",)
+    await provider.close()
+
+
 async def test_create_conflict_resolves_same_owned_request(provider, api):
     api.conflict = True
     await provider.create(MachineRequest(allocation_id=uuid4(), profile="small"))

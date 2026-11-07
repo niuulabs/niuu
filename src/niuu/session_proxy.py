@@ -39,6 +39,10 @@ class SessionProxyGuardMissingError(RuntimeError):
     """A non-dev session proxy was asked to attach without an ownership guard."""
 
 
+class PreviewCredentialIssuerMissingError(RuntimeError):
+    """A live preview needs a router credential and nothing is wired to mint one."""
+
+
 class SkuldPortRegistry:
     """Maps session IDs to their Skuld subprocess ports.
 
@@ -103,6 +107,10 @@ class SkuldPortRegistry:
         # (see close_connections) instead of relying solely on
         # _revalidate_loop's interval poll.
         self._live_connections: dict[tuple[str, str], set[WebSocket]] = {}
+        # Mints the credential the live-preview router presents to a session's
+        # Skuld (niuu.preview_proxy). Set by the composition root from its
+        # workload identity service; see preview_credential().
+        self._preview_credential_issuer: Callable[[str, Principal], Awaitable[str]] | None = None
 
     @property
     def dev_identity(self) -> bool:
@@ -153,6 +161,35 @@ class SkuldPortRegistry:
         responses and gate resolution, distinct from the attach decision.
         """
         self._room_role_resolver = resolver
+
+    def set_preview_credential_issuer(
+        self, issuer: Callable[[str, Principal], Awaitable[str]]
+    ) -> None:
+        """Inject the router-credential minting used by live preview.
+
+        ``issuer(session_id, owner) -> token``: a short-lived credential bound to
+        that one session, which its Skuld verifies before dialing a port.
+        """
+        self._preview_credential_issuer = issuer
+
+    async def preview_credential(self, session_id: str, principal: Principal) -> str:
+        """Mint the router credential for one preview request.
+
+        A dev-identity registry (no identity provider anywhere, its Skulds run
+        without router authentication) needs none and returns ``""``.
+
+        Raises:
+            PreviewCredentialIssuerMissingError: No issuer is wired and dev identity is off.
+        """
+        if self._preview_credential_issuer is not None:
+            return await self._preview_credential_issuer(session_id, principal)
+        if self._dev_identity:
+            return ""
+        raise PreviewCredentialIssuerMissingError(
+            "Live preview has no router credential issuer: enable workload_identity "
+            "(the router mints a forge:session:preview workload credential for each "
+            "request), or disable session_preview"
+        )
 
     def track_connection(self, session_id: str, user_id: str, websocket: WebSocket) -> None:
         """Register a live proxied socket so a later revoke can close it immediately."""
@@ -712,14 +749,7 @@ def _session_target_url(
 
 def _session_http_connect_url(target: SessionProxyTarget, path: str) -> tuple[str, str]:
     """Return the gateway URL and Host header for an HTTP session request."""
-    service = urllib.parse.urlsplit(target.service_url)
-    scheme = "https" if target.connect_secure else "http"
-    host = target.connect_host
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    netloc = f"{host}:{target.connect_port}"
-    url = urllib.parse.urlunsplit((scheme, netloc, path, "", ""))
-    return url, service.netloc
+    return target.http_url(path)
 
 
 def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) -> None:

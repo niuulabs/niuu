@@ -63,6 +63,7 @@ def test_composition_builds_service_from_config():
         broadcaster=MagicMock(),
         integration_repository=None,
         session_lookup=AsyncMock(return_value=None),
+        broker_target=AsyncMock(return_value=None),
     )
     assert [(s.name, s.label) for s in service._sinks] == [("ops", "Ops"), ("page", "page")]
     assert service._image_scheduler is image_worker
@@ -80,6 +81,7 @@ def test_composition_builds_service_from_config():
             broadcaster=MagicMock(),
             integration_repository=None,
             session_lookup=AsyncMock(return_value=None),
+            broker_target=AsyncMock(return_value=None),
         )
         is None
     )

@@ -957,8 +957,7 @@ function toDomainSession(session: VolundrSession): Session {
     resources: EMPTY_SESSION_RESOURCES,
     env: {},
     events: [],
-    bootProgress:
-      state === 'provisioning' ? (session.status === 'starting' ? 0.25 : 0.6) : undefined,
+    startup: session.startup ?? null,
     connectionType: 'cli',
     tokensIn: session.tokensUsed,
     tokensOut: 0,
@@ -966,6 +965,9 @@ function toDomainSession(session: VolundrSession): Session {
     trackerIssue: session.trackerIssue,
     origin: session.origin,
     error: session.error,
+    readState: session.readState,
+    shortDescription: session.shortDescription,
+    workedSeconds24h: session.workedSeconds24h,
   };
 }
 
@@ -976,10 +978,25 @@ function buildSplitVolundrService(
   return {
     ...catalog,
     getFeatures: (instanceId) => forge.getFeatures(instanceId),
+    getComputeHosts: (instanceId) => forge.getComputeHosts(instanceId),
+    getComputeHostTagSets: (instanceId) => forge.getComputeHostTagSets(instanceId),
+    createPairingCode: (instanceId, request) => forge.createPairingCode(instanceId, request),
+    revokePairingCode: (instanceId, codeId) => forge.revokePairingCode(instanceId, codeId),
+    updateComputeHost: (instanceId, hostId, changes) =>
+      forge.updateComputeHost(instanceId, hostId, changes),
+    drainComputeHost: (instanceId, hostId, remove) =>
+      forge.drainComputeHost(instanceId, hostId, remove),
+    resumeComputeHost: (instanceId, hostId) => forge.resumeComputeHost(instanceId, hostId),
+    reprepareComputeHost: (instanceId, hostId) => forge.reprepareComputeHost(instanceId, hostId),
+    checkComputeHost: (instanceId, hostId) => forge.checkComputeHost(instanceId, hostId),
+    removeComputeHost: (instanceId, hostId) => forge.removeComputeHost(instanceId, hostId),
     getSessions: (options) => forge.getSessions(options),
     getSession: (id, options) => forge.getSession(id, options),
     getSessionChanges: forge.getSessionChanges?.bind(forge),
     getActiveSessions: () => forge.getActiveSessions(),
+    getSessionReadState: (id, options) => forge.getSessionReadState(id, options),
+    changeSessionReadState: (id, change, options) =>
+      forge.changeSessionReadState(id, change, options),
     getStats: (options) => forge.getStats(options),
     getRepos: () => forge.getRepos(),
     getProjects: (options) => forge.getProjects(options),
@@ -1004,11 +1021,17 @@ function buildSplitVolundrService(
       forge.evaluatePermissionAutoApproval(sessionId, request),
     connectSession: (config) => forge.connectSession(config),
     updateSession: (sessionId, updates) => forge.updateSession(sessionId, updates),
+    forkSession: (sessionId, name) => forge.forkSession(sessionId, name),
     stopSession: (sessionId) => forge.stopSession(sessionId),
     resumeSession: (sessionId) => forge.resumeSession(sessionId),
     deleteSession: (sessionId, cleanup) => forge.deleteSession(sessionId, cleanup),
     archiveSession: (sessionId) => forge.archiveSession(sessionId),
     archiveStoppedSessions: () => forge.archiveStoppedSessions(),
+    getSecretRequest: (sessionId, requestId) => forge.getSecretRequest(sessionId, requestId),
+    fulfillSecretRequest: (sessionId, requestId, fulfillment) =>
+      forge.fulfillSecretRequest(sessionId, requestId, fulfillment),
+    declineSecretRequest: (sessionId, requestId) =>
+      forge.declineSecretRequest(sessionId, requestId),
     restoreSession: (sessionId) => forge.restoreSession(sessionId),
     listArchivedSessions: (options) => forge.listArchivedSessions(options),
     listExternalSessions: () => forge.listExternalSessions(),

@@ -10,7 +10,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import copy
+import inspect
 import json
+import typing
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,10 +33,19 @@ from volundr.domain.compute import (
     MachineProvider,
     MachineState,
 )
+from volundr.domain.compute_hosts import HostConnector, HostInspector, RegisteredHostRepository
+from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestIdentity
+from volundr.domain.service_account_tokens import ServiceAccountTokenPort
+from volundr.domain.services.compute_hosts import HostExecution
 from volundr.domain.services.compute_leases import ComputeLeaseService
+from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.external_modules import load_external_module_manifests
 
 if TYPE_CHECKING:
+    from volundr.adapters.inbound.host_connect_keys import (
+        EndpointKeyAnswer,
+        HostConnectKeyServer,
+    )
     from volundr.domain.execution_catalog import ResolvedExecutionPlan
     from volundr.domain.guest_access import GuestAccess
     from volundr.domain.host_preparation import HostPreparation
@@ -42,7 +53,14 @@ if TYPE_CHECKING:
     from volundr.domain.vm_runtime import VmRuntime
 
 
-def build_provider(config: ComputeConfig) -> MachineProvider:
+def build_provider(
+    config: ComputeConfig, ports: Mapping[str, object] | None = None
+) -> MachineProvider:
+    """Construct the provider from config kwargs plus the ports its constructor declares.
+
+    A registered-host provider declares its inventory, connectors and inspector; a VM
+    provider declares none and receives none.
+    """
     kwargs = resolve_secret_kwargs(
         copy.deepcopy(config.provider.kwargs), config.provider.secret_kwargs_env
     )
@@ -54,10 +72,186 @@ def build_provider(config: ComputeConfig) -> MachineProvider:
             )
         )
     provider_cls = import_class(config.provider.adapter)
-    provider = provider_cls(**kwargs)
+    declared = {p.name for p in inspect.signature(provider_cls).parameters.values()}
+    provider = provider_cls(
+        **kwargs, **{name: port for name, port in (ports or {}).items() if name in declared}
+    )
     if not isinstance(provider, MachineProvider):
         raise TypeError("Configured compute provider must implement MachineProvider")
+    if provider.fixed_inventory != (config.hosts is not None):
+        raise ValueError(
+            "compute.hosts configures registered hosts and needs a registered-host provider "
+            "(volundr.adapters.outbound.registered_hosts.RegisteredHostMachineProvider); "
+            "set both or neither"
+        )
     return provider
+
+
+@dataclass(frozen=True)
+class RegisteredHostComponents:
+    """Registered-host collaborators, owned by the composition root."""
+
+    repository: RegisteredHostRepository
+    connectors: dict[str, HostConnector]
+    inspector: HostInspector
+    executions: dict[str, HostExecution]
+
+    def provider_ports(self, pool_id: str) -> dict[str, object]:
+        return {
+            "pool_id": pool_id,
+            "host_repository": self.repository,
+            "host_connectors": self.connectors,
+            "host_inspector": self.inspector,
+        }
+
+
+def build_registered_hosts(
+    config: ComputeConfig,
+    database_pool: asyncpg.Pool,
+    execution: ExecutionComponents | None,
+) -> RegisteredHostComponents:
+    """Compose the host inventory, its connectors and the inspector for each execution."""
+    from volundr.adapters.outbound.host_checks import SshHostInspector
+    from volundr.adapters.outbound.postgres_compute_hosts import (
+        PostgresRegisteredHostRepository,
+    )
+    from volundr.adapters.outbound.ssh_guest_access import SshGuestAccess
+
+    hosts = config.hosts
+    if hosts is None:
+        raise ValueError("compute.hosts is not configured")
+    if execution is None:
+        raise ValueError(
+            "Registered hosts need compute.execution_catalog: each host runs one catalog execution"
+        )
+    repository = PostgresRegisteredHostRepository(database_pool)
+    connectors: dict[str, HostConnector] = {}
+    for binding in hosts.connectors:
+        connector = import_class(binding.adapter)(
+            **resolve_secret_kwargs(copy.deepcopy(binding.kwargs), binding.secret_kwargs_env)
+        )
+        if not isinstance(connector, HostConnector):
+            raise TypeError(f"Connector {binding.binding_id} must implement HostConnector")
+        connector.attach(repository)
+        connectors[binding.binding_id] = connector
+    executions: dict[str, HostExecution] = {}
+    accesses: dict[str, GuestAccess] = {}
+    for plan in execution.resolver.plans():
+        access = execution.accesses_by_plan[plan.plan_digest]
+        if not isinstance(access, SshGuestAccess):
+            raise TypeError(
+                f"Execution {plan.execution} reaches its hosts through "
+                f"{type(access).__name__}; registered hosts need SshGuestAccess"
+            )
+        runtime = execution.runtimes[plan.plan_digest]
+        kind = runtime.session_runtime
+        executions[str(plan.execution)] = HostExecution(
+            execution=str(plan.execution),
+            profile=plan.provider_profile,
+            runtime=kind,
+            label=_RUNTIME_LABELS.get(kind, type(runtime).__name__)
+            if kind
+            else str(plan.execution),
+            supports_slots=runtime.supports_slots,
+            requires_root_daemon=runtime.requires_root_daemon,
+            slot_limits=runtime.slot_limits,
+            forge_public_key=access.public_key,
+            ssh_user=access.principal,
+            platforms=runtime.host_platforms,
+        )
+        accesses[str(plan.execution)] = access
+
+    def access_for(host):
+        return accesses[host.execution]
+
+    def uid_base_for(host):
+        limits = executions[host.execution].slot_limits
+        return limits.uid_base if limits is not None else None
+
+    inspector = SshHostInspector(
+        access_for=access_for,
+        uid_base_for=uid_base_for,
+        connectors=connectors,
+        min_free_disk_mib=hosts.min_free_disk_mib,
+        command_timeout_seconds=hosts.command_timeout_seconds,
+    )
+    return RegisteredHostComponents(
+        repository=repository,
+        connectors=connectors,
+        inspector=inspector,
+        executions=executions,
+    )
+
+
+def build_host_connect_key_servers(
+    connectors: Mapping[str, HostConnector], answer: EndpointKeyAnswer
+) -> list[HostConnectKeyServer]:
+    """One key-lookup socket per connect endpoint the connectors use; usually none."""
+    from volundr.adapters.inbound.host_connect_keys import HostConnectKeyServer
+
+    sockets = sorted(
+        {c.endpoint_socket for c in connectors.values() if c.endpoint_socket is not None}
+    )
+    return [HostConnectKeyServer(socket_path=path, answer=answer) for path in sockets]
+
+
+#: What the Add host form calls each runtime a host can run.
+_RUNTIME_LABELS = {
+    SessionRuntimeKind.HOST: "Host · Nix + rootless Podman",
+    SessionRuntimeKind.CONTAINER: "Container (Docker)",
+    SessionRuntimeKind.OPENSHELL: "OpenShell",
+}
+
+
+@dataclass(frozen=True)
+class GuestCredentialComponents:
+    """VM guest credential collaborators, owned (and closed) by the composition root."""
+
+    service_account_tokens: ServiceAccountTokenPort | None
+    guest_identity: GuestIdentity | None
+    delivery: GuestCredentialDelivery | None
+
+
+def _build_adapter(config: DynamicAdapterConfig, ports: Mapping[str, object]):
+    """Construct with config kwargs plus the ports the constructor declares.
+
+    An adapter that accepts ``**kwargs`` receives every port; one with an exact
+    signature receives only its own, so a mistyped config kwarg still fails.
+    """
+    kwargs = resolve_secret_kwargs(copy.deepcopy(config.kwargs), config.secret_kwargs_env)
+    cls = import_class(config.adapter)
+    parameters = inspect.signature(cls).parameters.values()
+    if not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters):
+        declared = {p.name for p in parameters}
+        ports = {name: port for name, port in ports.items() if name in declared}
+    return cls(**{**kwargs, **ports})
+
+
+def build_guest_credentials(
+    config: ComputeConfig, ports: Mapping[str, object]
+) -> GuestCredentialComponents:
+    """Compose the token issuer, guest identity and delivery from dynamic config.
+
+    Each adapter receives its kwargs plus the shared ``ports`` and the components
+    built before it; adapters ignore the ports they do not use (``**_extra``).
+    """
+    tokens = identity = delivery = None
+    if config.service_account_tokens is not None:
+        tokens = _build_adapter(config.service_account_tokens, ports)
+        if not isinstance(tokens, ServiceAccountTokenPort):
+            raise TypeError("compute.service_account_tokens must implement ServiceAccountTokenPort")
+    if config.guest_identity is not None:
+        identity = _build_adapter(config.guest_identity, ports)
+        if not isinstance(identity, GuestIdentity):
+            raise TypeError("compute.guest_identity must implement GuestIdentity")
+    if config.credential_delivery is not None:
+        delivery = _build_adapter(
+            config.credential_delivery,
+            {**ports, "service_account_tokens": tokens, "guest_identity": identity},
+        )
+        if not isinstance(delivery, GuestCredentialDelivery):
+            raise TypeError("compute.credential_delivery must implement GuestCredentialDelivery")
+    return GuestCredentialComponents(tokens, identity, delivery)
 
 
 def build_runtime(
@@ -74,11 +268,51 @@ def build_runtime(
         else DynamicAdapterConfig.model_validate(dict(config))
     )
     kwargs = resolve_secret_kwargs(parsed.kwargs, parsed.secret_kwargs_env)
-    composed = {name: _runtime_value(value, importer=importer) for name, value in kwargs.items()}
-    runtime = importer(parsed.adapter)(**composed)
+    runtime_class = importer(parsed.adapter)
+    nested = _runtime_parameters(runtime_class, kwargs)
+    composed = {
+        name: _runtime_value(value, importer=importer) if name in nested else value
+        for name, value in kwargs.items()
+    }
+    runtime = runtime_class(**composed)
     if not isinstance(runtime, VmRuntime):
         raise TypeError("Configured compute runtime must implement VmRuntime")
     return runtime
+
+
+def _runtime_parameters(runtime_class: type, kwargs: Mapping[str, object]) -> set[str]:
+    """The kwargs whose adapter configs are nested runtimes to build here.
+
+    Only parameters the constructor types as runtimes (``default: VmRuntime``,
+    ``profiles: Mapping[str, VmRuntime]``). Any other adapter-shaped mapping is data
+    the runtime passes on, such as Skuld's ``preview.router_auth`` for the guest.
+    """
+    if not any(_has_adapter_config(value) for value in kwargs.values()):
+        return set()
+    from volundr.domain.vm_runtime import VmRuntime
+
+    try:
+        hints = typing.get_type_hints(runtime_class.__init__)
+    except NameError as exc:
+        raise TypeError(
+            f"Compute runtime {runtime_class.__qualname__} has constructor annotations that "
+            f"do not resolve ({exc}); nested runtime configs need resolvable types"
+        ) from exc
+    return {name for name in kwargs if _holds_runtime(hints.get(name), VmRuntime)}
+
+
+def _has_adapter_config(value) -> bool:
+    if isinstance(value, Mapping):
+        return "adapter" in value or any(_has_adapter_config(item) for item in value.values())
+    if isinstance(value, list | tuple):
+        return any(_has_adapter_config(item) for item in value)
+    return False
+
+
+def _holds_runtime(annotation, runtime_type: type) -> bool:
+    if isinstance(annotation, type) and issubclass(annotation, runtime_type):
+        return True
+    return any(_holds_runtime(arg, runtime_type) for arg in typing.get_args(annotation))
 
 
 def _runtime_value(value, *, importer: Callable[[str], type]):
@@ -102,6 +336,7 @@ class ExecutionComponents:
     runtimes: dict[str, VmRuntime]
     preparations: dict[str, HostPreparation]
     accesses: tuple[GuestAccess, ...]
+    accesses_by_plan: dict[str, GuestAccess]
 
 
 def provider_fingerprint(config: ComputeConfig) -> str:
@@ -157,6 +392,7 @@ async def build_execution_components(
     runtimes, preparations = {}, {}
     opened = []
     accesses = []
+    accesses_by_plan = {}
     try:
         for plan in plans:
             if plan.pool_id != config.pool_id or plan.provider_binding != config.provider_binding:
@@ -169,6 +405,7 @@ async def build_execution_components(
                 raise TypeError("Configured guest access must implement GuestAccess")
             opened.append(access)
             accesses.append(access)
+            accesses_by_plan[plan.plan_digest] = access
             access.configure_trust(
                 principal=plan.access.principal,
                 mode=plan.access.trust.mode.value,
@@ -191,7 +428,9 @@ async def build_execution_components(
     except BaseException:
         await asyncio.gather(*(item.close() for item in reversed(opened)), return_exceptions=True)
         raise
-    return ExecutionComponents(resolver, default, runtimes, preparations, tuple(accesses))
+    return ExecutionComponents(
+        resolver, default, runtimes, preparations, tuple(accesses), accesses_by_plan
+    )
 
 
 def emit(event: str, **data) -> None:
@@ -208,16 +447,18 @@ async def prove(
     owner_id: str,
     tenant_id: str,
 ) -> None:
-    if any(lease.session_id == session_id for lease in await repository.list(config.pool_id)):
+    slots = await repository.list_slots(config.pool_id, live_only=False)
+    if any(slot.session_id == session_id for slot in slots):
         raise ValueError("Proof requires a new session_id; refusing to touch an existing claim")
     # Print the durable claim key before making any external provisioning request.
     emit("proof_started", pool_id=config.pool_id, session_id=session_id)
     lease_id = None
     try:
         async with asyncio.timeout(config.provisioning_timeout_seconds):
-            lease = await service.acquire(
+            claim = await service.acquire(
                 session_id=session_id, owner_id=owner_id, tenant_id=tenant_id, profile=profile
             )
+            lease = claim.allocation
             lease_id = lease.id
             emit(
                 "allocation_created",
@@ -240,17 +481,19 @@ async def prove(
         emit("vm_ready", lease_id=lease.id, machine=lease.machine.model_dump(mode="json"))
     finally:
         if lease_id is None:
-            # A provider may have failed after admission but before acquire returned.
-            candidates = [
-                lease
-                for lease in await repository.list(config.pool_id)
-                if lease.session_id == session_id
-                and lease.owner_id == owner_id
-                and lease.tenant_id == tenant_id
-                and lease.state != LeaseState.RELEASED
-            ]
-            if candidates:
-                lease_id = candidates[0].id
+            # A provider may have failed after admission but before acquire returned: find
+            # the allocation through the session's binding.
+            for slot in await repository.list_slots(config.pool_id, live_only=False):
+                if (
+                    slot.session_id != session_id
+                    or slot.owner_id != owner_id
+                    or slot.tenant_id != tenant_id
+                ):
+                    continue
+                machine = await repository.get(slot.allocation_id)
+                if machine is not None and machine.state != LeaseState.RELEASED:
+                    lease_id = machine.id
+                    break
         if lease_id is not None:
             emit("cleanup_started", lease_id=lease_id)
             async with asyncio.timeout(config.cleanup_timeout_seconds):
@@ -309,6 +552,10 @@ async def run(args) -> None:
                     leases=[
                         lease.model_dump(mode="json")
                         for lease in await repository.list(config.pool_id)
+                    ],
+                    slots=[
+                        slot.model_dump(mode="json")
+                        for slot in await repository.list_slots(config.pool_id, live_only=False)
                     ],
                 )
                 return

@@ -328,6 +328,8 @@ provisioning:
   timeoutSeconds: 300.0
   # -- Initial delay before starting readiness polls in seconds
   initialDelaySeconds: 5.0
+  # -- Seconds between reads of a starting session's launch stages (pod conditions and events, VM state)
+  startupPollSeconds: 2.0
 
 # -- Seconds between realm-detail SSE state checks and idle keepalive comments
 realmDetailStreamIntervalSeconds: 15.0
@@ -352,6 +354,84 @@ bifrost:
     secretKwargs: []
 
 compute: null
+
+# VM guest metadata endpoint (POST /api/v1/internal/compute/metadata/credentials). A VM
+# session's guest agent pulls its ServiceAccount tokens and Forge session credential
+# there, authenticated by the guest identity configured under `compute` (an Ed25519
+# host-key signature or a SPIFFE JWT-SVID), never by a bearer Keycloak/workload JWT.
+guestMetadata:
+  # -- Serve the endpoint. Renders the Envoy bypass for exactly that route (JWT and
+  # Cedar admission are skipped; the route authenticates the guest itself) and a Role
+  # letting Forge request ServiceAccount tokens (serviceaccounts/token create).
+  enabled: false
+  # -- Namespace of the ServiceAccounts VM sessions run as, where Forge may request
+  # their tokens. Must equal the token issuer's `namespace` kwarg. Empty:
+  # podManager.kwargs.namespace, else the release namespace.
+  serviceAccountNamespace: ""
+  # -- Grant the ServiceAccount-token Role without serving the endpoint, for
+  # SshPushCredentialDelivery (the controller writes tokens over SSH).
+  issueServiceAccountTokens: false
+  # -- Let Forge manage SPIRE ClusterStaticEntry registrations for VM guests
+  # (SpiffeGuestIdentity); requires spire-controller-manager.
+  spiffeRegistration: false
+
+# Host connect endpoint for registered hosts behind NAT (ReverseSshConnector): an OpenSSH
+# sidecar in the Forge pod. Each host keeps one `ssh -N -R` to it and forwards a port on
+# the pod's loopback to its own sshd, which Forge dials. Its AuthorizedKeysCommand asks
+# Forge on a socket in a volume only Forge and the sidecar mount; only keys of
+# registered reverse-SSH hosts are admitted, each to listen on its own loopback port and
+# nothing else. See docs/operator/compute-hosts.md ("Hosts behind NAT").
+hostConnect:
+  # -- Run the endpoint. Needs one Forge pod (replicaCount 1, strategy Recreate, no
+  # autoscaling) and a namespace that admits a root container (Pod Security baseline):
+  # sshd separates privileges per connection.
+  enabled: false
+  # -- Port sshd listens on in the pod, and the Service's port.
+  port: 2222
+  # -- The volume Forge and the sidecar share: the key-lookup socket, the connection
+  # records and the revoke pipe. Must equal the connector's `runtime_dir` kwarg.
+  runtimeDir: /run/niuu-connect
+  # -- The account hosts log in as; must equal the connector's `connect_user` kwarg.
+  # The image creates it with no password and no shell.
+  user: niuu-connect
+  # -- Existing Secret with the endpoint's own Ed25519 host key (OpenSSH format). Hosts
+  # pin its public half: put that in the connector's `endpoint_host_key` kwarg.
+  # Create it once: ssh-keygen -t ed25519 -N '' -f key && kubectl create secret generic
+  # <name> --from-file=ssh_host_ed25519_key=key
+  hostKeySecret:
+    name: ""
+    key: ssh_host_ed25519_key
+  # -- Bound on one key lookup from sshd to Forge; past it the connection is refused
+  # and the host retries.
+  keyLookupTimeoutSeconds: 5
+  # -- The image's Python, which runs the key command (root-owned, as sshd requires).
+  python: /usr/local/bin/python3
+  # -- Keepalive from the endpoint: a host silent for interval × countMax is dropped,
+  # which frees its port for its reconnect.
+  clientAliveIntervalSeconds: 15
+  clientAliveCountMax: 3
+  # -- Bound on a connection's authentication.
+  loginGraceTimeSeconds: 20
+  # -- Public-key attempts per connection; a host offers exactly one key.
+  maxAuthTries: 2
+  resources: {}
+  # -- How hosts reach the endpoint: a LoadBalancer Service, or a Gateway TCPRoute to
+  # a ClusterIP Service.
+  service:
+    type: LoadBalancer
+    port: 2222
+    annotations: {}
+    loadBalancerIP: ""
+    loadBalancerSourceRanges: []
+    externalTrafficPolicy: ""
+  tcpRoute:
+    enabled: false
+    # -- Gateway listeners (TCP) the route attaches to.
+    parentRefs: []
+    annotations: {}
+  # -- NetworkPolicy ingress to the endpoint (networkPolicy.enabled); empty admits any
+  # source, since hosts are wherever their NAT is.
+  networkPolicyFrom: []
 
 podManager:
   # -- Explicit contributor backend identity; set vm for VmPodManager
@@ -1426,6 +1506,46 @@ sessionGateway:
   httpRedirect: true
   # -- Extra annotations on the Gateway resource
   annotations: {}
+
+# Live preview: <port>--<session-id>.<domain> opens a port a session listens on,
+# on its own origin, for the session's owner only (niuu.preview_proxy). Needs
+# workloadIdentity (the router's credential to each session's Skuld), session
+# pods with skuld's preview.enabled, a wildcard DNS record for *.<domain>
+# pointing at the session gateway, and the OIDC client below.
+sessionPreview:
+  # -- Serve live previews through the session gateway
+  enabled: false
+  # -- Preview domain (defaults to preview.{domain}); the listener serves *.<domain>
+  domain: ""
+  # -- TLS secret for the *.<domain> listener (defaults to "{gateway name}-preview-tls");
+  # cert-manager issues it through sessionGateway.certIssuer, which must solve DNS-01
+  tlsSecretName: ""
+  # -- How long an idle preview stream (hot-reload WebSocket, SSE) stays open at
+  # Forge's Envoy. Past it the dev server's client reconnects.
+  streamIdleTimeout: "3600s"
+  # -- Lifetime of the router credential minted per forwarded request
+  credentialTtlSeconds: 60
+  # -- Audience of the router credential; session pods' Skuld verifies it
+  credentialAudience: "volundr-api"
+  # Sign-in on the preview domain: Envoy Gateway runs the OIDC code flow for
+  # every preview host, with its session cookies scoped to the preview domain
+  # (never the platform's parent domain), and forwards the access token to
+  # Forge, whose Envoy verifies it like any other request.
+  oidc:
+    # -- OIDC issuer (the realm Forge's Envoy trusts)
+    issuer: ""
+    # -- Confidential client for the preview domain; its access tokens must
+    # carry an audience Forge's Envoy accepts
+    clientId: ""
+    # -- Secret (in this namespace) holding the client secret under key "client-secret"
+    clientSecretName: ""
+    # -- Host the provider redirects back to (defaults to auth.<domain>); one
+    # registered redirect URI, https://<host>/oauth2/callback, serves every preview
+    callbackHost: ""
+    # -- Scopes requested at sign-in
+    scopes: ["openid", "profile", "email"]
+    # -- Path on any preview host that signs out of the preview domain
+    logoutPath: "/.niuu/preview/logout"
 
 # Auth discovery (public endpoint for CLI auto-configuration)
 authDiscovery:

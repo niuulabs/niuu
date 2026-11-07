@@ -8,7 +8,7 @@ import {
   useCopyFeedback,
   type ConversationResource,
 } from '../chat';
-import { classifyPreview, isTextPreview, type PreviewKind } from './filePreview';
+import { classifyPreview, imageMimeFor, isTextPreview, type PreviewKind } from './filePreview';
 
 export interface LoadedPreview {
   url: string;
@@ -25,10 +25,15 @@ export async function loadPreview(blob: Blob, name: string, mime?: string): Prom
   const { kind, language } = classifyPreview(name, mime || blob.type);
   const text =
     isTextPreview(kind) && blob.size <= INLINE_TEXT_LIMIT ? await blob.text() : undefined;
+  // Workspace files arrive as untyped downloads; a browser draws an image (an SVG above all)
+  // or a PDF from a blob only when the blob says what it is.
+  const imageType = kind === 'image' && !blob.type.startsWith('image/') && imageMimeFor(name);
   const bytes =
     kind === 'pdf' && blob.type !== 'application/pdf'
       ? new Blob([blob], { type: 'application/pdf' })
-      : blob;
+      : imageType
+        ? new Blob([blob], { type: imageType })
+        : blob;
   return { url: URL.createObjectURL(bytes), blob, text, kind, language };
 }
 

@@ -166,14 +166,22 @@ export interface ForgeProject {
   instance_id?: string;
   instance_name?: string;
   workspace_path?: string;
+  description?: string;
   brief?: string;
   repo_url?: string;
   revision?: number;
 }
+/**
+ * What `PATCH /projects/{id}` accepts besides the revision. Connecting a checkout is a
+ * change of `workspace_path`: Forge reads the folder's Git remote and sets `repo_url`.
+ */
 export interface ForgeProjectChanges {
   name?: string;
+  description?: string;
   brief?: string;
+  status?: 'active' | 'archived';
   repo_url?: string;
+  workspace_path?: string;
 }
 export interface SessionProjectMembership {
   sessionId: string;
@@ -185,7 +193,32 @@ export interface SessionCoordination {
   projectId: string;
   role: string;
   parent?: { instanceId: string; sessionId: string } | null;
+  /** What the coordinator asked this worker to do; Forge records it with the membership. */
+  objective?: string;
   labels?: string[];
+}
+
+/** Where one step of a session's launch stands, as the runtime backend reported it. */
+export type StartupStageState = 'pending' | 'active' | 'done' | 'failed';
+
+/** One step of a launch: a pod condition, a kubelet event, a VM's phase, with real times. */
+export interface StartupStage {
+  key: string;
+  label: string;
+  state: StartupStageState;
+  /** The backend's own words (event message, node, VM phase), when it gave any. */
+  detail: string | null;
+  /** Null while the stage is still to come. */
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+/** The stages of a session's latest launch. */
+export interface SessionStartup {
+  startedAt: string;
+  stages: StartupStage[];
+  /** Why Forge could not read the backend's progress on its last attempt. */
+  progressError: string | null;
 }
 
 export interface VolundrSession {
@@ -221,6 +254,8 @@ export interface VolundrSession {
     | null;
   activityStateSince?: string | null;
   turnStartedAt?: string | null;
+  /** The latest launch's stages; absent for a session not started since Forge records them. */
+  startup?: SessionStartup | null;
   /** True when the session is blocked waiting on the user (awaiting_input). */
   needsAttention?: boolean;
   /** Its broker's metadata records a pending human gate; its gates say whether one still waits. */
@@ -230,14 +265,46 @@ export interface VolundrSession {
   instanceId?: string;
   instanceName?: string;
   /** The caller's inbox state for the session's latest final reply, when reported. */
-  readState?: SessionInboxReadState;
+  readState?: SessionReadState;
+  /** The agent's own one-line summary of what the session is doing, when it wrote one. */
+  shortDescription?: string;
+  /**
+   * Seconds Forge worked on the session in the last 24 hours. Only the session list reports
+   * it, and only a host that records turn spans.
+   */
+  workedSeconds24h?: number;
 }
 
-export interface SessionInboxReadState {
+/**
+ * The caller's read state for one session. `latestOutputSeq` and `readThroughSeq` are positions
+ * in the session's event log, not counts of replies.
+ */
+export interface SessionReadState {
   isUnread: boolean;
   latestOutputSeq: number;
+  latestOutputTurnId?: string | null;
+  latestOutputAt?: string | null;
   readThroughSeq: number;
+  manuallyUnread?: boolean;
   revision: number;
+}
+
+/** The earlier name of the read state a session response embeds. */
+export type SessionInboxReadState = SessionReadState;
+
+/** A read or unread action. `throughSeq` is the output the caller actually saw. */
+export interface SessionReadStateChange {
+  state: 'read' | 'unread';
+  expectedRevision: number;
+  throughSeq: number;
+}
+
+/** Operator grants that let a session act on other sessions through the Forge MCP. */
+export type ForgeMcpGrant = 'message' | 'lifecycle';
+
+/** Forge MCP options for a new session (`forge_mcp` on session create). */
+export interface ForgeMcpSessionOptions {
+  grants: ForgeMcpGrant[];
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +399,17 @@ export interface VolundrMessage {
   tokensIn?: number;
   tokensOut?: number;
   latency?: number;
+}
+
+/**
+ * What `POST /sessions/{id}/messages` answers. `delivered` means the session's transport
+ * accepted the message (200); `pending` means Forge accepted it and is still retrying
+ * delivery (202), which is not a confirmed send.
+ */
+export interface SessionMessageDelivery {
+  status: 'delivered' | 'pending';
+  requestId: string;
+  sessionId: string;
 }
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';

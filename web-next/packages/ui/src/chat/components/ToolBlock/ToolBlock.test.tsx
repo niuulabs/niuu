@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ToolBlock } from './ToolBlock';
-import { ToolGroupBlock } from './ToolGroupBlock';
 import { groupContentBlocks, type ContentBlock } from './groupContentBlocks';
 import { getToolLabel, getToolCategory } from './toolLabels';
 
@@ -215,26 +214,6 @@ describe('ToolBlock', () => {
   });
 });
 
-describe('ToolGroupBlock', () => {
-  const blocks = [
-    { block: { type: 'tool_use' as const, id: '1', name: 'Read', input: { file_path: '/a.ts' } } },
-    { block: { type: 'tool_use' as const, id: '2', name: 'Read', input: { file_path: '/b.ts' } } },
-  ];
-
-  it('renders collapsed with count badge', () => {
-    render(<ToolGroupBlock toolName="Read" blocks={blocks} />);
-    expect(screen.getByText('2')).toBeInTheDocument();
-    expect(screen.queryByText('/a.ts')).not.toBeInTheDocument();
-  });
-
-  it('expands on click', () => {
-    render(<ToolGroupBlock toolName="Read" blocks={blocks} />);
-    fireEvent.click(screen.getByRole('button'));
-    // Individual ToolBlocks render
-    expect(screen.getAllByTestId('tool-block')).toHaveLength(2);
-  });
-});
-
 describe('groupContentBlocks', () => {
   it('groups consecutive same-name tool_use blocks', () => {
     const blocks = [
@@ -330,22 +309,6 @@ describe('hierarchical tool groups', () => {
       ],
     });
   });
-  it('unmounts collapsed children, pages calls and supports keyboard disclosure', () => {
-    const blocks = Array.from({ length: 30 }, (_, i) => ({
-      block: { ...bashBlock, id: `call-${i}`, input: { command: `command-${i}` } },
-      result: { type: 'tool_result' as const, tool_use_id: `call-${i}`, content: `result-${i}` },
-    }));
-    render(<ToolGroupBlock toolName="Bash" blocks={blocks} />);
-    const group = screen.getByRole('button', { name: /Expand 30 tool calls/ });
-    expect(screen.queryAllByTestId('tool-block')).toHaveLength(0);
-    fireEvent.keyDown(group, { key: 'ArrowRight' });
-    expect(screen.getAllByTestId('tool-block')).toHaveLength(25);
-    expect(screen.queryByText('result-0')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Show 5 more calls/ }));
-    expect(screen.getAllByTestId('tool-block')).toHaveLength(30);
-    fireEvent.keyDown(group, { key: 'Escape' });
-    expect(screen.queryAllByTestId('tool-block')).toHaveLength(0);
-  });
 });
 
 describe('Forge notification tool parts', () => {
@@ -383,5 +346,28 @@ describe('Forge notification tool parts', () => {
     expect(block).toHaveAttribute('data-tool-kind', 'forge-notify');
     expect(block).toHaveClass('niuu-chat-tool-block--mcp');
     expect(block.querySelector('.niuu-chat-tool-preview')).toBeNull();
+  });
+});
+
+describe('subagent calls in groups', () => {
+  it('keeps Task and Agent calls out of a burst so each renders as its own card', () => {
+    const blocks: ContentBlock[] = [
+      bashBlock,
+      { type: 'tool_use', id: 'task-1', name: 'Task', input: { description: 'Check gates' } },
+      { type: 'tool_use', id: 'agent-1', name: 'Agent', input: { prompt: 'Look around' } },
+      { ...bashBlock, id: 'after' },
+      { type: 'tool_use', id: 'read', name: 'Read', input: { file_path: 'a.ts' } },
+    ];
+    const grouped = groupContentBlocks(blocks, true);
+    expect(grouped.map((item) => item.kind)).toEqual(['single', 'single', 'single', 'group']);
+    expect(grouped[1]).toMatchObject({ block: { id: 'task-1' } });
+  });
+
+  it('emits compaction parts as their own item', () => {
+    const grouped = groupContentBlocks(
+      [bashBlock, { type: 'compaction', tokensBefore: 10 } as ContentBlock],
+      true,
+    );
+    expect(grouped.map((item) => item.kind)).toEqual(['single', 'compaction']);
   });
 });

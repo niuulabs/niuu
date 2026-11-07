@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import typing
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 from niuu.adapters.workload_identity.key_file import (
@@ -16,6 +18,11 @@ from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.ports.credentials import CredentialRefreshLockPort
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
+from volundr.adapters.inbound.host_join_listener import (
+    HostJoinListenerError,
+    JoinTls,
+    load_or_create_join_tls,
+)
 from volundr.adapters.outbound.contributors.workflow_execution_credentials import (
     WorkflowExecutionCredentialContributor,
 )
@@ -59,6 +66,14 @@ KEY_SOURCE_KEY_FILE = "key_file"
 
 class ForgeSessionCredentialsUnavailableError(RuntimeError):
     """Forge session credentials are enabled but no signing key is usable."""
+
+
+class HostPairingSignerUnavailableError(RuntimeError):
+    """Registered hosts are configured but nothing can sign a usable pairing code."""
+
+
+#: Issuer and kid of pairing codes signed with ``compute.hosts.pairing_signing_key_file``.
+HOST_PAIRING_ISSUER = "niuu-forge-host-pairing"
 
 
 def _create_forge_session_tokens(
@@ -109,6 +124,87 @@ def _create_forge_session_tokens(
         ttl_seconds=cfg.ttl_seconds,
         key_source=KEY_SOURCE_KEY_FILE,
     )
+
+
+def _create_host_pairing_signer(
+    settings: Settings,
+    workload_identity: WorkloadIdentityService,
+) -> WorkloadIdentityService:
+    """The issuer of host pairing codes.
+
+    The workload-identity issuer signs them when it is enabled with a configured key:
+    that is the key Envoy and the identity adapter validate. Otherwise, only where
+    the identity adapter is allow-all (local mini mode, where nothing but Forge itself
+    checks a bearer), Forge signs them with its own RSA key file, generated once, so
+    a single machine can add hosts without any identity infrastructure. Anywhere
+    else a code signed by Forge's own key would be refused before it reached Forge,
+    so startup fails instead.
+    """
+    hosts = settings.compute.hosts if settings.compute is not None else None
+    if hosts is None:
+        raise HostPairingSignerUnavailableError("compute.hosts is not configured")
+    if workload_identity.enabled and workload_identity.has_configured_key:
+        logger.info("Host pairing codes: signed by the workload identity issuer")
+        return workload_identity
+    if settings.identity.adapter not in ALLOW_ALL_IDENTITY_ADAPTERS:
+        raise HostPairingSignerUnavailableError(
+            "compute.hosts needs a pairing-code signer the identity layer accepts: "
+            f"identity.adapter is {settings.identity.adapter}, so enable "
+            "workload_identity with a configured signing key (signing_key_pem or "
+            "signing_key_env). Forge's own key file is only used with the allow-all "
+            "identity adapter of local mini mode."
+        )
+    try:
+        pem = load_or_create_rsa_key_pem(
+            hosts.pairing_signing_key_file, key_size=hosts.pairing_signing_key_bits
+        )
+    except SigningKeyFileError as exc:
+        raise HostPairingSignerUnavailableError(
+            f"compute.hosts has no usable pairing signing key: {exc}. Fix "
+            "compute.hosts.pairing_signing_key_file, or enable workload_identity with a "
+            "signing key."
+        ) from exc
+    logger.info("Host pairing codes: signed with the local key file")
+    return WorkloadIdentityService(
+        WorkloadIdentityConfig(
+            enabled=True,
+            issuer=HOST_PAIRING_ISSUER,
+            audiences=["volundr-api"],
+            key_id=HOST_PAIRING_ISSUER,
+        ),
+        signing_key_pem=pem,
+    )
+
+
+@dataclass(frozen=True)
+class HostJoinEndpoint:
+    """Where hosts join: the URL, and the pinned listener's TLS when Forge serves it."""
+
+    url: str
+    tls: JoinTls | None
+
+
+def _create_host_join_endpoint(settings: Settings) -> HostJoinEndpoint:
+    """The join URL and, for Forge's own join listener, its key, certificate and pin.
+
+    Without ``join_url`` the URL is the listener at ``server_public_host``; an address no
+    other machine can reach is a startup error, never a plaintext or loopback join.
+    """
+    hosts = settings.compute.hosts if settings.compute is not None else None
+    if hosts is None:
+        raise HostJoinListenerError("compute.hosts is not configured")
+    try:
+        url = hosts.join_base_url(settings.server_public_host)
+    except ValueError as exc:
+        raise HostJoinListenerError(str(exc)) from exc
+    listener = hosts.join_listener
+    if listener is None:
+        logger.info("Hosts join through Forge's API at %s", url)
+        return HostJoinEndpoint(url=url, tls=None)
+    tls = load_or_create_join_tls(
+        cert_file=listener.cert_file, key_file=listener.key_file, key_bits=listener.key_bits
+    )
+    return HostJoinEndpoint(url=url, tls=tls)
 
 
 def _create_forge_session_projection(
@@ -336,8 +432,56 @@ def with_oauth_device_runner(
 def _create_pod_manager(settings: Settings) -> PodManager:
     """Create the PodManager adapter from dynamic config."""
     pm_cfg = settings.pod_manager
-    cls = import_class(pm_cfg.adapter)
-    kwargs = resolve_secret_kwargs(pm_cfg.kwargs, pm_cfg.secret_kwargs_env)
+    instance = _build_pod_manager(
+        settings,
+        pm_cfg.adapter,
+        resolve_secret_kwargs(pm_cfg.kwargs, pm_cfg.secret_kwargs_env),
+    )
+    logger.info("Pod manager: %s", pm_cfg.adapter.rsplit(".", 1)[-1])
+    return instance
+
+
+def _nested_pod_manager_parameters(cls: type, kwargs: dict[str, Any]) -> set[str]:
+    """The kwargs whose adapter configs are pod managers to build here.
+
+    Only parameters the constructor types as ``PodManager`` (the placement pod
+    manager's ``local`` and ``pool``). Any other adapter-shaped mapping is data the
+    adapter passes on, such as Skuld's ``preview_router_auth``.
+    """
+    if not any(isinstance(value, dict) and "adapter" in value for value in kwargs.values()):
+        return set()
+    try:
+        hints = typing.get_type_hints(cls.__init__)
+    except NameError as exc:
+        raise TypeError(
+            f"Pod manager {cls.__qualname__} has constructor annotations that do not "
+            f"resolve ({exc}); nested pod manager configs need resolvable types"
+        ) from exc
+    return {
+        name
+        for name, value in kwargs.items()
+        if isinstance(value, dict) and "adapter" in value and hints.get(name) is PodManager
+    }
+
+
+def _build_pod_manager(settings: Settings, adapter: str, kwargs: dict[str, Any]) -> PodManager:
+    cls = import_class(adapter)
+    kwargs = dict(kwargs)
+    for name in _nested_pod_manager_parameters(cls, kwargs):
+        nested = kwargs[name]
+        unknown = set(nested) - {"adapter", "kwargs", "secret_kwargs_env"}
+        if unknown:
+            raise ValueError(
+                f"pod_manager.kwargs.{name} takes adapter, kwargs and secret_kwargs_env; "
+                f"move {sorted(unknown)} under kwargs"
+            )
+        kwargs[name] = _build_pod_manager(
+            settings,
+            str(nested["adapter"]),
+            resolve_secret_kwargs(
+                dict(nested.get("kwargs") or {}), dict(nested.get("secret_kwargs_env") or {})
+            ),
+        )
     kwargs.setdefault("server_public_host", settings.server_public_host)
     kwargs.setdefault("server_host", settings.server_host)
     kwargs.setdefault("server_port", settings.server_port)
@@ -347,9 +491,7 @@ def _create_pod_manager(settings: Settings) -> PodManager:
     kwargs.setdefault("client_id", settings.openshell_oidc_client_id)
     if settings.openshell_oidc_client_secret:
         kwargs.setdefault("client_secret", settings.openshell_oidc_client_secret)
-    instance = cls(**kwargs)
-    logger.info("Pod manager: %s", pm_cfg.adapter.rsplit(".", 1)[-1])
-    return instance
+    return cls(**kwargs)
 
 
 _OPENBAO_SECRET_INJECTION_ADAPTER = (

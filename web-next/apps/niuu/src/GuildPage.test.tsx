@@ -1,6 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { GuildPage } from './GuildPage';
 import { canManageInstance, type InstanceRecord } from './guildInstances';
 
@@ -20,7 +21,10 @@ vi.mock('@niuulabs/plugin-sdk', async (original) => ({
       credentials: { mode: 'http', baseUrl: '/api/v1/credentials' },
     },
   }),
-  useService: () => ({ getIdentity: async () => identity }),
+  useService: () => ({
+    getIdentity: async () => identity,
+    getComputeHosts: async () => (forgeHasHosts ? {} : null),
+  }),
 }));
 vi.mock('@tanstack/react-router', () => ({ useRouterState: () => ({ search: '' }) }));
 
@@ -51,6 +55,7 @@ const node: InstanceRecord = {
 };
 let records: InstanceRecord[];
 let failure = false;
+let forgeHasHosts = false;
 let probeFailure = false;
 let probes = 0;
 let loading: Promise<void> | undefined;
@@ -61,7 +66,9 @@ function renderGuild() {
   });
   render(
     <QueryClientProvider client={client}>
-      <GuildPage />
+      <ServicesProvider services={{ volundr: {} }}>
+        <GuildPage />
+      </ServicesProvider>
     </QueryClientProvider>,
   );
   return client;
@@ -69,6 +76,7 @@ function renderGuild() {
 beforeEach(() => {
   records = [structuredClone(node)];
   failure = false;
+  forgeHasHosts = false;
   probeFailure = false;
   probes = 0;
   loading = undefined;
@@ -295,6 +303,17 @@ describe('Guild node management', () => {
     expect(banner).toHaveTextContent('1 instance unreachable: build-kit');
     expect(screen.getByText('last error')).toBeInTheDocument();
     expect(screen.getByText('connection refused')).toBeInTheDocument();
+  });
+  it('links a Forge that has compute hosts to its Hosts page', async () => {
+    forgeHasHosts = true;
+    renderGuild();
+    const link = await screen.findByRole('link', { name: 'Compute hosts' });
+    expect(link).toHaveAttribute('href', '/volundr/hosts?instance_id=node-1');
+  });
+  it('offers no Hosts page for a Forge without compute hosts', async () => {
+    renderGuild();
+    await screen.findByRole('button', { name: 'Edit settings' });
+    expect(screen.queryByRole('link', { name: 'Compute hosts' })).not.toBeInTheDocument();
   });
   it('treats an unrecognized health value as unknown instead of rendering it as unreachable', async () => {
     records = [{ ...structuredClone(node), health: 'weird-future-value' as never }];

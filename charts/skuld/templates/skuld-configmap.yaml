@@ -129,16 +129,51 @@ data:
     {{- end }}
     service_user_id: {{ .Values.volundr.serviceUserId | default "skuld-broker" | quote }}
     service_tenant_id: {{ .Values.volundr.serviceTenantId | default "default" | quote }}
-    {{- if .Values.forgeMcp.tokenFile }}
+    {{- if .Values.preview.enabled }}
+    {{- $workload := .Values.envoy.jwt.workload }}
+    {{- if not (and $workload.issuer $workload.jwksUri) }}
+    {{- fail "preview.enabled needs envoy.jwt.workload.issuer and envoy.jwt.workload.jwksUri: the router credential is a workload JWT Skuld verifies against them" }}
+    {{- end }}
+
+    # Live preview: this pod is the session, so every listener in its network
+    # namespace is offered except the pod's own infrastructure.
+    preview:
+      enabled: true
+      port_scan_interval_seconds: {{ .Values.preview.portScanIntervalSeconds }}
+      port_scanner:
+        adapter: skuld.preview_adapters.ProcNetListeningPortScanner
+        kwargs:
+          excluded_ports: {{ include "skuld.previewExcludedPorts" . }}
+      router_auth:
+        adapter: skuld.preview_adapters.WorkloadJwtRouterAuth
+        kwargs:
+          issuer: {{ $workload.issuer | quote }}
+          audience: {{ .Values.preview.routerAudience | quote }}
+          jwks_uri: {{ $workload.jwksUri | quote }}
+    {{- end }}
+    {{- if or .Values.forgeMcp.tokenFile (not (kindIs "invalid" .Values.forgeMcp.brokerRequestTimeoutS)) (not (kindIs "invalid" .Values.forgeMcp.toolTimeoutS)) }}
 
     # The session-bound Forge credential, mounted by Forge from a per-session Secret
     # (forge_mcp.session_tokens.projection_adapter). Only the file path is a value.
     forge_mcp:
+      {{- if .Values.forgeMcp.tokenFile }}
       token_file: {{ .Values.forgeMcp.tokenFile | quote }}
+      {{- end }}
       {{- if kindIs "slice" .Values.forgeMcp.grants }}
       grants: {{ .Values.forgeMcp.grants | toJson }}
       {{- end }}
+      {{- if not (kindIs "invalid" .Values.forgeMcp.brokerRequestTimeoutS) }}
+      broker_request_timeout_s: {{ .Values.forgeMcp.brokerRequestTimeoutS | toJson }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.forgeMcp.toolTimeoutS) }}
+      tool_timeout_s: {{ .Values.forgeMcp.toolTimeoutS | toJson }}
+      {{- end }}
     {{- end }}
+
+    # How request_secret waits for the user's answer in the chat card.
+    secret_requests:
+      poll_interval_s: {{ .Values.secretRequests.pollIntervalS | toJson }}
+      wait_max_s: {{ .Values.secretRequests.waitMaxS | toJson }}
     {{- if and (include "skuld.residentEnabled" .) .Values.resident.platform.enabled }}
 
     # Workload identity token exchange (config-first; replaces the legacy

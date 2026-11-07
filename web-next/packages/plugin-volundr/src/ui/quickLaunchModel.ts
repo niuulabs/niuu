@@ -1,5 +1,5 @@
 import type { BifrostModel } from '@niuulabs/plugin-bifrost';
-import type { VolundrTarget } from '../models/volundr.model';
+import type { ForgeMcpGrant, VolundrTarget } from '../models/volundr.model';
 
 /** The same two curated standards as Lexi iOS's NewForgeSessionView. */
 export const FORGE_STANDARDS = [
@@ -24,6 +24,26 @@ export const FORGE_STANDARDS = [
     ],
   },
 ] as const;
+/**
+ * The Forge tools a new session can be granted over other sessions. Reading sessions and
+ * notifying are always available; these two need an operator grant.
+ */
+export const FORGE_TOOL_GRANTS: ReadonlyArray<{
+  grant: ForgeMcpGrant;
+  label: string;
+  description: string;
+}> = [
+  {
+    grant: 'lifecycle',
+    label: 'Manage sessions',
+    description: 'Create, start and stop other sessions',
+  },
+  {
+    grant: 'message',
+    label: 'Message sessions',
+    description: 'Send messages that steer other sessions',
+  },
+];
 export type ForgeStandardId = (typeof FORGE_STANDARDS)[number]['id'];
 export const EFFORT_LABELS: Record<string, string> = {
   off: 'Off',

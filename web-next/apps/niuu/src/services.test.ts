@@ -511,6 +511,46 @@ describe('buildServices live base selection', () => {
     );
   });
 
+  it('sends compute host reads and changes to the Forge that owns the hosts', async () => {
+    const forge = {
+      getComputeHosts: vi.fn(async () => null),
+      getComputeHostTagSets: vi.fn(async () => [['gpu']]),
+      createPairingCode: vi.fn(async () => ({ id: 'c-1' })),
+      revokePairingCode: vi.fn(async () => undefined),
+      updateComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      drainComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      resumeComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      reprepareComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      checkComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      removeComputeHost: vi.fn(async () => ({ removed: true, hostCleanupCommand: null })),
+    };
+    volundrMocks.createMockVolundrService.mockImplementationOnce(() => forge as never);
+    const volundr = buildServices({ demoMode: true, services: {} } as any).volundr as any;
+    const request = { execution: 'host@1', connector: 'direct-ssh', tags: [], slots: null };
+
+    await volundr.getComputeHosts('ymir');
+    await volundr.getComputeHostTagSets('ymir');
+    await volundr.createPairingCode('ymir', request);
+    await volundr.revokePairingCode('ymir', 'c-1');
+    await volundr.updateComputeHost('ymir', 'h-1', { tags: ['gpu'] });
+    await volundr.drainComputeHost('ymir', 'h-1', true);
+    await volundr.resumeComputeHost('ymir', 'h-1');
+    await volundr.reprepareComputeHost('ymir', 'h-1');
+    await volundr.checkComputeHost('ymir', 'h-1');
+    await volundr.removeComputeHost('ymir', 'h-1');
+
+    expect(forge.getComputeHosts).toHaveBeenCalledWith('ymir');
+    expect(forge.getComputeHostTagSets).toHaveBeenCalledWith('ymir');
+    expect(forge.createPairingCode).toHaveBeenCalledWith('ymir', request);
+    expect(forge.revokePairingCode).toHaveBeenCalledWith('ymir', 'c-1');
+    expect(forge.updateComputeHost).toHaveBeenCalledWith('ymir', 'h-1', { tags: ['gpu'] });
+    expect(forge.drainComputeHost).toHaveBeenCalledWith('ymir', 'h-1', true);
+    expect(forge.resumeComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
+    expect(forge.reprepareComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
+    expect(forge.checkComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
+    expect(forge.removeComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
+  });
+
   it('serves the observatory agent directory from the mock in demo mode', () => {
     const services = buildServices({ demoMode: true, services: {} } as any);
 
@@ -1137,6 +1177,53 @@ describe('buildServices', () => {
     await expect((services.volundr as any).getSession('session-facade')).resolves.toEqual(
       facadeSession,
     );
+  });
+
+  it('reads and changes session read state on the Forge host and carries it into the list', async () => {
+    const services = buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+      },
+    } as any);
+    const forgeVolundr = volundrMocks.buildVolundrHttpAdapter.mock.results[0]?.value;
+    const readState = {
+      isUnread: true,
+      latestOutputSeq: 14,
+      readThroughSeq: 9,
+      revision: 3,
+    };
+    forgeVolundr.getSessionReadState = vi.fn().mockResolvedValue(readState);
+    forgeVolundr.changeSessionReadState = vi.fn().mockResolvedValue({ ...readState, revision: 4 });
+    const volundr = services.volundr as any;
+
+    await expect(volundr.getSessionReadState('s1', { instanceId: 'thor' })).resolves.toBe(
+      readState,
+    );
+    expect(forgeVolundr.getSessionReadState).toHaveBeenCalledWith('s1', { instanceId: 'thor' });
+    const change = { state: 'read', expectedRevision: 3, throughSeq: 14 };
+    await expect(volundr.changeSessionReadState('s1', change)).resolves.toMatchObject({
+      revision: 4,
+    });
+    expect(forgeVolundr.changeSessionReadState).toHaveBeenCalledWith('s1', change, undefined);
+
+    forgeVolundr.getSession.mockResolvedValue({
+      id: 's1',
+      name: 'alpha',
+      status: 'running',
+      source: { type: 'git', repo: 'r', branch: 'main' },
+      readState,
+      shortDescription: 'Tests next',
+      workedSeconds24h: 120,
+    });
+    await expect((services.sessionStore as any).getSession('s1')).resolves.toMatchObject({
+      readState,
+      shortDescription: 'Tests next',
+      workedSeconds24h: 120,
+    });
   });
 
   it('prefers an explicit filesystem base over the derived Volundr route', () => {
@@ -1911,7 +1998,7 @@ describe('buildServices', () => {
       expect.objectContaining({
         id: 'sess-starting',
         state: 'provisioning',
-        bootProgress: 0.25,
+        startup: null,
         clusterId: 'tenant-a',
         ravnId: 'tenant-a',
       }),

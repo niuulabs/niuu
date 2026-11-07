@@ -22,4 +22,11 @@ describe('resolveParticipantColor', () => {
     // Not all necessarily different, but at least 2 distinct values in 4 is expected
     expect(colors.size).toBeGreaterThanOrEqual(1);
   });
+
+  it('maps a palette slot the room assigned onto the palette', () => {
+    expect(resolveParticipantColor('peer-1', 'p1')).toBe('#38bdf8');
+    expect(resolveParticipantColor('peer-1', 'p3')).toBe('#818cf8');
+    expect(resolveParticipantColor('peer-1', 'p10')).toBe('#a78bfa');
+    expect(resolveParticipantColor('peer-1', '#123456')).toBe('#123456');
+  });
 });

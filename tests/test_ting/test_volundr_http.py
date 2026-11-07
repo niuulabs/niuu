@@ -17,6 +17,7 @@ from ting.adapters.volundr_http import VolundrHTTPAdapter
 from ting.ports.volundr import (
     ActivityStreamConnected,
     ForgeProjectRef,
+    HostTagSetsUnreadableError,
     SessionMembership,
     SpawnRequest,
 )
@@ -1576,3 +1577,62 @@ async def test_a_launch_carries_its_project_and_parent(adapter: VolundrHTTPAdapt
         "labels": ["work-project:p1"],
         "parent": {"instance_id": "forge-host", "session_id": "coordinator-1"},
     }
+
+
+# -------------------------------------------------------------------
+# host_tag_sets
+# -------------------------------------------------------------------
+
+TAG_SETS_URL = f"{BASE_URL}/api/v1/forge/compute/hosts/tag-sets"
+
+
+class TestHostTagSets:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_returns_the_forges_tag_sets_with_the_callers_credentials(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        route = respx.get(TAG_SETS_URL).mock(
+            return_value=httpx.Response(200, json={"tag_sets": [["gpu", "site:a"], ["site:a"]]})
+        )
+
+        tag_sets = await adapter.host_tag_sets(auth_token="pat-1")
+
+        assert tag_sets == [["gpu", "site:a"], ["site:a"]]
+        assert route.calls[0].request.headers["Authorization"] == "Bearer pat-1"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_404_means_the_forge_has_no_hosts(self, adapter: VolundrHTTPAdapter):
+        respx.get(TAG_SETS_URL).mock(return_value=httpx.Response(404, json={"detail": "Not Found"}))
+
+        assert await adapter.host_tag_sets() == []
+
+    @pytest.mark.asyncio
+    @respx.mock
+    @pytest.mark.parametrize(
+        "response",
+        [
+            httpx.Response(500, json={"detail": "boom"}),
+            httpx.Response(403, json={"detail": "no"}),
+            httpx.Response(200, content=b"not json"),
+            httpx.Response(200, json=["gpu"]),
+            httpx.Response(200, json={"tag_sets": "gpu"}),
+            httpx.Response(200, json={"tag_sets": [["gpu", 3]]}),
+        ],
+    )
+    async def test_any_other_answer_is_unreadable_and_names_the_target(
+        self, adapter: VolundrHTTPAdapter, response: httpx.Response
+    ):
+        respx.get(TAG_SETS_URL).mock(return_value=response)
+
+        with pytest.raises(HostTagSetsUnreadableError, match="test-cluster"):
+            await adapter.host_tag_sets()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_transport_failure_is_unreadable_not_empty(self, adapter: VolundrHTTPAdapter):
+        respx.get(TAG_SETS_URL).mock(side_effect=httpx.ConnectError("refused"))
+
+        with pytest.raises(HostTagSetsUnreadableError, match="ConnectError"):
+            await adapter.host_tag_sets()

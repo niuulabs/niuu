@@ -91,6 +91,7 @@ from niuu.domain.services.token_scope import (
     require_scope,
 )
 from niuu.domain.session_owners import SessionOwners
+from niuu.domain.tags import matches_tags, residual_selector, satisfiable, validate_match
 from niuu.forge_mcp.credentials import token_scopes
 from niuu.ports.instances import InvalidInstanceIdError
 
@@ -110,6 +111,8 @@ MCP_PATH = "/mcp"
 NOTIFICATION_EVENT = "session_notification"
 # Gateway-only selectors: never forwarded to a Forge node, whose ids differ.
 _FLEET_SELECTORS = frozenset({"instance_id", "all_instances", "scope"})
+#: The actions Forge offers on one secret request (``rest_secret_requests``).
+SECRET_REQUEST_OPERATIONS = frozenset({"fulfill", "decline", "claim", "cancel"})
 
 _DELIVERY_POST_PATHS = frozenset(
     {
@@ -165,6 +168,14 @@ RELAY_LOGIN_REQUIRED_DETAIL = (
 OWNER_HINT_TIMEOUT_SECONDS = 5.0
 #: Seconds a relayed session message may take end to end (delivery waits for the ACK).
 RELAY_TIMEOUT_SECONDS = 60.0
+#: Seconds a Forge may take to report its host tag sets while a tag selector picks an
+#: instance. Bound by the read being one small query on the Forge; a Forge slower than
+#: this is reported as unreadable by name, never skipped quietly.
+HOST_TAG_SETS_TIMEOUT_SECONDS = 10.0
+#: The Forge route that reports its hosts' distinct tag sets (404 on a Forge without hosts).
+HOST_TAG_SETS_PATH = "/compute/hosts/tag-sets"
+#: The key the residual host selector travels in, inside a session's ``workload_config``.
+HOST_SELECTOR_KEY = "host_selector"
 #: WebSocket close code mirroring HTTP 403, and the close-frame reason bound.
 _WS_FORBIDDEN = 4403
 _WS_REASON_CHARS = 120
@@ -1083,6 +1094,151 @@ async def _find_trace_owner(
     return instance
 
 
+class _HostTagSetsUnreadableError(Exception):
+    """A Forge's host tag sets could not be read; the message says why."""
+
+
+def _host_tag_sets_from(response: httpx.Response) -> list[list[str]]:
+    """The tag sets in a ``GET /compute/hosts/tag-sets`` answer, or why it is unusable.
+
+    A 404 is the Forge's answer that it has no hosts (no ``compute.hosts``), so it has
+    no host tags. Any other status, or a body that is not the documented shape, is a
+    failed read.
+    """
+    if response.status_code == status.HTTP_404_NOT_FOUND:
+        return []
+    if response.status_code != status.HTTP_200_OK:
+        raise _HostTagSetsUnreadableError(f"HTTP {response.status_code}")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise _HostTagSetsUnreadableError("the answer is not JSON") from exc
+    tag_sets = payload.get("tag_sets") if isinstance(payload, dict) else None
+    if not isinstance(tag_sets, list) or not all(
+        isinstance(tag_set, list) and all(isinstance(tag, str) for tag in tag_set)
+        for tag_set in tag_sets
+    ):
+        raise _HostTagSetsUnreadableError('the answer is not {"tag_sets": [[str, ...], ...]}')
+    return tag_sets
+
+
+async def _read_host_tag_sets(
+    instance: RegisteredInstance,
+    request: Request,
+    embedded_app: ASGIApp | None,
+) -> list[list[str]]:
+    """The distinct host tag sets one Forge reports; ``_HostTagSetsUnreadableError`` on failure."""
+    try:
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=HOST_TAG_SETS_PATH,
+            embedded_app=embedded_app,
+            timeout=HOST_TAG_SETS_TIMEOUT_SECONDS,
+        )
+    except HTTPException as exc:
+        raise _HostTagSetsUnreadableError(f"HTTP {exc.status_code}: {exc.detail}") from exc
+    except httpx.HTTPError as exc:
+        raise _HostTagSetsUnreadableError(f"{type(exc).__name__}: {exc}") from exc
+    return _host_tag_sets_from(response)
+
+
+async def _instances_serving_tags(
+    instances: list[RegisteredInstance],
+    request: Request,
+    embedded_app: ASGIApp | None,
+    *,
+    tags: list[str],
+    match: str,
+) -> tuple[list[RegisteredInstance], dict[str, str]]:
+    """Instances that can serve the selector, and the ones whose hosts could not be read.
+
+    An instance serves it when its own tags match, or when its own tags together with
+    ONE of its host tag sets do (``niuu.domain.tags.satisfiable``). Only an instance
+    whose own tags fall short is asked for its host tag sets. The second result maps
+    an unreadable instance's name to the reason: it is neither eligible nor dropped
+    without a trace.
+    """
+    to_read = [i for i in instances if not matches_tags(i.tags, tags, match)]
+    unreadable: dict[str, str] = {}
+    serving = {i.id for i in instances} - {i.id for i in to_read}
+
+    async def read_one(instance: RegisteredInstance) -> None:
+        try:
+            tag_sets = await _read_host_tag_sets(instance, request, embedded_app)
+        except _HostTagSetsUnreadableError as exc:
+            unreadable[instance.name] = str(exc)
+            return
+        if satisfiable(instance.tags, tag_sets, tags, match):
+            serving.add(instance.id)
+
+    await asyncio.gather(*(read_one(i) for i in to_read))
+    return [i for i in instances if i.id in serving], unreadable
+
+
+def _selector_miss(tags: list[str], match: str, unreadable: dict[str, str]) -> HTTPException:
+    """The refusal when no instance serves the selector: a miss, or a failed read."""
+    if not unreadable:
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"No enabled Volundr instance matches tags {sorted(tags)} (match={match})",
+        )
+    named = "; ".join(f"{name} ({reason})" for name, reason in sorted(unreadable.items()))
+    return HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=(
+            f"No enabled Volundr instance matches tags {sorted(tags)} (match={match}) by its "
+            f"own tags, and the host tags of these instances could not be read, so they "
+            f"cannot be ruled out: {named}"
+        ),
+    )
+
+
+def _host_selector_for(
+    instance: RegisteredInstance, tags: list[str] | None, match: str
+) -> dict[str, Any] | None:
+    """What the chosen Forge must still satisfy with a host, as the session-create value."""
+    if not tags:
+        return None
+    residual = residual_selector(instance.tags, tags, match)
+    if residual is None:
+        return None
+    residual_tags, residual_match = residual
+    return {"tags": list(residual_tags), "match": residual_match}
+
+
+def _refuse_caller_host_selector(body: dict[str, Any]) -> None:
+    """422 when a request names target tags and also sets its own host selector.
+
+    Two selectors for the same placement would leave the facade to pick one, so the
+    caller must choose: target tags (the facade splits them into the instance and the
+    host part) or an explicit ``workload_config.host_selector`` for a named Forge.
+    """
+    workload_config = body.get("workload_config")
+    if workload_config is None:
+        return
+    if not isinstance(workload_config, dict):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="workload_config must be an object",
+        )
+    if HOST_SELECTOR_KEY in workload_config:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Send either target_tags/target_match or workload_config.{HOST_SELECTOR_KEY}, "
+                "not both: the facade derives the host selector from the target tags"
+            ),
+        )
+
+
+def _with_host_selector(body: dict[str, Any], host_selector: dict[str, Any]) -> dict[str, Any]:
+    """The session-create body with ``workload_config.host_selector`` set."""
+    workload_config = body.get("workload_config") or {}
+    return {**body, "workload_config": {**workload_config, HOST_SELECTOR_KEY: host_selector}}
+
+
 async def _resolve_target_instance(
     service: InstanceService,
     principal: Principal,
@@ -1090,7 +1246,23 @@ async def _resolve_target_instance(
     *,
     tags: list[str] | None = None,
     match: str = "all",
+    request: Request | None = None,
+    embedded_app: ASGIApp | None = None,
 ) -> RegisteredInstance:
+    """The instance a request targets: a named one, or one that serves the tag selector.
+
+    With ``tags`` alone, an instance serves the selector when its own tags match. Pass
+    ``request`` when the caller places a session, which a Forge's hosts can serve: an
+    instance then also serves it through its own tags plus ONE of its hosts' tag sets,
+    read from the Forge with that request's credentials.
+    """
+    if tags:
+        try:
+            validate_match(match)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
     if instance_id:
         try:
             instance = await service.get_visible(principal, instance_id)
@@ -1107,19 +1279,31 @@ async def _resolve_target_instance(
         principal,
         kind=InstanceKind.VOLUNDR,
         enabled_only=True,
-        tags=tags,
-        match=match,
     )
     if _is_session_principal(principal):
         instances = _local_only(instances)
-    if not instances:
-        # Fail loud: never silently fall back to an untagged backend when a tag
-        # selector was requested.
-        if tags:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(f"No enabled Volundr instance matches tags {sorted(tags)} (match={match})"),
+    if tags:
+        if request is None:
+            instances = [i for i in instances if matches_tags(i.tags, tags, match)]
+            unreadable: dict[str, str] = {}
+        else:
+            instances, unreadable = await _instances_serving_tags(
+                instances, request, embedded_app, tags=tags, match=match
             )
+        if unreadable:
+            logger.error(
+                "Host tags of %d Volundr instance(s) could not be read for selector %s "
+                "(match=%s) and they were not considered: %s",
+                len(unreadable),
+                sorted(tags),
+                match,
+                unreadable,
+            )
+        if not instances:
+            # Fail loud: never fall back to an untagged backend when a tag selector was
+            # requested, and never read an unreadable instance as "no match".
+            raise _selector_miss(tags, match, unreadable)
+    if not instances:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No enabled Volundr instances are registered for this user",
@@ -2214,13 +2398,21 @@ def create_volundr_router(
         requested_instance_id = body.get("instance_id") or body.get("instanceId")
         target_tags = body.get("target_tags") or body.get("targetTags")
         target_match = body.get("target_match") or body.get("targetMatch") or "all"
+        tags = list(target_tags) if target_tags else None
+        if tags:
+            _refuse_caller_host_selector(body)
         instance = await _resolve_target_instance(
             service,
             principal,
             str(requested_instance_id) if requested_instance_id else None,
-            tags=list(target_tags) if target_tags else None,
+            tags=tags,
             match=str(target_match),
+            request=request,
+            embedded_app=embedded_forge_app,
         )
+        host_selector = _host_selector_for(instance, tags, str(target_match))
+        if host_selector is not None:
+            body = _with_host_selector(body, host_selector)
         await _sync_persona_to_instance(
             instance,
             request,
@@ -2628,6 +2820,155 @@ def create_volundr_router(
             "push_voip": push_capabilities.get("push_voip") is True,
         }
         return flags
+
+    @router.get("/settings/live-preview")
+    async def get_live_preview_settings(
+        request: Request,
+        instance_id: str | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """Where previews of the node's sessions open: each Forge has its own preview domain."""
+        instance = await _resolve_target_instance(service, principal, instance_id)
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path="/settings/live-preview",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return response.json()
+
+    @router.get("/session-runtimes")
+    async def get_session_runtimes(
+        request: Request,
+        instance_id: str | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """What a launch on the node may run as: each Forge offers its own runtimes."""
+        instance = await _resolve_target_instance(service, principal, instance_id)
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path="/session-runtimes",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return response.json()
+
+    async def _proxy_compute_hosts(
+        request: Request,
+        principal: Principal,
+        instance_id: str | None,
+        *,
+        method: str,
+        path: str,
+    ) -> Response:
+        """Pass one compute-host admin call to one Forge, answer and status untouched.
+
+        The Forge owns the authorization (``volundr:admin``) and the answers, 4xx bodies
+        included, so the console shows the Forge's own reason.
+        """
+        instance = await _resolve_target_instance(service, principal, instance_id)
+        body = await request.body()
+        content_type = request.headers.get("content-type")
+        response = await _request_remote(
+            instance,
+            request,
+            method=method,
+            path=path,
+            content_body=body or None,
+            params=_forward_params(request, drop=_FLEET_SELECTORS),
+            extra_headers={"content-type": content_type} if content_type and body else None,
+            embedded_app=embedded_forge_app,
+        )
+        forwarded_headers = {
+            name: response.headers[name]
+            for name in ("content-type", "retry-after", "www-authenticate")
+            if name in response.headers
+        }
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers=forwarded_headers,
+        )
+
+    @router.get("/compute/hosts")
+    async def list_compute_hosts(
+        request: Request,
+        instance_id: str | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """The Forge's registered hosts, pool summary, connectors, runtimes and pairing codes."""
+        return await _proxy_compute_hosts(
+            request, principal, instance_id, method="GET", path="/compute/hosts"
+        )
+
+    @router.post("/compute/hosts/pairing-codes")
+    async def create_compute_host_pairing_code(
+        request: Request,
+        instance_id: str | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        return await _proxy_compute_hosts(
+            request, principal, instance_id, method="POST", path="/compute/hosts/pairing-codes"
+        )
+
+    @router.delete("/compute/hosts/pairing-codes/{code_id}")
+    async def revoke_compute_host_pairing_code(
+        request: Request,
+        code_id: UUID,
+        instance_id: str | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        return await _proxy_compute_hosts(
+            request,
+            principal,
+            instance_id,
+            method="DELETE",
+            path=f"/compute/hosts/pairing-codes/{code_id}",
+        )
+
+    @router.patch("/compute/hosts/{host_id}")
+    async def update_compute_host(
+        request: Request,
+        host_id: UUID,
+        instance_id: str | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        return await _proxy_compute_hosts(
+            request, principal, instance_id, method="PATCH", path=f"/compute/hosts/{host_id}"
+        )
+
+    @router.delete("/compute/hosts/{host_id}")
+    async def remove_compute_host(
+        request: Request,
+        host_id: UUID,
+        instance_id: str | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        return await _proxy_compute_hosts(
+            request, principal, instance_id, method="DELETE", path=f"/compute/hosts/{host_id}"
+        )
+
+    @router.post("/compute/hosts/{host_id}/{action}")
+    async def act_on_compute_host(
+        request: Request,
+        host_id: UUID,
+        action: Literal["drain", "resume", "check", "reprepare"],
+        instance_id: str | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Drain, resume, check or re-prepare one host (the Forge answers 409 for a wrong
+        state)."""
+        return await _proxy_compute_hosts(
+            request,
+            principal,
+            instance_id,
+            method="POST",
+            path=f"/compute/hosts/{host_id}/{action}",
+        )
 
     async def _push_gateway_capabilities(
         request: Request,
@@ -4966,6 +5307,56 @@ def create_volundr_router(
         _ensure_remote_success(response)
         return JSONResponse(content=response.json(), status_code=response.status_code)
 
+    @router.api_route("/sessions/{session_id}/secret-requests", methods=["GET", "POST"])
+    @router.api_route("/sessions/{session_id}/secret-requests/{request_id}", methods=["GET"])
+    @router.api_route(
+        "/sessions/{session_id}/secret-requests/{request_id}/{operation}", methods=["POST"]
+    )
+    async def secret_request(
+        request: Request,
+        session_id: str,
+        request_id: UUID | None = None,
+        operation: str | None = None,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Secret requests, on the session's owning node.
+
+        The body goes through as bytes and is never parsed here, so a malformed fulfil
+        body cannot be echoed back in a 422. Forge's answer comes back as is: its status
+        (409 for an ended session, 403 for a scoped token on fulfil) and the claim's
+        ``Cache-Control: no-store``.
+        """
+        if operation is not None and operation not in SECRET_REQUEST_OPERATIONS:
+            raise HTTPException(404, "Unknown secret request operation")
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        path = f"/sessions/{session_id}/secret-requests"
+        if request_id is not None:
+            path += f"/{request_id}"
+        if operation is not None:
+            path += f"/{operation}"
+        is_post = request.method == "POST"
+        upstream = await _request_remote(
+            instance,
+            request,
+            method=request.method,
+            path=path,
+            content_body=await request.body() if is_post else None,
+            params=None if is_post else _query_params(request),
+            extra_headers={"content-type": "application/json"} if is_post else None,
+            embedded_app=embedded_forge_app,
+        )
+        headers: dict[str, str] = {}
+        if cache := upstream.headers.get("cache-control"):
+            headers["cache-control"] = cache
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+            headers=headers,
+        )
+
     @router.get("/sessions/{session_id}/logs")
     async def get_logs(
         request: Request,
@@ -5317,6 +5708,57 @@ def create_volundr_router(
         )
         _ensure_remote_success(response)
         return response.json()
+
+    # A side chat forks a session as Lexi does: read the session's chronicle,
+    # then reforge it into a child on the same host. Both were missing from the
+    # aggregate, so the fork 404'd here though each Forge serves them.
+    @router.get("/sessions/{session_id}/chronicle")
+    async def get_session_chronicle(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/chronicle",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.post("/chronicles/{chronicle_id}/reforge")
+    async def reforge_chronicle(
+        request: Request,
+        chronicle_id: str = Path(description="Chronicle identifier"),
+        instance_id: str | None = Query(
+            default=None,
+            description="The Forge holding the chronicle: the session it was read from",
+        ),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        # A chronicle id names no owner the aggregate can look up, so the caller
+        # names the Forge it read the chronicle from.
+        instance = await _resolve_target_instance(service, principal, instance_id)
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/chronicles/{chronicle_id}/reforge",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return _with_instance(payload, instance) if isinstance(payload, dict) else {}
 
     # --- Skuld broker telemetry ingestion -----------------------------------
     # The in-instance Skuld broker POSTs trace spans, session events, and

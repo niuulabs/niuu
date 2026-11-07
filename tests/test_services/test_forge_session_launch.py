@@ -9,6 +9,7 @@ from niuu.domain.services.token_scope import (
     FORGE_SESSION_LIFECYCLE_SCOPE,
     FORGE_SESSION_MESSAGE_SCOPE,
     FORGE_SESSION_READ_SCOPE,
+    FORGE_SESSION_SECRET_SCOPE,
 )
 from niuu.forge_mcp.models import ForgeMcpGrant
 from tests.conftest import InMemorySessionRepository, MockPodManager
@@ -62,7 +63,11 @@ class TestMintAtStart:
         forge = build_forge_app()
         session = await forge.session()
         credential = await forge.start(session)
-        assert credential.scopes == (FORGE_NOTIFY_SCOPE, FORGE_SESSION_READ_SCOPE)
+        assert credential.scopes == (
+            FORGE_NOTIFY_SCOPE,
+            FORGE_SESSION_READ_SCOPE,
+            FORGE_SESSION_SECRET_SCOPE,
+        )
         stored = await forge.sessions.get(session.id)
         assert stored.workload_config["forge_mcp"] == {
             "grants": [],
@@ -107,6 +112,7 @@ class TestMintAtStart:
         assert credential.scopes == (
             FORGE_NOTIFY_SCOPE,
             FORGE_SESSION_READ_SCOPE,
+            FORGE_SESSION_SECRET_SCOPE,
             FORGE_SESSION_LIFECYCLE_SCOPE,
             FORGE_SESSION_MESSAGE_SCOPE,
         )

@@ -11,6 +11,7 @@ import pytest
 
 from volundr.adapters.outbound.push_device_state import (
     DELETE_CONNECTION_SQL,
+    LOCK_TOKEN_SQL,
     REPLACE_ACTIVITY_TOKEN_SQL,
     TAKE_OVER_SQL,
     UPSERT_SQL,
@@ -51,6 +52,7 @@ def conn():
     connection = MagicMock()
     connection.fetch = AsyncMock(return_value=[])
     connection.fetchrow = AsyncMock()
+    connection.execute = AsyncMock()
 
     @asynccontextmanager
     async def transaction():
@@ -90,6 +92,8 @@ class TestRegister:
 
         stored, removed = await store.register(row)
 
+        # Registrations of one token take turns, inside the registration's transaction.
+        conn.execute.assert_awaited_once_with(LOCK_TOKEN_SQL, row.token_sha256, "alert")
         conn.fetch.assert_awaited_once_with(
             TAKE_OVER_SQL, row.token_sha256, "alert", row.credential_name
         )

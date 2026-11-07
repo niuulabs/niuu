@@ -62,6 +62,7 @@ from skuld.presented_durable import (
     upload_presented_file,
     write_pending_record,
 )
+from skuld.preview import PreviewMiddleware
 from skuld.room_role_port import RoomRoleResolutionError
 from skuld.service_manager import ServiceCreateRequest, ServiceStatus
 from volundr.log_aggregate import aggregate_workspace_logs
@@ -991,6 +992,23 @@ async def restart_service(name: str) -> ServiceStatus:
 
 
 register_file_routes(app, lambda: broker)
+
+
+@app.get("/api/preview/ports")
+async def get_preview_ports() -> dict:
+    """The ports this session listens on, for its Live preview pane.
+
+    ``enabled: false`` when live preview is off for this session.
+    """
+    watcher = broker.preview_watcher
+    if watcher is None:
+        return {"enabled": False, "ports": []}
+    return {"enabled": True, **watcher.snapshot()}
+
+
+# Outermost: an app's own traffic on /preview/... never meets the broker's CORS
+# handling or room-role gate (skuld.preview).
+app.add_middleware(PreviewMiddleware, forwarder_provider=lambda: broker.preview_forwarder)
 register_forge_mcp_routes(app, lambda: broker, dependencies=_LOOPBACK_GUARD)
 
 # --------------------------------------------------------------------------- present-file

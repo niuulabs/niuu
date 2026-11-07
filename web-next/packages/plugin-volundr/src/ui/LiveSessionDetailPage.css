@@ -137,19 +137,11 @@
   padding: 0 20px;
 }
 
-.niuu-live-session__title-group,
-.niuu-live-session__metrics-row,
 .niuu-live-session__tabs,
 .niuu-live-session__toolbar {
   display: flex;
   align-items: center;
   min-width: 0;
-}
-
-.niuu-live-session__title-group {
-  gap: 10px;
-  flex: 1 1 auto;
-  overflow: hidden;
 }
 
 .niuu-live-session__return-link {
@@ -182,10 +174,29 @@
   min-width: 0;
 }
 
-.niuu-live-session__metrics-row {
-  margin-left: auto;
-  flex: 0 0 auto;
-  gap: 12px;
+/* Rename, pin and move wait until the title is pointed at, as Lexi's title menu does. */
+.niuu-live-session__title-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+@media (hover: hover) {
+  /* Hidden, they take no room, so the name gets the line until they are wanted. */
+  .niuu-live-session__title-actions {
+    max-width: 0;
+    overflow: hidden;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+
+  .niuu-live-session__identity:hover .niuu-live-session__title-actions,
+  .niuu-live-session__title-actions:focus-within,
+  .niuu-live-session__title-actions:has([aria-expanded='true']) {
+    max-width: none;
+    overflow: visible;
+    opacity: 1;
+  }
 }
 
 .niuu-live-session__status-dot {
@@ -225,13 +236,6 @@
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
-}
-
-.niuu-live-session__divider {
-  width: 1px;
-  height: 15px;
-  flex-shrink: 0;
-  background: color-mix(in srgb, var(--color-text-faint) 38%, transparent);
 }
 
 .niuu-live-session__ticket,
@@ -348,59 +352,6 @@
 
 .niuu-live-session__branch-button:hover {
   color: var(--color-text-primary);
-}
-
-.niuu-live-session__forge-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 4px 10px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--color-bg-elevated) 96%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-border-subtle) 94%, transparent);
-  font-family: var(--font-mono);
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
-.niuu-live-session__forge-badge-label {
-  color: var(--color-text-primary);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.niuu-live-session__forge-badge-tone {
-  color: var(--color-text-faint);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
-.niuu-live-session__metric {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--font-mono);
-  white-space: nowrap;
-}
-
-.niuu-live-session__metric-label {
-  color: var(--color-text-faint);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.18em;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
-.niuu-live-session__metric-value {
-  color: var(--color-text-primary);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
 }
 
 .niuu-live-session__tabs {
@@ -2126,21 +2077,6 @@
     gap: 12px;
   }
 
-  .niuu-live-session__header {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .niuu-live-session__metrics-row {
-    margin-left: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .niuu-live-session__metrics-row::-webkit-scrollbar {
-    display: none;
-  }
-
   .niuu-live-telemetry {
     padding: 12px;
   }
@@ -2324,43 +2260,9 @@
   font-family: var(--font-sans);
   font-size: 12px;
 }
-.niuu-live-session__handle,
-.niuu-live-session__metric-label,
-.niuu-live-session__forge-badge-label {
+.niuu-live-session__handle {
   font-size: 11px;
   letter-spacing: 0;
-}
-@container (max-width: 760px) {
-  .niuu-live-session__header {
-    flex-direction: column;
-    align-items: stretch;
-    padding-top: var(--space-2);
-    padding-bottom: var(--space-2);
-  }
-  .niuu-live-session__title-group {
-    flex-wrap: wrap;
-    row-gap: var(--space-2);
-  }
-  .niuu-live-session__identity {
-    flex: 1 1 calc(100% - 20px);
-    max-width: calc(100% - 20px);
-    overflow: hidden;
-  }
-  .niuu-live-session__title-group > .niuu-live-session__divider {
-    display: none;
-  }
-  .niuu-live-session__metrics-row {
-    margin-left: 0;
-  }
-  .niuu-live-session__tabs {
-    flex-basis: 100%;
-  }
-  .niuu-live-session__toolbar {
-    width: 100%;
-    margin-left: 0;
-    justify-content: flex-end;
-    border-top: 1px solid var(--color-border-subtle);
-  }
 }
 @media (max-width: 760px) {
   .niuu-live-session__header,
@@ -2667,4 +2569,563 @@
   [data-theme='light'] .niuu-live-telemetry__metric-card {
     border-top: 1px solid var(--color-border);
   }
+}
+
+/* Lexi header: identity and subline on the left, meter and actions on the right. */
+.niuu-live-session__header {
+  display: block;
+  min-height: 0;
+  padding: 12px 20px 10px;
+  border-bottom: 0;
+  overflow: visible;
+}
+
+.niuu-live-session__head-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.niuu-live-session__head-title {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.niuu-live-session__head-top > .niuu-live-session__toolbar {
+  margin-left: auto;
+  padding: 0 0 0 12px;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.niuu-live-session__status-dot--working {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-green) 25%, transparent);
+}
+
+.niuu-live-session__identity {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.niuu-live-session__title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.niuu-live-session__state-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border: 0.5px solid color-mix(in srgb, var(--pill) 32%, transparent);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--pill) 16%, transparent);
+  color: var(--pill);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  --pill: var(--color-text-muted);
+}
+
+.niuu-live-session__state-pill[data-tone='working'] {
+  --pill: var(--status-green);
+}
+
+.niuu-live-session__state-pill[data-tone='attention'] {
+  --pill: var(--status-amber);
+}
+
+.niuu-live-session__state-pill[data-tone='critical'] {
+  --pill: var(--color-critical-fg);
+}
+
+.niuu-live-session__subline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.niuu-live-session__sep {
+  color: var(--color-text-faint);
+}
+
+.niuu-live-session__model {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+
+.niuu-live-session__model[data-harness='claude'] {
+  color: var(--color-harness-claude);
+}
+
+.niuu-live-session__model[data-harness='codex'] {
+  color: var(--color-harness-codex);
+}
+
+.niuu-live-session__source-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.niuu-live-session__branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 240px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.niuu-live-session__branch svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 760px) {
+  .niuu-live-session__header {
+    padding: 10px 12px 8px;
+  }
+
+  .niuu-live-session__head-top {
+    flex-wrap: wrap;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__toolbar {
+    width: 100%;
+    margin-left: 0;
+    padding-left: 0;
+    justify-content: flex-end;
+    overflow-x: auto;
+  }
+}
+
+/* The project beside the name, as Lexi's title bar shows it. */
+.niuu-live-session__project {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--color-text-muted);
+}
+
+.niuu-live-session__project svg {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+}
+
+/* ── A port the session listens on: opens it in the live preview ── */
+
+.niuu-live-session__preview-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.niuu-live-session__preview-chip:hover {
+  border-color: var(--color-brand-600, var(--color-accent));
+  color: var(--color-text-primary);
+}
+
+.niuu-live-session__preview-chip svg {
+  width: 13px;
+  height: 13px;
+  color: var(--color-success, #3fb950);
+}
+
+/* ── The views as one segmented control in the title bar, like Lexi's Chat · Voice · Code ── */
+
+.niuu-live-session__head-top > .niuu-live-session__tabs {
+  flex: 0 0 auto;
+  overflow: visible;
+  gap: 2px;
+  margin-left: auto;
+  padding: 2px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 55%, transparent);
+}
+
+.niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab {
+  gap: 5px;
+  padding: 5px 9px;
+  border-bottom: 0;
+  border-radius: 7px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab--active {
+  background: color-mix(in srgb, var(--color-text-primary) 10%, transparent);
+  color: var(--color-text-primary);
+}
+
+.niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  font-size: 10px;
+}
+
+.niuu-live-session__head-top > .niuu-live-session__tabs + .niuu-live-session__toolbar {
+  margin-left: 0;
+  padding-left: 10px;
+}
+
+/* Only the open view names itself; the others are icons with their name for readers. */
+.niuu-live-session__head-top
+  > .niuu-live-session__tabs
+  .niuu-live-session__tab:not(.niuu-live-session__tab--active)
+  .niuu-live-session__tab-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The line under the name stays one line; it gives way at its end. */
+.niuu-live-session__head-title .niuu-live-session__subline {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* In the title bar Display is an icon, as Lexi's display options are. */
+.niuu-live-session__display-controls .niuu-chat-preferences-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The title row stays one line: the name gives way, its state and project stay. */
+.niuu-live-session__head-title .niuu-live-session__identity {
+  flex-wrap: nowrap;
+  max-width: 100%;
+}
+
+.niuu-live-session__head-title .niuu-live-session__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: none;
+  white-space: nowrap;
+}
+
+.niuu-live-session__head-title .niuu-live-session__state-pill {
+  flex-shrink: 0;
+}
+
+.niuu-live-session__head-title .niuu-live-session__project {
+  flex: 0 2 auto;
+}
+
+/* ── The title bar's controls as Lexi's: one row of same-size plain icons ── */
+@media (min-width: 761px) {
+  .niuu-live-session__head-top > .niuu-live-session__toolbar {
+    align-items: center;
+    gap: 2px;
+    padding-left: 8px;
+  }
+
+  .niuu-live-session__head-top .niuu-live-session__toolbar-button {
+    min-width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+  }
+
+  .niuu-live-session__head-top .niuu-live-session__toolbar-button:hover:not(:disabled),
+  .niuu-live-session__head-top .niuu-live-session__toolbar-button--active {
+    background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+    color: var(--color-text-primary);
+  }
+
+  /* A labelled control ("Needs you 2") keeps its words beside the icon. */
+  .niuu-live-session__head-top
+    .niuu-live-session__toolbar-button:has(.niuu-live-session__toolbar-label) {
+    padding: 0 8px;
+  }
+
+  .niuu-live-session__head-top .niuu-live-session__toolbar-icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  .niuu-live-session__head-top .niuu-live-session__toolbar-button--critical {
+    color: var(--color-critical-fg);
+  }
+
+  .niuu-live-session__head-top .niuu-live-session__toolbar-button--critical:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-critical) 18%, transparent);
+    color: var(--color-critical-fg);
+  }
+
+  /* The views match the icons' height. */
+  .niuu-live-session__head-top > .niuu-live-session__tabs {
+    align-self: center;
+    padding: 2px;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab {
+    height: 24px;
+    min-height: 0;
+    padding: 0 8px;
+  }
+}
+
+/* ── Lexi's title bar: name, project and state on one line with the controls; the session's
+      facts in one quiet line under it, across the whole width ── */
+@media (min-width: 761px) {
+  .niuu-live-session__head-top {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'back dot identity views controls'
+      '. . meta meta meta'
+      '. . worker worker worker';
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 1px;
+  }
+
+  .niuu-live-session__head-top:not(:has(> .niuu-live-session__return-link)) {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'dot identity views controls'
+      '. meta meta meta'
+      '. worker worker worker';
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__return-link {
+    grid-area: back;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__status-dot {
+    grid-area: dot;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__head-title {
+    display: contents;
+  }
+
+  .niuu-live-session__head-title > .niuu-live-session__identity {
+    grid-area: identity;
+    min-width: 0;
+  }
+
+  .niuu-live-session__head-title > .niuu-live-session__subline {
+    grid-area: meta;
+    min-width: 0;
+  }
+
+  .niuu-live-session__head-title > .forge-worker-of {
+    grid-area: worker;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__tabs {
+    grid-area: views;
+    margin-left: 0;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__toolbar {
+    grid-area: controls;
+    margin-left: 0;
+    padding-left: 0;
+  }
+
+  /* The views are icons, as Lexi's title bar holds only icons; their names stay for readers. */
+  .niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab {
+    padding: 0 7px;
+  }
+}
+
+/* In the facts line the ticket is a quiet link, not a pill. */
+.niuu-live-session__subline .niuu-live-session__ticket {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: var(--font-sans);
+  font-size: inherit;
+  font-weight: 600;
+  color: var(--color-brand-300, var(--color-brand));
+}
+
+.niuu-live-session__subline .niuu-live-session__ticket:hover {
+  background: none;
+  text-decoration: underline;
+}
+
+/* The name keeps its room; the project gives way first. */
+.niuu-live-session__head-title .niuu-live-session__project {
+  flex: 0 1000 auto;
+  min-width: 18px;
+}
+
+/* ── One quiet line, as Lexi's: dot, name ⌄, project … view icons and controls ── */
+@media (min-width: 761px) {
+  .niuu-live-session__head-top,
+  .niuu-live-session__head-top:not(:has(> .niuu-live-session__return-link)) {
+    grid-template-areas: 'back dot identity views controls';
+    grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+    row-gap: 0;
+  }
+
+  .niuu-live-session__head-top:not(:has(> .niuu-live-session__return-link)) {
+    grid-template-areas: 'dot identity views controls';
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+  }
+
+  .niuu-live-session__header {
+    min-height: 44px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  /* The views are plain icons beside the controls, not a boxed switcher. */
+  .niuu-live-session__head-top > .niuu-live-session__tabs {
+    padding: 0;
+    border: 0;
+    background: none;
+    gap: 2px;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab {
+    height: 28px;
+    padding: 0 6px;
+    color: var(--color-text-muted);
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab-icon {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.niuu-live-session__head-title .niuu-live-session__title {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+/* The dot says the state, as Lexi's does; its name is the tooltip. */
+.niuu-live-session__status-dot[data-state='failed'] {
+  background: var(--color-critical);
+  box-shadow: none;
+}
+
+.niuu-live-session__status-dot[data-state='awaiting_input'] {
+  background: var(--status-amber);
+  box-shadow: none;
+}
+
+/* ── The name's menu: the facts, the state, rename, pin and move ── */
+.niuu-live-session__facts {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.niuu-live-session__facts > summary {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  color: var(--color-text-muted);
+  list-style: none;
+  cursor: pointer;
+}
+
+.niuu-live-session__facts > summary::-webkit-details-marker {
+  display: none;
+}
+
+.niuu-live-session__facts > summary svg {
+  width: 13px;
+  height: 13px;
+}
+
+.niuu-live-session__facts > summary:hover,
+.niuu-live-session__facts[open] > summary {
+  background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+  color: var(--color-text-primary);
+}
+
+.niuu-live-session__facts-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: -8px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  width: max-content;
+  max-width: min(520px, 70vw);
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+  background: var(--color-bg-elevated);
+  box-shadow: var(--shadow-lg, 0 10px 30px rgb(0 0 0 / 35%));
+}
+
+.niuu-live-session__facts-panel .niuu-live-session__subline {
+  flex-wrap: wrap;
+  white-space: normal;
+}
+
+/* In the menu the actions are always there. */
+.niuu-live-session__facts-panel .niuu-live-session__title-actions {
+  max-width: none;
+  overflow: visible;
+  opacity: 1;
 }

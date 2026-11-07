@@ -257,6 +257,9 @@ spec:
               {{- end }}
               if git -C "$WORKSPACE" rev-parse HEAD >/dev/null 2>&1; then
                 echo "Workspace already contains a valid git repository, skipping clone"
+                if [ -n "$BASE_BRANCH" ] && ! git -C "$WORKSPACE" config --get niuu.baseBranch >/dev/null; then
+                  git -C "$WORKSPACE" config niuu.baseBranch "$BASE_BRANCH"
+                fi
               else
                 git -C "$WORKSPACE" fetch origin
                 if git -C "$WORKSPACE" rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
@@ -272,6 +275,19 @@ spec:
                   echo "Branch $BRANCH not found on remote, creating from $FALLBACK"
                   git -C "$WORKSPACE" checkout -B "$FALLBACK" "origin/$FALLBACK"
                   git -C "$WORKSPACE" checkout -b "$BRANCH"
+                fi
+                # Record where this branch started, so the session's changes can be shown against it.
+                RECORDED_BASE="${FALLBACK:-}"
+                if [ -z "$RECORDED_BASE" ]; then
+                  if [ -n "$BASE_BRANCH" ] && \
+                    git -C "$WORKSPACE" rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
+                    RECORDED_BASE="$BASE_BRANCH"
+                  else
+                    RECORDED_BASE=$(git -C "$WORKSPACE" remote show origin | sed -n 's/.*HEAD branch: //p')
+                  fi
+                fi
+                if [ -n "$RECORDED_BASE" ]; then
+                  git -C "$WORKSPACE" config niuu.baseBranch "$RECORDED_BASE"
                 fi
                 echo "Repository cloned successfully"
               fi

@@ -17,7 +17,7 @@ import re
 import string
 import uuid
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -36,7 +36,7 @@ from niuu.domain.model_runtime import (
     validate_session_definition_for_models,
 )
 from niuu.domain.models import Principal
-from niuu.domain.tags import matches_tags
+from niuu.domain.tags import matches_tags, residual_selector, satisfiable, validate_match
 from ravn.domain.persona_document import PortablePersonaSource
 from ting.config import DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS
 from ting.domain.flock_merge import build_flock_workload_config
@@ -67,7 +67,12 @@ from ting.ports.event_bus import EventBusPort, TingEvent
 from ting.ports.flock_flow import FlockFlowProvider
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.tracker import TrackerFactory, TrackerPort
-from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort
+from ting.ports.volundr import (
+    HostTagSetsUnreadableError,
+    SpawnRequest,
+    VolundrFactory,
+    VolundrPort,
+)
 from ting.ports.workflow_repository import WorkflowRepository
 
 logger = logging.getLogger(__name__)
@@ -479,27 +484,103 @@ class TargetSelectionError(Exception):
     """Raised when no available Volundr backend satisfies the requested target."""
 
 
-def select_adapter_by_tags(
+class HostTagsUnreadableError(TargetSelectionError):
+    """No target matched, and some targets' host tags could not be read.
+
+    Distinct from a plain miss: the unreadable targets may have the host the selector
+    needs, so the message names each of them and why it could not be read.
+    """
+
+
+HOST_SELECTOR_KEY = "host_selector"
+
+
+def _adapter_tags(adapter: VolundrPort) -> list[str]:
+    return getattr(adapter, "tags", []) or []
+
+
+async def _adapters_serving_tags(
+    adapters: list[VolundrPort],
+    tags: list[str] | tuple[str, ...],
+    match: str,
+    *,
+    auth_token: str | None,
+    principal: Principal | None,
+) -> tuple[list[VolundrPort], dict[str, str]]:
+    """Adapters whose tags, alone or with ONE of their host tag sets, satisfy the selector.
+
+    Only an adapter whose own tags fall short is asked for its host tag sets. The second
+    result maps the name of an adapter whose host tags could not be read to the reason:
+    it is neither eligible nor dropped without a trace.
+    """
+    to_read = [a for a in adapters if not matches_tags(_adapter_tags(a), tags, match)]
+    unreadable: dict[str, str] = {}
+    serving = {id(a) for a in adapters} - {id(a) for a in to_read}
+
+    async def read_one(adapter: VolundrPort) -> None:
+        try:
+            tag_sets = await adapter.host_tag_sets(auth_token=auth_token, principal=principal)
+        except HostTagSetsUnreadableError as exc:
+            unreadable[adapter.name or adapter.target_id] = str(exc)
+            return
+        if satisfiable(_adapter_tags(adapter), tag_sets, tags, match):
+            serving.add(id(adapter))
+
+    await asyncio.gather(*(read_one(a) for a in to_read))
+    return [a for a in adapters if id(a) in serving], unreadable
+
+
+async def select_adapter_by_tags(
     adapters: list[VolundrPort],
     tags: list[str] | tuple[str, ...] = (),
     match: str = "all",
     *,
     connection_id: str | None = None,
+    auth_token: str | None = None,
+    principal: Principal | None = None,
 ) -> VolundrPort:
     """Place new work uniformly across eligible targets, or honor an explicit pin.
 
-    ``match="all"`` requires every tag; ``match="any"`` requires one.
+    ``match="all"`` requires every tag; ``match="any"`` requires one. A target is
+    eligible when its own tags satisfy the selector, or when its own tags together with
+    ONE of its host tag sets do (``niuu.domain.tags.satisfiable``); the tag sets of
+    different hosts are never combined. A target whose host tags cannot be read is not
+    eligible, is logged, and, when nothing else is, is named in the raised error.
     Selection never retries another target after a failure.
     """
-    eligible = [
-        adapter
-        for adapter in adapters
-        if not tags or matches_tags(getattr(adapter, "tags", []) or [], tags, match)
-    ]
+    if tags:
+        try:
+            validate_match(match)
+        except ValueError as exc:
+            raise TargetSelectionError(str(exc)) from exc
+    candidates = adapters
     if connection_id:
-        for adapter in eligible:
-            if connection_id in {adapter.target_id, adapter.name}:
-                return adapter
+        candidates = [a for a in adapters if connection_id in {a.target_id, a.name}]
+    unreadable: dict[str, str] = {}
+    eligible = candidates
+    if tags:
+        eligible, unreadable = await _adapters_serving_tags(
+            candidates, tags, match, auth_token=auth_token, principal=principal
+        )
+    if unreadable:
+        logger.error(
+            "Host tags of %d Volundr target(s) could not be read for selector %s (match=%s) "
+            "and they were not considered: %s",
+            len(unreadable),
+            sorted(set(tags)),
+            match,
+            unreadable,
+        )
+    if not eligible and unreadable:
+        named = "; ".join(f"{name} ({reason})" for name, reason in sorted(unreadable.items()))
+        raise HostTagsUnreadableError(
+            f"No Volundr backend matches tags {sorted(set(tags))} (match={match}) by its own "
+            f"tags, and the host tags of these targets could not be read, so they cannot be "
+            f"ruled out: {named}"
+        )
+    if connection_id:
+        if eligible:
+            return eligible[0]
         raise TargetSelectionError(f"Volundr target not found or ineligible: {connection_id}")
     if not eligible:
         raise TargetSelectionError(
@@ -507,6 +588,61 @@ def select_adapter_by_tags(
         )
     # ponytail: uniform placement; use capacity-aware scheduling when targets expose capacity.
     return random.choice(eligible)
+
+
+def host_selector_for(
+    adapter: VolundrPort,
+    tags: list[str] | tuple[str, ...],
+    match: str = "all",
+) -> dict[str, Any] | None:
+    """What the chosen target's Forge must still satisfy with a host, or ``None``.
+
+    The value for ``workload_config.host_selector``: the selector minus what the
+    target's own tags already cover (``niuu.domain.tags.residual_selector``).
+    """
+    if not tags:
+        return None
+    residual = residual_selector(_adapter_tags(adapter), tags, match)
+    if residual is None:
+        return None
+    residual_tags, residual_match = residual
+    return {"tags": list(residual_tags), "match": residual_match}
+
+
+def host_selector_config(
+    adapter: VolundrPort,
+    tags: list[str] | tuple[str, ...],
+    match: str = "all",
+) -> dict[str, Any]:
+    """``{"host_selector": ...}`` to merge into a ``workload_config``, or ``{}`` for none."""
+    selector = host_selector_for(adapter, tags, match)
+    if selector is None:
+        return {}
+    return {HOST_SELECTOR_KEY: selector}
+
+
+def with_host_selector(
+    request: SpawnRequest,
+    adapter: VolundrPort,
+    tags: list[str] | tuple[str, ...],
+    match: str = "all",
+) -> SpawnRequest:
+    """The spawn request carrying the chosen target's residual host selector, if any.
+
+    A request that already names its own ``host_selector`` while the placement also
+    carries target tags is ambiguous and refused, never merged.
+    """
+    selector = host_selector_for(adapter, tags, match)
+    if selector is None:
+        return request
+    if HOST_SELECTOR_KEY in request.workload_config:
+        raise TargetSelectionError(
+            f"The session already sets workload_config.{HOST_SELECTOR_KEY} and its placement "
+            f"names target tags {sorted(set(tags))}; set only one of them"
+        )
+    return replace(
+        request, workload_config={**request.workload_config, HOST_SELECTOR_KEY: selector}
+    )
 
 
 def base_branch_for_repo(saga: Saga, repo: str) -> str:
@@ -804,11 +940,13 @@ class DispatchService:
             if not target_connection and not item.target_tags:
                 target_connection = saga.instance_id
             try:
-                target_volundr = select_adapter_by_tags(
+                target_volundr = await select_adapter_by_tags(
                     all_volundr,
                     item.target_tags,
                     item.target_match,
                     connection_id=target_connection,
+                    auth_token=auth_token,
+                    principal=principal,
                 )
             except TargetSelectionError as exc:
                 logger.warning("Target selection failed for issue %s: %s", item.issue_id, exc)
@@ -1176,7 +1314,7 @@ class DispatchService:
                     phase.name,
                 )
                 continue
-            volundr = select_adapter_by_tags(
+            volundr = await select_adapter_by_tags(
                 all_volundr,
                 saga.target_tags,
                 saga.target_match,
@@ -1213,6 +1351,7 @@ class DispatchService:
                 workload_type="ravn_flock" if workload_config else "default",
                 workload_config=workload_config or {},
             )
+            request = with_host_selector(request, volundr, saga.target_tags, saga.target_match)
             try:
                 session = await volundr.spawn_session(request=request)
                 updated = Run(
@@ -1605,6 +1744,9 @@ class DispatchService:
                 session_definition=session_definition,
                 persona_overrides=persona_overrides,
                 workflow_snapshot=workflow_snapshot,
+            )
+            request = with_host_selector(
+                request, target_volundr, item.target_tags, item.target_match
             )
             spawn_kwargs: dict[str, Any] = {
                 "request": request,

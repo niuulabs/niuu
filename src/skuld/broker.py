@@ -109,6 +109,7 @@ from skuld.file_routes import (  # noqa: F401
 from skuld.flock_outcomes import FlockActivityLog
 from skuld.forge_mcp.integration import ForgeSessionMixin
 from skuld.history_hydration import fetch_durable_history, merge_history_turns
+from skuld.preview import PreviewForwarder, PreviewPortWatcher
 from skuld.service_manager import (  # noqa: F401
     ServiceCreateRequest,
     ServiceManager,
@@ -636,6 +637,9 @@ class Broker(
         self._transport: CLITransport | None = None
         self._transport_start_lock = asyncio.Lock()
         self.service_manager: ServiceManager | None = None
+        # Live preview (skuld.preview): built at startup when preview.enabled.
+        self.preview_watcher: PreviewPortWatcher | None = None
+        self.preview_forwarder: PreviewForwarder | None = None
         self._channels = ChannelRegistry()
         self._http_client: httpx.AsyncClient | None = None
         self._http_client_jwt: str | None = None  # JWT used to create _http_client

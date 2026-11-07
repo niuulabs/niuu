@@ -21,6 +21,7 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from niuu.config_models import SessionPreviewConfig
 from niuu.domain.models import InstanceKind, InstanceVisibility
 
 
@@ -517,6 +518,14 @@ class NiuuHostConfig(BaseSettings):
     external_database_port: int = Field(
         default=5432,
         validation_alias=AliasChoices("external_database_port", "DATABASE__PORT"),
+    )
+    session_preview: SessionPreviewConfig = Field(
+        default_factory=lambda: SessionPreviewConfig(enabled=True, domain="localhost"),
+        description=(
+            "Live preview on the local host: <port>--<session-id>.localhost:<host port> "
+            "opens a session's port. Browsers resolve every *.localhost name to "
+            "loopback, so this needs no DNS, certificate or sign-in."
+        ),
     )
     session_proxy_role_check_interval_seconds: float = Field(
         default=5.0,

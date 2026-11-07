@@ -67,6 +67,7 @@ from volundr.domain.ports import (
 )
 from volundr.domain.presented_files import PresentedFileStore
 from volundr.domain.projects import SessionCoordination
+from volundr.domain.secret_request_ports import SessionSecretCleanup
 from volundr.domain.services.forge_session_launch import (
     ForgeMcpGrantChangeRefusedError,
     ForgeMcpGrantEscalationError,
@@ -78,11 +79,14 @@ from volundr.domain.services.forge_session_launch import (
     with_forge_mcp,
     without_forge_mcp,
 )
+from volundr.domain.services.session_startup import SessionStartupRecorder
 from volundr.domain.session_changes import SessionChanges
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
+from volundr.domain.session_runtimes import SessionRuntimeOffer, requested_grants
 from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
 
 if TYPE_CHECKING:
+    from niuu.ports.session_proxy import SessionProxyTarget
     from niuu.ports.user_integration import UserIntegrationPort
     from sleipnir.ports.audit import AuditRepository
     from volundr.adapters.outbound.git_registry import GitProviderRegistry
@@ -176,6 +180,7 @@ class SessionService:
         contributors: list[SessionContributor] | None = None,
         provisioning_timeout: float = 300.0,
         provisioning_initial_delay: float = 5.0,
+        startup_poll_seconds: float = 2.0,
         integration_repo: IntegrationRepository | None = None,
         storage: StoragePort | None = None,
         chronicle_repository: ChronicleRepository | None = None,
@@ -194,6 +199,7 @@ class SessionService:
         user_integration: UserIntegrationPort | None = None,
         presented_file_store: PresentedFileStore | None = None,
         forge_session_projection: ExecutionCredentialProjectionPort | None = None,
+        secret_cleanup: SessionSecretCleanup | None = None,
     ):
         if forge_session_projection is not None and not forge_session_projection.supports(
             runtime_backend
@@ -204,6 +210,7 @@ class SessionService:
             )
         self._repository = repository
         self._presented_file_store = presented_file_store
+        self._secret_cleanup = secret_cleanup
         self._pod_manager = pod_manager
         self._git_registry = git_registry
         self._user_integration = user_integration
@@ -215,6 +222,9 @@ class SessionService:
         self._provisioning_timeout = provisioning_timeout
         self._provisioning_initial_delay = provisioning_initial_delay
         self._provisioning_tasks: dict[UUID, asyncio.Task] = {}
+        self._startup = SessionStartupRecorder(
+            repository, pod_manager, broadcaster, startup_poll_seconds
+        )
         self._activity_stop_tasks: set[asyncio.Task[None]] = set()
         self._integration_repo = integration_repo
         self._storage = storage
@@ -406,6 +416,10 @@ class SessionService:
     async def get_session(self, session_id: UUID) -> Session | None:
         """Get a session by ID."""
         return await self._repository.get(session_id)
+
+    async def broker_target(self, session: Session) -> SessionProxyTarget | None:
+        """Where Forge reaches the session's broker, when not at its chat endpoint."""
+        return await self._pod_manager.broker_target(session)
 
     async def get_many_sessions(self, session_ids: list[UUID]) -> dict[UUID, Session]:
         """Batch-fetch sessions by ID. Returns only the ones that exist."""
@@ -1086,14 +1100,17 @@ class SessionService:
                 **await self._execution_context(session),
             )
 
-        durable_compute = self._runtime_backend == "vm" or self._execution_resolver is not None
-
         destroyed = await self._pod_manager.destroy(session)
-        if durable_compute and not destroyed:
+        if self._runs_on_compute(session) and not destroyed:
             raise RuntimeError("Compute infrastructure deletion was not confirmed")
 
         # Run contributor cleanup in reverse order
         await self._run_cleanup(session, principal, context=cleanup_context)
+
+        # A failure keeps the record, so the delete can be retried: a session-only
+        # secret must never outlive the session that asked for it.
+        if self._secret_cleanup is not None:
+            await self._secret_cleanup.purge_session(session_id)
 
         deleted = await self._repository.delete(session_id)
 
@@ -1131,6 +1148,16 @@ class SessionService:
 
         if CleanupTarget.CHRONICLES in targets:
             await self._cleanup_chronicles(session_id)
+
+    async def _cancel_secret_requests(self, session_id: UUID) -> None:
+        """Cancel the session's open secret requests and delete their session-only values.
+
+        Not guarded: a value that cannot be deleted is an error for the caller, never a
+        secret left behind unnoticed.
+        """
+        if self._secret_cleanup is None:
+            return
+        await self._secret_cleanup.cancel_for_session(session_id)
 
     async def _cleanup_presented_files(self, session_id: UUID) -> None:
         """Drop the session's durable presented files (F2) with the session."""
@@ -1190,6 +1217,26 @@ class SessionService:
                 exc_info=True,
             )
 
+    async def session_runtimes(self) -> tuple[SessionRuntimeOffer, ...]:
+        """What this host runs every session as: one offer, or none when it declares none."""
+        return await self._pod_manager.session_runtimes()
+
+    async def _require_host_grants(self, workload_config: dict) -> None:
+        """Refuse runtime_grants the host's one runtime does not offer."""
+        try:
+            grants = requested_grants(workload_config)
+        except ValueError as exc:
+            raise ExecutionSelectionError(str(exc)) from exc
+        if not grants:
+            return
+        offered = {grant for offer in await self.session_runtimes() for grant in offer.grants}
+        refused = sorted(grant.value for grant in grants - offered)
+        if refused:
+            raise ExecutionSelectionError(
+                f"This host's runtime does not offer runtime_grants {refused}; "
+                "drop the grants or launch on a host whose runtime offers them"
+            )
+
     async def ensure_capacity(self, session: Session | None = None) -> None:
         """Raise SessionCapacityError when the runtime has no free slot.
 
@@ -1203,6 +1250,15 @@ class SessionService:
         if capacity is None or capacity.available > 0:
             return
         raise SessionCapacityError(capacity)
+
+    def _runs_on_compute(self, session: Session) -> bool:
+        """Whether ``session`` runs on durable compute, whose stop and delete must be
+        confirmed. On a Forge that also runs local sessions, only its pool sessions do."""
+        if self._runtime_backend == "vm":
+            return True
+        if self._execution_resolver is None:
+            return False
+        return self._execution_resolver.runs_on_compute(session)
 
     async def _resolve_execution_config(
         self, session: Session, workload_config: dict, launch_spec: str | None
@@ -1308,6 +1364,8 @@ class SessionService:
             raise ExecutionSelectionError(
                 "Compute execution selection requires a configured catalog"
             )
+        else:
+            await self._require_host_grants(workload_config or {})
         if workload_type == "ravn_flock" and not initial_prompt:
             initial_prompt = str((workload_config or {}).get("initiative_context") or "")
 
@@ -1357,6 +1415,8 @@ class SessionService:
             }
         )
         stored = await self._repository.update(starting)
+        # A new launch: the previous launch's stages are history.
+        stored = await self._startup.begin(stored) or stored
 
         if self._broadcaster is not None:
             await self._broadcaster.publish_session_updated(stored)
@@ -1383,6 +1443,7 @@ class SessionService:
         )
         self._provisioning_tasks[session_id] = task
         task.add_done_callback(lambda t: self._provisioning_tasks.pop(session_id, None))
+        self._startup.watch(session_id)
 
         return starting
 
@@ -1602,6 +1663,7 @@ class SessionService:
                 part for part in (existing_prompt, project_context) if part
             )
         self._overlay_resume_session(session, spec)
+        await self._startup.handing_off(session.id)
         return await self._pod_manager.start(session, spec=spec)
 
     def check_forge_mcp_grants(
@@ -1775,6 +1837,22 @@ class SessionService:
         if getattr(self._pod_manager, "delivers_forge_session_token", False):
             return True
         return self._forge_session_projection is not None
+
+    async def issue_forge_session(self, session_id: UUID) -> IssuedForgeSessionToken | None:
+        """Mint a credential for the session's current launch without starting a new one.
+
+        A guest that pulls its credentials (VM metadata delivery) refreshes them while the
+        session runs; the launch id stays the one recorded at start, so the credential is
+        revoked by the next start exactly like the one handed over at launch. Returns
+        ``None`` when the session is gone, has no owner or no recorded launch, or no
+        broker can receive a credential on this Forge.
+        """
+        session = await self._repository.get(session_id)
+        if session is None or not session.owner_id:
+            return None
+        if launch_id_of(session.workload_config) is None:
+            return None
+        return self._mint_forge_session(session)
 
     async def _deliver_forge_session(
         self, session: Session, spec: SessionSpec
@@ -2071,7 +2149,7 @@ class SessionService:
                 )
             stopped = await self._pod_manager.stop(session)
             if not stopped:
-                if self._runtime_backend == "vm" or self._execution_resolver is not None:
+                if self._runs_on_compute(session):
                     raise RuntimeError("Compute infrastructure stop was not confirmed")
                 logger.warning(
                     "Pod manager could not find/cancel pods for session %s "
@@ -2092,6 +2170,7 @@ class SessionService:
                 .model_copy(update={"error": kept_error})
             )
             final = await self._repository.update(stopped)
+            await self._cancel_secret_requests(session_id)
 
             if self._broadcaster is not None:
                 await self._broadcaster.publish_session_updated(final)
@@ -2143,6 +2222,8 @@ class SessionService:
             SessionStatus.CREATED,
         ):
             raise SessionStateError(session_id, "archive", session.status)
+
+        await self._cancel_secret_requests(session_id)
 
         now = datetime.now(UTC)
         archived = session.model_copy(
@@ -2206,8 +2287,12 @@ class SessionService:
         Called on application startup to handle sessions that were left
         in PROVISIONING state after a restart.
         """
+        for starting in await self._repository.list(status=SessionStatus.STARTING):
+            # Its launch stages close as soon as reconciliation settles the row.
+            self._startup.watch(starting.id)
         sessions = await self._repository.list(status=SessionStatus.PROVISIONING)
         for session in sessions:
+            self._startup.watch(session.id)
             logger.info(
                 "Reconciling stuck PROVISIONING session %s, re-launching readiness poll",
                 session.id,
@@ -2276,6 +2361,8 @@ class SessionService:
     ) -> Session:
         updated = self._reconciled_session(session, actual_status, status_detail)
         final = await self._repository.update(updated)
+        if final.status in _ENDED_STATUSES and session.status not in _ENDED_STATUSES:
+            await self._cancel_secret_requests(final.id)
         if self._broadcaster is not None:
             await self._broadcaster.publish_session_updated(final)
         if session.status != SessionStatus.RUNNING and final.status == SessionStatus.RUNNING:
@@ -2325,6 +2412,8 @@ class SessionService:
             if self._spawn_in_flight(session):
                 continue
             if session.status == SessionStatus.FAILED and self._runtime_backend != "kubernetes":
+                if not self._runs_on_compute(session):
+                    continue
                 # Swept only to release compute a failed cleanup left bound. Never
                 # ask for its status: a VM runtime reports a still-bound lease as
                 # provisioning and restarts it, which would resurrect the session.
@@ -2438,6 +2527,10 @@ class SessionService:
         untouched (no false reap).
         """
         return await self.reconcile_session_if_active(session_id)
+
+
+#: Statuses of a session that no longer runs: its secret requests are closed with it.
+_ENDED_STATUSES = frozenset({SessionStatus.STOPPED, SessionStatus.FAILED, SessionStatus.ARCHIVED})
 
 
 def _booting_status(session: Session, actual_status: SessionStatus) -> SessionStatus:

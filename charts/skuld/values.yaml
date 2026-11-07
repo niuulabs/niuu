@@ -312,6 +312,22 @@ forgeMcp:
   tokenFile: ""
   # -- Tool grants of the credential (message, lifecycle). Null keeps the token's own.
   grants: null
+  # -- Seconds the engine allows one stdio-server -> broker tool call (forge_mcp.broker_request_timeout_s).
+  # Null keeps the broker default (60). Must exceed secretRequests.waitMaxS.
+  brokerRequestTimeoutS: null
+  # -- Seconds the engine allows one MCP tool call (forge_mcp.tool_timeout_s). Null keeps the broker
+  # default (120). Must exceed secretRequests.waitMaxS.
+  toolTimeoutS: null
+
+# request_secret / request-secret: the agent asks the user for a secret through a masked chat card.
+secretRequests:
+  # -- Seconds between checks of whether the user answered the card (secret_requests.poll_interval_s).
+  pollIntervalS: 2
+  # -- Longest one request_secret call waits for the user, in seconds (secret_requests.wait_max_s).
+  # Bounded by the engine's MCP call timeouts: it must stay below forgeMcp.brokerRequestTimeoutS
+  # (default 60) and forgeMcp.toolTimeoutS (default 120), or the broker refuses to start. When it
+  # passes, the call fails and the request stays open in the chat; the agent calls it again.
+  waitMaxS: 50
 
 # Volundr API (for token usage reporting back to the control plane)
 volundr:
@@ -961,6 +977,25 @@ wsAuth:
   # volundr.apiUrl below) so a standalone install needs no further values;
   # override wsAuth.room_role_remote.adapter/kwargs/secret_kwargs_env here
   # (or via RoomRoleSourceContributor's per-session values) to change them.
+
+# Live preview (skuld.preview): a port the session listens on opens at
+# <port>--<session-id>.<preview domain> through Forge's preview router, which
+# forwards to /preview/<port>/ here. Skuld admits only the router's workload
+# credential, checked against envoy.jwt.workload's issuer and JWKS (required).
+preview:
+  # -- Discover the pod's listening ports and serve them to Forge's preview router
+  enabled: false
+  # -- Seconds between scans of the pod's listening sockets
+  portScanIntervalSeconds: 2
+  # -- Audience of the router credential (Forge's session_preview.credential_audience)
+  routerAudience: "volundr-api"
+  # -- Ports never offered as previews. The pod's own infrastructure ports
+  # (nginx, broker, Envoy, authz, terminal, mesh, resident shim) are excluded
+  # automatically; 5432 is the devrunner's Postgres.
+  excludedPorts: [5432]
+  # -- How long nginx keeps an idle preview stream (hot-reload WebSocket, SSE)
+  # open. Past it the dev server's client reconnects (Vite reloads the page).
+  streamIdleTimeout: "3600s"
 
 # Limit pod ingress to the authenticated gateway, including direct pod-IP traffic.
 # Add explicit peer selectors/ports for direct Flokk mesh deployments.

@@ -13,7 +13,10 @@ from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
 
-from niuu.adapters.outbound.guild_transport import build_guild_httpx_client
+from niuu.adapters.outbound.guild_transport import (
+    GuildTransportError,
+    build_guild_httpx_client,
+)
 from niuu.domain.delivery import (
     AcceptancePolicy,
     CandidateEvidence,
@@ -34,6 +37,7 @@ from ting.ports.volundr import (
     ActivityEvent,
     ActivityStreamConnected,
     ForgeProjectRef,
+    HostTagSetsUnreadableError,
     PublicSessionLogEntry,
     PublicSessionLogPage,
     SessionMembership,
@@ -49,6 +53,7 @@ _CI_PASSED = {"passing": True, "failing": False}
 FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 FORGE_PROJECTS_PATH = "/api/v1/forge/projects"
 FORGE_FEATURE_FLAGS_PATH = "/api/v1/forge/feature-flags"
+FORGE_HOST_TAG_SETS_PATH = "/api/v1/forge/compute/hosts/tag-sets"
 REPO_PULL_REQUESTS_PATH = "/api/v1/niuu/repos/prs"
 INTEGRATIONS_PATH = "/api/v1/integrations"
 WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
@@ -937,6 +942,47 @@ class VolundrHTTPAdapter(VolundrPort):
                 if status == "stopped":
                     return
             resp.raise_for_status()
+
+    async def host_tag_sets(
+        self,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[list[str]]:
+        """The distinct tag sets of this Forge's placeable hosts; ``[]`` when it has none.
+
+        A 404 is the Forge's answer that it has no ``compute.hosts``. Any other failure,
+        or an answer that is not ``{"tag_sets": [[str, ...], ...]}``, raises
+        ``HostTagSetsUnreadableError`` naming this target.
+        """
+        target = self._name or self._base_url
+        try:
+            client = await self._client(timeout=self._timeout)
+            async with client:
+                response = await client.get(
+                    f"{self._base_url}{FORGE_HOST_TAG_SETS_PATH}",
+                    headers=self._headers(auth_token, principal),
+                )
+        except (httpx.HTTPError, GuildTransportError) as exc:
+            raise HostTagSetsUnreadableError(f"{target}: {type(exc).__name__}: {exc}") from exc
+        if response.status_code == httpx.codes.NOT_FOUND:
+            return []
+        if response.status_code != httpx.codes.OK:
+            raise HostTagSetsUnreadableError(
+                f"{target}: HTTP {response.status_code}: {_error_detail(response)}"
+            )
+        try:
+            tag_sets = response.json().get("tag_sets")
+        except (ValueError, AttributeError):
+            tag_sets = None
+        if not isinstance(tag_sets, list) or not all(
+            isinstance(tag_set, list) and all(isinstance(tag, str) for tag in tag_set)
+            for tag_set in tag_sets
+        ):
+            raise HostTagSetsUnreadableError(
+                f'{target}: the answer is not {{"tag_sets": [[str, ...], ...]}}'
+            )
+        return tag_sets
 
     async def list_integration_ids(
         self,

@@ -22,7 +22,7 @@ import tarfile
 import tempfile
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -52,6 +52,7 @@ from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPod
 from volundr.adapters.outbound.k8s_storage_adapter import _storage_bytes
 from volundr.adapters.outbound.local_process import (
     FORGE_MCP_GRANTS_ENV,
+    FORGE_MCP_TOKEN_FILE_ENV,
     LocalProcessPodManager,
 )
 from volundr.adapters.outbound.openshell_contract import (
@@ -155,6 +156,7 @@ from volundr.domain.ports import (
     ResidentRuntimeRepository,
     SessionRepository,
 )
+from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +223,17 @@ DETACHED_EXEC_TIMEOUT_SECONDS = 10
 WRITE_FILES_TIMEOUT_SECONDS = 30.0
 BOOTSTRAP_GIT_ATTEMPTS = 20
 MAX_SANDBOX_ROUTING_NAME_LENGTH = 19
+
+# The stages of a session's launch, (key, label), in the order start() performs them.
+STAGE_CREDENTIALS = ("credentials", "Resolving credentials")
+STAGE_SANDBOX = ("sandbox", "Creating the sandbox")
+STAGE_RESUME = ("sandbox", "Resuming the sandbox")
+STAGE_READY = ("ready", "Waiting for the sandbox")
+STAGE_FILES = ("files", "Writing session configuration")
+STAGE_WORKSPACE = ("workspace", "Preparing the workspace")
+STAGE_SKULD = ("skuld", "Starting Skuld")
+STAGE_EXPOSE = ("expose", "Exposing the service")
+STAGE_BROKER = ("broker", "Waiting for the broker")
 OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
 GRANT_AUDIENCE_PREFIX = "niuu:credential:"
 PLATFORM_GRANT_AUDIENCE_PREFIX = "niuu:platform:"
@@ -229,7 +242,6 @@ PLATFORM_ACCESS_TOKEN_ENV = "NIUU_VOLUNDR_ACCESS_TOKEN"
 #: a private file (0600) written before the broker starts. A session sandbox has no
 #: /run/secrets. Only the path travels in the broker's env, never the token.
 FORGE_SESSION_TOKEN_FILE = ".volundr/forge-session/token"
-FORGE_MCP_TOKEN_FILE_ENV = "SKULD__FORGE_MCP__TOKEN_FILE"
 DEFAULT_CREDENTIAL_TOKEN_ENDPOINT = (
     "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
 )
@@ -283,6 +295,9 @@ class OpenShellSandbox:
     #: The image of the sandbox's template and the sandbox's own annotations.
     image: str = ""
     annotations: dict[str, str] | None = None
+    #: The gateway's own explanation while the sandbox is not ready: its Ready
+    #: condition's reason and message. Empty when the gateway gave none.
+    not_ready_reason: str = ""
 
 
 class WorkspaceRepair(Enum):
@@ -1284,6 +1299,8 @@ class OpenShellGatewayPodManager(
             timeout=command_timeout,
         )
         self._service_urls: dict[str, str] = {}
+        # Session id -> the stages of its current start, as this controller drove them.
+        self._progress: dict[UUID, SessionStartup] = {}
         # Held while a deploy, restart or reconcile owns a resident's processes.
         self._resident_process_locks: dict[str, asyncio.Lock] = {}
         self._resident_forwarders: dict[str, OpenShellTcpForwarder] = {}
@@ -1845,7 +1862,89 @@ class OpenShellGatewayPodManager(
             connect_secure=self._gateway_connect_secure,
         )
 
+    @property
+    def reports_startup_stages(self) -> bool:
+        return True
+
+    async def startup_stages(self, session: Session) -> tuple[StartupStage, ...]:
+        """The stages this controller drove the session's current start through.
+
+        Empty after a controller restart: the start is not replayed, so there is
+        nothing this process did to report.
+        """
+        progress = self._progress.get(session.id)
+        return progress.stages if progress is not None else ()
+
+    def _begin_progress(self, session_id: UUID, *, exposes_service: bool) -> None:
+        stages = [
+            STAGE_CREDENTIALS,
+            STAGE_SANDBOX,
+            STAGE_READY,
+            STAGE_FILES,
+            STAGE_WORKSPACE,
+            STAGE_SKULD,
+            *([STAGE_EXPOSE] if exposes_service else []),
+            STAGE_BROKER,
+        ]
+        self._progress[session_id] = SessionStartup(
+            started_at=datetime.now(UTC),
+            stages=tuple(
+                StartupStage(key=key, label=label, state=StartupStageState.PENDING)
+                for key, label in stages
+            ),
+        )
+
+    def _set_stage(
+        self,
+        session_id: UUID,
+        stage: tuple[str, str],
+        state: StartupStageState,
+        detail: str | None = None,
+    ) -> None:
+        progress = self._progress.get(session_id)
+        if progress is None:
+            return
+        key, label = stage
+        now = datetime.now(UTC)
+        current = next((s for s in progress.stages if s.key == key), None)
+        if current is not None and current.state is state and current.detail == detail:
+            return
+        started = current.started_at if current is not None and current.started_at else now
+        self._progress[session_id] = progress.with_stage(
+            StartupStage(
+                key=key,
+                label=label,
+                state=state,
+                detail=detail,
+                started_at=started,
+                finished_at=now if state is StartupStageState.DONE else None,
+            )
+        )
+
+    def _skip_stage(self, session_id: UUID, stage: tuple[str, str]) -> None:
+        """Drop a stage still pending that this start does not go through."""
+        progress = self._progress.get(session_id)
+        if progress is None:
+            return
+        self._progress[session_id] = progress.model_copy(
+            update={
+                "stages": tuple(
+                    s
+                    for s in progress.stages
+                    if s.key != stage[0] or s.state is not StartupStageState.PENDING
+                )
+            }
+        )
+
+    def _stage_is(self, session_id: UUID, stage: tuple[str, str], state: StartupStageState) -> bool:
+        progress = self._progress.get(session_id)
+        if progress is None:
+            return False
+        current = next((s for s in progress.stages if s.key == stage[0]), None)
+        return current is not None and current.state is state
+
     async def start(self, session: Session, spec: SessionSpec) -> PodStartResult:
+        self._begin_progress(session.id, exposes_service=self._exposes_service(session))
         spec = self._with_brokered_credentials(spec)
         check_policy_allows_egress(
             self._network_policies, (spec.values.get("openshell") or {}).get("egress") or []
@@ -1886,6 +1985,7 @@ class OpenShellGatewayPodManager(
             )
         self._warn_unsupported_pod_spec(session, spec)
         try:
+            self._set_stage(session.id, STAGE_CREDENTIALS, StartupStageState.ACTIVE)
             platform_providers = await self._resolve_platform_provider(
                 session, api_urls=_resident_api_urls(spec.values)
             )
@@ -1930,9 +2030,17 @@ class OpenShellGatewayPodManager(
                 OpenShellProviderGrant(provider_name=name, profile_id=name)
                 for name in provider_names
             )
+            self._set_stage(
+                session.id,
+                STAGE_CREDENTIALS,
+                StartupStageState.DONE,
+                ", ".join(provider_names) or None,
+            )
             if legacy is not None:
+                self._set_stage(session.id, STAGE_RESUME, StartupStageState.ACTIVE)
                 sandbox = await self._resume_legacy_sandbox(sandbox_name)
             else:
+                self._set_stage(session.id, STAGE_SANDBOX, StartupStageState.ACTIVE)
                 sandbox = await asyncio.to_thread(
                     self._client.create_sandbox,
                     name=sandbox_name,
@@ -1946,22 +2054,53 @@ class OpenShellGatewayPodManager(
                     providers=provider_names,
                     policy=self._sandbox_policy,
                 )
-            ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
+            self._set_stage(
+                session.id,
+                STAGE_RESUME if legacy is not None else STAGE_SANDBOX,
+                StartupStageState.DONE,
+                f"{sandbox.name}: {_phase_name(sandbox.phase)}",
+            )
+            self._set_stage(session.id, STAGE_READY, StartupStageState.ACTIVE)
+            ready = await self._wait_for_sandbox_name(
+                sandbox.name,
+                self._ready_timeout,
+                observe=lambda seen: self._set_stage(
+                    session.id, STAGE_READY, StartupStageState.ACTIVE, _sandbox_report(seen)
+                ),
+            )
+            self._set_stage(session.id, STAGE_READY, StartupStageState.DONE, _sandbox_report(ready))
             projected_files = {**credential_context.files, **forge_session_files}
             for process in runtime_processes:
                 projected_files.update(process.files)
             if projected_files:
+                self._set_stage(session.id, STAGE_FILES, StartupStageState.ACTIVE)
                 await asyncio.to_thread(
                     self._client.write_files,
                     sandbox=ready.name,
                     files=projected_files,
                 )
-            await self._bootstrap_workspace(
+                self._set_stage(
+                    session.id,
+                    STAGE_FILES,
+                    StartupStageState.DONE,
+                    f"{len(projected_files)} file(s) written",
+                )
+            else:
+                self._skip_stage(session.id, STAGE_FILES)
+            self._set_stage(session.id, STAGE_WORKSPACE, StartupStageState.ACTIVE)
+            bootstrap_output = await self._bootstrap_workspace(
                 ready.name,
                 session,
                 spec,
                 env,
             )
+            self._set_stage(
+                session.id,
+                STAGE_WORKSPACE,
+                StartupStageState.DONE,
+                _last_line(_redact_secret_url(bootstrap_output)),
+            )
+            self._set_stage(session.id, STAGE_SKULD, StartupStageState.ACTIVE)
             if workload_start_file:
                 # Configuration travels over the file API, outside the bounded
                 # pod driver config. Write the startup marker last.
@@ -1975,6 +2114,12 @@ class OpenShellGatewayPodManager(
                     files={**workload_files, workload_start_file: b"ready"},
                 )
             for process in runtime_processes:
+                self._set_stage(
+                    session.id,
+                    STAGE_SKULD,
+                    StartupStageState.ACTIVE,
+                    f"Starting process {process.name}",
+                )
                 process_exit = await asyncio.to_thread(
                     self._client.exec_detached,
                     sandbox=ready.name,
@@ -1987,6 +2132,7 @@ class OpenShellGatewayPodManager(
                         f"OpenShell runtime process {process.name!r} failed with exit "
                         f"{process_exit}"
                     )
+            self._set_stage(session.id, STAGE_SKULD, StartupStageState.ACTIVE)
             # ExecSandbox env values reject newlines; command arguments are
             # shell-quoted by exec_detached and preserve the original prose.
             session_values = spec.values.get("session", {})
@@ -2012,14 +2158,24 @@ class OpenShellGatewayPodManager(
                 raise RuntimeError(
                     f"OpenShell session command bootstrap failed with exit {exit_code}"
                 )
-            if len(sandbox_name) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
+            self._set_stage(
+                session.id,
+                STAGE_SKULD,
+                StartupStageState.DONE,
+                f"Started in {ready.name}",
+            )
+            if not self._exposes_service(session):
                 service_url = "http://skuld.internal"
             else:
+                self._set_stage(session.id, STAGE_EXPOSE, StartupStageState.ACTIVE)
                 service_url = await asyncio.to_thread(
                     self._client.expose_service,
                     sandbox_name=sandbox_name,
                     target_port=self._service_port,
                     service=self._service_name,
+                )
+                self._set_stage(
+                    session.id, STAGE_EXPOSE, StartupStageState.DONE, service_url or None
                 )
             if not service_url and not self._gateway_public_url:
                 raise RuntimeError(
@@ -2037,12 +2193,21 @@ class OpenShellGatewayPodManager(
         if service_url:
             self._service_urls[session_id] = service_url.rstrip("/")
         self._provider_grants[session_id] = grants
+        self._set_stage(session.id, STAGE_BROKER, StartupStageState.ACTIVE)
 
         return PodStartResult(
             chat_endpoint=self._chat_endpoint(session),
             code_endpoint=self._code_endpoint(session),
             pod_name=sandbox_name,
         )
+
+    def _exposes_service(self, session: Session) -> bool:
+        """Whether start asks the gateway to expose the broker's port.
+
+        A sandbox whose name is too long for a routed service is reached through
+        the gateway's own address, so there is no service to expose.
+        """
+        return len(self._sandbox_name(session)) <= MAX_SANDBOX_ROUTING_NAME_LENGTH
 
     async def _resume_legacy_sandbox(self, sandbox_name: str) -> OpenShellSandbox:
         """Start a stopped sandbox that owns its own storage.
@@ -2065,6 +2230,7 @@ class OpenShellGatewayPodManager(
         self, session: Session
     ) -> tuple[str, OpenShellSandbox | None, tuple[OpenShellProviderGrant, ...]]:
         """Close this process's handles on a session's sandbox and find its grants."""
+        self._progress.pop(session.id, None)
         forwarder = self._resident_forwarders.pop(str(session.id), None)
         if forwarder is not None:
             await asyncio.to_thread(forwarder.close)
@@ -2160,7 +2326,16 @@ class OpenShellGatewayPodManager(
         sandbox = await asyncio.to_thread(self._client.get_sandbox, self._sandbox_name(session))
         if sandbox is None:
             return SessionStatus.STOPPED
-        return _status_from_sandbox(sandbox)
+        status = _status_from_sandbox(sandbox)
+        if status is SessionStatus.RUNNING and self._stage_is(
+            session.id, STAGE_BROKER, StartupStageState.ACTIVE
+        ):
+            # Forge keeps the session starting until the gateway reports the sandbox
+            # running, and start() has handed it Skuld by the time this stage is active.
+            self._set_stage(
+                session.id, STAGE_BROKER, StartupStageState.DONE, _sandbox_report(sandbox)
+            )
+        return status
 
     @property
     def backend(self) -> ResidentBackend:
@@ -3346,12 +3521,11 @@ class OpenShellGatewayPodManager(
             and runtime.desired_state is ResidentDesiredState.RUNNING
         ):
             return self._going_sandbox_observation(runtime, profile, sandbox.name)
-        if (
-            sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPED
-            and runtime.desired_state is ResidentDesiredState.RUNNING
-        ):
-            # Forge never stops a resident's sandbox, so this one stopped under
-            # it (a node drain leaves it suspended). Later passes see it ready
+        if _sandbox_stopped(sandbox) and runtime.desired_state is ResidentDesiredState.RUNNING:
+            # Forge never stops or suspends a resident's sandbox, so this one
+            # stopped under it (a node drain stops it; `openshell sandbox
+            # suspend` freezes it). Starting discards a suspended sandbox's
+            # memory state and keeps its storage. Later passes see it ready
             # and start its processes.
             sandbox = await self._start_stopped_resident_sandbox(runtime, sandbox)
         if (
@@ -3837,8 +4011,9 @@ class OpenShellGatewayPodManager(
             self._client.get_sandbox,
             self._resident_sandbox_name(runtime),
         )
-        if sandbox is not None and sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPED:
-            # A restart also brings back a sandbox that stopped under the resident.
+        if sandbox is not None and _sandbox_stopped(sandbox):
+            # A restart also brings back a sandbox that stopped (or was
+            # suspended) under the resident.
             await self._start_resident_sandbox(sandbox.name)
             sandbox = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
         runtime_id = str(runtime.id)
@@ -4786,10 +4961,11 @@ class OpenShellGatewayPodManager(
         session: Session,
         spec: SessionSpec,
         env: dict[str, str],
-    ) -> None:
+    ) -> str:
+        """Prepare the workspace; return what the script reported."""
         script = self._workspace_bootstrap_script(session, spec)
         if not script:
-            return
+            return ""
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
             sandbox=sandbox_name,
@@ -4799,6 +4975,7 @@ class OpenShellGatewayPodManager(
         if exit_code != 0:
             redacted_output = _redact_secret_url(output)
             raise RuntimeError(f"OpenShell workspace bootstrap failed: {redacted_output}")
+        return output
 
     async def wait_for_ready(self, session: Session, timeout: float) -> SessionStatus:
         try:
@@ -4807,11 +4984,19 @@ class OpenShellGatewayPodManager(
             return SessionStatus.FAILED
         return await self.status(session)
 
-    async def _wait_for_sandbox_name(self, name: str, timeout: float) -> OpenShellSandbox:
+    async def _wait_for_sandbox_name(
+        self,
+        name: str,
+        timeout: float,
+        observe: Callable[[OpenShellSandbox], None] | None = None,
+    ) -> OpenShellSandbox:
+        """Wait for the sandbox to run; ``observe`` sees the sandbox at every poll."""
         deadline = time.monotonic() + float(timeout)
         while time.monotonic() < deadline:
             sandbox = await asyncio.to_thread(self._client.get_sandbox, name)
             if sandbox is not None:
+                if observe is not None:
+                    observe(sandbox)
                 status = _status_from_sandbox(sandbox)
                 if status == SessionStatus.RUNNING:
                     return sandbox
@@ -4925,6 +5110,9 @@ git -C "$WORKSPACE" config user.email >/dev/null 2>&1 || \
   git -C "$WORKSPACE" config user.email {shlex.quote(str(git_cfg.get("userEmail") or ""))}
 if git -C "$WORKSPACE" rev-parse --verify HEAD >/dev/null 2>&1; then
   echo "Workspace already contains a git repository, skipping clone"
+  if [ -n "$BASE_BRANCH" ] && ! git -C "$WORKSPACE" config --get niuu.baseBranch >/dev/null; then
+    git -C "$WORKSPACE" config niuu.baseBranch "$BASE_BRANCH"
+  fi
   exit 0
 fi
 attempt=1
@@ -4951,6 +5139,19 @@ else
   if [ -n "$BRANCH" ] && [ "$BRANCH" != "$FALLBACK" ]; then
     git -C "$WORKSPACE" checkout -b "$BRANCH"
   fi
+fi
+# Record where this branch started, so the session's changes can be shown against it.
+RECORDED_BASE="${{FALLBACK:-}}"
+if [ -z "$RECORDED_BASE" ]; then
+  if [ -n "$BASE_BRANCH" ] && \
+    git -C "$WORKSPACE" rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
+    RECORDED_BASE="$BASE_BRANCH"
+  else
+    RECORDED_BASE=$(git -C "$WORKSPACE" remote show origin | sed -n 's/.*HEAD branch: //p')
+  fi
+fi
+if [ -n "$RECORDED_BASE" ]; then
+  git -C "$WORKSPACE" config niuu.baseBranch "$RECORDED_BASE"
 fi
 git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
 echo "Workspace ready at $WORKSPACE"
@@ -6628,13 +6829,60 @@ def _sandbox_from_proto(raw: Any) -> OpenShellSandbox:
         providers=tuple(str(name) for name in raw.spec.providers),
         image=str(getattr(template, "image", "") or ""),
         annotations={str(key): str(value) for key, value in metadata.annotations.items()},
+        not_ready_reason=_not_ready_reason(status),
+    )
+
+
+def _not_ready_reason(status: Any) -> str:
+    """The gateway's reason and message from its Ready condition, while it is not ready."""
+    for condition in status.conditions:
+        if condition.type != "Ready" or condition.status == "True":
+            continue
+        return ": ".join(part for part in (condition.reason, condition.message) if part)
+    return ""
+
+
+def _phase_name(phase: int) -> str:
+    """The gateway's name for a sandbox phase, e.g. ``PROVISIONING``."""
+    try:
+        return openshell_pb2.SandboxPhase.Name(phase).removeprefix("SANDBOX_PHASE_")
+    except ValueError:
+        return f"phase {phase}"
+
+
+def _sandbox_report(sandbox: OpenShellSandbox) -> str:
+    """The sandbox's phase with the gateway's reason, as the launch detail."""
+    phase = _phase_name(sandbox.phase)
+    if not sandbox.not_ready_reason:
+        return phase
+    return f"{phase}: {sandbox.not_ready_reason}"
+
+
+def _last_line(output: str) -> str | None:
+    """The last line a script printed; None when it printed nothing."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines else None
+
+
+def _sandbox_stopped(sandbox: OpenShellSandbox) -> bool:
+    """Whether the sandbox runs no workload: stopped, or suspended (OpenShell v0.1.7+).
+
+    A suspended sandbox keeps its frozen memory for ResumeSandbox; StartSandbox
+    discards that state and boots it again on its retained storage.
+    """
+    return sandbox.phase in (
+        openshell_pb2.SANDBOX_PHASE_STOPPED,
+        openshell_pb2.SANDBOX_PHASE_SUSPENDED,
     )
 
 
 def _status_from_sandbox(sandbox: OpenShellSandbox) -> SessionStatus:
-    if sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPED:
+    if _sandbox_stopped(sandbox):
         return SessionStatus.STOPPED
-    if sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPING:
+    if sandbox.phase in (
+        openshell_pb2.SANDBOX_PHASE_STOPPING,
+        openshell_pb2.SANDBOX_PHASE_SUSPENDING,
+    ):
         return SessionStatus.STOPPING
     if sandbox.phase == openshell_pb2.SANDBOX_PHASE_READY or sandbox.ready:
         return SessionStatus.RUNNING

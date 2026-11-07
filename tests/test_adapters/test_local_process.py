@@ -946,6 +946,7 @@ class TestGitClone:
                 checkout_proc,
                 checkout_proc,
                 checkout_proc,
+                checkout_proc,
             ]
             await manager._clone_repo(source, workspace, spec)
 
@@ -955,13 +956,15 @@ class TestGitClone:
         assert "clone" in args
         assert "--no-single-branch" in args
         assert "x-access-token:tok123@github.com/org/repo" in args[5]
-        assert mock_exec.call_args_list[3][0][-4:] == (
+        # The branch existed, so the workspace records the session's base branch.
+        assert mock_exec.call_args_list[3][0][-3:] == ("config", "niuu.baseBranch", "main")
+        assert mock_exec.call_args_list[4][0][-4:] == (
             "remote",
             "set-url",
             "origin",
             "https://github.com/org/repo",
         )
-        assert mock_exec.call_args_list[4][0][-5:] == (
+        assert mock_exec.call_args_list[5][0][-5:] == (
             "remote",
             "set-url",
             "--push",
@@ -1067,6 +1070,32 @@ class TestGitClone:
             await manager._clone_repo(source, workspace, spec)
 
         assert mock_exec.call_args_list[4][0][-3:] == ("checkout", "-b", "feat/missing")
+        assert mock_exec.call_args_list[5][0][-3:] == ("config", "niuu.baseBranch", "main")
+
+    async def test_failing_to_record_the_base_branch_raises(
+        self,
+        manager: LocalProcessPodManager,
+    ) -> None:
+        """A workspace that cannot record its base branch does not start silently without it."""
+        source = GitSource(repo="https://github.com/org/repo", branch="dev", base_branch="dev")
+        workspace = manager._workspaces_dir / "no-base"
+        workspace.mkdir(parents=True)
+        spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+
+        ok_proc = AsyncMock()
+        ok_proc.returncode = 0
+        ok_proc.communicate = AsyncMock(return_value=(b"", b""))
+        config_proc = AsyncMock()
+        config_proc.returncode = 1
+        config_proc.communicate = AsyncMock(return_value=(b"", b"error: could not lock config"))
+
+        with (
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            pytest.raises(RuntimeError, match="could not lock config"),
+        ):
+            # clone, rev-parse origin/dev, checkout dev, then the config write fails.
+            mock_exec.side_effect = [ok_proc, ok_proc, ok_proc, config_proc]
+            await manager._clone_repo(source, workspace, spec)
 
 
 # ------------------------------------------------------------------
@@ -3286,3 +3315,112 @@ class TestLocalFlockMeshMode:
             "auth_token": "runtime-only-token",
         }
         assert node_config["permission"]["workspace_root"] == str(repo_workspace)
+
+
+class TestPreviewEnv:
+    """Skuld live-preview settings for a session on the shared local host."""
+
+    def _manager(self, tmp_workspaces, tmp_state_file, registry=None, **kwargs):
+        mgr = LocalProcessPodManager(
+            workspaces_dir=str(tmp_workspaces),
+            claude_binary="/usr/bin/fake-claude",
+            state_file=str(tmp_state_file),
+            **kwargs,
+        )
+        if registry is not None:
+            mgr.set_skuld_registry(registry)
+        return mgr
+
+    def test_dev_identity_registry_needs_no_router_credential(self, tmp_workspaces, tmp_state_file):
+        registry = MagicMock()
+        registry.dev_identity = True
+        mgr = self._manager(tmp_workspaces, tmp_state_file, registry)
+
+        env = mgr._preview_env("sess-1")
+
+        assert env["SKULD__PREVIEW__ENABLED"] == "true"
+        assert json.loads(env["SKULD__PREVIEW__ROUTER_AUTH"]) == {
+            "adapter": "skuld.preview_adapters.NoRouterAuth"
+        }
+        assert json.loads(env["SKULD__PREVIEW__PORT_SCANNER"]) == {
+            "adapter": "skuld.preview_adapters.LsofSessionPortScanner",
+            "kwargs": {"session_id": "sess-1"},
+        }
+
+    def test_dev_identity_wins_over_a_configured_router_auth(self, tmp_workspaces, tmp_state_file):
+        registry = MagicMock()
+        registry.dev_identity = True
+        configured = {"adapter": "skuld.preview_adapters.WorkloadJwtRouterAuth", "kwargs": {}}
+        mgr = self._manager(
+            tmp_workspaces, tmp_state_file, registry, preview_router_auth=configured
+        )
+
+        auth = json.loads(mgr._preview_env("s")["SKULD__PREVIEW__ROUTER_AUTH"])
+
+        assert auth == {"adapter": "skuld.preview_adapters.NoRouterAuth"}
+
+    def test_an_authenticated_host_uses_the_configured_router_auth(
+        self, tmp_workspaces, tmp_state_file
+    ):
+        registry = MagicMock()
+        registry.dev_identity = False
+        configured = {
+            "adapter": "skuld.preview_adapters.WorkloadJwtRouterAuth",
+            "kwargs": {"issuer": "i", "audience": "a", "jwks_uri": "http://x/jwks"},
+        }
+        mgr = self._manager(
+            tmp_workspaces, tmp_state_file, registry, preview_router_auth=configured
+        )
+
+        env = mgr._preview_env("sess-2")
+
+        assert env["SKULD__PREVIEW__ENABLED"] == "true"
+        assert json.loads(env["SKULD__PREVIEW__ROUTER_AUTH"]) == configured
+        assert json.loads(env["SKULD__PREVIEW__PORT_SCANNER"])["kwargs"] == {"session_id": "sess-2"}
+
+    def test_an_authenticated_host_without_router_auth_turns_preview_off(
+        self, tmp_workspaces, tmp_state_file, caplog
+    ):
+        registry = MagicMock()
+        registry.dev_identity = False
+        mgr = self._manager(tmp_workspaces, tmp_state_file, registry)
+
+        with caplog.at_level("INFO", logger=local_process_mod.logger.name):
+            env = mgr._preview_env("sess-3")
+
+        assert env == {"SKULD__PREVIEW__ENABLED": "false"}
+        assert "preview_router_auth" in caplog.text
+
+    def test_no_registry_at_all_counts_as_an_authenticated_host(
+        self, tmp_workspaces, tmp_state_file
+    ):
+        mgr = self._manager(tmp_workspaces, tmp_state_file)
+
+        assert mgr._preview_env("s") == {"SKULD__PREVIEW__ENABLED": "false"}
+
+    async def test_the_spawned_skuld_environment_carries_it(
+        self, tmp_workspaces, tmp_state_file, git_session, default_spec
+    ):
+        registry = MagicMock()
+        registry.dev_identity = True
+        mgr = self._manager(tmp_workspaces, tmp_state_file, registry)
+        workspace = tmp_workspaces / str(git_session.id)
+        workspace.mkdir(parents=True)
+        mock_proc = MagicMock()
+        mock_proc.pid = 42
+
+        with (
+            patch.object(mgr, "_resolve_skuld_command", return_value=["python", "-m", "skuld"]),
+            patch.object(mgr, "_resolve_claude_binary", return_value="/usr/bin/fake-claude"),
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=mock_proc,
+            ) as mock_exec,
+        ):
+            await mgr._spawn_skuld(git_session, default_spec, workspace, 9100)
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert env["SKULD__PREVIEW__ENABLED"] == "true"
+        scanner = json.loads(env["SKULD__PREVIEW__PORT_SCANNER"])
+        assert scanner["kwargs"] == {"session_id": str(git_session.id)}

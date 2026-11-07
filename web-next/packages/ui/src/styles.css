@@ -50,17 +50,19 @@
 @import './data/states/states.css';
 
 /* ── Chat / Mesh ──────────────────────────────────────────────────────────── */
-@import './chat/components/AgentDetailPanel/AgentDetailPanel.css';
+@import './chat/components/AttentionRow/AttentionRow.css';
 @import './chat/components/ChatEmptyStates/ChatEmptyStates.css';
 @import './chat/components/ChatInput/ChatInput.css';
 @import './chat/components/ChatMessages/ChatMessages.css';
+@import './chat/components/HandoffRow/HandoffRow.css';
 @import './chat/components/MarkdownContent/MarkdownContent.css';
 @import './chat/components/MentionMenu/MentionMenu.css';
 @import './chat/components/MentionPill/MentionPill.css';
-@import './chat/components/MeshCascadePanel/MeshCascadePanel.css';
 @import './chat/components/MeshEventCard/MeshEventCard.css';
-@import './chat/components/MeshSidebar/MeshSidebar.css';
 @import './chat/components/OutcomeCard/OutcomeCard.css';
+@import './chat/components/PlanDock/PlanDock.css';
+@import './chat/components/ProgressLane/ProgressLane.css';
+@import './chat/components/QuestionBand/QuestionBand.css';
 @import './chat/components/ParticipantFilter/ParticipantFilter.css';
 @import './chat/components/RenderedContent/RenderedContent.css';
 @import './chat/components/RoomMessage/RoomMessage.css';
@@ -68,4 +70,7 @@
 @import './chat/components/SlashCommandMenu/SlashCommandMenu.css';
 @import './chat/components/ThreadGroup/ThreadGroup.css';
 @import './chat/components/ToolBlock/ToolBlock.css';
+@import './chat/components/VerdictPill/VerdictPill.css';
+@import './chat/components/WorkerSheet/WorkerSheet.css';
+@import './chat/components/WorkersStrip/WorkersStrip.css';
 @config "../tailwind.config.ts";

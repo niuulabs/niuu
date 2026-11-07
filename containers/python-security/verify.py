@@ -1,10 +1,12 @@
 """Verify the installed backports and exploit regressions; emit scan evidence."""
 
 import hashlib
+import http.client
 import inspect
 import io
 import json
 import poplib
+import socket
 import sys
 import sysconfig
 import tarfile
@@ -14,6 +16,22 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from unittest.mock import Mock
+
+
+class FakeSocket:
+    """Serve a canned HTTP response to http.client without any network."""
+
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def makefile(self, mode):
+        return io.BytesIO(self._data)
+
+
+def http_response(head: str, body: bytes) -> http.client.HTTPResponse:
+    response = http.client.HTTPResponse(FakeSocket(head.encode() + body), method="GET")
+    response.begin()
+    return response
 
 
 class BackportRegressionTests(unittest.TestCase):
@@ -28,6 +46,96 @@ class BackportRegressionTests(unittest.TestCase):
         client._putline.assert_not_called()
         client._putcmd("USER alice")
         client._putline.assert_called_once_with(b"USER alice")
+
+    def test_http_content_length_follows_the_rfc_9112_grammar(self):
+        # CVE-2026-103995: int() also accepts a sign, underscores and spaces, so
+        # these must not frame the body; optional whitespace around a valid
+        # value is not part of it and must still frame the body.
+        for value in ("+5", "5_0", "5 0", "-5", "0x5"):
+            with self.subTest(value=value):
+                response = http_response(
+                    f"HTTP/1.1 200 OK\r\nContent-Length: {value}\r\n\r\n", b"Hello\r\n"
+                )
+                self.assertIsNone(response.length)
+                self.assertEqual(response.read(), b"Hello\r\n")
+        for value in ("7", "7 ", "7\t", "7 \t ", " 7 "):
+            with self.subTest(value=value):
+                response = http_response(
+                    f"HTTP/1.1 200 OK\r\nContent-Length: {value}\r\n\r\n", b"Hello\r\nextra"
+                )
+                self.assertEqual(response.length, 7)
+                self.assertEqual(response.read(), b"Hello\r\n")
+                self.assertTrue(response.isclosed())
+
+    def test_http_chunk_size_follows_the_rfc_9112_grammar(self):
+        # CVE-2026-103995: a chunk-size is 1*HEXDIG; int(_, 16) accepts more.
+        head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+        for size in ("-5", "+5", "0x5", "1_f", " 5"):
+            with self.subTest(size=size):
+                response = http_response(head, f"{size}\r\nHELLO\r\n0\r\n\r\n".encode())
+                with self.assertRaises(http.client.IncompleteRead):
+                    response.read()
+                self.assertTrue(response.isclosed())
+        response = http_response(head, b"5\r\nHELLO\r\n0\r\n\r\n")
+        self.assertEqual(response.read(), b"HELLO")
+
+    def test_getaddrinfo_rejects_null_bytes_in_host_and_port(self):
+        # CVE-2026-116566: the C layer truncates at a null byte, so
+        # "127.0.0.1\0evil" resolved as "127.0.0.1". This guard is in socket.py;
+        # the compiled _socket.getaddrinfo is unchanged.
+        class HiddenText(str):
+            def __contains__(self, item):
+                return False
+
+        class HiddenBytes(bytes):
+            def __contains__(self, item):
+                return False
+
+        for host in (
+            "local\0host",
+            b"local\0host",
+            "localhost\0",
+            b"localhost\0",
+            "\0localhost",
+            "\0",
+            b"\0",
+            "b\xfccher\0.example",
+            HiddenText("local\0host"),
+            HiddenBytes(b"local\0host"),
+        ):
+            with self.subTest(host=host), self.assertRaisesRegex(ValueError, "host"):
+                socket.getaddrinfo(host, 80)
+        for port in ("8\x000", b"8\x000", "http\0", b"http\0", "\0", b"\0", HiddenText("8\x000")):
+            with self.subTest(port=port), self.assertRaisesRegex(ValueError, "port"):
+                socket.getaddrinfo("localhost", port)
+        for port in (80, "80", b"80", None):
+            with self.subTest(port=port):
+                addresses = socket.getaddrinfo("127.0.0.1", port, type=socket.SOCK_STREAM)
+                self.assertTrue(addresses)
+                self.assertEqual(addresses[0][4][0], "127.0.0.1")
+
+    def test_other_address_resolution_rejects_null_bytes(self):
+        # CVE-2026-116566: getaddrinfo() is the only resolver entry point that
+        # truncated. The others already reject a null byte, which is why the
+        # guard in socket.getaddrinfo() covers the public API.
+        host = "local\0host"
+        for function in (
+            socket.gethostbyname,
+            socket.gethostbyname_ex,
+            socket.gethostbyaddr,
+            socket.getservbyname,
+            socket.inet_aton,
+        ):
+            with self.subTest(function=function.__name__):
+                with self.assertRaises((TypeError, ValueError)):
+                    function(host)
+        with self.assertRaises((TypeError, ValueError)):
+            socket.getnameinfo((host, 80), 0)
+        with socket.socket() as client:
+            for method in (client.connect, client.connect_ex, client.bind):
+                with self.subTest(method=method.__name__):
+                    with self.assertRaises((TypeError, ValueError)):
+                        method((host, 80))
 
     def test_idna_uses_unicode_3_2_case_folding(self):
         cases = [
@@ -116,6 +224,9 @@ def verify(manifest: dict) -> dict:
         upstream[item["cve"]] = hashlib.sha256((stdlib / item["file"]).read_bytes()).hexdigest()
         if upstream[item["cve"]] != item["sha256"]:
             raise RuntimeError(f"Upstream security fix missing or changed: {item['file']}")
+    for item in manifest["mitigations"]:
+        if item["file"] not in manifest["files"]:
+            raise RuntimeError(f"Mitigation names an unverified module: {item['file']}")
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(BackportRegressionTests)
     if not unittest.TextTestRunner(stream=sys.stderr).run(suite).wasSuccessful():
         raise RuntimeError("Installed Python security regression tests failed")
@@ -128,6 +239,7 @@ def verify(manifest: dict) -> dict:
         "python_version": manifest["python_version"],
         "files": actual,
         "cves": manifest["cves"],
+        "mitigations": [item["cve"] for item in manifest["mitigations"]],
         "executable": str(Path(sys.executable).resolve()),
         "patches": [item["commit"] for item in manifest["patches"]],
         "upstream_fixes": upstream,

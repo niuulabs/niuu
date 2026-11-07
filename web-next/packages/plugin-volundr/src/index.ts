@@ -5,7 +5,12 @@ import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ForgePage } from './ui/ForgePage';
 import { VolundrPage } from './ui/VolundrPage';
 import { NewSessionPage } from './ui/NewSessionPage';
-import { VolundrSessionsRoute, VolundrSessionRoute, VolundrArchivedRoute } from './ui/routes';
+import {
+  VolundrSessionsRoute,
+  VolundrSessionRoute,
+  VolundrArchivedRoute,
+  VolundrHostsRoute,
+} from './ui/routes';
 import { LaunchCatalogPage } from './ui/LaunchCatalogPage';
 import { HistoryPage } from './ui/HistoryPage';
 import { NotificationsPage } from './ui/notifications/NotificationsPage';
@@ -80,6 +85,11 @@ export const volundrPlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/volundr/catalog',
       component: LaunchCatalogPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/volundr/hosts',
+      component: VolundrHostsRoute,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -193,6 +203,7 @@ export {
 } from './ui/hooks/useNotifications';
 export { NewSessionPage } from './ui/NewSessionPage';
 export { useSessionList, useSessionDetail } from './ui/hooks/useSessionStore';
+export { useSessionRead, type UseSessionRead } from './ui/hooks/useSessionRead';
 export { sessionActivityTs, compareSessionsByActivity } from './ui/sessions/sessionLabels';
 export {
   useQuickLaunch,
@@ -225,9 +236,20 @@ export { ModelChip } from './ui/atoms/ModelChip';
 
 // Domain types
 export type { Session, SessionState, SessionResources, SessionEvent } from './domain/session';
-export { canTransition, transitionSession } from './domain/session';
+export {
+  canTransition,
+  transitionSession,
+  SessionForkError,
+  SessionReadStateConflictError,
+} from './domain/session';
 export { toLifecycleState } from './ui/utils/toLifecycleState';
 export type { ExecEntry, ExecStatus } from './domain/exec';
+export type {
+  RuntimeReadiness,
+  SessionGrant,
+  SessionRuntimeKind,
+  SessionRuntimeOffer,
+} from './domain/sessionRuntimes';
 export { appendExecEntry, updateExecEntry } from './domain/exec';
 export type { PodSpec, Mount, MountSource, ResourceSpec, MountKind } from './domain/pod';
 export type { Cluster, ClusterNode, ClusterCapacity, NodeStatus } from './domain/cluster';
@@ -251,6 +273,7 @@ export type {
   SessionStatus,
   VolundrFeatures,
   VolundrMessage,
+  SessionMessageDelivery,
   VolundrLog,
   VolundrAggregatedLog,
   VolundrLogParticipant,
@@ -272,8 +295,31 @@ export type {
   SessionOrigin,
   ExternalSession,
   ExternalSessionHarness,
+  SessionReadState,
+  SessionReadStateChange,
+  SessionStartup,
+  StartupStage,
+  StartupStageState,
+  ForgeMcpGrant,
 } from './models/volundr.model';
 
 export { UserStorageSettings } from './ui/UserStorageSettings';
+
+// Compute hosts (bare-metal machines registered as a Forge's compute)
+export { ComputeHostsPanel } from './ui/computeHosts/ComputeHostsPanel';
+export { ComputeHostsPage } from './ui/computeHosts/ComputeHostsPage';
+export { ForgeHostsLink, computeHostsHref } from './ui/computeHosts/ForgeHostsLink';
+export { createMockComputeHosts, seedComputeHosts } from './adapters/computeHosts.mock';
+export type {
+  ComputeHost,
+  ComputeHostChanges,
+  ComputeHostsOverview,
+  ComputeSummary,
+  HostState,
+  NewPairingCode,
+  PairingCode,
+  PairingCodeRequest,
+  RemoveHostResult,
+} from './domain/computeHosts';
 
 export { ForgeSessionSettings } from './ui/ForgeSessionSettings';

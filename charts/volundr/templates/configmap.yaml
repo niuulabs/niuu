@@ -71,6 +71,7 @@ data:
     provisioning:
       timeout_seconds: {{ .Values.provisioning.timeoutSeconds | default 300.0 }}
       initial_delay_seconds: {{ .Values.provisioning.initialDelaySeconds | default 5.0 }}
+      startup_poll_seconds: {{ .Values.provisioning.startupPollSeconds | default 2.0 }}
 
     realm_detail_stream_interval_seconds: {{ .Values.realmDetailStreamIntervalSeconds | default 15.0 }}
 
@@ -539,6 +540,17 @@ data:
       instance_name: {{ required "guild.instanceName must be this Forge's name in its Guild's registry" .instanceName | quote }}
       instance_slug: {{ required "guild.instanceSlug must be this Forge's slug in its Guild's registry" .instanceSlug | quote }}
     {{- end }}
+    {{- end }}
+
+    {{- if .Values.sessionPreview.enabled }}
+    {{- if not .Values.workloadIdentity.enabled }}
+    {{- fail "sessionPreview.enabled needs workloadIdentity.enabled: the preview router presents a workload credential to each session's Skuld" }}
+    {{- end }}
+    session_preview:
+      enabled: true
+      domain: {{ include "volundr.sessionPreview.domain" . | quote }}
+      credential_ttl_seconds: {{ .Values.sessionPreview.credentialTtlSeconds }}
+      credential_audience: {{ .Values.sessionPreview.credentialAudience | quote }}
     {{- end }}
 
     workload_identity:

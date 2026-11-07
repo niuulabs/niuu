@@ -1,4 +1,4 @@
-FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS builder
+FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c AS builder
 
 ARG TARGETARCH
 
@@ -16,10 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install uv from a pinned release archive and resolve from the committed lockfile.
 RUN set -eux; \
-    UV_VERSION="0.13.5"; \
+    UV_VERSION="0.13.7"; \
     case "${TARGETARCH}" in \
-      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f" ;; \
-      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="4bb69cf95ed13f23713bb7bc09f241896ea0c75b7c557e615a20604b82f9c403" ;; \
+      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83" ;; \
+      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="71279f8d3c67241e807b9d8db872d1bf541579fb9f08b7d1eb1682196d1e57dc" ;; \
       *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}" -o "/tmp/${UV_ARCHIVE}"; \
@@ -56,30 +56,32 @@ COPY vendor/ /app/vendor/
 RUN uv build --wheel --out-dir /dist
 
 # ---------------------------------------------------------------------------
-# gh v2.102.0 (the latest release) is built with Go 1.27.1 and golang.org/x/net
-# v0.58.0 (GO-2026-6603/6604/6611/6612). Build the same release with Go 1.27.3 and
-# the patched module; return to GitHub's apt package once a release ships them.
+# gh v2.103.3 requires klauspost/compress v1.20.3 in its go.mod
+# (GO-2026-6865, fixed in v1.20.2) and golang.org/x/net v0.60.0 (GO-2026-6603/6604/
+# 6611/6612), so no module override is needed. Build it from the checksum-verified
+# source with Go 1.27.3, which satisfies its `toolchain go1.27.3`, to keep the
+# version pinned and the toolchain current.
 # ---------------------------------------------------------------------------
 FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS gh-build
 ARG TARGETARCH
 WORKDIR /src
-RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.102.0.tar.gz -O /tmp/gh.tar.gz \
-    && echo "08bf0ef8b4409893889175e0f5279d30d6edd96465816042c0d7c72eac598158  /tmp/gh.tar.gz" | sha256sum -c - \
+RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.103.3.tar.gz -O /tmp/gh.tar.gz \
+    && echo "bb148138a3a2fe023e57c78042fe3b42fc09171c0e8fff4cf983b227b7a2eade  /tmp/gh.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/gh.tar.gz --strip-components=1 \
-    && go get golang.org/x/net@v0.60.0 \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath \
-        -ldflags '-s -w -X github.com/cli/cli/v2/internal/build.Version=2.102.0-niuu.1 -X github.com/cli/cli/v2/internal/build.Date=2026-09-30' \
+        -ldflags '-s -w -X github.com/cli/cli/v2/internal/build.Version=2.103.3-niuu.1 -X github.com/cli/cli/v2/internal/build.Date=2026-10-26' \
         -o /out/gh ./cmd/gh
 
 # ---------------------------------------------------------------------------
-# glab v1.124.0 (the latest release) ships binaries built with Go 1.27.2
-# (GO-2026-6809). Build the same release with Go 1.27.3; the module proxy
-# download is verified against sum.golang.org. Return to the release .deb once
-# one is built with a patched Go.
+# glab v1.128.0 is the first release with brotli 1.2.7 (GO-2026-6888). Its
+# release binaries may predate Go 1.27.3 (GO-2026-6809), so build the same
+# release from source with Go 1.27.3; the module proxy download is verified
+# against sum.golang.org. Return to the release .deb once one is built with a
+# patched Go.
 # ---------------------------------------------------------------------------
 FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS glab-build
 ARG TARGETARCH
-ARG GLAB_VERSION=1.124.0
+ARG GLAB_VERSION=1.128.0
 RUN cd "$(go mod download -json gitlab.com/gitlab-org/cli@v${GLAB_VERSION} | sed -n 's/.*"Dir": "\(.*\)".*/\1/p')" \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath \
         -ldflags "-s -w -X main.version=${GLAB_VERSION}-niuu.1" \
@@ -88,7 +90,7 @@ RUN cd "$(go mod download -json gitlab.com/gitlab-org/cli@v${GLAB_VERSION} | sed
 # ---------------------------------------------------------------------------
 # Runtime — Node.js stays (needed for claude-code/codex CLI at runtime)
 # ---------------------------------------------------------------------------
-FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
+FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
 
 
 LABEL org.opencontainers.image.title="skuld"
@@ -159,7 +161,7 @@ COPY containers/skuld/npm-tools/package.json containers/skuld/npm-tools/package-
 RUN cd /opt/npm-bootstrap \
     && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
-    && sh /opt/npm-bootstrap/replace-nested.sh /opt/npm-bootstrap node_modules/npm/node_modules brace-expansion ip-address undici \
+    && sh /opt/npm-bootstrap/replace-nested.sh /opt/npm-bootstrap node_modules/npm/node_modules glob minimatch path-scurry +@isaacs/nonrecursive-glob-match \
     && rm -rf /usr/lib/node_modules/npm \
     && ln -s /opt/npm-bootstrap/node_modules/npm /usr/lib/node_modules/npm \
     && ln -sf /usr/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
@@ -167,7 +169,6 @@ RUN cd /opt/npm-bootstrap \
     && cd /opt/skuld-tools \
     && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
-    && sh /opt/npm-bootstrap/replace-nested.sh /opt/skuld-tools node_modules/@earendil-works/pi-coding-agent/node_modules undici \
     && ln -sf /opt/skuld-tools/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -sf /opt/skuld-tools/node_modules/.bin/codex /usr/local/bin/codex \
     && ln -sf /opt/skuld-tools/node_modules/.bin/opencode /usr/local/bin/opencode \

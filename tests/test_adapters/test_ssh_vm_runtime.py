@@ -21,9 +21,11 @@ from volundr.adapters.outbound.ssh_vm_runtime import SshContainerVmRuntime
 from volundr.domain.compute import (
     BootstrapFile,
     ComputeLease,
+    ComputeSlot,
     Machine,
     MachineBootstrap,
     MachineState,
+    SlotLease,
 )
 from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
@@ -111,13 +113,10 @@ def setup(tmp_path):
     )
     bootstrap = runtime.bootstrap(session, spec, MachineBootstrap())
     allocation = uuid4()
-    lease = ComputeLease(
+    machine = ComputeLease(
         id=allocation,
-        session_id=session.id,
         pool_id="test",
         profile="small",
-        owner_id="owner",
-        tenant_id="tenant",
         request_fingerprint="test",
         machine=Machine(
             allocation_id=allocation,
@@ -126,6 +125,16 @@ def setup(tmp_path):
             addresses=("192.0.2.10",),
         ),
     )
+    binding = ComputeSlot(
+        id=uuid4(),
+        allocation_id=allocation,
+        slot=0,
+        pool_id="test",
+        session_id=session.id,
+        owner_id="owner",
+        tenant_id="tenant",
+    )
+    lease = SlotLease(allocation=machine, binding=binding)
     return runtime, session, spec, bootstrap, lease
 
 
@@ -192,6 +201,82 @@ async def test_start_restores_archive_then_uses_persisted_launch_payload(setup):
     runtime._guest_access.execute.reset_mock()
     await runtime.start(lease, bootstrap)
     assert "stdin" not in runtime._guest_access.execute.await_args_list[1].kwargs
+
+
+async def _started_steps(setup, *, archive: bool, credentials: bool):
+    runtime, session, spec, bootstrap, lease = setup
+    runtime._ssh(lease, bootstrap)
+    if archive:
+        file = runtime._data / str(session.id) / "session.tar"
+        file.parent.mkdir(mode=0o700, parents=True)
+        file.write_bytes(b"explicit-test-archive")
+    if credentials:
+        files = tuple(
+            f.model_copy(
+                update={"content": json.dumps({**json.loads(f.content), "forge_session": True})}
+            )
+            if f.path == module._LAUNCH
+            else f
+            for f in bootstrap.files
+        )
+        bootstrap = bootstrap.model_copy(update={"files": files})
+        runtime.configure_credential_delivery(AsyncMock())
+    steps = []
+    runtime.report_startup_to(lambda sid, key, label: steps.append((sid, key, label)))
+    runtime._guest_access.ensure = AsyncMock()
+    runtime._guest_access.execute = AsyncMock(return_value=GuestCommandResult(0))
+    runtime.target = AsyncMock()
+    await runtime.prepare(lease, bootstrap)
+    await runtime.start(lease, bootstrap)
+    return steps, session.id
+
+
+async def test_start_names_each_step_with_the_leases_session(setup):
+    steps, session_id = await _started_steps(setup, archive=False, credentials=False)
+
+    assert steps == [
+        (session_id, "guest_files", "Delivering session files"),
+        (session_id, "guest_tunnel", "Opening the tunnel to Forge"),
+        (session_id, "guest_skuld", "Pulling and starting Skuld"),
+    ]
+
+
+async def test_start_names_the_restore_step_only_when_an_archive_exists(setup):
+    steps, session_id = await _started_steps(setup, archive=True, credentials=False)
+
+    assert [key for _, key, _ in steps] == [
+        "guest_files",
+        "guest_restore",
+        "guest_tunnel",
+        "guest_skuld",
+    ]
+    assert steps[1] == (session_id, "guest_restore", "Restoring the workspace")
+
+
+async def test_start_names_the_credentials_step_only_with_a_credential_plan(setup):
+    steps, session_id = await _started_steps(setup, archive=True, credentials=True)
+
+    assert [key for _, key, _ in steps] == [
+        "guest_files",
+        "guest_restore",
+        "guest_tunnel",
+        "guest_credentials",
+        "guest_skuld",
+    ]
+    assert steps[3] == (session_id, "guest_credentials", "Delivering credentials")
+
+
+async def test_start_without_a_reporter_names_no_steps(setup):
+    runtime, session, spec, bootstrap, lease = setup
+    runtime._ssh(lease, bootstrap)
+    runtime._guest_access.ensure = AsyncMock()
+    runtime._guest_access.execute = AsyncMock(return_value=GuestCommandResult(0))
+    runtime.target = AsyncMock()
+
+    await runtime.start(lease, bootstrap)
+
+    assert runtime._report_startup is None
+    assert runtime._guest_access.execute.await_count == 3
 
 
 async def test_explicit_ssh_bootstrap_uses_tofu_once_then_strict_pin(setup, tmp_path):
@@ -310,12 +395,11 @@ def test_warm_spares_use_allocation_scoped_ssh_bootstrap_paths(setup, tmp_path):
         skuld_image="test/skuld:dev",
         bootstrap_delivery="ssh",
     )
-    first = lease.model_copy(update={"session_id": None})
+    first = lease.allocation
     second_id = uuid4()
-    second = lease.model_copy(
+    second = lease.allocation.model_copy(
         update={
             "id": second_id,
-            "session_id": None,
             "machine": lease.machine.model_copy(update={"allocation_id": second_id}),
         }
     )
@@ -663,13 +747,15 @@ async def test_warm_bootstrap_is_unbound_and_binding_keeps_machine_identity(setu
     ]["SESSION_ID"] == str(session.id)
     runtime._guest_access.ensure = AsyncMock()
     runtime._guest_access.execute = AsyncMock(return_value=GuestCommandResult(0))
-    spare = lease.model_copy(update={"session_id": None})
+    spare = lease.allocation
     await runtime.warm(spare, machine)
     assert runtime._guest_access.execute.await_args.args[2] == (
         "sudo -n docker pull test/skuld:dev"
     )
-    with pytest.raises(ValueError, match="unbound"):
-        await runtime.start(spare, machine)
+    # A machine with no session has no credentials to resume, even given a launch payload.
+    runtime._credential_delivery = AsyncMock()
+    await runtime._resume_delivery(spare, bound)
+    runtime._credential_delivery.resume.assert_not_awaited()
 
 
 def test_restore_excludes_runtime_cache_but_rejects_other_escaping_links(tmp_path):
@@ -774,3 +860,153 @@ async def test_injected_access_is_closed_only_by_composition_owner(setup, tmp_pa
     await runtime.close()
 
     access.close.assert_not_awaited()
+
+
+def _preview_runtime(tmp_path: Path, **kwargs) -> SshContainerVmRuntime:
+    key = Ed25519PrivateKey.generate()
+    private = tmp_path / "preview-key"
+    public = tmp_path / "preview-key.pub"
+    private.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.OpenSSH,
+            serialization.NoEncryption(),
+        )
+    )
+    public.write_bytes(
+        key.public_key().public_bytes(
+            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
+        )
+    )
+    return SshContainerVmRuntime(
+        ssh_private_key_file=str(private),
+        ssh_public_key_file=str(public),
+        data_dir=str(tmp_path / "preview-data"),
+        skuld_image="test/skuld:dev",
+        **kwargs,
+    )
+
+
+def _launch_environment(runtime: SshContainerVmRuntime) -> dict[str, str]:
+    session = Session(name="test", owner_id="owner", tenant_id="tenant", source=GitSource())
+    spec = SessionSpec(values={"session": {}}, pod_spec=PodSpecAdditions())
+    bootstrap = runtime.bootstrap(session, spec, MachineBootstrap())
+    files = {f.path: f.content for f in bootstrap.files}
+    return json.loads(files[module._LAUNCH])["environment"]
+
+
+_ROUTER_AUTH = {
+    "adapter": "skuld.preview_adapters.WorkloadJwtRouterAuth",
+    "kwargs": {
+        "issuer": "https://forge.example/api/v1/tokens/workload",
+        "audience": "volundr-api",
+        "jwks_uri": "http://127.0.0.1:18080/api/v1/tokens/workload/jwks",
+    },
+}
+
+
+class TestVmLivePreview:
+    def test_off_without_a_router_auth(self, tmp_path):
+        environment = _launch_environment(_preview_runtime(tmp_path))
+
+        assert environment["SKULD__PREVIEW__ENABLED"] == "false"
+        assert "SKULD__PREVIEW__PORT_SCANNER" not in environment
+        assert "SKULD__PREVIEW__ROUTER_AUTH" not in environment
+
+    def test_on_scans_the_vm_minus_its_own_infrastructure_ports(self, tmp_path):
+        runtime = _preview_runtime(
+            tmp_path,
+            preview_router_auth=_ROUTER_AUTH,
+            ssh_port=2222,
+            guest_platform_port=18081,
+            broker_port=8099,
+        )
+
+        environment = _launch_environment(runtime)
+
+        assert environment["SKULD__PREVIEW__ENABLED"] == "true"
+        assert json.loads(environment["SKULD__PREVIEW__PORT_SCANNER"]) == {
+            "adapter": "skuld.preview_adapters.ProcNetListeningPortScanner",
+            "kwargs": {"excluded_ports": [53, 2222, 8099, 18081], "same_user_only": True},
+        }
+        assert json.loads(environment["SKULD__PREVIEW__ROUTER_AUTH"]) == _ROUTER_AUTH
+
+    def test_extra_excluded_ports_join_the_fixed_ones(self, tmp_path):
+        runtime = _preview_runtime(
+            tmp_path,
+            preview_router_auth=_ROUTER_AUTH,
+            preview_excluded_ports=[5432, "22", 8081],
+        )
+
+        scanner = json.loads(_launch_environment(runtime)["SKULD__PREVIEW__PORT_SCANNER"])
+
+        # defaults: ssh 22, resolver 53, guest platform 18080, broker 8081
+        assert scanner["kwargs"]["excluded_ports"] == [22, 53, 5432, 8081, 18080]
+
+    def test_the_rendered_adapters_are_ones_skuld_can_build(self, tmp_path):
+        from niuu.config import DynamicAdapterConfig
+        from skuld.config import PreviewConfig
+        from skuld.preview import build_preview
+
+        environment = _launch_environment(
+            _preview_runtime(tmp_path, preview_router_auth=_ROUTER_AUTH)
+        )
+        config = PreviewConfig(
+            enabled=environment["SKULD__PREVIEW__ENABLED"] == "true",
+            port_scanner=DynamicAdapterConfig(
+                **json.loads(environment["SKULD__PREVIEW__PORT_SCANNER"])
+            ),
+            router_auth=DynamicAdapterConfig(
+                **json.loads(environment["SKULD__PREVIEW__ROUTER_AUTH"])
+            ),
+        )
+
+        watcher, forwarder = build_preview(config, session_id="s", emit=AsyncMock())
+
+        assert watcher is not None and forwarder is not None
+        # The guest's root-owned services are never offered as previews.
+        assert watcher._scanner._uid is not None
+
+
+def test_start_program_can_run_only_the_pod_containers(tmp_path: Path):
+    """Another runtime (OpenShell) starts Skuld itself, next to the credential agents."""
+    calls = tmp_path / "calls"
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    docker = binary / "docker"
+    docker.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n'
+        # No container exists yet, so every sidecar is created.
+        '[ "$1 $2" = "container inspect" ] && exit 1\nexit 0\n'
+    )
+    docker.chmod(0o755)
+    container = {
+        "image": "test/skuld@sha256:" + "a" * 64,
+        "command": [],
+        "args": [],
+        "environment": {},
+        "mounts": [],
+    }
+    payload = {
+        "allocation_id": str(uuid4()),
+        "directories": [{"path": str(tmp_path / "tokens"), "mode": "0755"}],
+        "init_containers": [{**container, "name": "agent-init"}],
+        "sidecars": [{**container, "name": "agent"}],
+        "containers_only": True,
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-c", module._START],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"CALLS": str(calls), "PATH": f"{binary}:/usr/bin:/bin"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    recorded = calls.read_text()
+    assert "run --rm" in recorded
+    assert "--name niuu-sidecar-agent" in recorded
+    assert "niuu-skuld" not in recorded
+    assert (tmp_path / "tokens").is_dir()

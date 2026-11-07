@@ -100,6 +100,13 @@ Namespace of the session pods that receive their Forge credential from a Secret
 {{- end }}
 
 {{/*
+Namespace of the ServiceAccounts VM sessions run as (Forge requests their tokens there)
+*/}}
+{{- define "volundr.guestMetadataNamespace" -}}
+{{- .Values.guestMetadata.serviceAccountNamespace | default ((.Values.podManager.kwargs).namespace) | default .Release.Namespace }}
+{{- end }}
+
+{{/*
 Home PVC name
 */}}
 {{- define "volundr.homePvcName" -}}
@@ -199,6 +206,9 @@ Annotations for checksum/config - forces restart on config changes
 */}}
 {{- define "volundr.checksumAnnotations" -}}
 checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- if .Values.hostConnect.enabled }}
+checksum/host-connect: {{ include (print $.Template.BasePath "/host-connect-configmap.yaml") . | sha256sum }}
+{{- end }}
 {{- if .Values.envoy.enabled }}
 checksum/envoy: {{ include (print $.Template.BasePath "/envoy-configmap.yaml") . | sha256sum }}
 {{- if .Values.envoy.authorization.enabled }}
@@ -397,3 +407,14 @@ lifecycle:
 {{- end -}}
 {{- end -}}
 
+
+{{/*
+Live preview domain (defaults to preview.{domain}).
+*/}}
+{{- define "volundr.sessionPreview.domain" -}}
+{{- if .Values.sessionPreview.domain -}}
+  {{- .Values.sessionPreview.domain -}}
+{{- else -}}
+  {{- printf "preview.%s" (required "sessionPreview.domain or global.domain is required for live preview" (include "volundr.domain" .)) -}}
+{{- end -}}
+{{- end }}

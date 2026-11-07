@@ -1,0 +1,117 @@
+/* ── A waiting decision by the composer, folded to a strip or opened in place ── */
+
+.forge-decision-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px;
+  padding: 8px 14px;
+  border: 1px solid color-mix(in srgb, var(--status-amber) 35%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--status-amber) 9%, var(--color-bg-secondary));
+  font-size: 13px;
+}
+
+.forge-decision-strip__icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  color: var(--status-amber);
+}
+
+.forge-decision-strip__count {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--status-amber) 70%, var(--color-text-primary));
+}
+
+.forge-decision-strip__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+
+.forge-decision-strip__show {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--status-amber) 70%, var(--color-text-primary));
+  cursor: pointer;
+}
+
+.forge-decision-strip__show:hover {
+  background: color-mix(in srgb, var(--status-amber) 14%, transparent);
+}
+
+.forge-decision-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: min(60vh, 520px);
+  margin: 0 0 8px;
+  padding: 12px 14px 14px;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--status-amber) 35%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--status-amber) 6%, var(--color-bg-secondary));
+  box-shadow: var(--shadow-lg, 0 18px 40px rgb(0 0 0 / 35%));
+}
+
+.forge-decision-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.forge-decision-card__heading {
+  font-weight: 600;
+  color: color-mix(in srgb, var(--status-amber) 70%, var(--color-text-primary));
+}
+
+.forge-decision-card__waiting {
+  margin-left: auto;
+  color: var(--color-text-muted);
+}
+
+.forge-decision-card__fold {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.forge-decision-card__head > .forge-decision-card__heading + .forge-decision-card__fold {
+  margin-left: auto;
+}
+
+.forge-decision-card__fold:hover {
+  background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+  color: var(--color-text-primary);
+}
+
+.forge-decision-card__fold svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* The decision form sits in the card without a second frame around it. */
+.forge-decision-card .niuu-gate-decision {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}

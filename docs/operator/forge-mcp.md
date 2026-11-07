@@ -30,7 +30,7 @@ It is a workload JWT signed by the workload-identity issuer, with these claims:
 |---|---|
 | `sub` / `tenant_id` | The session owner and their tenant |
 | `token_use` | `forge_session` |
-| `scopes` | `forge:notify` and `forge:session:read` always, plus one scope per grant |
+| `scopes` | `forge:notify`, `forge:session:read` and `forge:session:secret` always, plus one scope per grant |
 | `workload_session_id` | The one session it is bound to (the same claim OpenShell session tokens use) |
 | `workload_launch_id` | The launch it belongs to |
 | `resource_access.*.roles` | `volundr:developer`. A session credential is never an admin, whatever its owner's roles. |
@@ -102,7 +102,7 @@ cannot be created there); set `forgeMcp.session_tokens.enabled` to override.
 
 | Grant | Adds scope | Tools |
 |---|---|---|
-| none | `forge:notify`, `forge:session:read` | `environment`, `notify`, `describe_session`, `list_notifications`, `list_sessions`, `get_session`, `session_transcript` |
+| none | `forge:notify`, `forge:session:read`, `forge:session:secret` | `environment`, `notify`, `describe_session`, `list_notifications`, `list_sessions`, `get_session`, `session_transcript` |
 | `message` | `forge:session:message` | `send_message`, `message_status` |
 | `lifecycle` | `forge:session:lifecycle` | `create_session`, `start_session`, `stop_session` (never delete or archive) |
 
@@ -183,6 +183,42 @@ effective `grants`, the offered `tools` and the credential in use
 (`forge_credential.kind`: `forge_session` or `broker`), never the token itself. Those
 are the grants actually minted into this launch's token, from all four sources. After
 an operator change they move only once the session restarts.
+
+## Secret requests (Forge REST)
+
+An agent that needs a secret (a token, a password) asks its session's **owner**; the
+value never enters the transcript, the event log, the chat WebSocket or the model's
+context. The owner types it into a masked card, which posts it straight to Forge with
+their own login. The agent claims it once and gets a file path, not the value.
+
+All routes are under `/api/v1/forge/sessions/{id}/secret-requests`:
+
+| Route | Caller | Does |
+|---|---|---|
+| `POST` | the session's token (scope `forge:session:secret`), or the owner | Open a request `{name, purpose, target?}`: 201, or 200 with the request already open for that name |
+| `GET`, `GET /{rid}` | same | List (newest first, `?status=`) or read |
+| `POST /{rid}/fulfill` | **the owner only** | `{value, keep}`; `keep` is `session` or `saved` |
+| `POST /{rid}/decline` | **the owner only** | Pending requests only |
+| `POST /{rid}/claim` | the session's token, or the owner | Returns `{name, value}` once, `Cache-Control: no-store` |
+| `POST /{rid}/cancel` | the session's token, or the owner | Withdraws a pending or fulfilled request |
+
+- **Name** is `^[A-Z_][A-Z0-9_]*$`, at most 255 characters (it becomes a file name); anything else is 422.
+- **Status** is `pending`, `fulfilled`, `delivered`, `declined` or `cancelled`. A wrong-state action is 409.
+- **Fulfil and decline refuse every scoped credential** (a session token, a build token, a scoped
+  PAT) with 403, and are not on the session-credential allow-list, so an agent can never answer
+  its own request.
+- **Where the value lives.** Only in the credential store (OpenBao on a cluster), under the owner
+  (`user`, the session's owner), as `{"value": …}` with metadata `source`, `session_id` and
+  `request_id`. The `session_secret_requests` table holds no value. `keep: session` stores it as
+  `session-secret-<request id>` and deletes it at claim, cancel or the end of the session.
+  `keep: saved` stores it as the kebab-case name (`GITLAB_TOKEN` becomes `gitlab-token`),
+  overwriting, and keeps it.
+- **Session end.** When a session stops (or is found dead), is archived or is deleted, its open
+  requests become `cancelled` and their session-only values are deleted. A deletion that fails
+  fails the stop or delete, so a lingering secret is never silent; a failed stop leaves the
+  session `failed`, which can be stopped again.
+- Values are never logged, never in an error message, and returned by no route except `claim`.
+  Malformed fulfil bodies get a 422 that does not echo the input.
 
 ## Questions from agents
 

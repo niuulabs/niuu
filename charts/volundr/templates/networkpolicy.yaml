@@ -28,6 +28,16 @@ spec:
       ports:
         - protocol: TCP
           port: {{ if .Values.envoy.enabled }}{{ .Values.envoy.port }}{{ else }}{{ .Values.service.targetPort | default 8080 }}{{ end }}
+    {{- if .Values.hostConnect.enabled }}
+    # Registered hosts behind NAT dial the connect endpoint from wherever they are.
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.hostConnect.port }}
+      {{- with .Values.hostConnect.networkPolicyFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
     {{- with .Values.networkPolicy.extraIngress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

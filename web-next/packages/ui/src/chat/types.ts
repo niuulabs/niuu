@@ -19,7 +19,8 @@ export interface ContentBlock {
 }
 
 export interface ChatMessagePart {
-  readonly type: 'text' | 'tool_use' | 'tool_result' | 'reasoning' | 'tool_separator';
+  readonly type:
+    'text' | 'tool_use' | 'tool_result' | 'reasoning' | 'tool_separator' | 'compaction';
   readonly text?: string;
   readonly id?: string;
   /** Native public text identity; phase is preserved even when a provider adds a new value. */
@@ -90,6 +91,85 @@ export interface ChatMessage {
   participant?: ParticipantMeta;
   visibility?: 'visible' | 'internal';
   threadId?: string;
+  /** Where a user message sent over the session socket is in delivery (user messages only). */
+  delivery?: UserMessageDelivery;
+}
+
+/**
+ * The broker's delivery state for a user message.
+ *
+ * `user_confirmed` with `steering_state: "pending"` means queued behind the running turn;
+ * `user_active` / `user_consumed` mean the agent took it; `user_delivered`,
+ * `user_delivery_pending` and `user_delivery_failed` report the native send.
+ */
+export type UserMessageDeliveryState = 'queued' | 'active' | 'delivered' | 'unconfirmed' | 'failed';
+
+export interface UserMessageDelivery {
+  state: UserMessageDeliveryState;
+  /** The broker's own sentence when the state is `failed` or `unconfirmed`. */
+  error?: string;
+}
+
+/** One task in the agent's plan (Claude TodoWrite, Codex `turn/plan/updated`), from the `plan` frame. */
+export interface SessionPlanTask {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed' | string;
+  /** Present-tense label for the task while it runs ("Running the tests"). */
+  activeForm?: string;
+}
+
+export interface SessionPlan {
+  tasks: SessionPlanTask[];
+  counts: { total: number; pending?: number; in_progress?: number; completed?: number };
+}
+
+/** A subagent or teammate the session started, from the `agent_update` frame. */
+export interface SessionAgent {
+  id: string;
+  kind: 'subagent' | 'teammate' | string;
+  name: string;
+  status: 'running' | 'done' | 'failed' | string;
+  description?: string;
+  model?: string;
+  startedAt?: string;
+  endedAt?: string;
+}
+
+/** Reasoning effort for the next turn, from the `effort_status` frame. */
+export interface SessionEffort {
+  current: string | null;
+  levels: string[];
+  mutable: boolean;
+  appliesTo?: string;
+}
+
+export interface SessionRuntimeModel {
+  id: string;
+  model: string;
+  name: string;
+  description?: string;
+  isDefault?: boolean;
+  hidden?: boolean;
+  effortLevels: string[];
+  defaultEffort?: string;
+}
+
+/** The session's native model catalog and current choice, from the `runtime_options` frame. */
+export interface SessionRuntimeOptions {
+  current: { model: string; effort?: string | null };
+  models: SessionRuntimeModel[];
+  appliesTo?: string;
+}
+
+/** Token use reported by the runtime (`session_usage`); `window` is the model's context size. */
+export interface SessionUsage {
+  model?: string;
+  /** Tokens in the context for the latest turn, when the runtime reports it. */
+  contextTokens?: number;
+  /** The model's context window, when the runtime reports it. */
+  window?: number;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
 }
 
 export interface AgentInternalEvent {
@@ -168,6 +248,8 @@ export interface InputRequest {
   answerable?: boolean;
   /** Why the last answer was refused (the broker's message); shown on the card. */
   error?: string;
+  /** When this client first received the question (ISO 8601); drives the "waiting" timer. */
+  receivedAt?: string;
 }
 
 /** One structured answer, in the shape Skuld's ``ask_user_answer`` accepts. */
@@ -192,6 +274,11 @@ export interface FileEntry {
 
 export interface SessionCapabilities {
   interrupt?: boolean;
+  /** Messages sent while a turn runs are steered into it (or queued) by the broker. */
+  steer?: boolean;
+  steering_mode?: 'none' | 'live' | 'native' | string;
+  set_effort?: boolean;
+  runtime_options?: boolean;
   set_model?: boolean;
   set_thinking_tokens?: boolean;
   rewind_files?: boolean;

@@ -4,6 +4,12 @@
   gap: var(--space-1);
 }
 
+/* A speaker's run is one header (initial and name, as Lexi heads an agent's reply) and its
+   messages under it, indented to the name. */
+.niuu-chat-room-message[data-speaker] > :not(.niuu-chat-room-label) {
+  padding-left: 30px;
+}
+
 .niuu-chat-room-label {
   display: flex;
   align-items: center;
@@ -13,63 +19,50 @@
 .niuu-chat-room-persona-btn {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: 2px var(--space-2);
-  background: none;
-  border: none;
-  cursor: pointer;
-  border-radius: var(--radius-full);
-  transition: background-color var(--transition-fast);
-}
-
-.niuu-chat-room-persona-btn:hover {
-  background: color-mix(in srgb, var(--niuu-persona-color, var(--color-brand)) 10%, transparent);
-}
-
-.niuu-chat-room-persona-btn--selected {
-  background: color-mix(in srgb, var(--niuu-persona-color, var(--color-brand)) 15%, transparent);
-}
-
-.niuu-chat-room-persona-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-full);
-  background: var(--niuu-persona-color, var(--color-brand));
-  flex-shrink: 0;
-}
-
-.niuu-chat-room-persona-name {
-  font-size: var(--text-xs);
-  font-family: var(--font-mono);
-  font-weight: 500;
-  color: var(--niuu-persona-color, var(--color-text-secondary));
-}
-
-.niuu-chat-room-detail-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
   padding: 0;
   background: none;
   border: none;
-  color: var(--color-text-muted);
   cursor: pointer;
   border-radius: var(--radius-sm);
-  transition: color var(--transition-fast);
 }
 
-.niuu-chat-room-detail-btn:hover {
-  color: var(--color-text-secondary);
+.niuu-chat-room-persona-btn:hover .niuu-chat-room-persona-name {
+  text-decoration: underline;
 }
 
-.niuu-chat-room-detail-icon {
-  width: 12px;
-  height: 12px;
+.niuu-chat-room-persona-btn:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+.niuu-chat-room-avatar {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-full);
+  background: color-mix(
+    in srgb,
+    var(--niuu-persona-color, var(--color-brand)) 30%,
+    var(--color-bg-tertiary)
+  );
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.niuu-chat-room-persona-name {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--niuu-persona-color, var(--color-text-secondary));
 }
 
 /* Participant dots retain identity colors; names need contrast on Light surfaces. */
 [data-theme='light'] .niuu-chat-room-persona-name {
   color: var(--color-text-primary);
+}
+
+.niuu-chat-room-avatar::before {
+  content: attr(data-initial);
 }

@@ -2160,8 +2160,8 @@ wheels = [
 
 [[package]]
 name = "openshell"
-version = "0.1.6rc6.dev12+g03d0f94d4"
-source = { url = "https://github.com/jve/OpenShell/releases/download/niuu-sdk-03d0f94d4/openshell-0.1.6rc6.dev12%2Bg03d0f94d4-py3-none-any.whl" }
+version = "0.1.8.dev40+ge9825820d"
+source = { url = "https://github.com/jve/OpenShell/releases/download/niuu-sdk-e9825820d/openshell-0.1.8.dev40%2Bge9825820d-py3-none-any.whl" }
 dependencies = [
     { name = "cloudpickle" },
     { name = "googleapis-common-protos" },
@@ -2170,7 +2170,7 @@ dependencies = [
     { name = "protobuf" },
 ]
 wheels = [
-    { url = "https://github.com/jve/OpenShell/releases/download/niuu-sdk-03d0f94d4/openshell-0.1.6rc6.dev12%2Bg03d0f94d4-py3-none-any.whl", hash = "sha256:09d8439f2cea37b65773db013449b827f81973ab00ae4442c89a42c9cc6ec146" },
+    { url = "https://github.com/jve/OpenShell/releases/download/niuu-sdk-e9825820d/openshell-0.1.8.dev40%2Bge9825820d-py3-none-any.whl", hash = "sha256:434731a0f8988615c6dc14f5e1ec9d533d503f983ee27dd1a36fe0e5528412ec" },
 ]
 
 [package.metadata]
@@ -2653,11 +2653,11 @@ wheels = [
 
 [[package]]
 name = "pyasn1"
-version = "0.6.4"
+version = "0.6.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a4/9a/23310166d960def5897e91fe20e5b724601b02a22e84ba1f94232c0b7f67/pyasn1-0.6.4.tar.gz", hash = "sha256:9c447d8431c947fe4c8febc4ed9e760bc29011a5b01e5c74b67025bd9fb8ce81", size = 151262, upload-time = "2026-07-09T01:12:33.988Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/88/7e/3c0da41061a2021cac7cd524fd57092adbe5b515e8bf9005702e366802e2/pyasn1-0.6.5.tar.gz", hash = "sha256:6b11616a6bcf3a40e635f082bb232fa57b5e0dd7f517bd7ddd69ec3794508a47", size = 155152, upload-time = "2026-10-27T06:32:49.125Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9a/3b/6163796d69c3977d1e4287bea4a6979161cbbdd170ebb430511e8e1999ce/pyasn1-0.6.4-py3-none-any.whl", hash = "sha256:deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b", size = 84410, upload-time = "2026-07-09T01:12:32.92Z" },
+    { url = "https://files.pythonhosted.org/packages/19/1f/3eefd5c84c35cae44549ce1c7f7e58f7945b34f5a6bce07a135438522073/pyasn1-0.6.5-py3-none-any.whl", hash = "sha256:4017b0fce125096b8573b39c989fdb1a4b19cf761e683398184550fea0e66587", size = 84807, upload-time = "2026-10-27T06:32:48.045Z" },
 ]
 
 [[package]]
@@ -4060,7 +4060,7 @@ requires-dist = [
     { name = "nats-py", extras = ["nkeys"], marker = "extra == 'nats'", specifier = ">=2.15.0" },
     { name = "nemo-switchyard", marker = "extra == 'switchyard'", git = "https://github.com/NVIDIA-NeMo/Switchyard.git?rev=578e1b7cbd9db9577c4a9f14b0218ebc543b2049" },
     { name = "nuitka", extras = ["onefile"], marker = "extra == 'cli'", specifier = ">=4.2.1" },
-    { name = "openshell", marker = "python_full_version >= '3.12' and extra == 'openshell'", url = "https://github.com/jve/OpenShell/releases/download/niuu-sdk-03d0f94d4/openshell-0.1.6rc6.dev12%2Bg03d0f94d4-py3-none-any.whl" },
+    { name = "openshell", marker = "python_full_version >= '3.12' and extra == 'openshell'", url = "https://github.com/jve/OpenShell/releases/download/niuu-sdk-e9825820d/openshell-0.1.8.dev40%2Bge9825820d-py3-none-any.whl" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.44.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otel'", specifier = ">=1.44.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.44.0" },

@@ -289,6 +289,10 @@ class InMemoryEventBroadcaster(EventBroadcaster):
                 "last_work_at": _iso(session.last_work_at),
                 "tool_open": session.tool_open,
                 "open_controls": session.open_controls,
+                # The latest launch's stages, as its runtime backend reported them.
+                "startup": (
+                    session.startup.model_dump(mode="json") if session.startup is not None else None
+                ),
             },
             timestamp=datetime.now(UTC),
         )

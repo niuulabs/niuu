@@ -687,6 +687,75 @@ class WorkloadIdentityConfig(BaseModel):
         return value
 
 
+class PreviewConfig(BaseModel):
+    """Live preview: serve the session's own listening ports to its owner.
+
+    Skuld watches which TCP ports the session listens on, reports changes to the
+    browser, and forwards Forge's preview router to them on loopback (see
+    ``skuld.preview``). Both adapters are required when enabled.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Discover the session's listening ports and serve them as live previews.",
+    )
+    port_scan_interval_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Seconds between scans of the session's listening sockets: how soon a "
+            "dev server that starts or stops shows up in the browser."
+        ),
+    )
+    port_scanner: DynamicAdapterConfig | None = Field(
+        default=None,
+        description=(
+            "skuld.preview_port.ListeningPortScanner adapter, e.g. "
+            "skuld.preview_adapters.ProcNetListeningPortScanner (a pod or VM: the whole "
+            "network namespace, minus excluded_ports) or "
+            "skuld.preview_adapters.LsofSessionPortScanner (a shared host: only "
+            "the session's own processes)."
+        ),
+    )
+    router_auth: DynamicAdapterConfig | None = Field(
+        default=None,
+        description=(
+            "skuld.preview_port.PreviewRouterAuth adapter that admits Forge's preview "
+            "router: skuld.preview_adapters.WorkloadJwtRouterAuth, or "
+            "skuld.preview_adapters.NoRouterAuth only on a host with no identity provider."
+        ),
+    )
+    connect_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Seconds to wait for a session port to accept a connection. Responses and "
+            "WebSockets stream unbounded, for as long as the browser holds them."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _adapters_when_enabled(self) -> "PreviewConfig":
+        if not self.enabled:
+            return self
+        missing = [
+            name
+            for name, adapter in (
+                ("port_scanner", self.port_scanner),
+                ("router_auth", self.router_auth),
+            )
+            if adapter is None or not adapter.adapter
+        ]
+        if missing:
+            raise ValueError(
+                f"preview.enabled is true but preview.{' and preview.'.join(missing)} "
+                "is not set: configure the adapter, or set preview.enabled to false"
+            )
+        return self
+
+
 class ForgeMcpConfig(BaseModel):
     """The built-in ``forge`` MCP server Skuld injects into every MCP-capable engine.
 
@@ -830,6 +899,30 @@ class ForgeMcpConfig(BaseModel):
             raise ValueError(f"forge_mcp.token_file {str(path)!r} is empty")
         self.token = token
         return self
+
+
+class SecretRequestsConfig(BaseModel):
+    """How the ``request_secret`` tool waits for the user to type a secret into the chat card."""
+
+    poll_interval_s: float = Field(
+        default=2.0,
+        gt=0,
+        description=(
+            "How often request_secret asks Forge whether the user answered the card. It "
+            "trades answer latency against Forge load; there is no event to wait on."
+        ),
+    )
+    wait_max_s: float = Field(
+        default=50.0,
+        gt=0,
+        description=(
+            "Longest one request_secret call waits for the user. Bounded by the engine's MCP "
+            "call timeouts: it must be shorter than forge_mcp.broker_request_timeout_s and "
+            "forge_mcp.tool_timeout_s, or the engine kills the call first (startup fails "
+            "otherwise). When it passes the call fails loudly and the request stays open in "
+            "the chat; the agent calls request_secret again with the same name to keep waiting."
+        ),
+    )
 
 
 class CodexAuthConfig(BaseModel):
@@ -1280,6 +1373,8 @@ class SkuldSettings(BaseSettings):
     acp_prompt_timeout_s: float = Field(default=300.0)  # ACP/MSP (Grok Build, Muse) turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
+    preview: PreviewConfig = Field(default_factory=PreviewConfig)
+    secret_requests: SecretRequestsConfig = Field(default_factory=SecretRequestsConfig)
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
     observability: SkuldObservabilityConfig = Field(default_factory=SkuldObservabilityConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
@@ -1349,6 +1444,24 @@ class SkuldSettings(BaseSettings):
                 "its flock through the room's mesh route via the forge MCP flock tools. "
                 "Enable them, or unset mesh.flock_broker"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _secret_wait_fits_engine_call(self) -> "SkuldSettings":
+        """A wait the engine cuts off mid-call would read as a failure, not as "still open"."""
+        if not self.forge_mcp.enabled:
+            return self
+        wait = self.secret_requests.wait_max_s
+        for knob, bound in (
+            ("forge_mcp.broker_request_timeout_s", self.forge_mcp.broker_request_timeout_s),
+            ("forge_mcp.tool_timeout_s", self.forge_mcp.tool_timeout_s),
+        ):
+            if wait >= bound:
+                raise ValueError(
+                    f"secret_requests.wait_max_s ({wait}) must be shorter than {knob} ({bound}), "
+                    "or the engine ends every long request_secret call before it can answer. "
+                    f"Lower secret_requests.wait_max_s or raise {knob}"
+                )
         return self
 
     @property

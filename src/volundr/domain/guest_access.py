@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import BinaryIO
 
 from niuu.ports.session_proxy import SessionProxyTarget
-from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.compute import AllocationRef, MachineBootstrap
 
 
 @dataclass(frozen=True)
@@ -39,13 +39,13 @@ class GuestAccess(ABC):
         """Add only the minimum identity material needed for guest access."""
 
     @abstractmethod
-    async def ensure(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def ensure(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
         """Wait for access and prove that the allocation's pinned identity is reusable."""
 
     @abstractmethod
     async def execute(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         command: str,
         *,
@@ -63,7 +63,7 @@ class GuestAccess(ABC):
     @abstractmethod
     async def open_tunnel(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         *,
         remote_port: int,
@@ -71,12 +71,19 @@ class GuestAccess(ABC):
         reverse_port: int,
         controller_host: str,
         controller_port: int,
+        remote_host: str = "127.0.0.1",
+        key: str | None = None,
     ) -> SessionProxyTarget:
-        """Open or reuse the allocation-scoped runtime and callback tunnel."""
+        """Open or reuse the runtime and callback tunnel kept under ``key``.
+
+        ``key`` defaults to the allocation; a VM serving several sessions keys
+        each slot's tunnel apart. ``remote_host`` is where the guest end of the
+        forward connects, its loopback unless the runtime listens elsewhere.
+        """
 
     @abstractmethod
     async def close_tunnel(self, lease_id: str) -> None:
-        """Close one allocation's tunnel."""
+        """Close the tunnel kept under ``lease_id`` (an allocation or slot key)."""
 
     @abstractmethod
     async def close(self) -> None:

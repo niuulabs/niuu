@@ -1,12 +1,10 @@
 import {
   useCallback,
-  useId,
   useMemo,
   useState,
   useRef,
   useEffect,
   useLayoutEffect,
-  type FormEvent,
   type ReactNode,
 } from 'react';
 import {
@@ -21,11 +19,19 @@ import {
   ChevronRight,
   ChevronDown,
   Loader2,
+  BadgeCheck,
 } from 'lucide-react';
 import { LoadingState } from '../../../data/states/LoadingState';
 import { ErrorState } from '../../../data/states/ErrorState';
 import { cn } from '../../../utils/cn';
 import { hideToolParts, useRoomState } from '../../hooks/useRoomState';
+import {
+  roomWorkers,
+  workerOutcomes,
+  workerStages,
+  type Worker,
+  type WorkerOutcome,
+} from '../../workers';
 import {
   UserMessage,
   AssistantMessage,
@@ -33,17 +39,24 @@ import {
   SystemMessage,
   hasNativeMessageParts,
   messageRenderKey,
+  messageModel,
+  ModelSpeaker,
 } from '../ChatMessages';
 import { RoomMessage } from '../RoomMessage';
 import { ThreadGroup } from '../ThreadGroup';
-import { MeshCascadePanel } from '../MeshCascadePanel';
-import { MeshSidebar } from '../MeshSidebar';
-import { AgentDetailPanel } from '../AgentDetailPanel';
+import { WorkersStrip } from '../WorkersStrip';
+import { useSessionLinks, type SessionLink } from '../../sessionLinks';
+import { ProgressLane } from '../ProgressLane';
+import { WorkerSheet } from '../WorkerSheet';
+import { HandoffRow, handoffParties } from '../HandoffRow';
+import { AttentionRow } from '../AttentionRow';
+import { isCoordinator } from '../RoomMessage/speaker';
 import { ChatInput } from '../ChatInput';
+import { PlanDock } from '../PlanDock';
+import { QuestionBand } from '../QuestionBand';
 import { SessionEmptyChat } from '../ChatEmptyStates';
-import { MarkdownContent } from '../MarkdownContent';
-import { extractOutcomeBlock } from '../OutcomeCard';
-import { Dialog, DialogContent } from '../../../primitives/Dialog';
+import { WorkerOutcomeCard } from '../OutcomeCard';
+import { resolveParticipantColor } from '../../utils/participantColor';
 import type {
   AgentInternalEvent,
   AgentEventTarget,
@@ -53,10 +66,16 @@ import type {
   InputRequest,
   RoomParticipant,
   MeshEvent,
+  MeshDelegationEvent,
+  MeshNotificationEvent,
   PermissionRequest,
   PermissionBehavior,
   FileEntry,
+  SessionAgent,
   SessionCapabilities,
+  SessionEffort,
+  SessionPlan,
+  SessionRuntimeOptions,
 } from '../../types';
 import type { FileAttachment } from '../../hooks/useFileAttachments';
 import type { SlashCommand } from '../../utils/slashCommands';
@@ -75,69 +94,6 @@ const THINKING_PRESETS = [
   { label: '16K', value: 16384 },
   { label: '32K', value: 32768 },
 ] as const;
-
-function stringifyOutcomeValue(value: unknown): string {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function pushOutcomeField(lines: string[], key: string, value: unknown): void {
-  const text = stringifyOutcomeValue(value);
-  if (!text) return;
-  if (text.includes('\n')) {
-    lines.push(`${key}: |`);
-    for (const line of text.split('\n')) {
-      lines.push(`  ${line}`);
-    }
-    return;
-  }
-  lines.push(`${key}: ${text}`);
-}
-
-function formatOutcomeMarkdown(event: Extract<MeshEvent, { type: 'outcome' }>): string {
-  const fields = event.fields ?? {};
-  const lines: string[] = [];
-  pushOutcomeField(lines, 'verdict', event.verdict ?? fields.verdict);
-  pushOutcomeField(lines, 'summary', event.summary ?? fields.summary);
-
-  for (const [key, value] of Object.entries(fields)) {
-    if (key === 'verdict' || key === 'summary' || key === 'success') continue;
-    pushOutcomeField(lines, key, value);
-  }
-
-  if (lines.length === 0) {
-    pushOutcomeField(lines, 'event_type', event.eventType);
-  }
-
-  return `### ${event.persona}\n\n\`\`\`outcome\n${lines.join('\n')}\n\`\`\``;
-}
-
-function isOutcomeMessageContent(content: string): boolean {
-  return (
-    content.includes('```outcome') ||
-    content.includes('---outcome---') ||
-    content.includes('<outcome>')
-  );
-}
-
-function formatOutcomeDialogContent(
-  messageContent: string | undefined,
-  event: Extract<MeshEvent, { type: 'outcome' }>,
-): string {
-  if (messageContent) {
-    const extracted = extractOutcomeBlock(messageContent);
-    if (extracted) {
-      return `\`\`\`outcome\n${extracted.raw}\n\`\`\``;
-    }
-  }
-  return formatOutcomeMarkdown(event);
-}
 
 function DefaultPermissionRequests({
   permissions,
@@ -184,160 +140,6 @@ function DefaultPermissionRequests({
   );
 }
 
-function InputRequestForm({
-  request,
-  onRespond,
-  onDismiss,
-}: {
-  request: InputRequest;
-  onRespond: (requestId: string, values: (string | InputAnswer)[]) => void;
-  onDismiss?: (requestId: string) => void;
-}) {
-  const formId = useId();
-  const [selected, setSelected] = useState<number[][]>(() => request.questions.map(() => []));
-  const [text, setText] = useState(() => request.questions.map(() => ''));
-  if (request.answerable === false) {
-    return (
-      <section className="niuu-chat-request" data-answerable="false">
-        <div className="niuu-chat-request-copy">
-          <strong className="niuu-chat-request-title">Answer in the session terminal</strong>
-          {request.questions.map((question, index) => (
-            <p className="niuu-chat-request-prompt" key={`${request.requestId}-${index}`}>
-              {question.prompt}
-              {question.choices.length > 0 && ` (${question.choices.join(' / ')})`}
-            </p>
-          ))}
-          {request.error && (
-            <p role="alert" className="niuu-chat-request-error">
-              {request.error}
-            </p>
-          )}
-          <p className="niuu-chat-request-prompt">
-            This question can&apos;t be answered from here. Answer it in the session&apos;s
-            terminal; the card closes when Claude continues.
-          </p>
-        </div>
-        {onDismiss && (
-          <button
-            type="button"
-            className="niuu-chat-request-button"
-            onClick={() => onDismiss(request.requestId)}
-          >
-            Dismiss
-          </button>
-        )}
-      </section>
-    );
-  }
-  // One structured answer per question: the chosen labels (several for a multi-select
-  // question) plus any typed text, in the shape Skuld's ask_user_answer accepts.
-  const answers: InputAnswer[] = request.questions.map((question, index) => {
-    const indexes = selected[index] ?? [];
-    const custom = (text[index] ?? '').trim();
-    const values = indexes.map((i) => question.choices[i]!).concat(custom ? [custom] : []);
-    return {
-      question: question.prompt,
-      ...(question.id ? { question_id: question.id } : {}),
-      ...(question.header ? { header: question.header } : {}),
-      answer: question.multiSelect ? values : (values[0] ?? ''),
-      option_indexes: indexes,
-      ...(custom ? { free_text: custom } : {}),
-    };
-  });
-  const complete = answers.every((answer) => answer.answer.length > 0);
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!complete) return;
-    onRespond(request.requestId, answers);
-  };
-
-  return (
-    <section className="niuu-chat-request">
-      <form className="niuu-chat-request-copy" onSubmit={submit}>
-        <strong className="niuu-chat-request-title">Input required</strong>
-        {request.questions.map((question, index) => {
-          const inputId = `input-request-${request.requestId}-${index}`;
-          return (
-            <div className="niuu-chat-request-question" key={inputId}>
-              <label className="niuu-chat-request-prompt" htmlFor={inputId}>
-                {question.prompt}
-              </label>
-              {question.multiSelect && (
-                <small className="niuu-chat-request-hint">Select all that apply.</small>
-              )}
-              {question.choices.length > 0 && (
-                <div className="niuu-chat-request-choices" aria-label="Suggested responses">
-                  {question.choices.map((choice, choiceIndex) => {
-                    const description = question.descriptions?.[choiceIndex];
-                    const descriptionId = `${formId}-${index}-${choiceIndex}`;
-                    return (
-                      <button
-                        type="button"
-                        className="niuu-chat-request-button niuu-chat-request-choice"
-                        aria-label={choice}
-                        aria-describedby={description ? descriptionId : undefined}
-                        aria-pressed={(selected[index] ?? []).includes(choiceIndex)}
-                        key={choiceIndex}
-                        onClick={() => {
-                          setSelected((current) =>
-                            current.map((value, i) =>
-                              i !== index
-                                ? value
-                                : question.multiSelect
-                                  ? value.includes(choiceIndex)
-                                    ? value.filter((v) => v !== choiceIndex)
-                                    : [...value, choiceIndex]
-                                  : [choiceIndex],
-                            ),
-                          );
-                          if (!question.multiSelect) {
-                            setText((current) =>
-                              current.map((value, i) => (i === index ? '' : value)),
-                            );
-                          }
-                        }}
-                      >
-                        <span>{choice}</span>
-                        {description && <small id={descriptionId}>{description}</small>}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-              <input
-                id={inputId}
-                className="niuu-chat-request-input"
-                value={text[index] ?? ''}
-                onChange={(event) => {
-                  setText((current) =>
-                    current.map((value, i) => (i === index ? event.target.value : value)),
-                  );
-                  if (!question.multiSelect) {
-                    setSelected((current) => current.map((value, i) => (i === index ? [] : value)));
-                  }
-                }}
-                placeholder={question.choices.length ? 'Or type another answer' : 'Type a response'}
-              />
-            </div>
-          );
-        })}
-        {request.error && (
-          <p role="alert" className="niuu-chat-request-error">
-            {request.error}
-          </p>
-        )}
-        <button
-          type="submit"
-          className="niuu-chat-request-button niuu-chat-request-button--primary"
-          disabled={!complete}
-        >
-          Submit
-        </button>
-      </form>
-    </section>
-  );
-}
-
 export interface SessionChatProps {
   /** All completed messages */
   messages: readonly ChatMessage[];
@@ -359,6 +161,31 @@ export interface SessionChatProps {
   onLoadOlderHistory?: () => Promise<void>;
   /** Room participants map (peerId → meta) */
   participants?: ReadonlyMap<string, RoomParticipant>;
+  /**
+   * Ids of the worker sessions this session coordinates. They join the room's agents in the
+   * Workers strip, resolved through the page's session links.
+   */
+  workerSessionIds?: readonly string[];
+  /**
+   * What the host keeps by the composer, above it: a decision the session waits on, as Lexi
+   * keeps its questions where the person answers.
+   */
+  aboveComposer?: ReactNode;
+  /**
+   * Draw the workers strip and progress lane over the conversation. A host that lists the
+   * workers itself (a session list with the workers under their coordinator) leaves them out,
+   * so the chat starts with the conversation, as Lexi's does.
+   */
+  showWorkersStrip?: boolean;
+  /**
+   * The room worker shown on its own, in place of the coordinator's view of everyone. Given
+   * with `onFocusWorker`, the host owns it (a session list that selects workers); without
+   * them the chat keeps it itself.
+   */
+  focusedWorkerId?: string | null;
+  onFocusWorker?: (peerId: string | null) => void;
+  /** The room's workers whenever who they are or what they are doing changes. */
+  onWorkersChange?: (workers: readonly Worker[]) => void;
   /** Mesh events for the cascade panel */
   meshEvents?: readonly MeshEvent[];
   /** Per-agent internal event frames */
@@ -371,6 +198,16 @@ export interface SessionChatProps {
   availableCommands?: readonly SlashCommand[];
   /** Which server-side capabilities are active */
   capabilities?: SessionCapabilities;
+  /** The agent's plan; shown as a capsule above the composer when it has tasks. */
+  plan?: SessionPlan | null;
+  /** Subagents and teammates; the running ones are counted on the plan capsule. */
+  agents?: readonly SessionAgent[];
+  /** Reasoning effort choices for the composer's effort chip. */
+  effort?: SessionEffort | null;
+  /** Model catalog and current choice for the composer's model chip. */
+  runtimeOptions?: SessionRuntimeOptions | null;
+  /** The agent is mid-turn: the composer shows Stop and, when supported, queues messages. */
+  working?: boolean;
   /** Pod hostname for file listing */
   sessionHost?: string | null;
   /** Full chat endpoint URL */
@@ -416,10 +253,19 @@ export interface SessionChatProps {
    */
   onSetInternalVisibility?: (visible: boolean) => void;
   onSetModel?: (model: string) => void;
+  onSetEffort?: (effort: string) => void;
+  /** Change the model from the composer chip (a runtime-options model id). */
+  onSetRuntimeModel?: (model: string) => void;
+  /** Why the runtime refused to list its models (shown on the composer's model chip). */
+  runtimeOptionsError?: string | null;
+  /** Why the runtime refused to report its effort levels (shown on the effort chip). */
+  effortError?: string | null;
   onSetThinkingTokens?: (tokens: number) => void;
   onRewindFiles?: () => void;
   onCopy?: (text: string) => void;
   onRegenerate?: (messageId: string) => void;
+  /** Offer "Forward…" on assistant messages; absent means no button. */
+  onForwardMessage?: (message: ChatMessage) => void;
   onBookmark?: (messageId: string, bookmarked: boolean) => void;
   onPermissionRespond?: (requestId: string, behavior: PermissionBehavior) => void;
   onInputRespond?: (requestId: string, values: (string | InputAnswer)[]) => void;
@@ -435,10 +281,45 @@ export interface SessionChatProps {
   ) => ReactNode;
 }
 
-type SelectedOutcomeDetail = {
-  event: Extract<MeshEvent, { type: 'outcome' }>;
-  content: string;
-};
+type InlineItem =
+  | { kind: 'handoff'; key: string; at: Date; event: MeshDelegationEvent }
+  | { kind: 'attention'; key: string; at: Date; event: MeshNotificationEvent }
+  | { kind: 'outcome'; key: string; at: Date; outcome: WorkerOutcome };
+
+const COORDINATOR_KEY = 'coordinator';
+
+/** Who a message speaks as, for sharing a header; null for messages that have no speaker. */
+function speakerKey(message: ChatMessage): string | null {
+  if (message.metadata?.messageType === 'system') return null;
+  if (message.participant) {
+    return isCoordinator(message.participant) ? COORDINATOR_KEY : message.participant.peerId;
+  }
+  return message.role === 'assistant' ? COORDINATOR_KEY : null;
+}
+
+/** When a group of messages began. */
+function groupStartedAt(
+  group:
+    | { type: 'single'; message: ChatMessage }
+    | { type: 'thread'; messages: readonly ChatMessage[] }
+    | {
+        type: 'compact';
+        turn: { intermediaries: readonly ChatMessage[]; final: ChatMessage | null };
+      },
+): number {
+  if (group.type === 'single') return group.message.createdAt.getTime();
+  if (group.type === 'thread') return group.messages[0]!.createdAt.getTime();
+  return (group.turn.intermediaries[0] ?? group.turn.final)!.createdAt.getTime();
+}
+
+/** "54s", "2m 5s", "1h 12m": how long a turn worked, as Lexi writes it. */
+function workedDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return seconds % 60 ? `${minutes}m ${seconds % 60}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
+}
 
 export function SessionChat({
   messages,
@@ -454,12 +335,23 @@ export function SessionChat({
   olderHistoryError,
   onLoadOlderHistory,
   participants = new Map(),
+  workerSessionIds,
+  showWorkersStrip = true,
+  aboveComposer,
+  focusedWorkerId,
+  onFocusWorker,
+  onWorkersChange,
   meshEvents = [],
   agentEvents = new Map(),
   pendingPermissions = [],
   pendingInputRequests = [],
   availableCommands,
   capabilities = {},
+  plan = null,
+  agents,
+  effort = null,
+  runtimeOptions = null,
+  working = false,
   sessionHost = null,
   chatEndpoint = null,
   historyEndpoint = null,
@@ -478,10 +370,15 @@ export function SessionChat({
   onClear,
   onSetInternalVisibility,
   onSetModel,
+  onSetEffort,
+  onSetRuntimeModel,
+  runtimeOptionsError,
+  effortError,
   onSetThinkingTokens,
   onRewindFiles,
   onCopy,
   onRegenerate,
+  onForwardMessage,
   onBookmark,
   onPermissionRespond,
   onInputRespond,
@@ -492,8 +389,6 @@ export function SessionChat({
 }: SessionChatProps) {
   const {
     isRoomMode,
-    activeFilter,
-    setActiveFilter,
     showInternal,
     setShowInternal,
     toggleInternal: toggleInternalLocal,
@@ -520,11 +415,6 @@ export function SessionChat({
   const [showThinkingMenu, setShowThinkingMenu] = useState(false);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [newMessageCount, setNewMessageCount] = useState(0);
-  const [selectedOutcomeDetail, setSelectedOutcomeDetail] = useState<SelectedOutcomeDetail | null>(
-    null,
-  );
-  const [peerSidebarCollapsed, setPeerSidebarCollapsed] = useState(false);
-  const [cascadePanelCollapsed, setCascadePanelCollapsed] = useState(false);
   const conversationView = useConversationView();
   const [expandedTurns, setExpandedTurns] = useState<ReadonlySet<string>>(new Set());
 
@@ -586,61 +476,50 @@ export function SessionChat({
     (participant) => participant.participantType && participant.participantType !== 'skuld',
   );
 
-  const selectedAgentId: string | null = activeFilter !== 'all' ? activeFilter : null;
-  const [detailPeerId, setDetailPeerId] = useState<string | null>(null);
-  const effectiveRightPanelMode = detailPeerId
-    ? 'detail'
-    : meshEvents.length > 0
-      ? 'cascade'
-      : null;
-
-  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
-  const findClosestParticipantMessage = useCallback(
-    (event: MeshEvent, outcomeOnly = false) => {
-      const targetTime = event.timestamp.getTime();
-      const participantMsgs = messages.filter(
-        (message) =>
-          message.participant?.peerId === event.participantId && message.role === 'assistant',
-      );
-      const scopedMessages =
-        outcomeOnly || event.type === 'outcome'
-          ? participantMsgs.filter((message) => isOutcomeMessageContent(message.content))
-          : participantMsgs;
-      const candidateMessages = scopedMessages.length > 0 ? scopedMessages : participantMsgs;
-      if (candidateMessages.length === 0) return null;
-      return candidateMessages.reduce((best, message) => {
-        const dt = Math.abs(message.createdAt.getTime() - targetTime);
-        const bestDt = Math.abs(best.createdAt.getTime() - targetTime);
-        return dt < bestDt ? message : best;
-      });
-    },
-    [messages],
+  // The coordinator's workers: the room's agents, their outcomes and the order of their flow.
+  const workers = useMemo(
+    () => roomWorkers(participantsMap, meshEvents, messages),
+    [participantsMap, meshEvents, messages],
   );
-
-  const handleOutcomeClick = useCallback(
-    (event: MeshEvent) => {
-      const closest = findClosestParticipantMessage(event);
-      if (!closest) return;
-      const el = document.getElementById(`msg-${closest.id}`);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        setHighlightedMsgId(closest.id);
-        setTimeout(() => setHighlightedMsgId(null), 2000);
-      }
-    },
-    [findClosestParticipantMessage],
+  const stages = useMemo(() => workerStages(workers), [workers]);
+  const hasWorkers = workers.length > 0;
+  const sessionLinks = useSessionLinks();
+  const workerSessions = useMemo(
+    () =>
+      (workerSessionIds ?? []).flatMap((id): SessionLink[] => {
+        const link = sessionLinks?.resolve(id);
+        return link ? [link] : [];
+      }),
+    [sessionLinks, workerSessionIds],
   );
+  const roomView = isRoomMode || isRoomSession || hasWorkers;
+  const [ownFocus, setOwnFocus] = useState<string | null>(null);
+  const focusControlled = focusedWorkerId !== undefined && onFocusWorker !== undefined;
+  const sheetPeerId = focusControlled ? focusedWorkerId : ownFocus;
+  const focusWorker = focusControlled ? onFocusWorker : setOwnFocus;
+  const sheetWorker = workers.find((worker) => worker.peerId === sheetPeerId);
+  const sheetParticipant = sheetPeerId ? participantsMap.get(sheetPeerId) : undefined;
+  const workerIds = useMemo(() => new Set(workers.map((worker) => worker.peerId)), [workers]);
 
-  const handleOutcomeShowDetails = useCallback(
-    (event: Extract<MeshEvent, { type: 'outcome' }>) => {
-      const closest = findClosestParticipantMessage(event, true);
-      setSelectedOutcomeDetail({
-        event,
-        content: formatOutcomeDialogContent(closest?.content, event),
-      });
-    },
-    [findClosestParticipantMessage],
+  const openWorker = useCallback(
+    (peerId: string) => focusWorker(sheetPeerId === peerId ? null : peerId),
+    [focusWorker, sheetPeerId],
   );
+  const closeWorker = useCallback(() => focusWorker(null), [focusWorker]);
+
+  // Tell the host who the workers are only when that changes, not on every message.
+  const workersKey = workers
+    .map(
+      (worker) =>
+        `${worker.peerId}:${worker.name}:${worker.status}:${worker.latest?.verdict ?? ''}`,
+    )
+    .join('|');
+  const reportedWorkersKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!onWorkersChange || reportedWorkersKey.current === workersKey) return;
+    reportedWorkersKey.current = workersKey;
+    onWorkersChange(workers);
+  }, [workers, workersKey, onWorkersChange]);
 
   const hasConversation = useMemo(
     () =>
@@ -751,6 +630,9 @@ export function SessionChat({
     return groups;
   }, [renderedGroups]);
 
+  type RoomGroup = (typeof compactRoomGroups)[number];
+  type TimelineEntry = { kind: 'group'; group: RoomGroup } | { kind: 'inline'; item: InlineItem };
+
   const compactTurns = useMemo((): CompactTurn[] => {
     const turns: CompactTurn[] = [];
     // Messages before the first user message (e.g. a resumed session opening
@@ -813,6 +695,117 @@ export function SessionChat({
   }, [visibleMessages]);
 
   const useCompact = conversationView === 'compact';
+
+  // Every tool call the transcript holds, by message, for the folded turns' "N tools".
+  const messageOrder = useMemo(
+    () => new Map(messages.map((message, index) => [message.id, index])),
+    [messages],
+  );
+  const toolUses = (message: ChatMessage | undefined): number =>
+    message?.parts?.filter((part) => part.type === 'tool_use').length ?? 0;
+  const turnToolCount = (turn: (typeof compactTurns)[number]): number => {
+    const own = [...turn.intermediaries, ...(turn.final ? [turn.final] : [])];
+    // A question bounds its turn: everything up to the answer is that turn's work, tool-only
+    // messages included. A room fold has no question; it counts its speaker's own messages.
+    if (!turn.user) {
+      return own.reduce((count, message) => {
+        const index = messageOrder.get(message.id);
+        return count + toolUses(index === undefined ? message : messages[index]);
+      }, 0);
+    }
+    const from = (messageOrder.get(turn.user.id) ?? -1) + 1;
+    const last = own.at(-1);
+    const to = last ? (messageOrder.get(last.id) ?? messages.length - 1) : messages.length - 1;
+    return messages.slice(from, to + 1).reduce((count, message) => count + toolUses(message), 0);
+  };
+
+  // What the workers did that no transcript message carries: handoffs between them, outcomes
+  // that arrived only as live events, and their calls for attention. Each stands in the
+  // conversation where it happened.
+  const inlineItems = useMemo((): InlineItem[] => {
+    if (!hasWorkers) return [];
+    const handoffs = meshEvents.filter(
+      (event): event is MeshDelegationEvent => event.type === 'mesh_message',
+    );
+    const notices = meshEvents.filter(
+      (event): event is MeshNotificationEvent => event.type === 'notification',
+    );
+    // An outcome that came in a message renders inside it; only the live-event ones stand alone.
+    const outcomes = workerOutcomes(meshEvents, messages).filter((outcome) => !outcome.messageId);
+    return [
+      ...handoffs.map((event): InlineItem => ({
+        kind: 'handoff',
+        key: event.id,
+        at: event.timestamp,
+        event,
+      })),
+      ...notices.map((event): InlineItem => ({
+        kind: 'attention',
+        key: event.id,
+        at: event.timestamp,
+        event,
+      })),
+      ...outcomes.map((outcome, index): InlineItem => ({
+        kind: 'outcome',
+        key: `outcome-${outcome.peerId}-${outcome.at.getTime()}-${index}`,
+        at: outcome.at,
+        outcome,
+      })),
+    ].sort((a, b) => a.at.getTime() - b.at.getTime());
+  }, [hasWorkers, meshEvents, messages]);
+
+  // The conversation in order: message groups with the workers' inline items between them,
+  // an item landing before the first group that is later than it.
+  const timeline = useMemo((): TimelineEntry[] => {
+    const groups = useCompact ? compactRoomGroups : renderedGroups;
+    const entries: TimelineEntry[] = [];
+    let next = 0;
+    for (const group of groups) {
+      const groupAt = groupStartedAt(group);
+      while (next < inlineItems.length && inlineItems[next]!.at.getTime() < groupAt) {
+        entries.push({ kind: 'inline', item: inlineItems[next]! });
+        next++;
+      }
+      entries.push({ kind: 'group', group });
+    }
+    for (; next < inlineItems.length; next++) {
+      entries.push({ kind: 'inline', item: inlineItems[next]! });
+    }
+    return entries;
+  }, [useCompact, compactRoomGroups, renderedGroups, inlineItems]);
+
+  // Consecutive messages from one speaker share the first one's header; a handoff, an
+  // outcome, a thread or another speaker starts a new run.
+  const hiddenHeaders = useMemo((): ReadonlySet<string> => {
+    const hidden = new Set<string>();
+    if (!hasWorkers) return hidden;
+    let previous: string | null = null;
+    const visit = (message: ChatMsg) => {
+      const key = speakerKey(message);
+      if (key && key === previous) hidden.add(message.id);
+      previous = key;
+    };
+    for (const entry of timeline) {
+      if (entry.kind === 'inline') {
+        previous = null;
+        continue;
+      }
+      const { group } = entry;
+      if (group.type === 'thread') {
+        previous = null;
+        continue;
+      }
+      if (group.type === 'single') {
+        visit(group.message);
+        continue;
+      }
+      // A folded turn: its steps sit under the disclosure, its answer shows the speaker.
+      for (const step of group.turn.intermediaries) hidden.add(step.id);
+      if (group.turn.intermediaries.length > 0) previous = null;
+      if (group.turn.final) visit(group.turn.final);
+    }
+    return hidden;
+  }, [hasWorkers, timeline]);
 
   const hasRunningAssistantMessage = visibleMessages.some(
     (message) => message.role === 'assistant' && message.status === 'running',
@@ -956,22 +949,6 @@ export function SessionChat({
     [onInputRespond],
   );
 
-  const handleSelectAgent = useCallback(
-    (peerId: string) => {
-      setDetailPeerId(null);
-      setActiveFilter(activeFilter === peerId ? 'all' : peerId);
-    },
-    [activeFilter, setActiveFilter],
-  );
-
-  const handleShowDetail = useCallback((peerId: string) => {
-    setDetailPeerId(peerId);
-  }, []);
-
-  const handleCloseDetail = useCallback(() => {
-    setDetailPeerId(null);
-  }, []);
-
   const handleCopy = useCallback(
     (text: string) => {
       if (onCopy) {
@@ -982,11 +959,6 @@ export function SessionChat({
     },
     [onCopy],
   );
-
-  const hasSidebar = Array.from(participants.values()).some(
-    (participant) => participant.participantType === 'ravn',
-  );
-  const showRightPanel = effectiveRightPanelMode !== null;
 
   if (!historyLoaded) {
     return (
@@ -1024,18 +996,15 @@ export function SessionChat({
     if (msg.metadata?.messageType === 'system') {
       return <SystemMessage key={messageRenderKey(msg)} message={msg} />;
     }
-    if ((isRoomMode && msg.participant) || isRoomSession) {
+    if ((isRoomMode && msg.participant) || isRoomSession || hasWorkers) {
+      const worker = msg.participant && workerIds.has(msg.participant.peerId);
       return (
-        <div
-          key={messageRenderKey(msg)}
-          id={`msg-${msg.id}`}
-          data-highlighted={highlightedMsgId === msg.id || undefined}
-        >
+        <div key={messageRenderKey(msg)} id={`msg-${msg.id}`}>
           <RoomMessage
             message={msg}
-            onSelectAgent={handleSelectAgent}
-            selectedAgentId={selectedAgentId}
-            onShowDetail={msg.participant ? handleShowDetail : undefined}
+            workerRoom={hasWorkers}
+            showHeader={!hiddenHeaders.has(msg.id)}
+            onShowDetail={worker ? openWorker : undefined}
             onCopy={handleCopy}
             onRegenerate={onRegenerate}
             onBookmark={onBookmark}
@@ -1059,6 +1028,7 @@ export function SessionChat({
         showTokenUsage={showTokenUsage}
         onCopy={handleCopy}
         onRegenerate={onRegenerate}
+        onForward={onForwardMessage}
         onBookmark={onBookmark}
         bookmarked={isBookmarked(msg.id)}
       />
@@ -1085,25 +1055,37 @@ export function SessionChat({
     const turnRunning =
       turn.final?.status === 'running' || turn.intermediaries.some((m) => m.status === 'running');
 
-    let workedLabel: string;
-    if (turnRunning) {
-      workedLabel = 'Working…';
-    } else if (turn.user && turn.final) {
-      const seconds = Math.round(
-        (turn.final.createdAt.getTime() - turn.user.createdAt.getTime()) / 1000,
-      );
-      workedLabel =
-        Number.isFinite(seconds) && seconds > 0
-          ? `Worked for ${seconds}s`
-          : `Show work (${stepCount} step${stepCount === 1 ? '' : 's'})`;
-    } else {
-      workedLabel = `Show work (${stepCount} step${stepCount === 1 ? '' : 's'})`;
-    }
+    // Lexi's "Worked · 5 tools · 54s": the tools the turn ran and how long it took. Tool
+    // calls are hidden from the folded messages, so they are counted in the transcript.
+    const toolCount = turnToolCount(turn);
+    const seconds =
+      turn.user && turn.final
+        ? Math.round((turn.final.createdAt.getTime() - turn.user.createdAt.getTime()) / 1000)
+        : NaN;
+    const workedFacts = [
+      toolCount > 0
+        ? `${toolCount} tool${toolCount === 1 ? '' : 's'}`
+        : `${stepCount} step${stepCount === 1 ? '' : 's'}`,
+      Number.isFinite(seconds) && seconds > 0 ? workedDuration(seconds) : null,
+    ].filter(Boolean);
+    const workedLabel = turnRunning ? 'Working…' : 'Worked';
+    // The answer's speaker heads the turn, above its work, as in Lexi.
+    const speakerModel = turn.final ? messageModel(turn.final) : undefined;
 
     return (
-      <div key={turn.id} className="niuu-chat-compact-turn" data-testid="compact-turn">
+      <div
+        key={turn.id}
+        className="niuu-chat-compact-turn"
+        data-testid="compact-turn"
+        data-headed={speakerModel && stepCount > 0 ? true : undefined}
+      >
         {turn.leading.map((m) => renderSingleMessage(m))}
         {turn.user && renderSingleMessage(turn.user)}
+        {speakerModel && stepCount > 0 && (
+          <div className="niuu-chat-turn-speaker">
+            <ModelSpeaker model={speakerModel} />
+          </div>
+        )}
         {stepCount > 0 && (
           <div className="niuu-chat-worked">
             <button
@@ -1113,18 +1095,27 @@ export function SessionChat({
               aria-expanded={expanded}
               data-testid="worked-toggle"
             >
-              {turnRunning ? (
-                <Loader2 className="niuu-chat-spinner-icon" aria-hidden />
-              ) : expanded ? (
+              {expanded ? (
                 <ChevronDown className="niuu-chat-control-icon" aria-hidden />
               ) : (
                 <ChevronRight className="niuu-chat-control-icon" aria-hidden />
               )}
-              <span>
+              {turnRunning ? (
+                <Loader2 className="niuu-chat-spinner-icon" aria-hidden />
+              ) : (
+                <BadgeCheck className="niuu-chat-worked-badge" aria-hidden />
+              )}
+              <span className="niuu-chat-worked-label">
                 {(isRoomMode || isRoomSession) && turn.final?.participant
                   ? `${turn.final.participant.displayName || turn.final.participant.persona}: ${workedLabel}`
                   : workedLabel}
               </span>
+              {!turnRunning &&
+                workedFacts.map((fact) => (
+                  <span key={fact} className="niuu-chat-worked-fact">
+                    {fact}
+                  </span>
+                ))}
             </button>
             {expanded && (
               <div className="niuu-chat-worked-steps" data-testid="worked-steps">
@@ -1138,6 +1129,58 @@ export function SessionChat({
     );
   };
 
+  const renderInlineItem = (item: InlineItem): ReactNode => {
+    if (item.kind === 'handoff') {
+      return (
+        <HandoffRow
+          key={item.key}
+          event={item.event}
+          parties={handoffParties(item.event, participantsMap, workers)}
+          onOpenWorker={openWorker}
+        />
+      );
+    }
+    if (item.kind === 'attention') {
+      const worker = workers.find((candidate) => candidate.peerId === item.event.participantId);
+      return (
+        <AttentionRow
+          key={item.key}
+          event={item.event}
+          worker={worker && { peerId: worker.peerId, name: worker.name, color: worker.color }}
+          onOpenWorker={openWorker}
+        />
+      );
+    }
+    const { outcome } = item;
+    const worker = workers.find((candidate) => candidate.peerId === outcome.peerId);
+    return (
+      <WorkerOutcomeCard
+        key={item.key}
+        outcome={outcome}
+        speaker={{
+          name: worker?.name ?? outcome.persona,
+          color: worker?.color ?? resolveParticipantColor(outcome.peerId),
+        }}
+      />
+    );
+  };
+
+  const renderGroup = (group: RoomGroup): ReactNode => {
+    if (group.type === 'compact') return renderCompactTurn(group.turn);
+    if (group.type === 'thread') {
+      return (
+        <div key={group.threadId} data-history-id={group.threadId}>
+          <ThreadGroup
+            messages={group.messages}
+            isCollapsed={collapsedThreads.has(group.threadId)}
+            onToggle={() => toggleThread(group.threadId)}
+          />
+        </div>
+      );
+    }
+    return renderSingleMessage(group.message);
+  };
+
   const displayControls = (
     <>
       <ChatConnectionsButton />
@@ -1146,27 +1189,7 @@ export function SessionChat({
   );
 
   return (
-    <div
-      className={cn('niuu-chat-outer-grid', className)}
-      data-has-sidebar={hasSidebar || undefined}
-      data-right-panel={showRightPanel || undefined}
-      data-right-panel-collapsed={
-        showRightPanel && effectiveRightPanelMode === 'cascade' && cascadePanelCollapsed
-          ? true
-          : undefined
-      }
-      data-testid="session-chat"
-    >
-      {hasSidebar && (
-        <MeshSidebar
-          participants={participants}
-          selectedPeerId={selectedAgentId}
-          onSelectPeer={handleSelectAgent}
-          collapsed={peerSidebarCollapsed}
-          onToggleCollapsed={() => setPeerSidebarCollapsed((value) => !value)}
-        />
-      )}
-
+    <div className={cn('niuu-chat-outer-grid', className)} data-testid="session-chat">
       <div className="niuu-chat-wrapper">
         {!showToolbar && showDisplayControls && (
           <div className="niuu-chat-display-controls">{displayControls}</div>
@@ -1309,6 +1332,15 @@ export function SessionChat({
           </div>
         )}
 
+        {showWorkersStrip && (hasWorkers || workerSessions.length > 0) && (
+          <WorkersStrip
+            workers={workers}
+            sessions={workerSessions}
+            activePeerId={sheetPeerId}
+            onSelect={openWorker}
+          />
+        )}
+        {showWorkersStrip && hasWorkers && <ProgressLane stages={stages} onSelect={openWorker} />}
         {historyError && (
           <div className="niuu-chat-history-status" role="alert">
             {historyError}{' '}
@@ -1340,23 +1372,13 @@ export function SessionChat({
                       </button>
                     </div>
                   )}
-                  {useCompact && !isRoomMode && !isRoomSession
+                  {useCompact && !roomView
                     ? compactTurns.map((turn) => renderCompactTurn(turn))
-                    : (useCompact ? compactRoomGroups : renderedGroups).map((group) => {
-                        if (group.type === 'compact') return renderCompactTurn(group.turn);
-                        if (group.type === 'thread') {
-                          return (
-                            <div key={group.threadId} data-history-id={group.threadId}>
-                              <ThreadGroup
-                                messages={group.messages}
-                                isCollapsed={collapsedThreads.has(group.threadId)}
-                                onToggle={() => toggleThread(group.threadId)}
-                              />
-                            </div>
-                          );
-                        }
-                        return renderSingleMessage(group.message);
-                      })}
+                    : timeline.map((entry) =>
+                        entry.kind === 'inline'
+                          ? renderInlineItem(entry.item)
+                          : renderGroup(entry.group),
+                      )}
 
                   {/* Streaming indicator */}
                   {isStreaming && (
@@ -1412,6 +1434,7 @@ export function SessionChat({
                   onRespond={handlePermissionRespond}
                 />
               ))}
+            <PlanDock plan={plan} agents={agents} />
             {pendingInputRequests.length > 0 && (
               <div
                 className="niuu-chat-request-list"
@@ -1419,7 +1442,7 @@ export function SessionChat({
                 aria-label="Pending input requests"
               >
                 {pendingInputRequests.map((request) => (
-                  <InputRequestForm
+                  <QuestionBand
                     key={request.requestId}
                     request={request}
                     onRespond={handleInputRespond}
@@ -1428,15 +1451,23 @@ export function SessionChat({
                 ))}
               </div>
             )}
+            {aboveComposer}
             <ChatInput
               onSend={handleSend}
               onSendDirected={handleSendDirected}
               onPublishEvent={handlePublishEvent}
               eventRouting={eventRouting}
-              isLoading={false}
+              isLoading={working}
               onStop={onStop ?? (() => undefined)}
               disabled={!connected}
               stopDisabled={!capabilities.interrupt}
+              capabilities={capabilities}
+              effort={effort}
+              runtimeOptions={runtimeOptions}
+              onSetEffort={onSetEffort}
+              onSetRuntimeModel={onSetRuntimeModel}
+              runtimeOptionsError={runtimeOptionsError}
+              effortError={effortError}
               sessionHost={sessionHost}
               chatEndpoint={chatEndpoint}
               availableCommands={availableCommands}
@@ -1445,45 +1476,21 @@ export function SessionChat({
             />
           </div>
         </div>
+        {sheetWorker && sheetParticipant && (
+          <HistoryDetailsContext.Provider value={historyEndpoint ?? chatEndpoint}>
+            <ToolImageProvider endpoint={historyEndpoint ?? chatEndpoint}>
+              <WorkerSheet
+                worker={sheetWorker}
+                participant={sheetParticipant}
+                messages={messages}
+                events={agentEvents.get(sheetWorker.peerId) ?? []}
+                onClose={closeWorker}
+                onSendDirected={onSendDirected ? handleSendDirected : undefined}
+              />
+            </ToolImageProvider>
+          </HistoryDetailsContext.Provider>
+        )}
       </div>
-
-      <Dialog
-        open={selectedOutcomeDetail !== null}
-        onOpenChange={(open) => {
-          if (!open) setSelectedOutcomeDetail(null);
-        }}
-      >
-        {selectedOutcomeDetail && (
-          <DialogContent
-            title={`${selectedOutcomeDetail.event.persona} outcome`}
-            description={selectedOutcomeDetail.event.eventType}
-            className="niuu-chat-outcome-dialog"
-          >
-            <MarkdownContent content={selectedOutcomeDetail.content} />
-          </DialogContent>
-        )}
-      </Dialog>
-
-      {showRightPanel && effectiveRightPanelMode === 'cascade' && meshEvents.length > 0 && (
-        <MeshCascadePanel
-          events={meshEvents}
-          onEventClick={handleOutcomeClick}
-          onOutcomeShowDetails={handleOutcomeShowDetails}
-          collapsed={cascadePanelCollapsed}
-          onToggleCollapsed={() => setCascadePanelCollapsed((value) => !value)}
-        />
-      )}
-
-      {showRightPanel &&
-        effectiveRightPanelMode === 'detail' &&
-        detailPeerId &&
-        participants.get(detailPeerId) && (
-          <AgentDetailPanel
-            participant={participants.get(detailPeerId)!}
-            events={agentEvents.get(detailPeerId) ?? []}
-            onClose={handleCloseDetail}
-          />
-        )}
     </div>
   );
 }

@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { OutcomeCard, extractOutcomeBlock } from './OutcomeCard';
+import { OutcomeCard, WorkerOutcomeCard, extractOutcomeBlock } from './OutcomeCard';
+import { OutcomeSpeakerProvider } from './OutcomeSpeaker';
+import type { WorkerOutcome } from '../../workers';
 import { MarkdownContent } from '../MarkdownContent';
 
 describe('OutcomeCard', () => {
@@ -8,8 +10,45 @@ describe('OutcomeCard', () => {
 
   it('renders with verdict badge', () => {
     render(<OutcomeCard raw={raw} />);
-    expect(screen.getByText('pass')).toBeInTheDocument();
+    expect(screen.getByText('Passed')).toBeInTheDocument();
     expect(screen.getByText('All checks passed')).toBeInTheDocument();
+  });
+
+  it('shows the kicker, the verdict tone and the event type', () => {
+    render(
+      <OutcomeCard raw={'verdict: needs_changes\nsummary: Stale\nevent_type: review.changes'} />,
+    );
+    expect(screen.getByText('Outcome')).toBeInTheDocument();
+    expect(screen.getByText('Changes requested')).toHaveAttribute('data-tone', 'changes');
+    expect(screen.getByTestId('outcome-card')).toHaveClass('niuu-chat-outcome--tone-changes');
+    expect(screen.getByText('review.changes')).toBeInTheDocument();
+  });
+
+  it('names the worker in its colour, from a prop or from the message that carries it', () => {
+    const { rerender } = render(
+      <OutcomeCard raw="verdict: pass" speaker={{ name: 'reviewer', color: '#123456' }} />,
+    );
+    expect(screen.getByText('reviewer')).toBeInTheDocument();
+    expect(screen.getByTestId('outcome-card').style.getPropertyValue('--niuu-worker-color')).toBe(
+      '#123456',
+    );
+
+    rerender(
+      <OutcomeSpeakerProvider value={{ name: 'coder', color: '#abcdef' }}>
+        <OutcomeCard raw="verdict: pass" />
+      </OutcomeSpeakerProvider>,
+    );
+    expect(screen.getByText('coder')).toBeInTheDocument();
+  });
+
+  it('shows short plain fields as facts and keeps longer or markdown ones in full', () => {
+    const long = 'a long explanation that is well past what a small chip can hold on one line';
+    render(<OutcomeCard raw={`verdict: pass\nfiles: 2\nnotes: ${long}\nlist: - first item`} />);
+    expect(screen.getByText('files').closest('.niuu-chat-outcome-fact')).toHaveTextContent(
+      'files2',
+    );
+    expect(screen.getByText(long).closest('.niuu-chat-outcome-fact')).toBeNull();
+    expect(screen.getByText('first item')).toBeInTheDocument();
   });
 
   it('shows raw toggle', () => {
@@ -101,7 +140,7 @@ opinion
       />,
     );
 
-    expect(screen.getByText('opinion_submitted')).toBeInTheDocument();
+    expect(screen.getByText('Opinion submitted')).toBeInTheDocument();
     expect(
       screen.getByText('Wrote opinion recommending risk-tiered opt-out autonomy.'),
     ).toBeInTheDocument();
@@ -308,5 +347,55 @@ describe('a JSON outcome, as a coordinator writes it', () => {
     expect(screen.getByTestId('outcome-card')).toBeInTheDocument();
     expect(screen.getByText('Plan --- approved at the gate.')).toBeInTheDocument();
     expect(screen.queryByText(/---outcome---|next_action_timing|"\]\}/)).toBeNull();
+  });
+});
+
+describe('WorkerOutcomeCard', () => {
+  const outcome: WorkerOutcome = {
+    peerId: 'rev',
+    persona: 'reviewer',
+    eventType: 'review.changes_requested',
+    verdict: 'changes_requested',
+    summary: 'The stale-cache probe reads the wrong timestamp.',
+    fields: { findings: 2, file: 'probes/freshness.py:42', empty: null },
+    at: new Date('2026-11-05T05:20:00Z'),
+    tone: 'changes',
+  };
+
+  it('renders a live-event outcome as the same card', () => {
+    render(
+      <WorkerOutcomeCard outcome={outcome} speaker={{ name: 'reviewer', color: '#123456' }} />,
+    );
+    expect(screen.getByText('Outcome')).toBeInTheDocument();
+    expect(screen.getByText('reviewer')).toBeInTheDocument();
+    expect(screen.getByText('Changes requested')).toBeInTheDocument();
+    expect(screen.getByText('review.changes_requested')).toBeInTheDocument();
+    expect(
+      screen.getByText('The stale-cache probe reads the wrong timestamp.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('findings').closest('.niuu-chat-outcome-fact')).toHaveTextContent(
+      'findings2',
+    );
+    expect(screen.queryByText('empty')).toBeNull();
+  });
+
+  it('shows the event fields as raw text', () => {
+    render(
+      <WorkerOutcomeCard outcome={outcome} speaker={{ name: 'reviewer', color: '#123456' }} />,
+    );
+    fireEvent.click(screen.getByText('Show raw'));
+    expect(document.querySelector('pre.niuu-chat-outcome-raw')!.textContent).toContain(
+      'findings: 2',
+    );
+  });
+
+  it('serialises a nested field value rather than dropping it', () => {
+    render(
+      <WorkerOutcomeCard
+        outcome={{ ...outcome, fields: { state: { a: 1 } } }}
+        speaker={{ name: 'reviewer', color: '#123456' }}
+      />,
+    );
+    expect(screen.getByText('state')).toBeInTheDocument();
   });
 });

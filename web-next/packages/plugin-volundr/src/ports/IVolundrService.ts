@@ -5,12 +5,24 @@
  * import from the local models instead of the legacy @/modules/volundr/models
  * aliases.
  */
+import type { SecretFulfillment, SecretRequest } from '@niuulabs/domain';
+import type { LivePreviewConfig } from '../domain/livePreview';
+import type { SessionRuntimeOffer } from '../domain/sessionRuntimes';
+import type {
+  ComputeHost,
+  ComputeHostChanges,
+  ComputeHostsOverview,
+  NewPairingCode,
+  PairingCodeRequest,
+  RemoveHostResult,
+} from '../domain/computeHosts';
 import type {
   VolundrFeatures,
   VolundrSession,
   VolundrStats,
   VolundrRepo,
   VolundrMessage,
+  SessionMessageDelivery,
   VolundrLog,
   VolundrAggregatedLog,
   VolundrLogParticipant,
@@ -57,6 +69,9 @@ import type {
   VolundrSessionTrace,
   VolundrSessionTraceSummary,
   ExternalSession,
+  SessionReadState,
+  SessionReadStateChange,
+  ForgeMcpSessionOptions,
 } from '../models/volundr.model';
 
 export interface VolundrConversationTurn {
@@ -144,6 +159,62 @@ export interface RuntimeVersion {
 export interface IVolundrService {
   // Feature flags
   getFeatures(instanceId?: string): Promise<VolundrFeatures>;
+  /**
+   * Where sessions' live previews open; disabled when the platform serves none. Each Forge
+   * host has its own preview domain, so ask the one that runs the session.
+   */
+  getLivePreviewConfig(instanceId?: string): Promise<LivePreviewConfig>;
+  /**
+   * What the host runs every session as ("Runs as"), with warm readiness: one offer, or
+   * none when the host declares none. A host runs exactly one runtime and sessions never
+   * choose, so ask the host that will run the session.
+   */
+  getSessionRuntimes(instanceId?: string): Promise<SessionRuntimeOffer[]>;
+
+  // Compute hosts: machines registered as compute for a Forge. Admin only (`volundr:admin`).
+  /**
+   * The Forge's registered hosts, its pool summary, connectors, runtimes and open pairing
+   * codes. Null when the Forge has no compute hosts configured (it answers 404): that
+   * Forge has no Hosts view. Any other failure rejects.
+   */
+  getComputeHosts(instanceId: string): Promise<ComputeHostsOverview | null>;
+  /**
+   * Distinct tag sets of the hosts that can take a session now (healthy, active, slots
+   * set), for targeting. Null for a Forge without compute hosts.
+   */
+  getComputeHostTagSets(instanceId: string): Promise<string[][] | null>;
+  /** Mints a single-use pairing code and the one-line command that joins a host with it. */
+  createPairingCode(instanceId: string, request: PairingCodeRequest): Promise<NewPairingCode>;
+  /** Revokes a code that has not been used. */
+  revokePairingCode(instanceId: string, codeId: string): Promise<void>;
+  /**
+   * Changes a host's tags, slot count or name. Rejects with the platform's own reason when
+   * the slot count needs the host out of service or is over what the host can hold.
+   */
+  updateComputeHost(
+    instanceId: string,
+    hostId: string,
+    changes: ComputeHostChanges,
+  ): Promise<ComputeHost>;
+  /**
+   * Takes no new sessions; running ones are never stopped. With `remove`, Forge removes
+   * the host once it is empty.
+   */
+  drainComputeHost(instanceId: string, hostId: string, remove: boolean): Promise<ComputeHost>;
+  /**
+   * Returns an out-of-service host to service after a clean audit; on a draining host it
+   * cancels the drain.
+   */
+  resumeComputeHost(instanceId: string, hostId: string): Promise<ComputeHost>;
+  /**
+   * Has the next claim run the current recipe again on an empty host, then checks it;
+   * rejects while sessions run there (drain it first).
+   */
+  reprepareComputeHost(instanceId: string, hostId: string): Promise<ComputeHost>;
+  /** Runs the probe and the audit now. */
+  checkComputeHost(instanceId: string, hostId: string): Promise<ComputeHost>;
+  /** Removes an empty host; rejects while sessions still run on it (drain and remove). */
+  removeComputeHost(instanceId: string, hostId: string): Promise<RemoveHostResult>;
 
   // Session definitions
   getSessionDefinitions(): Promise<SessionDefinition[]>;
@@ -157,6 +228,17 @@ export interface IVolundrService {
     options: SessionChangesReadOptions,
   ): Promise<VolundrSessionChanges>;
   getActiveSessions(): Promise<VolundrSession[]>;
+  /** The caller's read state for a session's latest reply. */
+  getSessionReadState(sessionId: string, options?: SessionReadOptions): Promise<SessionReadState>;
+  /**
+   * Marks the session read or unread. Rejects with `SessionReadStateConflictError` when a newer
+   * action won; the caller reads the state again before deciding.
+   */
+  changeSessionReadState(
+    sessionId: string,
+    change: SessionReadStateChange,
+    options?: SessionReadOptions,
+  ): Promise<SessionReadState>;
   getStats(options?: SessionReadOptions): Promise<VolundrStats>;
   getRepos(): Promise<VolundrRepo[]>;
   getTargets(): Promise<VolundrTarget[]>;
@@ -165,6 +247,10 @@ export interface IVolundrService {
   getProjects(options?: SessionReadOptions): Promise<ForgeProject[]>;
   /** A name is enough. The host is the given instance, else the default one. */
   createProject(name: string, options?: { instanceId?: string }): Promise<ForgeProject>;
+  /**
+   * Change a project at the revision the caller read; a stale revision is refused. The change
+   * goes to the host that owns the project. Setting `workspace_path` connects a checkout.
+   */
   updateProject(project: ForgeProject, changes: ForgeProjectChanges): Promise<ForgeProject>;
   getSessionProject(
     sessionId: string,
@@ -225,6 +311,8 @@ export interface IVolundrService {
     /** What the session runs: an ordinary coding session (default) or `ravn_flock`. */
     workloadType?: 'session' | 'ravn_flock';
     workloadConfig?: Record<string, unknown>;
+    /** Forge MCP grants for the session; the node's defaults and role grants apply on top. */
+    forgeMcp?: ForgeMcpSessionOptions;
   }): Promise<VolundrSession>;
   evaluatePermissionAutoApproval(
     sessionId: string,
@@ -235,12 +323,28 @@ export interface IVolundrService {
     sessionId: string,
     updates: { name?: string; model?: string; branch?: string; tracker_issue_id?: string },
   ): Promise<VolundrSession>;
+  /**
+   * Forks a session into a child on the same host, as Lexi's side chat: Forge's reforge of the
+   * session's chronicle (same repository, branch and model), named `name` and started. Throws
+   * `SessionForkError` with the child's id when the child was created but a later step failed.
+   */
+  forkSession(sessionId: string, name: string): Promise<VolundrSession>;
   getRuntimeVersion(sessionId: string, instanceId?: string): Promise<RuntimeVersion>;
   stopSession(sessionId: string): Promise<void>;
   resumeSession(sessionId: string): Promise<void>;
   deleteSession(sessionId: string, cleanup?: string[]): Promise<void>;
   archiveSession(sessionId: string): Promise<void>;
   archiveStoppedSessions(): Promise<string[]>;
+
+  // Secure secret requests: an agent asks the person for a secret. The value goes to Forge in
+  // `fulfillSecretRequest` and is never returned, cached or shown to the agent.
+  getSecretRequest(sessionId: string, requestId: string): Promise<SecretRequest>;
+  fulfillSecretRequest(
+    sessionId: string,
+    requestId: string,
+    fulfillment: SecretFulfillment,
+  ): Promise<SecretRequest>;
+  declineSecretRequest(sessionId: string, requestId: string): Promise<SecretRequest>;
   restoreSession(sessionId: string): Promise<void>;
   listArchivedSessions(options?: SessionReadOptions): Promise<VolundrSession[]>;
 
@@ -256,6 +360,8 @@ export interface IVolundrService {
 
   // Messaging
   getConversationHistory(sessionId: string): Promise<VolundrConversationHistory>;
+  /** One turn in full (`GET /sessions/{id}/conversation/turns/{turnId}`), wherever it sits. */
+  getConversationTurn(sessionId: string, turnId: string): Promise<VolundrConversationTurn>;
   getWorkflowGates(sessionId: string): Promise<VolundrWorkflowGate[]>;
   resolveWorkflowGate(
     sessionId: string,
@@ -263,7 +369,11 @@ export interface IVolundrService {
     request: ResolveWorkflowGateRequest,
   ): Promise<VolundrWorkflowGate>;
   getMessages(sessionId: string): Promise<VolundrMessage[]>;
-  sendMessage(sessionId: string, content: string): Promise<VolundrMessage>;
+  /**
+   * Send a user message into a running session. Resolves `delivered` or `pending` (accepted,
+   * delivery still being retried; not confirmed); rejects with Forge's `detail` on refusal.
+   */
+  sendMessage(sessionId: string, content: string): Promise<SessionMessageDelivery>;
   subscribeMessages(sessionId: string, callback: (message: VolundrMessage) => void): () => void;
 
   // Logs

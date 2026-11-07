@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import importlib
 import io
@@ -109,6 +110,31 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
     openshell_pb2_mod.SANDBOX_PHASE_DELETING = 4
     openshell_pb2_mod.SANDBOX_PHASE_STOPPED = 5
     openshell_pb2_mod.SANDBOX_PHASE_STOPPING = 6
+    openshell_pb2_mod.SANDBOX_PHASE_SUSPENDING = 11
+    openshell_pb2_mod.SANDBOX_PHASE_SUSPENDED = 12
+
+    class SandboxPhase:
+        """The generated enum's name lookup, as the protobuf runtime provides it."""
+
+        _names = {
+            0: "SANDBOX_PHASE_UNSPECIFIED",
+            1: "SANDBOX_PHASE_PROVISIONING",
+            2: "SANDBOX_PHASE_READY",
+            3: "SANDBOX_PHASE_ERROR",
+            4: "SANDBOX_PHASE_DELETING",
+            5: "SANDBOX_PHASE_STOPPED",
+            6: "SANDBOX_PHASE_STOPPING",
+            11: "SANDBOX_PHASE_SUSPENDING",
+            12: "SANDBOX_PHASE_SUSPENDED",
+        }
+
+        @classmethod
+        def Name(cls, number: int) -> str:  # noqa: N802 - protobuf compatibility shim.
+            if number not in cls._names:
+                raise ValueError(f"Enum SandboxPhase has no name defined for value {number!r}")
+            return cls._names[number]
+
+    openshell_pb2_mod.SandboxPhase = SandboxPhase
     openshell_pb2_mod.DELETION_OUTCOME_UNSPECIFIED = 0
     openshell_pb2_mod.DELETION_OUTCOME_COMPLETED = 1
     openshell_pb2_mod.DELETION_OUTCOME_ACCEPTED = 2
@@ -900,6 +926,30 @@ def test_native_lifecycle_calls_authenticated_gateway(monkeypatch, method, rpc):
     assert getattr(client, method)("forge").id == "id"
     assert call.call_args.args[0].name == "forge"
     assert ("authorization", "Bearer test-token") in call.call_args.kwargs["metadata"]
+
+
+@pytest.mark.parametrize(
+    "phase,expected",
+    [
+        ("SANDBOX_PHASE_SUSPENDING", SessionStatus.STOPPING),
+        ("SANDBOX_PHASE_SUSPENDED", SessionStatus.STOPPED),
+        ("SANDBOX_PHASE_STOPPING", SessionStatus.STOPPING),
+        ("SANDBOX_PHASE_STOPPED", SessionStatus.STOPPED),
+    ],
+)
+def test_session_status_reports_a_suspended_sandbox_as_down(
+    monkeypatch, phase: str, expected: SessionStatus
+):
+    """OpenShell v0.1.7 can suspend a sandbox; it runs no workload, so it is not provisioning."""
+    adapter = _import_adapter(monkeypatch)
+    sandbox = adapter.OpenShellSandbox(
+        id="sandbox-id",
+        name="session",
+        phase=getattr(adapter.openshell_pb2, phase),
+    )
+
+    assert adapter._status_from_sandbox(sandbox) is expected
+    assert adapter._phase_name(sandbox.phase) == phase.removeprefix("SANDBOX_PHASE_")
 
 
 @pytest.mark.asyncio
@@ -1905,14 +1955,14 @@ async def test_resident_reconcile_reports_processes_when_they_cannot_be_started(
     assert observation.conditions[1].reason == "Unavailable"
 
 
-def _drain_sandbox(adapter, client) -> None:
-    """Leave the sandbox as a node drain does: stopped until the gateway starts it."""
+def _drain_sandbox(adapter, client, phase: str = "SANDBOX_PHASE_STOPPED") -> None:
+    """Leave the sandbox as a node drain (or a suspend) does: down until the gateway starts it."""
     running = client.get_sandbox
 
     def stopped(name: str):
         return replace(
             running(name),
-            phase=adapter.openshell_pb2.SANDBOX_PHASE_STOPPED,
+            phase=getattr(adapter.openshell_pb2, phase),
             ready=False,
         )
 
@@ -1929,16 +1979,18 @@ def _drain_sandbox(adapter, client) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stopped_phase", ["SANDBOX_PHASE_STOPPED", "SANDBOX_PHASE_SUSPENDED"])
 async def test_resident_reconcile_starts_a_sandbox_that_stopped_under_it(
     monkeypatch: pytest.MonkeyPatch,
+    stopped_phase: str,
 ) -> None:
-    """A drained resident comes back on its own sandbox, then gets its processes."""
+    """A drained or suspended resident comes back on its own sandbox, then gets its processes."""
     adapter = _import_adapter(monkeypatch)
     runtime = _deployed_resident(_resident_runtime())
     client = _FakeOpenShellGatewayClient(adapter)
     client.exec_script = lambda **_kwargs: (1, "")
     manager = _deployed_resident_manager(adapter, client, runtime)
-    _drain_sandbox(adapter, client)
+    _drain_sandbox(adapter, client, stopped_phase)
     sandbox_name = runtime.backend_ref["name"]
 
     observation = await manager.reconcile(runtime, _resident_profile())
@@ -4644,12 +4696,14 @@ async def test_restart_on_the_current_image_restarts_processes_in_place(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stopped_phase", ["SANDBOX_PHASE_STOPPED", "SANDBOX_PHASE_SUSPENDED"])
 async def test_restart_brings_back_a_sandbox_that_stopped_under_the_resident(
     monkeypatch: pytest.MonkeyPatch,
+    stopped_phase: str,
 ) -> None:
     adapter, runtime, client, manager, _ = await _resident_on_old_image(monkeypatch)
     client.sandbox_image = _CURRENT_SANDBOX_IMAGE
-    _drain_sandbox(adapter, client)
+    _drain_sandbox(adapter, client, stopped_phase)
 
     await manager.restart(runtime, _resident_profile())
 
@@ -4773,3 +4827,336 @@ async def test_the_held_reason_reaches_the_resident_api(
             "No persistent workspace; the sandbox image can't change without losing /sandbox."
         )
         assert body["backendRef"]["image"] == _OLD_SANDBOX_IMAGE
+
+
+# --- Launch stages --------------------------------------------------------
+
+
+async def _stage_rows(manager, session) -> list[tuple[str, str, str, str | None]]:
+    return [
+        (s.key, s.label, s.state.value, s.detail) for s in await manager.startup_stages(session)
+    ]
+
+
+def _not_ready(adapter, client, reason: str, phase: str = "PROVISIONING"):
+    """Make the fake gateway report a sandbox that is not ready, with its own reason."""
+    original = client.get_sandbox
+    pb2 = adapter.openshell_pb2
+
+    def get_sandbox(name: str):
+        sandbox = original(name)
+        if sandbox is None or name in client.deleted:
+            return sandbox
+        return replace(
+            sandbox,
+            phase=getattr(pb2, f"SANDBOX_PHASE_{phase}"),
+            ready=False,
+            not_ready_reason=reason,
+        )
+
+    client.get_sandbox = get_sandbox
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_start_reports_each_step_it_performs(monkeypatch: pytest.MonkeyPatch):
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    loop = asyncio.get_running_loop()
+    during_create: list[list[tuple[str, str, str, str | None]]] = []
+    create = client.create_sandbox
+
+    def create_and_look(**kwargs):
+        during_create.append(
+            asyncio.run_coroutine_threadsafe(_stage_rows(manager, session), loop).result()
+        )
+        return create(**kwargs)
+
+    client.create_sandbox = create_and_look
+
+    assert manager.reports_startup_stages is True
+    assert await manager.startup_stages(session) == ()
+    before = datetime.now(UTC)
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    after = datetime.now(UTC)
+
+    name = f"forge-{session.id.hex[:13]}"
+    # Mid-launch, the steps still to come are named but have not begun.
+    assert during_create == [
+        [
+            ("credentials", "Resolving credentials", "done", None),
+            ("sandbox", "Creating the sandbox", "active", None),
+            ("ready", "Waiting for the sandbox", "pending", None),
+            ("files", "Writing session configuration", "pending", None),
+            ("workspace", "Preparing the workspace", "pending", None),
+            ("skuld", "Starting Skuld", "pending", None),
+            ("expose", "Exposing the service", "pending", None),
+            ("broker", "Waiting for the broker", "pending", None),
+        ]
+    ]
+    # A start with nothing to write never goes through the files step.
+    assert await _stage_rows(manager, session) == [
+        ("credentials", "Resolving credentials", "done", None),
+        ("sandbox", "Creating the sandbox", "done", f"{name}: PROVISIONING"),
+        ("ready", "Waiting for the sandbox", "done", "READY"),
+        ("workspace", "Preparing the workspace", "done", "Workspace ready"),
+        ("skuld", "Starting Skuld", "done", f"Started in {name}"),
+        ("expose", "Exposing the service", "done", client.service_url),
+        ("broker", "Waiting for the broker", "active", None),
+    ]
+    stages = await manager.startup_stages(session)
+    for stage in stages:
+        assert before <= stage.started_at <= after
+    for earlier, later in zip(stages, stages[1:], strict=False):
+        assert earlier.finished_at <= later.started_at, "stages run one after another"
+
+    # Forge sees the session running when the gateway says so; that ends the last stage.
+    assert await manager.status(session) is SessionStatus.RUNNING
+    assert (await _stage_rows(manager, session))[-1] == (
+        "broker",
+        "Waiting for the broker",
+        "done",
+        "READY",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_status_read_before_the_broker_is_started_does_not_finish_its_stage(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    loop = asyncio.get_running_loop()
+    seen: list[SessionStatus] = []
+    exec_detached = client.exec_detached
+
+    def exec_and_read_status(**kwargs):
+        seen.append(asyncio.run_coroutine_threadsafe(manager.status(session), loop).result())
+        return exec_detached(**kwargs)
+
+    client.exec_detached = exec_and_read_status
+
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    assert seen == [SessionStatus.RUNNING], "the gateway already said the sandbox runs"
+    rows = await _stage_rows(manager, session)
+    assert rows[-1] == ("broker", "Waiting for the broker", "active", None)
+
+
+@pytest.mark.asyncio
+async def test_a_start_that_writes_session_files_reports_that_step_before_the_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from niuu.forge_mcp.models import ForgeMcpGrant
+    from tests.support.forge_session import token_service
+
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+    spec.forge_session = token_service().mint(
+        session_id=session.id,
+        session_name=session.name,
+        owner_id="owner-1",
+        tenant_id=None,
+        grants=(ForgeMcpGrant.MESSAGE,),
+        launch_id="launch-1",
+    )
+
+    await manager.start(session, spec)
+
+    rows = await _stage_rows(manager, session)
+    assert [row[0] for row in rows] == [
+        "credentials",
+        "sandbox",
+        "ready",
+        "files",
+        "workspace",
+        "skuld",
+        "expose",
+        "broker",
+    ]
+    assert ("files", "Writing session configuration", "done", "1 file(s) written") in rows
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_sandbox_reports_resuming_and_never_creating(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    session = _session().with_pod_name("legacy")
+    from unittest.mock import Mock
+
+    resumed = replace(
+        client.get_sandbox("legacy"),
+        phase=adapter.openshell_pb2.SANDBOX_PHASE_PROVISIONING,
+        ready=False,
+    )
+    client.start_sandbox = Mock(return_value=resumed)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    rows = await _stage_rows(manager, session)
+    assert ("sandbox", "Resuming the sandbox", "done", "legacy: PROVISIONING") in rows
+    assert not [row for row in rows if row[1] == "Creating the sandbox"]
+    assert [row[0] for row in rows] == [
+        "credentials",
+        "sandbox",
+        "ready",
+        "workspace",
+        "skuld",
+        "expose",
+        "broker",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_with_a_long_name_has_no_service_to_expose(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    session = _session().with_pod_name("forge-a-sandbox-with-a-long-name")
+    spec = SessionSpec(
+        values={"persistence": {"existingClaim": "workspace", "mountPath": "/sandbox/workspace"}},
+        pod_spec=PodSpecAdditions(),
+    )
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client, ready_timeout=0.1, gateway_public_url="http://gateway.example"
+    )
+
+    await manager.start(session, spec)
+
+    assert client.exposed is None
+    assert "expose" not in [row[0] for row in await _stage_rows(manager, session)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("phase", "error"),
+    [("PROVISIONING", TimeoutError), ("ERROR", RuntimeError)],
+)
+async def test_a_sandbox_that_never_becomes_ready_leaves_the_gateways_reason_on_the_wait(
+    monkeypatch: pytest.MonkeyPatch, phase: str, error: type[Exception]
+):
+    adapter = _import_adapter(monkeypatch)
+    monkeypatch.setattr(adapter, "READY_POLL_INTERVAL", 0.01)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    reason = "Unschedulable: 0/3 nodes are available"
+    _not_ready(adapter, client, reason, phase)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+
+    with pytest.raises(error):
+        await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    name = f"forge-{session.id.hex[:13]}"
+    # The wait is still the active stage with what the gateway last said; marking
+    # the session failed, and with what error, is the recorder's job.
+    assert await _stage_rows(manager, session) == [
+        ("credentials", "Resolving credentials", "done", None),
+        ("sandbox", "Creating the sandbox", "done", f"{name}: PROVISIONING"),
+        ("ready", "Waiting for the sandbox", "active", f"{phase}: {reason}"),
+        ("files", "Writing session configuration", "pending", None),
+        ("workspace", "Preparing the workspace", "pending", None),
+        ("skuld", "Starting Skuld", "pending", None),
+        ("expose", "Exposing the service", "pending", None),
+        ("broker", "Waiting for the broker", "pending", None),
+    ]
+    assert client.deleted == [name], "the failed launch is still rolled back"
+
+
+@pytest.mark.asyncio
+async def test_stop_and_destroy_forget_the_launch(monkeypatch: pytest.MonkeyPatch):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    stopped, destroyed = _session(), _session()
+    spec = SessionSpec(
+        values={"persistence": {"existingClaim": "workspace", "mountPath": "/sandbox/workspace"}},
+        pod_spec=PodSpecAdditions(),
+    )
+    for session in (stopped, destroyed):
+        await manager.start(session, spec)
+        assert await manager.startup_stages(session)
+
+    await manager.stop(stopped)
+    await manager.destroy(destroyed)
+
+    assert await manager.startup_stages(stopped) == ()
+    assert await manager.startup_stages(destroyed) == ()
+
+
+@pytest.mark.asyncio
+async def test_a_second_start_replaces_the_previous_launch(monkeypatch: pytest.MonkeyPatch):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    session = _session()
+    spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+    await manager.start(session, spec)
+    first = await manager.startup_stages(session)
+    await manager.status(session)
+
+    await manager.start(session, spec)
+
+    second = await manager.startup_stages(session)
+    assert [s.key for s in second] == [s.key for s in first]
+    assert second[-1].state.value == "active", "the new launch has not been read as running yet"
+    assert second[0].started_at >= first[-1].started_at
+
+
+def test_the_sandbox_carries_the_gateways_reason_while_it_is_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _import_adapter(monkeypatch)
+
+    def raw(conditions: list[types.SimpleNamespace]):
+        return types.SimpleNamespace(
+            metadata=types.SimpleNamespace(
+                id="sandbox-id", name="forge-1", labels={}, annotations={}
+            ),
+            status=types.SimpleNamespace(phase=1, conditions=conditions),
+            spec=types.SimpleNamespace(providers=[], template=None),
+        )
+
+    def condition(kind: str, status: str, reason: str, message: str):
+        return types.SimpleNamespace(type=kind, status=status, reason=reason, message=message)
+
+    waiting = adapter._sandbox_from_proto(
+        raw(
+            [
+                condition("Scheduled", "True", "Scheduled", "assigned"),
+                condition("Ready", "False", "DependenciesNotReady", "Pod is Pending"),
+            ]
+        )
+    )
+    assert waiting.not_ready_reason == "DependenciesNotReady: Pod is Pending"
+    assert adapter._sandbox_report(waiting) == "PROVISIONING: DependenciesNotReady: Pod is Pending"
+
+    only_message = adapter._sandbox_from_proto(raw([condition("Ready", "False", "", "Starting")]))
+    assert only_message.not_ready_reason == "Starting"
+
+    ready = adapter._sandbox_from_proto(raw([condition("Ready", "True", "AllGood", "up")]))
+    assert ready.not_ready_reason == ""
+    assert adapter._sandbox_report(ready) == "PROVISIONING"
+
+    silent = adapter._sandbox_from_proto(raw([]))
+    assert silent.not_ready_reason == ""
+
+
+def test_a_phase_the_gateway_has_no_name_for_is_reported_by_its_number(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _import_adapter(monkeypatch)
+
+    assert adapter._phase_name(adapter.openshell_pb2.SANDBOX_PHASE_READY) == "READY"
+    assert adapter._phase_name(99) == "phase 99"
+    assert adapter._last_line("one\n\nWorkspace ready\n  \n") == "Workspace ready"
+    assert adapter._last_line("") is None

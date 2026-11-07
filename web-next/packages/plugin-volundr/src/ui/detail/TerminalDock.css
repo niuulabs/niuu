@@ -1,0 +1,29 @@
+/* ── The terminal dock: full width under the conversation and the right dock ── */
+
+.forge-terminal-dock {
+  display: flex;
+  position: relative;
+  flex: none;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--color-border);
+}
+
+/* The resizer sits over the dock's top line, so the dock's height is all it takes. */
+.forge-terminal-dock > .niuu-sidebar-resizer {
+  position: absolute;
+  inset: -4px 0 auto 0;
+  z-index: 1;
+  height: 7px;
+  background: transparent;
+}
+
+.forge-terminal-dock > .niuu-sidebar-resizer:hover,
+.forge-terminal-dock > .niuu-sidebar-resizer:focus-visible {
+  background: var(--color-brand);
+}
+
+.forge-terminal-dock__body {
+  flex: 1;
+  min-height: 0;
+}

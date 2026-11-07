@@ -34,6 +34,7 @@ from niuu.domain.services.token_scope import (
     FORGE_SESSION_LIFECYCLE_SCOPE,
     FORGE_SESSION_MESSAGE_SCOPE,
     FORGE_SESSION_READ_SCOPE,
+    FORGE_SESSION_SECRET_SCOPE,
     FORGE_SESSION_TOKEN_USE,
 )
 from niuu.domain.services.workload_identity import WorkloadIdentityService
@@ -95,6 +96,7 @@ class TestMint:
         assert claims["scopes"] == [
             FORGE_NOTIFY_SCOPE,
             FORGE_SESSION_READ_SCOPE,
+            FORGE_SESSION_SECRET_SCOPE,
             FORGE_SESSION_MESSAGE_SCOPE,
         ]
         assert claims["resource_access"]["volundr"]["roles"] == list(FORGE_SESSION_ROLES)
@@ -112,7 +114,11 @@ class TestMint:
 
     def test_defaults_only_without_grants(self) -> None:
         issued = _mint(_service())
-        assert issued.scopes == (FORGE_NOTIFY_SCOPE, FORGE_SESSION_READ_SCOPE)
+        assert issued.scopes == (
+            FORGE_NOTIFY_SCOPE,
+            FORGE_SESSION_READ_SCOPE,
+            FORGE_SESSION_SECRET_SCOPE,
+        )
         assert issued.grants == ()
 
     def test_repr_never_contains_the_token(self) -> None:
@@ -264,10 +270,15 @@ class TestWorkloadIssuerAdditions:
 
 class TestGrantsAndScopes:
     def test_scopes_for_grants(self) -> None:
-        assert scopes_for_grants([]) == (FORGE_NOTIFY_SCOPE, FORGE_SESSION_READ_SCOPE)
+        assert scopes_for_grants([]) == (
+            FORGE_NOTIFY_SCOPE,
+            FORGE_SESSION_READ_SCOPE,
+            FORGE_SESSION_SECRET_SCOPE,
+        )
         assert scopes_for_grants(["message", "lifecycle", "message"]) == (
             FORGE_NOTIFY_SCOPE,
             FORGE_SESSION_READ_SCOPE,
+            FORGE_SESSION_SECRET_SCOPE,
             FORGE_SESSION_LIFECYCLE_SCOPE,
             FORGE_SESSION_MESSAGE_SCOPE,
         )

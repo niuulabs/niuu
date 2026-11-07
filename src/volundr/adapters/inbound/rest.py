@@ -164,6 +164,7 @@ from volundr.domain.session_broker import (
     DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL,
     OPENSHELL_SERVICE_HOST_SUFFIX,
     PRESENTED_FILE_ROUTE,
+    broker_target_request,
     server_side_http_proxy_target,
     session_proxy_url,
 )
@@ -173,6 +174,8 @@ from volundr.domain.session_read_state import (
     SessionReadStateChange,
     SessionReadStateConflictError,
 )
+from volundr.domain.session_runtimes import SessionRuntimeOffer
+from volundr.domain.session_startup import SessionStartup
 from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import load_workspace_transcript
 
@@ -214,6 +217,7 @@ def _session_summary(item: Any, node: str | None) -> dict[str, Any]:
         "name": item.name,
         "status": item.status.value if hasattr(item.status, "value") else item.status,
         "activity_state": getattr(item, "activity_state", None),
+        "startup": getattr(item, "startup", None),
         "short_description": getattr(item, "short_description", None),
         "project": (
             {"id": str(coordination.project_id), "role": coordination.role}
@@ -570,6 +574,44 @@ class ForgeMcpGrantsUpdate(BaseModel):
             "The session's own Forge MCP grants, replacing the stored ones: 'message' "
             "and/or 'lifecycle'. [] removes them. They apply at the next start."
         ),
+    )
+
+
+class RuntimeReadinessResponse(BaseModel):
+    state: str = Field(
+        description="'warm': a prepared machine is free, the session starts in seconds; "
+        "'boot': a machine boots first (minutes); 'full': no capacity for a new session"
+    )
+    warm: int = Field(description="Free prepared machines that can take this runtime now")
+    remedy: str | None = Field(default=None, description="Where capacity is raised when full")
+
+
+class SessionRuntimeResponse(BaseModel):
+    runtime: str = Field(
+        description="What every session on this host runs as: 'container', 'openshell' or 'host'"
+    )
+    grants: list[str] = Field(
+        description="Extra access ('sudo', 'docker') this runtime can give a session; send "
+        "the chosen ones as workload_config.runtime_grants"
+    )
+    readiness: RuntimeReadinessResponse
+
+    @classmethod
+    def from_offer(cls, offer: SessionRuntimeOffer) -> "SessionRuntimeResponse":
+        return cls(
+            runtime=offer.runtime.value,
+            grants=[grant.value for grant in offer.grants],
+            readiness=RuntimeReadinessResponse(
+                state=offer.readiness.state.value,
+                warm=offer.readiness.warm,
+                remedy=offer.readiness.remedy,
+            ),
+        )
+
+
+class SessionRuntimesResponse(BaseModel):
+    runtimes: list[SessionRuntimeResponse] = Field(
+        description="The one runtime this host runs sessions as; empty when it does not declare one"
     )
 
 
@@ -1277,6 +1319,14 @@ class SessionResponse(BaseModel):
         default_factory=dict,
         description="Metadata from the latest activity report",
     )
+    startup: SessionStartup | None = Field(
+        default=None,
+        description=(
+            "Stages of the latest launch as the runtime backend reported them (pod "
+            "conditions and events, VM state), with when each began and ended; null "
+            "for a session never started since stages were recorded"
+        ),
+    )
     needs_attention: bool = Field(
         default=False,
         description=(
@@ -1438,6 +1488,7 @@ class SessionResponse(BaseModel):
                 session.turn_started_at.isoformat() if session.turn_started_at else None
             ),
             activity_metadata=session.activity_metadata,
+            startup=session.startup,
             needs_attention=session.needs_attention,
             workload_type=session.workload_type,
             origin=session.origin,
@@ -2105,6 +2156,20 @@ def create_router(
             gateway_url=openshell_internal_gateway_url,
         )
 
+    async def _broker_request(
+        session: Session, base_url: str, *path_segments: str
+    ) -> tuple[str, dict[str, str]]:
+        """The URL and routing headers that reach ``path_segments`` on the session's broker.
+
+        A pod manager that names its broker target (VM sessions, whose chat endpoint is
+        Forge's own session proxy) is dialled there; every other session is reached at
+        its chat endpoint ``base_url``.
+        """
+        target = await forge.get_broker_target(session)
+        if target is not None:
+            return broker_target_request(target, *path_segments)
+        return _http_proxy_target(_session_proxy_url(base_url, *path_segments))
+
     @router.get("/version", tags=["Forge"])
     async def forge_version() -> dict:
         """Identify the running Forge API build (git sha / branch) so an operator
@@ -2217,6 +2282,14 @@ def create_router(
 
         router.include_router(create_projects_router(project_service, project_principal))
         router.include_router(create_session_projects_router(project_service, project_principal))
+
+    @router.get("/session-runtimes", tags=["Sessions"], response_model=SessionRuntimesResponse)
+    async def get_session_runtimes() -> SessionRuntimesResponse:
+        """What this host runs every session as, with current warm readiness."""
+        offers = await session_service.session_runtimes()
+        return SessionRuntimesResponse(
+            runtimes=[SessionRuntimeResponse.from_offer(offer) for offer in offers]
+        )
 
     @router.get("/feature-flags", tags=["Features"])
     async def get_feature_flags(request: Request) -> dict:
@@ -2900,11 +2973,11 @@ def create_router(
         if not session.chat_endpoint:
             result["state"] = "not_running"
             return result
-        _, base_url = await forge.get_session_proxy_target(session_id)
-        url, headers = _http_proxy_target(_session_proxy_url(base_url, "health"))
-        if auth := request.headers.get("authorization"):
-            headers["Authorization"] = auth
+        live_session, base_url = await forge.get_session_proxy_target(session_id)
         try:
+            url, headers = await _broker_request(live_session, base_url, "health")
+            if auth := request.headers.get("authorization"):
+                headers["Authorization"] = auth
             async with httpx.AsyncClient(timeout=runtime_health_timeout) as client:
                 response = await client.get(url, headers=headers)
                 response.raise_for_status()
@@ -3679,7 +3752,10 @@ def create_router(
         ``GET /api/logs`` endpoint.
         """
         try:
-            _, base_url = await forge.get_session_proxy_target(session_id)
+            live_session, base_url = await forge.get_session_proxy_target(session_id)
+            proxy_url, routing_headers = await _broker_request(
+                live_session, base_url, "api", "logs"
+            )
         except LookupError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -3696,9 +3772,6 @@ def create_router(
             auth = request.headers.get("authorization")
             if auth:
                 headers["Authorization"] = auth
-            proxy_url, routing_headers = _http_proxy_target(
-                _session_proxy_url(base_url, "api", "logs")
-            )
             headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
@@ -3765,13 +3838,13 @@ def create_router(
 
         try:
             if session.chat_endpoint:
-                _, base_url = await forge.get_session_proxy_target(session_id)
+                live_session, base_url = await forge.get_session_proxy_target(session_id)
                 headers = {}
                 auth = request.headers.get("authorization")
                 if auth:
                     headers["Authorization"] = auth
-                proxy_url, routing_headers = _http_proxy_target(
-                    _session_proxy_url(base_url, "api", "logs", "aggregate")
+                proxy_url, routing_headers = await _broker_request(
+                    live_session, base_url, "api", "logs", "aggregate"
                 )
                 headers.update(routing_headers)
                 async with httpx.AsyncClient(timeout=10.0) as client:
@@ -3830,7 +3903,10 @@ def create_router(
         extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         try:
-            _, base_url = await forge.get_session_proxy_target(session_id)
+            live_session, base_url = await forge.get_session_proxy_target(session_id)
+            proxy_url, routing_headers = await _broker_request(
+                live_session, base_url, "api", *path_segments
+            )
         except LookupError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -3850,9 +3926,6 @@ def create_router(
         headers.update(extra_headers or {})
         body = await request.body()
         try:
-            proxy_url, routing_headers = _http_proxy_target(
-                _session_proxy_url(base_url, "api", *path_segments)
-            )
             headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                 response = await client.request(
@@ -4116,7 +4189,6 @@ def create_router(
                 detail="Not authorized to message this session",
             )
 
-        # Build WS URL with access token
         ws_url = session.chat_endpoint
         # An instruction sender needs delivery ACKs, not the whole conversation.
         # Old proxies only forward history=recent, still avoiding full replay;
@@ -4131,13 +4203,15 @@ def create_router(
             (("history", "recent"), ("history_protocol", "2"), ("history_delivery", "none"))
         )
         ws_url = urlunsplit(endpoint._replace(query=urlencode(query)))
-        auth = request.headers.get("authorization", "")
-        token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
-        if token:
-            sep = "&" if "?" in ws_url else "?"
-            ws_url = f"{ws_url}{sep}access_token={token}"
 
         connect_kwargs: dict[str, object] = {"open_timeout": 10}
+        # The caller's bearer rides in the Authorization header, as for the history
+        # proxy: Envoy reads JWTs from that header (and only a `token` query
+        # parameter), so `?access_token=` reached a standalone Forge's /s route
+        # unauthenticated and the broker socket was refused with 401.
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer ") and auth.removeprefix("Bearer ").strip():
+            connect_kwargs["additional_headers"] = {"Authorization": auth}
         if ws_url.startswith("wss://"):
             ssl_ctx = ssl.create_default_context()
             ssl_ctx.check_hostname = False
@@ -4669,10 +4743,12 @@ def create_router(
         except SessionAccessDeniedError as exc:
             raise HTTPException(403, f"Access denied to session {session_id}") from exc
 
+        # The broker's answer when it holds no turns, kept while the durable rebuild is tried.
+        empty_live: tuple[dict, float] | None = None
         try:
             if session.chat_endpoint:
                 t_tgt = time.perf_counter()
-                _, base_url = await forge.get_session_proxy_target(session_id)
+                live_session, base_url = await forge.get_session_proxy_target(session_id)
                 timings["proxy_target_ms"] = round((time.perf_counter() - t_tgt) * 1000.0, 1)
 
                 headers = {}
@@ -4681,8 +4757,8 @@ def create_router(
                     headers["Authorization"] = auth
 
                 t_fetch = time.perf_counter()
-                proxy_url, routing_headers = _http_proxy_target(
-                    _session_proxy_url(base_url, "api", "conversation", "history")
+                proxy_url, routing_headers = await _broker_request(
+                    live_session, base_url, "api", "conversation", "history"
                 )
                 headers.update(routing_headers)
                 # WEDGE GRACE (2026-07-12): a huge session's broker can stall for seconds
@@ -4856,6 +4932,8 @@ def create_router(
                         "falling through to durable-log rebuild",
                         _sanitize_log(session_id),
                     )
+                    if isinstance(live, dict) and live.get("turns") == []:
+                        empty_live = (live, fetch_ms)
         except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
             logger.info(
                 "Falling back to workspace transcript for session %s: %s",
@@ -4876,6 +4954,17 @@ def create_router(
             fallback = _fallback_workspace_transcript(session)
             if fallback is not None:
                 return _maybe_elide(fallback)
+            if isinstance(e, SessionArchiveNotAvailableError) and empty_live is not None:
+                # The broker holds no turns and no durable source holds anything (a new
+                # session, e.g. a VM session whose workspace lives in its guest): the
+                # empty transcript is the answer, not an outage. A seed-only body with
+                # nothing durable still closes with 503 — that user turn went unrecorded.
+                logger.info(
+                    "No durable transcript for session %s; serving the live broker's "
+                    "empty transcript",
+                    _sanitize_log(session_id),
+                )
+                return _maybe_elide(empty_live[0], fetch_ms=empty_live[1])
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(e) or "Session archive service not available",
@@ -5070,13 +5159,13 @@ def create_router(
 
         if session.chat_endpoint:
             try:
-                _, base_url = await forge.get_session_proxy_target(session_id)
+                live_session, base_url = await forge.get_session_proxy_target(session_id)
                 headers = {}
                 auth = request.headers.get("authorization")
                 if auth:
                     headers["Authorization"] = auth
-                tool_result_url, routing_headers = _http_proxy_target(
-                    _session_proxy_url(base_url, "api", "conversation", "tool-result", tool_use_id)
+                tool_result_url, routing_headers = await _broker_request(
+                    live_session, base_url, "api", "conversation", "tool-result", tool_use_id
                 )
                 headers.update(routing_headers)
                 # Generous timeout: source 2 pulls the WHOLE inline transcript from an old
@@ -5098,8 +5187,8 @@ def create_router(
                     # `detail`), and it is the ONLY live source for the large image results a
                     # durable rebuild misses. Scan it, and hand the turns back so the caller's
                     # warm-pass fills the whole session from this one fetch.
-                    history_url, history_routing_headers = _http_proxy_target(
-                        _session_proxy_url(base_url, "api", "conversation", "history")
+                    history_url, history_routing_headers = await _broker_request(
+                        live_session, base_url, "api", "conversation", "history"
                     )
                     history_headers = {**headers, **history_routing_headers}
                     history = await client.get(
@@ -5369,13 +5458,13 @@ def create_router(
             return {"gates": []}
 
         try:
-            _, base_url = await forge.get_session_proxy_target(session_id)
+            live_session, base_url = await forge.get_session_proxy_target(session_id)
             headers = {}
             auth = request.headers.get("authorization")
             if auth:
                 headers["Authorization"] = auth
-            proxy_url, routing_headers = _http_proxy_target(
-                _session_proxy_url(base_url, "api", "workflow", "gates")
+            proxy_url, routing_headers = await _broker_request(
+                live_session, base_url, "api", "workflow", "gates"
             )
             headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -5490,9 +5579,15 @@ def create_router(
         headers[ROOM_ROLE_HEADER] = "approver"
 
         try:
-            proxy_url, routing_headers = _http_proxy_target(
-                _session_proxy_url(base_url, "api", "workflow", "gates", gate_id, "resolve")
+            proxy_url, routing_headers = await _broker_request(
+                session, base_url, "api", "workflow", "gates", gate_id, "resolve"
             )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} has no active endpoint",
+            )
+        try:
             headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
@@ -5555,13 +5650,13 @@ def create_router(
         if not session.chat_endpoint:
             return {"requests": []}
         try:
-            _, base_url = await forge.get_session_proxy_target(session_id)
+            live_session, base_url = await forge.get_session_proxy_target(session_id)
             headers = {}
             auth = request.headers.get("authorization")
             if auth:
                 headers["Authorization"] = auth
-            proxy_url, routing_headers = _http_proxy_target(
-                _session_proxy_url(base_url, "api", "help", "requests")
+            proxy_url, routing_headers = await _broker_request(
+                live_session, base_url, "api", "help", "requests"
             )
             headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -5617,9 +5712,15 @@ def create_router(
         if auth:
             headers["Authorization"] = auth
         try:
-            proxy_url, routing_headers = _http_proxy_target(
-                _session_proxy_url(base_url, "api", "help", "requests", request_id, "answer")
+            proxy_url, routing_headers = await _broker_request(
+                session, base_url, "api", "help", "requests", request_id, "answer"
             )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} has no active endpoint",
+            )
+        try:
             headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
@@ -6174,7 +6275,10 @@ def create_router(
             await forge.get_authorized_session(session_id, principal=principal, action="read")
 
         try:
-            _, base_url = await forge.get_session_proxy_target(session_id)
+            live_session, base_url = await forge.get_session_proxy_target(session_id)
+            proxy_url, routing_headers = await _broker_request(
+                live_session, base_url, "api", "diff"
+            )
         except LookupError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -6193,9 +6297,6 @@ def create_router(
             proxy_headers["Authorization"] = auth_header
 
         try:
-            proxy_url, routing_headers = _http_proxy_target(
-                _session_proxy_url(base_url, "api", "diff")
-            )
             proxy_headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(

@@ -101,6 +101,8 @@ from volundr.domain.push import PushTokenKind
 from volundr.domain.session_changes import SessionChanges
 from volundr.domain.session_participants import ParticipantRole, SessionParticipant
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
+from volundr.domain.session_runtimes import SessionRuntimeOffer
+from volundr.domain.session_startup import SessionStartup, StartupStage
 
 __all__ = [
     "AuthorizationPort",
@@ -183,6 +185,15 @@ class SessionRepository(ABC):
 
         Returns the stored session, or ``None`` when it no longer exists. The
         running launch's credential is unchanged; the next start mints from these.
+        """
+
+    @abstractmethod
+    async def update_startup(self, session_id: UUID, startup: SessionStartup) -> Session | None:
+        """Replace only the session's launch stages.
+
+        The startup recorder is the column's only writer; ordinary updates never
+        write it, so a lifecycle update with a stale copy cannot lose a stage.
+        Returns the stored session, or ``None`` when it no longer exists.
         """
 
     @abstractmethod
@@ -576,6 +587,14 @@ class PodManager(ABC):
         """
         return await self.capacity()
 
+    async def session_runtimes(self) -> tuple[SessionRuntimeOffer, ...]:
+        """What this host runs every session as: at most one offer.
+
+        A host runs exactly one runtime, so sessions never choose; empty means
+        this pod manager does not declare what its sessions run in.
+        """
+        return ()
+
     @property
     def delivers_forge_session_token(self) -> bool:
         """Whether ``start`` hands ``spec.forge_session`` to the broker privately.
@@ -588,6 +607,15 @@ class PodManager(ABC):
 
     def initial_chat_endpoint(self, session: Session) -> str | None:
         """Return the deterministic chat endpoint before pods are ready, if known."""
+        return None
+
+    async def broker_target(self, session: Session) -> SessionProxyTarget | None:
+        """Where Forge itself reaches the session's broker HTTP API.
+
+        None means at the session's chat endpoint. A manager whose chat endpoint
+        is Forge's own session proxy returns the target that proxy dials, and
+        raises ``ValueError`` while the session has no reachable broker.
+        """
         return None
 
     def initial_code_endpoint(self, session: Session) -> str | None:
@@ -637,6 +665,42 @@ class PodManager(ABC):
 
     async def status_detail(self, session: Session) -> str | None:
         """Return a safe, non-terminal detail for the current runtime status."""
+        return None
+
+    # --- Launch progress -------------------------------------------------
+    #
+    # Any backend can show people what a starting session waits on. Forge's
+    # SessionStartupRecorder calls ``startup_stages`` every
+    # ``provisioning.startup_poll_seconds`` while a session is starting and
+    # persists the merged result on ``sessions.startup`` (REST, the session
+    # stream, the Guild facade). A backend opts in by returning True from
+    # ``reports_startup_stages`` and implementing ``startup_stages``; one that
+    # does not shows a single "Starting the runtime" stage. Rules:
+    #
+    # - Return the whole launch every time, oldest stage first, with stable
+    #   ``key``s. Earlier views are merged by key; a stage keeps its earliest
+    #   start, and a new stage that begins ends every earlier active one.
+    # - Only real backend state: a condition or event with its own timestamp,
+    #   or the time this controller performed the step. Never a timer, an
+    #   estimate or a percentage. ``detail`` is the backend's own words.
+    # - Stages still to come may be returned as PENDING (no ``started_at``).
+    # - Running ends every open stage and a failure marks the active one with
+    #   ``session.error``; backends never report those terminal verdicts.
+    # - Raise when the backend cannot be read: the recorder logs it at error,
+    #   counts it and shows it on the record as ``progress_error``.
+
+    @property
+    def reports_startup_stages(self) -> bool:
+        """Whether ``startup_stages`` reports this backend's launch stages."""
+        return False
+
+    async def startup_stages(self, session: Session) -> tuple[StartupStage, ...] | None:
+        """The current launch's stages as this backend knows them now, in order.
+
+        Called only after Forge handed the launch to ``start``. None means this
+        backend does not report its stages; an empty tuple means nothing has
+        happened yet for this launch.
+        """
         return None
 
     @abstractmethod
@@ -1865,6 +1929,31 @@ class SecretInjectionPort(ABC):
         """Whether this adapter continuously projects OAuth engine access tokens."""
         return False
 
+    @property
+    def supports_guest_agents(self) -> bool:
+        """Whether this adapter can run its own agent containers on a VM guest.
+
+        Kubernetes sessions get their secrets from an in-cluster injector; a VM has none,
+        so an adapter that renders secrets with an agent describes that agent as
+        containers the VM runtime runs (``guest_agent_pod_spec_additions``).
+        """
+        return False
+
+    async def guest_agent_pod_spec_additions(
+        self,
+        user_id: str,
+        session_id: str,
+        credential_mappings: list[CredentialMapping],
+    ) -> PodSpecAdditions:
+        """Return explicit init/sidecar containers and volumes that render the secrets.
+
+        Used instead of ``pod_spec_additions`` for VM sessions, where no injector
+        mutates the pod.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot run secret injection agents on a VM guest"
+        )
+
     @abstractmethod
     async def pod_spec_additions(
         self,
@@ -2047,6 +2136,11 @@ if TYPE_CHECKING:
 
 class SessionExecutionResolver(Protocol):
     """Resolve and verify an operator-approved execution choice before contribution."""
+
+    def runs_on_compute(self, session: Session) -> bool:
+        """Whether ``session`` runs in the compute pool, so its stop and delete must be
+        confirmed. False only for a session a placement keeps off the pool."""
+        ...
 
     async def has_legacy_allocation(self, session: Session) -> bool: ...
 

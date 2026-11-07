@@ -4,6 +4,7 @@
 {{- $hasFluxController = true -}}
 {{- end -}}
 {{- end -}}
+{{- $hasAgentInjector := or (contains "InfisicalAgent" .Values.secretInjection.adapter) (contains "OpenBaoAgentInjectionAdapter" .Values.secretInjection.adapter) -}}
 {{- if .Values.rbac.create -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -59,7 +60,24 @@ rules:
   # Access to configmaps
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list", "watch"]
+    verbs:
+      - get
+      - list
+      - watch
+      {{- if and $hasAgentInjector (not .Values.rbac.clusterWide) }}
+      # Agent injectors write each session's agent config as a ConfigMap
+      - create
+      - update
+      - patch
+      - delete
+      {{- end }}
+  {{- if and (contains "OpenBaoAgentInjectionAdapter" .Values.secretInjection.adapter) (not .Values.rbac.clusterWide) }}
+  # OpenBao session injection creates a dedicated ServiceAccount per session
+  # NOTE: If sessions run in a different namespace, enable rbac.clusterWide
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- end }}
   # Access to events for monitoring
   - apiGroups: [""]
     resources: ["events"]
@@ -119,7 +137,7 @@ rules:
     resources: ["pods/exec"]
     verbs: ["get", "create"]
   {{- end }}
-  {{- if or (contains "InfisicalAgent" .Values.secretInjection.adapter) (contains "OpenBaoAgentInjectionAdapter" .Values.secretInjection.adapter) }}
+  {{- if $hasAgentInjector }}
   # Cluster-wide access to injector coordination resources in the session namespace
   - apiGroups: [""]
     resources: ["configmaps"]
@@ -320,6 +338,73 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ include "volundr.fullname" . }}-session-credentials
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "volundr.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- /*
+VM guest metadata: a VM session has no kubelet, so Forge requests the ServiceAccount
+tokens a projected volume would carry (TokenRequest) and hands them to the guest agent.
+Namespaced to the ServiceAccounts' namespace, and create-only on the token subresource.
+*/}}
+{{- if and .Values.rbac.create (or .Values.guestMetadata.enabled .Values.guestMetadata.issueServiceAccountTokens) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "volundr.fullname" . }}-guest-metadata
+  namespace: {{ include "volundr.guestMetadataNamespace" . }}
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "volundr.fullname" . }}-guest-metadata
+  namespace: {{ include "volundr.guestMetadataNamespace" . }}
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "volundr.fullname" . }}-guest-metadata
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "volundr.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- /*
+SPIFFE guest identity: one spire-controller-manager ClusterStaticEntry per VM
+allocation, created when its session starts and deleted when it stops.
+*/}}
+{{- if and .Values.rbac.create .Values.guestMetadata.spiffeRegistration }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "volundr.fullname" . }}-guest-spiffe
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["spire.spiffe.io"]
+    resources: ["clusterstaticentries"]
+    verbs: ["get", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "volundr.fullname" . }}-guest-spiffe
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "volundr.fullname" . }}-guest-spiffe
 subjects:
   - kind: ServiceAccount
     name: {{ include "volundr.serviceAccountName" . }}

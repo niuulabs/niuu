@@ -1,0 +1,143 @@
+/* The agent's plan, as a capsule above the composer. */
+
+.niuu-plan-dock {
+  display: flex;
+  flex-direction: column;
+  align-self: center;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 88%, transparent);
+  backdrop-filter: blur(14px);
+}
+
+.niuu-plan-dock[data-open] {
+  align-self: stretch;
+}
+
+.niuu-plan-dock__cap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 14px;
+  border: 0;
+  background: none;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.niuu-plan-dock__cap:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -2px;
+}
+
+.niuu-plan-dock__ring {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.niuu-plan-dock__ring-track,
+.niuu-plan-dock__ring-fill {
+  fill: none;
+}
+
+.niuu-plan-dock__ring-track {
+  stroke: var(--color-bg-elevated);
+}
+
+.niuu-plan-dock__ring-fill {
+  stroke: var(--color-accent-emerald);
+}
+
+.niuu-plan-dock__summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.niuu-plan-dock__summary b {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.niuu-plan-dock__agents {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+}
+
+.niuu-plan-dock__agents-icon,
+.niuu-plan-dock__chevron {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
+.niuu-plan-dock__chevron {
+  margin-left: auto;
+}
+
+.niuu-plan-dock__list {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: var(--space-1) 14px 12px;
+  border-top: 1px solid var(--color-border-subtle);
+  list-style: none;
+}
+
+.niuu-plan-dock__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 3px 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.niuu-plan-dock__item--done {
+  color: var(--color-text-muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--color-text-faint);
+}
+
+.niuu-plan-dock__item--active {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.niuu-plan-dock__box {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  border: 1.5px solid var(--color-text-faint);
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+.niuu-plan-dock__item--done .niuu-plan-dock__box {
+  border-color: var(--color-accent-emerald);
+  background: var(--color-accent-emerald);
+  color: var(--color-accent-on-fill, var(--color-bg-primary));
+}
+
+.niuu-plan-dock__item--active .niuu-plan-dock__box {
+  border-color: var(--color-brand);
+}
+
+.niuu-plan-dock__check {
+  width: 11px;
+  height: 11px;
+}

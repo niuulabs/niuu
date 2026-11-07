@@ -20,6 +20,15 @@ describe('createMockVolundrService', () => {
     expect(typeof svc.subscribe).toBe('function');
   });
 
+  it('forks a session into a named, starting child it then lists', async () => {
+    const svc = createMockVolundrService();
+    const [parent] = await svc.getSessions();
+    const child = await svc.forkSession(parent!.id, 'parent-side');
+    expect(child).toMatchObject({ name: 'parent-side', status: 'starting', messageCount: 0 });
+    expect(await svc.getSession(child.id)).toMatchObject({ id: child.id });
+    await expect(svc.forkSession('missing', 'x')).rejects.toThrow('Session not found: missing');
+  });
+
   it('getSessions returns seeded sessions', async () => {
     const svc = createMockVolundrService();
     const sessions = await svc.getSessions();
@@ -143,12 +152,12 @@ describe('createMockVolundrService', () => {
     expect(session.hostname).toBe('host.example.com');
   });
 
-  it('sendMessage echoes back the content', async () => {
+  it('sendMessage reports the message delivered to the target session', async () => {
     const svc = createMockVolundrService();
-    const msg = await svc.sendMessage('sess-1', 'hello');
-    expect(msg.role).toBe('assistant');
-    expect(msg.content).toContain('hello');
-    expect(msg.sessionId).toBe('sess-1');
+    const delivery = await svc.sendMessage('sess-1', 'hello');
+    expect(delivery.status).toBe('delivered');
+    expect(delivery.sessionId).toBe('sess-1');
+    expect(delivery.requestId).toBeTruthy();
   });
 
   it('getFeatures returns a feature flags object', async () => {
@@ -1018,10 +1027,126 @@ describe('mock Forge projects', () => {
     expect((await service.getProjects()).map((entry) => entry.name)).toContain('Spring catalogue');
   });
 
+  it('refuses an update made against a stale revision', async () => {
+    const service = createMockVolundrService();
+    const project = await service.createProject('Spring catalogue');
+    await service.updateProject(project, { description: 'First' });
+    await expect(service.updateProject(project, { description: 'Second' })).rejects.toThrow(
+      'Project changed; reload before saving',
+    );
+  });
+
+  it('carries the description, status and checkout folder of an update', async () => {
+    const service = createMockVolundrService();
+    const project = await service.createProject('Spring catalogue');
+    const updated = await service.updateProject(project, {
+      description: 'Seasonal',
+      status: 'archived',
+      workspace_path: '/work/spring',
+    });
+    expect(updated).toMatchObject({
+      description: 'Seasonal',
+      status: 'archived',
+      workspace_path: '/work/spring',
+    });
+  });
+
   it('refuses to update a project it does not hold', async () => {
     const service = createMockVolundrService();
     await expect(
       service.updateProject({ id: 'nope', name: 'x', slug: 'x', status: 'active' }, {}),
     ).rejects.toThrow('Project not found');
+  });
+});
+
+describe('mock session read state', () => {
+  it('marks a session unread and read, advancing the revision each time', async () => {
+    const service = createMockVolundrService();
+    const first = await service.getSessionReadState('sess-1');
+    expect(first).toMatchObject({ isUnread: false, revision: 0 });
+
+    const unread = await service.changeSessionReadState('sess-1', {
+      state: 'unread',
+      expectedRevision: 0,
+      throughSeq: 0,
+    });
+    expect(unread).toMatchObject({ isUnread: true, manuallyUnread: true, revision: 1 });
+    expect(await service.getSessionReadState('sess-1')).toMatchObject({ isUnread: true });
+
+    const read = await service.changeSessionReadState('sess-1', {
+      state: 'read',
+      expectedRevision: 1,
+      throughSeq: 0,
+    });
+    expect(read).toMatchObject({ isUnread: false, manuallyUnread: false, revision: 2 });
+  });
+
+  it('refuses a change made against an old revision', async () => {
+    const service = createMockVolundrService();
+    await expect(
+      service.changeSessionReadState('sess-1', {
+        state: 'read',
+        expectedRevision: 5,
+        throughSeq: 0,
+      }),
+    ).rejects.toThrow('marked read or unread elsewhere');
+  });
+
+  it('refuses a session it does not hold', async () => {
+    await expect(createMockVolundrService().getSessionReadState('nope')).rejects.toThrow(
+      'Session not found',
+    );
+  });
+});
+
+describe('mock secret requests', () => {
+  it('serves a pending request and records the keep choice, never the value', async () => {
+    const svc = createMockVolundrService();
+    expect(await svc.getSecretRequest('sess-1', 'secret-request-1')).toMatchObject({
+      name: 'GITLAB_TOKEN',
+      status: 'pending',
+    });
+    const fulfilled = await svc.fulfillSecretRequest('sess-1', 'secret-request-1', {
+      value: 'glpat-123',
+      keep: 'saved',
+    });
+    expect(fulfilled).toMatchObject({
+      status: 'fulfilled',
+      keep: 'saved',
+      credentialName: 'gitlab-token',
+    });
+    expect(JSON.stringify(fulfilled)).not.toContain('glpat-123');
+    expect(await svc.getSecretRequest('sess-1', 'secret-request-1')).toMatchObject({
+      status: 'fulfilled',
+    });
+    await expect(
+      svc.fulfillSecretRequest('sess-1', 'secret-request-1', { value: 'again', keep: 'session' }),
+    ).rejects.toThrow('already fulfilled');
+  });
+
+  it('keeps a session-only value without a credential name', async () => {
+    const svc = createMockVolundrService();
+    expect(
+      await svc.fulfillSecretRequest('sess-1', 'secret-request-1', { value: 'v', keep: 'session' }),
+    ).toMatchObject({ keep: 'session', credentialName: null });
+  });
+
+  it('declines a pending request once', async () => {
+    const svc = createMockVolundrService();
+    expect(await svc.declineSecretRequest('sess-1', 'secret-request-1')).toMatchObject({
+      status: 'declined',
+    });
+    await expect(svc.declineSecretRequest('sess-1', 'secret-request-1')).rejects.toThrow(
+      'already declined',
+    );
+  });
+
+  it('refuses an unknown request or one from another session', async () => {
+    const svc = createMockVolundrService();
+    await expect(svc.getSecretRequest('sess-1', 'nope')).rejects.toThrow('not found: nope');
+    await expect(svc.getSecretRequest('sess-2', 'secret-request-1')).rejects.toThrow('not found');
+    await expect(svc.declineSecretRequest('sess-2', 'secret-request-1')).rejects.toThrow(
+      'not found',
+    );
   });
 });

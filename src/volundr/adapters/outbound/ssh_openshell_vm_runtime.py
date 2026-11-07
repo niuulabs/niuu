@@ -7,24 +7,30 @@ import hashlib
 import json
 import math
 import os
+import re
 import shlex
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
 
 from niuu.ports.credentials import CredentialStorePort
+from volundr.adapters.outbound.local_process import FORGE_MCP_GRANTS_ENV
 from volundr.adapters.outbound.openshell_contract import check_network_endpoint_modes
 from volundr.adapters.outbound.ssh_vm_runtime import (
     _LAUNCH,
     _PREPARE,
     _REMOTE_DATA,
     _SESSION_FILES,
+    _START,
+    _STOP,
     SshContainerVmRuntime,
 )
-from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.compute import AllocationRef, ComputeLease, MachineBootstrap, SlotLease
+from volundr.domain.guest_credentials import GuestCredentialPlan
 from volundr.domain.models import Session, SessionSpec
+from volundr.domain.session_runtimes import SessionRuntimeKind
 
 _OPEN_SHELL_ERROR_PREFIX = "NIIU_OPEN_SHELL_STAGE:"
 _OPEN_SHELL_DETAIL_PREFIX = "NIIU_OPEN_SHELL_DETAIL:"
@@ -34,13 +40,16 @@ _OPEN_SHELL_CODEX_HOME = f"{_OPEN_SHELL_HOME}/.codex"
 _OPEN_SHELL_CLAUDE_HOME = f"{_OPEN_SHELL_HOME}/.claude"
 #: The OpenShell release this runtime installs on a guest, and the SHA-256 of
 #: that release's install.sh (raw.githubusercontent.com/NVIDIA/OpenShell/<tag>).
-DEFAULT_OPENSHELL_VERSION = "v0.1.6-pre.5"
+#: A tagged release: install.sh fetches prerelease packages only through an
+#: authenticated GitHub CLI, which a guest does not have.
+DEFAULT_OPENSHELL_VERSION = "v0.1.7"
 DEFAULT_OPENSHELL_INSTALL_SHA256 = (
     "04c1a437d4a4fc11930d75a336fc4f52bf0c95251e8469c306e407e203769ae7"
 )
 #: ``openshell sandbox list --page-size`` while confirming a deletion; the
 #: gateway coerces anything above 1000 down to 1000.
 DEFAULT_SANDBOX_INVENTORY_PAGE_SIZE = 1000
+_DIGEST = re.compile(r"@sha256:[a-f0-9]{64}$")
 
 
 def _credential_mappings(values: dict[str, Any]) -> list[dict[str, Any]]:
@@ -222,6 +231,39 @@ def _policy_with_native_providers(configured_policy: str, specs: list[dict[str, 
     return yaml.safe_dump(policy, sort_keys=False)
 
 
+def _policy_with_mounts(configured_policy: str, mounts: list[dict[str, Any]]) -> str:
+    """Let the sandbox reach the guest directories it mounts.
+
+    Landlock denies every path its policy does not name, so a mounted directory
+    the operator's policy does not cover would be invisible to Skuld.
+    """
+    if not mounts:
+        return configured_policy
+    policy = yaml.safe_load(configured_policy)
+    if not isinstance(policy, dict):
+        raise ValueError("OpenShell policy must be a YAML object")
+    filesystem = policy.setdefault("filesystem_policy", {})
+    if not isinstance(filesystem, dict):
+        raise ValueError("OpenShell filesystem_policy must be a YAML object")
+    for key in ("read_only", "read_write"):
+        if not isinstance(filesystem.setdefault(key, []), list):
+            raise ValueError(f"OpenShell filesystem_policy.{key} must be a list")
+    for mount in mounts:
+        target = PurePosixPath(mount["target"])
+        # read_write grants reading as well; read_only covers only read-only mounts.
+        covering = [
+            *filesystem["read_write"],
+            *(filesystem["read_only"] if mount["readonly"] else []),
+        ]
+        if any(
+            target == PurePosixPath(path) or PurePosixPath(path) in target.parents
+            for path in covering
+        ):
+            continue
+        filesystem["read_only" if mount["readonly"] else "read_write"].append(str(target))
+    return yaml.safe_dump(policy, sort_keys=False)
+
+
 _OPENSHELL_VERSION_CHECK = r"""
 def installed_openshell_version():
     if shutil.which('openshell') is None:
@@ -232,6 +274,11 @@ def installed_openshell_version():
     return match.group(1).replace('~','-') if match else ''
 pinned_version=sys.argv[1]
 wanted_version=pinned_version.lstrip('v')
+def gateway_ready():
+    # `openshell status` exits 0 while no gateway is registered; listing
+    # sandboxes needs a registered, reachable and authenticated gateway.
+    return subprocess.run(['openshell','sandbox','list'],stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode == 0
 """
 
 _INSTALL_OPENSHELL = (
@@ -241,6 +288,7 @@ import base64, hashlib, os, pathlib, re, shutil, subprocess, sys, time
     + _OPENSHELL_VERSION_CHECK
     + r"""
 install_sha256=sys.argv[2]
+sandbox_uid,sandbox_gid=int(sys.argv[3]),int(sys.argv[4])
 stage='host-install'
 def report_stage(exc_type,exc_value,traceback):
     print('NIIU_OPEN_SHELL_STAGE:'+stage,file=sys.stderr)
@@ -259,19 +307,6 @@ def run(*args, **kwargs):
 
 user=os.environ['USER']
 run('sudo','-n','loginctl','enable-linger',user)
-# Rootless Podman resolves host.containers.internal to its host-side bridge
-# address, not guest loopback.  Permit the controller's explicitly requested
-# remote-forward address so an OpenShell sandbox can call back to Volundr.
-stage='host-ssh'
-gateway_ports=pathlib.Path('/etc/ssh/sshd_config.d/20-niuu-gateway-ports.conf')
-gateway_ports_text='GatewayPorts clientspecified\n'
-if not gateway_ports.exists() or gateway_ports.read_text()!=gateway_ports_text:
-    temporary=pathlib.Path('/tmp/niuu-openshell-gateway-ports.conf')
-    temporary.write_text(gateway_ports_text)
-    run('sudo','-n','install','-D','-m','0644',str(temporary),str(gateway_ports))
-    temporary.unlink(missing_ok=True)
-    run('sudo','-n','sshd','-t')
-    run('sudo','-n','systemctl','restart','ssh')
 if installed_openshell_version() != wanted_version or shutil.which('openshell-gateway') is None:
     installer=pathlib.Path('/tmp/niuu-openshell-install.sh')
     run('curl','-LsSf',
@@ -335,6 +370,8 @@ config=pathlib.Path.home()/'.config/openshell/gateway.toml'
 config.parent.mkdir(parents=True,exist_ok=True)
 # The sandbox mounts the guest's workspace and home as host binds through its
 # driver config; OpenShell cannot label host paths, so admission is off here.
+# keep-id maps this host user to the sandbox user, so files the guest writes as
+# this user (and secrets readable by its group) belong to the sandbox user.
 desired=f'''[openshell]
 version = 2
 
@@ -347,6 +384,7 @@ socket_path = "/run/user/{os.getuid()}/podman/podman.sock"
 grpc_endpoint = "https://host.containers.internal:17670"
 enable_bind_mounts = true
 allow_driver_config = true
+userns = "keep-id:uid={sandbox_uid},gid={sandbox_gid}"
 
 [openshell.drivers.podman.resource_admission]
 enabled = false
@@ -376,10 +414,18 @@ if not podman_socket.exists():
     raise RuntimeError('OpenShell Podman socket is unavailable')
 stage='gateway-start'
 run('systemctl','--user','restart','openshell-gateway')
+stage='gateway-register'
+# Register the CLI with the gateway's current client certificates; a previous
+# registration holds copies of certificates regenerated above.
+cli_config=pathlib.Path.home()/'.config/openshell'
+shutil.rmtree(cli_config/'gateways'/'openshell',ignore_errors=True)
+active=cli_config/'active_gateway'
+if active.exists() and active.read_text().strip()=='openshell':
+    active.unlink()
+run('openshell','gateway','add','https://127.0.0.1:17670','--local','--name','openshell')
+stage='gateway-ready'
 for _ in range(30):
-    ready=subprocess.run(['openshell','status'],stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
-    if ready.returncode == 0:
+    if gateway_ready():
         break
     time.sleep(1)
 else:
@@ -389,10 +435,11 @@ else:
 
 _VERIFY_OPENSHELL = (
     r"""
-import os, pathlib, re, shutil, subprocess, sys
+import os, pathlib, re, shutil, subprocess, sys, tomllib
 """
     + _OPENSHELL_VERSION_CHECK
     + r"""
+sandbox_uid,sandbox_gid=int(sys.argv[3]),int(sys.argv[4])
 for command in ('openshell','openshell-gateway','podman'):
     if shutil.which(command) is None:
         raise RuntimeError('Prepared OpenShell host is missing required software')
@@ -406,8 +453,23 @@ if int(version.split('.',1)[0]) < 5:
 socket=pathlib.Path(f'/run/user/{os.getuid()}/podman/podman.sock')
 if not socket.exists():
     raise RuntimeError('Prepared OpenShell host Podman socket is unavailable')
-subprocess.run(['openshell','status'],check=True,stdout=subprocess.DEVNULL,
-               stderr=subprocess.DEVNULL)
+# The start program relies on these driver settings: host bind mounts through
+# driver config, and the host user mapped to the sandbox user.
+gateway=tomllib.loads((pathlib.Path.home()/'.config/openshell/gateway.toml').read_text())
+podman=gateway.get('openshell',{}).get('drivers',{}).get('podman',{})
+required={'enable_bind_mounts':True,'allow_driver_config':True,
+          'userns':f'keep-id:uid={sandbox_uid},gid={sandbox_gid}'}
+for key,value in required.items():
+    if podman.get(key)!=value:
+        raise RuntimeError(f'Prepared OpenShell gateway must set [openshell.drivers.podman] '
+                           f'{key} = {value!r}')
+if podman.get('resource_admission',{}).get('enabled',True):
+    raise RuntimeError('Prepared OpenShell gateway must set '
+                       '[openshell.drivers.podman.resource_admission] enabled = false')
+if not gateway_ready():
+    raise RuntimeError('Prepared OpenShell gateway is not registered or not reachable; '
+                       'run `openshell gateway add https://127.0.0.1:17670 --local '
+                       '--name openshell` as the access principal')
 """
 )
 
@@ -468,42 +530,47 @@ root=pathlib.Path('/var/lib/niuu/session')
 workspace=root/'workspace'
 home=root/'home'
 run('sudo','-n','mkdir','-p',str(workspace),str(home))
-stage='uid-map'
-sandbox_owner=f"{p['sandbox_uid']}:{p['sandbox_gid']}"
-# Restore and retry paths can replace the bind-mount ownership while the
-# sandbox record remains.  Normalize through Podman's user namespace before
-# both create and start so the image user always owns the writable mounts.
+stage='ownership'
+# The gateway maps this user to the sandbox user (userns keep-id). Restore and
+# retry paths can replace the ownership while the sandbox record remains, so
+# hand the writable mounts back to this user before both create and start.
 run('sudo','-n','chown','-R',f'{os.getuid()}:{os.getgid()}',
     str(workspace),str(home))
-run('podman','unshare','chown','-R',sandbox_owner,str(workspace),str(home))
+stage='clone'
+# As the Docker runtime does: the session's repository, cloned on the host.
+if p['repo'] and not (workspace/'.git').exists():
+    args=['git','clone']
+    if p['branch']:
+        args.extend(['--branch',p['branch']])
+    run(*args,'--',p['repo'],str(workspace))
 existing=subprocess.run(['openshell','sandbox','get',name],stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL)
 if existing.returncode:
-    # Ask Podman's own user namespace to translate the image identity to the
-    # host subordinate-ID range.  The podman service PID is not guaranteed to
-    # live in that namespace, so deriving IDs from /proc/<pid>/*_map can leave
-    # bind mounts owned by nobody inside the sandbox.
     mounts=[
         {'type':'bind','source':str(workspace),
          'target':p['workspace_target'],'read_only':False},
         {'type':'bind','source':str(home),
          'target':p['home_target'],'read_only':False},
     ]
+    # The session's guest directories (rendered secrets, ServiceAccount tokens,
+    # the Forge session credential), kept fresh by its credential agents.
+    for mount in p.get('volume_mounts',[]):
+        mounts.append({'type':'bind','source':mount['source'],
+                       'target':mount['target'],'read_only':mount['readonly']})
     stage='secret-staging'
-    secret_root=root/'.openshell-secrets'
+    # On tmpfs, outside the session directory that stop archives.
+    secret_root=pathlib.Path('/run/niuu/openshell-secrets')
     run('sudo','-n','install','-d','-m','0700','-o',str(os.getuid()),
         '-g',str(os.getgid()),str(secret_root))
     for index,mount in enumerate(p.get('secret_mounts',[])):
         staged=secret_root/str(index)
-        # The gateway must read the source as the host user while the sandbox
-        # must see it owned by its image UID through the rootless user namespace.
+        # Owned by this user, which the sandbox user is through keep-id.
         run('sudo','-n','install','-m','0640','-o',str(os.getuid()),
             '-g',str(os.getgid()),'--',mount['source'],str(staged))
-        run('podman','unshare','chown',sandbox_owner,str(staged))
         mounts.append({'type':'bind','source':str(staged),
                        'target':mount['target'],'read_only':True})
     args=['openshell','sandbox','create','--name',name,
-          '--from',p['image'],'--no-tty','--no-auto-providers']
+          '--from',p['image'],'--no-tty','--no-auto-providers','--detach']
     for provider in p.get('providers',[]):
         args.extend(['--provider',provider])
     args.extend(['--driver-config-json',json.dumps({'podman':{'mounts':mounts}})])
@@ -685,6 +752,8 @@ if absent is not True:
             f'inventory={observation}; last_presence={presence}; checks={checks}; '
             f'deadline_exceeded={time.monotonic() >= deadline}')
     report_failure(detail,'OpenShell sandbox deletion could not be verified before cleanup')
+stage='secret-staging-delete'
+subprocess.run(['sudo','-n','rm','-rf','--','/run/niuu/openshell-secrets'],check=True)
 for provider in json.loads(sys.argv[5]):
     stage='provider-delete'
     subprocess.run(['openshell','provider','delete',provider],
@@ -701,13 +770,34 @@ for provider in json.loads(sys.argv[5]):
 
 
 class SshOpenShellVmRuntime(SshContainerVmRuntime):
-    """Use official OpenShell on the allocated host instead of raw Docker."""
+    """Run Skuld in an OpenShell sandbox on the allocated host instead of raw Docker.
+
+    The session's credential delivery and pod sidecars (OpenBao's agent, the
+    guest agent) still run in the host's Docker, exactly as for
+    ``SshContainerVmRuntime``; Skuld alone runs in the sandbox, which mounts the
+    directories they keep fresh at the targets the launch payload names.
+    ``host_image`` is the digest-pinned Skuld image those host containers run.
+
+    ``native_credential_providers`` turns ``openshell.credentialMappings`` into
+    OpenShell providers, so the sandbox never sees the credential. Turn it off
+    when sessions use the VM contributor contract, whose credentials arrive as
+    rendered files and whose values carry the same mappings.
+    """
+
+    # Each session is an OpenShell sandbox, whose policy is its boundary.
+    _separates_slots = False
+
+    @property
+    def session_runtime(self) -> SessionRuntimeKind | None:
+        return SessionRuntimeKind.OPENSHELL
 
     def __init__(
         self,
         *,
         sandbox_platform_url: str = "",
         policy: str = "",
+        host_image: str = "",
+        native_credential_providers: bool = True,
         sandbox_delete_timeout_seconds: float = 120,
         sandbox_delete_poll_interval_seconds: float = 2,
         sandbox_delete_command_timeout_seconds: float = 30,
@@ -724,6 +814,12 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
         super().__init__(**kwargs)
         if min(sandbox_uid, sandbox_gid) < 1 or not sandbox_command:
             raise ValueError("OpenShell sandbox identity and command must be configured")
+        if not policy.strip():
+            # A sandbox created without a policy never leaves Provisioning
+            # (ConfigurationInvalid), so refuse at composition instead.
+            raise ValueError("OpenShell sandboxes need a policy: set the runtime's policy YAML")
+        if host_image and self._host_prepared and not _DIGEST.search(host_image):
+            raise ValueError("Prepared-host runtime requires a digest-pinned host_image")
         deletion_timing = (
             sandbox_delete_timeout_seconds,
             sandbox_delete_poll_interval_seconds,
@@ -744,6 +840,8 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
         self._openshell_install_sha256 = openshell_install_sha256
         self._sandbox_platform_url = sandbox_platform_url.rstrip("/")
         self._policy = policy
+        self._host_image = host_image
+        self._native_credential_providers = native_credential_providers
         self._sandbox_uid = sandbox_uid
         self._sandbox_gid = sandbox_gid
         self._sandbox_command = tuple(sandbox_command)
@@ -752,9 +850,18 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
     def configure_credentials(self, credential_store: CredentialStorePort) -> None:
         self._credential_store = credential_store
 
+    def _delivery_image(self) -> str:
+        # The sandbox image is not a host image: its default Python is not Niuu's.
+        if not self._host_image:
+            raise ValueError(
+                "This OpenShell VM session needs credential agents on the host; set the "
+                "runtime's host_image to the digest-pinned Skuld image"
+            )
+        return self._host_image
+
     async def _execute_remote(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         command: str,
         **kwargs,
@@ -797,57 +904,95 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
         )
         if self._sandbox_platform_url:
             payload["environment"]["SKULD__VOLUNDR_API_URL"] = self._sandbox_platform_url
-        payload["openshell_credential_mappings"] = _credential_mappings(spec.values)
-        if self._policy:
-            # The sandbox lifecycle runs as the access principal, while session
-            # bootstrap files live below a root-owned /etc/niuu.  Carry the
-            # policy through the protected launch payload so _START_OPENSHELL
-            # can create its short-lived, principal-owned policy file.
-            payload["policy_content"] = self._policy
+        payload["openshell_credential_mappings"] = (
+            _credential_mappings(spec.values) if self._native_credential_providers else []
+        )
+        # The sandbox lifecycle runs as the access principal, while session
+        # bootstrap files live below a root-owned /etc/niuu.  Carry the
+        # policy through the protected launch payload so _START_OPENSHELL
+        # can create its short-lived, principal-owned policy file.
+        payload["policy_content"] = self._policy
         files[launch_index] = files[launch_index].model_copy(
             update={"content": json.dumps(payload)}
         )
         return bootstrap.model_copy(update={"files": tuple(files)})
 
-    async def _ensure_openshell(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def _ensure_openshell(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
         program = (
             _VERIFY_OPENSHELL if getattr(self, "_host_prepared", False) else _INSTALL_OPENSHELL
         )
         await self._execute_remote(
             lease,
             bootstrap,
-            self._user_python(program, self._openshell_version, self._openshell_install_sha256),
+            self._user_python(
+                program,
+                self._openshell_version,
+                self._openshell_install_sha256,
+                str(self._sandbox_uid),
+                str(self._sandbox_gid),
+            ),
             safe_error_prefix=_OPEN_SHELL_ERROR_PREFIX,
             safe_detail_prefix=_OPEN_SHELL_DETAIL_PREFIX,
         )
 
-    async def warm(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
-        await super().prepare(lease, bootstrap)
-        await self._ensure_openshell(lease, bootstrap)
-        await self._guest_access.execute(
+    async def _prime_sandbox_image(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
+        """Pull the sandbox image and build its copy owned by the sandbox user.
+
+        Podman builds that copy the first time an image runs under the gateway's
+        keep-id mapping (about a minute for the OpenShell image), and OpenShell's
+        sandbox create gives up before it is done; afterwards it is instant.
+        """
+        if isinstance(lease, SlotLease):
+            # A warm spare has no session to report to.
+            self._step(lease, "guest_image", "Pulling the sandbox image")
+        await self._execute_remote(
+            lease, bootstrap, shlex.join(["podman", "pull", "-q", self._image])
+        )
+        await self._execute_remote(
             lease,
             bootstrap,
-            shlex.join(["podman", "pull", self._image]),
+            shlex.join(
+                [
+                    "podman",
+                    "run",
+                    "--rm",
+                    "--userns",
+                    f"keep-id:uid={self._sandbox_uid},gid={self._sandbox_gid}",
+                    "--entrypoint",
+                    "true",
+                    self._image,
+                ]
+            ),
         )
 
-    async def prepare(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def warm(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+        await self.prepare(lease, bootstrap)
+        if self._host_image:
+            await self._execute_remote(
+                lease,
+                bootstrap,
+                shlex.join(["sudo", "-n", "docker", "pull", self._host_image]),
+            )
+
+    async def prepare(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
         await super().prepare(lease, bootstrap)
         await self._ensure_openshell(lease, bootstrap)
+        await self._prime_sandbox_image(lease, bootstrap)
 
     @staticmethod
-    def _sandbox_name(lease: ComputeLease) -> str:
+    def _sandbox_name(lease: AllocationRef) -> str:
         # OpenShell routes sandbox names through a field capped at 19 characters.
         # Keep the allocation-derived name deterministic without sending the full
         # UUID (the previous ``niuu-<uuid>`` form was 41 characters).
         return "niuu-" + lease.id.hex[:14]
 
     @staticmethod
-    def _workload_unit(lease: ComputeLease) -> str:
+    def _workload_unit(lease: AllocationRef) -> str:
         return "niuu-skuld-" + str(lease.id)
 
     async def _configure_native_providers(
         self,
-        lease: ComputeLease,
+        lease: SlotLease,
         bootstrap: MachineBootstrap,
         payload: dict[str, Any],
     ) -> list[str]:
@@ -891,9 +1036,18 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
                 spec.pop("credential_value", None)
         return [spec["name"] for spec in specs]
 
-    async def start(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
-        if lease.session_id is None:
-            raise ValueError("Cannot start an unbound guest")
+    def _sandbox_mounts(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """The guest directories the sandbox mounts, at their paths inside the image."""
+        return [
+            {
+                "source": mount["source"],
+                "target": str(self._in_image(mount["target"])),
+                "readonly": bool(mount.get("readonly", True)),
+            }
+            for mount in payload.get("volume_mounts", [])
+        ]
+
+    async def start(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         session_directory = self._data / str(lease.session_id)
         session_directory.mkdir(mode=0o700, exist_ok=True, parents=True)
         files = [
@@ -903,6 +1057,7 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
             or item.path == "/etc/niuu/openshell-policy.yaml"
             or item.path.startswith("/etc/niuu/session-secrets/")
         ]
+        self._step(lease, "guest_files", "Delivering session files")
         await self._execute_remote(
             lease,
             bootstrap,
@@ -911,6 +1066,7 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
         )
         archive = session_directory / "session.tar"
         if archive.exists():
+            self._step(lease, "guest_restore", "Restoring the workspace")
             with archive.open("rb") as source:
                 await self._execute_remote(
                     lease,
@@ -926,21 +1082,56 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
                 bootstrap,
                 self._python(_PREPARE, str(lease.id), "empty", json.dumps(self._archive_excludes)),
             )
+        self._step(lease, "guest_tunnel", "Opening the tunnel to Forge")
         await self.target(lease, bootstrap)
         payload = json.loads(next(item.content for item in bootstrap.files if item.path == _LAUNCH))
+        payload["allocation_id"] = str(lease.id)
+        plan = GuestCredentialPlan.from_launch(payload)
+        if not plan.empty:
+            if self._credential_delivery is None:
+                raise ValueError(
+                    "This VM session needs delivered credentials; configure "
+                    "compute.credential_delivery"
+                )
+            self._step(lease, "guest_credentials", "Delivering credentials")
+            await self._credential_delivery.start(lease, bootstrap, plan, payload, self)
+            grants = payload.pop("forge_session_grants", None)
+            if grants is not None:
+                payload["environment"][FORGE_MCP_GRANTS_ENV] = ",".join(grants)
+        if any(
+            payload.get(key) for key in ("init_containers", "sidecars", "directories")
+        ) or payload.get("metadata_address"):
+            self._step(lease, "guest_agents", "Starting the session's credential agents")
+            await self._execute_remote(
+                lease,
+                bootstrap,
+                self._python(_START),
+                data=json.dumps({**payload, "containers_only": True}).encode(),
+            )
         payload["providers"] = await self._configure_native_providers(lease, bootstrap, payload)
+        mounts = self._sandbox_mounts(payload)
+        payload["policy_content"] = _policy_with_mounts(
+            payload["policy_content"],
+            [
+                *mounts,
+                *(
+                    {"target": str(self._in_image(item["target"])), "readonly": True}
+                    for item in payload.get("secret_mounts", [])
+                ),
+            ],
+        )
         payload.update(
             {
                 "sandbox_name": self._sandbox_name(lease),
                 "broker_port": self._broker_port,
-                "sandbox_uid": self._sandbox_uid,
-                "sandbox_gid": self._sandbox_gid,
                 "sandbox_command": self._sandbox_command,
                 "workload_unit": self._workload_unit(lease),
                 "workspace_target": _OPEN_SHELL_WORKSPACE,
                 "home_target": _OPEN_SHELL_HOME,
+                "volume_mounts": mounts,
             }
         )
+        self._step(lease, "guest_skuld", "Starting Skuld in its OpenShell sandbox")
         await self._execute_remote(
             lease,
             bootstrap,
@@ -950,7 +1141,7 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
             safe_detail_prefix=_OPEN_SHELL_DETAIL_PREFIX,
         )
 
-    async def stop(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         payload = json.loads(next(item.content for item in bootstrap.files if item.path == _LAUNCH))
         providers = [
             spec["name"]
@@ -982,6 +1173,16 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
             safe_error_prefix=_OPEN_SHELL_ERROR_PREFIX,
             safe_detail_prefix=_OPEN_SHELL_DETAIL_PREFIX,
         )
+        if result != 42 and (payload.get("init_containers") or payload.get("sidecars")):
+            # The credential agents outlive Skuld so it can still flush; stop them now.
+            await self._execute_remote(
+                lease,
+                bootstrap,
+                self._python(_STOP, str(lease.id), str(self._stop_timeout)),
+                expected_exit_codes=(0, 42),
+            )
+        if self._credential_delivery is not None and lease.session_id is not None:
+            await self._credential_delivery.stop(lease, bootstrap)
         if result == 42:
             await self._close_tunnel(str(lease.id))
             return
