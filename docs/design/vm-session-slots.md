@@ -126,6 +126,17 @@ as today. Host mode needs more, because a slot is not root:
 System packages (`apt install`) need root and change the VM for every slot, so
 they are not available to a slot in a shared VM; see the opt-in below.
 
+**Decision: Nix is the shared software layer.** It is the one mechanism that lets
+users who are not root share installs safely: content-addressed paths, side-by-side
+versions, and no slot able to change another's packages. It also installs on any
+Linux host or Mac without Forge, so the same package set and versions work in a VM
+slot, on a plain host and on a developer's Mac. Homebrew is not used between slots:
+its prefix is one mutable tree, so a shared prefix lets one slot upgrade or remove
+another's tools, and a private prefix per slot loses its prebuilt bottles and
+compiles from source. A profile may still preinstall Homebrew where one user owns
+the machine: a session with a sudo grant (which gets a VM to itself) or a
+developer's own host.
+
 ## Host mode is opt-in
 
 - The operator enables host mode on a machine profile; a session can only choose
