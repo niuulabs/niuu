@@ -4,22 +4,23 @@ Status: accepted; being built. PR 1 (slot ledger) is in progress.
 
 Today a VM Forge runs one session per VM, and only one runtime: Skuld in Docker
 with host networking (`SshContainerVmRuntime`). This proposal lets one VM serve
-several sessions ("slots"), lets each session choose how it runs (Docker,
-OpenShell, or directly on the VM), and keeps sessions on one VM apart from each
+several sessions ("slots"), adds runtimes besides Docker (OpenShell, and
+directly on the VM), one per Forge, and keeps sessions on one VM apart from each
 other.
 
 ## Goals
 
 - Several sessions per VM, configurable per pool, default one.
-- Three runtimes in a VM, chosen per session among those the operator enabled:
-  **Docker**, **OpenShell**, and **host** (no image; the VM's own system).
+- Three runtimes, one per VM Forge: **Docker**, **OpenShell**, and **host** (no
+  image; the VM's own system).
 - Sessions on one VM are separated: their files, credentials, processes,
   network ports and resources.
 - Sessions can still install software, and share large toolchains (a Go
   compiler, Node) instead of each slot downloading its own.
 - Warm capacity stays: sessions should start in seconds, and the pool boots new
   VMs ahead of demand when free slots run low.
-- Host mode is opt-in, because it gives a session the VM's own system.
+- Host mode is opt-in, because it gives a session the VM's own system; even
+  there, no slot is root, and containers run rootless.
 
 ## Model
 
@@ -130,7 +131,8 @@ as today. Host mode needs more, because a slot is not root:
    cache through the same mechanism.
 
 System packages (`apt install`) need root and change the VM for every slot, so
-they are not available to a slot in a shared VM; see the opt-in below.
+they are not available to a slot; a slot builds and runs containers rootless
+instead (below).
 
 **Decision: Nix is the shared software layer.** It is the one mechanism that lets
 users who are not root share installs safely: content-addressed paths, side-by-side
@@ -139,29 +141,45 @@ Linux host or Mac without Forge, so the same package set and versions work in a 
 slot, on a plain host and on a developer's Mac. Homebrew is not used between slots:
 its prefix is one mutable tree, so a shared prefix lets one slot upgrade or remove
 another's tools, and a private prefix per slot loses its prebuilt bottles and
-compiles from source. A profile may still preinstall Homebrew where one user owns
-the machine: a session with a sudo grant (which gets a VM to itself) or a
-developer's own host.
+compiles from source. Homebrew stays for a developer's own host, where one user
+owns the machine.
 
 ## Host mode is opt-in
 
-- The operator enables host mode on a machine profile; a session can only choose
-  a runtime its profile enables.
-- A slot can be granted **sudo** or **Docker access**. Either is root-equivalent:
-  it can read every other slot. The scheduler therefore gives a session with such
-  a grant **a machine to itself** (its machine takes no other sessions while it
-  runs), whatever `slots_per_machine` says. That is enforced in placement, not
-  left to convention.
-- Without those grants, the per-slot separation above is what keeps host-mode
-  sessions apart, the same as in Docker.
+- Host mode is a server of its own: a VM Forge (and its Guild host) runs exactly
+  one runtime, configured on the server, so an operator enables host mode by
+  running a host-mode Forge. Sessions never choose a runtime and pools never mix
+  them.
+- **No slot is ever root on the machine.** There are no grants: no sudo, no
+  membership of the guest's `docker` group, never the guest's Docker socket.
+  Either would be root-equivalent and read every other slot, and there is no
+  "machine to itself" path that lifts this. A session that needs root runs on a
+  container runtime, where root is its container's.
+- **Every slot runs containers rootless** (Podman), inside its own boundary:
+  - subordinate uids and gids per slot that overlap no other slot and no VM
+    account;
+  - rootless networking (pasta) in the slot's own network namespace, so a
+    published port is the slot's alone and opens as a preview;
+  - a cgroup delegated from the slot's own, so every container sits under the
+    slot's limits and per-container limits work;
+  - storage in the slot's home (the machine's, never archived) and a runtime
+    directory of its own;
+  - the session's PID namespace: containers end with the session.
+- The VM's own credentials (its identity token, Forge's SSH host key) are hidden
+  from a host session's mount namespace, and so from its containers, whatever
+  their modes: the session runs on the VM's filesystem.
+- With these, the per-slot separation above is what keeps host-mode sessions
+  apart, the same as in Docker.
 
 ## Choosing a runtime
 
-A session's `workload_config` names its runtime (`docker`, `openshell`, `host`)
-and optional grants. Launch shows a runtime choice limited to what the host's
-profiles enable (a mockup comes before that UI is built). The existing versioned
-execution catalog (`docs/operator/vm-compute.md`) carries the per-runtime
-adapter bindings; `ProfiledVmRuntime` stays for single-runtime pools.
+**Decision: one runtime per server.** A VM Forge runs one runtime, named in its
+configuration (its execution catalog's default execution); each runtime is its
+own Forge and Guild host (for example "Valhalla VMs" for Docker and "Valhalla VMs
+(host)" for host mode). A session picks the server, not a runtime, and carries
+no grants. The existing versioned execution catalog
+(`docs/operator/vm-compute.md`) carries the runtime's adapter bindings and host
+recipe; `ProfiledVmRuntime` stays for single-runtime pools.
 
 ## Live preview and progress
 
