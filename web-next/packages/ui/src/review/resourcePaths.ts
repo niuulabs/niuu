@@ -101,11 +101,18 @@ export function resolveSessionResource(href: string, workspace?: string): Worksp
   if (path.includes('\0') || path.includes('\\')) return null;
   // `~/x` is in the session's home, which the session's files are browsed as `/home`.
   if (path.startsWith(HOME_PREFIX)) return contained('/home', path.slice(HOME_PREFIX.length));
-  const root = workspace?.replace(/\/+$/, '');
+  const root = workspace === undefined ? undefined : trimTrailingSlashes(workspace);
   if (root && path.startsWith(`${root}/`)) path = path.slice(root.length + 1);
   else if (path.startsWith('/workspace/')) path = path.slice('/workspace/'.length);
   else if (path.startsWith('/')) return null;
   return contained('/workspace', path);
+}
+
+/** `root` without trailing slashes, in linear time (a `/\/+$/` replace is quadratic). */
+function trimTrailingSlashes(root: string): string {
+  let end = root.length;
+  while (end > 0 && root[end - 1] === '/') end -= 1;
+  return root.slice(0, end);
 }
 
 /** A path inside one root, never climbing out of it. */

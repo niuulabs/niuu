@@ -470,9 +470,12 @@ root; it is not a systemd service. For slot `n` the supervisor creates:
 
 - user and group `niuu-slot-<n>` with uid and gid `uid_base + n`. Its
   directories `/var/lib/niuu/slots/<n>` (home, workspace, launch file, session
-  secrets, the Forge session credential, the guest agent's configuration) and
-  `/run/niuu/slots/<n>` (emptyDir and token volumes) are mode 0700 and owned by
-  that user;
+  secrets, the Forge session credential) and `/run/niuu/slots/<n>` (emptyDir and
+  token volumes) are mode 0700 and owned by that user. The guest agent's
+  configuration, which names the slot it fetches credentials for, is in
+  `/etc/niuu/slots/<n>`, owned by root, so the slot cannot point the agent at
+  another slot. Sidecars that set a group (OpenBao's agent renders secrets 0640)
+  run with the slot's group, never a VM group;
 - a holder container (`niuu-slot-<n>-holder`, the Skuld image running `sleep` as
   the slot's uid). Its network namespace is attached as `niuu-slot-<n>`, and every
   container of the slot shares its network and PID namespaces. So two sessions
@@ -963,12 +966,11 @@ admission lock applies policy across concurrent controllers, not just one proces
 
 A machine has `slots_per_machine` slots (**Sessions per machine**, default 1), and
 each slot holds one session. One slot is the behaviour described above: a machine
-serves one session. More than one slot per machine needs a default execution
-whose runtime keeps the slots apart (`VmRuntime.supports_slots`; see "Separated
-session slots"). Otherwise Forge refuses a policy above one slot at startup and in
-the admin form, naming the runtime and the remedy. A session whose execution's
-runtime does not support slots (OpenShell) gets a machine of one slot to itself,
-whatever the policy says; the admin status shows each machine's slots. The slot count is fixed when a machine is created, so
+serves one session. More than one slot per machine needs a runtime that keeps the
+slots apart (`VmRuntime.supports_slots`; see "Separated session slots"). A VM Forge
+runs one runtime, so every configured runtime must declare it; otherwise Forge
+refuses a policy above one slot at startup and in the admin form, naming the
+runtime and the remedy. The slot count is fixed when a machine is created, so
 changing it applies to machines booted afterwards.
 
 **Placement.** A new session takes a free slot of a ready machine whose profile and

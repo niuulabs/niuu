@@ -169,6 +169,7 @@ def _spec(root: Path, **overrides) -> dict:
         "uid": 61003,
         "data_root": str(root / "var" / "slots" / "3"),
         "run_root": str(root / "run" / "slots" / "3"),
+        "agent_root": str(root / "etc" / "slots" / "3"),
         "netns": "niuu-slot-3",
         "host_link": "niuuslot3",
         "gateway": "10.249.0.13",
@@ -218,6 +219,9 @@ def test_up_creates_the_whole_slot_boundary(vm):
     for path in (supervisor.data_root, supervisor.home, supervisor.workspace, supervisor.run_root):
         assert path.is_dir() and path.stat().st_mode & 0o777 == 0o700
         assert (str(path), 61003, 61003) in vm.chowned
+    # The slot's root agents' configuration: root's, out of the slot user's reach.
+    assert supervisor.agent_root.is_dir() and supervisor.agent_root.stat().st_mode & 0o777 == 0o755
+    assert (str(supervisor.agent_root), 0, 0) in vm.chowned
     passwd = (supervisor.identity_directory / "passwd").read_text()
     assert "skuld:x:61003:61003::/home/skuld:/bin/bash" in passwd
     assert "root:x:0:0:root:/root:/bin/bash" in passwd
@@ -377,6 +381,7 @@ def test_down_removes_everything_and_proves_it(vm):
     assert supervisor.leftovers() == []
     assert vm.rules == [] and vm.links == set() and vm.users == {} and vm.groups == {}
     assert not supervisor.data_root.exists() and not supervisor.run_root.exists()
+    assert not supervisor.agent_root.exists()
     assert vm.ran("docker", "rm") == [["docker", "rm", "--force", "--volumes", "holder-id"]]
     # Another slot's rule whose tag merely starts the same is never touched.
     assert vm.foreign_rules and not [a for a in vm.commands if "niuu-slot-31" in a]
@@ -432,6 +437,7 @@ def test_leftovers_list_every_kind_of_slot_state(vm):
         "group niuu-slot-3",
         f"directory {supervisor.data_root}",
         f"directory {supervisor.run_root}",
+        f"directory {supervisor.agent_root}",
         "container holder-id",
         "network namespace niuu-slot-3",
         "interface niuuslot3",
@@ -471,6 +477,7 @@ def test_up_refuses_a_symlinked_slot_directory(vm, tmp_path, monkeypatch):
     [
         ({"data_root": "relative/slots/3"}, "slots/3"),
         ({"run_root": "/run/niuu/slots/4"}, "slots/3"),
+        ({"agent_root": "/etc/niuu/agents/3"}, "slots/3"),
         ({"data_root": "/var/lib/niuu/other/3"}, "slots/3"),
         ({"data_root": "/var/lib/niuu/slots/../3"}, "slots/3"),
         ({"slice": "niuu-slot-3.slice"}, "top-level"),

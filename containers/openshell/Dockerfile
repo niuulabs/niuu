@@ -6,18 +6,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends patch \
 
 FROM ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 AS uv
 
-# The sandbox base ships gh v2.102.0 (the latest release), built with Go 1.27.1 and
-# golang.org/x/net v0.58.0 (GO-2026-6603/6604/6611/6612). Replace it with the same
-# release built with Go 1.27.3 and the patched module until upstream ships them.
+# The sandbox base ships gh v2.102.0, built with Go 1.27.1 and golang.org/x/net
+# v0.58.0 (GO-2026-6603/6604/6611/6612). gh v2.103.3 requires x/net v0.60.0 and
+# klauspost/compress v1.20.3 (GO-2026-6865, fixed in v1.20.2), so no module override
+# is needed. Replace the base's gh with v2.103.3 built from the checksum-verified
+# source with Go 1.27.3, which satisfies its `toolchain go1.27.3`.
 FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:8a5046497cda39860b832ffdbe8dd66018a0f05bb01352f533a36e7e2ced66a0 AS gh-build
 ARG TARGETARCH
 WORKDIR /src
-RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.102.0.tar.gz -O /tmp/gh.tar.gz \
-    && echo "08bf0ef8b4409893889175e0f5279d30d6edd96465816042c0d7c72eac598158  /tmp/gh.tar.gz" | sha256sum -c - \
+RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.103.3.tar.gz -O /tmp/gh.tar.gz \
+    && echo "bb148138a3a2fe023e57c78042fe3b42fc09171c0e8fff4cf983b227b7a2eade  /tmp/gh.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/gh.tar.gz --strip-components=1 \
-    && go get golang.org/x/net@v0.60.0 \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath \
-        -ldflags '-s -w -X github.com/cli/cli/v2/internal/build.Version=2.102.0-niuu.1 -X github.com/cli/cli/v2/internal/build.Date=2026-09-30' \
+        -ldflags '-s -w -X github.com/cli/cli/v2/internal/build.Version=2.103.3-niuu.1 -X github.com/cli/cli/v2/internal/build.Date=2026-10-26' \
         -o /out/gh ./cmd/gh
 
 FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:aeef1c63f00e2913ea002ccb3aaf925f338b5c5d70e63576f0d95c16a138044e AS base
@@ -48,7 +49,7 @@ RUN --mount=type=bind,from=python-security,source=/patched-stdlib,target=/patche
 COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json containers/node/npm-bootstrap/replace-nested.sh /opt/npm-bootstrap/
 RUN cd /opt/npm-bootstrap && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
-    && sh /opt/npm-bootstrap/replace-nested.sh /opt/npm-bootstrap node_modules/npm/node_modules brace-expansion ip-address undici \
+    && sh /opt/npm-bootstrap/replace-nested.sh /opt/npm-bootstrap node_modules/npm/node_modules glob minimatch path-scurry +@isaacs/nonrecursive-glob-match \
     && rm -rf /usr/lib/node_modules/npm \
     && ln -s /opt/npm-bootstrap/node_modules/npm /usr/lib/node_modules/npm \
     && ln -sf /usr/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
@@ -94,7 +95,6 @@ COPY containers/skuld/npm-tools/package.json containers/skuld/npm-tools/package-
 RUN cd /opt/skuld-tools \
     && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
-    && sh /opt/npm-bootstrap/replace-nested.sh /opt/skuld-tools node_modules/@earendil-works/pi-coding-agent/node_modules undici \
     && rm -rf /usr/lib/node_modules/@openai \
     && mkdir -p /usr/lib/node_modules \
     && mv /opt/skuld-tools/node_modules/@openai /usr/lib/node_modules/@openai \
