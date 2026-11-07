@@ -171,12 +171,19 @@ async def test_bind_takes_a_free_slot_of_an_idle_machine_with_room(setup):
 
 @pytest.mark.parametrize(
     "case",
-    ["full", "limit-reached", "stopping", "too-old"],
+    ["full", "limit-reached", "stopping", "too-old", "granted", "neighbour"],
 )
 async def test_bind_refuses_a_machine_with_no_usable_slot(setup, case):
     idle = machine(state=LeaseState.IDLE, slots=2)
     policy = POLICY.model_copy(update={"slots_per_machine": 2})
     served = [binding(idle, slot=0, state=SlotState.RELEASED)]
+    exclusive = False
+    if case == "granted":
+        # An earlier session held root-equivalent grants on this machine.
+        served = [binding(idle, slot=0, state=SlotState.RETIRED, exclusive=True)]
+    if case == "neighbour":
+        # A granted session needs a machine no one has used.
+        served, exclusive = [binding(idle, slot=0)], True
     if case == "full":
         served = [binding(idle, slot=0), binding(idle, slot=1)]
     if case == "stopping":
@@ -189,7 +196,7 @@ async def test_bind_refuses_a_machine_with_no_usable_slot(setup, case):
         policy = policy.model_copy(update={"max_machine_age_seconds": 60})
 
     with pytest.raises(ComputeLeaseBusyError, match="no usable slot"):
-        await bind_with(setup, idle, served, binding(idle, slot=1), policy)
+        await bind_with(setup, idle, served, binding(idle, slot=1, exclusive=exclusive), policy)
 
 
 async def test_bind_refuses_an_occupied_or_unknown_slot(setup):

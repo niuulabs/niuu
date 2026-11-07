@@ -207,6 +207,11 @@ class ComputeSlot(BaseModel):
     stop_requested: bool = False
     state: SlotState = SlotState.STARTING
     error: str | None = None
+    exclusive: bool = Field(
+        default=False,
+        description="The session holds root-equivalent grants (sudo, Docker): its machine "
+        "serves no other session, while it runs or after",
+    )
 
 
 class AllocationRef(Protocol):
@@ -270,6 +275,10 @@ class SlotLease(BaseModel):
     @property
     def tenant_id(self) -> str:
         return self.binding.tenant_id
+
+    @property
+    def exclusive(self) -> bool:
+        return self.binding.exclusive
 
 
 class ComputeCapacityError(RuntimeError):
@@ -443,6 +452,10 @@ def usable_slots(
     """
     if machine.state not in _OFFERABLE_STATES:
         return 0
+    # Root-equivalent grants reach every slot and whatever they leave behind: a machine
+    # that ever held such a session is never offered again, and drains once it is empty.
+    if any(b.exclusive for b in bindings):
+        return 0
     if any(b.stop_requested for b in bindings if b.state in LIVE_SLOT_STATES):
         return 0
     if machine_expired(machine, policy, now):
@@ -452,6 +465,24 @@ def usable_slots(
     if limit is not None:
         free = min(free, limit - len(bindings))
     return max(0, free)
+
+
+def can_bind(
+    machine: ComputeLease,
+    bindings: Sequence[ComputeSlot],
+    policy: ComputePoolPolicy,
+    now: datetime,
+    *,
+    exclusive: bool,
+) -> bool:
+    """Whether a new session may be placed on ``machine``.
+
+    A session with root-equivalent grants needs a machine nobody has used: one with
+    no bindings at all, so no earlier session's leftovers and no later neighbour.
+    """
+    if exclusive and bindings:
+        return False
+    return usable_slots(machine, bindings, policy, now) > 0
 
 
 def bindings_by_allocation(bindings: Iterable[ComputeSlot]) -> dict[UUID, list[ComputeSlot]]:

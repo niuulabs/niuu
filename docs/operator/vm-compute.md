@@ -538,6 +538,122 @@ slot but 0 is refused. With it, `SshContainerVmRuntime` declares slot support
 OpenShell runtimes refuse `slot_isolation`: their sandbox is the boundary, and
 they serve one session per machine.
 
+## Host mode
+
+`volundr.adapters.outbound.ssh_host_vm_runtime.SshHostVmRuntime` runs each
+session directly on its VM: Skuld and the agent CLI run as the slot's user
+against the VM's own filesystem, toolchain and Nix store, with no session
+container. A VM Forge runs one runtime, so host mode is a Forge (and a Guild
+host) of its own, never a choice beside Docker on the same pool.
+
+```yaml
+compute:
+  runtime:
+    adapter: volundr.adapters.outbound.ssh_host_vm_runtime.SshHostVmRuntime
+    kwargs:
+      skuld_image: "ghcr.io/niuulabs/openshell@sha256:<digest>"
+      slot_isolation:        # required: the slot is the session's boundary
+        cpu: 2
+        memory_mib: 4096
+        pids: 4096
+        image_user: sandbox  # the OpenShell image's session account
+      nix: true              # the machine profile installs Nix (below)
+      grants: [sudo, docker] # optional; see "Grants"
+      # session_start_timeout_seconds: 30  (until Skuld's PID 1 runs; a hit fails the start)
+      # … SSH, platform and preview settings as for SshContainerVmRuntime
+```
+
+How a session runs, all over SSH as every other guest step, never as a service:
+
+1. The slot supervisor creates the slot exactly as for Docker sessions (user
+   `niuu-slot-<n>`, its directories, the holder container that keeps the slot's
+   network namespace and cgroup, the veth, the rules and the slice). The
+   credential agents (guest agent, OpenBao's agent) run beside the holder in
+   the guest's Docker, as for `SshContainerVmRuntime`.
+2. The session image is unpacked once per digest under
+   `/var/lib/niuu/host-images/<digest>` (`docker create` and `docker export`; no
+   container runs it), with wrappers for the agent CLIs (`claude`, `codex`,
+   `opencode`, `grok`, `pi`, `muse`) and fallback tools (`gh`, `glab`, `uv`,
+   `node`, `npm`). `warm` does this ahead of sessions.
+3. A guest program joins the slot's network namespace and the holder's cgroup
+   (so the slot's limits apply), opens its own mount and PID namespaces and
+   becomes PID 1 there. In that mount namespace it binds, read-only, the
+   unpacked image at `/opt/niuu-skuld` and the image's venv and Python at their
+   own paths, then the workspace at `/workspace`, the home at `/home/skuld`, the
+   launch's secret and volume mounts at their targets, a private `/tmp`,
+   `/var/tmp` and `/dev/shm`, and the VM's upstream resolvers over
+   `/etc/resolv.conf` (the slot cannot reach the VM's resolver on loopback).
+   It then runs Skuld as the slot's uid. When Skuld ends, PID 1 ends, and with
+   it every process the session left.
+
+`PATH` is the image's agent CLIs first (the pinned versions), then Nix's
+profiles (`~/.nix-profile/bin`, the default profile), then the VM's own
+directories, then the image's fallback tools. The agent's system prompt says it
+runs on the VM as an unprivileged user and how to install with Nix.
+
+**The image needs a relocatable Python.** Skuld runs from the image's venv on
+the VM's kernel and libc, so its interpreter must not be the image
+distribution's: `ghcr.io/niuulabs/openshell` is built on uv's
+python-build-standalone and declares `VIRTUAL_ENV` and `UV_PYTHON_INSTALL_DIR`.
+The Skuld image's Python is Ubuntu's and runs only inside its own root; the
+unpack refuses such an image, naming the remedy. One digest serves the
+holder, the credential agents and Skuld.
+
+Stopping a session sends Skuld `SIGTERM` (then `SIGKILL` after
+`stop_timeout_seconds`), withdraws its grants, and then stops, archives and
+removes the slot as for Docker sessions. A host session's links to absolute
+paths (Nix makes `~/.nix-profile` and its caches that way) are restored as
+written; they are never followed, and a member whose own path resolves outside
+the session still fails the restore. Docker sessions keep refusing them.
+
+### Nix on host-mode VMs
+
+Software is shared through a multi-user Nix: one daemon, one `/nix/store`,
+profiles per user. `deploy/nix/install-nix.sh` installs a pinned release
+(checked by SHA-256) as root and is idempotent; run it from the machine
+profile's cloud-init or a host recipe. It:
+
+- enables `nix-command` and `flakes`, lets every user build through the daemon
+  and trusts only root, so a slot can add packages but never a substituter or
+  an unsigned path, and cannot change another slot's packages;
+- puts one copy of a locked nixpkgs (`NIX_NIXPKGS`, a revision with its
+  narHash) in the store, roots it (`/nix/var/nix/gcroots/niuu-nixpkgs`) and
+  makes it what `nixpkgs` means in the system registry. No slot resolves a
+  branch through the GitHub API, which rate-limits a shared egress address, and
+  none downloads or unpacks nixpkgs again;
+- installs `NIX_BASELINE` into the default profile, when set: for example the
+  repository's own flake, `github:niuulabs/niuu/<rev>?dir=deploy/nix#baseline`,
+  which builds the same toolchain on Linux and macOS.
+
+Pass garbage collection thresholds in `NIX_EXTRA_CONF`, for example
+`min-free = 2147483648` and `max-free = 8589934592`: the daemon then collects
+on its own when free space drops, which keeps a long-lived VM from filling.
+A stopped slot's profile goes with its home, so its packages become garbage.
+With `replace` (the default) machines drain after their sessions as well.
+
+A slot installs with `nix profile install nixpkgs#<package>` (kept in its
+profile, which is archived with its home) or `nix shell nixpkgs#<package>`; a
+package another slot installed is in the store already and needs no download.
+The runtime refuses to start a session with `nix: true` on a VM without the
+daemon socket.
+
+Limit: a profile is a store path built on the VM. A session restored onto
+another VM keeps `~/.nix-profile`, but that VM lacks the profile's store path
+until the session installs its packages again.
+
+### Grants
+
+`grants` lists the root-equivalent extras a session may ask for, sent as
+`workload_config.runtime_grants` (Launch shows them only on a host whose
+runtime offers them). `sudo` adds `/etc/sudoers.d/niuu-slot-<n>`
+(`NOPASSWD: ALL`, checked with `visudo`); `docker` adds the `docker` group to
+the session's processes. Either can read every other slot, so a granted
+session gets a machine to itself: its binding is exclusive, it is placed only
+on a machine nobody has used (a cold start reserves a one-slot machine), and a
+machine that held it is never offered again and drains when empty. The runtime
+refuses to apply a grant on a shared lease. The rule is in
+`.claude/rules/architecture.md` ("Root-equivalent session grants").
+
 ## VM session credentials
 
 A session pod gets its ServiceAccount's tokens from the kubelet and its Forge

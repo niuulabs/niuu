@@ -22,6 +22,7 @@ from volundr.domain.compute import (
     MachineState,
     SlotLease,
     SlotState,
+    can_bind,
     usable_slots,
 )
 from volundr.domain.execution_catalog import (
@@ -639,6 +640,7 @@ class VmPodManager(PodManager):
                         "A warm VM from the pool",
                     )
             if lease is None:
+                exclusive = self._needs_own_machine(session)
                 plan = (
                     await self.execution_for(session)
                     if "_compute_execution" in session.workload_config
@@ -694,7 +696,13 @@ class VmPodManager(PodManager):
                     execution_plan=plan,
                     timeout_seconds=timeout_seconds,
                     # Without a pool service there is no policy: machines are single-slot.
-                    slots=self._pool_service.new_machine_slots(policy, plan) if policy else 1,
+                    # A session with root-equivalent grants gets a machine of one slot.
+                    slots=(
+                        self._pool_service.new_machine_slots(policy, plan)
+                        if policy and not exclusive
+                        else 1
+                    ),
+                    exclusive=exclusive,
                 )
                 if plan is not None:
                     bootstrap = await service.bootstrap_for(lease)
@@ -894,9 +902,15 @@ class VmPodManager(PodManager):
             await repository.save_slot(binding)
             return SlotLease(allocation=machine, binding=binding)
 
+    @staticmethod
+    def _needs_own_machine(session: Session) -> bool:
+        """A session with root-equivalent grants (sudo, Docker) shares its machine with no one."""
+        return bool(requested_grants(session.workload_config))
+
     async def _claim_warm(self, session: Session, spec: SessionSpec) -> SlotLease | None:
         if self._pool_service is None:
             return None
+        exclusive = self._needs_own_machine(session)
         service, repository, legacy_runtime = self._configured()
         policy = await self._pool_service.policy()
         plan = (
@@ -932,9 +946,12 @@ class VmPodManager(PodManager):
                 != plan.host_compatibility_digest
             ):
                 continue
-            if (
-                usable_slots(candidate, bindings.get(candidate.id, []), policy, datetime.now(UTC))
-                < 1
+            if not can_bind(
+                candidate,
+                bindings.get(candidate.id, []),
+                policy,
+                datetime.now(UTC),
+                exclusive=exclusive,
             ):
                 continue
             try:
@@ -944,10 +961,13 @@ class VmPodManager(PodManager):
                     if (
                         lease is None
                         or lease.state != LeaseState.IDLE
-                        or usable_slots(
-                            lease, await repository.slots(lease.id), policy, datetime.now(UTC)
+                        or not can_bind(
+                            lease,
+                            await repository.slots(lease.id),
+                            policy,
+                            datetime.now(UTC),
+                            exclusive=exclusive,
                         )
-                        < 1
                         or not await service.compatible(lease)
                     ):
                         continue
@@ -966,6 +986,7 @@ class VmPodManager(PodManager):
                         bootstrap,
                         policy.provisioning_timeout_seconds,
                         execution_plan=plan,
+                        exclusive=exclusive,
                     )
                     get_observability().count(
                         "volundr.compute.assignments",

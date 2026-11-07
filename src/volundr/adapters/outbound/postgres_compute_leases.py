@@ -31,6 +31,7 @@ from volundr.domain.compute import (
     SlotLease,
     SlotState,
     bindings_by_allocation,
+    can_bind,
     usable_slots,
 )
 
@@ -332,7 +333,9 @@ class PostgresComputeLeaseRepository(ComputeLeaseRepository):
             if current is None or current.state is not LeaseState.IDLE:
                 raise ComputeLeaseBusyError("Standby allocation is no longer idle")
             bindings = await self.slots(machine.id)
-            if usable_slots(current, bindings, policy, datetime.now(UTC)) < 1:
+            if not can_bind(
+                current, bindings, policy, datetime.now(UTC), exclusive=binding.exclusive
+            ):
                 raise ComputeLeaseBusyError("Standby allocation has no usable slot")
             if binding.slot >= current.slots or any(
                 other.slot == binding.slot and other.state is not SlotState.RELEASED

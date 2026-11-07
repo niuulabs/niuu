@@ -134,8 +134,13 @@ class ComputeLeaseService:
         execution_plan: ResolvedExecutionPlan | None = None,
         timeout_seconds: float | None = None,
         slots: int = 1,
+        exclusive: bool = False,
     ) -> SlotLease:
-        """Reserve a new machine with the session bound to its slot 0."""
+        """Reserve a new machine with the session bound to its slot 0.
+
+        ``exclusive``: the session holds root-equivalent grants, so its machine never
+        serves another session (``usable_slots``).
+        """
         if not tenant_id or not owner_id:
             raise ValueError("Compute claims require tenant_id and owner_id")
         machine, binding = await self._acquire(
@@ -148,6 +153,7 @@ class ComputeLeaseService:
             execution_plan=execution_plan,
             timeout_seconds=timeout_seconds,
             slots=slots,
+            exclusive=exclusive,
         )
         return SlotLease(allocation=machine, binding=binding)
 
@@ -171,6 +177,7 @@ class ComputeLeaseService:
             execution_plan=execution_plan,
             timeout_seconds=timeout_seconds,
             slots=slots,
+            exclusive=False,
         )
         return machine
 
@@ -186,6 +193,7 @@ class ComputeLeaseService:
         execution_plan: ResolvedExecutionPlan | None,
         timeout_seconds: float | None,
         slots: int,
+        exclusive: bool,
     ) -> tuple[ComputeLease, ComputeSlot | None]:
         if bootstrap is not None and self._bootstrap_store is None:
             raise ValueError("Per-session bootstrap requires a durable credential store")
@@ -225,6 +233,7 @@ class ComputeLeaseService:
                     else None
                 ),
                 start_deadline=deadline,
+                exclusive=exclusive,
             )
         lease, binding = await self._repository.reserve(
             ComputeLease(
@@ -587,6 +596,7 @@ class ComputeLeaseService:
         bootstrap: MachineBootstrap,
         timeout_seconds: float,
         execution_plan: ResolvedExecutionPlan | None = None,
+        exclusive: bool = False,
     ) -> SlotLease:
         """Called under the allocation operation lock; secrets precede binding commit."""
         if not owner_id or not tenant_id or self._bootstrap_store is None:
@@ -620,6 +630,7 @@ class ComputeLeaseService:
             execution_plan=execution_plan,
             session_bootstrap_ref=reference,
             start_deadline=datetime.now(UTC) + timedelta(seconds=timeout_seconds),
+            exclusive=exclusive,
         )
         # An uncertain DB commit must retain its bootstrap for restart recovery.
         try:

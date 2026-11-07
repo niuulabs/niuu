@@ -195,8 +195,10 @@ run('docker','run','--detach',*init,'--name',name,*placement(),
 
 _PREPARE = r"""
 import json,pathlib,sys,tarfile
-# argv: storage key, restore|empty, exclusions, and a slot's storage root.
+# argv: storage key, restore|empty, exclusions, a slot's storage root, and
+# 'absolute-links' where the session's links to absolute paths are restored too.
 root=pathlib.Path(sys.argv[4]) if len(sys.argv)>4 else pathlib.Path('/var/lib/niuu/session')
+absolute_links=len(sys.argv)>5 and sys.argv[5]=='absolute-links'
 marker=root/'.allocation'
 allocation=sys.argv[1]
 root.mkdir(parents=True,exist_ok=True)
@@ -212,6 +214,10 @@ def restore_member(member,destination):
         return None
     if any(name == p or p in name.parents for p in excludes):
         return None
+    if absolute_links and member.issym() and member.linkname.startswith('/'):
+        # Restored as written, never followed: tar_filter still refuses any member
+        # whose own path resolves outside the root.
+        return tarfile.tar_filter(member,destination)
     return tarfile.data_filter(member,destination)
 if sys.argv[2]=='restore':
     with tarfile.open(fileobj=sys.stdin.buffer,mode='r|') as archive:
@@ -1155,6 +1161,12 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 payload["environment"][FORGE_MCP_GRANTS_ENV] = ",".join(grants)
         if layout is not None:
             payload = layout.launch(payload, platform_port=self._guest_platform_port)
+        await self._launch_skuld(lease, bootstrap, payload)
+
+    async def _launch_skuld(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, payload: dict
+    ) -> None:
+        """Run the session's containers and Skuld from the placed launch payload."""
         self._step(lease, "guest_skuld", "Pulling and starting Skuld")
         await self._guest_access.execute(
             lease,
