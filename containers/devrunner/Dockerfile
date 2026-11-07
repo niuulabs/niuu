@@ -78,7 +78,7 @@ COPY containers/devrunner/npm-tools/package.json containers/devrunner/npm-tools/
 RUN cd /opt/npm-bootstrap \
     && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
-    && sh /opt/npm-bootstrap/replace-nested.sh /opt/npm-bootstrap node_modules/npm/node_modules brace-expansion glob ip-address minimatch path-scurry undici +@isaacs/nonrecursive-glob-match \
+    && sh /opt/npm-bootstrap/replace-nested.sh /opt/npm-bootstrap node_modules/npm/node_modules glob minimatch path-scurry +@isaacs/nonrecursive-glob-match \
     && rm -rf /usr/lib/node_modules/npm \
     && ln -s /opt/npm-bootstrap/node_modules/npm /usr/lib/node_modules/npm \
     && ln -sf /usr/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \

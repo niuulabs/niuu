@@ -62,13 +62,11 @@ updates:
       # npm 12 blocks dependency lifecycle scripts required by the runtime CLIs.
       - dependency-name: "npm"
         update-types: ["version-update:semver-major"]
-      # npm-bootstrap pins undici, glob, minimatch and path-scurry only for
+      # npm-bootstrap pins glob, minimatch and path-scurry only for
       # replace-nested.sh, which copies them over the copies npm bundles. Each
-      # must stay on the major its consumers were smoke-tested with (npm's
-      # node-gyp needs undici ^6; glob 14 needs minimatch ^11 and path-scurry
-      # ^3): a major is a deliberate change to the bundle, not a routine bump.
-      - dependency-name: "undici"
-        update-types: ["version-update:semver-major"]
+      # must stay on the major npm's bundle was smoke-tested with (glob 14
+      # needs minimatch ^11 and path-scurry ^3): a major is a deliberate change
+      # to the bundle, not a routine bump. Drop them once npm bundles glob 14.
       - dependency-name: "glob"
         update-types: ["version-update:semver-major"]
       - dependency-name: "minimatch"
