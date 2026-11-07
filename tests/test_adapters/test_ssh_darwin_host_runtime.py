@@ -600,13 +600,13 @@ def registry(tmp_path, monkeypatch):
     return serve, env, tmp_path
 
 
-def _install(env, digest, cache):
+def _install(env, digest, cache, tag=""):
     return subprocess.run(
         [
             sys.executable,
             "-c",
             programs.INSTALL,
-            f"ghcr.io/niuulabs/skuld-darwin@sha256:{digest}",
+            f"ghcr.io/niuulabs/skuld-darwin{tag}@sha256:{digest}",
             str(cache),
             BUNDLE_MEDIA_TYPE,
         ],
@@ -636,6 +636,17 @@ def test_install_fetches_the_bundle_anonymously_verifies_and_unpacks_it(registry
     before = (tmp_path / "log").read_text()
     assert _install(env, digest, cache).returncode == 0
     assert (tmp_path / "log").read_text() == before
+
+
+def test_install_fetches_a_pin_that_names_its_tag_by_digest(registry):
+    serve, env, tmp_path = registry
+    description = {**DESCRIPTION, "platform": f"darwin-{os.uname().machine}"}
+    digest = serve(_bundle_archive(description))
+
+    result = _install(env, digest, tmp_path / "cache", tag=":dev-" + "e" * 40)
+
+    assert result.returncode == 0, result.stderr
+    assert f"/v2/niuulabs/skuld-darwin/manifests/sha256:{digest}" in (tmp_path / "log").read_text()
 
 
 def test_install_refuses_a_bundle_whose_digest_the_registry_does_not_match(registry):

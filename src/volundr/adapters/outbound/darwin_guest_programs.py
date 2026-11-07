@@ -23,6 +23,8 @@ match = re.match(r'^([^/]+)/(.+)@sha256:([a-f0-9]{64})$', reference)
 if not match:
     raise RuntimeError('The session bundle must be pinned by digest: ' + reference)
 registry, repository, digest = match.groups()
+# A pin may name its tag too (repo:dev-<sha>@sha256:...); the digest is what is fetched.
+repository = repository.rsplit(':', 1)[0] if ':' in repository.rsplit('/', 1)[-1] else repository
 root = cache / digest
 if (root / 'bundle.json').exists():
     print((root / 'bundle.json').read_text())
