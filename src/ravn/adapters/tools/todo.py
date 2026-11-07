@@ -14,8 +14,9 @@ from __future__ import annotations
 import logging
 from uuid import uuid4
 
-from ravn.domain.models import Session, TodoItem, TodoStatus, ToolResult
-from ravn.ports.tool import ToolPort
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
+from ravn.domain.models import Session, TodoItem, TodoStatus
 
 logger = logging.getLogger(__name__)
 

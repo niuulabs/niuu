@@ -7,6 +7,7 @@ from uuid import UUID
 
 import pytest
 
+from niuu.domain.tool import ToolResult
 from ravn.domain.models import (
     LLMResponse,
     Message,
@@ -16,7 +17,6 @@ from ravn.domain.models import (
     StreamEventType,
     TokenUsage,
     ToolCall,
-    ToolResult,
     TurnResult,
 )
 

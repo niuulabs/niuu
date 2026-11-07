@@ -20,6 +20,7 @@ from niuu.domain.delivery import (
     WorkspaceAllocation,
     WorkstreamSpec,
 )
+from niuu.domain.tool import ToolResult
 from ravn.adapters.child_task_a2a import (
     ConfiguredRavnChildTaskA2AGateway,
     RavnChildTaskA2AGateway,
@@ -52,7 +53,7 @@ from ravn.cli.commands import _build_tool_mcp_tools
 from ravn.cli.tool_builders import _build_tools
 from ravn.config import Settings
 from ravn.domain.delivery import ChildLaunchRequest, ChildTaskHandle
-from ravn.domain.models import Session, ToolResult
+from ravn.domain.models import Session
 
 
 class _TaskTool:

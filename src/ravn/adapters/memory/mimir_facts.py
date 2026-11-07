@@ -29,7 +29,7 @@ from ravn.ports.memory import MemoryPort
 
 if TYPE_CHECKING:
     from niuu.ports.mimir import MimirPort
-    from ravn.ports.tool import ToolPort
+    from niuu.ports.tool import ToolPort
 
 
 class MimirFactCapturingMemory(MemoryPort):

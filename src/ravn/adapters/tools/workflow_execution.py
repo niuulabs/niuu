@@ -12,9 +12,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ravn.domain.models import ToolResult
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.domain.workflow_execution import WorkflowExecutionToolPort
-from ravn.ports.tool import ToolPort
 
 _FORBIDDEN_PAYLOAD_FIELDS = frozenset(
     {"command", "commands", "shell", "script", "policy", "acceptance_policy"}

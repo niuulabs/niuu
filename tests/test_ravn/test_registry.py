@@ -6,8 +6,9 @@ import asyncio
 
 import pytest
 
-from ravn.domain.models import ToolCall, ToolResult
-from ravn.ports.tool import ToolPort
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
+from ravn.domain.models import ToolCall
 from ravn.registry import ToolRegistrationError, ToolRegistry
 
 # ---------------------------------------------------------------------------

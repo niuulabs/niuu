@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from ravn.domain.models import ToolResult
+from niuu.domain.tool import ToolResult
 
 
 class ToolPort(ABC):

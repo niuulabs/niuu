@@ -132,7 +132,6 @@ ravn [OPTIONS] COMMAND [ARGS]...
 | [`leave`](#ravn-leave) | Stop a member's daemon and remove it from the room. |
 | [`listen`](#ravn-listen) | Listen for remotely dispatched tasks via Sleipnir (NIU-505). |
 | [`memory-backfill-embeddings`](#ravn-memory-backfill-embeddings) | Embed indexed episodes that predate embeddings being enabled. |
-| [`mimir`](#ravn-mimir) | Mímir knowledge-base utilities. |
 | [`peers`](#ravn-peers) | List verified flock members with persona, capabilities, and status. |
 | [`personas`](#ravn-personas) | Inspect the personas available to --persona. |
 | [`profiles`](#ravn-profiles) | Inspect the profiles available to --profile. |
@@ -432,50 +431,6 @@ Turning embeddings on only affects new writes, so a corpus built while they were
 | `--config` | STR |  | Path to the ravn config file. |
 | `--batch-size` | INT | `64` | Documents embedded per request. |
 | `--max-documents` | INT | `0` | Stop after this many; 0 means all. |
-
-#### `ravn mimir`
-
-Mímir knowledge-base utilities.
-
-```bash
-ravn mimir [OPTIONS] COMMAND [ARGS]...
-```
-
-| Subcommand | Description |
-| --- | --- |
-| [`ingest`](#ravn-mimir-ingest) | Ingest a file or stdin into the Mímir knowledge base. |
-
-##### `ravn mimir ingest`
-
-Ingest a file or stdin into the Mímir knowledge base.
-
-```bash
-ravn mimir ingest [OPTIONS] {path}
-```
-
-Works with both local (filesystem) and remote (HTTP) Mímir adapters — the adapter is selected from ravn config, no explicit URL needed.
-
-Examples::
-
-```bash
-ravn mimir ingest ./architecture.md
-ravn mimir ingest ./notes.txt --title "Sprint retro notes" --type research
-ravn mimir ingest ./doc.md --mimir local
-ravn mimir ingest ./doc.md --mimir shared
-cat doc.md | ravn mimir ingest -
-```
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `PATH` | yes | Path to a file to ingest, or '-' to read from stdin. |
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--title`, `-t` | STR |  | Title override (defaults to filename). |
-| `--type` | STR | `document` | Source type: document, web, research, conversation, tool_output. |
-| `--url`, `-u` | STR |  | Original URL (optional metadata). |
-| `--mimir`, `-m` | STR |  | Named Mímir instance to ingest into (e.g. 'local', 'shared'). Defaults to all configured instances. |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
 
 #### `ravn peers`
 

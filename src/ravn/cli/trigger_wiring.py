@@ -60,7 +60,7 @@ def _wire_mimir_triggers(
         )
 
     if not workflow_runtime and mc.staleness_trigger.enabled:
-        from ravn.adapters.mimir.usage_log import LogBasedUsageAdapter
+        from mimir.adapters.usage_log import LogBasedUsageAdapter
         from ravn.adapters.triggers.mimir_staleness import MimirStalenessTrigger
 
         usage = LogBasedUsageAdapter(mimir_root=mc.path)

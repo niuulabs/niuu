@@ -9,6 +9,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.adapters.channels.voice.prompt import (
     PROMPT_VERSION,
     UnsupportedProviderError,
@@ -25,8 +27,6 @@ from ravn.adapters.channels.voice.tools import (
     VoiceToolTimeoutError,
 )
 from ravn.adapters.permission.allow_deny import AllowAllPermission, DenyAllPermission
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
 
 MODELS = {"grok": "grok-voice-3.0", "gpt-realtime": "gpt-realtime-2.1"}
 

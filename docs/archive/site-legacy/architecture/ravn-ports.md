@@ -60,7 +60,7 @@ Built-in adapters: `AnthropicAdapter`, `BifrostAdapter`, `OpenAICompatibleAdapte
 
 ### ToolPort
 
-**File:** `src/ravn/ports/tool.py`
+**File:** `src/niuu/ports/tool.py`
 **Config key:** `tools.custom[].adapter`
 **Cardinality:** any number — all registered tools are presented to the LLM each turn
 

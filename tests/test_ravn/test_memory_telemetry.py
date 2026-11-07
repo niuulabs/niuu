@@ -15,11 +15,11 @@ import httpx
 import pytest
 import respx
 
+from mimir.adapters.http import HttpMimirAdapter
+from niuu import memory_telemetry
 from niuu.ports.search import SearchResult
-from ravn import memory_telemetry
 from ravn.adapters.memory.scoring import combined_score, score_and_admit
 from ravn.adapters.memory.sqlite import SqliteMemoryAdapter
-from ravn.adapters.mimir.http import HttpMimirAdapter
 from ravn.domain.models import Episode, Outcome
 
 _MIMIR_URL = "http://mimir.test"

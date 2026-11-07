@@ -9,7 +9,7 @@ network required.  Covers:
    - upsert_page("project/…") routes to hosted only.
    - upsert_page("self/…") routes to local only.
    - Hosted pages survive after local dir is deleted.
-4. Adapter factory: _build_mimir() instantiates HttpMimirAdapter when instance
+4. Adapter factory: build_mimir() instantiates HttpMimirAdapter when instance
    has url, MarkdownMimirAdapter when instance has path.
 """
 
@@ -23,12 +23,12 @@ import pytest
 from fastapi import FastAPI
 
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
+from mimir.adapters.composite import CompositeMimirAdapter
+from mimir.adapters.http import HttpMimirAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
+from mimir.domain import MimirMount, WriteRouting
 from mimir.router import MimirRouter
 from niuu.domain.mimir import MimirSource, compute_content_hash, compute_source_id
-from ravn.adapters.mimir.composite import CompositeMimirAdapter
-from ravn.adapters.mimir.http import HttpMimirAdapter
-from ravn.domain.mimir import MimirMount, WriteRouting
 
 # ---------------------------------------------------------------------------
 # Helpers

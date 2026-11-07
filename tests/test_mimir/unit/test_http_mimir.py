@@ -12,6 +12,10 @@ import pytest
 import respx
 from httpx import Response
 
+from mimir.adapters import http as http_module
+from mimir.adapters.http import HttpMimirAdapter
+from mimir.domain import MimirAuth
+from mimir.exceptions import MimirConfigurationError
 from niuu.domain.mimir import (
     MimirLintReport,
     MimirSource,
@@ -19,10 +23,6 @@ from niuu.domain.mimir import (
     ThreadState,
     compute_content_hash,
 )
-from ravn.adapters.mimir import http as http_module
-from ravn.adapters.mimir.http import HttpMimirAdapter
-from ravn.domain.exceptions import ConfigurationError
-from ravn.domain.mimir import MimirAuth
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -413,7 +413,7 @@ async def test_workload_auth_missing_token_file_raises_configuration_error(
         ),
     )
 
-    with pytest.raises(ConfigurationError, match="http://mimir.test") as exc_info:
+    with pytest.raises(MimirConfigurationError, match="http://mimir.test") as exc_info:
         await adapter._resolve_workload_token()
     assert str(missing_file) in str(exc_info.value)
 
@@ -433,7 +433,7 @@ async def test_workload_auth_empty_token_file_raises_configuration_error(
         ),
     )
 
-    with pytest.raises(ConfigurationError, match="empty"):
+    with pytest.raises(MimirConfigurationError, match="empty"):
         await adapter._resolve_workload_token()
 
 
@@ -448,7 +448,7 @@ async def test_workload_auth_missing_exchange_url_raises_configuration_error(
         auth=MimirAuth(type="workload", token_file=str(proof_file), exchange_url=None),
     )
 
-    with pytest.raises(ConfigurationError, match="exchange_url"):
+    with pytest.raises(MimirConfigurationError, match="exchange_url"):
         await adapter._resolve_workload_token()
 
 
@@ -510,7 +510,7 @@ async def test_workload_token_refresh_margin_is_honoured(
 
 
 class _FakeTimeModule:
-    """Stand-in for the ``time`` module binding inside ``ravn.adapters.mimir.http``.
+    """Stand-in for the ``time`` module binding inside ``mimir.adapters.http``.
 
     Replaces only that module's local ``time`` name (via monkeypatch), never the
     real global ``time`` module — httpx's own internals also call ``time.time()``

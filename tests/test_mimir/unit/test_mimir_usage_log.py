@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ravn.adapters.mimir.usage_log import LogBasedUsageAdapter
+from mimir.adapters.usage_log import LogBasedUsageAdapter
 
 
 class TestLogBasedUsageAdapter:

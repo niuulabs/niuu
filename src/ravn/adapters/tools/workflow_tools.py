@@ -6,12 +6,13 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.domain.capability_catalog import (
     WorkflowCapability,
     WorkflowSelector,
     capability_from_workflow,
 )
-from ravn.domain.models import ToolResult
 from ravn.ports.capability import (
     WorkflowArtifact,
     WorkflowArtifactContent,
@@ -22,7 +23,6 @@ from ravn.ports.capability import (
     WorkflowRunReference,
     WorkflowRunStatus,
 )
-from ravn.ports.tool import ToolPort
 
 _PERMISSION_READ = "workflow:read"
 _PERMISSION_LAUNCH = "workflow:launch"

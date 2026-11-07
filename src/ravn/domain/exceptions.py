@@ -68,16 +68,6 @@ class ConfigurationError(RavnError):
     """Raised when Ravn is misconfigured."""
 
 
-class MimirUnavailableError(RavnError):
-    """Raised when Mímir could not answer, so absence cannot be concluded.
-
-    "Not found" and "could not ask" are different answers. Collapsing them
-    reported a transient 503 as "research page references missing source_ids",
-    which reads as a permanent provenance defect and prescribes a remedy —
-    ingest the sources — that cannot fix an outage.
-    """
-
-
 class PromptBudgetExceededError(RavnError):
     """Raised when a turn's estimated prompt exceeds the configured hard budget.
 

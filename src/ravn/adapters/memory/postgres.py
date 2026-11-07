@@ -20,6 +20,15 @@ from typing import Any
 import asyncpg
 
 from niuu.adapters.search.postgres import PostgresSearchAdapter
+from niuu.memory_telemetry import (
+    RESULT_EMPTY,
+    RESULT_ERROR,
+    RESULT_HIT,
+    record_funnel,
+    record_injected_chars,
+    record_memory_operation,
+    result_for,
+)
 from niuu.ports.search import SearchPort
 from ravn.adapters.memory.scoring import (
     _AVG_EPISODE_CHARS,
@@ -30,15 +39,6 @@ from ravn.adapters.memory.scoring import (
     score_and_admit,
 )
 from ravn.domain.models import Episode, EpisodeMatch, Outcome, SessionSummary, SharedContext
-from ravn.memory_telemetry import (
-    RESULT_EMPTY,
-    RESULT_ERROR,
-    RESULT_HIT,
-    record_funnel,
-    record_injected_chars,
-    record_memory_operation,
-    result_for,
-)
 from ravn.ports.memory import MemoryPort
 
 # Identifies this backend on every metric it emits.

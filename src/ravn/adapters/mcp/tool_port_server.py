@@ -8,8 +8,8 @@ import logging
 import sys
 from typing import IO, Any
 
+from niuu.ports.tool import ToolPort
 from ravn.adapters.mcp.protocol import MCP_PROTOCOL_VERSION
-from ravn.ports.tool import ToolPort
 from ravn.tool_observability import execute_observed_tool
 
 logger = logging.getLogger(__name__)

@@ -115,7 +115,7 @@ async def test_status_ignores_stale_ready_and_mimir_keeps_its_storage():
 async def test_remote_inspection_keeps_backend_metrics():
     import httpx
 
-    from ravn.adapters.mimir.http import HttpMimirAdapter
+    from mimir.adapters.http import HttpMimirAdapter
 
     port = HttpMimirAdapter(base_url="http://mimir.test")
     port._request = AsyncMock(
@@ -190,7 +190,7 @@ async def test_no_gbrain_config_means_no_config_values_key():
 async def test_remote_inspection_reports_older_server_capability():
     import httpx
 
-    from ravn.adapters.mimir.http import HttpMimirAdapter
+    from mimir.adapters.http import HttpMimirAdapter
 
     port = HttpMimirAdapter(base_url="http://mimir.test")
     port._request = AsyncMock(return_value=httpx.Response(404))

@@ -22,13 +22,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from niuu.domain.mimir import compute_source_id
-from ravn.adapters.mimir.markdown import (
+from mimir.adapters.markdown import (
     MarkdownMimirAdapter,
     _extract_summary,
     _extract_title,
 )
-from ravn.adapters.tools.mimir_tools import (
+from mimir.client_config import MimirConfig
+from mimir.tools import (
     MimirIngestTool,
     MimirLintTool,
     MimirPublishArtifactTool,
@@ -40,7 +40,8 @@ from ravn.adapters.tools.mimir_tools import (
     MimirWriteTool,
     build_mimir_tools,
 )
-from ravn.config import MimirConfig, Settings
+from niuu.domain.mimir import compute_source_id
+from ravn.config import Settings
 from ravn.domain.models import (
     AgentTask,
     MimirLintReport,

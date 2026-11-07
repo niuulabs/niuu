@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from niuu.domain.tool import ToolResult
 from ravn.adapters.tools.cascade_tools import (
     TaskCollectTool,
     TaskCreateTool,
@@ -43,7 +44,7 @@ from ravn.adapters.tools.cascade_tools import (
 )
 from ravn.budget import IterationBudget
 from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.domain.models import AgentTask, OutputMode, SharedContext, ToolResult
+from ravn.domain.models import AgentTask, OutputMode, SharedContext
 from ravn.ports.spawn import SpawnConfig
 from tests.test_ravn.conftest import (
     _FakeDiscovery,

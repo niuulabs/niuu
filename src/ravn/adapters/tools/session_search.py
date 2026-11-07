@@ -7,9 +7,9 @@ Two-stage search:
 
 from __future__ import annotations
 
-from ravn.domain.models import ToolResult
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.ports.memory import MemoryPort
-from ravn.ports.tool import ToolPort
 
 
 class SessionSearchTool(ToolPort):

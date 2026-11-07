@@ -10,7 +10,6 @@ import os
 import signal
 import sys
 from contextlib import suppress
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -163,12 +162,11 @@ def approvals_main() -> None:
 
 # Compatibility exports remain late because the Typer apps must exist first.
 # isort: off
+from mimir.builders import build_mimir  # noqa: E402, F401
 from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _build_executor,
     _build_llm,
     _build_memory,
-    _build_mimir,
-    _build_mimir_auth,
     _build_permission,
     _build_tool_build_backend,
     _effective_permission_mode,
@@ -177,9 +175,7 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _with_mimir_fact_capture,
     _import_class,
     _inject_secrets,
-    _mimir_workload_platform_defaults,
     _resident_ravn_state_dir,
-    _resolve_mimir_auth_token,
     _resolve_workspace,
     _runtime_cli_transport_kwargs,
     _transport_mcp_servers,
@@ -518,7 +514,7 @@ def _build_agent(
         persona_config=persona_config,
     )
     memory = _build_memory(settings, llm=llm)
-    mimir = _build_mimir(settings)
+    mimir = build_mimir(settings)
     memory = _with_mimir_fact_capture(memory, mimir)
     iteration_budget = _build_iteration_budget(settings, max_iterations)
     tools = _build_tools(
@@ -991,7 +987,7 @@ def _build_tool_mcp_tools(settings: Settings, *, persona_config: Any | None) -> 
     memory = (
         _build_memory(settings) if _tool_mcp_allows(persona_config, _MEMORY_TOOL_NAMES) else None
     )
-    mimir = _build_mimir(settings) if _tool_mcp_allows(persona_config, _MIMIR_TOOL_NAMES) else None
+    mimir = build_mimir(settings) if _tool_mcp_allows(persona_config, _MIMIR_TOOL_NAMES) else None
     max_iterations = settings.agent.max_iterations
     if persona_config is not None and persona_config.iteration_budget is not None:
         max_iterations = persona_config.iteration_budget
@@ -1907,156 +1903,3 @@ def tool_build_workflows(
         marker = "*" if row["matches_selector"] else " "
         tags = ", ".join(row["tags"]) if row["tags"] else "-"
         typer.echo(f"{marker} {row['name'] or row['id']}  id={row['id']}  tags={tags}")
-
-
-# ---------------------------------------------------------------------------
-# Mímir CLI
-# ---------------------------------------------------------------------------
-
-mimir_app = typer.Typer(
-    name="mimir",
-    help="Mímir knowledge-base utilities.",
-    add_completion=False,
-)
-app.add_typer(mimir_app, name="mimir")
-
-
-@mimir_app.command("ingest")
-def mimir_ingest_cmd(
-    path: str = typer.Argument(..., help="Path to a file to ingest, or '-' to read from stdin."),
-    title: str = typer.Option("", "--title", "-t", help="Title override (defaults to filename)."),
-    source_type: str = typer.Option(
-        "document",
-        "--type",
-        help="Source type: document, web, research, conversation, tool_output.",
-    ),
-    origin_url: str = typer.Option("", "--url", "-u", help="Original URL (optional metadata)."),
-    target: str = typer.Option(
-        "",
-        "--mimir",
-        "-m",
-        help=(
-            "Named Mímir instance to ingest into (e.g. 'local', 'shared'). "
-            "Defaults to all configured instances."
-        ),
-    ),
-    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
-) -> None:
-    """Ingest a file or stdin into the Mímir knowledge base.
-
-    Works with both local (filesystem) and remote (HTTP) Mímir adapters —
-    the adapter is selected from ravn config, no explicit URL needed.
-
-    Examples::
-
-        ravn mimir ingest ./architecture.md
-        ravn mimir ingest ./notes.txt --title "Sprint retro notes" --type research
-        ravn mimir ingest ./doc.md --mimir local
-        ravn mimir ingest ./doc.md --mimir shared
-        cat doc.md | ravn mimir ingest -
-    """
-    if config:
-        os.environ["RAVN_CONFIG"] = config
-
-    settings = Settings()
-    _configure_logging(settings)
-
-    if not settings.mimir.enabled:
-        typer.echo("Mímir is disabled in config (mimir.enabled = false).", err=True)
-        raise typer.Exit(1)
-
-    asyncio.run(
-        _run_mimir_ingest(settings, path, title, source_type, origin_url or None, target or None)
-    )
-
-
-def _build_single_mimir(settings: Settings, name: str) -> Any:
-    """Build a single named Mímir adapter by instance name.
-
-    Searches ``settings.mimir.instances`` for *name*.  Falls back to the
-    single-path local adapter when instances are not configured and *name*
-    is ``'local'``.
-    """
-    for inst in settings.mimir.instances:
-        if inst.name != name:
-            continue
-        from mimir.connections import resolve_mimir_connection
-
-        return resolve_mimir_connection(
-            adapter=inst.adapter,
-            kwargs=inst.kwargs,
-            secret_kwargs_env=inst.secret_kwargs_env,
-            path=inst.path,
-            url=inst.url,
-            environment_id=settings.environment.id,
-            auth=_build_mimir_auth(settings, inst.auth) if inst.auth is not None else None,
-        )
-
-    # No instances configured — accept "local" as alias for the single path adapter
-    if not settings.mimir.instances and name == "local":
-        from mimir.adapters.markdown import MarkdownMimirAdapter
-
-        return MarkdownMimirAdapter(root=settings.mimir.path)
-
-    available = [inst.name for inst in settings.mimir.instances] or ["local"]
-    typer.echo(f"Unknown Mímir instance {name!r}. Available: {', '.join(available)}", err=True)
-    raise typer.Exit(1)
-
-
-async def _run_mimir_ingest(
-    settings: Settings,
-    path: str,
-    title: str,
-    source_type: str,
-    origin_url: str | None,
-    target: str | None = None,
-) -> None:
-    import sys
-
-    from niuu.domain.mimir import MimirSource, compute_content_hash
-
-    mimir = _build_single_mimir(settings, target) if target else _build_mimir(settings)
-    if mimir is None:
-        typer.echo("Failed to build Mímir adapter — check config.", err=True)
-        raise typer.Exit(1)
-
-    if path == "-":
-        content = sys.stdin.read()
-        resolved_title = title or "stdin"
-        resolved_path = "stdin"
-    else:
-        file_path = Path(path).expanduser()
-        if not file_path.exists():
-            typer.echo(f"File not found: {file_path}", err=True)
-            raise typer.Exit(1)
-        content = file_path.read_text(encoding="utf-8", errors="replace")
-        resolved_title = title or file_path.stem.replace("-", " ").replace("_", " ").title()
-        resolved_path = str(file_path)
-
-    if not content.strip():
-        typer.echo("Content is empty — nothing to ingest.", err=True)
-        raise typer.Exit(1)
-
-    content_hash = compute_content_hash(content)
-    source_id = "src_" + content_hash[:16]
-
-    source = MimirSource(
-        source_id=source_id,
-        title=resolved_title,
-        content=content,
-        source_type=source_type,  # type: ignore[arg-type]
-        origin_url=origin_url,
-        content_hash=content_hash,
-        ingested_at=datetime.now(UTC),
-    )
-
-    await mimir.ingest(source)
-    typer.echo(f"Ingested: {resolved_title!r}")
-    typer.echo(f"source_id: {source_id}")
-    typer.echo(f"file:      {resolved_path}")
-    typer.echo(f"target:    {target or 'all'}")
-    typer.echo("Synthesis will be triggered automatically by the daemon (or run ravn chat).")
-
-
-def mimir_main() -> None:
-    mimir_app()

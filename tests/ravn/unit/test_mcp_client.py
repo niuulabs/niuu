@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from niuu.domain.tool import ToolResult
 from ravn.adapters.mcp.client import (
     MCPServerClient,
     MCPServerHealth,
@@ -41,7 +42,6 @@ from ravn.adapters.mcp.protocol import (
 from ravn.adapters.mcp.tool import MCPTool
 from ravn.adapters.mcp.transport import MCPTransport, MCPTransportError
 from ravn.config import MCPServerConfig
-from ravn.domain.models import ToolResult
 
 # ---------------------------------------------------------------------------
 # Helpers

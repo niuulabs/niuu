@@ -18,10 +18,10 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 
+from mimir.client_config import MimirSourceTriggerConfig
 from niuu.domain.mimir import OPERATIONAL_SOURCE_TYPES
 from niuu.ports.mimir import MimirPort
 from ravn.cap_telemetry import record_truncation
-from ravn.config import MimirSourceTriggerConfig
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.ports.trigger import TriggerPort
 

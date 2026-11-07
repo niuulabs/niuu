@@ -5,7 +5,7 @@ fail silently in its own way:
 
 * **episodic memory** (:class:`ravn.ports.memory.MemoryPort`) — ranked, lossy;
   a miss costs answer quality;
-* **Mímir** (:class:`ravn.ports.mimir.MimirPort`) — the shared knowledge base
+* **Mímir** (:class:`niuu.ports.mimir.MimirPort`) — the shared knowledge base
   reached over HTTP.
 
 Both previously emitted nothing, so an empty result was indistinguishable

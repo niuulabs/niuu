@@ -28,6 +28,8 @@ from urllib.parse import quote
 
 import httpx
 
+from mimir.domain import MimirAuth
+from mimir.exceptions import MimirConfigurationError
 from niuu.domain.mimir import (
     LintIssue,
     MimirLintReport,
@@ -40,15 +42,13 @@ from niuu.domain.mimir import (
     ThreadOwnershipError,
     ThreadState,
 )
-from niuu.ports.mimir import MimirPort
-from ravn.domain.exceptions import ConfigurationError
-from ravn.domain.mimir import MimirAuth
-from ravn.memory_telemetry import (
+from niuu.memory_telemetry import (
     RESULT_ERROR,
     RESULT_HIT,
     record_mimir_operation,
     result_for,
 )
+from niuu.ports.mimir import MimirPort
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ class HttpMimirAdapter(MimirPort):
         token_file = self._auth.token_file or "/var/run/secrets/niuu-workload/token"
         token_path = Path(token_file)
         if not token_path.exists():
-            raise ConfigurationError(
+            raise MimirConfigurationError(
                 f"Mímir workload auth is configured for {self._base_url} but the "
                 f"projected identity token file {token_file!r} does not exist — "
                 "mount the workload identity token at this path, or set "
@@ -143,7 +143,7 @@ class HttpMimirAdapter(MimirPort):
             )
         proof = token_path.read_text(encoding="utf-8").strip()
         if not proof:
-            raise ConfigurationError(
+            raise MimirConfigurationError(
                 f"Mímir workload auth is configured for {self._base_url} but the "
                 f"projected identity token file {token_file!r} is empty — the "
                 "workload identity sidecar has not projected a token yet, or "
@@ -152,7 +152,7 @@ class HttpMimirAdapter(MimirPort):
 
         exchange_url = self._auth.exchange_url
         if not exchange_url:
-            raise ConfigurationError(
+            raise MimirConfigurationError(
                 f"Mímir workload auth is configured for {self._base_url} but no "
                 "exchange_url is set — set mimir.instances[].auth.exchange_url, "
                 "or configure gateway.platform.workload_exchange_url / "

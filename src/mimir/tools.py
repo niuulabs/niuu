@@ -22,13 +22,13 @@ from pathlib import Path
 from typing import Any
 
 from mimir.compiled_truth import parse_page as parse_compiled_truth_page
+from mimir.exceptions import MimirUnavailableError
+from mimir.file_security import PathSecurityError, resolve_safe
+from mimir.ports.entity_extractor import EntityExtractorPort
 from niuu.domain.mimir import MimirSource, compute_content_hash, compute_source_id
-from ravn.adapters.tools.entity_extractor import EntityExtractor
-from ravn.adapters.tools.file_security import PathSecurityError, resolve_safe
-from ravn.domain.exceptions import MimirUnavailableError
-from ravn.domain.models import ToolResult
-from ravn.ports.mimir import MimirPort
-from ravn.ports.tool import ToolPort
+from niuu.domain.tool import ToolResult
+from niuu.ports.mimir import MimirPort
+from niuu.ports.tool import ToolPort
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +138,7 @@ class MimirIngestTool(ToolPort):
     def __init__(
         self,
         adapter: MimirPort,
-        entity_extractor: EntityExtractor | None = None,
+        entity_extractor: EntityExtractorPort | None = None,
         event_emitter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._adapter = adapter
@@ -954,7 +954,7 @@ class MimirLintTool(ToolPort):
 def build_mimir_tools(
     adapter: MimirPort,
     workspace: Path | None = None,
-    entity_extractor: EntityExtractor | None = None,
+    entity_extractor: EntityExtractorPort | None = None,
     event_emitter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
 ) -> list[ToolPort]:
     """Return all Mímir tools wired to *adapter*.

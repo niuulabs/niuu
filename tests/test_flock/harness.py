@@ -27,6 +27,8 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from mimir.adapters.composite import CompositeMimirAdapter
+from mimir.domain import MimirMount, WriteRouting
 from niuu.domain.mimir import (
     MimirLintReport,
     MimirPage,
@@ -37,9 +39,7 @@ from niuu.domain.mimir import (
     ThreadState,
 )
 from niuu.ports.mimir import MimirPort
-from ravn.adapters.mimir.composite import CompositeMimirAdapter
 from ravn.domain.events import RavnEvent
-from ravn.domain.mimir import MimirMount, WriteRouting
 from ravn.ports.mesh import MeshPort
 from skuld.config import MeshConfig
 from skuld.mesh_adapter import SkuldMeshAdapter

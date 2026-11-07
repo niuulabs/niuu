@@ -365,7 +365,7 @@ def _resolve_mimir_runtime(
             instance["kwargs"] = dict(raw_ref.get("kwargs") or {})
             instance["secret_kwargs_env"] = dict(raw_ref.get("secret_kwargs_env") or {})
             auth_ref = raw_ref.get("auth_ref") or raw_ref.get("authRef")
-            if instance["adapter"] == "ravn.adapters.mimir.gbrain.GBrainMimirAdapter" and auth_ref:
+            if instance["adapter"] == "mimir.adapters.gbrain.GBrainMimirAdapter" and auth_ref:
                 instance["kwargs"].pop("api_token", None)
                 instance["secret_kwargs_env"].pop("api_token", None)
                 instance["kwargs"]["api_token_file"] = _mimir_token_file(str(auth_ref))

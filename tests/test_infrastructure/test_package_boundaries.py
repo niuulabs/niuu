@@ -53,6 +53,12 @@ def test_niuu_does_not_import_feature_packages() -> None:
     assert actual == set()
 
 
+def test_mimir_does_not_import_ravn() -> None:
+    actual = {path for path, imported in _external_package_imports("mimir") if imported == "ravn"}
+
+    assert actual == set()
+
+
 def test_domain_layers_do_not_read_process_environment() -> None:
     violations: set[str] = set()
 
@@ -155,7 +161,7 @@ def test_scoped_api_and_adapters_have_no_behavioral_environment_reads() -> None:
         "volundr/adapters/inbound/rest.py",
         "volundr/adapters/outbound/local_process.py",
         "volundr/adapters/outbound/openshell_gateway.py",
-        "ravn/adapters/mimir/http.py",
+        "mimir/adapters/http.py",
     )
     forbidden = ("os.environ.get", "os.getenv", "os.environ[")
     violations = {

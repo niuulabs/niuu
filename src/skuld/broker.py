@@ -4912,7 +4912,7 @@ class Broker(
         if self._reflex_initialised:
             return self._reflex_injector
         self._reflex_initialised = True
-        from ravn.reflex import build_reflex_injector  # noqa: PLC0415
+        from mimir.reflex import build_reflex_injector  # noqa: PLC0415
 
         self._reflex_injector = build_reflex_injector(self._settings)
         return self._reflex_injector

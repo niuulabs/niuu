@@ -38,15 +38,15 @@ from niuu.domain.notifications import (
     SpeakPriority,
 )
 from niuu.domain.resident_notifications import MAX_IDEMPOTENCY_KEY_CHARS
+from niuu.domain.tool import ToolResult
 from niuu.forge_mcp.guidance import (
     COMPACT_NOTIFICATION_GUIDANCE,
     NOTIFICATION_TRIGGER_GUIDANCE,
 )
+from niuu.ports.tool import ToolPort
 from ravn.adapters.channels.voice.calls import ResidentCallRequests
-from ravn.domain.models import ToolResult
 from ravn.domain.notification_channel import current_notification_channel
 from ravn.ports.resident_notifications import ResidentNotificationOutboxPort
-from ravn.ports.tool import ToolPort
 
 NOTIFY_TOOL_NAME = "notify"
 _PERMISSION = "notify:send"

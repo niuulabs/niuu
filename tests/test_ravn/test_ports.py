@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ravn.domain.models import ToolResult
+from niuu.domain.tool import ToolResult
 from tests.test_ravn.conftest import EchoTool
 
 

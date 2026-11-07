@@ -41,9 +41,9 @@ def test_ensure_codex_tool_shims_adds_tracker_and_mimir_bridges(tmp_path: Path) 
     mimir_script = (bin_dir / "mimir_publish_files").read_text(encoding="utf-8")
     assert "PYTHONPATH=" in mimir_script
     assert "UV_CACHE_DIR=" in mimir_script
-    assert "-m ravn.cli.mimir_bridge publish-files" in mimir_script
+    assert "-m mimir.bridge publish-files" in mimir_script
     artifact_script = (bin_dir / "mimir_publish_artifact").read_text(encoding="utf-8")
-    assert "-m ravn.cli.mimir_bridge publish-artifact" in artifact_script
+    assert "-m mimir.bridge publish-artifact" in artifact_script
 
 
 def test_ensure_codex_tool_shims_adds_mimir_related_bridge(tmp_path: Path) -> None:
@@ -62,7 +62,7 @@ def test_ensure_codex_tool_shims_adds_mimir_related_bridge(tmp_path: Path) -> No
     related_shim = bin_dir / "mimir_related"
     assert related_shim.exists()
     script = related_shim.read_text(encoding="utf-8")
-    assert "-m ravn.cli.mimir_bridge related" in script
+    assert "-m mimir.bridge related" in script
     assert "# mimir_related:" in script
     assert "wikilink graph" in script
     assert env["RAVN_MIMIR_PATH"] == "/tmp/mimir"

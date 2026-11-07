@@ -17,7 +17,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from ravn.ports.mimir_usage import MimirUsagePort
+from mimir.ports.usage import MimirUsagePort
 
 logger = logging.getLogger(__name__)
 

@@ -19,8 +19,8 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 
 if TYPE_CHECKING:
     from ravn.ports.discovery import DiscoveryPort

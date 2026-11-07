@@ -33,6 +33,8 @@ import logging
 import uuid
 from pathlib import Path
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.adapters.tools.terminal import (
     _DEFAULT_SHELL,
     _DEFAULT_TIMEOUT_SECONDS,
@@ -45,8 +47,6 @@ from ravn.adapters.tools.terminal import (
     run_sentinel_command,
 )
 from ravn.config import DockerTerminalConfig
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +252,7 @@ class DockerPersistentShell:
 class DockerTerminalTool(ToolPort):
     """Execute shell commands inside an ephemeral Docker container.
 
-    Implements the same :class:`~ravn.ports.tool.ToolPort` interface as
+    Implements the same :class:`~niuu.ports.tool.ToolPort` interface as
     :class:`~ravn.adapters.tools.terminal.TerminalTool` — the tool registry
     treats them identically; backend selection is done by configuration.
 

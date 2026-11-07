@@ -21,10 +21,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from niuu.domain.tool import ToolResult
 from niuu.ports.embedding import EmbeddingPort
+from niuu.ports.tool import ToolPort
 from ravn.adapters.memory.scoring import cosine_similarity
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
 from ravn.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)

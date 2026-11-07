@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from niuu.domain.tool import ToolResult
 from ravn.agent import PostToolHook, PreToolHook
 from ravn.cli.runtime_builders import (
     _build_workflow_capability_sources,
@@ -16,7 +17,7 @@ from ravn.cli.runtime_builders import (
     _resident_ravn_state_dir,
 )
 from ravn.config import Settings, resolve_trust_tools
-from ravn.domain.models import Session, ToolCall, ToolResult
+from ravn.domain.models import Session, ToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +83,8 @@ def _build_tools(
     if no_tools:
         return []
 
+    from niuu.ports.tool import ToolPort
     from ravn.adapters.tools.builtin_registry import BUILTIN_TOOLS
-    from ravn.ports.tool import ToolPort
 
     profile_cfg = _get_tool_group(settings, profile)
 
@@ -338,8 +339,8 @@ def _build_tools(
 
     # -- Mímir tools (injected when adapter is wired and "mimir" group is active) --
     if mimir is not None and "mimir" in include_groups:
+        from mimir.tools import build_mimir_tools
         from ravn.adapters.tools.entity_extractor import EntityExtractor
-        from ravn.adapters.tools.mimir_tools import build_mimir_tools
 
         entity_extractor = None
         if settings.mimir.ingest.entity_detection and llm is not None:

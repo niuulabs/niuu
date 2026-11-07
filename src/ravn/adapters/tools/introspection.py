@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import logging
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.budget import IterationBudget
 from ravn.cap_telemetry import require_complete
-from ravn.domain.models import Session, ToolResult
+from ravn.domain.models import Session
 from ravn.ports.llm import LLMPort
 from ravn.ports.memory import MemoryPort
-from ravn.ports.tool import ToolPort
 
 logger = logging.getLogger(__name__)
 

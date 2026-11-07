@@ -4,8 +4,8 @@ import json
 import logging
 from typing import Any
 
+from niuu.domain.tool import ToolResult
 from ravn.config import Settings
-from ravn.domain.models import ToolResult
 from ravn.ports.executor import ExecutionAgentPort
 
 logger = logging.getLogger(__name__)

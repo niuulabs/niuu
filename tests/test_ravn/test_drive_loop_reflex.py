@@ -7,10 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 
-from ravn.config import InitiativeConfig, MimirConfig, MimirReflexConfig
+from mimir.client_config import MimirConfig, MimirReflexConfig
+from mimir.reflex import POINTER_BLOCK_HEADER, ReflexEntity, ReflexInjector
+from ravn.config import InitiativeConfig
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.drive_loop import DriveLoop
-from ravn.reflex import POINTER_BLOCK_HEADER, ReflexEntity, ReflexInjector
 
 
 def _make_task(task_id: str = "t1", *, context: str = "do it") -> AgentTask:
@@ -122,7 +123,7 @@ class TestDriveLoopReflex:
         )
         dl._reflex_initialised = True
 
-        with caplog.at_level(logging.ERROR, logger="ravn.reflex"):
+        with caplog.at_level(logging.ERROR, logger="mimir.reflex"):
             await dl._run_task(_make_task(context="Check Volundr Auth"))
 
         assert len(prompts) == 1

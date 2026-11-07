@@ -173,7 +173,7 @@ def test_mimir_workload_defaults_fall_back_to_the_runtime_env(monkeypatch) -> No
     (None, None); the Mímir adapter then had no exchange_url, sent every
     request to the shared Mímir with no Authorization header, and the failure
     surfaced as a bare 401 that read like a missing credential."""
-    from ravn.cli.runtime_builders import _mimir_workload_platform_defaults
+    from mimir.builders import mimir_workload_platform_defaults
 
     monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", "/var/run/secrets/niuu-workload/token")
     monkeypatch.setenv(
@@ -185,14 +185,14 @@ def test_mimir_workload_defaults_fall_back_to_the_runtime_env(monkeypatch) -> No
     )
     assert settings.gateway.platform.enabled is False
 
-    token_file, exchange_url = _mimir_workload_platform_defaults(settings)
+    token_file, exchange_url = mimir_workload_platform_defaults(settings)
 
     assert token_file == "/var/run/secrets/niuu-workload/token"
     assert exchange_url == "https://volundr.example.test/api/v1/tokens/workload/exchange"
 
 
 def test_configured_platform_still_wins_for_mimir(monkeypatch) -> None:
-    from ravn.cli.runtime_builders import _mimir_workload_platform_defaults
+    from mimir.builders import mimir_workload_platform_defaults
 
     monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "https://wrong.test/exchange")
     settings = Settings.model_validate(
@@ -207,7 +207,7 @@ def test_configured_platform_still_wins_for_mimir(monkeypatch) -> None:
         }
     )
 
-    token_file, exchange_url = _mimir_workload_platform_defaults(settings)
+    token_file, exchange_url = mimir_workload_platform_defaults(settings)
 
     assert token_file == "/custom/token"
     assert exchange_url == "https://volundr.example.test/api/v1/tokens/workload/exchange"

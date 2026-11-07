@@ -160,7 +160,7 @@ ravn = "ravn.cli.commands:app"
 ravn-api = "ravn.main:main"
 ravn-approvals = "ravn.cli.commands:approvals_main"
 ravn-gateway = "ravn.cli.commands:gateway_main"
-ravn-mimir = "ravn.cli.commands:mimir_main"
+mimir = "mimir.__main__:main"
 
 [project.entry-points."niuu.plugins"]
 niuu = "niuu.plugin:NiuuPlugin"

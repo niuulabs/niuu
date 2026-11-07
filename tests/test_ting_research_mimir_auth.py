@@ -71,7 +71,7 @@ def test_campaign_without_caller_does_not_borrow_volundr_credentials() -> None:
 
 
 def test_gateway_mounts_are_not_batched_together() -> None:
-    from ravn.adapters.mimir.http import HttpMimirAdapter
+    from mimir.adapters.http import HttpMimirAdapter
 
     first = HttpMimirAdapter(base_url="https://knowledge.test/api/v1", mount="first")
     second = HttpMimirAdapter(base_url="https://knowledge.test/api/v1", mount="second")

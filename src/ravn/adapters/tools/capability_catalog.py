@@ -7,7 +7,9 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from niuu.domain.agent_directory import AgentSkill
+from niuu.domain.tool import ToolResult
 from niuu.observability import get_observability
+from niuu.ports.tool import ToolPort
 from ravn.domain.capability_catalog import (
     Capability,
     CapabilityKind,
@@ -17,11 +19,9 @@ from ravn.domain.capability_catalog import (
     capability_from_workflow,
     filter_capabilities,
 )
-from ravn.domain.models import ToolResult
 from ravn.ports.agent_directory import PeerAgentDirectoryPort
 from ravn.ports.capability import WorkflowCapabilityPort
 from ravn.ports.skill import SkillPort
-from ravn.ports.tool import ToolPort
 from ravn.skills.management import SkillManagementRegistry
 from ravn.tool_observability import publish_learned_tool_inventory
 

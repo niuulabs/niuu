@@ -16,7 +16,7 @@ from pathlib import Path
 
 import httpx
 
-from ravn.adapters.tools.mimir_tools import (
+from mimir.tools import (
     MimirIngestTool,
     MimirPublishArtifactTool,
     MimirPublishFilesTool,
@@ -25,7 +25,7 @@ from ravn.adapters.tools.mimir_tools import (
     MimirSearchTool,
     MimirWriteTool,
 )
-from ravn.domain.models import ToolResult
+from niuu.domain.tool import ToolResult
 
 
 def _workspace() -> Path:
@@ -45,10 +45,10 @@ def _mimir_root() -> Path:
 def _configured_adapter():
     if not os.environ.get("RAVN_CONFIG", "").strip():
         return None
-    from ravn.cli.commands import _build_mimir
-    from ravn.config import Settings
+    from mimir.builders import build_mimir
+    from mimir.client_settings import MimirClientSettings
 
-    return _build_mimir(Settings())
+    return build_mimir(MimirClientSettings())
 
 
 def _adapter():

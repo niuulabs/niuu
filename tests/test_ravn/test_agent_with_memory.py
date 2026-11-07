@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from niuu.domain.tool import ToolResult
 from ravn.adapters.permission.allow_deny import AllowAllPermission
 from ravn.agent import (
     RavnAgent,
@@ -24,7 +25,6 @@ from ravn.domain.models import (
     StreamEventType,
     TokenUsage,
     ToolCall,
-    ToolResult,
     TurnResult,
 )
 from ravn.ports.llm import LLMPort

@@ -20,7 +20,9 @@ from __future__ import annotations
 import logging
 from uuid import uuid4
 
+from niuu.domain.tool import ToolResult
 from niuu.observability import get_observability
+from niuu.ports.tool import ToolPort
 from ravn.context.autonomy import (
     AutonomyMode,
     AutonomyPolicy,
@@ -28,9 +30,7 @@ from ravn.context.autonomy import (
     ProposalScope,
     SelfImprovementProposal,
 )
-from ravn.domain.models import ToolResult
 from ravn.ports.skill import SkillPort
-from ravn.ports.tool import ToolPort
 from ravn.skills.management import SkillManagementRegistry
 
 logger = logging.getLogger(__name__)

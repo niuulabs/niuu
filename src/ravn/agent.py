@@ -12,8 +12,10 @@ from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from niuu.domain.tool import ToolResult
 from niuu.observability import get_observability
 from niuu.ports.mimir import MimirPort
+from niuu.ports.tool import ToolPort
 from ravn.budget import IterationBudget, TokenEstimator
 from ravn.cap_telemetry import record_cap_hit, record_truncation, require_complete
 from ravn.compression import CompressionResult, ContextCompressor
@@ -41,7 +43,6 @@ from ravn.domain.models import (
     StreamEventType,
     TokenUsage,
     ToolCall,
-    ToolResult,
     TurnResult,
 )
 from ravn.harness_telemetry import emit_harness_step
@@ -51,7 +52,6 @@ from ravn.ports.llm import LLMPort, SystemPrompt
 from ravn.ports.memory import MemoryPort
 from ravn.ports.native_compaction import NativeCompactionPort
 from ravn.ports.permission import PermissionPort
-from ravn.ports.tool import ToolPort
 from ravn.prompt_builder import PromptBuilder
 
 if TYPE_CHECKING:

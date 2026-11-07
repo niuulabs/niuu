@@ -6,7 +6,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from niuu.domain.tool import ToolResult
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from niuu.ports.tool import ToolPort
 from ravn.adapters.executors.cli import (
     CliTransportAgent,
     CliTransportExecutor,
@@ -15,9 +17,8 @@ from ravn.adapters.executors.cli import (
 )
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.events import RavnEvent
-from ravn.domain.models import Message, Session, ToolResult
+from ravn.domain.models import Message, Session
 from ravn.domain.notification_channel import current_notification_channel
-from ravn.ports.tool import ToolPort
 
 
 class _CollectingChannel:

@@ -8,12 +8,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from mimir.client_config import MimirSourceTriggerConfig, MimirStalenessTriggerConfig
 from niuu.domain.mimir import LintIssue, MimirLintReport
 from niuu.ports.mimir import MimirPageMeta, MimirSource, MimirSourceMeta
 from ravn.adapters.triggers.mimir_source import MimirSourceTrigger
 from ravn.adapters.triggers.mimir_staleness import MimirStalenessTrigger
 from ravn.cap_telemetry import cap_hit_counts
-from ravn.config import MimirSourceTriggerConfig, MimirStalenessTriggerConfig
 from ravn.domain.models import AgentTask
 
 

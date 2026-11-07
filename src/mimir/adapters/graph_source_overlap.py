@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from ravn.ports.mimir_graph import MimirGraph, MimirGraphPort
+from mimir.ports.graph import MimirGraph, MimirGraphPort
 
 logger = logging.getLogger(__name__)
 

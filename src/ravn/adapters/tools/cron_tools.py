@@ -27,7 +27,9 @@ import logging
 import re
 from uuid import uuid4
 
+from niuu.domain.tool import ToolResult
 from niuu.observability import get_observability
+from niuu.ports.tool import ToolPort
 from ravn.adapters.triggers.cron import (
     CronExpressionError,
     CronJobRecord,
@@ -35,8 +37,6 @@ from ravn.adapters.triggers.cron import (
     parse_schedule,
     validate_cron_fields,
 )
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
 from ravn.resident_text import texts_overlap, texts_similar
 
 logger = logging.getLogger(__name__)

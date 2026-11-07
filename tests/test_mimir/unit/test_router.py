@@ -18,12 +18,12 @@ from identity.adapters.identity import (
     AllowAllHeaderAuthenticationAdapter,
     EnvoyHeaderAuthenticationAdapter,
 )
+from mimir.adapters.composite import CompositeMimirAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
+from mimir.domain import MimirMount, WriteRouting
 from mimir.registry import MimirRegistryStore
 from mimir.router import MimirRouter
 from niuu.domain.mimir import compute_source_id
-from ravn.adapters.mimir.composite import CompositeMimirAdapter
-from ravn.domain.mimir import MimirMount, WriteRouting
 
 #: Headers satisfying both _require_write_auth (tenant + WRITE_ROLES) and
 #: _require_deploy_auth for the default EnvoyHeaderAuthenticationAdapter fixture
@@ -1537,7 +1537,7 @@ def test_activity_recent_writes_and_dreams_cover_log_variants(tmp_path: Path) ->
 
 def test_mounts_support_remote_http_host_metadata(tmp_path: Path) -> None:
     app = _make_app(tmp_path / "hosted")
-    from ravn.adapters.mimir.http import HttpMimirAdapter
+    from mimir.adapters.http import HttpMimirAdapter
 
     transport = httpx.ASGITransport(app=app)
     remote = HttpMimirAdapter(base_url="http://mimir-test")
@@ -1700,8 +1700,8 @@ def test_graph_preserves_shared_provenance_across_mounts(tmp_path):
 
 
 def test_remote_registry_connection_becomes_a_routable_mount(tmp_path):
+    from mimir.adapters.http import HttpMimirAdapter
     from mimir.registry import MimirRegistryEntry
-    from ravn.adapters.mimir.http import HttpMimirAdapter
 
     store = MimirRegistryStore(tmp_path / "registry.json")
     entry = store.save_entry(MimirRegistryEntry(name="ymir", url="http://ymir.test"))
@@ -1722,8 +1722,8 @@ def test_remote_registry_connection_becomes_a_routable_mount(tmp_path):
 
 
 def test_federation_diagnostics_read_configured_capture_directory(tmp_path):
-    from ravn.adapters.mimir.composite import CompositeMimirAdapter
-    from ravn.domain.mimir import MimirMount
+    from mimir.adapters.composite import CompositeMimirAdapter
+    from mimir.domain import MimirMount
 
     adapter = CompositeMimirAdapter(
         mounts=[

@@ -1,4 +1,4 @@
-"""Tests for the Retrieval Reflex scanner (NIU-1059) — src/ravn/reflex.py."""
+"""Tests for the Retrieval Reflex scanner (NIU-1059) — src/mimir/reflex.py."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import httpx
 import pytest
 import respx
 
-from ravn.config import MimirAuthConfig, MimirConfig, MimirInstanceConfig, MimirReflexConfig
-from ravn.reflex import (
+from mimir.client_config import MimirAuthConfig, MimirConfig, MimirInstanceConfig, MimirReflexConfig
+from mimir.reflex import (
     INJECTED_LOG_EVENT,
     POINTER_BLOCK_HEADER,
     EntityIndex,
@@ -341,7 +341,7 @@ class TestReflexInjector:
 
     async def test_pointer_block_happy_path(self, caplog):
         injector = self._injector()
-        with caplog.at_level(logging.INFO, logger="ravn.reflex"):
+        with caplog.at_level(logging.INFO, logger="mimir.reflex"):
             block = await injector.pointer_block("Check Volundr Auth please", "s1")
         assert block is not None
         assert block.startswith(POINTER_BLOCK_HEADER)
@@ -372,7 +372,7 @@ class TestReflexInjector:
             raise httpx.ConnectError("mimir down")
 
         injector = ReflexInjector(fetch_entities=fetch, max_pointers=5, cache_ttl_seconds=300.0)
-        with caplog.at_level(logging.ERROR, logger="ravn.reflex"):
+        with caplog.at_level(logging.ERROR, logger="mimir.reflex"):
             block = await injector.pointer_block("Check Volundr Auth", "s1")
         assert block is None
         errors = [r for r in caplog.records if r.levelno == logging.ERROR]
@@ -381,13 +381,13 @@ class TestReflexInjector:
     async def test_configuration_error_propagates_instead_of_failing_open(self):
         """A workload-auth misconfiguration is a fixable defect, not an outage —
         it must not be reported as "entity feed unreachable" and swallowed."""
-        from ravn.domain.exceptions import ConfigurationError
+        from mimir.exceptions import MimirConfigurationError
 
         async def fetch():
-            raise ConfigurationError("mimir workload auth misconfigured for http://mimir.test")
+            raise MimirConfigurationError("mimir workload auth misconfigured for http://mimir.test")
 
         injector = ReflexInjector(fetch_entities=fetch, max_pointers=5, cache_ttl_seconds=300.0)
-        with pytest.raises(ConfigurationError, match="misconfigured"):
+        with pytest.raises(MimirConfigurationError, match="misconfigured"):
             await injector.pointer_block("Check Volundr Auth", "s1")
 
     async def test_apply_prefixes_block(self):
@@ -499,7 +499,7 @@ class TestBuildReflexInjector:
 
     def test_enabled_without_any_url_logs_warning_and_returns_none(self, caplog):
         cfg = MimirConfig(reflex=MimirReflexConfig(enabled=True))
-        with caplog.at_level(logging.WARNING, logger="ravn.reflex"):
+        with caplog.at_level(logging.WARNING, logger="mimir.reflex"):
             assert build_reflex_injector(cfg) is None
         assert any("no Mimir HTTP endpoint" in r.getMessage() for r in caplog.records)
 

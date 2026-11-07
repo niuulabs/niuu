@@ -7,7 +7,7 @@ import logging
 import re
 from pathlib import Path
 
-from ravn.adapters.tools.file_security import (
+from mimir.file_security import (
     DEFAULT_BINARY_CHECK_BYTES,
     DEFAULT_MAX_READ_BYTES,
     DEFAULT_MAX_WRITE_BYTES,
@@ -15,8 +15,8 @@ from ravn.adapters.tools.file_security import (
     is_binary,
     resolve_safe,
 )
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 
 logger = logging.getLogger(__name__)
 

@@ -18,10 +18,10 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 
+from mimir.client_config import MimirStalenessTriggerConfig
+from mimir.ports.usage import MimirUsagePort
 from niuu.ports.mimir import MimirPort
-from ravn.config import MimirStalenessTriggerConfig
 from ravn.domain.models import AgentTask, OutputMode
-from ravn.ports.mimir_usage import MimirUsagePort
 from ravn.ports.trigger import TriggerPort
 
 logger = logging.getLogger(__name__)

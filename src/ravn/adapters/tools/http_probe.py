@@ -6,9 +6,9 @@ from urllib.parse import urlparse
 
 import httpx
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from niuu.utils.url_security import check_ssrf
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
 
 _DEFAULT_TIMEOUT = 20.0
 _DEFAULT_USER_AGENT = "Ravn/1.0 (+https://github.com/niuulabs/volundr)"

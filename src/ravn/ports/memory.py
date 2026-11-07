@@ -13,7 +13,7 @@ from ravn.domain.models import (
 )
 
 if TYPE_CHECKING:
-    from ravn.ports.tool import ToolPort
+    from niuu.ports.tool import ToolPort
 
 # Default maximum characters for the in-memory rolling session summary.
 # Override per-instance by setting ``adapter._rolling_summary_max_chars``

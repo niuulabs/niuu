@@ -20,10 +20,10 @@ from pathlib import Path
 
 import yaml as _yaml
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.adapters.personas.loader import _VALID_FAN_IN_STRATEGIES
-from ravn.domain.models import ToolResult
 from ravn.domain.permission_mode import parse_optional_permission_mode
-from ravn.ports.tool import ToolPort
 
 logger = logging.getLogger(__name__)
 

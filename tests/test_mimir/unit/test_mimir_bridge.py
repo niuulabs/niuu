@@ -10,8 +10,8 @@ import pytest
 import respx
 from httpx import Response
 
-from ravn.cli import mimir_bridge
-from ravn.cli.mimir_bridge import main
+from mimir import bridge as mimir_bridge
+from mimir.bridge import main
 
 ENTITY_PAGE = """---
 type: entity

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from niuu.domain.tool import ToolResult
 from ravn.agent import RavnAgent
 from ravn.budget import IterationBudget
 from ravn.cap_telemetry import (
@@ -34,14 +35,7 @@ from ravn.domain.exceptions import (
     MaxIterationsError,
     OutputTruncatedError,
 )
-from ravn.domain.models import (
-    LLMResponse,
-    Message,
-    StopReason,
-    TokenUsage,
-    ToolCall,
-    ToolResult,
-)
+from ravn.domain.models import LLMResponse, Message, StopReason, TokenUsage, ToolCall
 from tests.ravn.conftest import MockLLM, make_agent, make_text_response
 from tests.ravn.fixtures.fakes import EchoTool, InMemoryChannel
 

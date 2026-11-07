@@ -21,8 +21,8 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,7 @@ async def restore_shell_state(
 
 
 def _build_result(output: str, exit_code: int) -> ToolResult:
-    """Build a :class:`~ravn.domain.models.ToolResult` from shell output."""
+    """Build a :class:`~niuu.domain.tool.ToolResult` from shell output."""
     content = output.rstrip("\n")
     if exit_code != 0:
         suffix = f"\n[exit {exit_code}]"

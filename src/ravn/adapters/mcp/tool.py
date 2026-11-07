@@ -6,8 +6,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 
 if TYPE_CHECKING:
     from ravn.adapters.mcp.client import MCPServerClient

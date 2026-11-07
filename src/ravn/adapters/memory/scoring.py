@@ -17,9 +17,9 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from niuu.adapters.search.rrf import cosine_similarity, reciprocal_rank_fusion
+from niuu.memory_telemetry import record_funnel
 from niuu.ports.search import SearchResult
 from ravn.domain.models import Episode, EpisodeMatch, Outcome, SessionSummary
-from ravn.memory_telemetry import record_funnel
 
 # Re-export so existing ``from ravn.adapters.memory.scoring import ...`` calls work.
 __all__ = [

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ravn import memory_telemetry
+from niuu import memory_telemetry
 
 
 def test_runtime_dashboard_covers_judgment_and_causal_dependencies() -> None:
@@ -56,7 +56,7 @@ def _dashboard_queries() -> str:
 
 
 def test_runtime_dashboard_covers_every_agent_memory_metric() -> None:
-    """Each metric ``ravn.memory_telemetry`` emits must be plotted somewhere.
+    """Each metric ``niuu.memory_telemetry`` emits must be plotted somewhere.
 
     The three memory surfaces previously emitted nothing at all, so an empty
     prefetch was indistinguishable from a healthy one. Pinning the emitted

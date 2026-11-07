@@ -1557,31 +1557,31 @@ class TestEffectiveModelResolution:
 
 class TestBuildMimir:
     def test_disabled_returns_none(self, settings: Settings) -> None:
-        from ravn.cli.commands import _build_mimir
+        from mimir.builders import build_mimir
 
         settings.mimir.enabled = False
-        result = _build_mimir(settings)
+        result = build_mimir(settings)
         assert result is None
 
     def test_single_local_instance_returns_markdown_adapter(
         self, settings: Settings, tmp_path: Path
     ) -> None:
         from mimir.adapters.markdown import MarkdownMimirAdapter
-        from ravn.cli.commands import _build_mimir
+        from mimir.builders import build_mimir
 
         settings.mimir.enabled = True
         settings.mimir.instances = []
         settings.mimir.path = str(tmp_path / "mimir")
-        result = _build_mimir(settings)
+        result = build_mimir(settings)
         assert isinstance(result, MarkdownMimirAdapter)
 
     def test_instance_with_path_returns_markdown_adapter(
         self, settings: Settings, tmp_path: Path
     ) -> None:
+        from mimir.adapters.composite import CompositeMimirAdapter
         from mimir.adapters.markdown import MarkdownMimirAdapter
-        from ravn.adapters.mimir.composite import CompositeMimirAdapter
-        from ravn.cli.commands import _build_mimir
-        from ravn.config import MimirInstanceConfig
+        from mimir.builders import build_mimir
+        from mimir.client_config import MimirInstanceConfig
 
         settings.mimir.enabled = True
         settings.mimir.instances = [
@@ -1591,16 +1591,16 @@ class TestBuildMimir:
                 path=str(tmp_path / "mimir"),
             )
         ]
-        result = _build_mimir(settings)
+        result = build_mimir(settings)
         assert isinstance(result, CompositeMimirAdapter)
         # The single mount should be a MarkdownMimirAdapter
         assert isinstance(result._mounts[0].port, MarkdownMimirAdapter)
 
     def test_instance_with_url_returns_http_adapter(self, settings: Settings) -> None:
-        from ravn.adapters.mimir.composite import CompositeMimirAdapter
-        from ravn.adapters.mimir.http import HttpMimirAdapter
-        from ravn.cli.commands import _build_mimir
-        from ravn.config import MimirInstanceConfig
+        from mimir.adapters.composite import CompositeMimirAdapter
+        from mimir.adapters.http import HttpMimirAdapter
+        from mimir.builders import build_mimir
+        from mimir.client_config import MimirInstanceConfig
 
         settings.mimir.enabled = True
         settings.mimir.instances = [
@@ -1610,16 +1610,16 @@ class TestBuildMimir:
                 url="https://mimir.niuu.internal",
             )
         ]
-        result = _build_mimir(settings)
+        result = build_mimir(settings)
         assert isinstance(result, CompositeMimirAdapter)
         assert isinstance(result._mounts[0].port, HttpMimirAdapter)
 
     def test_mixed_instances_returns_composite(self, settings: Settings, tmp_path: Path) -> None:
+        from mimir.adapters.composite import CompositeMimirAdapter
+        from mimir.adapters.http import HttpMimirAdapter
         from mimir.adapters.markdown import MarkdownMimirAdapter
-        from ravn.adapters.mimir.composite import CompositeMimirAdapter
-        from ravn.adapters.mimir.http import HttpMimirAdapter
-        from ravn.cli.commands import _build_mimir
-        from ravn.config import MimirInstanceConfig
+        from mimir.builders import build_mimir
+        from mimir.client_config import MimirInstanceConfig
 
         settings.mimir.enabled = True
         settings.mimir.instances = [
@@ -1634,7 +1634,7 @@ class TestBuildMimir:
                 url="https://mimir.niuu.internal",
             ),
         ]
-        result = _build_mimir(settings)
+        result = build_mimir(settings)
         assert isinstance(result, CompositeMimirAdapter)
         assert len(result._mounts) == 2
         port_types = {m.name: type(m.port) for m in result._mounts}
@@ -1649,8 +1649,8 @@ class TestBuildMimir:
         Skipping produced a Mímir with fewer mounts than configured: reads
         returned less, and nothing anywhere said an instance was missing.
         """
-        from ravn.cli.commands import _build_mimir
-        from ravn.config import MimirInstanceConfig
+        from mimir.builders import build_mimir
+        from mimir.client_config import MimirInstanceConfig
 
         settings.mimir.enabled = True
         settings.mimir.instances = [
@@ -1659,7 +1659,7 @@ class TestBuildMimir:
         ]
 
         with pytest.raises(ValueError, match="no adapter, path or url"):
-            _build_mimir(settings)
+            build_mimir(settings)
 
     def test_an_instance_with_no_backend_raises(self, settings: Settings) -> None:
         """Replaces a test asserting this returned None — i.e. Mímir disabled.
@@ -1667,19 +1667,19 @@ class TestBuildMimir:
         Returning None is how a typo in one instance turned into a resident
         running with no knowledge base at all, looking healthy.
         """
-        from ravn.cli.commands import _build_mimir
-        from ravn.config import MimirInstanceConfig
+        from mimir.builders import build_mimir
+        from mimir.client_config import MimirInstanceConfig
 
         settings.mimir.enabled = True
         settings.mimir.instances = [MimirInstanceConfig(name="bad", role="local")]
 
         with pytest.raises(ValueError, match="no adapter, path or url"):
-            _build_mimir(settings)
+            build_mimir(settings)
 
     def test_write_routing_applied_to_composite(self, settings: Settings, tmp_path: Path) -> None:
-        from ravn.adapters.mimir.composite import CompositeMimirAdapter
-        from ravn.cli.commands import _build_mimir
-        from ravn.config import MimirInstanceConfig, MimirWriteRoutingConfig
+        from mimir.adapters.composite import CompositeMimirAdapter
+        from mimir.builders import build_mimir
+        from mimir.client_config import MimirInstanceConfig, MimirWriteRoutingConfig
 
         settings.mimir.enabled = True
         settings.mimir.instances = [
@@ -1701,7 +1701,7 @@ class TestBuildMimir:
             ],
             default=["local"],
         )
-        result = _build_mimir(settings)
+        result = build_mimir(settings)
         assert isinstance(result, CompositeMimirAdapter)
         # Routing: self/ → local, project/ → hosted, default → local
         assert result._write_routing.resolve("self/notes.md") == ["local"]
@@ -1713,14 +1713,14 @@ class TestBuildMimirAuthWorkloadDefaults:
     """Workload Mímir auth threads gateway.platform config (config-first rule)."""
 
     def test_workload_auth_falls_back_to_platform_config(self, settings: Settings) -> None:
-        from ravn.cli.commands import _build_mimir_auth
-        from ravn.config import MimirAuthConfig
+        from mimir.builders import build_mimir_auth
+        from mimir.client_config import MimirAuthConfig
 
         settings.gateway.platform.enabled = True
         settings.gateway.platform.workload_token_file = "/var/run/secrets/niuu-workload/token"
         settings.gateway.platform.workload_exchange_url = "http://volundr.svc/exchange"
 
-        auth = _build_mimir_auth(settings, MimirAuthConfig(type="workload"))
+        auth = build_mimir_auth(settings, MimirAuthConfig(type="workload"))
         assert auth.type == "workload"
         assert auth.token_file == "/var/run/secrets/niuu-workload/token"
         assert auth.exchange_url == "http://volundr.svc/exchange"
@@ -1728,25 +1728,25 @@ class TestBuildMimirAuthWorkloadDefaults:
     def test_workload_auth_derives_exchange_url_from_platform_base_url(
         self, settings: Settings
     ) -> None:
-        from ravn.cli.commands import _build_mimir_auth
-        from ravn.config import MimirAuthConfig
+        from mimir.builders import build_mimir_auth
+        from mimir.client_config import MimirAuthConfig
 
         settings.gateway.platform.enabled = True
         settings.gateway.platform.base_url = "http://volundr.svc/"
         settings.gateway.platform.workload_exchange_url = ""
 
-        auth = _build_mimir_auth(settings, MimirAuthConfig(type="workload"))
+        auth = build_mimir_auth(settings, MimirAuthConfig(type="workload"))
         assert auth.exchange_url == "http://volundr.svc/api/v1/tokens/workload/exchange"
 
     def test_workload_auth_explicit_instance_values_win(self, settings: Settings) -> None:
-        from ravn.cli.commands import _build_mimir_auth
-        from ravn.config import MimirAuthConfig
+        from mimir.builders import build_mimir_auth
+        from mimir.client_config import MimirAuthConfig
 
         settings.gateway.platform.enabled = True
         settings.gateway.platform.workload_token_file = "/platform/token"
         settings.gateway.platform.workload_exchange_url = "http://platform/exchange"
 
-        auth = _build_mimir_auth(
+        auth = build_mimir_auth(
             settings,
             MimirAuthConfig(
                 type="workload",
@@ -1758,22 +1758,22 @@ class TestBuildMimirAuthWorkloadDefaults:
         assert auth.exchange_url == "http://instance/exchange"
 
     def test_workload_auth_platform_disabled_keeps_none(self, settings: Settings) -> None:
-        from ravn.cli.commands import _build_mimir_auth
-        from ravn.config import MimirAuthConfig
+        from mimir.builders import build_mimir_auth
+        from mimir.client_config import MimirAuthConfig
 
         settings.gateway.platform.enabled = False
-        auth = _build_mimir_auth(settings, MimirAuthConfig(type="workload"))
+        auth = build_mimir_auth(settings, MimirAuthConfig(type="workload"))
         assert auth.token_file is None
         assert auth.exchange_url is None
 
     def test_bearer_auth_is_not_threaded(self, settings: Settings) -> None:
-        from ravn.cli.commands import _build_mimir_auth
-        from ravn.config import MimirAuthConfig
+        from mimir.builders import build_mimir_auth
+        from mimir.client_config import MimirAuthConfig
 
         settings.gateway.platform.enabled = True
         settings.gateway.platform.workload_exchange_url = "http://platform/exchange"
 
-        auth = _build_mimir_auth(settings, MimirAuthConfig(type="bearer", token="tok"))
+        auth = build_mimir_auth(settings, MimirAuthConfig(type="bearer", token="tok"))
         assert auth.type == "bearer"
         assert auth.token == "tok"
         assert auth.exchange_url is None

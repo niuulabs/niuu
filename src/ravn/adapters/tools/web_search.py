@@ -7,8 +7,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.ports.web_search import SearchResult, WebSearchPort
 
 _DEFAULT_NUM_RESULTS = 5

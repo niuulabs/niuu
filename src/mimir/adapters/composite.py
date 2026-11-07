@@ -7,9 +7,9 @@ agent override — exactly parallel to ``CompositeMeshAdapter``.
 Example (two mounts — local filesystem + shared HTTP service)::
 
     from mimir.adapters.markdown import MarkdownMimirAdapter
-    from ravn.adapters.mimir.http import HttpMimirAdapter
-    from ravn.adapters.mimir.composite import CompositeMimirAdapter
-    from ravn.domain.mimir import MimirAuth, MimirMount, WriteRouting
+    from mimir.adapters.http import HttpMimirAdapter
+    from mimir.adapters.composite import CompositeMimirAdapter
+    from mimir.domain import MimirAuth, MimirMount, WriteRouting
 
     local = MarkdownMimirAdapter(root="~/.ravn/mimir")
     shared = HttpMimirAdapter(
@@ -42,6 +42,8 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 
+from mimir.domain import MimirMount, WriteRouting
+from mimir.exceptions import MimirUnavailableError
 from niuu.domain.mimir import (
     LintIssue,
     MimirLintReport,
@@ -55,8 +57,6 @@ from niuu.domain.mimir import (
     ThreadState,
 )
 from niuu.ports.mimir import MimirPort
-from ravn.domain.exceptions import MimirUnavailableError
-from ravn.domain.mimir import MimirMount, WriteRouting
 
 logger = logging.getLogger(__name__)
 

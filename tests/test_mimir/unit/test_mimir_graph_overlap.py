@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from ravn.adapters.mimir.graph_source_overlap import SourceOverlapGraphAdapter
+from mimir.adapters.graph_source_overlap import SourceOverlapGraphAdapter
 
 
 class TestSourceOverlapGraphAdapter:

@@ -24,11 +24,11 @@ import os
 import signal
 from pathlib import Path
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.adapters.permission.bash_validator import BashValidationPipeline
 from ravn.cap_telemetry import record_truncation
 from ravn.config import BashToolConfig
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
 
 logger = logging.getLogger(__name__)
 

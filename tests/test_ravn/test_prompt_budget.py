@@ -8,20 +8,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.agent import RavnAgent
 from ravn.budget import _CHARS_PER_TOKEN
 from ravn.cap_telemetry import cap_hit_counts
 from ravn.domain.events import RavnEventType
 from ravn.domain.exceptions import PromptBudgetExceededError
-from ravn.domain.models import (
-    StreamEvent,
-    StreamEventType,
-    TokenUsage,
-    ToolCall,
-    ToolResult,
-)
+from ravn.domain.models import StreamEvent, StreamEventType, TokenUsage, ToolCall
 from ravn.ports.llm import LLMPort
-from ravn.ports.tool import ToolPort
 from ravn.prompt_builder import PromptBuilder
 from tests.test_ravn.conftest import (
     AllowAllPermission,

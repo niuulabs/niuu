@@ -17,6 +17,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from mimir.adapters.composite import CompositeMimirAdapter
+from mimir.domain import MimirMount, WriteRouting
+from mimir.exceptions import MimirUnavailableError
 from niuu.domain.mimir import (
     LintIssue,
     MimirLintReport,
@@ -27,9 +30,6 @@ from niuu.domain.mimir import (
     MimirSource,
     compute_content_hash,
 )
-from ravn.adapters.mimir.composite import CompositeMimirAdapter
-from ravn.domain.exceptions import MimirUnavailableError
-from ravn.domain.mimir import MimirMount, WriteRouting
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -446,8 +446,8 @@ async def test_read_source_raises_once_the_retry_budget_is_spent() -> None:
 
     # Advance only the adapter's clock, independently of CI scheduling latency.
     with (
-        patch("ravn.adapters.mimir.composite.time") as clock,
-        patch("ravn.adapters.mimir.composite.asyncio.sleep", new_callable=AsyncMock) as sleep,
+        patch("mimir.adapters.composite.time") as clock,
+        patch("mimir.adapters.composite.asyncio.sleep", new_callable=AsyncMock) as sleep,
     ):
         clock.monotonic.side_effect = [0.0, 0.001, 0.005]
         with pytest.raises(MimirUnavailableError, match="after 2 attempt\\(s\\)"):

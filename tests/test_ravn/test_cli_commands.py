@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from niuu.domain.tool import ToolResult
 from ravn.adapters.personas.loader import PersonaConfig, PersonaExecutorConfig
 from ravn.cli.commands import (
     _apply_profile,
@@ -43,14 +44,7 @@ from ravn.cli.commands import (
 )
 from ravn.cli.flock import NodeDef, _write_node_config
 from ravn.config import Settings
-from ravn.domain.models import (
-    Session,
-    StreamEvent,
-    StreamEventType,
-    TokenUsage,
-    ToolResult,
-    TurnResult,
-)
+from ravn.domain.models import Session, StreamEvent, StreamEventType, TokenUsage, TurnResult
 from ravn.domain.permission_mode import PermissionMode
 from ravn.domain.profile import RavnProfile
 from ravn.workflow_runtime import _workflow_result_schema_for_event
@@ -1310,7 +1304,7 @@ class TestDaemonAgentFactory:
             ),
             patch("ravn.cli.commands._build_hooks", return_value=([], [])),
             patch("ravn.cli.commands._start_mcp_shared", new=AsyncMock(return_value=(None, []))),
-            patch("ravn.cli.commands._build_mimir", return_value=None),
+            patch("ravn.cli.commands.build_mimir", return_value=None),
             patch("ravn.cli.commands._build_permission", return_value=MagicMock()),
             patch("ravn.cli.commands._build_tools", return_value=[]),
             patch(
@@ -1447,7 +1441,7 @@ class TestDaemonAgentFactory:
             ),
             patch("ravn.cli.commands._build_hooks", return_value=([], [])),
             patch("ravn.cli.commands._start_mcp_shared", new=AsyncMock(return_value=(None, []))),
-            patch("ravn.cli.commands._build_mimir", return_value=None),
+            patch("ravn.cli.commands.build_mimir", return_value=None),
             patch("ravn.cli.commands._build_permission", return_value=MagicMock()),
             patch("ravn.cli.commands._build_tools", side_effect=_record),
             patch("ravn.cli.commands._build_executor", return_value=_FakeExecutor()),

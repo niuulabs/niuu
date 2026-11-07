@@ -10,11 +10,11 @@ import math
 
 import pytest
 
+from niuu.domain.tool import ToolResult
 from niuu.ports.embedding import EmbeddingPort
+from niuu.ports.tool import ToolPort
 from ravn.adapters.memory.scoring import cosine_similarity
 from ravn.adapters.tools.discovery import ToolDiscovery, ToolSearchTool
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
 from ravn.registry import ToolRegistry
 
 # ---------------------------------------------------------------------------

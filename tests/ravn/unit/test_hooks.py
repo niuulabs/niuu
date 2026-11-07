@@ -6,6 +6,7 @@ import re
 
 import pytest
 
+from niuu.domain.tool import ToolResult
 from ravn.adapters.permission.allow_deny import AllowAllPermission, DenyAllPermission
 from ravn.adapters.tools.hooks import (
     _REDACTED,
@@ -18,7 +19,6 @@ from ravn.adapters.tools.hooks import (
     SanitisationHook,
 )
 from ravn.domain.exceptions import PermissionDeniedError
-from ravn.domain.models import ToolResult
 from ravn.ports.hooks import HookPipelinePort, PostToolHookPort, PreToolHookPort
 from ravn.registry import ToolRegistry
 from tests.ravn.fixtures.fakes import EchoTool, FailingTool

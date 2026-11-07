@@ -23,10 +23,10 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+from niuu.domain.tool import ToolResult
 from niuu.observability import get_observability
-from ravn.domain.models import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.ports.permission import PermissionPort
-from ravn.ports.tool import ToolPort
 from ravn.skills.management import SkillLifecycle, SkillManagementRegistry
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,

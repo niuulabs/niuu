@@ -8,10 +8,10 @@ import respx
 import yaml
 
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
+from mimir.builders import build_mimir
 from mimir.connections import resolve_mimir_registry_refs
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
-from ravn.adapters.tools.mimir_tools import MimirReadTool, MimirSearchTool, MimirWriteTool
-from ravn.cli.runtime_builders import _build_mimir
+from mimir.tools import MimirReadTool, MimirSearchTool, MimirWriteTool
 from ravn.config import Settings
 from ting.domain.workflow_snapshot import workflow_mimir_from_snapshot
 from volundr.adapters.outbound.contributors.ravn_flock import _build_ravn_config
@@ -26,7 +26,7 @@ async def test_gbrain_well_reaches_runtime_with_tools_and_guidance(tmp_path):
     entry = store.save_entry(
         MimirRegistryEntry(
             name="research-brain",
-            adapter="ravn.adapters.mimir.gbrain.GBrainMimirAdapter",
+            adapter="mimir.adapters.gbrain.GBrainMimirAdapter",
             kwargs={"mcp_url": "https://brain.test/mcp", "api_token_file": str(token_path)},
         )
     )
@@ -61,7 +61,7 @@ async def test_gbrain_well_reaches_runtime_with_tools_and_guidance(tmp_path):
     config = yaml.safe_load(config_text)
     guidance = config["persona_overrides"]["system_prompt_extra"]
     assert "mimir_search" in guidance and "gbrain" in guidance and "raw-source" in guidance
-    runtime = _build_mimir(Settings.model_validate(config))
+    runtime = build_mimir(Settings.model_validate(config))
     calls = []
 
     def respond(request):
@@ -100,7 +100,7 @@ def test_gbrain_credential_reference_uses_injected_file():
             "registry_refs": [
                 {
                     "mount_name": "brain",
-                    "adapter": "ravn.adapters.mimir.gbrain.GBrainMimirAdapter",
+                    "adapter": "mimir.adapters.gbrain.GBrainMimirAdapter",
                     "kwargs": {"mcp_url": "https://brain.test/mcp"},
                     "auth_ref": "brain-token",
                     "secret_kwargs_env": {"api_token": "HOST_ONLY_TOKEN"},
@@ -128,12 +128,12 @@ async def test_research_reads_the_same_gateway_mount_as_the_runtime(backend, tmp
 
     from fastapi import FastAPI
 
+    from mimir.adapters.composite import CompositeMimirAdapter
+    from mimir.adapters.gbrain import GBrainMimirAdapter
+    from mimir.adapters.http import HttpMimirAdapter
     from mimir.adapters.markdown import MarkdownMimirAdapter
+    from mimir.domain import MimirMount
     from mimir.router import MimirRouter
-    from ravn.adapters.mimir.composite import CompositeMimirAdapter
-    from ravn.adapters.mimir.gbrain import GBrainMimirAdapter
-    from ravn.adapters.mimir.http import HttpMimirAdapter
-    from ravn.domain.mimir import MimirMount
     from tests.test_ting_research_mimir_auth import _campaign, _settings
     from ting.api.research import _campaign_artifact_summaries, _load_campaign_artifacts
 
@@ -202,7 +202,7 @@ async def test_research_reads_the_same_gateway_mount_as_the_runtime(backend, tmp
 
     monkeypatch.setattr(HttpMimirAdapter, "_get_client", gateway_client)
     connection = {
-        "adapter": "ravn.adapters.mimir.http.HttpMimirAdapter",
+        "adapter": "mimir.adapters.http.HttpMimirAdapter",
         "kwargs": {"base_url": "https://knowledge.test/api/v1", "mount": "research-well"},
     }
     campaign = _campaign()
@@ -210,7 +210,7 @@ async def test_research_reads_the_same_gateway_mount_as_the_runtime(backend, tmp
         "default_mounts": ["research-well"],
         "registry_refs": [{"mount_name": "research-well", **connection}],
     }
-    runtime = _build_mimir(
+    runtime = build_mimir(
         Settings.model_validate(
             {
                 "mimir": {

@@ -59,7 +59,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         # tool call (GBrainMimirAdapter.query). Without this, gbrain's think
         # ignores its own configured chat model and falls back to a hardcoded
         # Anthropic default (NO_ANTHROPIC_API_KEY) — see
-        # ravn.adapters.mimir.gbrain.GBrainMimirAdapter.__init__.
+        # mimir.adapters.gbrain.GBrainMimirAdapter.__init__.
         self.think_model = think_model
         # Additional gbrain chart `config` (config.json passthrough) applied
         # to every tenant gbrain HelmRelease this target deploys — e.g.
@@ -161,9 +161,9 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
             return []
         from kubernetes_asyncio import client
 
-        from ravn.adapters.mimir.gbrain import GBrainMimirAdapter
-        from ravn.adapters.mimir.http import HttpMimirAdapter
-        from ravn.domain.mimir import MimirAuth
+        from mimir.adapters.gbrain import GBrainMimirAdapter
+        from mimir.adapters.http import HttpMimirAdapter
+        from mimir.domain import MimirAuth
 
         # Runs on every Mímir request, so its Kubernetes reads are issued
         # together rather than one after another (two per ready instance plus

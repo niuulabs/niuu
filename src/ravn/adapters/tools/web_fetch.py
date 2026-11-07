@@ -9,10 +9,10 @@ from urllib.parse import urlparse
 
 import httpx
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from niuu.utils.url_security import check_ssrf
 from ravn.cap_telemetry import record_truncation
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
 
 logger = logging.getLogger(__name__)
 

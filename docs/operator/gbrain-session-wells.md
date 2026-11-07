@@ -19,7 +19,7 @@ Operator-managed gbrain entries use the existing dynamic adapter configuration:
 name: team-brain
 kind: remote
 role: shared
-adapter: ravn.adapters.mimir.gbrain.GBrainMimirAdapter
+adapter: mimir.adapters.gbrain.GBrainMimirAdapter
 kwargs:
   mcp_url: https://brain.example.com/mcp
   query_expansion: false

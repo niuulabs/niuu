@@ -19,10 +19,10 @@ import logging
 from typing import Any
 from urllib.parse import urlparse
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from niuu.utils.url_security import check_ssrf
-from ravn.domain.models import ToolResult
 from ravn.ports.browser import BrowserPort, PageSummary
-from ravn.ports.tool import ToolPort
 
 logger = logging.getLogger(__name__)
 

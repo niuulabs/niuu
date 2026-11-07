@@ -17,12 +17,12 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from niuu.ports.tool import ToolPort
 from ravn.adapters.mcp.client import MCPServerClient, make_tool_prefix
 from ravn.adapters.mcp.lifecycle import MCPServerState
 from ravn.adapters.mcp.tool import MCPTool
 from ravn.adapters.mcp.transport import MCPTransport
 from ravn.config import MCPServerConfig
-from ravn.ports.tool import ToolPort
 
 logger = logging.getLogger(__name__)
 

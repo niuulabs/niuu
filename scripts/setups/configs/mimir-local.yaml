@@ -16,9 +16,9 @@
 #   ravn run --config ~/.ravn/config.yaml
 #
 # Ingest existing documents:
-#   ravn mimir ingest ~/notes/architecture.md --title "Architecture Notes"
-#   ravn mimir ingest ~/docs/ --type technical
-#   cat README.md | ravn mimir ingest - --title "Project README"
+#   python -m mimir ingest ~/notes/architecture.md --title "Architecture Notes"
+#   python -m mimir ingest ~/docs/ --type technical
+#   cat README.md | python -m mimir ingest - --title "Project README"
 # ─────────────────────────────────────────────────────────────────────────────
 
 llm:

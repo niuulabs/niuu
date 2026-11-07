@@ -21,8 +21,9 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from ravn.domain.models import AgentTask, OutputMode, ToolResult
-from ravn.ports.tool import ToolPort
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
+from ravn.domain.models import AgentTask, OutputMode
 
 if TYPE_CHECKING:
     from ravn.drive_loop import DriveLoop

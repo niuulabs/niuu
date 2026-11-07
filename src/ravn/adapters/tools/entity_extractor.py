@@ -23,15 +23,16 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from mimir.client_config import MimirIngestConfig
 from mimir.compiled_truth import (
     append_timeline_entry,
     parse_page,
     rewrite_compiled_truth,
 )
+from mimir.ports.entity_extractor import EntityExtractorPort
 from niuu.domain.mimir import EntityType, MimirSource, PageConfidence, slugify
 from niuu.ports.mimir import MimirPort
 from ravn.cap_telemetry import record_truncation, require_complete
-from ravn.config import MimirIngestConfig
 from ravn.ports.llm import LLMPort
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,7 @@ class ExtractedEntity:
     key_facts: list[str] = field(default_factory=list)
 
 
-class EntityExtractor:
+class EntityExtractor(EntityExtractorPort):
     """Extracts entities from a MimirSource and applies them to the wiki.
 
     Args:

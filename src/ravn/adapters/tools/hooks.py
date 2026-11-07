@@ -22,8 +22,8 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
+from niuu.domain.tool import ToolResult
 from ravn.domain.exceptions import PermissionDeniedError
-from ravn.domain.models import ToolResult
 from ravn.ports.hooks import HookPipelinePort, PostToolHookPort, PreToolHookPort
 from ravn.ports.permission import Allow, NeedsApproval, PermissionEnforcerPort, PermissionPort
 

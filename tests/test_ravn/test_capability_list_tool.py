@@ -7,11 +7,12 @@ from types import SimpleNamespace
 import pytest
 
 from niuu.domain.agent_directory import AgentDirectoryPage
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.adapters.tools.capability_catalog import CapabilityListTool
 from ravn.domain.capability_catalog import WorkflowCapability
-from ravn.domain.models import Skill, ToolResult
+from ravn.domain.models import Skill
 from ravn.ports.capability import WorkflowLaunchRequest, WorkflowLaunchResult
-from ravn.ports.tool import ToolPort
 
 
 class FakeTool(ToolPort):

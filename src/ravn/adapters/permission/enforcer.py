@@ -40,6 +40,13 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from mimir.file_security import (
+    _SYSTEM_PREFIXES,
+    DEFAULT_BINARY_CHECK_BYTES,
+    PathSecurityError,
+    is_binary,
+    resolve_safe,
+)
 from ravn.adapters.memory.approval import ApprovalMemory
 from ravn.adapters.permission.bash_validator import (
     _ALWAYS_BLOCKED,
@@ -52,13 +59,6 @@ from ravn.adapters.permission.bash_validator import (
     _SYSTEM_ADMIN_COMMANDS,
     _WRITE_COMMANDS,
     unwrap_sudo,
-)
-from ravn.adapters.tools.file_security import (
-    _SYSTEM_PREFIXES,
-    DEFAULT_BINARY_CHECK_BYTES,
-    PathSecurityError,
-    is_binary,
-    resolve_safe,
 )
 from ravn.config import PermissionConfig
 from ravn.domain.permission_mode import PermissionMode, parse_permission_mode

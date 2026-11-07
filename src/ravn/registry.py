@@ -6,10 +6,11 @@ import asyncio
 import logging
 import time
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.domain.exceptions import PermissionDeniedError
-from ravn.domain.models import ToolCall, ToolResult
+from ravn.domain.models import ToolCall
 from ravn.ports.hooks import HookPipelinePort
-from ravn.ports.tool import ToolPort
 
 logger = logging.getLogger(__name__)
 

@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from niuu.domain.tool import ToolResult
 from ravn.adapters.mcp.lifecycle import MCPLifecyclePhase, MCPServerState
 from ravn.adapters.mcp.protocol import (
     MCPProtocolError,
@@ -20,7 +21,6 @@ from ravn.adapters.mcp.protocol import (
     parse_tool_definitions,
 )
 from ravn.adapters.mcp.transport import MCPTransport, MCPTransportError
-from ravn.domain.models import ToolResult
 
 logger = logging.getLogger(__name__)
 

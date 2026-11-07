@@ -14,18 +14,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from niuu.domain.tool import ToolResult
 from ravn.agent import RavnAgent, _maybe_append_budget_warning
 from ravn.budget import IterationBudget
 from ravn.compression import CompressionResult, ContextCompressor
 from ravn.domain.exceptions import MaxIterationsError
-from ravn.domain.models import (
-    Message,
-    StreamEvent,
-    StreamEventType,
-    TokenUsage,
-    ToolCall,
-    ToolResult,
-)
+from ravn.domain.models import Message, StreamEvent, StreamEventType, TokenUsage, ToolCall
 from ravn.ports.llm import LLMPort
 from ravn.prompt_builder import PromptBuilder
 from tests.ravn.fixtures.fakes import EchoTool, InMemoryChannel

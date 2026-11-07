@@ -28,6 +28,16 @@ from pathlib import Path
 from time import monotonic
 
 from niuu.adapters.search.sqlite import SqliteSearchAdapter
+from niuu.memory_telemetry import (
+    RESULT_EMPTY,
+    RESULT_ERROR,
+    RESULT_HIT,
+    record_corpus,
+    record_funnel,
+    record_injected_chars,
+    record_memory_operation,
+    result_for,
+)
 from niuu.ports.embedding import EmbeddingPort
 from niuu.ports.reranker import RerankerPort
 from ravn.adapters.memory.scoring import (
@@ -44,16 +54,6 @@ from ravn.domain.models import (
     Outcome,
     SessionSummary,
     SharedContext,
-)
-from ravn.memory_telemetry import (
-    RESULT_EMPTY,
-    RESULT_ERROR,
-    RESULT_HIT,
-    record_corpus,
-    record_funnel,
-    record_injected_chars,
-    record_memory_operation,
-    result_for,
 )
 from ravn.ports.memory import MemoryPort
 

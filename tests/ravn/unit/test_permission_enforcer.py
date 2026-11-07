@@ -867,8 +867,8 @@ class TestFileWriteForMode:
 
 class TestSystemPathPrefixDeduplication:
     def test_system_prefixes_imported_from_file_security(self) -> None:
+        from mimir.file_security import _SYSTEM_PREFIXES
         from ravn.adapters.permission.enforcer import _SYSTEM_PATH_PREFIXES
-        from ravn.adapters.tools.file_security import _SYSTEM_PREFIXES
 
         # All base prefixes are included
         for prefix in _SYSTEM_PREFIXES:
@@ -888,7 +888,7 @@ class TestSystemPathPrefixDeduplication:
 
 class TestBinaryCheckBytes:
     def test_config_binary_check_bytes_uses_constant(self) -> None:
-        from ravn.adapters.tools.file_security import DEFAULT_BINARY_CHECK_BYTES
+        from mimir.file_security import DEFAULT_BINARY_CHECK_BYTES
 
         e = _enforcer("workspace_write")
         assert e._config_binary_check_bytes() == DEFAULT_BINARY_CHECK_BYTES

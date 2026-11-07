@@ -26,10 +26,10 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.adapters.mcp.auth import MCPAuthSession, MCPAuthType
 from ravn.config import MCPServerConfig
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
 
 if TYPE_CHECKING:
     from ravn.adapters.mcp.manager import MCPManager

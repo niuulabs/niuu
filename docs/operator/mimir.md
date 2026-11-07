@@ -136,7 +136,7 @@ inert with a single warning. Disable with `reflex.enabled: false`
 | Surface | Tools |
 |---|---|
 | **MCP** (`python -m mimir mcp --path ~/.ravn/mimir`) | `mimir_search`, `mimir_read`, `mimir_write`, `mimir_ingest`, `mimir_read_source`, `mimir_lint`, `mimir_stats`, `mimir_related` |
-| **Shell shims** (generated per Skuld session in `.skuld-tools/bin/`) | same eight commands, backed by `ravn.cli.mimir_bridge`; work against a local path or an HTTP URL via `RAVN_MIMIR_PATH` |
+| **Shell shims** (generated per Skuld session in `.skuld-tools/bin/`) | same eight commands, backed by `mimir.bridge`; work against a local path or an HTTP URL via `RAVN_MIMIR_PATH` |
 | **Ravn tools** | `MimirIngestTool`, `MimirReadTool`, `MimirWriteTool`, `MimirSearchTool`, `MimirLintTool` (permission-gated: `mimir:read` / `mimir:write`) |
 
 `mimir_related --path entities/alice.md --depth 2 [--rel works_at]` traverses

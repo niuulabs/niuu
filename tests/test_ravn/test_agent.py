@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from niuu.domain.outcome import OutcomeField
+from niuu.domain.tool import ToolResult
 from ravn.adapters.personas.loader import PersonaConfig, PersonaProduces
 from ravn.agent import RavnAgent, _build_assistant_content
 from ravn.budget import IterationBudget
@@ -22,7 +23,6 @@ from ravn.domain.models import (
     StreamEventType,
     TokenUsage,
     ToolCall,
-    ToolResult,
 )
 from ravn.ports.llm import LLMPort
 from ravn.prompt_builder import PromptBuilder

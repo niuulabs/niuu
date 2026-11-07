@@ -16,6 +16,7 @@ from niuu.domain.mimir import (  # noqa: F401 — re-exported for existing impor
     MimirQueryResult,
     MimirSource,
 )
+from niuu.domain.tool import ToolResult
 
 __all__ = [
     "MimirLintReport",
@@ -214,15 +215,6 @@ class ToolCall:
     id: str
     name: str
     input: dict
-
-
-@dataclass(frozen=True)
-class ToolResult:
-    """The result of executing a tool."""
-
-    tool_call_id: str
-    content: str
-    is_error: bool = False
 
 
 # Keys a message's api dict carries its provider items under (see Message).

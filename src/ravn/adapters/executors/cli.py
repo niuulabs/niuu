@@ -17,6 +17,7 @@ from time import monotonic
 from typing import Any
 
 from niuu.adapters.cli import CliTurnRunner
+from niuu.domain.tool import ToolResult
 from niuu.observability import get_observability
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
@@ -24,16 +25,7 @@ from ravn.adapters.executors.cli_threads import CliThreadStore
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.events import RavnEvent
 from ravn.domain.harness_telemetry import HarnessStepTelemetryRecord
-from ravn.domain.models import (
-    Episode,
-    Message,
-    Outcome,
-    Session,
-    TokenUsage,
-    ToolCall,
-    ToolResult,
-    TurnResult,
-)
+from ravn.domain.models import Episode, Message, Outcome, Session, TokenUsage, ToolCall, TurnResult
 from ravn.domain.notification_channel import current_notification_channel
 from ravn.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.harness_telemetry import emit_harness_step

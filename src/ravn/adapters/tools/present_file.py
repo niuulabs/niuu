@@ -25,9 +25,9 @@ from niuu.domain.presented_files import (
     PRESENTED_ARTIFACT_KEY_FIELD,
     PRESENTED_ARTIFACT_KEY_PATTERN,
 )
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.cap_telemetry import record_cap_hit
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
 
 PRESENT_FILE_TOOL_NAME = "present_file"
 _PERMISSION = "artifact:present"

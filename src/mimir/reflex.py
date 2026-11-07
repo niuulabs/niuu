@@ -33,7 +33,7 @@ from pathlib import Path
 
 import httpx
 
-from ravn.domain.exceptions import ConfigurationError
+from mimir.exceptions import MimirConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -287,13 +287,13 @@ class ReflexInjector:
 
         Fail-open: when the entity feed is unreachable this logs an ERROR and
         returns None — the turn proceeds without injection, never crashes.
-        A ``ConfigurationError`` (e.g. workload auth misconfigured) is not
+        A ``MimirConfigurationError`` (e.g. workload auth misconfigured) is not
         "unreachable" — it is a fixable setup defect — so it propagates
         instead of being reported as a transient feed outage.
         """
         try:
             index = await self._cache.get()
-        except ConfigurationError:
+        except MimirConfigurationError:
             raise
         except Exception:
             logger.error(
@@ -377,8 +377,8 @@ def _resolve_reflex_headers_provider(
         if auth is None or getattr(auth, "type", "") != "workload":
             return None
 
-        from ravn.adapters.mimir.http import HttpMimirAdapter
-        from ravn.domain.mimir import MimirAuth
+        from mimir.adapters.http import HttpMimirAdapter
+        from mimir.domain import MimirAuth
 
         adapter = HttpMimirAdapter(
             base_url=normalized_base,

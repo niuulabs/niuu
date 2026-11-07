@@ -18,9 +18,9 @@ from typing import Any, Protocol
 
 from packaging.requirements import InvalidRequirement, Requirement
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.cap_telemetry import record_degraded
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
 from ravn.valkyrie_evolution.models import (
     LearnedToolArtifact,
     LearnedToolManifest,

@@ -30,6 +30,7 @@ from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
+from mimir.reflex import ReflexInjector, build_reflex_injector
 from niuu.domain.json_schema import PortableSchemaError, validate_object_instance
 from niuu.domain.mimir import ThreadState
 from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
@@ -69,7 +70,6 @@ from ravn.ports.event_publisher import EventPublisherPort
 from ravn.ports.resident_budget import ResidentBudgetPort
 from ravn.ports.trigger import TriggerPort
 from ravn.prompt_builder import build_initiative_prompt
-from ravn.reflex import ReflexInjector, build_reflex_injector
 from ravn.workflow_runtime import _workflow_result_schema_for_event
 from sleipnir.domain.events import SleipnirEvent
 
@@ -1687,7 +1687,7 @@ class DriveLoop:
         if not paths:
             return ""
 
-        from ravn.adapters.tools.mimir_tools import MimirPublishFilesTool  # noqa: PLC0415
+        from mimir.tools import MimirPublishFilesTool  # noqa: PLC0415
 
         workspace_root = Path(
             str(getattr(getattr(self._settings, "permission", None), "workspace_root", "")).strip()
@@ -1737,7 +1737,7 @@ class DriveLoop:
         if not paths:
             return
 
-        from ravn.adapters.tools.file_security import (  # noqa: PLC0415
+        from mimir.file_security import (  # noqa: PLC0415
             PathSecurityError,
             resolve_safe,
         )
@@ -3562,7 +3562,7 @@ class DriveLoop:
                 task,
                 outcome_fields,
             )
-        from ravn.adapters.tools.mimir_tools import PROVENANCE_UNVERIFIABLE  # noqa: PLC0415
+        from mimir.tools import PROVENANCE_UNVERIFIABLE  # noqa: PLC0415
 
         if artifact_publish_error and PROVENANCE_UNVERIFIABLE in artifact_publish_error:
             # Mímir was unreachable, not wrong. No rewrite the agent can produce

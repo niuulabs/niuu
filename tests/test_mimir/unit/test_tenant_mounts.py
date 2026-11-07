@@ -7,11 +7,11 @@ from fastapi.testclient import TestClient
 
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.adapters.flux import FluxKnowledgeDeploymentAdapter
+from mimir.adapters.http import HttpMimirAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.ports.deployment import DeploymentRequest, KnowledgeDeploymentPort
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from mimir.router import MimirRouter
-from ravn.adapters.mimir.http import HttpMimirAdapter
 
 
 def identity(tenant):
@@ -268,7 +268,7 @@ async def test_gbrain_mount_is_given_the_configured_think_model():
 
 
 def test_session_proxy_mount_keeps_workload_identity():
-    from ravn.cli.runtime_builders import _build_mimir
+    from mimir.builders import build_mimir
     from ravn.config import Settings
 
     settings = Settings(
@@ -277,7 +277,7 @@ def test_session_proxy_mount_keeps_workload_identity():
             "instances": [
                 {
                     "name": "brain",
-                    "adapter": "ravn.adapters.mimir.http.HttpMimirAdapter",
+                    "adapter": "mimir.adapters.http.HttpMimirAdapter",
                     "kwargs": {"base_url": "https://mimir.test/api/v1", "mount": "brain"},
                     "auth": {
                         "type": "workload",
@@ -288,7 +288,7 @@ def test_session_proxy_mount_keeps_workload_identity():
             ],
         }
     )
-    port = _build_mimir(settings)._mounts[0].port
+    port = build_mimir(settings)._mounts[0].port
     assert port._mount == "brain"
     assert port._auth.type == "workload"
     assert port._auth.token_file == "/run/identity/token"
@@ -312,7 +312,7 @@ def test_standalone_instance_enforces_tenant_on_rest_and_mcp(tmp_path):
     [
         {"kind": "local", "path": "/data/other-tenant"},
         {
-            "adapter": "ravn.adapters.mimir.gbrain.GBrainMimirAdapter",
+            "adapter": "mimir.adapters.gbrain.GBrainMimirAdapter",
             "kwargs": {"api_token_file": "/run/secrets/token"},
         },
         {"secret_kwargs_env": {"token": "OTHER_TENANT_TOKEN"}},

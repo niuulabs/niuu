@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import pytest
 
+from niuu.domain.tool import ToolResult
 from ravn.domain.exceptions import PermissionDeniedError
-from ravn.domain.models import ToolCall, ToolResult
+from ravn.domain.models import ToolCall
 from ravn.ports.hooks import HookPipelinePort
 from ravn.registry import ToolRegistrationError, ToolRegistry, _validate_schema
 from tests.ravn.fixtures.fakes import (

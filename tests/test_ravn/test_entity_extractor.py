@@ -23,11 +23,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from mimir.client_config import MimirIngestConfig
+from mimir.tools import MimirIngestTool, build_mimir_tools
 from niuu.domain.mimir import EntityType, MimirSource, PageConfidence
 from ravn.adapters.tools.entity_extractor import EntityExtractor, ExtractedEntity
-from ravn.adapters.tools.mimir_tools import MimirIngestTool, build_mimir_tools
 from ravn.cap_telemetry import cap_hit_counts
-from ravn.config import MimirIngestConfig
 from ravn.domain.exceptions import OutputTruncatedError
 from ravn.domain.models import LLMResponse, StopReason, TokenUsage
 

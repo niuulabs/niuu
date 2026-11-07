@@ -6,10 +6,10 @@ so there is a single authoritative definition of each fake.
 
 from __future__ import annotations
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.domain.events import RavnEvent
-from ravn.domain.models import ToolResult
 from ravn.ports.channel import ChannelPort
-from ravn.ports.tool import ToolPort
 
 
 class InMemoryChannel(ChannelPort):

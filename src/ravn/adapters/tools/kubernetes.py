@@ -12,10 +12,10 @@ from typing import Any
 
 import yaml
 
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.adapters.kubernetes_pod_logs import read_pod_log
 from ravn.cap_telemetry import record_cap_hit, record_truncation
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
 
 
 @dataclass(frozen=True)

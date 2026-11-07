@@ -15,6 +15,7 @@ import httpx
 import pytest
 import respx
 
+from mimir.adapters.gbrain import GBrainMimirAdapter
 from niuu.domain.mimir import (
     MimirPageMeta,
     MimirSource,
@@ -24,7 +25,6 @@ from niuu.domain.mimir import (
     compute_source_id,
 )
 from niuu.ports.mimir import MimirPort
-from ravn.adapters.mimir.gbrain import GBrainMimirAdapter
 
 _MCP = "https://brain.test/mcp"
 _INGEST = "https://brain.test/ingest"
@@ -485,8 +485,9 @@ class TestConfigWiring:
     """
 
     def test_a_mimir_instance_can_name_the_gbrain_adapter(self, monkeypatch) -> None:
-        from ravn.cli.runtime_builders import _build_mimir
-        from ravn.config import MimirInstanceConfig, Settings
+        from mimir.builders import build_mimir
+        from mimir.client_config import MimirInstanceConfig
+        from ravn.config import Settings
 
         monkeypatch.setenv("TEST_GBRAIN_TOKEN", "gbrain_from_env")
         settings = Settings()
@@ -495,27 +496,28 @@ class TestConfigWiring:
             MimirInstanceConfig(
                 name="brain",
                 role="shared",
-                adapter="ravn.adapters.mimir.gbrain.GBrainMimirAdapter",
+                adapter="mimir.adapters.gbrain.GBrainMimirAdapter",
                 kwargs={"mcp_url": "https://brain.test/mcp"},
                 secret_kwargs_env={"api_token": "TEST_GBRAIN_TOKEN"},
             )
         ]
 
-        built = _build_mimir(settings)
+        built = build_mimir(settings)
 
         assert built is not None
 
     def test_an_instance_with_no_backend_raises_instead_of_being_skipped(self) -> None:
         """It used to warn and continue, leaving the mount silently absent."""
-        from ravn.cli.runtime_builders import _build_mimir
-        from ravn.config import MimirInstanceConfig, Settings
+        from mimir.builders import build_mimir
+        from mimir.client_config import MimirInstanceConfig
+        from ravn.config import Settings
 
         settings = Settings()
         settings.mimir.enabled = True
         settings.mimir.instances = [MimirInstanceConfig(name="nowhere", role="local")]
 
         with pytest.raises(ValueError, match="no adapter, path or url"):
-            _build_mimir(settings)
+            build_mimir(settings)
 
 
 @respx.mock
@@ -578,7 +580,7 @@ async def test_summary_paginates_all_pages():
 
 
 def test_sse_preserves_unicode_line_separators():
-    from ravn.adapters.mimir.gbrain import _parse_mcp_response
+    from mimir.adapters.gbrain import _parse_mcp_response
 
     message = {"result": {"content": [{"text": "first\u2028second"}]}}
     assert (

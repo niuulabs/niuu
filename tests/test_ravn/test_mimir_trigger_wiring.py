@@ -33,7 +33,7 @@ def test_workflow_runtime_skips_background_mimir_triggers() -> None:
             "ravn.adapters.triggers.mimir_staleness.MimirStalenessTrigger",
             return_value=staleness_trigger,
         ) as mock_staleness,
-        patch("ravn.adapters.mimir.usage_log.LogBasedUsageAdapter") as mock_usage,
+        patch("mimir.adapters.usage_log.LogBasedUsageAdapter") as mock_usage,
         patch(
             "ravn.adapters.triggers.thread_queue.ThreadQueueTrigger",
             return_value=thread_queue_trigger,
@@ -86,7 +86,7 @@ def test_plain_runtime_registers_mimir_background_triggers() -> None:
             return_value=thread_queue_trigger,
         ) as mock_thread_queue,
         patch(
-            "ravn.adapters.mimir.usage_log.LogBasedUsageAdapter",
+            "mimir.adapters.usage_log.LogBasedUsageAdapter",
             return_value=usage,
         ) as mock_usage,
     ):

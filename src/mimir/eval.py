@@ -349,7 +349,7 @@ async def evaluate_adapter(
     *adapter* only has to answer ``await adapter.search(query)`` with objects
     exposing ``meta.path`` — the ``MimirPort`` search contract. That is the
     whole coupling, which is what makes a bake-off possible: the markdown
-    adapter and :class:`~ravn.adapters.mimir.gbrain.GBrainMimirAdapter` are
+    adapter and :class:`~mimir.adapters.gbrain.GBrainMimirAdapter` are
     scored by identical code on identical queries, so a metric difference is a
     retrieval difference and nothing else.
 

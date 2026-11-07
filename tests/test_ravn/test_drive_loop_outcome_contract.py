@@ -9,9 +9,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from niuu.domain.outcome import OutcomeField
+from niuu.domain.tool import ToolResult
 from ravn.cap_telemetry import cap_hit_counts
 from ravn.domain.events import RavnEventType
-from ravn.domain.models import TokenUsage, ToolCall, ToolResult, TurnResult
+from ravn.domain.models import TokenUsage, ToolCall, TurnResult
 from ravn.drive_loop import (
     _build_workflow_outcome_repair_prompt,
     _default_success_verdict,

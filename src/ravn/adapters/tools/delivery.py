@@ -21,6 +21,8 @@ from niuu.domain.delivery import (
     WorkspaceAllocation,
     WorkstreamSpec,
 )
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
 from ravn.adapters.tools.workflow_execution import (
     WorkflowExecutionToolBase,
     _error,
@@ -28,8 +30,6 @@ from ravn.adapters.tools.workflow_execution import (
     _result,
 )
 from ravn.domain.delivery import DeliveryExecutionToolPort
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
 
 
 class _DeliveryExecutionTool(WorkflowExecutionToolBase):
