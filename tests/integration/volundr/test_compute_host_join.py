@@ -83,10 +83,6 @@ async def test_every_host_statement_runs_on_postgres(db_pool):
         assert (followed.execution, followed.profile) == ("host@2", "bm")
         # Only the execution moves: the operator's edit and the check stay as stored.
         assert set(followed.tags) == {"gpu", "big"} and followed.facts == {"cpus": 8}
-            "host@2",
-            "bm",
-            ("gpu", "big"),
-        )
         with pytest.raises(LookupError):
             await repository.follow_execution(uuid4(), execution="host@2", profile="bm")
         allocation = uuid4()
