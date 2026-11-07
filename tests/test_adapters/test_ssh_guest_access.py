@@ -125,6 +125,9 @@ def test_the_stored_key_is_written_where_ssh_reads_it_and_nobody_else_can(tmp_pa
     assert _mode(path) == 0o600
     assert _mode(path.parent) == 0o700
     assert access.public_key == keys.public_key
+    public = path.with_name("id_ed25519.pub")
+    assert public.read_text() == keys.public_key + "\n"
+    assert _mode(public) == 0o644
     assert not list(path.parent.glob(".*"))
     logged = [r.getMessage() for r in caplog.records if "host access" in r.getMessage()]
     assert logged == [f"Forge host access: SSH key {keys.fingerprint} from the credential store"]
@@ -142,6 +145,17 @@ def test_the_store_is_the_truth_a_restart_rewrites_the_file(tmp_path, keys):
     assert path.read_text() == keys.private_key
     assert _mode(path) == 0o600
     assert _mode(path.parent) == 0o700
+
+
+def test_a_public_file_left_by_another_key_is_replaced(tmp_path, keys):
+    # ssh offers the public half from <key>.pub: a stale one is refused by every host.
+    public = _key_path(tmp_path).with_name("id_ed25519.pub")
+    public.parent.mkdir(parents=True)
+    public.write_text(generate_host_access_key().public_key + "\n")
+
+    _access(tmp_path, keys)
+
+    assert public.read_text() == keys.public_key + "\n"
 
 
 def test_a_temporary_file_left_by_a_crash_does_not_stop_the_next_start(tmp_path, keys):

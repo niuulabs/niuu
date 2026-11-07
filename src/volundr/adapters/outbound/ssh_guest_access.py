@@ -110,6 +110,16 @@ _TRUST_DELIVERY = {
 }
 
 
+def _replace_file(path: Path, content: str, *, mode: int) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.unlink(missing_ok=True)
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    with os.fdopen(fd, "w") as stream:
+        stream.write(content)
+    os.chmod(temporary, mode)
+    os.replace(temporary, path)
+
+
 class SshGuestAccess(GuestAccess):
     """OpenSSH control with allocation-scoped host identity pins."""
 
@@ -160,17 +170,17 @@ class SshGuestAccess(GuestAccess):
         self._locks: dict[str, asyncio.Lock] = {}
 
     def _key_file(self, host_key: HostAccessKey) -> Path:
-        """The private key where ``ssh -i`` reads it: replaced whole, never readable by others."""
+        """The pair where ``ssh -i`` reads it: each file replaced whole, the private one 0600.
+
+        ``ssh`` offers the public half from ``<key>.pub`` when that file exists, so it is
+        written too: a ``.pub`` left from another key would be offered and refused.
+        """
         directory = self._data / HOST_ACCESS_KEY_DIR
         directory.mkdir(mode=0o700, exist_ok=True)
         directory.chmod(0o700)
         path = directory / HOST_ACCESS_KEY_NAME
-        temporary = directory / f".{HOST_ACCESS_KEY_NAME}.tmp"
-        temporary.unlink(missing_ok=True)
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w") as stream:
-            stream.write(host_key.private_key)
-        os.replace(temporary, path)
+        _replace_file(path, host_key.private_key, mode=0o600)
+        _replace_file(path.with_name(f"{path.name}.pub"), f"{host_key.public_key}\n", mode=0o644)
         return path
 
     @property
