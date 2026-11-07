@@ -27,6 +27,7 @@ from volundr.domain.compute import (
     SlotState,
     bindings_by_allocation,
     display_state,
+    machine_expired,
     session_limit,
     usable_slots,
 )
@@ -37,6 +38,9 @@ from volundr.domain.services.execution_catalog import ExecutionPlanResolver
 from volundr.domain.vm_runtime import ProfileAwareVmRuntime, VmRuntime, VmRuntimeUnavailableError
 
 logger = logging.getLogger(__name__)
+
+#: The ``state`` attribute of ``volundr.compute.slots`` for usable free slots on warm machines.
+FREE_SLOTS_STATE = "free"
 
 
 def _live(bindings: Iterable[ComputeSlot]) -> list[ComputeSlot]:
@@ -161,6 +165,14 @@ class ComputePoolService:
         )
         shown = [machine for machine in machines if machine.state != LeaseState.RELEASED]
         states = {m.id: display_state(m, bindings.get(m.id, [])) for m in shown}
+        policy = await self.policy()
+        free_warm_slots = self._free_slots(
+            shown,
+            await self.repository.machine_slots(self.pool_id),
+            policy,
+            self._default_plan(),
+            datetime.now(UTC),
+        )
         allocations = []
         for machine in shown:
             allocation = machine.model_dump(
@@ -192,8 +204,9 @@ class ComputePoolService:
                 profile.model_dump(exclude={"revision"})
                 for profile in await self.leases.validated_profiles()
             ],
-            "policy": (await self.policy()).model_dump(),
+            "policy": policy.model_dump(),
             "counts": dict(Counter(state.value for state in states.values())),
+            "free_warm_slots": free_warm_slots,
             "allocations": allocations,
             "last_error": self.last_error,
             "capacity_shortfall": self.capacity_shortfall,
@@ -203,9 +216,7 @@ class ComputePoolService:
     async def maintain(self) -> None:
         started = time.monotonic()
         policy = await self.policy()
-        default_plan = (
-            self._execution_resolver.resolve() if self._execution_resolver is not None else None
-        )
+        default_plan = self._default_plan()
         if default_plan is not None:
             await self.leases.validate_execution_plan(default_plan)
             if policy.profile != default_plan.provider_profile:
@@ -235,26 +246,35 @@ class ComputePoolService:
         ]
         leases = await self.repository.list(self.pool_id, include_released=False)
         bindings = await self.repository.machine_slots(self.pool_id)
+        # Warm capacity is counted in free slots: ``warm_min`` free, usable slots on machines
+        # that are provisioning, ready or idle. Only an empty machine is ever disposed for
+        # being surplus or idle, and only while the free slots left stay at ``warm_min``.
+        free = self._free_slots(leases, bindings, policy, default_plan, datetime.now(UTC))
         # Retire surplus spares after policy reductions, without touching bound guests.
         spares = [
             lease
             for lease in leases
             if lease.state == LeaseState.IDLE and not _live(bindings.get(lease.id, []))
         ]
-        surplus = max(
-            len(spares) - policy.warm_min if policy.reuse_policy == "replace" else 0,
-            sum(lease.state != LeaseState.RELEASED for lease in leases) - policy.max_machines,
+        over_machines = sum(lease.state != LeaseState.RELEASED for lease in leases) - (
+            policy.max_machines
         )
-        for spare in spares[: max(0, surplus)]:
+        for index, spare in enumerate(spares):
+            usable = self._usable(spare, bindings, policy, default_plan, datetime.now(UTC))
+            surplus_warm = policy.reuse_policy == "replace" and free - usable >= policy.warm_min
+            if index >= over_machines and not surplus_warm:
+                continue
             try:
                 await self.dispose(spare.id)
             except (ComputeLeaseBusyError, ValueError):
-                pass  # Concurrent assignment owns the guest now; never dispose its data.
+                continue  # Concurrent assignment owns the guest now; never dispose its data.
+            free -= usable
         leases = await self.repository.list(self.pool_id, include_released=False)
         bindings = await self.repository.machine_slots(self.pool_id)
         # Idle expiry only trims capacity above the warm minimum. The configured
-        # spares stay warm indefinitely; churning them would just reprovision.
+        # free slots stay warm indefinitely; churning them would just reprovision.
         now = datetime.now(UTC)
+        free = self._free_slots(leases, bindings, policy, default_plan, now)
         expired = sorted(
             (
                 lease
@@ -262,24 +282,26 @@ class ComputePoolService:
                 if lease.state == LeaseState.IDLE
                 and lease.idle_since is not None
                 and (now - lease.idle_since).total_seconds() >= policy.idle_timeout_seconds
-                and self._is_warm_spare(lease, bindings.get(lease.id, []), policy, default_plan)
+                and not _live(bindings.get(lease.id, []))
+                and self._warm_eligible(lease, policy, default_plan)
             ),
             key=lambda lease: lease.idle_since or now,
         )
-        warm = sum(
-            self._is_warm_spare(lease, bindings.get(lease.id, []), policy, default_plan)
-            for lease in leases
-        )
-        for lease in expired[: max(0, warm - policy.warm_min)]:
+        for lease in expired:
+            usable = self._usable(lease, bindings, policy, default_plan, now)
+            if free - usable < policy.warm_min:
+                continue
             try:
                 await self.dispose(lease.id)
             except (ComputeLeaseBusyError, ValueError):
                 continue  # Concurrent assignment owns the guest now; never dispose its data.
-            warm -= 1
-        if warm >= policy.warm_min:
+            free -= usable
+        if free >= policy.warm_min:
             self.capacity_shortfall = None
-        if not failures and not policy.paused and not policy.drain and warm < policy.warm_min:
-            for _ in range(policy.warm_min - warm):
+        if not failures and not policy.paused and not policy.drain and free < policy.warm_min:
+            # Each new machine brings ``slots_per_machine`` free slots.
+            wanted = -(-(policy.warm_min - free) // policy.slots_per_machine)
+            for booted in range(wanted):
                 try:
                     machine_bootstrap = self.bootstrap
                     if default_plan is not None:
@@ -303,39 +325,56 @@ class ComputePoolService:
                         slots=policy.slots_per_machine,
                     )
                 except ComputePoolFullError:
-                    # A cap, not a pause: the pool runs short of its warm minimum. Say so
+                    # A cap, not a pause: the pool runs short of its free warm slots. Say so
                     # once when it starts, count every hit, and show it in the pool status.
+                    held = free + booted * policy.slots_per_machine
                     get_observability().count(
                         "volundr.compute.warm.capacity_hits", attributes={"pool": self.pool_id}
                     )
                     if self.capacity_shortfall is None:
                         logger.error(
-                            "Compute pool %s holds %d of %d warm machines: it is at its "
+                            "Compute pool %s holds %d of %d free warm slots: it is at its "
                             "maximum of %d machines",
                             self.pool_id,
-                            warm,
+                            held,
                             policy.warm_min,
                             policy.max_machines,
                         )
                     self.capacity_shortfall = (
-                        f"{warm} of {policy.warm_min} warm machines: the pool is at its maximum "
-                        f"of {policy.max_machines} machines; raise the maximum or lower the "
-                        "warm minimum"
+                        f"{held} of {policy.warm_min} free warm slots: the pool is at its "
+                        f"maximum of {policy.max_machines} machines; raise the maximum or "
+                        "lower the free warm slots"
                     )
                     break
                 except ComputeCapacityError:
                     break  # Standby target met or provisioning limit: both clear on their own.
         leases = await self.repository.list(self.pool_id, include_released=False)
-        bindings = bindings_by_allocation(
-            await self.repository.list_slots(self.pool_id, live_only=True)
+        bindings = await self.repository.machine_slots(self.pool_id)
+        counts = Counter(
+            display_state(lease, _live(bindings.get(lease.id, []))) for lease in leases
         )
-        counts = Counter(display_state(lease, bindings.get(lease.id, [])) for lease in leases)
         for state in LeaseState:
             get_observability().gauge(
                 "volundr.compute.machines",
                 counts[state],
                 attributes={"pool": self.pool_id, "state": state.value},
             )
+        # Slots by state; a released slot is free again, so ``free`` stands for it: the usable
+        # free slots on compatible machines, the number ``warm_min`` is compared with.
+        slot_counts = Counter(item.state for items in bindings.values() for item in items)
+        for slot_state in SlotState:
+            if slot_state is SlotState.RELEASED:
+                continue
+            get_observability().gauge(
+                "volundr.compute.slots",
+                slot_counts[slot_state],
+                attributes={"pool": self.pool_id, "state": slot_state.value},
+            )
+        get_observability().gauge(
+            "volundr.compute.slots",
+            self._free_slots(leases, bindings, policy, default_plan, datetime.now(UTC)),
+            attributes={"pool": self.pool_id, "state": FREE_SLOTS_STATE},
+        )
         get_observability().duration(
             "volundr.compute.reconcile.duration",
             time.monotonic() - started,
@@ -452,6 +491,8 @@ class ComputePoolService:
             and binding.state in {SlotState.STARTING, SlotState.BUSY}
             and runtime.supports_reuse
             and (limit is None or len(bindings) < limit)
+            # A machine past its lifetime takes no new session, so it is not cleaned for one.
+            and not machine_expired(lease, policy, datetime.now(UTC))
             and await self.leases.compatible(lease)
         ):
             await runtime.recycle(view, await self.leases.bootstrap_for(view))
@@ -491,15 +532,13 @@ class ComputePoolService:
         """The runtime of the plan the session was started with."""
         return self._runtime_for(view.execution_plan, view.allocation)
 
-    def _is_warm_spare(
+    def _warm_eligible(
         self,
         lease: ComputeLease,
-        bindings: list[ComputeSlot],
         policy: ComputePoolPolicy,
         default_plan: ResolvedExecutionPlan | None,
     ) -> bool:
-        if _live(bindings):
-            return False
+        """Whether the machine's free slots count towards ``warm_min``."""
         if lease.state not in {LeaseState.PROVISIONING, LeaseState.READY, LeaseState.IDLE}:
             return False
         if lease.profile != policy.profile:
@@ -509,6 +548,34 @@ class ComputePoolService:
         return (
             lease.execution_plan.host_compatibility_digest == default_plan.host_compatibility_digest
         )
+
+    def _usable(
+        self,
+        lease: ComputeLease,
+        bindings: Mapping[UUID, list[ComputeSlot]],
+        policy: ComputePoolPolicy,
+        default_plan: ResolvedExecutionPlan | None,
+        now: datetime,
+    ) -> int:
+        """Free slots a warm-eligible machine offers; 0 for any other."""
+        if not self._warm_eligible(lease, policy, default_plan):
+            return 0
+        return usable_slots(lease, bindings.get(lease.id, []), policy, now)
+
+    def _free_slots(
+        self,
+        leases: Iterable[ComputeLease],
+        bindings: Mapping[UUID, list[ComputeSlot]],
+        policy: ComputePoolPolicy,
+        default_plan: ResolvedExecutionPlan | None,
+        now: datetime,
+    ) -> int:
+        return sum(self._usable(lease, bindings, policy, default_plan, now) for lease in leases)
+
+    def _default_plan(self) -> ResolvedExecutionPlan | None:
+        if self._execution_resolver is None:
+            return None
+        return self._execution_resolver.resolve()
 
     def _host_compatible(
         self,

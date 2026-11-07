@@ -816,7 +816,19 @@ class VmPodManager(PodManager):
         )
         runtime = self._execution_runtimes[plan.plan_digest] if plan is not None else legacy_runtime
         bindings = await repository.machine_slots(self._pool_id)
-        for candidate in await repository.list(self._pool_id, include_released=False):
+
+        def occupied(machine: ComputeLease) -> int:
+            return sum(
+                item.state is not SlotState.RELEASED for item in bindings.get(machine.id, [])
+            )
+
+        # Fill the busiest machine first, then the oldest: sessions pack onto few machines and
+        # the emptiest ones stay free to expire or to serve a session that needs a whole machine.
+        candidates = sorted(
+            await repository.list(self._pool_id, include_released=False),
+            key=lambda machine: (-occupied(machine), machine.created_at),
+        )
+        for candidate in candidates:
             if candidate.state != LeaseState.IDLE or candidate.profile != profile:
                 continue
             if plan is None and candidate.execution_plan is not None:
