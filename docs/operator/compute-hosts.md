@@ -626,7 +626,7 @@ the catalog:
 compute:
   session_images:
     native:
-      - quay.io/openbao/openbao@sha256:…   # OpenBao's agent; the bundle carries bao
+      - quay.io/openbao/openbao@sha256:50469110…   # OpenBao 2.7.2, the bundle's bao
 ```
 
 Its access binding is `SshGuestAccess` with `ssh_user: root`, and its connector's
