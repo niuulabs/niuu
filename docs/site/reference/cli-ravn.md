@@ -1,7 +1,7 @@
 # ravn CLI reference
 
 `ravn` is the agent runtime: it runs a conversation or daemon, manages
-personas and profiles, and supervises rooms, flocks, and wardens on the
+personas and profiles, and supervises rooms and flocks on the
 local host.
 
 Start with the worked examples below; the full command tree follows.
@@ -97,9 +97,6 @@ The daemon drives itself and answers what is addressed to it; the gateway expose
 ravn daemon --persona coordinator
 ravn listen --persona coder                # take dispatched tasks
 ravn gateway --telegram --http           # human-facing chat channels
-
-ravn warden list                           # persisted long-lived agents
-ravn warden create notes-warden
 ```
 
 ### Operator surfaces
@@ -129,13 +126,9 @@ ravn [OPTIONS] COMMAND [ARGS]...
 | --- | --- |
 | [`approvals`](#ravn-approvals) | Manage per-project command approval patterns. |
 | [`daemon`](#ravn-daemon) | Start gateway channels AND drive loop simultaneously. Never exits. |
-| [`evolve`](#ravn-evolve) | Self-improvement pattern extraction. |
 | [`flock`](#ravn-flock) | Manage a local multi-node Ravn flock (mesh of daemon processes). |
 | [`gateway`](#ravn-gateway) | Start the Ravn gateway (Telegram polling + local HTTP server). |
-| [`inbox-migrate`](#ravn-inbox-migrate) | Move flat resident inbox signal files into the archive and slot queue. |
 | [`join`](#ravn-join) | Put a persona-typed Ravn into a room as an addressable member. |
-| [`learned-tools-plan`](#ravn-learned-tools-plan) | Print what the next consolidation dream would retire from the learned tools. |
-| [`learnings-curate`](#ravn-learnings-curate) | Run one learning-curation pass now, outside the dream schedule. |
 | [`leave`](#ravn-leave) | Stop a member's daemon and remove it from the room. |
 | [`listen`](#ravn-listen) | Listen for remotely dispatched tasks via Sleipnir (NIU-505). |
 | [`memory-backfill-embeddings`](#ravn-memory-backfill-embeddings) | Embed indexed episodes that predate embeddings being enabled. |
@@ -143,14 +136,12 @@ ravn [OPTIONS] COMMAND [ARGS]...
 | [`peers`](#ravn-peers) | List verified flock members with persona, capabilities, and status. |
 | [`personas`](#ravn-personas) | Inspect the personas available to --persona. |
 | [`profiles`](#ravn-profiles) | Inspect the profiles available to --profile. |
-| [`resident`](#ravn-resident) | Inspect and repair a resident's durable state (cases, beliefs, questions, wakes). |
 | [`resume`](#ravn-resume) | Resume a task from a checkpoint. |
 | [`room`](#ravn-room) | Create, supervise, and join local Ravn collaboration rooms. |
 | [`run`](#ravn-run) | Start a Ravn conversation. Pass a prompt for single-turn, or omit for REPL. |
 | [`tool-build`](#ravn-tool-build) | Diagnose the Valkyrie tool-build path (Ting/Forge). |
 | [`tool-mcp`](#ravn-tool-mcp) | Serve the active Ravn ToolPort set over MCP stdio. |
 | [`tui`](#ravn-tui) | Launch the Ravn TUI — terminal operator interface for Flokk management. |
-| [`warden`](#ravn-warden) | Manage persisted long-lived Ravn wardens. |
 | [`web`](#ravn-web) | Start the standalone Ravn web UI with persona management. |
 
 #### `ravn approvals`
@@ -202,18 +193,6 @@ Channels and triggers are configured via the ``gateway:`` and ``initiative:`` se
 | `--persona`, `-p` | STR |  | Persona name applied to all daemon sessions. |
 | `--profile` | STR |  | Profile name (built-in or from ~/.ravn/profiles/). |
 | `--resume`, `--no-resume` | flag | `True` | Resume unfinished tasks from the journal. |
-
-#### `ravn evolve`
-
-Self-improvement pattern extraction.
-
-```bash
-ravn evolve [OPTIONS] COMMAND [ARGS]...
-```
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
 
 #### `ravn flock`
 
@@ -372,20 +351,6 @@ gateway: enabled: true channels: telegram: enabled: true token_env: TELEGRAM_BOT
 | `--persona`, `-p` | STR |  | Persona name applied to all gateway sessions. |
 | `--profile` | STR |  | Profile name (built-in or from ~/.ravn/profiles/). |
 
-#### `ravn inbox-migrate`
-
-Move flat resident inbox signal files into the archive and slot queue.
-
-```bash
-ravn inbox-migrate [OPTIONS] {root}
-```
-
-One-time, resumable and non-destructive: each record is archived and re-filed before its original file is removed, so an interrupted run simply resumes. Reports counts so the operator can reconcile before and after.
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `ROOT` | yes | Resident inbox root directory to migrate. |
-
 #### `ravn join`
 
 Put a persona-typed Ravn into a room as an addressable member.
@@ -413,35 +378,7 @@ ravn join --persona coder --room desk --here
 | `--rooms-dir` | STR |  | Override the rooms state directory. |
 | `--here` | flag |  | Run the member in this terminal instead of detaching. |
 | `--force`, `-f` | flag |  | Replace an existing member with the same handle. |
-| `--autonomous` | flag |  | Also enable the self-driving triggers (cron, staleness, wakefulness). |
-
-#### `ravn learned-tools-plan`
-
-Print what the next consolidation dream would retire from the learned tools.
-
-```bash
-ravn learned-tools-plan [OPTIONS]
-```
-
-Read-only: it computes the same plan the dream applies, with the same lifecycle usage, capability judge and never-used window, and prints it as JSON. Nothing is moved, archived or written; retirement happens only in the dream, so the running resident's lifecycle registry stays the one writer.
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config` | STR |  | Path to the ravn config file. |
-
-#### `ravn learnings-curate`
-
-Run one learning-curation pass now, outside the dream schedule.
-
-```bash
-ravn learnings-curate [OPTIONS]
-```
-
-The same pass the consolidation dream runs: every lesson not yet curated has its neighbourhood judged once, paraphrases fold into one lesson, and the lesson is marked ``curated``. Useful to consolidate a backlog at once rather than over the next dream, and safe to repeat — a second run only judges lessons recorded since. Every change is recorded on a Mímir audit page.
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config` | STR |  | Path to the ravn config file. |
+| `--autonomous` | flag |  | Also enable the self-driving triggers (cron, staleness, recap, dream cycle). |
 
 #### `ravn leave`
 
@@ -617,233 +554,6 @@ ravn profiles list --builtin  — only the built-in set
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--builtin` | flag |  | List only the built-in profiles. |
-
-#### `ravn resident`
-
-Inspect and repair a resident's durable state (cases, beliefs, questions, wakes).
-
-```bash
-ravn resident [OPTIONS] COMMAND [ARGS]...
-```
-
-| Subcommand | Description |
-| --- | --- |
-| [`answer`](#ravn-resident-answer) | Answer the operator question a case is blocked on. |
-| [`attention-calibrate`](#ravn-resident-attention-calibrate) | Replay this resident's judged inbox slots through the configured decision model. |
-| [`case`](#ravn-resident-case) | Show one case: every ref it holds, and what resumes it. |
-| [`case-drop`](#ravn-resident-case-drop) | Delete one case and everything under it. |
-| [`cases`](#ravn-resident-cases) | List durable cases and say which of them can still resume. |
-| [`cases-prune`](#ravn-resident-cases-prune) | Delete cases nothing can resume, per the store's retention policy. |
-| [`questions`](#ravn-resident-questions) | List the operator questions this resident is blocked on. |
-| [`status`](#ravn-resident-status) | Show one screen of what this resident is currently doing and believing. |
-| [`streak`](#ravn-resident-streak) | Show the repeated-decision streak — how long this resident has been stuck. |
-| [`streak-reset`](#ravn-resident-streak-reset) | Forget the repeated-decision streak once its cause is actually fixed. |
-| [`wake-cancel`](#ravn-resident-wake-cancel) | Cancel a case's scheduled wake so it stops resuming itself. |
-| [`wakes`](#ravn-resident-wakes) | List the wakes this resident scheduled for itself. |
-| [`working-state`](#ravn-resident-working-state) | Print the resident's own model of its current reality. |
-
-##### `ravn resident answer`
-
-Answer the operator question a case is blocked on.
-
-```bash
-ravn resident answer [OPTIONS] {case_id} {answer}
-```
-
-The one repair here that adds rather than removes: it unblocks the case the resident actually suspended, so work resumes instead of a phantom being deleted.
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `CASE_ID` | yes | Case id (slug) the resident asked about. |
-| `ANSWER` | yes | The answer to give it. |
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
-| `--yes`, `-y` | flag |  | Skip the confirmation. |
-
-##### `ravn resident attention-calibrate`
-
-Replay this resident's judged inbox slots through the configured decision model.
-
-```bash
-ravn resident attention-calibrate [OPTIONS]
-```
-
-Measures, at every skip probability in the data, how many routine slots the attention gate would have skipped and how many of those the resident itself judged worth a turn. Fit ``decision.resident_first_opinion.gate.min_skip_probability`` from this report; nothing here changes the resident. Run it in the resident's pod so it reads the live inbox and state.
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--out`, `-o` | STR |  | Where to write the JSON report. **Required.** |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
-| `--limit` | INT | `0` | Newest judged slots to replay; 0 replays every one the inbox holds. |
-
-##### `ravn resident case`
-
-Show one case: every ref it holds, and what resumes it.
-
-```bash
-ravn resident case [OPTIONS] {case_id}
-```
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `CASE_ID` | yes | Case id (slug) to show. |
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
-| `--content` | flag |  | Print each ref's full content. |
-| `--json` | flag |  | Output raw JSON. |
-
-##### `ravn resident case-drop`
-
-Delete one case and everything under it.
-
-```bash
-ravn resident case-drop [OPTIONS] {case_id}
-```
-
-This is how a belief built on a case that never existed gets retired. Deleting a resumable case is allowed on purpose — a case an operator has judged phantom is not made real by holding a pending wake — but the wake is named in the confirmation so the choice is a deliberate one.
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `CASE_ID` | yes | Case id (slug) to delete. |
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
-| `--yes`, `-y` | flag |  | Skip the confirmation. |
-
-##### `ravn resident cases`
-
-List durable cases and say which of them can still resume.
-
-```bash
-ravn resident cases [OPTIONS]
-```
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
-| `--resumable` | flag |  | Only cases something can still bring back. |
-| `--inert` | flag |  | Only cases nothing can resume. |
-| `--json` | flag |  | Output raw JSON. |
-
-##### `ravn resident cases-prune`
-
-Delete cases nothing can resume, per the store's retention policy.
-
-```bash
-ravn resident cases-prune [OPTIONS]
-```
-
-This runs the store's own sweep rather than a second pruning path, so an operator prune and the daemon's background prune can never disagree about what is safe to remove.
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
-| `--yes`, `-y` | flag |  | Skip the confirmation. |
-
-##### `ravn resident questions`
-
-List the operator questions this resident is blocked on.
-
-```bash
-ravn resident questions [OPTIONS]
-```
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
-| `--answers` | flag |  | Show unconsumed operator answers instead. |
-| `--json` | flag |  | Output raw JSON. |
-
-##### `ravn resident status`
-
-Show one screen of what this resident is currently doing and believing.
-
-```bash
-ravn resident status [OPTIONS]
-```
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
-| `--json` | flag |  | Output raw JSON. |
-
-##### `ravn resident streak`
-
-Show the repeated-decision streak — how long this resident has been stuck.
-
-```bash
-ravn resident streak [OPTIONS]
-```
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
-| `--json` | flag |  | Output raw JSON. |
-
-##### `ravn resident streak-reset`
-
-Forget the repeated-decision streak once its cause is actually fixed.
-
-```bash
-ravn resident streak-reset [OPTIONS]
-```
-
-The streak is what escalates a resident that keeps reaching the same conclusion. After the underlying problem is resolved the count is stale evidence, and leaving it makes the resident keep escalating a fixed issue.
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
-| `--yes`, `-y` | flag |  | Skip the confirmation. |
-
-##### `ravn resident wake-cancel`
-
-Cancel a case's scheduled wake so it stops resuming itself.
-
-```bash
-ravn resident wake-cancel [OPTIONS] {case_id}
-```
-
-Consumes the wake exactly as the runtime would on firing, so the case goes inert without losing the record that a wake was once scheduled — which deleting the case would.
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `CASE_ID` | yes | Case id (slug) whose wake should be cancelled. |
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
-| `--yes`, `-y` | flag |  | Skip the confirmation. |
-
-##### `ravn resident wakes`
-
-List the wakes this resident scheduled for itself.
-
-```bash
-ravn resident wakes [OPTIONS]
-```
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
-| `--json` | flag |  | Output raw JSON. |
-
-##### `ravn resident working-state`
-
-Print the resident's own model of its current reality.
-
-```bash
-ravn resident working-state [OPTIONS]
-```
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config`, `-c` | STR |  | Path to ravn config YAML. |
-| `--json` | flag |  | Output raw JSON. |
 
 #### `ravn resume`
 
@@ -1256,140 +966,6 @@ ravn tui --layout cascade
 | `--discover` | flag |  | Auto-discover Ravn daemons via mDNS. |
 | `--layout`, `-l` | STR |  | Start with a named layout preset (flokk, cascade, mimir, compare, broadcast). |
 | `--config`, `-c` | STR |  | Path to ravn config YAML. |
-
-#### `ravn warden`
-
-Manage persisted long-lived Ravn wardens.
-
-```bash
-ravn warden [OPTIONS] COMMAND [ARGS]...
-```
-
-| Subcommand | Description |
-| --- | --- |
-| [`create`](#ravn-warden-create) | Create and persist a new warden spec. |
-| [`install`](#ravn-warden-install) | Generate local service artifacts for one warden. |
-| [`list`](#ravn-warden-list) | List persisted wardens. |
-| [`show`](#ravn-warden-show) | Show one persisted warden. |
-| [`start`](#ravn-warden-start) | Mark an installed warden as started. |
-| [`stop`](#ravn-warden-stop) | Stop an installed warden. |
-| [`uninstall`](#ravn-warden-uninstall) | Uninstall a warden deployment while keeping the persisted spec. |
-
-##### `ravn warden create`
-
-Create and persist a new warden spec.
-
-```bash
-ravn warden create [OPTIONS] {name}
-```
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `NAME` | yes | Human-friendly warden name. |
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--persona` | STR | `research-and-distill` | Default persona used by this warden. |
-| `--profile` | STR |  | Optional Ravn profile name. |
-| `--deployment` | STR | `launchd` | Deployment backend shorthand, for example launchd, systemd, k8s-apply, or k8s-gitops. |
-| `--deployment-arg` | STR |  | Repeat key=value pairs for deployment backend configuration. |
-| `--mount` | STR |  | Repeat to attach one or more Mimir mounts. |
-| `--write-mount` | STR |  | Default Mimir write mount. |
-| `--autostart` | flag |  | Mark this warden for autostart. |
-| `--created-by` | STR | `cli` | Creator label for provenance. |
-| `--json` | flag |  | Output raw JSON. |
-
-##### `ravn warden install`
-
-Generate local service artifacts for one warden.
-
-```bash
-ravn warden install [OPTIONS] {warden_id}
-```
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `WARDEN_ID` | yes | Warden id. |
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--json` | flag |  | Output raw JSON. |
-
-##### `ravn warden list`
-
-List persisted wardens.
-
-```bash
-ravn warden list [OPTIONS]
-```
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--json` | flag |  | Output raw JSON. |
-
-##### `ravn warden show`
-
-Show one persisted warden.
-
-```bash
-ravn warden show [OPTIONS] {warden_id}
-```
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `WARDEN_ID` | yes | Warden id. |
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--json` | flag |  | Output raw JSON. |
-
-##### `ravn warden start`
-
-Mark an installed warden as started.
-
-```bash
-ravn warden start [OPTIONS] {warden_id}
-```
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `WARDEN_ID` | yes | Warden id. |
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--json` | flag |  | Output raw JSON. |
-
-##### `ravn warden stop`
-
-Stop an installed warden.
-
-```bash
-ravn warden stop [OPTIONS] {warden_id}
-```
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `WARDEN_ID` | yes | Warden id. |
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--json` | flag |  | Output raw JSON. |
-
-##### `ravn warden uninstall`
-
-Uninstall a warden deployment while keeping the persisted spec.
-
-```bash
-ravn warden uninstall [OPTIONS] {warden_id}
-```
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `WARDEN_ID` | yes | Warden id. |
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--json` | flag |  | Output raw JSON. |
 
 #### `ravn web`
 

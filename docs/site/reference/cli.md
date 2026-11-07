@@ -6,7 +6,7 @@ operation you want to perform.
 | Tool | Responsibility | Reference |
 | --- | --- | --- |
 | `niuu` | Start the platform, select server contexts, authenticate, and operate sessions and runs | [Niuu commands](cli-niuu.md) |
-| `ravn` | Run conversations and daemons, select personas, and operate rooms, flocks, and wardens | [Ravn commands](cli-ravn.md) |
+| `ravn` | Run conversations and daemons, select personas, and operate rooms and flocks | [Ravn commands](cli-ravn.md) |
 
 ## Inspect before running
 
