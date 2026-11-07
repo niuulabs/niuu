@@ -271,7 +271,7 @@ bootstrap host dependencies and the OpenShell runtime verifies its prepared soft
 instead of running its legacy installer. Build and validate a pinned recipe against
 the exact guest image before admitting sessions.
 
-The OpenShell release is pinned: `openshell_version` (default `v0.1.6`) selects the
+The OpenShell release is pinned: `openshell_version` (default `v0.1.7`) selects the
 release, and `openshell_install_sha256` the SHA-256 of that release's `install.sh`,
 which the runtime verifies before running it. Pin a tagged release: `install.sh`
 fetches prerelease packages only through an authenticated GitHub CLI, which a guest
