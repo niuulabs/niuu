@@ -1,0 +1,142 @@
+{{- if .Values.hostConnect.enabled }}
+{{- $hc := .Values.hostConnect }}
+{{- if ne (int .Values.replicaCount) 1 }}
+{{- fail "hostConnect needs replicaCount: 1: a host's tunnel ends in one Forge pod, which must be the one that dials it" }}
+{{- end }}
+{{- if .Values.autoscaling.enabled }}
+{{- fail "hostConnect needs autoscaling.enabled: false: a host's tunnel ends in one Forge pod" }}
+{{- end }}
+{{- if ne ((.Values.strategy).type | default "") "Recreate" }}
+{{- fail "hostConnect needs strategy.type: Recreate: during a rolling update two endpoints would split the hosts' tunnels between two Forge pods" }}
+{{- end }}
+{{- if not $hc.hostKeySecret.name }}
+{{- fail "hostConnect.hostKeySecret.name must name the Secret with the endpoint's Ed25519 host key; hosts pin it" }}
+{{- end }}
+{{- if not (.Values.securityContext).runAsUser }}
+{{- fail "hostConnect needs securityContext.runAsUser: the endpoint gives Forge's user the key socket's directory and the revoke pipe" }}
+{{- end }}
+{{- if and $hc.tcpRoute.enabled (not $hc.tcpRoute.parentRefs) }}
+{{- fail "hostConnect.tcpRoute.enabled needs hostConnect.tcpRoute.parentRefs: the Gateway listener hosts dial" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "volundr.fullname" . }}-host-connect
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+data:
+  sshd_config: |
+    # The host connect endpoint. Only keys Forge admits for registered reverse-SSH hosts
+    # log in, each to listen on its own port on the pod's loopback and nothing else.
+    Port {{ $hc.port }}
+    HostKey /run/niuu-connect-private/ssh_host_ed25519_key
+    HostKeyAlgorithms ssh-ed25519
+    PubkeyAcceptedAlgorithms ssh-ed25519
+    PidFile none
+    AllowUsers {{ $hc.user }}
+    AuthenticationMethods publickey
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    UsePAM no
+    PermitRootLogin no
+    AuthorizedKeysFile none
+    AuthorizedKeysCommand /run/niuu-connect-private/niuu-connect-keys %u %t %k
+    AuthorizedKeysCommandUser {{ $hc.user }}
+    # Remote forwards only; the key's permitlisten names the one port. authorized_keys
+    # has no "open nothing", so local forwarding is refused here, for every key.
+    AllowTcpForwarding remote
+    PermitOpen none
+    GatewayPorts no
+    AllowStreamLocalForwarding no
+    AllowAgentForwarding no
+    X11Forwarding no
+    PermitTunnel no
+    PermitTTY no
+    PermitUserRC no
+    PermitUserEnvironment no
+    # Hosts often share a NAT address, and a LoadBalancer may show them all as a node's:
+    # a penalty for one refused host would lock out its neighbours.
+    PerSourcePenalties no
+    ClientAliveInterval {{ $hc.clientAliveIntervalSeconds }}
+    ClientAliveCountMax {{ $hc.clientAliveCountMax }}
+    LoginGraceTime {{ $hc.loginGraceTimeSeconds }}
+    MaxAuthTries {{ $hc.maxAuthTries }}
+    LogLevel VERBOSE
+  niuu-connect-keys: |
+    #!/bin/sh
+    # sshd's AuthorizedKeysCommand: ask Forge, on its socket in the shared volume, for the
+    # line of this key, and record the connection (sshd's monitor process for it, which
+    # is our parent) so that revoking the host ends it.
+    exec {{ $hc.python }} -I -c '
+    import json, os, socket, sys
+    user, key_type, key, monitor, run, timeout = sys.argv[1:7]
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.settimeout(float(timeout))
+        sock.connect(os.path.join(run, "keys.sock"))
+        sock.sendall(json.dumps({"user": user, "type": key_type, "key": key}).encode() + b"\n")
+        reply = json.loads(sock.makefile("rb").readline())
+    if reply["line"]:
+        with open(f"/proc/{monitor}/stat") as stat:
+            started = stat.read().rsplit(")", 1)[1].split()[19]
+        record = os.path.join(run, "conns", reply["host_id"])
+        os.makedirs(record, exist_ok=True)
+        open(os.path.join(record, f"{monitor}-{started}"), "w").close()
+        print(reply["line"])
+    ' "$1" "$2" "$3" "$PPID" {{ $hc.runtimeDir | quote }} {{ $hc.keyLookupTimeoutSeconds | quote }}
+  niuu-connect-reaper: |
+    #!/bin/sh
+    # Ends a revoked host's connections. Forge writes the host's id to $RUN/revoke; each of
+    # its connections is recorded as $RUN/conns/<host id>/<pid>-<start time>, and a record
+    # whose process has since been replaced (another start time) is only removed.
+    RUN=$1
+    SSHD=$2
+    trap 'kill "$SSHD" 2>/dev/null; exit 0' TERM INT
+    # Read and write, so the pipe always has a reader while this runs: with none, Forge's
+    # write fails at once instead of a revoke going unseen.
+    exec 3<>"$RUN/revoke"
+    while read -r host <&3; do
+      case "$host" in
+        "" | *[!0-9a-f-]*)
+          echo "niuu-connect: ignored a revoke request that names no host" >&2
+          continue
+          ;;
+      esac
+      for record in "$RUN/conns/$host"/*; do
+        [ -e "$record" ] || continue
+        name=${record##*/}
+        pid=${name%-*}
+        started=${name#*-}
+        if stat=$(cat "/proc/$pid/stat" 2>/dev/null); then
+          # shellcheck disable=SC2086
+          set -- ${stat##*") "}
+          if [ "${20}" = "$started" ]; then
+            kill "$pid" && echo "niuu-connect: ended connection $pid of host $host" >&2
+          fi
+        fi
+        rm -f "$record"
+      done
+      rmdir "$RUN/conns/$host" || echo "niuu-connect: $RUN/conns/$host is not empty" >&2
+    done
+  entrypoint.sh: |
+    #!/bin/sh
+    # The host connect endpoint: sshd for registered hosts' reverse tunnels, and the
+    # reaper that ends a revoked host's connections.
+    set -eu
+    RUN={{ $hc.runtimeDir | quote }}
+    PRIVATE=/run/niuu-connect-private
+    # sshd refuses a host key, key command or privilege-separation directory that anyone
+    # but root could change, so each is copied out of its mount.
+    install -d -m 0755 -o root -g root /run/sshd "$PRIVATE"
+    install -m 0600 -o root -g root /etc/niuu-connect-key/ssh_host_ed25519_key "$PRIVATE/ssh_host_ed25519_key"
+    install -m 0755 -o root -g root /etc/niuu-connect/niuu-connect-keys "$PRIVATE/niuu-connect-keys"
+    # Forge owns the shared directory (its key socket); the key command only passes through.
+    chown "$FORGE_UID" "$RUN"
+    chmod 0711 "$RUN"
+    # Connections of a previous run of this container ended with its sshd.
+    rm -rf "$RUN/conns" "$RUN/revoke"
+    install -d -m 0755 -o {{ $hc.user }} -g root "$RUN/conns"
+    mkfifo -m 0200 "$RUN/revoke"
+    chown "$FORGE_UID" "$RUN/revoke"
+    /usr/sbin/sshd -D -e -f /etc/niuu-connect/sshd_config &
+    exec sh /etc/niuu-connect/niuu-connect-reaper "$RUN" "$!"
+{{- end }}

@@ -56,3 +56,11 @@ def test_join_refuses_to_run_as_a_normal_user_before_changing_anything(tmp_path)
     result = subprocess.run(["sh"], input=script.encode(), capture_output=True, cwd=tmp_path)
     assert result.returncode == 1
     assert b"run this as root" in result.stderr
+
+
+def test_leave_runs_connector_hooks_before_removing_their_files():
+    script = render_leave_script()
+    hooks = script.index("for hook in /etc/niuu/leave.d/*.sh; do")
+    assert 'if [ -e "$hook" ]; then sh -eu "$hook"; fi' in script
+    assert hooks < script.index('for path in $SETUP_FILES; do rm -f "$path"; done')
+    assert "rmdir /etc/niuu/leave.d" in script

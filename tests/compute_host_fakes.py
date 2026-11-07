@@ -136,6 +136,12 @@ class HostRepository(RegisteredHostRepository):
     async def get(self, host_id):
         return self.hosts.get(host_id)
 
+    async def with_public_key(self, public_key):
+        return next((h for h in self.hosts.values() if h.host_public_key == public_key), None)
+
+    async def connection_values(self, field):
+        return [h.connection[field] for h in self.hosts.values() if field in h.connection]
+
     async def held_by(self, allocation_id):
         return next((h for h in self.hosts.values() if h.allocation_id == allocation_id), None)
 

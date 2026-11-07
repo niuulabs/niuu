@@ -24,6 +24,8 @@ from volundr.domain.compute_hosts import (
 )
 
 _USABLE_CODE = "consumed_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()"
+#: Migration 000109: a reverse-SSH tunnel port belongs to one host of the Forge.
+_TUNNEL_PORT_INDEX = "idx_compute_hosts_tunnel_port"
 
 
 class PostgresRegisteredHostRepository(RegisteredHostRepository):
@@ -96,6 +98,11 @@ class PostgresRegisteredHostRepository(RegisteredHostRepository):
                 )
             except asyncpg.UniqueViolationError as exc:
                 # Raising rolls the transaction back, so the code stays usable.
+                if exc.constraint_name == _TUNNEL_PORT_INDEX:
+                    raise HostConflictError(
+                        "Another host joining at the same moment was given the same tunnel "
+                        "port; run the join command again"
+                    ) from exc
                 raise HostConflictError(
                     f"A host named {host.name!r} or with this host key is already registered"
                 ) from exc
@@ -104,6 +111,20 @@ class PostgresRegisteredHostRepository(RegisteredHostRepository):
     async def get(self, host_id: UUID) -> RegisteredHost | None:
         data = await self._pool.fetchval("SELECT data FROM compute_hosts WHERE id = $1", host_id)
         return RegisteredHost.model_validate_json(data) if data else None
+
+    async def with_public_key(self, public_key: str) -> RegisteredHost | None:
+        data = await self._pool.fetchval(
+            "SELECT data FROM compute_hosts WHERE host_public_key = $1", public_key
+        )
+        return RegisteredHost.model_validate_json(data) if data else None
+
+    async def connection_values(self, field: str) -> list[JsonValue]:
+        rows = await self._pool.fetch(
+            "SELECT data->'connection'->$1 AS value FROM compute_hosts "
+            "WHERE data->'connection' ? $1",
+            field,
+        )
+        return [json.loads(row["value"]) for row in rows]
 
     async def held_by(self, allocation_id: UUID) -> RegisteredHost | None:
         data = await self._pool.fetchval(

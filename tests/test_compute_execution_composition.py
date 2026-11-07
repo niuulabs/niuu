@@ -680,3 +680,70 @@ async def test_execution_components_record_each_plans_access(tmp_path, monkeypat
     assert result.accesses_by_plan == {result.default_plan.plan_digest: access}
     assert result.accesses == (access,)
     assert set(result.accesses_by_plan) == set(result.runtimes)
+
+
+class _EndpointConnector(HostConnector):
+    """Records the inventory it is attached to; has a connect endpoint socket."""
+
+    def __init__(self, socket=None):
+        self.socket = socket
+        self.inventory = None
+
+    kind = "fake"
+    label = "fake"
+
+    def attach(self, inventory):
+        self.inventory = inventory
+
+    @property
+    def endpoint_socket(self):
+        return self.socket
+
+    def join_setup(self, host):
+        raise NotImplementedError
+
+    async def admit(self, host, offered):
+        raise NotImplementedError
+
+    def dial(self, host):
+        raise NotImplementedError
+
+    async def status(self, host):
+        raise NotImplementedError
+
+    async def revoke(self, host):
+        raise NotImplementedError
+
+
+def test_every_connector_is_attached_to_the_host_inventory(tmp_path, monkeypatch):
+    connector = _EndpointConnector()
+    real_import = module.import_class
+    monkeypatch.setattr(
+        module,
+        "import_class",
+        lambda name: (
+            (lambda **_kwargs: connector) if name.endswith("Connector") else real_import(name)
+        ),
+    )
+    hosts = module.build_registered_hosts(
+        _hosts_config(), MagicMock(), _two_plan_components(tmp_path)
+    )
+    assert connector.inventory is hosts.repository
+
+
+def test_one_key_server_per_connect_endpoint_socket():
+    async def answer(**_request):
+        return None
+
+    connectors = {
+        "direct": _EndpointConnector(),
+        "reverse-a": _EndpointConnector("/run/niuu-connect/keys.sock"),
+        "reverse-b": _EndpointConnector("/run/niuu-connect/keys.sock"),
+        "reverse-c": _EndpointConnector("/run/other/keys.sock"),
+    }
+    servers = module.build_host_connect_key_servers(connectors, answer)
+    assert [server.socket_path for server in servers] == [
+        "/run/niuu-connect/keys.sock",
+        "/run/other/keys.sock",
+    ]
+    assert module.build_host_connect_key_servers({"direct": _EndpointConnector()}, answer) == []

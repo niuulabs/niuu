@@ -120,3 +120,15 @@ def test_down_drops_the_pairing_codes_before_the_hosts_and_is_idempotent():
         "DROP TABLE IF EXISTS compute_hosts"
     )
     assert not re.search(r"DROP TABLE (?!IF EXISTS)", DOWN)
+
+
+TUNNEL_UP = (ROOT / "migrations/000109_compute_host_tunnel_ports.up.sql").read_text()
+TUNNEL_DOWN = (ROOT / "migrations/000109_compute_host_tunnel_ports.down.sql").read_text()
+
+
+def test_a_tunnel_port_belongs_to_one_host_of_the_forge():
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_compute_hosts_tunnel_port" in TUNNEL_UP
+    assert "((data->'connection'->>'tunnel_port'))" in TUNNEL_UP
+    assert "WHERE data->'connection' ? 'tunnel_port'" in TUNNEL_UP
+    assert "pool_id" not in TUNNEL_UP
+    assert TUNNEL_DOWN.strip() == "DROP INDEX IF EXISTS idx_compute_hosts_tunnel_port;"

@@ -206,6 +206,9 @@ Annotations for checksum/config - forces restart on config changes
 */}}
 {{- define "volundr.checksumAnnotations" -}}
 checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- if .Values.hostConnect.enabled }}
+checksum/host-connect: {{ include (print $.Template.BasePath "/host-connect-configmap.yaml") . | sha256sum }}
+{{- end }}
 {{- if .Values.envoy.enabled }}
 checksum/envoy: {{ include (print $.Template.BasePath "/envoy-configmap.yaml") . | sha256sum }}
 {{- if .Values.envoy.authorization.enabled }}

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import shlex
 
-from volundr.adapters.outbound.host_checks import FACTS_SH, LEAVE_PATH
+from volundr.adapters.outbound.host_checks import FACTS_SH, LEAVE_HOOKS_DIR, LEAVE_PATH
 
 #: The host's Forge configuration, read by niuu-host-leave.
 HOST_CONFIG_PATH = "/etc/niuu/compute-host.env"
@@ -167,7 +167,12 @@ if [ -n "$HOME_DIR" ] && [ -f "$KEYS" ]; then
   chown "$SSH_USER" "$KEYS.niuu-tmp"
   mv "$KEYS.niuu-tmp" "$KEYS"
 fi
+# A connector's hooks undo what it started, while its files are still there.
+for hook in __LEAVE_HOOKS__/*.sh; do
+  if [ -e "$hook" ]; then sh -eu "$hook"; fi
+done
 for path in $SETUP_FILES; do rm -f "$path"; done
+rmdir __LEAVE_HOOKS__ 2>/dev/null || true
 rm -f __NIUU_KEY__ __NIUU_KEY__.pub "$CONFIG"
 echo "niuu: $HOST_NAME left the Forge at $FORGE_URL"
 rm -f "$0"
@@ -175,8 +180,10 @@ rm -f "$0"
 
 
 def render_leave_script() -> str:
-    return _LEAVE.replace("__CONFIG__", shlex.quote(HOST_CONFIG_PATH)).replace(
-        "__NIUU_KEY__", shlex.quote(NIUU_HOST_KEY_PATH)
+    return (
+        _LEAVE.replace("__CONFIG__", shlex.quote(HOST_CONFIG_PATH))
+        .replace("__NIUU_KEY__", shlex.quote(NIUU_HOST_KEY_PATH))
+        .replace("__LEAVE_HOOKS__", shlex.quote(LEAVE_HOOKS_DIR))
     )
 
 
