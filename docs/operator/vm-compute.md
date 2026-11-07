@@ -416,6 +416,73 @@ port on the guest's loopback. Turning it on takes:
   DNS-01 certificate issuer, and the preview OIDC client needs the release's
   callback host (`auth.<preview domain>`).
 
+## Separated session slots
+
+`compute.runtime.kwargs.slot_isolation` on `SshContainerVmRuntime` runs each
+session in a slot of its VM instead of on the whole VM. Before Skuld starts, the
+runtime runs the slot supervisor (`vm_slot_supervisor`) in the guest over SSH, as
+root; it is not a systemd service. For slot `n` the supervisor creates:
+
+- user and group `niuu-slot-<n>` with uid and gid `uid_base + n`. Its
+  directories `/var/lib/niuu/slots/<n>` (home, workspace, launch file, session
+  secrets, the Forge session credential, the guest agent's configuration) and
+  `/run/niuu/slots/<n>` (emptyDir and token volumes) are mode 0700 and owned by
+  that user;
+- a holder container (`niuu-slot-<n>-holder`, the Skuld image running `sleep` as
+  the slot's uid). Its network namespace is attached as `niuu-slot-<n>`, and every
+  container of the slot shares its network and PID namespaces. So two sessions
+  can both listen on `:5173`, and neither sees the other's processes;
+- a veth pair `niuuslot<n>` with the slot's four addresses from `subnet`.
+  Outbound traffic is NATed out of the VM's default-route interface. Netfilter
+  rules tagged `niuu-slot-<n>` allow the slot nothing else on the VM, no other
+  slot and no Docker network, and nothing inbound except replies;
+- the systemd slice `niuu_slot_<n>.slice` with the `cpu`, `memory_mib` and `pids`
+  limits. Every container of the slot runs in it.
+
+Skuld then runs as the slot's uid (the image's `image_user` account keeps its
+name, home and shell, renumbered), without `NET_RAW`. The broker listens on the
+slot's own address, and Forge's SSH tunnel for that slot forwards there. The
+broker's callbacks go to the slot's gateway on `guest_platform_port`, which is
+DNATed to the slot's reverse forward on the VM's loopback
+(`platform_forward_port_base + n`). Each slot's preview scanner sees only its own
+namespace, so a preview always opens the right session's port. Tunnels, the
+storage marker, credential refresh and container names are keyed by allocation
+and slot. Slot 0 keeps the allocation's own key.
+
+```yaml
+compute:
+  runtime:
+    kwargs:
+      slot_isolation:
+        cpu: 2            # cores per slot, or null for no limit
+        memory_mib: 4096  # or null
+        pids: 4096        # or null
+        # Defaults:
+        # uid_base: 61000
+        # subnet: 10.249.0.0/16     # 4 addresses per slot; must not overlap the VM's networks
+        # platform_forward_port_base: 18100
+        # image_user: skuld
+```
+
+The limits have no defaults: write each one, or `null`, for the machine profile.
+When a stopping slot has hit its memory or PID limit, the runtime logs an error
+naming the knob and counts the hits on `volundr.compute.slot.limit_hits`
+(attribute `limit`: `memory.max`, `memory.oom_kill` or `pids.max`).
+
+Stopping a slot stops its containers and archives its storage. The supervisor
+then removes the containers, rules, interface, namespace, slice and its settings,
+the directories, the user and the group. It then checks that none of them is
+left. If anything is left, the stop fails with stage `slot-down`, naming what
+remains (for example a process still running as the slot's user), and the stop
+is retried. A retry keeps the archive already taken.
+
+Without `slot_isolation` a VM runs one session, as before, and a lease for any
+slot but 0 is refused. `MetadataCredentialDelivery` vouches for the whole
+allocation, so with it only slot 0 can receive credentials and a later slot is
+refused. `SshPushCredentialDelivery` serves every slot. OpenShell runtimes refuse
+`slot_isolation`: their sandbox is the boundary. The pool's `slots_per_machine`
+stays 1 until the runtime declares slot support.
+
 ## VM session credentials
 
 A session pod gets its ServiceAccount's tokens from the kubelet and its Forge

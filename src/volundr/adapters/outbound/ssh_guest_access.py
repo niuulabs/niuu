@@ -468,8 +468,10 @@ class SshGuestAccess(GuestAccess):
         reverse_port: int,
         controller_host: str,
         controller_port: int,
+        remote_host: str = "127.0.0.1",
+        key: str | None = None,
     ) -> SessionProxyTarget:
-        key = str(lease.id)
+        key = key or str(lease.id)
         async with self._locks.setdefault(key, asyncio.Lock()):
             current = self._tunnels.get(key)
             address = (
@@ -490,7 +492,7 @@ class SshGuestAccess(GuestAccess):
             options = [
                 "-N",
                 "-L",
-                f"127.0.0.1:{port}:127.0.0.1:{remote_port}",
+                f"127.0.0.1:{port}:{remote_host}:{remote_port}",
                 "-R",
                 f"{reverse_bind_host}:{reverse_port}:{controller_host}:{controller_port}",
             ]

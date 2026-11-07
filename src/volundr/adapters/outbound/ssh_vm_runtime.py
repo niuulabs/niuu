@@ -8,7 +8,9 @@ operator cloud-init must install Docker, Python 3.12+, and OpenSSH.
 from __future__ import annotations
 
 import asyncio  # noqa: F401 - compatibility for tests patching the shared module
+import inspect
 import json
+import logging
 import os
 import pwd  # noqa: F401 - compatibility for tests patching the shared module
 import re
@@ -20,7 +22,9 @@ from uuid import UUID
 import httpx
 
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
+from niuu.observability import get_observability
 from niuu.ports.session_proxy import SessionProxyTarget
+from volundr.adapters.outbound import vm_slot_supervisor
 from volundr.adapters.outbound.brokered_credentials import (
     DEFAULT_CODEX_AUTH_ADAPTER,
     BrokeredCredentialPodManager,
@@ -34,6 +38,16 @@ from volundr.adapters.outbound.ssh_guest_access import (
     HOST_KEY_CONFIG_PATH,
     HOST_KEY_PATH,
     SshGuestAccess,
+)
+from volundr.adapters.outbound.vm_slot_layout import (
+    FORGE_SESSION_DIRECTORY,
+    SESSION_DATA,
+    SESSION_LAUNCH,
+    SESSION_RUNTIME,
+    SESSION_SECRETS,
+    SlotIsolation,
+    SlotLayout,
+    slot_index,
 )
 from volundr.domain.compute import (
     AllocationRef,
@@ -51,17 +65,17 @@ from volundr.domain.vm_runtime import StartupStepReport, VmRuntime
 # cloud-init's SSH module deletes/recreates keys at /etc/ssh/ssh_host_*.
 _HOST_KEY = HOST_KEY_PATH
 _HOST_KEY_CONFIG = HOST_KEY_CONFIG_PATH
-_LAUNCH = "/etc/niuu/session-launch.json"
+_LAUNCH = SESSION_LAUNCH
 #: The guest's local DNS stub (systemd-resolved on 127.0.0.53): never a preview.
 VM_GUEST_RESOLVER_PORT = 53
-_REMOTE_DATA = "/var/lib/niuu/session"
-_SECRETS = "/etc/niuu/session-secrets/"
+_REMOTE_DATA = SESSION_DATA
+_SECRETS = SESSION_SECRETS + "/"
 # Pod volumes Kubernetes would keep in memory: guest tmpfs, gone on reboot and
 # recreated on every start.
-_VOLUMES = "/run/niuu/session/volumes"
-_TOKENS = "/run/niuu/session/tokens"
+_VOLUMES = f"{SESSION_RUNTIME}/volumes"
+_TOKENS = f"{SESSION_RUNTIME}/tokens"
 # The Forge session credential of the current launch, outside archived data.
-_FORGE_SESSION_DIR = "/etc/niuu/forge-session"
+_FORGE_SESSION_DIR = FORGE_SESSION_DIRECTORY
 _FORGE_SESSION_TARGET = "/var/run/niuu/forge-session"
 _FORGE_SESSION_FILE = "token"
 _NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?")
@@ -70,16 +84,21 @@ _MOUNT_KEYS = {"name", "mountPath", "readOnly"}
 #: Directory symlinks in the session images: in the Skuld image ``/var/run`` is ``/run``.
 _DEFAULT_IMAGE_PATH_LINKS = {"/var/run": "/run"}
 
+logger = logging.getLogger(__name__)
+
 # Passed as a fixed program; session-controlled values arrive as JSON on stdin.
 # Init containers run to completion and sidecars start before Skuld, in the
 # order a kubelet uses, on every start (their volumes live on guest tmpfs).
 _START = r"""
 import json, os, pathlib, subprocess, sys
 p=json.load(sys.stdin)
-root=pathlib.Path('/var/lib/niuu/session')
+# A slot (vm_slot_layout.SlotLayout.launch) places the session in its own
+# directories, namespaces and cgroup; without one the session is the VM's.
+s=p.get('slot')
+root=pathlib.Path(s['data_root'] if s else '/var/lib/niuu/session')
 marker=root/'.allocation'
-name='niuu-skuld'
-label='compute.niuu.io/allocation='+p['allocation_id']
+name=s['skuld'] if s else 'niuu-skuld'
+labels=s['labels'] if s else ['compute.niuu.io/allocation='+p['allocation_id']]
 def run(*args, env=None):
     return subprocess.run(args,check=True,stdout=subprocess.DEVNULL,
         env={**os.environ,**(env or {})})
@@ -88,15 +107,22 @@ def owned(container):
     if r.returncode:
         return False
     info=json.loads(r.stdout)[0]
-    if info['Config'].get('Labels',{}).get('compute.niuu.io/allocation') != p['allocation_id']:
+    found=info['Config'].get('Labels') or {}
+    if any(found.get(k) != v for k,v in (l.split('=',1) for l in labels)):
         raise RuntimeError('Container ownership mismatch')
     return True
 def binds(mounts):
     return [arg for m in mounts for arg in
         ('--mount','type=bind,src='+m['source']+',dst='+m['target']
          +(',readonly' if m.get('readonly',True) else ''))]
+def placement():
+    if not s:
+        return ['--network','host']
+    # Every container of a slot shares its holder's network and PID namespaces.
+    return ['--network','container:'+s['holder'],'--pid','container:'+s['holder'],
+        '--cgroup-parent',s['slice'],'--cap-drop','NET_RAW']
 def container(c):
-    args=['--network','host','--label',label]
+    args=[*placement(),*(a for l in labels for a in ('--label',l))]
     if c.get('user'):
         args+=['--user',c['user']]
     args+=[a for key in c['environment'] for a in ('--env',key)]
@@ -110,18 +136,22 @@ for directory in p.get('directories',[]):
     path.chmod(int(directory['mode'],8))
 address=p.get('metadata_address')
 if address:
-    # The link-local address the guest agent serves credentials on.
-    shown=subprocess.run(['ip','-o','addr','show','dev','lo'],check=True,capture_output=True,text=True)
+    # The link-local address the guest agent serves credentials on, in the
+    # namespace the session runs in.
+    ip=['ip','netns','exec',s['netns'],'ip'] if s else ['ip']
+    shown=subprocess.run([*ip,'-o','addr','show','dev','lo'],check=True,capture_output=True,text=True)
     if ' '+address+'/' not in shown.stdout:
-        run('ip','addr','add',address+'/32','dev','lo')
+        run(*ip,'addr','add',address+'/32','dev','lo')
+# The holder of a slot's PID namespace is its init and reaps for every container.
+init=[] if s else ['--init']
 for c in p.get('init_containers',[]):
     run('docker','run','--rm',*container(c),env=c['environment'])
 for c in p.get('sidecars',[]):
-    sidecar='niuu-sidecar-'+c['name']
+    sidecar=(s['sidecar_prefix'] if s else 'niuu-sidecar-')+c['name']
     if owned(sidecar):
         run('docker','start',sidecar)
         continue
-    run('docker','run','--detach','--init','--restart','unless-stopped','--name',sidecar,
+    run('docker','run','--detach',*init,'--restart','unless-stopped','--name',sidecar,
         *container(c),env=c['environment'])
 if owned(name):
     # A new launch replaced the Forge session credential the running broker read.
@@ -129,7 +159,7 @@ if owned(name):
     sys.exit(0)
 if not marker.exists():
     raise RuntimeError('Session storage was not prepared')
-if marker.read_text() != p['allocation_id']:
+if marker.read_text() != (s['marker'] if s else p['allocation_id']):
     raise RuntimeError('Workspace allocation mismatch')
 workspace=root/'workspace'
 home=root/'home'
@@ -141,11 +171,19 @@ if p['repo'] and not (workspace/'.git').exists():
         args.extend(['--branch',p['branch']])
     args.extend(['--',p['repo'],str(workspace)])
     run(*args)
-run('chown','-R','1000:1000',str(root))
+# -h: a link the session left in its storage names its own path, never a target.
+owner=f"{s['uid']}:{s['uid']}" if s else '1000:1000'
+run('chown','-R','-h',owner,str(root))
 env_args=[arg for key in p['environment'] for arg in ('--env',key)]
+identity=[]
+if s:
+    # The slot's uid, with the image account's name, home and shell.
+    identity=['--user',owner,*binds([
+        {'source':s['identity']+'/passwd','target':'/etc/passwd'},
+        {'source':s['identity']+'/group','target':'/etc/group'}])]
 run('docker','pull',p['image'])
-run('docker','run','--detach','--init','--name',name,'--network','host',
-    '--label',label,
+run('docker','run','--detach',*init,'--name',name,*placement(),
+    *(a for l in labels for a in ('--label',l)),*identity,
     *env_args,*binds(p.get('secret_mounts',[])),*binds(p.get('volume_mounts',[])),
     '--mount','type=bind,src='+str(workspace)+',dst=/workspace',
     '--mount','type=bind,src='+str(home)+',dst=/home/skuld',p['image'],
@@ -154,7 +192,8 @@ run('docker','run','--detach','--init','--name',name,'--network','host',
 
 _PREPARE = r"""
 import json,pathlib,sys,tarfile
-root=pathlib.Path('/var/lib/niuu/session')
+# argv: storage key, restore|empty, exclusions, and a slot's storage root.
+root=pathlib.Path(sys.argv[4]) if len(sys.argv)>4 else pathlib.Path('/var/lib/niuu/session')
 marker=root/'.allocation'
 allocation=sys.argv[1]
 root.mkdir(parents=True,exist_ok=True)
@@ -227,29 +266,35 @@ sys.exit(0 if pathlib.Path(sys.argv[1]).is_file() else 43)
 _STOP = r"""
 import json,pathlib,subprocess,sys
 allocation=sys.argv[1]
-marker=pathlib.Path('/var/lib/niuu/session/.allocation')
+# A slot (vm_slot_layout.SlotLayout.stop_spec) names its storage and containers.
+s=json.loads(sys.argv[3]) if len(sys.argv)>3 else None
+marker=pathlib.Path(s['data_root'] if s else '/var/lib/niuu/session')/'.allocation'
+name=s['skuld'] if s else 'niuu-skuld'
+filters=['--filter','label=compute.niuu.io/allocation='+allocation]
+if s:
+    filters+=['--filter','label='+s['slot_label']]
 if not marker.exists():
     sys.exit(42)
-if marker.read_text()!=allocation:
+if marker.read_text()!=(s['marker'] if s else allocation):
     raise RuntimeError('Workspace allocation mismatch')
 def sidecars():
     # Sidecars of this allocation, stopped after Skuld so it can still flush.
-    listed=subprocess.run(
-        ['docker','ps','-aq','--filter','label=compute.niuu.io/allocation='+allocation],
-        capture_output=True,text=True,check=True)
+    listed=subprocess.run(['docker','ps','-aq',*filters],capture_output=True,text=True,check=True)
     for container in listed.stdout.split():
         subprocess.run(['docker','stop','--time',sys.argv[2],container],check=True,
             stdout=subprocess.DEVNULL)
-r=subprocess.run(['docker','container','inspect','niuu-skuld'],capture_output=True,text=True)
+r=subprocess.run(['docker','container','inspect',name],capture_output=True,text=True)
 if r.returncode:
     # Confirm Docker is reachable; missing container is expected after partial startup.
     subprocess.run(['docker','info'],check=True,stdout=subprocess.DEVNULL)
     sidecars()
     sys.exit(0)
 info=json.loads(r.stdout)[0]
-if info['Config'].get('Labels',{}).get('compute.niuu.io/allocation') != allocation:
+found=info['Config'].get('Labels') or {}
+if found.get('compute.niuu.io/allocation') != allocation or (
+        s and found.get('compute.niuu.io/slot') != s['slot_label'].split('=',1)[1]):
     raise RuntimeError('Container ownership mismatch')
-subprocess.run(['docker','stop','--time',sys.argv[2],'niuu-skuld'],check=True,stdout=subprocess.DEVNULL)
+subprocess.run(['docker','stop','--time',sys.argv[2],name],check=True,stdout=subprocess.DEVNULL)
 sidecars()
 """
 
@@ -285,6 +330,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         image_path_links: dict[str, str] | None = None,
         preview_router_auth: dict | None = None,
         preview_excluded_ports: list[int] | None = None,
+        slot_isolation: dict | None = None,
     ):
         """``preview_router_auth`` turns on live preview in session VMs: the Skuld
         ``preview.router_auth`` adapter (``{"adapter": ..., "kwargs": {...}}``),
@@ -293,9 +339,27 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         (``http://127.0.0.1:<guest_platform_port>/api/v1/tokens/workload/jwks``).
         The VM is the session, so every listener on it is offered except SSH,
         the guest resolver, the tunnel and broker ports, and
-        ``preview_excluded_ports``."""
+        ``preview_excluded_ports``.
+
+        ``slot_isolation`` (``vm_slot_layout.SlotIsolation``) runs each session in
+        its own slot of the VM: its own user, directories, network and PID
+        namespaces and cgroup, created by ``vm_slot_supervisor`` at start and
+        removed, provably, at stop. Without it the session is the whole VM and
+        only slot 0 exists."""
         if not skuld_image or not ssh_user or ssh_user.startswith("-"):
             raise ValueError("Configure a Skuld image and SSH user")
+        if slot_isolation is not None and not self._separates_slots:
+            raise ValueError(
+                f"{type(self).__name__} keeps its own sandbox boundary; remove slot_isolation"
+            )
+        self._slot_isolation = (
+            SlotIsolation(**slot_isolation) if slot_isolation is not None else None
+        )
+        # The supervisor runs in the guest from its own source; fail at
+        # composition when this build cannot ship it.
+        self._supervisor = (
+            inspect.getsource(vm_slot_supervisor) if self._slot_isolation is not None else ""
+        )
         self._preview_router_auth = dict(preview_router_auth or {})
         self._preview_excluded_ports = sorted(
             {ssh_port, VM_GUEST_RESOLVER_PORT, guest_platform_port, broker_port}
@@ -424,6 +488,36 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
 
     #: Whether the guest runs the pod's init containers and sidecars next to Skuld.
     _runs_pod_containers = True
+    #: Whether ``slot_isolation`` applies: runtimes with their own sandbox refuse it.
+    _separates_slots = True
+
+    def _layout(self, lease: AllocationRef) -> SlotLayout | None:
+        """The lease's slot, or ``None`` for the whole VM without slot isolation."""
+        if self._slot_isolation is None:
+            slot = slot_index(lease)
+            if slot != 0:
+                raise ValueError(
+                    f"Slot {slot} of a VM needs separated slots; configure "
+                    "compute.runtime.kwargs.slot_isolation"
+                )
+            return None
+        return SlotLayout.for_lease(self._slot_isolation, lease)
+
+    async def _supervise(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, layout: SlotLayout, action: str
+    ) -> bytes:
+        result = await self._guest_access.execute(
+            lease,
+            bootstrap,
+            self._python(self._supervisor, action),
+            data=json.dumps(
+                layout.supervisor_spec(image=self._image, platform_port=self._guest_platform_port)
+            ).encode(),
+            capture_stdout=True,
+            safe_error_prefix=vm_slot_supervisor.STAGE_PREFIX,
+            safe_detail_prefix=vm_slot_supervisor.DETAIL_PREFIX,
+        )
+        return result.stdout
 
     @property
     def session_runtime(self) -> SessionRuntimeKind | None:
@@ -441,6 +535,10 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
     async def write_files(
         self, lease: AllocationRef, bootstrap: MachineBootstrap, items: list[dict]
     ) -> None:
+        # Deliveries name the session's paths; a slot keeps them in its own directories.
+        layout = self._layout(lease)
+        if layout is not None:
+            items = [{**item, "directory": layout.relocate(item["directory"])} for item in items]
         await self._guest_access.execute(
             lease, bootstrap, self._python(_REFRESHED_FILES), data=json.dumps(items).encode()
         )
@@ -448,10 +546,11 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
     async def file_exists(
         self, lease: AllocationRef, bootstrap: MachineBootstrap, path: str
     ) -> bool:
+        layout = self._layout(lease)
         result = await self._guest_access.execute(
             lease,
             bootstrap,
-            self._python(_REQUIRE_FILE, path),
+            self._python(_REQUIRE_FILE, layout.relocate(path) if layout else path),
             expected_exit_codes=(0, 43),
         )
         return result.exit_code == 0
@@ -931,15 +1030,31 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         }
 
     async def target(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> SessionProxyTarget:
-        target = await self._guest_access.open_tunnel(
-            lease,
-            bootstrap,
-            remote_port=self._broker_port,
-            reverse_bind_host=self._guest_platform_bind_host,
-            reverse_port=self._guest_platform_port,
-            controller_host=self._platform_host,
-            controller_port=self._platform_port,
-        )
+        layout = self._layout(lease)
+        if layout is None:
+            target = await self._guest_access.open_tunnel(
+                lease,
+                bootstrap,
+                remote_port=self._broker_port,
+                reverse_bind_host=self._guest_platform_bind_host,
+                reverse_port=self._guest_platform_port,
+                controller_host=self._platform_host,
+                controller_port=self._platform_port,
+            )
+        else:
+            # The slot's broker listens on the slot's address; its callbacks reach
+            # the slot's own loopback port, where its gateway forwards them.
+            target = await self._guest_access.open_tunnel(
+                lease,
+                bootstrap,
+                remote_port=self._broker_port,
+                remote_host=layout.address,
+                reverse_bind_host="127.0.0.1",
+                reverse_port=layout.platform_forward_port,
+                controller_host=self._platform_host,
+                controller_port=self._platform_port,
+                key=layout.key,
+            )
         await self._resume_delivery(lease, bootstrap)
         return target
 
@@ -978,8 +1093,13 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         await self._guest_access.ensure(lease, access_bootstrap)
 
     async def start(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
+        layout = self._layout(lease)
         session_directory = self._data / str(lease.session_id)
         session_directory.mkdir(mode=0o700, exist_ok=True, parents=True)
+        if layout is not None:
+            self._require_slot_delivery(layout, bootstrap)
+            self._step(lease, "guest_slot", f"Preparing slot {layout.slot}")
+            await self._supervise(lease, bootstrap, layout, "up")
         # Warm machines were created without session secrets. Deliver them only
         # after the durable binding, through the authenticated guest transport.
         files = [
@@ -987,6 +1107,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             for f in bootstrap.files
             if f.path == _LAUNCH or f.path.startswith("/etc/niuu/session-secrets/")
         ]
+        if layout is not None:
+            files = [{**item, "path": layout.relocate(item["path"])} for item in files]
         self._step(lease, "guest_files", "Delivering session files")
         await self._guest_access.execute(
             lease,
@@ -1011,6 +1133,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             grants = payload.pop("forge_session_grants", None)
             if grants is not None:
                 payload["environment"][FORGE_MCP_GRANTS_ENV] = ",".join(grants)
+        if layout is not None:
+            payload = layout.launch(payload, platform_port=self._guest_platform_port)
         self._step(lease, "guest_skuld", "Pulling and starting Skuld")
         await self._guest_access.execute(
             lease,
@@ -1018,6 +1142,30 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             self._python(_START),
             data=json.dumps(payload).encode(),
         )
+
+    def _require_slot_delivery(self, layout: SlotLayout, bootstrap: MachineBootstrap) -> None:
+        """Refuse a slot past 0 whose credentials only the whole allocation can receive."""
+        launch = self._launch(bootstrap)
+        if (
+            layout.slot == 0
+            or self._credential_delivery is None
+            or self._credential_delivery.serves_slots
+            or launch is None
+            or GuestCredentialPlan.from_launch(launch).empty
+        ):
+            return
+        raise ValueError(
+            f"{type(self._credential_delivery).__name__} vouches for the whole allocation, so "
+            f"slot {layout.slot} cannot receive its credentials; run one slot per VM or use a "
+            "per-slot credential delivery"
+        )
+
+    def _prepare_arguments(self, lease: SlotLease, mode: str) -> tuple[str, ...]:
+        layout = self._layout(lease)
+        excludes = json.dumps(self._archive_excludes)
+        if layout is None:
+            return (str(lease.id), mode, excludes)
+        return (layout.key, mode, excludes, layout.session_data)
 
     async def _restore_data(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         archive = self._data / str(lease.session_id) / "session.tar"
@@ -1027,16 +1175,14 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 await self._guest_access.execute(
                     lease,
                     bootstrap,
-                    self._python(
-                        _PREPARE, str(lease.id), "restore", json.dumps(self._archive_excludes)
-                    ),
+                    self._python(_PREPARE, *self._prepare_arguments(lease, "restore")),
                     stdin=src,
                 )
         else:
             await self._guest_access.execute(
                 lease,
                 bootstrap,
-                self._python(_PREPARE, str(lease.id), "empty", json.dumps(self._archive_excludes)),
+                self._python(_PREPARE, *self._prepare_arguments(lease, "empty")),
             )
 
     async def ready(self, lease: SlotLease, bootstrap: MachineBootstrap) -> bool:
@@ -1049,22 +1195,54 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         return response.status_code == 200
 
     async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
+        layout = self._layout(lease)
+        arguments = [str(lease.id), str(self._stop_timeout)]
+        if layout is not None:
+            arguments.append(json.dumps(layout.stop_spec()))
         result = await self._guest_access.execute(
             lease,
             bootstrap,
-            self._python(_STOP, str(lease.id), str(self._stop_timeout)),
+            self._python(_STOP, *arguments),
             expected_exit_codes=(0, 42),
         )
         if self._credential_delivery is not None:
             await self._credential_delivery.stop(lease, bootstrap)
-        if result.exit_code == 42:
-            # Cancelled before storage restore: retain any previous local archive.
-            await self._close_tunnel(str(lease.id))
-            return
-        await self._archive_data(lease, bootstrap)
-        await self._close_tunnel(str(lease.id))
+        # Exit 42: cancelled before storage restore; retain any previous local archive.
+        if result.exit_code != 42:
+            await self._archive_data(lease, bootstrap)
+        if layout is not None:
+            # Archived: the slot's user, directories, namespaces and cgroup go,
+            # and the supervisor fails unless nothing of them is left.
+            await self._report_slot_limits(lease, bootstrap, layout)
+            await self._supervise(lease, bootstrap, layout, "down")
+        await self._close_tunnel(layout.key if layout else str(lease.id))
+
+    async def _report_slot_limits(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, layout: SlotLayout
+    ) -> None:
+        """Count every time the ending slot hit its memory or PID limit."""
+        events = json.loads(await self._supervise(lease, bootstrap, layout, "limits") or b"{}")
+        for event, count in sorted(events.items()):
+            if not count:
+                continue
+            get_observability().count(
+                "volundr.compute.slot.limit_hits",
+                count,
+                attributes={"limit": event},
+            )
+            logger.error(
+                "Session %s in slot %d of VM allocation %s hit its %s limit %d times; raise "
+                "compute.runtime.kwargs.slot_isolation.%s",
+                lease.session_id,
+                layout.slot,
+                lease.id,
+                event,
+                count,
+                "pids" if event.startswith("pids") else "memory_mib",
+            )
 
     async def _archive_data(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
+        layout = self._layout(lease)
         directory = self._data / str(lease.session_id)
         directory.mkdir(mode=0o700, exist_ok=True, parents=True)
         fd, temporary = tempfile.mkstemp(prefix="session-", suffix=".tar", dir=directory)
@@ -1082,7 +1260,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                             "--exclude=./.allocation",
                             *[f"--exclude=./{p}" for p in self._archive_excludes],
                             "-C",
-                            _REMOTE_DATA,
+                            layout.session_data if layout else _REMOTE_DATA,
                             "-cf",
                             "-",
                             ".",
