@@ -1,0 +1,119 @@
+# macOS session bundle — what the Skuld image is to a Linux session, for a Mac host.
+#
+# Every push to dev gets ghcr.io/niuulabs/skuld-darwin:dev-<sha>, the pin the infra bump
+# tool resolves for a release (as for the images). The bundle is rebuilt, on a macOS
+# runner, only when its inputs changed: their git tree hash names it (tree-<hash>), and a
+# commit whose inputs match an existing bundle only gets the new tag.
+#
+# Built by containers/skuld-darwin/build-bundle.sh; fetched by the darwin host runtime
+# (volundr.adapters.outbound.ssh_darwin_host_runtime), which pins it by digest.
+name: Darwin session bundle
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: darwin-bundle-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BUNDLE: ghcr.io/${{ github.repository_owner }}/skuld-darwin
+  MEDIA_TYPE: application/vnd.niuu.skuld-darwin.bundle.v1.tar+gzip
+  ARTIFACT_TYPE: application/vnd.niuu.skuld-darwin.v1
+
+jobs:
+  resolve:
+    name: Look up the bundle for these inputs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tree: ${{ steps.tree.outputs.tree }}
+      build: ${{ steps.lookup.outputs.build }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Hash the bundle's inputs
+        id: tree
+        run: |
+          set -euo pipefail
+          tree=$(for path in src pyproject.toml uv.lock README.md migrations vendor \
+              containers/skuld/npm-tools containers/skuld-darwin \
+              .github/workflows/darwin-bundle.yaml; do
+            printf '%s %s\n' "$path" "$(git rev-parse "HEAD:$path")"
+          done | sha256sum | cut -c1-40)
+          echo "tree=${tree}" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/setup-crane
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag the existing bundle, or ask for a build
+        id: lookup
+        env:
+          TREE: ${{ steps.tree.outputs.tree }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if digest=$(crane digest "${BUNDLE}:tree-${TREE}" 2>/dev/null); then
+            crane tag "${BUNDLE}@${digest}" "dev-${SHA}"
+            crane tag "${BUNDLE}@${digest}" dev
+            echo "Reused ${BUNDLE}@${digest} for dev-${SHA}"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build on macOS (arm64)
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: macos-15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the bundle
+        run: containers/skuld-darwin/build-bundle.sh "${RUNNER_TEMP}/skuld-darwin.tar.gz"
+
+      - uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
+
+      - name: Push the bundle
+        env:
+          TREE: ${{ needs.resolve.outputs.tree }}
+          SHA: ${{ github.sha }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${TOKEN}" | oras login ghcr.io --username "${ACTOR}" --password-stdin
+          cd "${RUNNER_TEMP}"
+          oras push "${BUNDLE}:tree-${TREE},dev-${SHA},dev" \
+            --artifact-type "${ARTIFACT_TYPE}" \
+            --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --annotation "org.opencontainers.image.revision=${SHA}" \
+            --annotation "org.opencontainers.image.description=Niuu macOS session bundle (darwin-arm64)" \
+            "skuld-darwin.tar.gz:${MEDIA_TYPE}"
+          echo "Pushed ${BUNDLE}@$(oras resolve "${BUNDLE}:dev-${SHA}")"
