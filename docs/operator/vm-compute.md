@@ -470,9 +470,12 @@ root; it is not a systemd service. For slot `n` the supervisor creates:
 
 - user and group `niuu-slot-<n>` with uid and gid `uid_base + n`. Its
   directories `/var/lib/niuu/slots/<n>` (home, workspace, launch file, session
-  secrets, the Forge session credential, the guest agent's configuration) and
-  `/run/niuu/slots/<n>` (emptyDir and token volumes) are mode 0700 and owned by
-  that user;
+  secrets, the Forge session credential) and `/run/niuu/slots/<n>` (emptyDir and
+  token volumes) are mode 0700 and owned by that user. The guest agent's
+  configuration, which names the slot it fetches credentials for, is in
+  `/etc/niuu/slots/<n>`, owned by root, so the slot cannot point the agent at
+  another slot. Sidecars that set a group (OpenBao's agent renders secrets 0640)
+  run with the slot's group, never a VM group;
 - a holder container (`niuu-slot-<n>-holder`, the Skuld image running `sleep` as
   the slot's uid). Its network namespace is attached as `niuu-slot-<n>`, and every
   container of the slot shares its network and PID namespaces. So two sessions
