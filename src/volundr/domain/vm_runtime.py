@@ -28,6 +28,19 @@ class SlotLimits:
     pids: int | None
 
 
+@dataclass(frozen=True)
+class SessionImages:
+    """The release's own session images, digest-pinned, which Forge hands host runtimes.
+
+    Not catalog content: a release bump moves them without changing the plan running
+    sessions are pinned to. ``linux`` is the Skuld image a Linux host unpacks (on a
+    relocatable Python); ``darwin`` the macOS session bundle.
+    """
+
+    linux: str | None = None
+    darwin: str | None = None
+
+
 class VmRuntimeUnavailableError(RuntimeError):
     """The guest SSH connection is not established; readiness may be retried."""
 
@@ -191,6 +204,15 @@ class VmRuntime(ABC):
         execution whose runtime does not name ``darwin`` here.
         """
         return LINUX_ONLY
+
+    def for_platform(self, platform: HostPlatform) -> VmRuntime:
+        """The runtime that runs this execution's sessions on ``platform`` hosts.
+
+        Itself, for a runtime of one platform; a runtime per platform hands out its child.
+        """
+        if platform not in self.host_platforms:
+            raise ValueError(f"{type(self).__name__} runs no sessions on {platform} hosts")
+        return self
 
     @property
     def session_runtime(self) -> SessionRuntimeKind | None:

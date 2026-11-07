@@ -29,6 +29,7 @@ from volundr.adapters.outbound.brokered_credentials import (
     DEFAULT_CODEX_AUTH_ADAPTER,
     BrokeredCredentialPodManager,
 )
+from volundr.adapters.outbound.host_checks import parse_check_output, slot_audit_arguments
 from volundr.adapters.outbound.local_process import (
     FORGE_MCP_GRANTS_ENV,
     FORGE_MCP_TOKEN_FILE_ENV,
@@ -317,6 +318,10 @@ if found.get('compute.niuu.io/allocation') != allocation or (
 subprocess.run(['docker','stop','--time',sys.argv[2],name],check=True,stdout=subprocess.DEVNULL)
 sidecars()
 """
+
+
+class SlotNotCleanError(RuntimeError):
+    """A stopped slot still holds something of its session; it must not take another."""
 
 
 class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
@@ -1278,6 +1283,28 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             await self._report_slot_limits(lease, bootstrap, layout)
             await self._supervise(lease, bootstrap, layout, "down")
         await self._close_tunnel(layout.key if layout else str(lease.id))
+
+    async def _audit_slot(
+        self, lease: AllocationRef, bootstrap: MachineBootstrap, program: str, slot: int
+    ) -> None:
+        """Run the registered-host audit ``program`` for ``slot`` alone; any finding raises."""
+        limits = self.slot_limits
+        if limits is None:
+            raise ValueError(f"{type(self).__name__} keeps no slots to audit")
+        arguments = slot_audit_arguments(uid_base=limits.uid_base, slot=slot)
+        result = await self._guest_access.execute(
+            lease,
+            bootstrap,
+            shlex.join(["sudo", "-n", "sh", "-s", "--", *arguments]),
+            data=program.encode(),
+            capture_stdout=True,
+        )
+        findings = parse_check_output(result.stdout.decode(errors="replace")).findings
+        if findings:
+            raise SlotNotCleanError(
+                f"Slot {slot} of allocation {lease.id} is not clean after its session, so it "
+                f"is not reused: {'; '.join(findings)}"
+            )
 
     async def _report_slot_limits(
         self, lease: SlotLease, bootstrap: MachineBootstrap, layout: SlotLayout

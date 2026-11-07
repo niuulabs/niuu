@@ -70,14 +70,19 @@ fi
 """
 
 #: Arguments: uid_base, slot count, live slot indexes (comma-separated, may be empty),
-#: free-disk floor in MiB, and "clean" to clear the allocation's bootstrap markers first.
+#: free-disk floor in MiB, "clean" to clear the allocation's bootstrap markers first, and
+#: optionally one slot index: then only that slot is audited (every other slot counts as
+#: live), which is how a runtime proves a slot clean before reusing it in place.
 AUDIT_SH = r"""
 set -u
-uid_base=$1; slots=$2; live=",$3,"; floor_mib=$4; mode=$5
+uid_base=$1; slots=$2; live=",$3,"; floor_mib=$4; mode=$5; only=${6:-}
 if [ "$mode" = clean ]; then
   rm -f /var/lib/niuu/bootstrap.sha256 /var/lib/niuu/bootstrap-state.json
 fi
-is_live() { case "$live" in *",$1,"*) return 0 ;; esac; return 1; }
+is_live() {
+  [ -n "$only" ] && [ "$1" != "$only" ] && return 0
+  case "$live" in *",$1,"*) return 0 ;; esac; return 1
+}
 # Every slot user, in or beyond the configured count: a leftover user is a finding.
 for user in $(getent passwd | awk -F: '/^niuu-slot-[0-9]+:/ {print $1}'); do
   n=${user#niuu-slot-}
@@ -147,10 +152,10 @@ echo "fact gpus 0"
 echo "fact os $(sw_vers -productName) $(sw_vers -productVersion)"
 """
 
-#: The audit of a Mac; the same arguments as ``AUDIT_SH``. A Mac has one slot, so the user
-#: is the whole boundary: what the audit proves is that nothing of a finished session's user
-#: is left (account, processes, launchd jobs, files, IPC, cron, Nix profile) and that no slot
-#: user holds a group that reaches past it.
+#: The audit of a Mac; the same arguments as ``AUDIT_SH`` (``only`` is always slot 0). A
+#: Mac has one slot, so the user is the whole boundary: what the audit proves is that
+#: nothing of a finished session's user is left (account, processes, launchd jobs, files,
+#: IPC, cron, Nix profile) and that no slot user holds a group that reaches past it.
 DARWIN_AUDIT_SH = r"""
 set -u
 uid_base=$1; slots=$2; live=",$3,"; floor_mib=$4; mode=$5
@@ -243,6 +248,17 @@ PROGRAMS: dict[HostPlatform, tuple[str, str]] = {
 class CheckOutput:
     facts: dict[str, JsonValue]
     findings: tuple[str, ...]
+
+
+def slot_audit_arguments(*, uid_base: int, slot: int) -> tuple[str, ...]:
+    """The audit's arguments for slot ``slot`` alone, with no disk floor and no clean-up.
+
+    The disk floor is the host's, which the registered-host checks keep; reuse is about
+    what the slot's session left.
+    """
+    if slot < 0:
+        raise ValueError("A slot index is never negative")
+    return (str(uid_base), str(slot + 1), "", "0", "check", str(slot))
 
 
 def parse_check_output(output: str) -> CheckOutput:
@@ -355,6 +371,7 @@ class SshHostInspector(HostInspector):
             ssh_port=dial.port,
             ssh_proxy_command=dial.proxy_command,
             host_public_key=host.host_public_key,
+            platform=host.platform,
             slots=host.slots,
             tags=host.tags,
             accepting=host.accepting,

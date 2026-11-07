@@ -25,6 +25,13 @@ class BootstrapFile(BaseModel):
     permissions: str = Field(default="0600", pattern=r"^0[0-7]{3}$")
 
 
+class HostPlatform(StrEnum):
+    """A host's operating system as ``uname -s`` names it, lowercased; fixed at join."""
+
+    LINUX = "linux"
+    DARWIN = "darwin"
+
+
 class MachineBootstrap(BaseModel):
     """Portable first-boot content; an adapter chooses its delivery format."""
 
@@ -114,6 +121,13 @@ class Machine(BaseModel):
             "quarantined or disconnected host); running sessions are not affected"
         ),
     )
+    platform: HostPlatform | None = Field(
+        default=None,
+        description=(
+            "The machine's operating system, when the provider knows it (a registered "
+            "host's, fixed at join); a runtime per platform is chosen by it"
+        ),
+    )
     host_public_key: str | None = Field(
         default=None,
         description=(
@@ -129,6 +143,91 @@ class Machine(BaseModel):
             "carries the bytes; empty means connect to addresses[0] directly"
         ),
     )
+
+
+#: Where a bootstrap built for several host platforms keeps each platform's files. Only
+#: this module reads it: a runtime is always handed one platform's bootstrap.
+PLATFORM_BOOTSTRAP_ROOT = "/etc/niuu/platform-bootstraps"
+_REFUSED = ".refused"
+
+
+def encode_platform_bootstraps(
+    built: dict[HostPlatform, MachineBootstrap], refused: dict[HostPlatform, str]
+) -> MachineBootstrap:
+    """One bootstrap holding each platform's own, and why the others refused the session.
+
+    Built before Forge knows which host a session gets. Commands and authorized keys are
+    the machine's, not a platform's: every platform's bootstrap must carry the same.
+    """
+    if set(built) & set(refused):
+        raise ValueError("A platform cannot both build and refuse a bootstrap")
+    bootstraps = list(built.values())
+    if any(
+        (item.commands, item.ssh_authorized_keys)
+        != (bootstraps[0].commands, bootstraps[0].ssh_authorized_keys)
+        for item in bootstraps
+    ):
+        raise ValueError(
+            "The platforms' runtimes disagree on the machine's boot commands or authorized "
+            "keys; a host execution's runtimes must share its guest access"
+        )
+    files = [
+        BootstrapFile(
+            path=f"{PLATFORM_BOOTSTRAP_ROOT}/{platform.value}{item.path}",
+            content=item.content,
+            permissions=item.permissions,
+        )
+        for platform, bootstrap in sorted(built.items())
+        for item in bootstrap.files
+    ]
+    files += [
+        BootstrapFile(path=f"{PLATFORM_BOOTSTRAP_ROOT}/{platform.value}{_REFUSED}", content=reason)
+        for platform, reason in sorted(refused.items())
+    ]
+    first = bootstraps[0] if bootstraps else MachineBootstrap()
+    return MachineBootstrap(
+        files=tuple(files),
+        commands=first.commands,
+        ssh_authorized_keys=first.ssh_authorized_keys,
+    )
+
+
+def _encoded(bootstrap: MachineBootstrap) -> bool:
+    return any(item.path.startswith(PLATFORM_BOOTSTRAP_ROOT + "/") for item in bootstrap.files)
+
+
+def platform_bootstrap(
+    bootstrap: MachineBootstrap, platform: HostPlatform | None
+) -> MachineBootstrap:
+    """``platform``'s own bootstrap; a bootstrap built for one platform is returned as is."""
+    if not _encoded(bootstrap):
+        return bootstrap
+    if platform is None:
+        raise ValueError(
+            "This bootstrap was built for several host platforms, but the machine records "
+            "none; its host must join again"
+        )
+    prefix = f"{PLATFORM_BOOTSTRAP_ROOT}/{platform.value}/"
+    files = tuple(
+        BootstrapFile(
+            path="/" + item.path[len(prefix) :],
+            content=item.content,
+            permissions=item.permissions,
+        )
+        for item in bootstrap.files
+        if item.path.startswith(prefix)
+    )
+    return bootstrap.model_copy(update={"files": files})
+
+
+def refused_platforms(bootstrap: MachineBootstrap) -> dict[HostPlatform, str]:
+    """The platforms whose runtime refused the session, with each one's reason."""
+    found = {}
+    for item in bootstrap.files:
+        for platform in HostPlatform:
+            if item.path == f"{PLATFORM_BOOTSTRAP_ROOT}/{platform.value}{_REFUSED}":
+                found[platform] = item.content
+    return found
 
 
 class MachineProviderError(RuntimeError):

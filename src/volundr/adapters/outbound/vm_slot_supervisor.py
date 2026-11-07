@@ -11,14 +11,16 @@ For slot ``n`` it owns:
 * a Linux user and group with a fixed id (``niuu-slot-<n>``) and the slot's
   data and runtime directories (mode 0700, owned by that user), which hold its
   home, workspace and credential files;
-* a holder container whose network and PID namespaces every container of the
-  slot joins, attached as the named network namespace ``niuu-slot-<n>``;
+* the named network namespace ``niuu-slot-<n>``: under a container daemon, a holder
+  container's, whose network and PID namespaces every container of the slot joins;
+  without one (``holder: null``, the host runtime on registered hosts), a namespace of
+  its own, which the slot's systemd units and its session join;
 * a veth pair into that namespace with its own address, NAT out of the VM's
   uplink, a DNAT from the slot's gateway to the slot's Forge callback forward
   on the VM's loopback, and filter rules that let the slot reach nothing else on
   the VM and no other slot;
 * a cgroup v2 (a systemd slice) with the slot's CPU, memory and PID limits,
-  holding every container of the slot.
+  holding every container (or unit) of the slot.
 
 ``down`` removes all of it and then proves nothing is left; anything left makes
 it fail, naming what remains. Every step is idempotent, so a failed ``up`` or
@@ -95,7 +97,9 @@ class SlotSupervisor:
         if "-" in self.slice or "/" in self.slice or not self.slice.endswith(".slice"):
             raise SlotError("The slot slice must be a top-level systemd slice name")
         self.limits = dict(spec["limits"])
-        self.holder = str(spec["holder"])
+        # No holder: the slot runs no container daemon, and its pod containers are
+        # systemd units named after it (``linux_guest_programs``).
+        self.holder = None if spec["holder"] is None else str(spec["holder"])
         self.image = str(spec["image"])
         self.image_user = str(spec["image_user"])
         self.comment = self.name
@@ -139,13 +143,23 @@ class SlotSupervisor:
 
     # -- up -----------------------------------------------------------------
 
+    @property
+    def daemonless(self) -> bool:
+        return self.holder is None
+
+    @property
+    def unit_prefix(self) -> str:
+        return f"{self.name}-"
+
     def up(self) -> dict:
         self._ensure_identity()
         self._ensure_directories()
-        self._ensure_image_identity()
         self._ensure_slice()
-        pid = self._ensure_holder()
-        self._ensure_netns(pid)
+        if self.daemonless:
+            self._ensure_own_netns()
+        else:
+            self._ensure_image_identity()
+            self._ensure_netns(self._ensure_holder())
         uplink = self._uplink()
         self._ensure_link()
         self._ensure_rules(uplink)
@@ -380,6 +394,11 @@ class SlotSupervisor:
             self._run(["ip", "netns", "delete", self.netns])
         self._run(["ip", "netns", "attach", self.netns, str(pid)])
 
+    def _ensure_own_netns(self) -> None:
+        if (_NETNS_DIR / self.netns).exists():
+            return
+        self._run(["ip", "netns", "add", self.netns])
+
     @staticmethod
     def _inode(path: str) -> int:
         """A namespace's identity: the inode its ``/proc`` or bind-mounted file shows."""
@@ -524,7 +543,24 @@ class SlotSupervisor:
 
     # -- down ---------------------------------------------------------------
 
+    def units(self) -> list[str]:
+        """The slot's systemd units (its pod containers and session) that are still loaded."""
+        listed = self._run(
+            [
+                "systemctl",
+                "list-units",
+                "--all",
+                "--plain",
+                "--no-legend",
+                "--type=service,scope",
+                f"{self.unit_prefix}*",
+            ]
+        )
+        return [line.split()[0] for line in listed.splitlines() if line.strip()]
+
     def containers(self) -> list[str]:
+        if self.daemonless:
+            return []
         listed = self._run(
             [
                 "docker",
@@ -560,6 +596,11 @@ class SlotSupervisor:
     def down(self) -> None:
         for container in self.containers():
             self._run(["docker", "rm", "--force", "--volumes", container])
+        if self.daemonless:
+            for unit in self.units():
+                self._run(["systemctl", "stop", unit])
+                # A failed unit stays loaded until reset; it holds nothing once stopped.
+                self._run(["systemctl", "reset-failed", unit], check=False)
         for table, tokens in self.tagged_rules():
             self._run(["iptables", "-w", "-t", table, "-D", *tokens[1:]])
         self._remove_link()
@@ -600,6 +641,8 @@ class SlotSupervisor:
             if root.exists() or root.is_symlink():
                 left.append(f"directory {root}")
         left += [f"container {container}" for container in self.containers()]
+        if self.daemonless:
+            left += [f"unit {unit}" for unit in self.units()]
         if (_NETNS_DIR / self.netns).exists():
             left.append(f"network namespace {self.netns}")
         if self._succeeds(["ip", "link", "show", "dev", self.link]):

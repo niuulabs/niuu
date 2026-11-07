@@ -18,14 +18,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
-from volundr.domain.compute import HostSelector, Machine, validate_tag
+from volundr.domain.compute import HostPlatform, HostSelector, Machine, validate_tag
 
-
-class HostPlatform(StrEnum):
-    """A host's operating system as ``uname -s`` names it, lowercased; fixed at join."""
-
-    LINUX = "linux"
-    DARWIN = "darwin"
+__all__ = ["HostPlatform"]
 
 
 #: What a host runs on unless its runtime or connector declares more.

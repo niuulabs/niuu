@@ -1,29 +1,32 @@
-"""Run a VM session directly on the VM ("host mode"), inside its slot's boundary.
+"""Run a session directly on its machine ("host mode"), inside its slot's boundary.
 
-The session has no image of its own: Skuld and the agent CLI run as the slot's
-user against the VM's own filesystem and toolchain (and its Nix store), not in a
+The session has no image of its own: Skuld and the agent CLI run as the slot's user
+against the machine's own filesystem and toolchain (and its Nix store), not in a
 container. What keeps sessions apart is the slot the supervisor creates
-(``vm_slot_supervisor``): its user, network namespace and cgroup. The runtime
-starts the session over SSH, as every other guest step, never as a service:
+(``vm_slot_supervisor``): its user, network namespace and cgroup. The runtime starts
+the session over SSH, as every other guest step, and needs **no container daemon**, so
+it runs on registered hosts (which are not disposable) as well as on VMs:
 
-* the slot's holder container keeps the slot's network namespace and cgroup, and
-  its credential agents still run beside it in the guest's Docker, as for
-  ``SshContainerVmRuntime``;
-* a small guest program joins that namespace and cgroup, opens its own mount and
-  PID namespaces, mounts what the launch names (secrets, workspace, home, a
-  private ``/tmp``) and runs Skuld as the slot's user. It is PID 1 of that
-  namespace, so ending it ends every process of the session.
+* the slot is a named network namespace and a systemd slice with the slot's limits;
+* the pod's init containers and sidecars (the credential agents) run from their
+  images' unpacked roots as systemd units in that slice and namespace
+  (``linux_guest_programs``), never in a container engine;
+* a small guest program, started in a delegated systemd scope of the slot's slice,
+  joins the slot's namespace, opens its own mount and PID namespaces, mounts what the
+  launch names (secrets, workspace, home, a private ``/tmp``) and runs Skuld as the
+  slot's user. It is PID 1 of that namespace, so ending it ends every process of the
+  session.
 
 Every slot can run containers rootless with Podman: the slot's user gets its own
-subordinate uid and gid range, a delegated cgroup inside the slot's (so a
-container's limits sit under the slot's), its own runtime directory, and its
-storage in its home. It never gets the guest's Docker or sudo, which are root.
+subordinate uid and gid range, a delegated cgroup inside the slot's (so a container's
+limits sit under the slot's), its own runtime directory, and its storage in its home.
+It never gets a root daemon or sudo.
 
-Skuld comes from the digest-pinned session image, unpacked once per digest on
-the VM (``docker create`` and ``export``; no container runs it) and bind-mounted
-read-only at its own paths in the session's mount namespace. Its Python must be
-relocatable (uv's python-build-standalone, as in ``ghcr.io/niuulabs/openshell``):
-a distribution's interpreter only runs inside its own root.
+Images are fetched from their registries by digest and unpacked once per digest on the
+machine (``linux_guest_programs.IMAGE``). Skuld's own image is bind-mounted read-only
+at its paths in the session's mount namespace; its Python must be relocatable (uv's
+python-build-standalone, as in ``ghcr.io/niuulabs/openshell``): a distribution's
+interpreter only runs inside its own root.
 """
 
 from __future__ import annotations
@@ -34,7 +37,9 @@ from pathlib import PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from volundr.adapters.outbound.ssh_vm_runtime import _START, SshContainerVmRuntime
+from volundr.adapters.outbound import linux_guest_programs as programs
+from volundr.adapters.outbound.host_checks import AUDIT_SH
+from volundr.adapters.outbound.ssh_vm_runtime import SshContainerVmRuntime
 from volundr.adapters.outbound.vm_slot_layout import (
     FORGE_SESSION_DIRECTORY,
     GUEST_AGENT_DIRECTORY,
@@ -44,17 +49,25 @@ from volundr.adapters.outbound.vm_slot_layout import (
     SESSION_SECRETS,
     SlotLayout,
 )
-from volundr.domain.compute import BootstrapFile, MachineBootstrap, SlotLease
+from volundr.domain.compute import AllocationRef, BootstrapFile, MachineBootstrap, SlotLease
 from volundr.domain.models import Session, SessionSpec
 from volundr.domain.session_runtimes import SessionRuntimeKind
+from volundr.domain.vm_runtime import SessionImages
 
-#: Where the session image is unpacked on the VM, one directory per digest.
-HOST_IMAGE_CACHE = "/var/lib/niuu/host-images"
+#: Where pod images are unpacked on the machine, one directory per digest.
+HOST_IMAGE_CACHE = programs.IMAGE_CACHE
 #: Where a session sees its unpacked image (wrappers under ``agents``/``tools``).
 HOST_IMAGE_VIEW = "/opt/niuu-skuld"
 #: Root-only state of the host sessions: their PID files and Skuld's output.
 HOST_SESSION_STATE = "/run/niuu/host-sessions"
 HOST_SESSION_LOGS = "/var/log/niuu/host-sessions"
+#: Root-only: the pod containers' writable layers (tmpfs while they run).
+HOST_POD_WORK = "/run/niuu/host-pods"
+#: What a container's /etc/resolv.conf is: the machine's upstream servers, since the
+#: slot's namespace cannot reach a stub resolver on the machine's loopback.
+_RESOLV_CONF = "/run/systemd/resolve/resolv.conf"
+#: What the pod program needs of an unpacked image to run a container from it.
+_POD_IMAGE_KEYS = ("rootfs", "env", "user", "workdir", "entrypoint", "cmd")
 #: Agent CLIs the session uses from the pinned image, ahead of everything else on PATH.
 AGENT_COMMANDS = ("claude", "codex", "opencode", "grok", "pi", "muse")
 #: Tools taken from the image only where neither Nix nor the VM provides them.
@@ -90,119 +103,32 @@ MASKED_GUEST_PATHS = ("/etc/niuu",)
 HOST_BIN = "/usr/local/lib/niuu/host-bin"
 _MAX_ID = 2**32 - 2
 
-# Unpack the session image once per digest. argv: image, cache root. Prints the
-# unpack's description (host.json). The image's own PATH finds the commands.
-_UNPACK = r"""
-import json, os, pathlib, shlex, shutil, subprocess, sys, tempfile
-image, cache = sys.argv[1], pathlib.Path(sys.argv[2])
-agents, tools, view = json.loads(sys.argv[3]), json.loads(sys.argv[4]), sys.argv[5]
-digest = image.rsplit('@sha256:', 1)[1]
-root = cache / digest
-if (root / 'host.json').exists():
-    print((root / 'host.json').read_text())
-    sys.exit(0)
-cache.mkdir(parents=True, exist_ok=True, mode=0o755)
-quiet = {'stdout': subprocess.DEVNULL}
-subprocess.run(['docker', 'pull', '--quiet', image], check=True, **quiet)
-info = json.loads(subprocess.run(['docker', 'image', 'inspect', image], check=True,
-    capture_output=True, text=True).stdout)[0]
-env = dict(item.split('=', 1) for item in info['Config'].get('Env') or [])
-venv, python_root = env.get('VIRTUAL_ENV'), env.get('UV_PYTHON_INSTALL_DIR')
-if not venv or not python_root:
-    raise RuntimeError('The session image declares no VIRTUAL_ENV and UV_PYTHON_INSTALL_DIR; '
-        'host mode needs an image on a relocatable Python, such as ghcr.io/niuulabs/openshell')
-work = pathlib.Path(tempfile.mkdtemp(dir=cache, prefix='.unpack-'))
-rootfs = work / 'rootfs'
-rootfs.mkdir()
-container = subprocess.run(['docker', 'create', image, 'true'], check=True,
-    capture_output=True, text=True).stdout.strip()
-try:
-    export = subprocess.Popen(['docker', 'export', container], stdout=subprocess.PIPE)
-    subprocess.run(['tar', '-x', '-C', str(rootfs), '--exclude=dev/*', '--exclude=proc/*',
-        '--exclude=sys/*'], stdin=export.stdout, check=True)
-    export.stdout.close()
-    if export.wait():
-        raise RuntimeError('docker export of the session image failed')
-finally:
-    subprocess.run(['docker', 'rm', '--force', container], check=True, **quiet)
-def resolve(path):
-    # A path inside the image, following its links as the image itself would.
-    parts, seen = [p for p in pathlib.PurePosixPath(path).parts if p != '/'], 0
-    done = []
-    while parts:
-        part = parts.pop(0)
-        if part == '..':
-            done = done[:-1]
-            continue
-        candidate = rootfs.joinpath(*done, part)
-        if candidate.is_symlink():
-            seen += 1
-            if seen > 64:
-                raise RuntimeError('Symbolic link loop in the session image at ' + path)
-            target = pathlib.PurePosixPath(os.readlink(candidate))
-            if target.is_absolute():
-                done = []
-            parts = [p for p in target.parts if p != '/'] + parts
-            continue
-        done.append(part)
-    return '/' + '/'.join(done)
-python = resolve(venv + '/bin/python')
-if not python.startswith(python_root.rstrip('/') + '/') or not (rootfs / python[1:]).is_file():
-    raise RuntimeError('The session image venv ' + venv + ' does not run on its own Python '
-        'under ' + python_root + '; host mode needs a relocatable Python')
-search = env.get('PATH', '/usr/local/bin:/usr/bin:/bin').split(':')
-def found(name):
-    for directory in search:
-        # lexists: an absolute link names a path in the image, not on the VM.
-        if os.path.lexists(rootfs / directory.lstrip('/') / name):
-            target = resolve(directory + '/' + name)
-            if (rootfs / target[1:]).is_file():
-                return target
-    return None
-def wrapper(directory, name):
-    target = found(name)
-    if target is None:
-        return
-    command = [view + '/rootfs' + target]
-    with (rootfs / target[1:]).open('rb') as program:
-        line = program.readline(256)
-    if line.startswith(b'#!/usr/bin/env '):
-        # The image's own interpreter, not whichever one the VM has on PATH.
-        interpreter = found(line.split()[1].decode())
-        if interpreter is None:
-            raise RuntimeError('The session image has no interpreter for ' + name)
-        command.insert(0, view + '/rootfs' + interpreter)
-    path = work / directory / name
-    path.write_text('#!/bin/sh\nexec ' + shlex.join(command) + ' "$@"\n')
-    path.chmod(0o755)
-for directory, names in (('agents', agents), ('tools', tools)):
-    (work / directory).mkdir()
-    for name in names:
-        wrapper(directory, name)
-description = json.dumps({'venv': venv, 'python_root': python_root, 'digest': digest})
-(work / 'host.json').write_text(description)
-work.chmod(0o755)
-try:
-    os.rename(work, root)
-except OSError:
-    # A concurrent unpack of the same digest finished first.
-    shutil.rmtree(work)
-    if not (root / 'host.json').exists():
-        raise
-print((root / 'host.json').read_text())
-"""
-
-# PID 1 of a host session's PID namespace. Started by _HOST_START as root with
-# the session spec on stdin: joins the slot's network namespace and cgroup,
-# mounts the session's view, then runs Skuld as the slot's user, forwards stop
-# signals to it and reaps whatever it leaves. When Skuld ends, so does this
-# process, and with it every process left in the namespace.
+# PID 1 of a host session's PID namespace. Started by _HOST_START as root, in a
+# delegated systemd scope of the slot's slice, with the session spec on stdin: makes
+# the scope a tree (itself in a leaf, the session's subtree delegated to the slot's
+# user, where its containers get cgroups of their own under the slot's limits), joins
+# the slot's network namespace, mounts the session's view, then runs Skuld as the
+# slot's user, forwards stop signals to it and reaps whatever it leaves. When Skuld
+# ends, so does this process, and with it every process left in the namespace.
 _HOST_INIT = r"""
 import json, os, pathlib, signal, subprocess, sys
 spec = json.load(sys.stdin)
 def mount(*args):
     subprocess.run(['mount', *args], check=True)
-pathlib.Path(spec['cgroup_procs']).write_text(str(os.getpid()))
+scope = pathlib.Path('/sys/fs/cgroup' + pathlib.Path('/proc/self/cgroup').read_text()
+    .strip().rsplit('::', 1)[1])
+session = scope / 'session'
+(session / 'init').mkdir(parents=True, exist_ok=True)
+(session / 'init' / 'cgroup.procs').write_text(str(os.getpid()))
+available = (scope / 'cgroup.controllers').read_text().split()
+wanted = ' '.join('+' + name for name in ('cpu', 'memory', 'pids') if name in available)
+if wanted:
+    (scope / 'cgroup.subtree_control').write_text(wanted)
+for path in (session, session / 'cgroup.procs', session / 'cgroup.subtree_control',
+        session / 'cgroup.threads', session / 'init', session / 'init' / 'cgroup.procs'):
+    os.chown(str(path), spec['uid'], spec['uid'])
+if wanted:
+    (session / 'cgroup.subtree_control').write_text(wanted)
 fd = os.open('/run/netns/' + spec['netns'], os.O_RDONLY)
 os.setns(fd, os.CLONE_NEWNET)
 os.close(fd)
@@ -389,32 +315,10 @@ for item in h['mounts']:
     elif not target.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
         target.touch()
-holder = subprocess.run(['docker', 'inspect', '--format', '{{.State.Pid}}', s['holder']],
-    check=True, capture_output=True, text=True).stdout.strip()
-# The holder's cgroup (its delegated Docker scope in the slot's slice) becomes a
-# tree: the holder in a leaf, and the session's own subtree, delegated to the
-# slot's user, where its containers get cgroups of their own under the slot's limits.
-scope = pathlib.Path('/sys/fs/cgroup' + pathlib.Path('/proc/%s/cgroup' % holder).read_text()
-    .strip().rsplit('::', 1)[1])
-if scope.name == 'holder':
-    scope = scope.parent
-leaf, session = scope / 'holder', scope / 'session'
-leaf.mkdir(exist_ok=True)
-for pid in (scope / 'cgroup.procs').read_text().split():
-    (leaf / 'cgroup.procs').write_text(pid)
-available = (scope / 'cgroup.controllers').read_text().split()
-wanted = ' '.join('+' + name for name in ('cpu', 'memory', 'pids') if name in available)
-(scope / 'cgroup.subtree_control').write_text(wanted)
-(session / 'init').mkdir(parents=True, exist_ok=True)
-for path in (session, session / 'cgroup.procs', session / 'cgroup.subtree_control',
-        session / 'cgroup.threads', session / 'init', session / 'init' / 'cgroup.procs'):
-    os.chown(path, s['uid'], s['uid'])
-(session / 'cgroup.subtree_control').write_text(wanted)
 for directory in (pidfile.parent, pathlib.Path(h['log']).parent):
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
 pidfile.unlink(missing_ok=True)
 spec = {
-    'cgroup_procs': str(session / 'init' / 'cgroup.procs'),
     'netns': s['netns'],
     'pidfile': str(pidfile),
     'mounts': h['mounts'],
@@ -427,8 +331,13 @@ spec = {
 log = os.open(h['log'], os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
 program = pidfile.parent / 'init.py'
 program.write_text(h['init'])
-init = subprocess.Popen([sys.executable, str(program)], stdin=subprocess.PIPE,
-    stdout=log, stderr=log, start_new_session=True, close_fds=True)
+# A scope of its own in the slot's slice: the slot's limits hold the session, and the
+# delegation lets it give its containers cgroups. Named per start: a scope whose last
+# process is still ending keeps its name for a moment.
+scope = h['scope_prefix'] + '%d.scope' % time.time_ns()
+init = subprocess.Popen(['systemd-run', '--scope', '--quiet', '--collect', '--unit', scope,
+    '--slice', s['slice'], '--property', 'Delegate=yes', sys.executable, '-I', str(program)],
+    stdin=subprocess.PIPE, stdout=log, stderr=log, start_new_session=True, close_fds=True)
 init.communicate(json.dumps(spec).encode(), timeout=h['start_timeout'])
 if init.returncode or not running():
     raise RuntimeError('The host session did not start; see ' + h['log'] + ' on the VM')
@@ -482,6 +391,15 @@ class HostSlotLayout(SlotLayout):
     storage, its home and workspace, stays in the slot's data directory.
     """
 
+    def supervisor_spec(self, *, image: str, platform_port: int) -> dict:
+        # No holder container: the slot runs no container daemon.
+        return {**super().supervisor_spec(image=image, platform_port=platform_port), "holder": None}
+
+    @property
+    def unit_prefix(self) -> str:
+        """The prefix of every systemd unit of this slot (``vm_slot_supervisor.units``)."""
+        return f"{self.name}-"
+
     def _roots(self) -> tuple[tuple[str, str], ...]:
         return (
             (SESSION_DATA, self.session_data),
@@ -518,12 +436,14 @@ class RootlessContainers(BaseModel):
 
 
 class SshHostVmRuntime(SshContainerVmRuntime):
-    """Run each session directly on its VM, in its slot's user, namespaces and cgroup.
+    """Run each session directly on its machine, in its slot's user, namespaces and cgroup.
 
     ``skuld_image`` is the digest-pinned session image Skuld, the agent CLIs and
     the guest credential agents come from; its Python must be relocatable (see
     the module docstring). ``slot_isolation`` is required: without a slot there
-    is no boundary between the session and the VM.
+    is no boundary between the session and the machine. The machine needs systemd,
+    cgroup v2, iproute2, iptables, curl and a ``python3`` with tarfile extraction
+    filters, and no container daemon.
 
     ``nix`` says the machine profile installs a multi-user Nix: the session gets
     Nix's profiles on its PATH and the agent is told how to install with it.
@@ -540,8 +460,21 @@ class SshHostVmRuntime(SshContainerVmRuntime):
         nix: bool = True,
         containers: dict | None = {},  # noqa: B006 - read-only; the defaults of RootlessContainers
         session_start_timeout_seconds: float = 30,
+        session_images: SessionImages | None = None,
         **kwargs,
     ):
+        if session_images is not None and session_images.linux:
+            if "skuld_image" in kwargs:
+                raise ValueError(
+                    "skuld_image is set and Forge hands this runtime the release's session "
+                    "image too; remove skuld_image to run the release's"
+                )
+            kwargs["skuld_image"] = session_images.linux
+        elif "skuld_image" not in kwargs:
+            raise ValueError(
+                "SshHostVmRuntime needs a session image: set skuld_image, or "
+                "compute.session_images.linux for the built-in host execution"
+            )
         super().__init__(**kwargs)
         if self._slot_isolation is None:
             raise ValueError(
@@ -580,6 +513,28 @@ class SshHostVmRuntime(SshContainerVmRuntime):
     @property
     def session_runtime(self) -> SessionRuntimeKind | None:
         return SessionRuntimeKind.HOST
+
+    @property
+    def requires_root_daemon(self) -> bool:
+        # Pod containers are systemd units and the session runs on the machine itself.
+        return False
+
+    @property
+    def supports_reuse(self) -> bool:
+        """A stopped slot is torn down and proven gone (``down``), then audited by recycle."""
+        return True
+
+    async def recycle(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
+        """Prove the slot ``stop`` removed is clean before it takes another session.
+
+        ``stop`` already removed the slot and checked nothing of it is left; this runs
+        the registered-host audit for this slot too (its user's processes and files
+        anywhere it could write, IPC objects, crontab, linger), and fails, naming every
+        finding, when it finds anything.
+        """
+        layout = self._slot(lease)
+        await self._supervise(lease, bootstrap, layout, "verify")
+        await self._audit_slot(lease, bootstrap, AUDIT_SH, layout.slot)
 
     def _slot(self, lease) -> SlotLayout:
         layout = self._layout(lease)
@@ -641,24 +596,27 @@ class SshHostVmRuntime(SshContainerVmRuntime):
         return (*super()._prepare_arguments(lease, mode), "absolute-links")
 
     async def warm(self, lease, bootstrap: MachineBootstrap) -> None:
-        await super().warm(lease, bootstrap)
+        # No container daemon to pull into: the session image is unpacked from its registry.
+        await self.prepare(lease, bootstrap)
         await self._unpack(lease, bootstrap)
 
     async def _unpack(self, lease, bootstrap: MachineBootstrap) -> dict:
+        """The session image, unpacked on the machine (once per digest), described."""
+        session = {"agents": AGENT_COMMANDS, "tools": FALLBACK_TOOLS, "view": HOST_IMAGE_VIEW}
+        return await self._fetch_image(lease, bootstrap, self._image, session)
+
+    async def _fetch_image(
+        self, lease: AllocationRef, bootstrap: MachineBootstrap, image: str, session=None
+    ) -> dict:
         result = await self._guest_access.execute(
             lease,
             bootstrap,
-            self._python(
-                _UNPACK,
-                self._image,
-                HOST_IMAGE_CACHE,
-                json.dumps(AGENT_COMMANDS),
-                json.dumps(FALLBACK_TOOLS),
-                HOST_IMAGE_VIEW,
-            ),
+            self._python(programs.IMAGE, image, HOST_IMAGE_CACHE, json.dumps(session)),
             capture_stdout=True,
         )
-        return json.loads(result.stdout)
+        description = json.loads(result.stdout)
+        root = f"{HOST_IMAGE_CACHE}/{description['digest'].split(':', 1)[1]}"
+        return {**description, "root": root, "rootfs": f"{root}/rootfs"}
 
     def _subordinate_ids(self, layout: SlotLayout) -> dict | None:
         if self._containers is None:
@@ -669,9 +627,9 @@ class SshHostVmRuntime(SshContainerVmRuntime):
     def _host_spec(self, layout: SlotLayout, payload: dict, image: dict) -> dict:
         """Where the session's processes run and what they see, for _HOST_START."""
         session_data = PurePosixPath(layout.session_data)
-        rootfs = f"{HOST_IMAGE_CACHE}/{image['digest']}/rootfs"
+        rootfs = image["rootfs"]
         mounts = [
-            {"source": f"{HOST_IMAGE_CACHE}/{image['digest']}", "target": HOST_IMAGE_VIEW},
+            {"source": image["root"], "target": HOST_IMAGE_VIEW},
             {"source": f"{rootfs}{image['venv']}", "target": image["venv"]},
             {"source": f"{rootfs}{image['python_root']}", "target": image["python_root"]},
         ]
@@ -679,7 +637,7 @@ class SshHostVmRuntime(SshContainerVmRuntime):
         runtime_directory = f"{layout.run_root}/xdg"
         private = [f"{layout.data_root}/tmp", f"{layout.run_root}/shm", runtime_directory]
         mounts += [
-            {"source": "/run/systemd/resolve/resolv.conf", "target": "/etc/resolv.conf"},
+            {"source": _RESOLV_CONF, "target": "/etc/resolv.conf"},
             {"source": private[0], "target": "/tmp"},
             {"source": private[0], "target": "/var/tmp"},
             {"source": private[1], "target": "/dev/shm"},
@@ -712,6 +670,7 @@ class SshHostVmRuntime(SshContainerVmRuntime):
             environment["XDG_RUNTIME_DIR"] = runtime_directory
         return {
             "user": layout.name,
+            "scope_prefix": f"{layout.unit_prefix}session-",
             "pidfile": f"{HOST_SESSION_STATE}/{layout.key}.pid",
             "log": f"{HOST_SESSION_LOGS}/{layout.key}.log",
             "nix": self._nix,
@@ -730,18 +689,43 @@ class SshHostVmRuntime(SshContainerVmRuntime):
             "start_timeout": self._session_start_timeout,
         }
 
+    def _pods_spec(self, layout: SlotLayout, images: dict[str, dict]) -> dict:
+        """How ``linux_guest_programs.PODS_START`` runs the slot's pod containers."""
+        return {
+            "prefix": layout.unit_prefix,
+            "slice": layout.slice,
+            "state": f"{HOST_SESSION_STATE}/{layout.key}-pods",
+            "logs": f"{HOST_SESSION_LOGS}/{layout.key}",
+            "work": f"{HOST_POD_WORK}/{layout.key}",
+            "resolv_conf": _RESOLV_CONF,
+            "program": programs.CONTAINER,
+            "images": {
+                reference: {key: image[key] for key in _POD_IMAGE_KEYS}
+                for reference, image in images.items()
+            },
+            "stop_timeout": self._stop_timeout,
+            "poll": self._poll,
+            "start_timeout": self._session_start_timeout,
+        }
+
     async def _launch_skuld(
         self, lease: SlotLease, bootstrap: MachineBootstrap, payload: dict
     ) -> None:
         layout = self._slot(lease)
+        containers = [*payload.get("init_containers", []), *payload.get("sidecars", [])]
+        images: dict[str, dict] = {}
+        if containers:
+            self._step(lease, "guest_images", "Fetching the session's agent images")
+            for reference in dict.fromkeys(container["image"] for container in containers):
+                images[reference] = await self._fetch_image(lease, bootstrap, reference)
         self._step(lease, "guest_skuld", "Starting the session's agents")
         await self._guest_access.execute(
             lease,
             bootstrap,
-            self._python(_START),
-            data=json.dumps({**payload, "containers_only": True}).encode(),
+            self._python(programs.PODS_START),
+            data=json.dumps({**payload, "pods": self._pods_spec(layout, images)}).encode(),
         )
-        self._step(lease, "guest_image", "Unpacking Skuld onto the VM")
+        self._step(lease, "guest_image", "Unpacking Skuld onto the machine")
         image = await self._unpack(lease, bootstrap)
         host = self._host_spec(layout, payload, image)
         environment = host.pop("environment")
@@ -772,5 +756,29 @@ class SshHostVmRuntime(SshContainerVmRuntime):
                 ),
             ),
         )
-        # Then as a container session: sidecars, archive, the slot itself.
-        await super().stop(lease, bootstrap)
+        # Then the agents, after Skuld has flushed through them.
+        result = await self._guest_access.execute(
+            lease,
+            bootstrap,
+            self._python(
+                programs.PODS_STOP,
+                json.dumps(
+                    {
+                        "prefix": layout.unit_prefix,
+                        "data_root": layout.session_data,
+                        "marker": layout.key,
+                    }
+                ),
+            ),
+            expected_exit_codes=(0, 42),
+        )
+        if self._credential_delivery is not None:
+            await self._credential_delivery.stop(lease, bootstrap)
+        # Exit 42: cancelled before storage restore; retain any previous local archive.
+        if result.exit_code != 42:
+            await self._archive_data(lease, bootstrap)
+        # Archived: the slot's user, directories, namespace, units and cgroup go, and
+        # the supervisor fails unless nothing of them is left.
+        await self._report_slot_limits(lease, bootstrap, layout)
+        await self._supervise(lease, bootstrap, layout, "down")
+        await self._close_tunnel(layout.key)

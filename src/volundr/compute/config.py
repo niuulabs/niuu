@@ -180,6 +180,40 @@ class ComputeHostsConfig(BaseModel):
         return f"https://{host}:{listener.port}"
 
 
+class SessionImagesConfig(BaseModel):
+    """The release's own session images, which Forge pins by digest at startup.
+
+    Host runtimes that are given no image of their own (the built-in host execution) run
+    these. A chart deployment renders them from its own image tag and ``niuu platform up``
+    from its build, so a release bump moves them; set them only to run other images.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    linux: str = Field(
+        default="",
+        description=(
+            "Skuld image Linux hosts unpack, on a relocatable Python "
+            "(ghcr.io/niuulabs/openshell:<tag>); a tag is resolved to its digest at startup"
+        ),
+    )
+    darwin: str = Field(
+        default="",
+        description=(
+            "macOS session bundle Macs fetch (ghcr.io/niuulabs/skuld-darwin:<tag>); a tag is "
+            "resolved to its digest at startup"
+        ),
+    )
+    resolve_timeout_seconds: float = Field(
+        default=30,
+        gt=0,
+        description=(
+            "One registry request while pinning a tag at startup; bounded by how long a "
+            "starting Forge may wait for its registry. A timeout stops startup"
+        ),
+    )
+
+
 class ComputeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
@@ -219,6 +253,10 @@ class ComputeConfig(BaseModel):
         default="", description="Stable deployment provider identity used by execution profiles"
     )
     database: DatabaseConfig | None = None
+    session_images: SessionImagesConfig | None = Field(
+        default=None,
+        description="The release's session images for host runtimes given none of their own",
+    )
     hosts: ComputeHostsConfig | None = Field(
         default=None,
         description="Registered hosts; set with the registered-host provider",

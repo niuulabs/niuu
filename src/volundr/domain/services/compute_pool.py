@@ -551,12 +551,38 @@ class ComputePoolService:
             # A machine past its lifetime takes no new session, so it is not cleaned for one.
             and not machine_expired(lease, policy, datetime.now(UTC))
             and await self.leases.compatible(lease)
+            and await self._recycled(runtime, view)
         ):
-            await runtime.recycle(view, await self.leases.bootstrap_for(view))
             lease = await self.leases.release_slot(lease, binding)
             return lease, binding.model_copy(update={"state": SlotState.RELEASED})
         others = [other for other in _live(bindings) if other.id != binding.id]
         return await self.leases.retire_slot(lease, binding, drain=not others)
+
+    async def _recycled(self, runtime: VmRuntime, view: SlotLease) -> bool:
+        """Clean the stopped slot for reuse; a slot that cannot be proven clean is retired.
+
+        Retiring is never quiet: the failure is an error log and a count on
+        ``volundr.compute.slot.recycle_failures``, the slot takes no other session, and a
+        machine left without sessions drains, so the registered-host audit or the VM's
+        deletion runs next. Raising instead would retry the same stop forever.
+        """
+        try:
+            await runtime.recycle(view, await self.leases.bootstrap_for(view))
+        except Exception as exc:
+            get_observability().count(
+                "volundr.compute.slot.recycle_failures", 1, attributes={"pool": self.pool_id}
+            )
+            logger.error(
+                "Slot %d of allocation %s in pool %s could not be cleaned for reuse, so it is "
+                "retired: %s",
+                view.slot,
+                view.id,
+                self.pool_id,
+                exc,
+                exc_info=True,
+            )
+            return False
+        return True
 
     def _resolved_plan(
         self, execution_plan: ResolvedExecutionPlan | None, machine: ComputeLease

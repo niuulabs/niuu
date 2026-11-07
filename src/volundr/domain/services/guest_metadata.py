@@ -20,6 +20,7 @@ from volundr.domain.compute import (
     LeaseState,
     SlotLease,
     SlotState,
+    platform_bootstrap,
 )
 from volundr.domain.guest_credentials import (
     GuestAuthenticationError,
@@ -180,6 +181,9 @@ class GuestMetadataService:
 
     async def _plan(self, lease: SlotLease) -> GuestCredentialPlan:
         bootstrap = await self._compute.bootstrap_for(lease)
+        # A host execution for several platforms keeps one launch per platform.
+        machine = lease.machine
+        bootstrap = platform_bootstrap(bootstrap, machine.platform if machine else None)
         launch = next(
             (item.content for item in bootstrap.files if item.path == LAUNCH_PAYLOAD_PATH), None
         )

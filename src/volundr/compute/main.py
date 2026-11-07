@@ -55,7 +55,7 @@ if TYPE_CHECKING:
     from volundr.domain.guest_access import GuestAccess
     from volundr.domain.host_preparation import HostPreparation
     from volundr.domain.services.execution_catalog import ExecutionPlanResolver
-    from volundr.domain.vm_runtime import VmRuntime
+    from volundr.domain.vm_runtime import SessionImages, VmRuntime
 
 
 def build_provider(
@@ -141,6 +141,7 @@ def build_registered_hosts(
         connectors[binding.binding_id] = connector
     executions: dict[str, HostExecution] = {}
     accesses: dict[str, GuestAccess] = {}
+    runtimes: dict[str, VmRuntime] = {}
     for plan in execution.resolver.plans():
         access = execution.accesses_by_plan[plan.plan_digest]
         if not isinstance(access, SshGuestAccess):
@@ -149,6 +150,7 @@ def build_registered_hosts(
                 f"{type(access).__name__}; registered hosts need SshGuestAccess"
             )
         runtime = execution.runtimes[plan.plan_digest]
+        runtimes[str(plan.execution)] = runtime
         kind = runtime.session_runtime
         executions[str(plan.execution)] = HostExecution(
             execution=str(plan.execution),
@@ -168,7 +170,8 @@ def build_registered_hosts(
         return accesses[host.execution]
 
     def uid_base_for(host):
-        limits = executions[host.execution].slot_limits
+        # The uid the host's own platform runs its slots at (a Mac's runtime may differ).
+        limits = runtimes[host.execution].for_platform(host.platform).slot_limits
         return limits.uid_base if limits is not None else None
 
     inspector = SshHostInspector(
@@ -205,11 +208,15 @@ def _runtime_label(runtime, execution: str) -> str:
         return execution
     if kind is SessionRuntimeKind.HOST and runtime.host_platforms == {HostPlatform.DARWIN}:
         return _MAC_HOST_LABEL
+    if kind is SessionRuntimeKind.HOST and len(runtime.host_platforms) > 1:
+        return _ANY_HOST_LABEL
     return _RUNTIME_LABELS.get(kind, type(runtime).__name__)
 
 
 #: A Mac runs one session at a time, as a fresh macOS user.
 _MAC_HOST_LABEL = "Host · macOS (one session, its own user)"
+#: One execution for Linux machines and Macs alike (``PlatformHostRuntime``).
+_ANY_HOST_LABEL = "Host · Linux (Nix + rootless Podman) or macOS (one session)"
 #: What the Add host form calls each runtime a host can run.
 _RUNTIME_LABELS = {
     SessionRuntimeKind.HOST: "Host · Nix + rootless Podman",
@@ -386,6 +393,61 @@ def _execution_component(binding, **collaborators):
     return import_class(binding.adapter)(**kwargs, **collaborators)
 
 
+def _execution_runtime(binding, **collaborators) -> VmRuntime:
+    """An execution's runtime, with any runtimes it holds built here with the same collaborators.
+
+    A runtime whose constructor types a parameter as runtimes (``platforms: Mapping[str,
+    VmRuntime]``) gets them built from their nested adapter configs, each with the
+    execution's guest access; it takes no collaborators itself.
+    """
+    kwargs = _execution_binding_kwargs(binding)
+    runtime_class = import_class(binding.adapter)
+    nested = _runtime_parameters(runtime_class, kwargs)
+    if not nested:
+        # The release's session images go only to runtimes that run them.
+        accepted = inspect.signature(runtime_class).parameters
+        if "session_images" not in accepted:
+            collaborators = {k: v for k, v in collaborators.items() if k != "session_images"}
+        return _execution_component(binding, **collaborators)
+    composed = {
+        name: _nested_execution_runtimes(value, collaborators) if name in nested else value
+        for name, value in kwargs.items()
+    }
+    return runtime_class(**composed)
+
+
+def _nested_execution_runtimes(value, collaborators: Mapping[str, object]):
+    if isinstance(value, Mapping) and "adapter" in value:
+        child = DynamicAdapterConfig.model_validate(dict(value))
+        return _execution_runtime(child, **collaborators)
+    if isinstance(value, Mapping):
+        return {
+            name: _nested_execution_runtimes(item, collaborators) for name, item in value.items()
+        }
+    raise TypeError("Nested execution runtimes must be adapter configs or mappings of them")
+
+
+async def resolve_session_images(config: ComputeConfig) -> SessionImages | None:
+    """The release's session images, each pinned to the digest its registry serves now."""
+    import httpx
+
+    from volundr.adapters.outbound.registry_digests import resolve_image_digest
+    from volundr.domain.vm_runtime import SessionImages
+
+    images = config.session_images
+    if images is None or not (images.linux or images.darwin):
+        return None
+    timeout = images.resolve_timeout_seconds
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        pinned = {
+            name: await resolve_image_digest(reference, client=client, timeout_seconds=timeout)
+            if reference
+            else None
+            for name, reference in (("linux", images.linux), ("darwin", images.darwin))
+        }
+    return SessionImages(**pinned)
+
+
 async def build_execution_components(
     config: ComputeConfig, credential_store: CredentialStorePort
 ) -> ExecutionComponents:
@@ -404,6 +466,7 @@ async def build_execution_components(
         raise TypeError("Configured execution catalog must implement ExecutionCatalogPort")
     resolver = ExecutionPlanResolver(catalog)
     default, plans = resolver.resolve_all()
+    session_images = await resolve_session_images(config)
     runtimes, preparations = {}, {}
     opened = []
     accesses = []
@@ -432,7 +495,12 @@ async def build_execution_components(
                 raise TypeError("Configured host preparation must implement HostPreparation")
             opened.append(preparation)
             runtime_binding = plan.runtime.runtime
-            runtime = _execution_component(runtime_binding, guest_access=access, host_prepared=True)
+            runtime = _execution_runtime(
+                runtime_binding,
+                guest_access=access,
+                host_prepared=True,
+                session_images=session_images,
+            )
             if not isinstance(runtime, VmRuntime):
                 raise TypeError("Configured execution runtime must implement VmRuntime")
             opened.append(runtime)

@@ -61,7 +61,7 @@ from volundr.domain.compute import AllocationRef, BootstrapFile, MachineBootstra
 from volundr.domain.compute_hosts import HostPlatform
 from volundr.domain.models import Session, SessionSpec
 from volundr.domain.session_runtimes import SessionRuntimeKind
-from volundr.domain.vm_runtime import SlotLimits
+from volundr.domain.vm_runtime import SessionImages, SlotLimits
 
 #: Where bundles are unpacked on the Mac, one directory per digest.
 BUNDLE_CACHE = "/var/lib/niuu/host-bundles"
@@ -257,7 +257,8 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
     def __init__(
         self,
         *,
-        skuld_bundle: str,
+        skuld_bundle: str | None = None,
+        session_images: SessionImages | None = None,
         native_images: list[str] | None = None,
         uid_base: int = 61000,
         nix: bool = True,
@@ -272,6 +273,18 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
         if "skuld_image" in kwargs:
             raise ValueError(
                 "Macs run Skuld from the session bundle, not an image; set skuld_bundle"
+            )
+        if session_images is not None and session_images.darwin:
+            if skuld_bundle is not None:
+                raise ValueError(
+                    "skuld_bundle is set and Forge hands this runtime the release's session "
+                    "bundle too; remove skuld_bundle to run the release's"
+                )
+            skuld_bundle = session_images.darwin
+        if skuld_bundle is None:
+            raise ValueError(
+                "SshDarwinHostRuntime needs a session bundle: set skuld_bundle, or "
+                "compute.session_images.darwin for the built-in host execution"
             )
         match = _BUNDLE.fullmatch(skuld_bundle)
         if match is None:
@@ -309,6 +322,15 @@ class SshDarwinHostRuntime(SshContainerVmRuntime):
     def supports_slots(self) -> bool:
         # One session per Mac: nothing but a user keeps two sessions apart there.
         return False
+
+    @property
+    def supports_reuse(self) -> bool:
+        """``stop`` deletes the slot user and fails unless the darwin audit finds nothing."""
+        return True
+
+    async def recycle(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
+        """Audit the slot again before the Mac takes its next session; any finding raises."""
+        await self._audit_slot(lease, bootstrap, DARWIN_AUDIT_SH, self._layout(lease).slot)
 
     @property
     def slot_limits(self) -> SlotLimits | None:
