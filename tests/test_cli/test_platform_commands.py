@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,6 +14,7 @@ import typer
 from typer.testing import CliRunner
 
 from bifrost.config import BifrostConfig
+from cli.commands import platform as platform_module
 from cli.commands.platform import (
     _build_init_config,
     _build_preflight_config,
@@ -21,6 +23,7 @@ from cli.commands.platform import (
     _collect_service_definitions,
     _effective_bifrost_config,
     _host_resident_platform_url,
+    _hosts_join_host,
     _prompt_mode_selection,
     _resolve_enabled_services,
     _resolve_local_pod_manager_env,
@@ -37,6 +40,18 @@ from tests.test_cli.conftest import FakePlugin, StubService
 from volundr.adapters.outbound.contributors.model_gateway import OPEN_GATEWAY_TOKEN
 
 runner = CliRunner()
+
+#: What the default route of the machine running these tests answers with.
+ROUTE_ADDRESS = "192.168.1.10"
+#: The real lookup, before the fixture below replaces it for every test.
+REAL_DEFAULT_ROUTE_ADDRESS = platform_module._default_route_address
+
+
+@pytest.fixture(autouse=True)
+def _default_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mini mode serves hosts by default and names this machine by its default route;
+    tests must not depend on the network of the machine they run on."""
+    monkeypatch.setattr("cli.commands.platform._default_route_address", lambda: ROUTE_ADDRESS)
 
 
 def _make_svc_def(
@@ -268,7 +283,7 @@ class TestDynamicUpCallback:
     def test_up_callback_sets_mini_mode_runtime_overrides(self) -> None:
         service_defs = {"volundr": _make_svc_def("volundr")}
         manager = MagicMock()
-        settings = CLISettings(mode="mini")
+        settings = CLISettings(mode="mini", hosts={"enabled": False})
         up_fn = _build_up_callback(service_defs, manager, settings)
 
         fake_event = MagicMock()
@@ -362,7 +377,7 @@ class TestDynamicUpCallback:
     def test_up_callback_applies_workspaces_dir_override_in_mini_mode(self) -> None:
         service_defs = {"volundr": _make_svc_def("volundr")}
         manager = MagicMock()
-        settings = CLISettings(mode="mini")
+        settings = CLISettings(mode="mini", hosts={"enabled": False})
         up_fn = _build_up_callback(service_defs, manager, settings)
 
         fake_event = MagicMock()
@@ -407,6 +422,43 @@ class TestDynamicUpCallback:
         called_settings = startup.await_args.args[1]
         assert called_settings.pod_manager.workspaces_dir == "/tmp/mini-workspaces"
         shutdown.assert_awaited_once_with(manager)
+
+    def test_up_callback_serves_registered_hosts_next_to_local_sessions_by_default(self) -> None:
+        service_defs = {"volundr": _make_svc_def("volundr")}
+        manager = MagicMock()
+        settings = CLISettings(mode="mini")
+        up_fn = _build_up_callback(service_defs, manager, settings)
+
+        fake_event = MagicMock()
+        fake_event.wait = AsyncMock(side_effect=asyncio.CancelledError())
+        captured_environment: dict[str, str] = {}
+
+        async def capture_startup(*_args, **_kwargs) -> None:
+            captured_environment.update(os.environ)
+
+        with (
+            patch("cli.commands.platform._startup", AsyncMock(side_effect=capture_startup)),
+            patch("cli.commands.platform._shutdown", AsyncMock()),
+            patch("cli.commands.platform.asyncio.Event", return_value=fake_event),
+            patch("cli.commands.platform.asyncio.run", side_effect=asyncio.run),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            up_fn(
+                skip_preflight=True,
+                all=False,
+                no_web=False,
+                host_profile="full",
+                mounts="",
+                workspaces_dir="/tmp/mini-workspaces",
+                volundr=True,
+            )
+
+        assert "POD_MANAGER__ADAPTER" not in captured_environment
+        pod_manager = json.loads(captured_environment["POD_MANAGER"])
+        assert pod_manager["adapter"].endswith("PlacementPodManager")
+        assert pod_manager["kwargs"]["local"]["kwargs"]["workspaces_dir"] == "/tmp/mini-workspaces"
+        compute = json.loads(captured_environment["COMPUTE"])
+        assert compute["hosts"]["join_url"] == f"https://{ROUTE_ADDRESS}:8443"
 
     def test_up_callback_rejects_workspaces_dir_override_outside_mini_mode(self) -> None:
         service_defs = {"volundr": _make_svc_def("volundr")}
@@ -1450,14 +1502,91 @@ class TestHostsSwitch:
             "allowed_sources": ["192.168.1.0/24"]
         }
 
-    def test_is_off_by_default(self) -> None:
+    def test_is_on_by_default_in_mini_mode(self) -> None:
         env = _resolve_local_pod_manager_env(CLISettings(mode="mini"))
+
+        assert "POD_MANAGER__ADAPTER" not in env
+        assert json.loads(env["POD_MANAGER"])["adapter"].endswith("PlacementPodManager")
+        compute = json.loads(env["COMPUTE"])
+        assert compute["pool_id"] == compute["provider_binding"] == "local-hosts"
+
+    def test_can_be_switched_off(self) -> None:
+        env = _resolve_local_pod_manager_env(CLISettings(mode="mini", hosts={"enabled": False}))
+
         assert "COMPUTE" not in env
+        assert "POD_MANAGER" not in env
         assert env["POD_MANAGER__ADAPTER"].endswith("LocalProcessPodManager")
 
-    def test_needs_an_execution_catalog(self, tmp_path) -> None:
-        with pytest.raises(ValueError, match="hosts.execution_catalog"):
-            self._settings(tmp_path, execution_catalog="")
+    def test_an_empty_catalog_is_niuus_built_in_host_execution(self, tmp_path) -> None:
+        settings = CLISettings(
+            mode="mini", server={"port": 9191}, hosts={"data_dir": str(tmp_path / "hosts")}
+        )
+
+        compute = json.loads(_resolve_local_pod_manager_env(settings)["COMPUTE"])
+
+        assert compute["execution_catalog"] == {
+            "adapter": "volundr.adapters.outbound.builtin_host_catalog.BuiltinHostCatalog",
+            "kwargs": {
+                "pool_id": "local-hosts",
+                "provider_binding": "local-hosts",
+                "profile": "host",
+                "data_dir": str(tmp_path / "hosts"),
+                "platform_port": 9191,
+            },
+            "secret_kwargs_env": {},
+        }
+        assert compute["session_images"]["linux"] == "ghcr.io/niuulabs/openshell:dev"
+        assert compute["session_images"]["darwin"] == "ghcr.io/niuulabs/skuld-darwin:dev"
+
+    def test_a_catalog_directory_keeps_its_own_images(self, tmp_path) -> None:
+        compute = json.loads(_resolve_local_pod_manager_env(self._settings(tmp_path))["COMPUTE"])
+
+        assert compute["execution_catalog"]["adapter"].endswith("FileExecutionCatalog")
+        assert "session_images" not in compute
+
+    def test_joins_at_the_pinned_listener_on_the_default_route_address(self) -> None:
+        hosts = json.loads(_resolve_local_pod_manager_env(CLISettings(mode="mini"))["COMPUTE"])[
+            "hosts"
+        ]
+
+        assert hosts["join_url"] == f"https://{ROUTE_ADDRESS}:8443"
+        assert "join_listener" in hosts
+
+    def test_a_join_url_is_used_as_it_is(self, monkeypatch) -> None:
+        def no_route() -> str:
+            raise AssertionError("the default route is not consulted when join_url is set")
+
+        monkeypatch.setattr("cli.commands.platform._default_route_address", no_route)
+        settings = CLISettings(mode="mini", hosts={"join_url": "https://forge.example.test"})
+
+        hosts = json.loads(_resolve_local_pod_manager_env(settings)["COMPUTE"])["hosts"]
+
+        assert hosts["join_url"] == "https://forge.example.test"
+        assert "join_listener" not in hosts
+
+    def test_a_defined_compute_pool_turns_the_default_off(self) -> None:
+        settings = CLISettings(
+            mode="mini",
+            compute={
+                "pool_id": "vms",
+                "max_machines": 1,
+                "provider": {"adapter": "private.Provider", "kwargs": {}},
+                "runtime": {"adapter": "private.Runtime", "kwargs": {}},
+            },
+        )
+
+        assert settings.hosts_active is False
+        env = _resolve_local_pod_manager_env(settings)
+        assert "COMPUTE" not in env
+        assert json.loads(env["POD_MANAGER"])["adapter"] == settings.pod_manager.adapter
+
+    @pytest.mark.parametrize("mode", ["docker", "cluster", "openshell"])
+    def test_is_off_by_default_outside_mini_mode(self, mode) -> None:
+        assert CLISettings(mode=mode).hosts_active is False
+
+    def test_enabled_overrides_the_default_either_way(self, tmp_path) -> None:
+        assert CLISettings(mode="mini", hosts={"enabled": False}).hosts_active is False
+        assert self._settings(tmp_path).hosts_active is True
 
     def test_refuses_a_second_compute_pool(self, tmp_path) -> None:
         with pytest.raises(ValueError, match="both define this Forge's compute pool"):
@@ -1484,3 +1613,81 @@ class TestHostsSwitch:
     def test_refuses_unknown_keys(self, tmp_path) -> None:
         with pytest.raises(ValueError, match="reserved_gpu"):
             self._settings(tmp_path, reserved_gpu=1)
+
+
+class TestHostsJoinHost:
+    """Where other machines reach this one to join: configured, else the default route's."""
+
+    def test_the_default_route_address_is_used_when_nothing_is_configured(self) -> None:
+        assert _hosts_join_host(CLISettings(mode="mini")) == ROUTE_ADDRESS
+
+    def test_server_external_host_beats_the_default_route(self) -> None:
+        settings = CLISettings(mode="mini", server={"external_host": "forge.lan"})
+
+        assert _hosts_join_host(settings) == "forge.lan"
+
+    def test_hosts_join_host_beats_server_external_host(self) -> None:
+        settings = CLISettings(
+            mode="mini",
+            server={"external_host": "forge.lan"},
+            hosts={"join_host": " 10.1.2.3 "},
+        )
+
+        assert _hosts_join_host(settings) == "10.1.2.3"
+
+    def test_a_dns_name_is_accepted(self) -> None:
+        settings = CLISettings(mode="mini", hosts={"join_host": "forge.example.test"})
+
+        assert _hosts_join_host(settings) == "forge.example.test"
+
+    @pytest.mark.parametrize("address", ["localhost", "127.0.0.1", "127.9.9.9", "::1", "0.0.0.0"])
+    @pytest.mark.parametrize("source", ["hosts", "server"])
+    def test_an_address_other_machines_cannot_reach_is_refused(self, address, source) -> None:
+        settings = CLISettings(
+            mode="mini",
+            **(
+                {"hosts": {"join_host": address}}
+                if source == "hosts"
+                else {"server": {"external_host": address}}
+            ),
+        )
+
+        with pytest.raises(typer.BadParameter, match="cannot reach this one") as refused:
+            _hosts_join_host(settings)
+
+        assert address in str(refused.value)
+        assert "hosts.enabled: false" in str(refused.value)
+
+    def test_a_refused_address_fails_up_with_the_remedy(self) -> None:
+        settings = CLISettings(mode="mini", hosts={"join_host": "localhost"})
+
+        with pytest.raises(typer.BadParameter, match="hosts.join_host"):
+            _resolve_local_pod_manager_env(settings)
+
+    def test_a_machine_without_a_default_route_is_refused_with_the_remedy(
+        self, monkeypatch
+    ) -> None:
+        def no_route() -> str:
+            raise OSError("Network is unreachable")
+
+        monkeypatch.setattr("cli.commands.platform._default_route_address", no_route)
+
+        with pytest.raises(typer.BadParameter, match="no default route") as refused:
+            _hosts_join_host(CLISettings(mode="mini"))
+
+        assert "Network is unreachable" in str(refused.value)
+        assert "server.external_host" in str(refused.value)
+
+    def test_the_default_route_address_is_the_local_end_of_a_connected_probe(self) -> None:
+        probe = MagicMock()
+        probe.getsockname.return_value = ("10.20.30.40", 54321)
+        context = MagicMock()
+        context.__enter__.return_value = probe
+
+        with patch("socket.socket", return_value=context) as make:
+            address = REAL_DEFAULT_ROUTE_ADDRESS()
+
+        assert address == "10.20.30.40"
+        probe.connect.assert_called_once_with(("192.0.2.1", 9))
+        probe.send.assert_not_called()
+        assert make.call_args.args == (socket.AF_INET, socket.SOCK_DGRAM)

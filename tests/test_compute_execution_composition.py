@@ -142,7 +142,7 @@ async def test_composes_each_plan_with_shared_access_and_resolved_secret(tmp_pat
         AsyncMock(spec=HostPreparation),
         AsyncMock(spec=VmRuntime),
     )
-    constructors = []
+    constructors = {}
 
     def importer(name):
         if name.endswith("FileExecutionCatalog"):
@@ -150,19 +150,23 @@ async def test_composes_each_plan_with_shared_access_and_resolved_secret(tmp_pat
         target = (
             access if "Transport" in name else preparation if "Preparation" in name else runtime
         )
-        constructor = Mock(return_value=target)
-        constructors.append((target, constructor))
-        return constructor
+        # The runtime's class is imported once to read its signature and once to build it.
+        if name not in constructors:
+            constructors[name] = (target, Mock(return_value=target))
+        return constructors[name][1]
 
     monkeypatch.setattr(module, "import_class", importer)
     result = await module.build_execution_components(configuration(root), MemoryCredentialStore())
     digest = result.default_plan.plan_digest
     assert result.runtimes[digest] is runtime
     assert result.preparations[digest] is preparation
-    assert constructors[0][1].call_args.kwargs["passphrase"] == "test-only-credential"
-    assert constructors[1][1].call_args.kwargs["guest_access"] is access
-    assert constructors[2][1].call_args.kwargs["guest_access"] is access
-    assert constructors[2][1].call_args.kwargs["host_prepared"] is True
+    by_target = {id(target): constructor for target, constructor in constructors.values()}
+    assert by_target[id(access)].call_args.kwargs["passphrase"] == "test-only-credential"
+    assert by_target[id(preparation)].call_args.kwargs["guest_access"] is access
+    assert by_target[id(runtime)].call_args.kwargs["guest_access"] is access
+    assert by_target[id(runtime)].call_args.kwargs["host_prepared"] is True
+    # No session images are configured, and this constructor does not take them.
+    assert "session_images" not in by_target[id(runtime)].call_args.kwargs
     assert "test-only-credential" not in result.default_plan.model_dump_json()
     access.configure_trust.assert_called_once_with(
         principal="niuu", mode="ssh_ca", kwargs={"ca_path": "/etc/niuu/ssh_ca.pub"}
@@ -678,8 +682,9 @@ def test_the_inspector_reaches_a_host_through_its_executions_access_and_uid_base
 
     hosts = module.build_registered_hosts(_hosts_config(), MagicMock(), execution)
 
-    isolated = SimpleNamespace(execution=str(plans["vm"].execution))
-    plain = SimpleNamespace(execution=str(plans["vm-b"].execution))
+    linux = HostPlatform.LINUX
+    isolated = SimpleNamespace(execution=str(plans["vm"].execution), platform=linux)
+    plain = SimpleNamespace(execution=str(plans["vm-b"].execution), platform=linux)
     assert hosts.inspector._access_for(isolated) is accesses["vm"]
     assert hosts.inspector._access_for(plain) is accesses["vm-b"]
     assert hosts.inspector._uid_base_for(isolated) == 62000
@@ -775,3 +780,339 @@ def test_one_key_server_per_connect_endpoint_socket():
         "/run/other/keys.sock",
     ]
     assert module.build_host_connect_key_servers({"direct": _EndpointConnector()}, answer) == []
+
+
+# -- the release's session images -------------------------------------------------------------
+
+LINUX_REF = "ghcr.io/niuulabs/openshell:1.2.3"
+DARWIN_REF = "ghcr.io/niuulabs/skuld-darwin:1.2.3"
+LINUX_PINNED = "ghcr.io/niuulabs/openshell:1.2.3@sha256:" + "a" * 64
+DARWIN_PINNED = "ghcr.io/niuulabs/skuld-darwin:1.2.3@sha256:" + "b" * 64
+
+
+@pytest.fixture
+def pinned(monkeypatch):
+    """Registry resolution replaced by a recorder: tag -> tag@sha256:<64 hex of its letter>."""
+    from volundr.adapters.outbound import registry_digests
+
+    calls = []
+
+    async def resolve(reference, *, client, timeout_seconds):
+        calls.append((reference, timeout_seconds))
+        letter = "a" if "openshell" in reference else "b"
+        return f"{reference}@sha256:{letter * 64}"
+
+    monkeypatch.setattr(registry_digests, "resolve_image_digest", resolve)
+    return calls
+
+
+@pytest.mark.parametrize(
+    "images",
+    [None, {}, {"linux": "", "darwin": ""}, {"resolve_timeout_seconds": 5}],
+)
+async def test_no_session_images_are_pinned_when_none_are_configured(images, pinned):
+    config = _provider_config(**({} if images is None else {"session_images": images}))
+
+    assert await module.resolve_session_images(config) is None
+    assert pinned == []
+
+
+async def test_both_session_images_are_pinned_to_their_digests(pinned):
+    config = _provider_config(
+        session_images={"linux": LINUX_REF, "darwin": DARWIN_REF, "resolve_timeout_seconds": 7}
+    )
+
+    images = await module.resolve_session_images(config)
+
+    assert (images.linux, images.darwin) == (LINUX_PINNED, DARWIN_PINNED)
+    assert pinned == [(LINUX_REF, 7), (DARWIN_REF, 7)]
+
+
+async def test_only_the_configured_session_image_is_pinned(pinned):
+    images = await module.resolve_session_images(
+        _provider_config(session_images={"darwin": DARWIN_REF})
+    )
+
+    assert (images.linux, images.darwin) == (None, DARWIN_PINNED)
+    assert [reference for reference, _ in pinned] == [DARWIN_REF]
+
+
+async def test_a_session_image_that_cannot_be_pinned_stops_startup(monkeypatch):
+    from volundr.adapters.outbound import registry_digests
+
+    async def refuse(reference, *, client, timeout_seconds):
+        raise registry_digests.ImageResolutionError(f"no such tag: {reference}")
+
+    monkeypatch.setattr(registry_digests, "resolve_image_digest", refuse)
+
+    with pytest.raises(registry_digests.ImageResolutionError, match="no such tag"):
+        await module.resolve_session_images(_provider_config(session_images={"linux": LINUX_REF}))
+
+
+# -- runtimes that hold runtimes ---------------------------------------------------------------
+
+
+class _Child(_HostRuntime):
+    """A per-platform runtime built from a nested adapter config, as the host runtimes are."""
+
+    built: list = []
+
+    def __init__(self, *, platform, guest_access, host_prepared, session_images=None, **extra):
+        super().__init__(
+            platform,
+            SessionRuntimeKind.HOST,
+            platforms=frozenset({HostPlatform(platform)}),
+        )
+        self.guest_access = guest_access
+        self.host_prepared = host_prepared
+        self.session_images = session_images
+        self.extra = extra
+        self.built.append(self)
+
+
+class _ChildWithoutImages(_HostRuntime):
+    def __init__(self, *, platform, guest_access, host_prepared):
+        super().__init__(
+            platform, SessionRuntimeKind.HOST, platforms=frozenset({HostPlatform(platform)})
+        )
+        self.guest_access = guest_access
+        self.host_prepared = host_prepared
+
+
+CHILD = "tests.test_compute_execution_composition._Child"
+CHILD_WITHOUT_IMAGES = "tests.test_compute_execution_composition._ChildWithoutImages"
+PLATFORM_RUNTIME = "volundr.adapters.outbound.platform_host_runtime.PlatformHostRuntime"
+
+
+def _binding(adapter, **kwargs) -> DynamicAdapterConfig:
+    return DynamicAdapterConfig(adapter=adapter, kwargs=kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _forget_children():
+    _Child.built.clear()
+
+
+def test_a_runtime_of_runtimes_is_built_with_every_child_given_the_collaborators():
+    access = object()
+    images = object()
+    binding = _binding(
+        PLATFORM_RUNTIME,
+        platforms={
+            "linux": {"adapter": CHILD, "kwargs": {"platform": "linux", "extra_setting": 1}},
+            "darwin": {"adapter": CHILD, "kwargs": {"platform": "darwin"}},
+        },
+    )
+
+    runtime = module._execution_runtime(
+        binding, guest_access=access, host_prepared=True, session_images=images
+    )
+
+    assert runtime.host_platforms == {HostPlatform.LINUX, HostPlatform.DARWIN}
+    assert len(_Child.built) == 2
+    for child in _Child.built:
+        assert child.guest_access is access
+        assert child.host_prepared is True
+        assert child.session_images is images
+    assert runtime.for_platform(HostPlatform.LINUX).extra == {"extra_setting": 1}
+
+
+def test_a_child_that_takes_no_session_images_is_not_handed_them():
+    binding = _binding(
+        PLATFORM_RUNTIME,
+        platforms={
+            "linux": {"adapter": CHILD_WITHOUT_IMAGES, "kwargs": {"platform": "linux"}},
+        },
+    )
+
+    runtime = module._execution_runtime(
+        binding, guest_access="access", host_prepared=True, session_images="images"
+    )
+
+    child = runtime.for_platform(HostPlatform.LINUX)
+    assert (child.guest_access, child.host_prepared) == ("access", True)
+
+
+def test_a_plain_runtime_gets_session_images_only_if_it_declares_them():
+    wants = module._execution_runtime(
+        _binding(CHILD, platform="linux"),
+        guest_access="access",
+        host_prepared=True,
+        session_images="images",
+    )
+    ignores = module._execution_runtime(
+        _binding(CHILD_WITHOUT_IMAGES, platform="linux"),
+        guest_access="access",
+        host_prepared=True,
+        session_images="images",
+    )
+
+    assert wants.session_images == "images"
+    assert (ignores.guest_access, ignores.host_prepared) == ("access", True)
+    assert not hasattr(ignores, "session_images")
+
+
+def test_nested_runtimes_must_be_adapter_configs_or_mappings_of_them():
+    binding = _binding(
+        PLATFORM_RUNTIME,
+        platforms={
+            "linux": {"adapter": CHILD, "kwargs": {"platform": "linux"}},
+            "darwin": "not-an-adapter-config",
+        },
+    )
+
+    with pytest.raises(TypeError, match="adapter configs or mappings of them"):
+        module._execution_runtime(binding, guest_access="access", host_prepared=True)
+
+
+def test_a_multi_platform_host_runtime_is_labelled_for_both(tmp_path):
+    resolver = _catalog_resolver(tmp_path)
+    plans = {plan.execution.id: plan for plan in resolver.plans()}
+    both = frozenset({HostPlatform.LINUX, HostPlatform.DARWIN})
+    execution = _components(
+        resolver,
+        {
+            "vm": _HostRuntime("vm", SessionRuntimeKind.HOST, platforms=both),
+            "vm-b": _HostRuntime("vm-b", SessionRuntimeKind.CONTAINER, platforms=both),
+        },
+        {name: _ssh_access(tmp_path, name, "root") for name in ("vm", "vm-b")},
+    )
+
+    hosts = module.build_registered_hosts(_hosts_config(), MagicMock(), execution)
+
+    both_hosts = hosts.executions[str(plans["vm"].execution)]
+    assert both_hosts.label == "Host · Linux (Nix + rootless Podman) or macOS (one session)"
+    assert both_hosts.platforms == both
+    # Only a HOST runtime gets the any-platform label.
+    assert hosts.executions[str(plans["vm-b"].execution)].label == "Container (Docker)"
+
+
+def test_the_inspector_uses_the_uid_base_of_the_hosts_own_platform(tmp_path):
+    from volundr.adapters.outbound.platform_host_runtime import PlatformHostRuntime
+
+    resolver = _catalog_resolver(tmp_path)
+    plans = {plan.execution.id: plan for plan in resolver.plans()}
+    linux_limits = SlotLimits(uid_base=62000, cpu=2.0, memory_mib=4096, pids=512)
+    mac_limits = SlotLimits(uid_base=71000, cpu=None, memory_mib=None, pids=None)
+    kind = SessionRuntimeKind.HOST
+    platform_runtime = PlatformHostRuntime(
+        platforms={
+            "linux": _HostRuntime(
+                "linux",
+                kind,
+                slots=True,
+                limits=linux_limits,
+                platforms=frozenset({HostPlatform.LINUX}),
+            ),
+            "darwin": _HostRuntime(
+                "darwin",
+                kind,
+                limits=mac_limits,
+                platforms=frozenset({HostPlatform.DARWIN}),
+            ),
+        }
+    )
+    execution = _components(
+        resolver,
+        {"vm": platform_runtime, "vm-b": _HostRuntime("vm-b", kind)},
+        {"vm": _ssh_access(tmp_path, "vm", "root"), "vm-b": _ssh_access(tmp_path, "b", "root")},
+    )
+
+    hosts = module.build_registered_hosts(_hosts_config(), MagicMock(), execution)
+
+    name = str(plans["vm"].execution)
+    mac = SimpleNamespace(execution=name, platform=HostPlatform.DARWIN)
+    linux = SimpleNamespace(execution=name, platform=HostPlatform.LINUX)
+    assert hosts.inspector._uid_base_for(linux) == 62000
+    assert hosts.inspector._uid_base_for(mac) == 71000
+    described = hosts.executions[name]
+    assert described.slot_limits == linux_limits
+    assert described.platforms == {HostPlatform.LINUX, HostPlatform.DARWIN}
+
+
+# -- the built-in host execution, end to end ---------------------------------------------------
+
+
+def _builtin_config(tmp_path, **update) -> ComputeConfig:
+    return ComputeConfig(
+        pool_id="hosts",
+        max_machines=1,
+        provider_binding="registered-hosts",
+        provider={"adapter": "tests.Provider"},
+        execution_catalog={
+            "adapter": "volundr.adapters.outbound.builtin_host_catalog.BuiltinHostCatalog",
+            "kwargs": {
+                "pool_id": "hosts",
+                "provider_binding": "registered-hosts",
+                "data_dir": str(tmp_path / "forge"),
+                "platform_port": 8080,
+            },
+        },
+        **update,
+    )
+
+
+async def _close(components) -> None:
+    await asyncio.gather(
+        *(runtime.close() for runtime in components.runtimes.values()),
+        *(preparation.close() for preparation in components.preparations.values()),
+        *(access.close() for access in components.accesses),
+    )
+
+
+async def test_the_built_in_catalog_composes_real_linux_and_mac_runtimes(tmp_path):
+    from volundr.adapters.outbound.platform_host_runtime import PlatformHostRuntime
+    from volundr.adapters.outbound.ssh_darwin_host_runtime import SshDarwinHostRuntime
+    from volundr.adapters.outbound.ssh_host_vm_runtime import SshHostVmRuntime
+
+    config = _builtin_config(
+        tmp_path,
+        session_images={
+            "linux": LINUX_PINNED,
+            "darwin": DARWIN_PINNED,
+        },
+    )
+
+    components = await module.build_execution_components(config, MemoryCredentialStore())
+    try:
+        runtime = components.runtimes[components.default_plan.plan_digest]
+        assert isinstance(runtime, PlatformHostRuntime)
+        linux = runtime.for_platform(HostPlatform.LINUX)
+        mac = runtime.for_platform(HostPlatform.DARWIN)
+        assert isinstance(linux, SshHostVmRuntime)
+        assert isinstance(mac, SshDarwinHostRuntime)
+        assert linux._image == LINUX_PINNED
+        assert mac._bundle_digest == "b" * 64
+        assert linux._host_prepared and mac._host_prepared
+        assert runtime.host_platforms == {HostPlatform.LINUX, HostPlatform.DARWIN}
+        assert runtime.supports_slots
+        assert runtime.slot_limits == linux.slot_limits
+
+        hosts = module.build_registered_hosts(
+            ComputeConfig(**{**config.model_dump(), "hosts": HOSTS, "provider": config.provider}),
+            MagicMock(),
+            components,
+        )
+        [execution] = hosts.executions.values()
+        assert execution.label == "Host · Linux (Nix + rootless Podman) or macOS (one session)"
+        assert execution.platforms == {HostPlatform.LINUX, HostPlatform.DARWIN}
+    finally:
+        await _close(components)
+
+
+async def test_the_built_in_catalog_without_session_images_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="needs a session image"):
+        await module.build_execution_components(_builtin_config(tmp_path), MemoryCredentialStore())
+
+
+async def test_session_images_are_pinned_once_and_handed_to_the_runtimes(tmp_path, pinned):
+    config = _builtin_config(tmp_path, session_images={"linux": LINUX_REF, "darwin": DARWIN_REF})
+
+    components = await module.build_execution_components(config, MemoryCredentialStore())
+    try:
+        runtime = components.runtimes[components.default_plan.plan_digest]
+        assert runtime.for_platform(HostPlatform.LINUX)._image == LINUX_PINNED
+        assert runtime.for_platform(HostPlatform.DARWIN)._bundle_digest == "b" * 64
+        assert [reference for reference, _ in pinned] == [LINUX_REF, DARWIN_REF]
+    finally:
+        await _close(components)

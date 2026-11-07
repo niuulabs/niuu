@@ -8,6 +8,7 @@ from volundr.compute.config import (
     ComputeHostsConfig,
     HostConnectorConfig,
     HostJoinListenerConfig,
+    SessionImagesConfig,
 )
 
 CONNECTOR = {"adapter": "volundr.adapters.outbound.host_connectors.DirectSshConnector"}
@@ -259,3 +260,27 @@ def test_the_compute_config_validates_its_hosts_section():
     )
 
     assert config.hosts.connectors[0].binding_id == "direct"
+
+
+# -- session_images -----------------------------------------------------------------------------
+
+
+def test_session_images_are_unset_by_default_and_each_image_is_optional():
+    base = {"pool_id": "pool", "max_machines": 1, "provider": {"adapter": "x.Y"}}
+
+    assert ComputeConfig(**base).session_images is None
+    images = ComputeConfig(**base, session_images={"linux": "ghcr.io/niuulabs/openshell:1"})
+    assert images.session_images.linux == "ghcr.io/niuulabs/openshell:1"
+    assert images.session_images.darwin == ""
+    assert images.session_images.resolve_timeout_seconds == 30
+
+
+@pytest.mark.parametrize("seconds", [0, -1])
+def test_a_registry_timeout_must_be_positive(seconds):
+    with pytest.raises(ValidationError, match="greater than 0"):
+        SessionImagesConfig(resolve_timeout_seconds=seconds)
+
+
+def test_unknown_session_image_keys_are_refused():
+    with pytest.raises(ValidationError, match="windows"):
+        SessionImagesConfig(windows="ghcr.io/niuulabs/x:1")

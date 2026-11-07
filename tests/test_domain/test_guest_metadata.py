@@ -15,10 +15,14 @@ from volundr.domain.compute import (
     BootstrapFile,
     ComputeLease,
     ComputeSlot,
+    HostPlatform,
     LeaseState,
+    Machine,
     MachineBootstrap,
+    MachineState,
     SlotLease,
     SlotState,
+    encode_platform_bootstraps,
 )
 from volundr.domain.guest_credentials import (
     GuestAuthenticationError,
@@ -389,6 +393,63 @@ async def test_a_plan_with_nothing_to_deliver_is_an_empty_answer():
 
     assert issued.service_account_tokens == ()
     assert issued.forge_session is None
+
+
+def platform_machine(platform: HostPlatform | None) -> ComputeLease:
+    allocation_id = uuid4()
+    return make_machine(
+        id=allocation_id,
+        machine=Machine(
+            allocation_id=allocation_id,
+            resource_id="host",
+            state=MachineState.RUNNING,
+            platform=platform,
+        ),
+    )
+
+
+def per_platform_bootstrap() -> MachineBootstrap:
+    """A host execution's bootstrap: each platform keeps its own launch payload."""
+    return encode_platform_bootstraps(
+        {
+            HostPlatform.LINUX: bootstrap({**LAUNCH, "service_account": "linux-sa"}),
+            HostPlatform.DARWIN: bootstrap({**LAUNCH, "service_account": "darwin-sa"}),
+        },
+        {},
+    )
+
+
+@pytest.mark.parametrize(
+    ("platform", "service_account"),
+    [(HostPlatform.LINUX, "linux-sa"), (HostPlatform.DARWIN, "darwin-sa")],
+)
+async def test_the_plan_is_read_from_the_launch_of_the_hosts_platform(platform, service_account):
+    harness = Harness(platform_machine(platform))
+    harness.compute.bootstrap_for.return_value = per_platform_bootstrap()
+
+    await harness.service.credentials(harness.request())
+
+    assert harness.tokens.calls[0][0] == service_account
+
+
+async def test_a_per_platform_bootstrap_needs_the_hosts_recorded_platform():
+    harness = Harness(platform_machine(None))
+    harness.compute.bootstrap_for.return_value = per_platform_bootstrap()
+
+    with pytest.raises(ValueError, match="records none"):
+        await harness.service.credentials(harness.request())
+
+    assert harness.tokens.calls == []
+
+
+async def test_a_platform_whose_runtime_refused_the_session_was_never_launched():
+    harness = Harness(platform_machine(HostPlatform.DARWIN))
+    harness.compute.bootstrap_for.return_value = encode_platform_bootstraps(
+        {HostPlatform.LINUX: bootstrap(LAUNCH)}, {HostPlatform.DARWIN: "no image on a Mac"}
+    )
+
+    with pytest.raises(GuestCredentialUnavailableError, match="not been launched"):
+        await harness.service.credentials(harness.request())
 
 
 def test_a_pool_id_is_required():

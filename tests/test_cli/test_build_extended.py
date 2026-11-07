@@ -76,6 +76,14 @@ class TestBuildCommandDataDirs:
             "ting/workflows"
         )
 
+    def test_host_recipe_scripts_are_bundled_where_the_built_in_catalog_reads_them(self) -> None:
+        from volundr.adapters.outbound.builtin_host_catalog import RECIPES
+
+        mappings = {src: dest for src, dest in DATA_DIR_MAPPINGS}
+
+        assert mappings[RECIPES] == "volundr/adapters/outbound/host_recipes"
+        assert (RECIPES / "install-nix.sh").is_file()
+
     def test_skips_empty_data_dirs(self) -> None:
         with patch.object(Path, "is_dir", return_value=False):
             cmd = build_command()
