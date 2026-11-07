@@ -14,6 +14,7 @@ from volundr.domain.compute import (
     ComputeLease,
     ComputeLeaseBusyError,
     ComputePoolFullError,
+    HostSelector,
     LeaseState,
     Machine,
     MachineBootstrap,
@@ -696,3 +697,207 @@ async def test_deleting_with_stored_references_but_no_store_is_an_error(setup):
 
     with pytest.raises(MachineProviderError, match="credential store is unavailable"):
         await service.release(claim.id)
+
+
+# -- host selectors, machine-set slots and refreshing a machine in service -----------------
+
+
+def recording_provider(provider, **machine_fields):
+    """Make the provider report a running machine, remembering every request it was given."""
+    requests = []
+
+    async def create(request):
+        requests.append(request)
+        machine = Machine(
+            allocation_id=request.allocation_id,
+            resource_id="host",
+            state=MachineState.RUNNING,
+            **machine_fields,
+        )
+        provider.machines[request.allocation_id] = machine
+        return machine
+
+    provider.create = create
+    return requests
+
+
+async def test_acquire_stores_the_hosts_selector_on_the_binding(setup):
+    service, repository, _ = setup
+    selector = HostSelector(tags=("rack-1", "gpu"), match="any")
+
+    claim = await acquire(service, host_selector=selector)
+
+    assert claim.binding.host_selector == selector
+    assert repository.bindings[claim.binding.id].host_selector == selector
+
+
+async def test_acquire_without_a_selector_stores_the_empty_one(setup):
+    service, _, _ = setup
+
+    assert (await acquire(service)).binding.host_selector == HostSelector()
+
+
+async def test_reconcile_asks_the_provider_for_a_machine_matching_the_live_selector(setup):
+    service, _, provider = setup
+    selector = HostSelector(tags=("gpu",))
+    requests = recording_provider(provider)
+    claim = await acquire(service, host_selector=selector)
+
+    await service.reconcile(claim.id)
+
+    assert requests
+    assert all(request.selector == selector for request in requests)
+
+
+async def test_a_standby_machine_is_requested_with_the_empty_selector(setup):
+    service, _, provider = setup
+    requests = recording_provider(provider)
+
+    spare = await service.acquire_standby(profile="small")
+    await service.reconcile(spare.id)
+
+    assert requests
+    assert all(request.selector == HostSelector() for request in requests)
+
+
+async def test_a_provider_that_sets_slots_per_machine_replaces_the_pools_while_provisioning(setup):
+    service, repository, provider = setup
+    recording_provider(provider, slots=2)
+    claim = await acquire(service, slots=4)
+
+    ready = await service.reconcile(claim.id)
+
+    assert (ready.state, ready.slots) == (LeaseState.READY, 2)
+    assert repository.leases[claim.id].slots == 2
+
+
+async def test_a_machine_still_provisioning_takes_the_providers_slots_too(setup):
+    service, _, provider = setup
+
+    async def waiting(request):
+        machine = Machine(
+            allocation_id=request.allocation_id,
+            resource_id="host",
+            state=MachineState.PROVISIONING,
+            slots=3,
+        )
+        provider.machines[request.allocation_id] = machine
+        return machine
+
+    provider.create = waiting
+    claim = await acquire(service, slots=1)
+
+    assert claim.allocation.state is LeaseState.PROVISIONING
+    assert claim.allocation.slots == 3
+
+
+async def test_slots_of_a_machine_in_service_never_change_when_the_provider_changes_its_mind(setup):
+    service, repository, provider = setup
+    recording_provider(provider, slots=2)
+    claim = await acquire(service, slots=4)
+    await service.reconcile(claim.id)
+    provider.machines[claim.id] = provider.machines[claim.id].model_copy(update={"slots": 8})
+
+    assert (await service.reconcile(claim.id)).slots == 2
+    assert repository.leases[claim.id].slots == 2
+
+
+async def test_a_machine_without_its_own_slots_keeps_the_pools(setup):
+    service, _, provider = setup
+    recording_provider(provider)
+    claim = await acquire(service, slots=4)
+
+    assert (await service.reconcile(claim.id)).slots == 4
+
+
+async def saves_during(repository, action):
+    saved = []
+    save = repository.save
+
+    async def counting(lease):
+        saved.append(lease)
+        await save(lease)
+
+    repository.save = counting
+    try:
+        result = await action()
+    finally:
+        repository.save = save
+    return result, saved
+
+
+@pytest.mark.parametrize("state", [LeaseState.READY, LeaseState.IDLE])
+async def test_refresh_saves_a_changed_snapshot_without_moving_the_lease(setup, state):
+    service, repository, provider = setup
+    recording_provider(provider)
+    claim = await acquire(service)
+    async with repository.operation(claim.id):
+        await repository.save(repository.leases[claim.id].model_copy(update={"state": state}))
+    changed = provider.machines[claim.id].model_copy(update={"accepting": False, "tags": ("a",)})
+    provider.machines[claim.id] = changed
+    before = repository.leases[claim.id]
+
+    refreshed, saved = await saves_during(repository, lambda: service.refresh_machine(claim.id))
+
+    assert refreshed.machine == changed
+    assert repository.leases[claim.id].machine == changed
+    assert refreshed.model_copy(update={"machine": before.machine}) == before
+    assert len(saved) == 1
+
+
+async def test_refresh_saves_nothing_when_the_machine_is_unchanged(setup):
+    service, repository, provider = setup
+    recording_provider(provider)
+    claim = await acquire(service)
+    ready = repository.leases[claim.id]
+    assert ready.state is LeaseState.READY
+
+    refreshed, saved = await saves_during(repository, lambda: service.refresh_machine(claim.id))
+
+    assert refreshed == ready
+    assert saved == []
+
+
+async def test_refresh_leaves_the_lease_alone_when_the_provider_no_longer_knows_the_machine(setup):
+    service, repository, provider = setup
+    recording_provider(provider)
+    claim = await acquire(service)
+    ready = repository.leases[claim.id]
+    assert ready.state is LeaseState.READY
+    provider.machines.pop(claim.id)
+
+    refreshed, saved = await saves_during(repository, lambda: service.refresh_machine(claim.id))
+
+    assert refreshed == ready
+    assert saved == []
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        LeaseState.PROVISIONING,
+        LeaseState.BUSY,
+        LeaseState.DRAINING,
+        LeaseState.QUARANTINED,
+        LeaseState.FAILED,
+        LeaseState.RELEASED,
+    ],
+)
+async def test_refresh_ignores_a_machine_that_is_not_in_service(setup, state):
+    service, repository, provider = setup
+    claim = await acquire(service)
+    async with repository.operation(claim.id):
+        await repository.save(claim.allocation.model_copy(update={"state": state}))
+    provider.get = AsyncMock(side_effect=AssertionError("the provider must not be asked"))
+
+    refreshed, saved = await saves_during(repository, lambda: service.refresh_machine(claim.id))
+
+    assert refreshed.state is state
+    assert saved == []
+
+
+async def test_refresh_of_an_unknown_lease_is_an_error(setup):
+    service, _, _ = setup
+
+    with pytest.raises(LookupError):
+        await service.refresh_machine(uuid4())
