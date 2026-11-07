@@ -536,7 +536,7 @@ def test_a_connector_that_is_not_a_host_connector_is_refused(tmp_path):
 def _catalog_resolver(tmp_path):
     from tests.test_adapters.test_vm_session_runtimes import _catalog
 
-    return _catalog(tmp_path, ["vm", "vm-b"])
+    return _catalog(tmp_path)
 
 
 def _two_plan_components(tmp_path):
