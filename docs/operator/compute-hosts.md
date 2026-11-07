@@ -68,6 +68,22 @@ Forge reaches the host, and optionally the number of slots, then copy the comman
 curl -fsSL -H 'Authorization: Bearer <code>' https://forge-hosts…/api/v1/forge/compute/hosts/join.sh | sudo sh
 ```
 
+To read the script before it runs, choose **Download and read first**. The UI then
+shows the script's SHA-256, a button that downloads the same file, and these commands
+for the host. They fetch the script, check the digest, show it, and run it only once
+you have read it:
+
+```bash
+curl -fsSL -o niuu-join.sh -H 'Authorization: Bearer <code>' https://forge-hosts…/api/v1/forge/compute/hosts/join.sh
+echo '<sha256>  niuu-join.sh' | sha256sum -c -
+less niuu-join.sh
+sudo sh niuu-join.sh
+```
+
+Forge renders the script for each code, so the digest is the one for this code. The
+mint response (`POST …/pairing-codes`) carries it as `script.sha256`, with the script
+itself and these commands.
+
 The host needs systemd, cgroup v2, OpenSSH server, `sudo`, `python3`, `iproute2` and
 `curl` or `wget`. A stock Ubuntu server has all of these. The script checks them
 first and changes nothing if any are missing. Then it:
@@ -95,7 +111,7 @@ the facts change later.
 | pending | Registered; Forge has not reached it yet (tried every `pending_check_interval_seconds`) |
 | ready | Reached, audited clean, not held |
 | in_service | Held by the pool; sessions are placed in its free slots |
-| draining | Takes no new sessions; leaves service once its allocation is empty and audited |
+| draining | Takes no new sessions; leaves service once its allocation is empty and audited; **Cancel drain** returns it to service |
 | out_of_service | Nothing runs and nothing is placed; **Resume** audits it and makes it ready |
 | quarantined | A check or audit found something; offered to no one until a check is clean |
 | unreachable | Forge cannot reach it, or its key no longer matches; retried, never placed on |
@@ -114,8 +130,34 @@ Only new placement stops.
   the host is still removed from Forge. The response then says to run
   `sudo niuu-host-leave` on the host.
 
+- **Cancel drain** returns a draining host to service at once
+  (`POST …/hosts/{id}/resume`). A host set to drain and remove cannot be cancelled.
+
 `niuu-host-leave` removes Forge's key, the key link and the config. Slot users and
 their data are the audit's business.
+
+## Re-prepare
+
+A host's recipe runs once per allocation: the allocation that holds the host pins the
+execution plan, carries the preparation result and keys the checkpoint on the host.
+While an allocation holds the host, later claims only verify the recipe; they do not
+run it again.
+
+**Re-prepare** (`POST /api/v1/forge/compute/hosts/{id}/reprepare`) has the next claim
+run the execution's current recipe again. It works only on a host that runs no
+session; otherwise it answers 409 and says to drain the host first. If an idle
+allocation holds the host, Forge disposes of it the way the pool disposes of any idle
+allocation whose plan changed: the allocation is deleted, the host is audited and
+released, and its service setting is kept. The next claim pins the current plan and
+runs every recipe stage against a fresh checkpoint. Re-prepare then checks the host,
+so a finding shows at once. A host that no allocation holds has no preparation to
+discard; Re-prepare only checks it, and its next claim prepares it anyway.
+
+If Forge cannot reach the host to audit it, Re-prepare answers 409 with the reason.
+The allocation stays draining, and the pool retries the release.
+
+A host that should change recipe while it runs sessions: **Drain**, wait until it is
+out of service, **Re-prepare**, then **Resume**.
 
 ## Tags and targeting
 
@@ -164,6 +206,4 @@ is retried. Capacity is never freed on a host nobody checked.
 - The reverse SSH connector for hosts behind NAT (design: "Connection"). Today a
   host must be reachable from Forge.
 - `warm_targets` per tag selector. `warm_min` counts free slots across the pool.
-- **Re-prepare.** After a recipe change, drain the host and resume it; the next claim
-  runs the new recipe.
 - macOS hosts.

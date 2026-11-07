@@ -715,8 +715,18 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
   `_ensure_host_prepared` path. It does not run at registration. Registration only
   reaches the host and audits it.
 - The audit checks free disk only; there is no memory floor.
-- Not built yet: the reverse SSH connector, `warm_targets` per selector, the
-  Re-prepare action (a recipe change today needs drain, then resume), macOS hosts.
+- **Re-prepare** (`POST …/hosts/{id}/reprepare`, also through the Guild facade) does
+  not run the recipe itself. The preparation record is the allocation that holds the
+  host: it pins the plan, carries the result and keys the checkpoint on the host. So
+  Re-prepare disposes of the idle allocation through `ComputePoolService.dispose`, the
+  same path that retires an idle allocation whose plan changed, and then checks the
+  host. The next claim pins the current plan and runs the recipe from a fresh
+  checkpoint. It refuses with 409 while sessions run, naming drain.
+- **Cancel drain** is `resume` on a draining host. **Download and read first** shows
+  the script's SHA-256, the file, and the commands to fetch, verify, read and run it.
+  The mint response carries the script and digest, rendered exactly as `join.sh`
+  serves it for that code, so no extra route was needed.
+- Not built yet: the reverse SSH connector, `warm_targets` per selector, macOS hosts.
 
 ## Decisions (settled 2026-11-07)
 
