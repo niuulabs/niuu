@@ -176,6 +176,21 @@ def create_admin_settings_router(
                     "Maximum machines",
                     "Includes standby, active, failed and deleting machines.",
                 ),
+                "slots_per_machine": (
+                    "Sessions per machine",
+                    "Sessions one machine serves at once. Above 1 needs a runtime that "
+                    "supports slots; the change is refused otherwise.",
+                ),
+                "max_sessions_per_machine": (
+                    "Sessions before replacement",
+                    "Sessions a machine serves before it drains and is replaced. Unset means "
+                    "one per slot. Applies to 'Replace VM' only.",
+                ),
+                "max_machine_age_seconds": (
+                    "Machine lifetime (seconds)",
+                    "Age after which a machine takes no new sessions and drains once empty. "
+                    "Unset means no limit. Applies to 'Replace VM' only.",
+                ),
                 "warm_min": (
                     "Ready spare machines",
                     "Maintain this many clean guests, within the total capacity limit.",
@@ -238,6 +253,9 @@ def create_admin_settings_router(
                             else "text",
                         )
                         for key, value in policy.items()
+                        # Unset optional limits are not offered until the form can leave a
+                        # number empty; posting them back as text would be rejected.
+                        if value is not None
                     ],
                 )
             )
@@ -302,9 +320,11 @@ def create_admin_settings_router(
                                 value=f"{lease['state']} · {lease['profile']}",
                                 description=lease["error"]
                                 or (
-                                    f"Session {lease['session_id']}"
-                                    if lease["session_id"]
-                                    else "Unbound machine"
+                                    ", ".join(
+                                        f"Slot {item['slot']}: session {item['session_id']}"
+                                        for item in lease["sessions"]
+                                    )
+                                    or "Unbound machine"
                                 ),
                             )
                             for lease in snapshot["allocations"]
@@ -312,7 +332,7 @@ def create_admin_settings_router(
                     ],
                 )
             )
-            disposable = [lease for lease in snapshot["allocations"] if lease["session_id"] is None]
+            disposable = [lease for lease in snapshot["allocations"] if not lease["sessions"]]
             schema.sections.append(
                 SettingsSectionSchema(
                     id="compute-dispose",

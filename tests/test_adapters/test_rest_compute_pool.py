@@ -120,3 +120,82 @@ def test_reuse_policy_is_editable_in_admin_settings(app, setup):
             client.get("/api/v1/forge/admin/settings/compute").json()["policy"]["reuse_policy"]
             == "reuse"
         )
+
+
+def _compute_fields(client) -> dict:
+    schema = client.get("/api/v1/forge/settings").json()
+    section = next(s for s in schema["sections"] if s["id"] == "compute")
+    return {f["key"]: f for f in section["fields"]}
+
+
+def test_slot_settings_are_labelled_and_unset_limits_are_not_posted_back_as_text(app):
+    with TestClient(app) as client:
+        fields = _compute_fields(client)
+
+        assert fields["slots_per_machine"]["label"] == "Sessions per machine"
+        assert fields["slots_per_machine"]["type"] == "number"
+        assert fields["slots_per_machine"]["value"] == 1
+        # Unset optional limits have no number to show yet; they stay unset on save.
+        assert "max_sessions_per_machine" not in fields
+        assert "max_machine_age_seconds" not in fields
+        body = {key: field["value"] for key, field in fields.items()}
+        assert client.patch("/api/v1/forge/admin/settings/compute", json=body).status_code == 200
+
+
+def test_set_drain_limits_are_labelled_numbers(app, setup):
+    setup[4].supports_reuse = True
+    with TestClient(app) as client:
+        body = {key: field["value"] for key, field in _compute_fields(client).items()}
+        body.update(max_sessions_per_machine=3, max_machine_age_seconds=3600)
+        assert client.patch("/api/v1/forge/admin/settings/compute", json=body).status_code == 200
+
+        fields = _compute_fields(client)
+
+        assert fields["max_sessions_per_machine"]["label"] == "Sessions before replacement"
+        assert fields["max_sessions_per_machine"]["type"] == "number"
+        assert fields["max_machine_age_seconds"]["label"] == "Machine lifetime (seconds)"
+        assert fields["max_machine_age_seconds"]["value"] == 3600
+
+
+def test_more_slots_than_the_runtime_supports_is_refused_with_the_remedy(app, setup):
+    setup[4].supports_slots = False
+    with TestClient(app) as client:
+        body = {key: field["value"] for key, field in _compute_fields(client).items()}
+        body["slots_per_machine"] = 2
+
+        response = client.patch("/api/v1/forge/admin/settings/compute", json=body)
+
+        assert response.status_code == 422
+        assert "slots_per_machine=2" in response.json()["detail"]
+        assert "Sessions per machine" in response.json()["detail"]
+        assert setup[2].policies["pool"].slots_per_machine == 1
+
+
+def test_reuse_with_a_drain_limit_is_refused(app, setup):
+    setup[4].supports_reuse = True
+    with TestClient(app) as client:
+        body = {key: field["value"] for key, field in _compute_fields(client).items()}
+        body.update(reuse_policy="reuse", max_machine_age_seconds=60)
+
+        response = client.patch("/api/v1/forge/admin/settings/compute", json=body)
+
+        assert response.status_code == 422
+
+
+async def test_status_lists_each_machines_sessions_and_only_empty_machines_can_be_disposed(
+    app, setup
+):
+    pool, leases, repo, _, _, _ = setup
+    claim = await leases.acquire(session_id=uuid4(), owner_id="o", tenant_id="t", profile="small")
+    spare = await leases.acquire_standby(profile="small")
+    with TestClient(app) as client:
+        schema = client.get("/api/v1/forge/settings").json()
+        sections = {s["id"]: s for s in schema["sections"]}
+
+        status = {f["key"]: f for f in sections["compute-status"]["fields"]}
+        assert status["counts"]["value"] == "ready: 2"
+        assert status[str(claim.id)]["value"].startswith("ready")
+        assert status[str(claim.id)]["description"] == (f"Slot 0: session {claim.session_id}")
+        assert status[str(spare.id)]["description"] == "Unbound machine"
+        dispose = sections["compute-dispose"]["fields"][0]
+        assert [option["value"] for option in dispose["options"]] == ["", str(spare.id)]

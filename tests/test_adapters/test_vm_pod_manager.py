@@ -15,11 +15,14 @@ from volundr.adapters.outbound.vm_pod_manager import VmPodManager
 from volundr.domain.compute import (
     ComputeCapacityError,
     ComputeLeaseBusyError,
+    ComputePoolPolicy,
     ComputeProvisioningLimitError,
+    ComputeSlot,
     LeaseState,
     MachineBootstrap,
     MachineProviderError,
     MachineState,
+    SlotState,
 )
 from volundr.domain.models import PodSpecAdditions, Session, SessionSpec, SessionStatus
 from volundr.domain.services.compute_leases import ComputeLeaseService
@@ -30,19 +33,7 @@ from volundr.domain.vm_runtime import (
     VmRuntimeUnavailableError,
 )
 
-
-class Repository(LeaseRepository):
-    async def active_for_session(self, pool_id, session_id):
-        return next(
-            (
-                lease
-                for lease in self.leases.values()
-                if lease.pool_id == pool_id
-                and lease.session_id == session_id
-                and lease.state != LeaseState.RELEASED
-            ),
-            None,
-        )
+Repository = LeaseRepository
 
 
 class ReadyProvider(Provider):
@@ -92,7 +83,9 @@ async def test_start_proxy_stop_preserves_before_disposal_and_resumes(setup):
     assert (await manager.capacity()).available == 0
     assert await manager.wait_for_ready(session, 0.2) == SessionStatus.RUNNING
     lease = next(iter(repository.leases.values()))
-    assert lease.state == LeaseState.BUSY
+    binding = next(iter(repository.bindings.values()))
+    # A machine in service is idle; its slot carries the session's busy state.
+    assert (lease.state, binding.state) == (LeaseState.IDLE, SlotState.BUSY)
     assert (await manager.session_proxy_target(session)).connect_port == 9000
     assert "bootstrap" not in lease.model_dump_json().replace("bootstrap_ref", "").replace(
         "bootstrap_owner", ""
@@ -155,8 +148,11 @@ async def test_start_retries_failed_runtime_on_same_running_machine(setup):
         await manager.start(session, spec)
 
     lease = next(iter(repository.leases.values()))
-    assert lease.state == LeaseState.FAILED
-    assert lease.error == "Runtime startup failed; inspect guest and stop session"
+    binding = next(iter(repository.bindings.values()))
+    # A failed runtime start fails the session's slot; the machine stays ready.
+    assert lease.state == LeaseState.READY
+    assert binding.state == SlotState.FAILED
+    assert binding.error == "Runtime startup failed; inspect guest and stop session"
 
     runtime.prepare.side_effect = None
     result = await manager.start(session, spec)
@@ -165,6 +161,9 @@ async def test_start_retries_failed_runtime_on_same_running_machine(setup):
     assert len(repository.leases) == 1
     assert len(provider.created) == 1
     assert repository.leases[lease.id].state == LeaseState.READY
+    retried = repository.bindings[binding.id]
+    assert retried.state == SlotState.STARTING
+    assert retried.error is None
 
 
 async def test_capacity_for_existing_session_reuses_its_allocation(setup):
@@ -233,7 +232,8 @@ async def test_restart_uses_bootstrap_store_and_enforces_owner(setup):
     with pytest.raises(ValueError, match="ownership"):
         await manager.start(session.model_copy(update={"owner_id": "other"}), spec)
     lease = next(iter(repository.leases.values()))
-    await store.delete("compute", lease.bootstrap_owner or "pool", lease.session_bootstrap_ref)
+    binding = next(iter(repository.bindings.values()))
+    await store.delete("compute", lease.bootstrap_owner or "pool", binding.session_bootstrap_ref)
     with pytest.raises(RuntimeError, match="missing"):
         await manager.status(session)
 
@@ -322,8 +322,8 @@ async def test_cancel_before_guest_control_releases_without_touching_archive(set
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    lease = next(iter(repository.leases.values()))
-    assert not lease.runtime_data_started
+    binding = next(iter(repository.bindings.values()))
+    assert not binding.runtime_data_started
     assert await manager.stop(session)
     runtime.stop.assert_not_awaited()
     assert not provider.machines
@@ -336,17 +336,18 @@ async def test_reconcile_resumes_cancelled_start_without_new_allocation(setup):
     with pytest.raises(asyncio.CancelledError):
         await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
     lease = next(iter(repository.leases.values()))
-    assert lease.runtime_data_started and not lease.runtime_started
+    binding = next(iter(repository.bindings.values()))
+    assert binding.runtime_data_started and not binding.runtime_started
     runtime.start.side_effect = None
     recovered = VmPodManager(profile="small", pool_id="pool", max_machines=1)
     recovered.configure_compute(
         service, repository, runtime, MachineBootstrap(), pool_id="pool", max_machines=1
     )
     assert await recovered.status(session) == SessionStatus.PROVISIONING
-    await recovered._recoveries[lease.id]
+    await recovered._recoveries[(lease.id, binding.id)]
     assert await recovered.status(session) == SessionStatus.RUNNING
     assert len(repository.leases) == len(provider.machines) == 1
-    assert repository.leases[lease.id].runtime_started
+    assert repository.bindings[binding.id].runtime_started
     assert runtime.start.await_count == 2
     await recovered.status(session)
     assert runtime.start.await_count == 2
@@ -363,10 +364,10 @@ async def test_background_recovery_failure_is_visible_and_retains_capacity(setup
     )
     runtime.start.side_effect = RuntimeError("sensitive remote error")
     assert await manager.status(session) == SessionStatus.PROVISIONING
-    await manager._recoveries[lease.id]
+    await manager._recoveries[(lease.id, lease.binding.id)]
     assert await manager.status(session) == SessionStatus.FAILED
     assert (await manager.capacity()).available == 0
-    assert "sensitive" not in repository.leases[lease.id].error
+    assert "sensitive" not in repository.bindings[lease.binding.id].error
     assert len(provider.machines) == 1
 
 
@@ -382,10 +383,10 @@ async def test_background_recovery_preserves_only_explicit_safe_runtime_stage(se
     runtime.start.side_effect = VmRuntimeStageError("sandbox-create")
 
     assert await manager.status(session) == SessionStatus.PROVISIONING
-    await manager._recoveries[lease.id]
+    await manager._recoveries[(lease.id, lease.binding.id)]
 
     assert await manager.status(session) == SessionStatus.FAILED
-    assert repository.leases[lease.id].error == (
+    assert repository.bindings[lease.binding.id].error == (
         "Runtime startup failed at stage sandbox-create; inspect guest and stop session"
     )
 
@@ -445,7 +446,7 @@ async def test_manager_claims_standby_without_provisioning_another_machine(setup
             await manager._claim_warm(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
             is None
         )
-        assert repo.leases[spare.id].session_id is None
+        assert not repo.bindings
         return
     creates = len(provider.created)
     await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
@@ -483,8 +484,8 @@ async def test_cold_machine_bootstrap_never_contains_session_content(setup):
     manager, service, repository, _, runtime, _, session = setup
     spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
     await manager.start(session, spec)
-    lease = next(iter(repository.leases.values()))
-    assert (await service.machine_bootstrap_for(lease)).commands == ()
+    lease = await repository.active_for_session("pool", session.id)
+    assert (await service.machine_bootstrap_for(lease.allocation)).commands == ()
     assert (await service.bootstrap_for(lease)).commands == (("true",),)
 
 
@@ -599,12 +600,15 @@ async def test_status_of_a_ready_session_never_fails_on_a_concurrent_lease_opera
     await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
     assert await manager.wait_for_ready(session, 0.2) == SessionStatus.RUNNING
     lease = next(iter(repository.leases.values()))
+    binding = next(iter(repository.bindings.values()))
     repository.leases[lease.id] = lease.model_copy(update={"state": LeaseState.READY})
+    repository.bindings[binding.id] = binding.model_copy(update={"state": SlotState.STARTING})
     busy = AsyncMock(side_effect=ComputeLeaseBusyError("in progress"))
     service.mark_busy = busy
     assert await manager.status(session) == SessionStatus.RUNNING
     busy.assert_awaited_once()
-    repository.leases[lease.id] = lease.model_copy(update={"state": LeaseState.BUSY})
+    repository.leases[lease.id] = lease.model_copy(update={"state": LeaseState.IDLE})
+    repository.bindings[binding.id] = binding.model_copy(update={"state": SlotState.BUSY})
     busy.reset_mock()
     assert await manager.status(session) == SessionStatus.RUNNING
     busy.assert_not_awaited()
@@ -700,10 +704,10 @@ async def test_a_lease_expiring_while_the_runtime_is_unprepared_still_names_it(s
     reason = "Runner has no Skuld venv"
 
     async def unprepared(*_args, **_kwargs):
-        # The lease's deadline passes while the guest is still unprepared.
-        for lease_id, lease in list(repository.leases.items()):
-            repository.leases[lease_id] = lease.model_copy(
-                update={"provision_deadline": datetime.now(UTC) - timedelta(seconds=1)}
+        # The slot's start deadline passes while the guest is still unprepared.
+        for slot_id, binding in list(repository.bindings.items()):
+            repository.bindings[slot_id] = binding.model_copy(
+                update={"start_deadline": datetime.now(UTC) - timedelta(seconds=1)}
             )
         raise VmRuntimeUnavailableError(reason)
 
@@ -1130,3 +1134,661 @@ async def test_a_new_start_begins_a_new_launch():
     second = await stages_of(manager, session)
     assert second["allocate"].detail == "This session's own VM"
     assert first["allocate"].detail == "A new VM, profile small"
+
+
+# --- The slot ledger: one slot behaves as one session per machine always did ----------------
+
+
+SPEC = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+
+
+def _ledger(repository):
+    """The only machine and the only binding of a one-session test."""
+    return next(iter(repository.leases.values())), next(iter(repository.bindings.values()))
+
+
+async def _edit(repository, machine=None, binding=None):
+    """Rewrite ledger rows the way a concurrent controller would, under the allocation lock."""
+    current, slot = _ledger(repository)
+    async with repository.operation(current.id):
+        if machine is not None:
+            await repository.save(current.model_copy(update=machine))
+        if binding is not None:
+            await repository.save_slot(slot.model_copy(update=binding))
+
+
+async def test_a_cold_start_binds_the_session_to_slot_zero_of_its_own_machine(setup):
+    manager, service, repository, provider, _, _, session = setup
+
+    result = await manager.start(session, SPEC)
+
+    machine, binding = _ledger(repository)
+    assert result.pod_name == str(machine.id)
+    assert (binding.slot, binding.session_id, binding.state) == (0, session.id, SlotState.STARTING)
+    assert (binding.owner_id, binding.tenant_id) == ("owner", "tenant")
+    assert machine.slots == 1 and machine.state == LeaseState.READY
+    assert binding.runtime_started
+    assert len(provider.created) == 1
+
+
+async def test_a_running_session_leaves_its_machine_idle_and_its_slot_busy(setup):
+    manager, _, repository, _, _, _, session = setup
+    await manager.start(session, SPEC)
+
+    assert await manager.status(session) == SessionStatus.RUNNING
+
+    machine, binding = _ledger(repository)
+    assert (machine.state, binding.state) == (LeaseState.IDLE, SlotState.BUSY)
+    # Asking again changes nothing.
+    assert await manager.status(session) == SessionStatus.RUNNING
+    assert _ledger(repository) == (machine, binding)
+
+
+async def test_capacity_counts_slots_and_a_session_frees_its_own_slot_for_a_restart(setup):
+    manager, _, repository, _, _, _, session = setup
+    capacity = await manager.capacity()
+    assert (capacity.limit, capacity.active, capacity.available) == (1, 0, 1)
+
+    await manager.start(session, SPEC)
+    assert await manager.status(session) == SessionStatus.RUNNING
+
+    busy = await manager.capacity()
+    assert (busy.limit, busy.active, busy.available) == (1, 1, 0)
+    mine = await manager.capacity_for(session)
+    assert mine.available == 1
+    other = session.model_copy(update={"id": uuid4()})
+    assert (await manager.capacity_for(other)).available == 0
+
+
+async def test_an_idle_machine_with_a_free_slot_is_capacity_even_without_a_pool_policy(setup):
+    manager, _, repository, _, _, _, session = setup
+    await manager.start(session, SPEC)
+    await _edit(
+        repository, machine={"state": LeaseState.IDLE}, binding={"state": SlotState.RELEASED}
+    )
+
+    free = await manager.capacity()
+
+    assert (free.limit, free.active) == (1, 0)
+    # Still in service with a live session in the slot: the same machine counts as used.
+    await _edit(repository, binding={"state": SlotState.BUSY})
+    assert (await manager.capacity()).active == 1
+
+
+async def test_capacity_honours_a_paused_pool(setup):
+    manager, _, _, _, _, _, _ = setup
+    pool = AsyncMock()
+    pool.policy.return_value = ComputePoolPolicy(profile="small", max_machines=1, paused=True)
+    manager.configure_pool(pool)
+
+    capacity = await manager.capacity()
+
+    assert (capacity.limit, capacity.active) == (0, 0)
+
+
+async def test_capacity_multiplies_machines_by_the_policy_slots(setup):
+    manager, _, repository, _, _, _, session = setup
+    pool = AsyncMock()
+    pool.policy.return_value = ComputePoolPolicy(profile="small", max_machines=3)
+    manager.configure_pool(pool)
+    await manager.start(session, SPEC)
+
+    capacity = await manager.capacity()
+
+    # One machine is in service; two more may be created: three slots, one in use.
+    assert (capacity.limit, capacity.active) == (3, 1)
+
+
+async def test_a_machine_with_more_slots_than_the_policy_counts_its_own(setup):
+    manager, _, repository, _, _, _, session = setup
+    pool = AsyncMock()
+    pool.policy.return_value = ComputePoolPolicy(
+        profile="small", max_machines=2, slots_per_machine=2
+    )
+    manager.configure_pool(pool)
+    await manager.start(session, SPEC)
+    await _edit(repository, machine={"slots": 4})
+
+    capacity = await manager.capacity()
+
+    # The existing machine's four slots plus one new two-slot machine.
+    assert (capacity.limit, capacity.active) == (6, 4)
+
+
+async def test_a_session_cold_start_reserves_the_policys_slots_per_machine(setup):
+    manager, _, repository, _, _, _, session = setup
+    pool = AsyncMock()
+    pool.policy.return_value = ComputePoolPolicy(
+        profile="small", max_machines=1, slots_per_machine=2, provisioning_timeout_seconds=5
+    )
+    manager.configure_pool(pool)
+
+    await manager.start(session, SPEC)
+
+    assert next(iter(repository.leases.values())).slots == 2
+
+
+async def test_a_staged_runtime_failure_is_not_retried_by_a_second_start(setup):
+    manager, _, repository, _, runtime, _, session = setup
+    runtime.prepare.side_effect = VmRuntimeStageError("sandbox-create")
+    with pytest.raises(VmRuntimeStageError):
+        await manager.start(session, SPEC)
+    _, binding = _ledger(repository)
+    assert binding.error == (
+        "Runtime startup failed at stage sandbox-create; inspect guest and stop session"
+    )
+
+    runtime.prepare.side_effect = None
+    with pytest.raises(RuntimeError, match="stage sandbox-create"):
+        await manager.start(session, SPEC)
+
+    assert _ledger(repository)[1].state == SlotState.FAILED
+    assert runtime.start.await_count == 0
+
+
+async def test_a_failed_slot_with_a_machine_that_is_gone_is_not_retried(setup):
+    manager, _, repository, provider, runtime, _, session = setup
+    runtime.prepare.side_effect = RuntimeError("guest package conflict")
+    with pytest.raises(RuntimeError, match="package conflict"):
+        await manager.start(session, SPEC)
+    runtime.prepare.side_effect = None
+    machine, _ = _ledger(repository)
+    await _edit(
+        repository,
+        machine={"machine": machine.machine.model_copy(update={"state": MachineState.STOPPED})},
+    )
+
+    with pytest.raises(RuntimeError):
+        await manager.start(session, SPEC)
+
+    assert _ledger(repository)[1].state == SlotState.FAILED
+
+
+async def test_the_slot_binding_disappearing_during_start_is_an_error(setup):
+    manager, service, repository, _, _, _, session = setup
+    reconcile = service.reconcile
+
+    calls = 0
+
+    async def lose_binding(lease_id):
+        nonlocal calls
+        calls += 1
+        machine = await reconcile(lease_id)
+        # The first reconcile is the claim's own; the start loop's is the second.
+        if calls > 1:
+            repository.bindings.clear()
+        return machine
+
+    service.reconcile = lose_binding
+
+    with pytest.raises(RuntimeError, match="slot binding disappeared"):
+        await manager.start(session, SPEC)
+
+
+async def test_a_slot_that_ended_while_starting_fails_the_start_with_its_own_error(setup):
+    manager, service, repository, _, _, _, session = setup
+    reconcile = service.reconcile
+
+    async def drain_slot(lease_id):
+        machine = await reconcile(lease_id)
+        _, binding = _ledger(repository)
+        repository.bindings[binding.id] = binding.model_copy(
+            update={"state": SlotState.DRAINING, "error": "slot is being deleted"}
+        )
+        return machine
+
+    service.reconcile = drain_slot
+
+    with pytest.raises(RuntimeError, match="slot is being deleted"):
+        await manager.start(session, SPEC)
+
+
+async def test_start_refuses_a_machine_the_session_does_not_own(setup):
+    manager, _, repository, _, _, _, session = setup
+    await manager.start(session, SPEC)
+
+    with pytest.raises(ValueError, match="ownership"):
+        await manager.start(session.model_copy(update={"tenant_id": "other"}), SPEC)
+
+
+@pytest.mark.parametrize(
+    "change,expected",
+    [
+        ({"binding": {"state": SlotState.RETIRED}}, SessionStatus.STOPPED),
+        ({"binding": {"state": SlotState.DRAINING}}, SessionStatus.PROVISIONING),
+        ({"binding": {"state": SlotState.FAILED}}, SessionStatus.FAILED),
+        # A draining machine is deleted by the reconcile this very status performs.
+        ({"machine": {"state": LeaseState.DRAINING}}, SessionStatus.STOPPED),
+        ({"machine": {"state": LeaseState.FAILED}}, SessionStatus.FAILED),
+    ],
+)
+async def test_session_status_follows_the_slot_and_then_the_machine(setup, change, expected):
+    manager, _, repository, provider, _, _, session = setup
+    await manager.start(session, SPEC)
+    await _edit(repository, **change)
+
+    assert await manager.status(session) == expected
+
+
+async def test_a_released_machine_is_a_stopped_session(setup):
+    manager, _, repository, _, _, _, session = setup
+    await manager.start(session, SPEC)
+    machine, _ = _ledger(repository)
+    manager._service.reconcile = AsyncMock(
+        return_value=machine.model_copy(update={"state": LeaseState.RELEASED})
+    )
+
+    assert await manager.status(session) == SessionStatus.STOPPED
+
+
+async def test_a_vanished_binding_is_a_stopped_session(setup):
+    manager, _, repository, _, _, _, session = setup
+    await manager.start(session, SPEC)
+    repository.get_slot = AsyncMock(return_value=None)
+
+    assert await manager.status(session) == SessionStatus.STOPPED
+
+
+async def test_a_second_status_while_recovery_runs_does_not_start_another(setup):
+    manager, _, repository, _, runtime, _, session = setup
+    await manager.start(session, SPEC)
+    await _edit(repository, binding={"runtime_started": False})
+    release = asyncio.Event()
+
+    async def hold(*args):
+        await release.wait()
+
+    runtime.prepare.side_effect = hold
+
+    assert await manager.status(session) == SessionStatus.PROVISIONING
+    assert await manager.status(session) == SessionStatus.PROVISIONING
+    assert len(manager._recoveries) == 1
+    release.set()
+    await asyncio.gather(*manager._recoveries.values())
+
+
+async def test_recovery_that_finds_the_guest_booting_is_retried_later(setup):
+    manager, _, repository, _, runtime, _, session = setup
+    await manager.start(session, SPEC)
+    await _edit(repository, binding={"runtime_started": False})
+    runtime.prepare.side_effect = VmRuntimeUnavailableError("booting")
+
+    assert await manager.status(session) == SessionStatus.PROVISIONING
+    await asyncio.gather(*manager._recoveries.values())
+
+    assert not manager._recoveries
+    assert _ledger(repository)[1].state == SlotState.STARTING
+
+
+async def test_runtime_start_refuses_a_slot_that_changed_under_it(setup):
+    manager, _, repository, _, _, _, session = setup
+    await manager.start(session, SPEC)
+    machine, binding = _ledger(repository)
+    await _edit(repository, binding={"state": SlotState.FAILED})
+
+    with pytest.raises(RuntimeError, match="changed before runtime startup"):
+        await manager._start_runtime(machine.id, binding.id, MachineBootstrap())
+    with pytest.raises(RuntimeError, match="changed before runtime startup"):
+        await manager._start_runtime(machine.id, uuid4(), MachineBootstrap())
+
+
+async def test_runtime_start_refuses_a_bootstrap_the_slot_no_longer_has(setup):
+    manager, _, repository, _, _, _, session = setup
+    await manager.start(session, SPEC)
+    machine, binding = _ledger(repository)
+
+    with pytest.raises(ComputeLeaseBusyError, match="rebound"):
+        await manager._start_runtime(
+            machine.id, binding.id, MachineBootstrap(commands=(("other",),))
+        )
+
+
+async def test_runtime_start_without_a_slot_deadline_uses_the_provisioning_timeout(setup):
+    manager, service, repository, _, runtime, _, session = setup
+    await manager.start(session, SPEC)
+    machine, binding = _ledger(repository)
+    await _edit(repository, binding={"start_deadline": None, "runtime_started": False})
+    runtime.start.reset_mock()
+
+    await manager._start_runtime(
+        machine.id,
+        binding.id,
+        await service.bootstrap_for(await repository.active_for_session("pool", session.id)),
+    )
+
+    runtime.start.assert_awaited_once()
+    assert _ledger(repository)[1].runtime_started
+
+
+async def test_a_session_with_a_failed_or_draining_slot_has_no_proxy_target(setup):
+    manager, _, repository, _, _, _, session = setup
+    await manager.start(session, SPEC)
+    assert await manager.session_proxy_target(session) is not None
+
+    await _edit(repository, binding={"state": SlotState.FAILED})
+    assert await manager.session_proxy_target(session) is None
+    await _edit(repository, binding={"state": SlotState.STARTING})
+    await _edit(repository, machine={"state": LeaseState.DRAINING})
+    assert await manager.session_proxy_target(session) is None
+    await _edit(repository, machine={"state": LeaseState.READY, "machine": None})
+    assert await manager.session_proxy_target(session) is None
+
+
+async def test_status_detail_is_only_given_while_the_slot_is_starting(setup):
+    manager, _, repository, _, _, _, session = setup
+    assert await manager.status_detail(session) is None
+    await manager.start(session, SPEC)
+    manager._wait_reasons[session.id] = "Runtime not ready: booting"
+    assert await manager.status_detail(session) == "Runtime not ready: booting"
+
+    await _edit(repository, binding={"state": SlotState.BUSY})
+    assert await manager.status_detail(session) is None
+
+
+# --- stopping a slot -------------------------------------------------------------------------
+
+
+async def test_stop_of_a_session_whose_slot_already_ended_is_done(setup):
+    manager, _, repository, _, runtime, _, session = setup
+    await manager.start(session, SPEC)
+    machine, binding = _ledger(repository)
+    # Another controller already retired the slot.
+    async with repository.operation(machine.id):
+        await repository.save_slot(binding.model_copy(update={"state": SlotState.RETIRED}))
+
+    assert await manager.stop(session)
+    assert await manager.stop(session)
+    runtime.stop.assert_not_awaited()
+
+
+async def test_stop_finishes_a_deletion_an_earlier_attempt_began(setup):
+    manager, service, repository, provider, runtime, _, session = setup
+    await manager.start(session, SPEC)
+    machine, binding = _ledger(repository)
+    async with repository.operation(machine.id):
+        stopping = binding.model_copy(update={"stop_requested": True})
+        await repository.save_slot(stopping)
+        await service.retire_slot(machine, stopping, drain=True)
+    provider.delete_pending = True
+    stop = asyncio.create_task(manager.stop(session))
+    await asyncio.sleep(0.01)
+    provider.delete_pending = False
+
+    assert await stop
+    assert repository.leases[machine.id].state == LeaseState.RELEASED
+    assert machine.id not in provider.machines
+    # The archive was done before the earlier attempt marked the machine; it is not repeated.
+    runtime.stop.assert_not_awaited()
+
+
+async def test_stop_after_a_crash_between_marking_the_slot_and_the_machine_still_deletes(setup):
+    manager, _, repository, provider, _, _, session = setup
+    await manager.start(session, SPEC)
+    machine, binding = _ledger(repository)
+    await _edit(repository, binding={"state": SlotState.DRAINING, "stop_requested": True})
+
+    assert await manager.stop(session)
+
+    assert repository.leases[machine.id].state == LeaseState.RELEASED
+    assert machine.id not in provider.machines
+
+
+async def test_stop_with_a_pool_reuses_the_slot_when_the_runtime_allows(setup):
+    from volundr.domain.services.compute_pool import ComputePoolService
+
+    manager, service, repository, provider, runtime, _, session = setup
+    runtime.supports_reuse = True
+    pool = ComputePoolService(
+        repository,
+        service,
+        provider,
+        runtime,
+        pool_id="pool",
+        defaults=ComputePoolPolicy(profile="small", max_machines=1, reuse_policy="reuse"),
+        bootstrap=MachineBootstrap(),
+    )
+    manager.configure_pool(pool)
+    await manager.start(session, SPEC)
+
+    assert await manager.stop(session)
+
+    machine, binding = _ledger(repository)
+    assert machine.state == LeaseState.IDLE and binding.state == SlotState.RELEASED
+    runtime.recycle.assert_awaited_once()
+    assert machine.id in provider.machines
+    # The next session takes the same machine.
+    other = session.model_copy(update={"id": uuid4()})
+    await manager.start(other, SPEC)
+    assert len(provider.created) == 1
+    assert (await repository.active_for_session("pool", other.id)).id == machine.id
+
+
+async def test_stop_without_a_pool_never_reuses_a_slot(setup):
+    manager, _, repository, provider, runtime, _, session = setup
+    await manager.start(session, SPEC)
+
+    assert await manager.stop(session)
+
+    runtime.recycle.assert_not_awaited()
+    assert not provider.machines
+    machine, binding = _ledger(repository)
+    assert (machine.state, binding.state) == (LeaseState.RELEASED, SlotState.RETIRED)
+
+
+async def test_stop_of_a_slot_that_never_started_its_runtime_does_not_stop_the_guest(setup):
+    manager, _, repository, _, runtime, _, session = setup
+    runtime.prepare.side_effect = VmRuntimeUnavailableError("booting")
+    task = asyncio.create_task(manager.start(session, SPEC))
+    await asyncio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert await manager.stop(session)
+
+    runtime.stop.assert_not_awaited()
+
+
+@pytest.mark.parametrize("reads_before_it_vanishes", [0, 1])
+async def test_stop_names_a_claim_that_vanished(setup, reads_before_it_vanishes):
+    manager, _, repository, _, _, _, session = setup
+    await manager.start(session, SPEC)
+    original = repository.get
+    calls = 0
+
+    async def vanish(lease_id):
+        nonlocal calls
+        calls += 1
+        return None if calls > reads_before_it_vanishes else await original(lease_id)
+
+    repository.get = vanish
+
+    with pytest.raises(RuntimeError, match="disappeared during stop"):
+        await manager.stop(session)
+
+
+# --- placing a session on a warm machine ---------------------------------------------------------
+
+
+def _warm_pool(setup, **policy):
+    from volundr.domain.services.compute_pool import ComputePoolService
+
+    manager, service, repository, provider, runtime, _, session = setup
+    runtime.machine_bootstrap = lambda defaults: defaults
+    runtime.session_bootstrap = lambda session, spec, machine: machine
+    pool = ComputePoolService(
+        repository,
+        service,
+        provider,
+        runtime,
+        pool_id="pool",
+        defaults=ComputePoolPolicy(profile="small", max_machines=1, warm_min=1, **policy),
+        bootstrap=MachineBootstrap(),
+    )
+    manager.configure_pool(pool)
+    return pool, manager, repository, session
+
+
+async def test_a_warm_machine_with_a_stopping_session_is_not_offered(setup):
+    pool, manager, repository, session = _warm_pool(setup)
+    await pool.maintain()
+    await pool.maintain()
+    spare = next(iter(repository.leases.values()))
+    assert spare.state == LeaseState.IDLE
+
+    # Stop intent on a live slot hides the machine; here the slot is another session's.
+    other = session.model_copy(update={"id": uuid4()})
+    claimed = await manager._claim_warm(other, SPEC)
+    assert claimed is not None
+    await _edit(repository, binding={"stop_requested": True})
+
+    assert await manager._claim_warm(session, SPEC) is None
+
+
+async def test_a_warm_machine_of_another_profile_or_plan_is_skipped(setup):
+    pool, manager, repository, session = _warm_pool(setup)
+    await pool.maintain()
+    await pool.maintain()
+    spare = next(iter(repository.leases.values()))
+    repository.leases[spare.id] = spare.model_copy(update={"profile": "large"})
+
+    assert await manager._claim_warm(session, SPEC) is None
+
+    repository.leases[spare.id] = spare.model_copy(update={"execution_plan": AsyncMock()})
+    assert await manager._claim_warm(session, SPEC) is None
+
+
+@pytest.mark.parametrize("taken_by", ["failure", "another session"])
+async def test_a_warm_machine_taken_while_choosing_is_not_claimed_twice(setup, taken_by):
+    pool, manager, repository, session = _warm_pool(setup)
+    await pool.maintain()
+    await pool.maintain()
+    spare = next(iter(repository.leases.values()))
+    get = repository.get
+    taken = False
+
+    async def take_then_read(lease_id):
+        nonlocal taken
+        if not taken:
+            taken = True
+            if taken_by == "failure":
+                repository.leases[spare.id] = spare.model_copy(update={"state": LeaseState.FAILED})
+            else:
+                rival = ComputeSlot(
+                    id=uuid4(),
+                    allocation_id=spare.id,
+                    slot=0,
+                    pool_id="pool",
+                    session_id=uuid4(),
+                    tenant_id="tenant",
+                    owner_id="owner",
+                )
+                repository.bindings[rival.id] = rival
+        return await get(lease_id)
+
+    repository.get = take_then_read
+
+    assert await manager._claim_warm(session, SPEC) is None
+
+
+async def test_a_busy_warm_machine_is_skipped_for_the_next(setup):
+    pool, manager, repository, session = _warm_pool(setup)
+    await pool.maintain()
+    await pool.maintain()
+    attempts = 0
+
+    @asynccontextmanager
+    async def contested(lease_id):
+        nonlocal attempts
+        attempts += 1
+        raise ComputeLeaseBusyError("another controller")
+        yield
+
+    repository.operation = contested
+
+    assert await manager._claim_warm(session, SPEC) is None
+    assert attempts == 1
+
+
+async def test_close_cancels_recoveries_that_are_still_running(setup):
+    manager, _, repository, _, runtime, _, session = setup
+    await manager.start(session, SPEC)
+    await _edit(repository, binding={"runtime_started": False})
+
+    async def hold(*args):
+        await asyncio.Event().wait()
+
+    runtime.prepare.side_effect = hold
+
+    assert await manager.status(session) == SessionStatus.PROVISIONING
+    task = next(iter(manager._recoveries.values()))
+    await asyncio.sleep(0)
+
+    await manager.close()
+
+    assert task.cancelled()
+
+
+async def test_a_machine_still_booting_or_without_an_address_leaves_the_session_provisioning(setup):
+    manager, service, repository, _, _, _, session = setup
+    await manager.start(session, SPEC)
+    machine, _ = _ledger(repository)
+
+    service.reconcile = AsyncMock(
+        return_value=machine.model_copy(update={"state": LeaseState.PROVISIONING})
+    )
+    assert await manager.status(session) == SessionStatus.PROVISIONING
+
+    unaddressed = machine.machine.model_copy(update={"addresses": ()})
+    service.reconcile = AsyncMock(return_value=machine.model_copy(update={"machine": unaddressed}))
+    assert await manager.status(session) == SessionStatus.PROVISIONING
+
+
+def _interleave(repository, change):
+    """Run ``change`` just before the first operation lock of a stop, as maintenance would."""
+    operation = repository.operation
+    fired = False
+
+    @asynccontextmanager
+    async def wrapped(lease_id):
+        nonlocal fired
+        if not fired:
+            fired = True
+            change()
+        async with operation(lease_id):
+            yield
+
+    repository.operation = wrapped
+
+
+async def test_stop_is_done_when_maintenance_finished_the_slot_first(setup):
+    manager, _, repository, _, runtime, _, session = setup
+    await manager.start(session, SPEC)
+    _, binding = _ledger(repository)
+    _interleave(
+        repository,
+        lambda: repository.bindings.__setitem__(
+            binding.id, binding.model_copy(update={"state": SlotState.RELEASED})
+        ),
+    )
+
+    assert await manager.stop(session)
+
+    runtime.stop.assert_not_awaited()
+
+
+async def test_stop_deletes_a_machine_maintenance_began_draining_in_the_meantime(setup):
+    manager, _, repository, provider, runtime, _, session = setup
+    await manager.start(session, SPEC)
+    machine, _ = _ledger(repository)
+    _interleave(
+        repository,
+        lambda: repository.leases.__setitem__(
+            machine.id, machine.model_copy(update={"state": LeaseState.DRAINING})
+        ),
+    )
+
+    assert await manager.stop(session)
+
+    assert machine.id not in provider.machines
+    runtime.stop.assert_not_awaited()

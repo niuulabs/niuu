@@ -182,6 +182,19 @@ async def test_a_free_prepared_machine_makes_each_runtime_on_its_host_warm(tmp_p
         (ReadinessState.WARM, 1),
     ]
 
+    # A session takes the spare's only slot: it is in service, not warm.
+    plan = plans["vm"]
+    session = _session(manager, plan, _compute_execution=manager.execution_reference(plan))
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    assert len(repository.leases) == 1
+
+    offers = await manager.session_runtimes()
+
+    assert [(o.readiness.state, o.readiness.warm) for o in offers] == [
+        (ReadinessState.BOOT, 0),
+        (ReadinessState.BOOT, 0),
+    ]
+
 
 async def test_a_full_pool_names_where_capacity_is_raised(tmp_path: Path):
     resolver = _catalog(tmp_path, ["vm"])

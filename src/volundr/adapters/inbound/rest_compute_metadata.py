@@ -16,7 +16,7 @@ from volundr.domain.guest_credentials import (
     GuestRequest,
     GuestUnavailableReason,
 )
-from volundr.domain.services.guest_metadata import GuestMetadataService, GuestRequestError
+from volundr.domain.services.guest_metadata import BAD_BODY, GuestMetadataService, GuestRequestError
 
 MAX_METADATA_REQUEST_BYTES = 64 * 1024
 
@@ -25,7 +25,7 @@ _NO_STORE = {"Cache-Control": "no-store"}
 
 #: The only body text a guest sees; the exception's detail stays in Forge's log.
 _UNAVAILABLE = {reason: reason.value for reason in GuestUnavailableReason}
-_BAD_BODY = 'The request body must be {"allocation_id": "<uuid>"}'
+_BAD_BODY = BAD_BODY
 
 logger = logging.getLogger(__name__)
 
