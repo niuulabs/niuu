@@ -600,6 +600,9 @@ iproute2, iptables, curl and a `python3` with tarfile extraction filters:
    session image this adds wrappers for the agent CLIs (`claude`, `codex`,
    `opencode`, `grok`, `pi`, `muse`) and fallback tools (`gh`, `glab`, `uv`,
    `node`, `npm`); `warm` does it ahead of sessions. Pod images must be public.
+   Each slot claims the roots it runs from; the ones nothing uses are removed when a
+   session starts and after one stops ([compute-hosts.md](compute-hosts.md#linux-hosts),
+   **The image cache**).
 3. The pod's init containers run to completion and its sidecars (the guest
    agent, OpenBao's agent) start, each as a systemd unit
    `niuu-slot-<n>-{init,sidecar}-<name>` in the slot's slice: in the slot's

@@ -442,7 +442,8 @@ a daemon for Forge:
 - each slot is a user `niuu-slot-<n>`, a named network namespace with its own veth and
   NAT, and a systemd slice `niuu_slot_<n>.slice` with the slot's limits;
 - the session image (the OpenShell image) and the credential agents' images are fetched
-  from their registries by digest and unpacked under `/var/lib/niuu/host-images`;
+  from their registries by digest and unpacked under `/var/lib/niuu/host-images`
+  (below: **The image cache**);
 - the credential agents are systemd units `niuu-slot-<n>-sidecar-<name>` in the slot's
   slice, and the session runs in a delegated systemd scope there, with rootless Podman
   for the containers it builds and runs.
@@ -451,6 +452,33 @@ The host needs systemd, cgroup v2, `iproute2`, `iptables`, `curl` and a `python3
 tarfile extraction filters (3.10.12, 3.11.4, 3.12 or later); the host recipe installs
 the packages it can with apt or dnf. No Docker is needed, and one that is there is
 never given to a slot.
+
+**The image cache.** Each image is unpacked once per manifest digest into
+`/var/lib/niuu/host-images/<digest>` and shared by every slot that runs from it; a
+session image is about 3.7 GB, so each Niuu release adds one. Forge removes the ones
+nothing uses when a session starts (before it fetches, so the new release has room) and
+after a session stops. Several slots start and stop at once, so a root stays while:
+
+- a slot claims it: the unpack records the digest for its slot in
+  `/var/lib/niuu/host-images/.claims/niuu-slot-<n>.json` before it looks at the root,
+  and the claim holds while the slot's network namespace or its slice's cgroup exists
+  (until teardown has ended everything of the slot);
+- any process's mount table names it (a session started before claims existed);
+- an unpack running now holds it (a shared `flock` on the directory);
+- it is the release's session image, or an image the starting session runs (by pinned
+  digest, or by the reference it was unpacked by).
+
+Claims are written and roots chosen for removal under one lock
+(`/var/lib/niuu/host-images/.lock`), held only while deciding: a root chosen is moved
+into a `.trash-` directory there and deleted after the lock is released, so a slot that
+starts meanwhile unpacks it again rather than running from a root being deleted.
+Leftovers of an unpack or prune that was killed (`.fetch-`, `.session-`, `.trash-`) go
+on the next prune. Entries Forge did not make are never removed; Forge logs them at
+error. A prune that cannot run (an unreadable mount table, a claim it cannot parse)
+fails the session's start or stop with the reason; a cache nobody prunes would fill the
+host until it is quarantined below `min_free_disk_mib`. A host that is already
+quarantined for its free space and runs no session frees nothing on its own: remove the
+roots it no longer needs by hand (`ls /var/lib/niuu/host-images`; keep the release's).
 
 ## Slots and reuse
 

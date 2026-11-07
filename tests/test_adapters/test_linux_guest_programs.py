@@ -10,6 +10,7 @@ instead of made; the real thing is proven on a host.
 from __future__ import annotations
 
 import ast
+import fcntl
 import gzip
 import hashlib
 import io
@@ -20,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -49,7 +51,7 @@ SESSION = {
 
 
 def test_every_guest_program_parses():
-    for name in ("IMAGE", "CONTAINER", "PODS_START", "PODS_STOP"):
+    for name in ("IMAGE", "PRUNE", "CONTAINER", "PODS_START", "PODS_STOP"):
         ast.parse(getattr(programs, name))
 
 
@@ -64,7 +66,7 @@ def test_the_runtime_and_the_programs_agree_on_the_image_cache():
 # A ``curl`` that answers from routes.json (URL to file, status and headers) and logs what was
 # asked, with the arguments the program passes: --output, --dump-header, -H, --write-out.
 CURL = r"""
-import json, pathlib, sys, os
+import json, pathlib, sys, os, time
 args = sys.argv[1:]
 registry = pathlib.Path(os.environ['FAKE_REGISTRY'])
 def option(name):
@@ -82,6 +84,14 @@ if route.get('token') is not None and bearer != route['token']:
     status, header_lines = 401, route['challenge']
 elif 'file' in route:
     body = pathlib.Path(route['file']).read_bytes()
+if route.get('wait'):
+    # Hold the fetch until the test lets it go: an unpack caught mid-download.
+    pathlib.Path(route['wait'] + '.waiting').touch()
+    deadline = time.monotonic() + 60
+    while not os.path.exists(route['wait']):
+        if time.monotonic() > deadline:
+            sys.exit('the test never released ' + route['wait'])
+        time.sleep(0.01)
 for path, content in route.get('create', []):
     pathlib.Path(path).mkdir(parents=True, exist_ok=True)
     (pathlib.Path(path) / 'host.json').write_text(content) if content else None
@@ -193,7 +203,32 @@ class Registry:
         ]
         return self.document({"mediaType": media, "manifests": entries}, *tags)
 
-    def run(self, reference, session=None, *, prelude="", cache: Path | None = None):
+    def run(self, reference, session=None, *, prelude="", cache=None, claim=None):
+        return subprocess.run(
+            self._command(reference, session, prelude, cache, claim),
+            capture_output=True,
+            text=True,
+            env=self._environment(),
+        )
+
+    def start(self, reference, session=None, *, claim=None) -> subprocess.Popen:
+        """The image program, running in the background (a slot starting beside others)."""
+        return subprocess.Popen(
+            self._command(reference, session, "", None, claim),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self._environment(),
+        )
+
+    def _environment(self) -> dict[str, str]:
+        return {
+            **os.environ,
+            "PATH": f"{self.bin}:{os.environ['PATH']}",
+            "FAKE_REGISTRY": str(self.directory),
+        }
+
+    def _command(self, reference, session, prelude, cache, claim) -> list[str]:
         (self.directory / "routes.json").write_text(
             json.dumps(
                 {
@@ -206,23 +241,15 @@ class Registry:
                 }
             )
         )
-        return subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                prelude + programs.IMAGE,
-                reference,
-                str(cache or self.cache),
-                json.dumps(session),
-            ],
-            capture_output=True,
-            text=True,
-            env={
-                **os.environ,
-                "PATH": f"{self.bin}:{os.environ['PATH']}",
-                "FAKE_REGISTRY": str(self.directory),
-            },
-        )
+        return [
+            sys.executable,
+            "-c",
+            prelude + programs.IMAGE,
+            reference,
+            str(cache or self.cache),
+            json.dumps(session),
+            json.dumps(claim),
+        ]
 
     def requests(self) -> list[dict]:
         log = self.directory / "requests.jsonl"
@@ -267,7 +294,8 @@ def loaded(result: subprocess.CompletedProcess) -> dict:
 
 
 def only_cache(registry: Registry) -> list[str]:
-    return sorted(p.name for p in registry.cache.iterdir())
+    """What the cache holds besides its lock."""
+    return sorted(p.name for p in registry.cache.iterdir() if p.name != ".lock")
 
 
 def installed(registry: Registry) -> list[str]:
@@ -358,7 +386,7 @@ def test_an_index_with_no_image_for_this_platform_is_refused_naming_it(registry)
     result = registry.run(f"ghcr.io/niuulabs/openshell@{index}")
 
     assert result.returncode != 0 and f"has no linux/{ARCH} image" in result.stderr
-    assert not registry.cache.exists() or [p for p in registry.cache.iterdir()] == []
+    assert not registry.cache.exists() or only_cache(registry) == []
 
 
 @pytest.mark.parametrize(
@@ -884,6 +912,298 @@ def test_a_script_whose_interpreter_the_image_lacks_is_refused(registry):
     result = registry.run(f"ghcr.io/niuulabs/openshell@{digest}", SESSION)
 
     assert result.returncode != 0 and "has no interpreter for codex" in result.stderr
+
+
+# -- pruning the cache -------------------------------------------------------------------------
+
+
+class Proc:
+    """A ``/proc`` of fake processes: each a mount namespace link and a mount table."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.path.mkdir()
+        self.pids = 0
+
+    def process(self, namespace: int, mountinfo: str = "") -> Path:
+        self.pids += 1
+        directory = self.path / str(self.pids)
+        (directory / "ns").mkdir(parents=True)
+        (directory / "ns" / "mnt").symlink_to(f"mnt:[{namespace}]")
+        (directory / "mountinfo").write_text(mountinfo)
+        return directory
+
+
+@pytest.fixture
+def proc(tmp_path):
+    fake = Proc(tmp_path / "proc")
+    fake.process(1, "22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n")
+    return fake
+
+
+def prune(cache: Path, proc: Proc, keep: list[str] = ()) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-c", programs.PRUNE, str(cache), json.dumps(list(keep)), str(proc.path)],
+        capture_output=True,
+        text=True,
+    )
+
+
+def pruned(cache: Path, proc: Proc, keep: list[str] = ()) -> dict:
+    return loaded(prune(cache, proc, keep))
+
+
+def cached(registry: Registry, content: bytes, claim=None, *, tags=("latest",)) -> str:
+    """An image served and unpacked; returns its root's name (the manifest digest)."""
+    digest = registry.image([layer(("file", "etc/release", content))], {}, tags=tags)
+    loaded(registry.run(f"ghcr.io/niuulabs/openshell@{digest}", claim=claim))
+    return digest.split(":")[1]
+
+
+def slot(tmp_path: Path, name: str) -> dict:
+    """A slot's claim, alive while its (stand-in) namespace and cgroup paths exist."""
+    alive = [tmp_path / "netns" / name, tmp_path / "cgroup" / f"{name}.slice"]
+    for path in alive:
+        path.mkdir(parents=True)
+    return {"slot": name, "alive": [str(path) for path in alive]}
+
+
+def gone(claim: dict) -> None:
+    for path in claim["alive"]:
+        os.rmdir(path)
+
+
+def held(path: Path, mode=None):
+    """Hold ``path`` as a running unpack does (a shared lock on the directory)."""
+    fd = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY)
+    fcntl.flock(fd, mode if mode is not None else fcntl.LOCK_SH)
+    return fd
+
+
+def test_a_prune_of_a_cache_never_made_removes_nothing(tmp_path, proc):
+    assert pruned(tmp_path / "cache", proc) == {
+        "removed": [],
+        "in_use": [],
+        "kept": [],
+        "unknown": [],
+    }
+    assert not (tmp_path / "cache").exists()
+
+
+def test_old_releases_go_and_the_kept_ones_stay_by_digest_or_by_reference(registry, proc):
+    old = cached(registry, b"1", tags=("v1",))
+    by_digest = cached(registry, b"2", tags=("v2",))
+    by_tag = registry.image([layer(("file", "etc/release", b"3"))], {}, tags=("v3",))
+    loaded(registry.run("ghcr.io/niuulabs/openshell:v3"))
+    tagged = by_tag.split(":")[1]
+
+    result = pruned(
+        registry.cache,
+        proc,
+        [f"ghcr.io/niuulabs/openshell@sha256:{by_digest}", "ghcr.io/niuulabs/openshell:v3"],
+    )
+
+    assert result["removed"] == [old]
+    assert sorted(result["kept"]) == sorted([by_digest, tagged])
+    assert only_cache(registry) == sorted([by_digest, tagged])
+
+
+def test_a_root_a_live_slot_claims_stays_until_the_slot_is_gone(registry, proc, tmp_path):
+    claim = slot(tmp_path, "niuu-slot-1")
+    root = cached(registry, b"1", claim)
+    record = json.loads((registry.cache / ".claims" / "niuu-slot-1.json").read_text())
+    assert record == {"digests": [root], "alive": claim["alive"]}
+
+    assert pruned(registry.cache, proc)["in_use"] == [root]
+    assert only_cache(registry) == [".claims", root]
+
+    # Torn down: its namespace went, its cgroup stays until nothing of the slot runs.
+    os.rmdir(claim["alive"][0])
+    assert pruned(registry.cache, proc)["in_use"] == [root]
+    os.rmdir(claim["alive"][1])
+    result = pruned(registry.cache, proc)
+
+    assert result["removed"] == [root]
+    assert only_cache(registry) == [".claims"]
+    assert list((registry.cache / ".claims").iterdir()) == []
+
+
+def test_a_slot_claims_every_image_it_runs_from_and_one_unpacked_before(registry, proc, tmp_path):
+    warm = cached(registry, b"session")  # a warm unpack: no slot, no claim
+    claim = slot(tmp_path, "niuu-slot-0")
+    agent = cached(registry, b"agent", claim, tags=("agent",))
+    loaded(registry.run(f"ghcr.io/niuulabs/openshell@sha256:{warm}", claim=claim))
+
+    record = json.loads((registry.cache / ".claims" / "niuu-slot-0.json").read_text())
+    assert record["digests"] == [agent, warm]
+    assert sorted(pruned(registry.cache, proc)["in_use"]) == sorted([agent, warm])
+
+
+def test_one_slots_teardown_leaves_the_roots_another_slot_runs_from(registry, proc, tmp_path):
+    first, second = slot(tmp_path, "niuu-slot-0"), slot(tmp_path, "niuu-slot-1")
+    shared = cached(registry, b"shared", first, tags=("shared",))
+    loaded(registry.run(f"ghcr.io/niuulabs/openshell@sha256:{shared}", claim=second))
+    own = cached(registry, b"own", first, tags=("own",))
+
+    gone(first)
+    result = pruned(registry.cache, proc)
+
+    assert result == {"removed": [own], "in_use": [shared], "kept": [], "unknown": []}
+    assert [path.name for path in (registry.cache / ".claims").iterdir()] == ["niuu-slot-1.json"]
+
+
+def test_a_root_any_mount_table_names_stays(registry, proc):
+    skuld = cached(registry, b"skuld", tags=("skuld",))
+    agent = cached(registry, b"agent", tags=("agent",))
+    unused = cached(registry, b"unused", tags=("unused",))
+    cache = registry.cache
+    # A session that started before claims existed: Skuld's view is a bind mount of its root,
+    # an agent an overlay on its rootfs, each seen from its own mount namespace.
+    skuld_table = (
+        f"301 22 8:1 {cache}/{skuld} /opt/niuu-skuld ro,relatime master:1 - ext4 /dev/sda1 rw\n"
+    )
+    proc.process(7, skuld_table)
+    proc.process(7, skuld_table)  # the same namespace again, read once
+    proc.process(
+        8,
+        f"402 22 0:51 / /run/niuu/host-pods/x/root rw - overlay overlay "
+        f"rw,lowerdir={cache}/{agent}/rootfs,upperdir=/run/u,workdir=/run/w\n",
+    )
+    ended = proc.process(9)
+    os.unlink(ended / "mountinfo")  # a process that ended mid-scan
+
+    result = pruned(cache, proc)
+
+    assert sorted(result["in_use"]) == sorted([skuld, agent])
+    assert result["removed"] == [unused]
+
+
+def test_unpack_leftovers_go_unless_a_running_program_holds_them(registry, proc):
+    cached(registry, b"1")
+    cache = registry.cache
+    leftovers = [cache / name for name in (".fetch-dead", ".session-dead", ".trash-dead")]
+    for path in leftovers:
+        (path / "rootfs").mkdir(parents=True)
+    running = cache / ".fetch-running"
+    running.mkdir()
+    fd = held(running)
+    try:
+        result = pruned(cache, proc)
+    finally:
+        os.close(fd)
+
+    assert result["in_use"] == [".fetch-running"]
+    assert not [path for path in leftovers if path.exists()]
+    assert running.exists()
+
+
+def test_entries_forge_did_not_make_are_left_and_named(registry, proc):
+    registry.cache.mkdir()
+    (registry.cache / "notes.txt").write_text("mine")
+    (registry.cache / ("f" * 64)).write_text("a file with a root's name")
+
+    result = pruned(registry.cache, proc)
+
+    assert sorted(result["unknown"]) == sorted(["f" * 64, "notes.txt"])
+    assert (registry.cache / "notes.txt").read_text() == "mine"
+
+
+def test_a_prune_that_cannot_read_a_mount_table_fails_naming_it(registry, proc):
+    if os.geteuid() == 0:
+        pytest.skip("root reads every mount table")
+    old = cached(registry, b"1")
+    hidden = proc.process(5, "")
+    (hidden / "mountinfo").chmod(0)
+
+    result = prune(registry.cache, proc)
+
+    assert result.returncode != 0 and "PermissionError" in result.stderr
+    assert old in only_cache(registry)
+
+
+def test_a_claim_that_is_not_a_slots_is_refused_before_any_request(registry):
+    for claim in (
+        {"slot": "../escape", "alive": ["/run/netns/x"]},
+        {"slot": "niuu-slot-0", "alive": []},
+        {"slot": "niuu-slot-0", "alive": ["relative"]},
+    ):
+        result = registry.run("ghcr.io/niuulabs/openshell:dev", claim=claim)
+        assert result.returncode != 0 and "Not a slot claim" in result.stderr
+    assert registry.urls() == []
+
+
+def test_a_prune_beside_a_slot_mid_unpack_removes_nothing_that_slot_needs(registry, proc, tmp_path):
+    """Slot 1 starts while slot 0's session stops and prunes: the race this cache must win."""
+    old = cached(registry, b"old", tags=("old",))
+    digest = registry.image([layer(("file", "etc/release", b"new"))], {}, tags=("new",))
+    root = digest.split(":")[1]
+    release = tmp_path / "release-blobs"
+    for url in registry.routes:
+        if "/blobs/" in url:
+            registry.routes[url]["wait"] = str(release)
+    claim = slot(tmp_path, "niuu-slot-1")
+    starting = registry.start(f"ghcr.io/niuulabs/openshell@{digest}", claim=claim)
+    try:
+        waiting = Path(str(release) + ".waiting")
+        deadline = time.monotonic() + 60
+        while not waiting.exists() and starting.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert waiting.exists(), starting.communicate()
+
+        # Mid-download: the slot has claimed the digest and holds its work directory.
+        during = pruned(registry.cache, proc)
+        assert during["removed"] == [old]
+        assert [name for name in during["in_use"] if name.startswith(".fetch-")]
+        assert (
+            root
+            in json.loads((registry.cache / ".claims" / "niuu-slot-1.json").read_text())["digests"]
+        )
+    finally:
+        release.touch()
+        out, err = starting.communicate(timeout=60)
+    assert starting.returncode == 0, err
+    assert json.loads(out)["digest"] == digest
+
+    # Unpacked and running: the claim keeps it; torn down, it goes.
+    assert pruned(registry.cache, proc)["in_use"] == [root]
+    assert only_cache(registry) == [".claims", root]
+    gone(claim)
+    assert pruned(registry.cache, proc)["removed"] == [root]
+
+
+def test_an_unpack_claims_its_root_only_under_the_caches_lock(registry, proc, tmp_path):
+    """While a prune holds the lock, a starting slot can neither claim nor read a root."""
+    root = cached(registry, b"1")
+    claim = slot(tmp_path, "niuu-slot-2")
+    lock = os.open(str(registry.cache / ".lock"), os.O_RDWR)
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        starting = registry.start(f"ghcr.io/niuulabs/openshell@sha256:{root}", claim=claim)
+        try:
+            starting.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        assert starting.poll() is None
+        assert not (registry.cache / ".claims").exists()
+    finally:
+        os.close(lock)
+    out, err = starting.communicate(timeout=60)
+
+    assert starting.returncode == 0, err
+    assert pruned(registry.cache, proc)["in_use"] == [root]
+
+
+def test_a_root_an_unpack_holds_is_not_removed_even_unclaimed(registry, proc):
+    """A warm unpack claims nothing; while it runs, the lock it holds on the root keeps it."""
+    root = cached(registry, b"1")
+    fd = held(registry.cache / root)
+    try:
+        result = pruned(registry.cache, proc)
+    finally:
+        os.close(fd)
+
+    assert result["in_use"] == [root]
+    assert pruned(registry.cache, proc)["removed"] == [root]
 
 
 # -- the pod containers' units -----------------------------------------------------------------

@@ -60,6 +60,13 @@ _SESSION_IMAGE_WRAPPERS = {
     "view": module.HOST_IMAGE_VIEW,
 }
 AGENT = "ghcr.io/niuulabs/guest-agent@sha256:" + "b" * 64
+#: What ``linux_guest_programs.PRUNE`` prints when it found nothing to remove.
+PRUNED = {"removed": [], "in_use": [], "kept": [], "unknown": []}
+#: Slot 2's claim on the images it runs from: alive while its namespace or cgroup is there.
+CLAIM = {
+    "slot": "niuu-slot-2",
+    "alive": ["/run/netns/niuu-slot-2", "/sys/fs/cgroup/niuu_slot_2.slice"],
+}
 OPENBAO = "quay.io/openbao/openbao@sha256:" + "c" * 64
 
 
@@ -120,9 +127,11 @@ def host(tmp_path):
     lease = SlotView(allocation, session.id, 2, machine)
 
     async def execute(lease_, bootstrap_, command, **kwargs):
+        if command.startswith(runtime._python(programs.PRUNE) + " "):
+            return GuestCommandResult(0, json.dumps(PRUNED).encode())
         if not command.startswith(runtime._python(programs.IMAGE) + " "):
             return GuestCommandResult(0, b"{}")
-        reference = shlex.split(command)[-3]
+        reference = shlex.split(command)[-4]
         description = UNPACKED if reference == IMAGE else _description(reference)
         return GuestCommandResult(0, json.dumps(description).encode())
 
@@ -299,14 +308,22 @@ async def test_start_runs_the_slot_agents_unpacks_skuld_then_starts_it_as_the_sl
     assert commands[0] == runtime._python(runtime._supervisor, "up")
     # The slot keeps no holder container: its namespace is the supervisor's own.
     assert json.loads(calls[0].kwargs["data"])["holder"] is None
-    pods = json.loads(calls[3].kwargs["data"])
-    assert commands[3] == runtime._python(programs.PODS_START)
-    assert "containers_only" not in pods and pods["pods"]["images"] == {}
-    assert commands[4] == runtime._python(
-        programs.IMAGE, IMAGE, "/var/lib/niuu/host-images", json.dumps(_SESSION_IMAGE_WRAPPERS)
+    # Before anything is fetched: the images no slot uses go, the release's stays.
+    assert commands[3] == runtime._python(
+        programs.PRUNE, "/var/lib/niuu/host-images", json.dumps([IMAGE]), "/proc"
     )
-    assert commands[5] == runtime._python(module._HOST_START)
-    started = json.loads(calls[5].kwargs["data"])
+    pods = json.loads(calls[4].kwargs["data"])
+    assert commands[4] == runtime._python(programs.PODS_START)
+    assert "containers_only" not in pods and pods["pods"]["images"] == {}
+    assert commands[5] == runtime._python(
+        programs.IMAGE,
+        IMAGE,
+        "/var/lib/niuu/host-images",
+        json.dumps(_SESSION_IMAGE_WRAPPERS),
+        json.dumps(CLAIM),
+    )
+    assert commands[6] == runtime._python(module._HOST_START)
+    started = json.loads(calls[6].kwargs["data"])
     host_spec = started["host"]
     key = f"{lease.id}-slot-2"
     assert host_spec["pidfile"] == f"/run/niuu/host-sessions/{key}.pid"
@@ -351,6 +368,7 @@ async def test_start_runs_the_slot_agents_unpacks_skuld_then_starts_it_as_the_sl
         "guest_slot",
         "guest_files",
         "guest_tunnel",
+        "guest_prune",
         "guest_skuld",
         "guest_image",
         "guest_host",
@@ -388,13 +406,22 @@ async def test_a_launch_with_agents_fetches_each_distinct_pod_image_once_before_
     await runtime._launch_skuld(lease, bootstrap, payload)
 
     calls = _calls(runtime)
+    # The launch's own images are kept by the prune that runs before they are fetched.
+    assert _program(calls[0]) == runtime._python(
+        programs.PRUNE, "/var/lib/niuu/host-images", json.dumps([IMAGE, AGENT, OPENBAO]), "/proc"
+    )
+    calls = calls[1:]
     commands = [_program(call) for call in calls]
-    fetched = [shlex.split(command)[-3] for command in commands[:2]]
+    fetched = [shlex.split(command)[-4] for command in commands[:2]]
     # In order of first use, the guest agent image once for its init container and sidecar.
     assert fetched == [AGENT, OPENBAO]
     for command in commands[:2]:
         assert command.startswith(runtime._python(programs.IMAGE) + " ")
-        assert shlex.split(command)[-2:] == ["/var/lib/niuu/host-images", "null"]
+        assert shlex.split(command)[-3:] == [
+            "/var/lib/niuu/host-images",
+            "null",
+            json.dumps(CLAIM),
+        ]
     assert commands[2] == runtime._python(programs.PODS_START)
     sent = json.loads(calls[2].kwargs["data"])
     assert sent["init_containers"] == payload["init_containers"]
@@ -412,7 +439,45 @@ async def test_a_launch_with_agents_fetches_each_distinct_pod_image_once_before_
     assert described[OPENBAO]["rootfs"] == f"/var/lib/niuu/host-images/{'e' * 64}/rootfs"
     assert commands[3].startswith(runtime._python(programs.IMAGE) + " ")
     assert commands[4] == runtime._python(module._HOST_START)
-    assert steps == ["guest_images", "guest_skuld", "guest_image", "guest_host"]
+    assert steps == ["guest_prune", "guest_images", "guest_skuld", "guest_image", "guest_host"]
+
+
+async def test_a_prune_that_cannot_run_fails_the_start_before_anything_is_fetched(host):
+    runtime, bootstrap, lease = host
+    original = runtime._guest_access.execute.side_effect
+
+    async def execute(lease_, bootstrap_, command, **kwargs):
+        if command.startswith(runtime._python(programs.PRUNE) + " "):
+            raise RuntimeError("PermissionError: /proc/77/mountinfo")
+        return await original(lease_, bootstrap_, command, **kwargs)
+
+    runtime._guest_access.execute.side_effect = execute
+
+    with pytest.raises(RuntimeError, match="mountinfo"):
+        await runtime._launch_skuld(lease, bootstrap, _pod_payload())
+
+    assert len(_calls(runtime)) == 1
+
+
+async def test_a_prune_logs_what_it_removed_and_errors_on_entries_forge_did_not_make(host, caplog):
+    runtime, bootstrap, lease = host
+    original = runtime._guest_access.execute.side_effect
+    found = {**PRUNED, "removed": ["f" * 64], "unknown": ["notes.txt"]}
+
+    async def execute(lease_, bootstrap_, command, **kwargs):
+        if command.startswith(runtime._python(programs.PRUNE) + " "):
+            return GuestCommandResult(0, json.dumps(found).encode())
+        return await original(lease_, bootstrap_, command, **kwargs)
+
+    runtime._guest_access.execute.side_effect = execute
+
+    with caplog.at_level("INFO", logger=module.__name__):
+        await runtime.stop(lease, bootstrap)
+
+    removed = [r for r in caplog.records if "Removed 1 unused image" in r.getMessage()]
+    assert removed and removed[0].levelname == "INFO" and "f" * 64 in removed[0].getMessage()
+    foreign = [r for r in caplog.records if "notes.txt" in r.getMessage()]
+    assert foreign and foreign[0].levelname == "ERROR"
 
 
 async def test_a_launch_without_agents_fetches_no_pod_image(host):
@@ -423,7 +488,8 @@ async def test_a_launch_without_agents_fetches_no_pod_image(host):
     await runtime._launch_skuld(lease, bootstrap, {"environment": {}})
 
     assert "guest_images" not in steps
-    assert len(_calls(runtime)) == 3  # the pods program, the session image, the session
+    # The prune, the pods program, the session image, the session.
+    assert len(_calls(runtime)) == 4
 
 
 def test_the_pods_spec_names_the_slots_units_state_and_images(host):
@@ -461,7 +527,7 @@ def test_the_pods_spec_names_the_slots_units_state_and_images(host):
 async def test_a_fetched_image_is_described_with_its_unpacked_root(host):
     runtime, bootstrap, lease = host
 
-    fetched = await runtime._fetch_image(lease, bootstrap, AGENT)
+    fetched = await runtime._fetch_image(lease, bootstrap, AGENT, None)
 
     assert fetched == {
         **_description(AGENT),
@@ -559,7 +625,11 @@ async def test_stop_ends_the_host_session_before_archiving_and_removing_the_slot
     assert "-C /var/lib/niuu/slots/2/session" in commands[2]
     assert commands[3] == runtime._python(runtime._supervisor, "limits")
     assert commands[4] == runtime._python(runtime._supervisor, "down")
-    assert len(commands) == 5
+    # The slot is gone and its claims with it: what only it ran from goes, the release's stays.
+    assert commands[5] == runtime._python(
+        programs.PRUNE, "/var/lib/niuu/host-images", json.dumps([IMAGE]), "/proc"
+    )
+    assert len(commands) == 6
     runtime._guest_access.close_tunnel.assert_awaited_once()
     # No container engine is asked to stop or remove anything.
     assert not [command for command in commands if "docker" in command]
@@ -603,10 +673,11 @@ async def test_a_session_cancelled_before_its_storage_was_prepared_keeps_the_pre
     commands = [_program(call) for call in _calls(runtime)]
     assert not [command for command in commands if " tar " in command]
     # The slot is still reported and removed, and the tunnel closed.
-    assert commands[-2:] == [
+    assert commands[-3:-1] == [
         runtime._python(runtime._supervisor, "limits"),
         runtime._python(runtime._supervisor, "down"),
     ]
+    assert commands[-1].startswith(runtime._python(programs.PRUNE) + " ")
     runtime._guest_access.close_tunnel.assert_awaited_once()
 
 
@@ -618,10 +689,12 @@ async def test_warm_prepares_the_machine_and_unpacks_the_session_image_without_a
     commands = [_program(call) for call in _calls(runtime)]
     assert not [command for command in commands if "docker" in command]
     assert commands[-1].startswith(runtime._python(programs.IMAGE) + " ")
-    assert shlex.split(commands[-1])[-3:] == [
+    # No slot runs from a warm unpack, so it claims nothing.
+    assert shlex.split(commands[-1])[-4:] == [
         IMAGE,
         "/var/lib/niuu/host-images",
         json.dumps(_SESSION_IMAGE_WRAPPERS),
+        "null",
     ]
 
 

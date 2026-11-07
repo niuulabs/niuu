@@ -23,7 +23,9 @@ limits sit under the slot's), its own runtime directory, and its storage in its 
 It never gets a root daemon or sudo.
 
 Images are fetched from their registries by digest and unpacked once per digest on the
-machine (``linux_guest_programs.IMAGE``). Skuld's own image is bind-mounted read-only
+machine (``linux_guest_programs.IMAGE``), each claimed for the slot that runs from it,
+and the ones nothing uses are removed when a session starts and when one stops
+(``linux_guest_programs.PRUNE``). Skuld's own image is bind-mounted read-only
 at its paths in the session's mount namespace; its Python must be relocatable (uv's
 python-build-standalone, as in ``ghcr.io/niuulabs/openshell``): a distribution's
 interpreter only runs inside its own root.
@@ -32,6 +34,7 @@ interpreter only runs inside its own root.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import PurePosixPath
 
@@ -59,6 +62,8 @@ from volundr.domain.compute import AllocationRef, MachineBootstrap, SlotLease
 from volundr.domain.models import Session
 from volundr.domain.vm_runtime import SessionImages
 
+logger = logging.getLogger(__name__)
+
 #: Where pod images are unpacked on the machine, one directory per digest.
 HOST_IMAGE_CACHE = programs.IMAGE_CACHE
 #: Where a session sees its unpacked image (wrappers under ``agents``/``tools``).
@@ -77,6 +82,10 @@ _SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 _HOME = "/home/skuld"
 _WORKSPACE = "/workspace"
 _DIGEST = re.compile(r"@sha256:([a-f0-9]{64})$")
+#: What exists while a slot does (``vm_slot_supervisor``): its named network namespace and
+#: its slice's cgroup, which outlives the namespace until nothing of the slot runs.
+_NETNS = "/run/netns"
+_CGROUP = "/sys/fs/cgroup"
 
 #: What the agent is told about the machine it runs on.
 HOST_HINT = (
@@ -492,26 +501,74 @@ class SshHostVmRuntime(HostModeRuntime):
 
     async def warm(self, lease, bootstrap: MachineBootstrap) -> None:
         # No container daemon to pull into: the session image is unpacked from its registry.
+        # No slot runs from it yet, so nothing claims it; every prune keeps the release's.
         await self.prepare(lease, bootstrap)
-        await self._unpack(lease, bootstrap)
+        await self._unpack(lease, bootstrap, None)
 
-    async def _unpack(self, lease, bootstrap: MachineBootstrap) -> dict:
+    async def _unpack(self, lease, bootstrap: MachineBootstrap, claim: dict | None) -> dict:
         """The session image, unpacked on the machine (once per digest), described."""
         session = {"agents": AGENT_COMMANDS, "tools": FALLBACK_TOOLS, "view": HOST_IMAGE_VIEW}
-        return await self._fetch_image(lease, bootstrap, self._image, session)
+        return await self._fetch_image(lease, bootstrap, self._image, claim, session)
 
     async def _fetch_image(
-        self, lease: AllocationRef, bootstrap: MachineBootstrap, image: str, session=None
+        self,
+        lease: AllocationRef,
+        bootstrap: MachineBootstrap,
+        image: str,
+        claim: dict | None,
+        session: dict | None = None,
     ) -> dict:
         result = await self._guest_access.execute(
             lease,
             bootstrap,
-            self._python(programs.IMAGE, image, HOST_IMAGE_CACHE, json.dumps(session)),
+            self._python(
+                programs.IMAGE, image, HOST_IMAGE_CACHE, json.dumps(session), json.dumps(claim)
+            ),
             capture_stdout=True,
         )
         description = json.loads(result.stdout)
         root = f"{HOST_IMAGE_CACHE}/{description['digest'].split(':', 1)[1]}"
         return {**description, "root": root, "rootfs": f"{root}/rootfs"}
+
+    @staticmethod
+    def _claim(layout: SlotLayout) -> dict:
+        """The slot's claim on the images it runs from: alive while the slot is there."""
+        return {
+            "slot": layout.name,
+            "alive": [f"{_NETNS}/{layout.name}", f"{_CGROUP}/{layout.slice}"],
+        }
+
+    async def _prune_images(
+        self, lease: AllocationRef, bootstrap: MachineBootstrap, keep: list[str]
+    ) -> None:
+        """Remove the unpacked images no slot claims, no mount names and ``keep`` does not.
+
+        A prune that cannot run raises: an image cache nobody prunes fills the machine
+        until it is quarantined below its free-disk floor.
+        """
+        result = await self._guest_access.execute(
+            lease,
+            bootstrap,
+            self._python(programs.PRUNE, HOST_IMAGE_CACHE, json.dumps(keep), "/proc"),
+            capture_stdout=True,
+        )
+        pruned = json.loads(result.stdout)
+        if pruned["removed"]:
+            logger.info(
+                "Removed %d unused image(s) from %s on allocation %s: %s",
+                len(pruned["removed"]),
+                HOST_IMAGE_CACHE,
+                lease.id,
+                ", ".join(pruned["removed"]),
+            )
+        if pruned["unknown"]:
+            logger.error(
+                "%s on allocation %s holds entries Forge did not make and never removes: %s; "
+                "remove them on the machine",
+                HOST_IMAGE_CACHE,
+                lease.id,
+                ", ".join(pruned["unknown"]),
+            )
 
     def _subordinate_ids(self, layout: SlotLayout) -> dict | None:
         if self._containers is None:
@@ -608,11 +665,16 @@ class SshHostVmRuntime(HostModeRuntime):
     ) -> None:
         layout = self._slot(lease)
         containers = [*payload.get("init_containers", []), *payload.get("sidecars", [])]
+        references = list(dict.fromkeys(container["image"] for container in containers))
+        # Before fetching: room for what this launch unpacks, and what it runs from stays.
+        self._step(lease, "guest_prune", "Removing images no session uses")
+        await self._prune_images(lease, bootstrap, [self._image, *references])
+        claim = self._claim(layout)
         images: dict[str, dict] = {}
-        if containers:
+        if references:
             self._step(lease, "guest_images", "Fetching the session's agent images")
-            for reference in dict.fromkeys(container["image"] for container in containers):
-                images[reference] = await self._fetch_image(lease, bootstrap, reference)
+            for reference in references:
+                images[reference] = await self._fetch_image(lease, bootstrap, reference, claim)
         self._step(lease, "guest_skuld", "Starting the session's agents")
         await self._guest_access.execute(
             lease,
@@ -621,7 +683,7 @@ class SshHostVmRuntime(HostModeRuntime):
             data=json.dumps({**payload, "pods": self._pods_spec(layout, images)}).encode(),
         )
         self._step(lease, "guest_image", "Unpacking Skuld onto the machine")
-        image = await self._unpack(lease, bootstrap)
+        image = await self._unpack(lease, bootstrap, claim)
         host = self._host_spec(layout, payload, image)
         environment = host.pop("environment")
         self._step(lease, "guest_host", f"Starting Skuld as {layout.name}")
@@ -631,6 +693,12 @@ class SshHostVmRuntime(HostModeRuntime):
             self._python(_HOST_START),
             data=json.dumps({**payload, "environment": environment, "host": host}).encode(),
         )
+
+    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
+        await super().stop(lease, bootstrap)
+        # The slot is gone, and its claims with it: what only it ran from goes too. The
+        # release's session image stays for the next session.
+        await self._prune_images(lease, bootstrap, [self._image])
 
     async def _stop_session(
         self, lease: SlotLease, bootstrap: MachineBootstrap, layout: SlotLayout

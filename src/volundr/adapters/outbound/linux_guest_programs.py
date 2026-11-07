@@ -7,6 +7,10 @@ Docker, these programs do with the kernel, systemd and the standard library:
 * ``IMAGE`` fetches a pod image from its registry (anonymous pull, every blob checked
   against its digest) and unpacks its layers once per digest, applying whiteouts, into
   ``/var/lib/niuu/host-images/<digest>/rootfs``. No container engine is involved.
+* ``PRUNE`` removes the unpacked images nothing uses. Several slots start and run at
+  once, so what is in use is decided under the cache's lock (``_CACHE``): a root a slot
+  claimed (``IMAGE`` records it for the slot before it looks at the root), one any mount
+  table names, one an unpack running now holds, and the ones the caller keeps.
 * ``CONTAINER`` runs one pod container from such a root: in the slot's network
   namespace, its own mount and PID namespaces, on an overlay whose writable layer is a
   fresh tmpfs (as a container's is), with the pod's mounts bound at their targets. It is
@@ -23,16 +27,56 @@ from __future__ import annotations
 #: Where pod images are unpacked on a host, one directory per manifest digest.
 IMAGE_CACHE = "/var/lib/niuu/host-images"
 
+#: Where a slot's claims on unpacked images are kept: ``<slot>.json`` with the digests it
+#: unpacked or reused and the paths that exist while the slot does (``alive``).
+CLAIMS = ".claims"
+
+#: Shared by ``IMAGE`` and ``PRUNE``: the cache's lock and the directory locks of a run.
+#: Whatever an unpack claims or starts to hold, and whatever a prune decides to remove, is
+#: done under the cache's lock (held for moments, never across a download or a removal).
+#: An unpack holds a shared lock on each directory it uses (its work directories, the root
+#: it reads) while it runs; a prune removes only what it can lock exclusively.
+_CACHE = r"""
+import fcntl, os, pathlib, tempfile
+HELD = []
+class locked:
+    def __init__(self, cache):
+        self.path = str(pathlib.Path(cache) / '.lock')
+    def __enter__(self):
+        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+    def __exit__(self, *exc):
+        os.close(self.fd)
+def hold(path):
+    fd = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY)
+    fcntl.flock(fd, fcntl.LOCK_SH)
+    HELD.append(fd)
+def scratch(cache, prefix):
+    # Made and held at once, under the cache's lock: a prune never sees it unheld.
+    with locked(cache):
+        path = pathlib.Path(tempfile.mkdtemp(dir=str(cache), prefix=prefix))
+        hold(path)
+    return path
+"""
+
 #: Fetch and unpack one image. argv: reference (``registry/repo[:tag][@sha256:…]``), cache
-#: root, and a JSON object: ``null``, or for the session image ``{"agents", "tools",
-#: "view"}`` (wrappers for the commands the session runs from it). Prints the image's
-#: description (``host.json``): digest, config (env, user, workdir, entrypoint, cmd) and,
-#: for the session image, its relocatable Python.
-IMAGE = r"""
+#: root, a JSON object: ``null``, or for the session image ``{"agents", "tools", "view"}``
+#: (wrappers for the commands the session runs from it), and the claim: ``null`` (a warm
+#: unpack, which no slot runs from) or ``{"slot", "alive"}``, the slot that will run from
+#: the image and the paths that exist while it does. Prints the image's description
+#: (``host.json``): digest, config (env, user, workdir, entrypoint, cmd) and, for the
+#: session image, its relocatable Python.
+IMAGE = (
+    _CACHE
+    + r"""
 import atexit, hashlib, json, os, pathlib, platform, re, shlex, shutil, subprocess, sys
 import tarfile
 import tempfile
 reference, cache, session = sys.argv[1], pathlib.Path(sys.argv[2]), json.loads(sys.argv[3])
+claimant = json.loads(sys.argv[4])
+if claimant is not None and (not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', claimant['slot'])
+        or not claimant['alive'] or not all(path.startswith('/') for path in claimant['alive'])):
+    raise RuntimeError('Not a slot claim: ' + sys.argv[4])
 if not hasattr(tarfile, 'tar_filter'):
     raise RuntimeError('python3 on this host has no tarfile extraction filters; install a '
         'python3 with security updates (3.10.12, 3.11.4, 3.12 or later)')
@@ -59,7 +103,7 @@ else:
     registry, repository = name.split('/', 1)
 cache.mkdir(parents=True, exist_ok=True)
 os.chmod(str(cache), 0o755)
-work = pathlib.Path(tempfile.mkdtemp(dir=str(cache), prefix='.fetch-'))
+work = scratch(cache, '.fetch-')
 # Whatever fails, nothing half-fetched stays (a finished unpack has moved it in place).
 atexit.register(shutil.rmtree, str(work), True)
 token = ['']
@@ -127,11 +171,32 @@ if document.get('mediaType') in INDEX or 'manifests' in document:
         raise RuntimeError(reference + ' has no linux/' + arch + ' image')
     document, digest = manifest(found[0]['digest'], found[0]['digest'])
 root = cache / digest.split(':', 1)[1]
+def claim(name):
+    # The slot's claim on the root, recorded before the root is looked at: from here on no
+    # prune removes it while the slot is there, whoever unpacks it.
+    claims = cache / '"""
+    + CLAIMS
+    + r"""'
+    claims.mkdir(mode=0o700, exist_ok=True)
+    path = claims / (claimant['slot'] + '.json')
+    record = json.loads(path.read_text()) if path.exists() else {'digests': []}
+    record['alive'] = claimant['alive']
+    if name not in record['digests']:
+        record['digests'].append(name)
+    temporary = claims / ('.' + path.name + '.tmp')
+    temporary.write_text(json.dumps(record))
+    os.replace(str(temporary), str(path))
+with locked(cache):
+    if claimant is not None:
+        claim(root.name)
+    present = (root / 'host.json').exists()
+    if present:
+        hold(root)
 def add_session_extras(description):
     # What a session needs of its image (its relocatable Python, wrappers for the commands it
     # runs from it), added to the image's cached root once, whoever unpacked it first.
     rootfs = root / 'rootfs'
-    extras = pathlib.Path(tempfile.mkdtemp(dir=str(cache), prefix='.session-'))
+    extras = scratch(cache, '.session-')
     atexit.register(shutil.rmtree, str(extras), True)
     env = dict(item.split('=', 1) for item in description['env'])
     venv, python_root = env.get('VIRTUAL_ENV'), env.get('UV_PYTHON_INSTALL_DIR')
@@ -206,7 +271,7 @@ def add_session_extras(description):
     temporary.write_text(json.dumps(description))
     os.replace(str(temporary), str(root / 'host.json'))
     return description
-if not (root / 'host.json').exists():
+if not present:
     def within(path):
         base = os.path.realpath(str(rootfs))
         resolved = os.path.realpath(str(path))
@@ -276,11 +341,14 @@ if not (root / 'host.json').exists():
         (work / 'host.json').write_text(json.dumps(description))
         work.chmod(0o755)
         try:
+            # The lock this run holds on its work directory now holds the root.
             os.rename(str(work), str(root))
         except OSError:
             # A concurrent unpack of the same digest finished first.
             if not (root / 'host.json').exists():
                 raise
+            with locked(cache):
+                hold(root)
     except BaseException:
         shutil.rmtree(str(work), ignore_errors=True)
         raise
@@ -290,6 +358,107 @@ if session and 'venv' not in description:
     description = add_session_extras(description)
 print(json.dumps(description))
 """
+)
+
+#: Remove the unpacked images nothing uses. argv: cache root, the references to keep (JSON
+#: list: the release's session image and a starting launch's images, matched by their
+#: pinned digest or the reference they were unpacked by) and the proc root (``/proc``).
+#: A root stays while a live slot claims it (a claim whose ``alive`` paths are all gone is
+#: dropped: the slot is torn down and nothing of it runs), while any mount table names it
+#: (a session started before claims existed), while an unpack holds it, or when it is
+#: kept. Unpack and prune leftovers (``.fetch-``, ``.session-``, ``.trash-``) go unless a
+#: running program holds them. Prints what it removed, what is in use or kept, and entries
+#: of the cache Forge did not make (left alone).
+PRUNE = (
+    _CACHE
+    + r"""
+import json, re, shutil, sys
+cache, keep, proc = pathlib.Path(sys.argv[1]), json.loads(sys.argv[2]), pathlib.Path(sys.argv[3])
+ROOT = re.compile(r'[a-f0-9]{64}')
+LEFTOVER = ('.fetch-', '.session-', '.trash-')
+pinned = {reference.partition('@sha256:')[2] for reference in keep} - {''}
+result = {'removed': [], 'in_use': [], 'kept': [], 'unknown': []}
+if not cache.is_dir():
+    print(json.dumps(result))
+    sys.exit(0)
+def mounted(names):
+    found, seen = set(), set()
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            namespace = os.readlink(str(entry / 'ns' / 'mnt'))
+            if namespace in seen:
+                continue
+            table = (entry / 'mountinfo').read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            # The process ended: its mounts went with its namespace, or another of its
+            # processes shows them.
+            continue
+        seen.add(namespace)
+        found.update(set(ROOT.findall(table)) & names)
+    return found
+def unpacked_by(root):
+    try:
+        return json.loads((root / 'host.json').read_text()).get('reference')
+    except FileNotFoundError:
+        return None
+def unheld(path):
+    fd = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    return fd
+with locked(cache):
+    claimed = set()
+    claims = cache / '"""
+    + CLAIMS
+    + r"""'
+    for record_path in sorted(claims.glob('*.json')) if claims.is_dir() else ():
+        record = json.loads(record_path.read_text())
+        if any(os.path.lexists(path) for path in record['alive']):
+            claimed.update(record['digests'])
+        else:
+            record_path.unlink()
+    entries = sorted(cache.iterdir())
+    roots = {e.name for e in entries if ROOT.fullmatch(e.name) and e.is_dir()
+        and not e.is_symlink()}
+    named = mounted(roots)
+    # Under the lock already: made and held here, not by scratch.
+    trash = pathlib.Path(tempfile.mkdtemp(dir=str(cache), prefix='.trash-'))
+    hold(trash)
+    for entry in entries:
+        name = entry.name
+        if name in ('.lock', '"""
+    + CLAIMS
+    + r"""'):
+            continue
+        if name in roots:
+            if name in claimed or name in named:
+                result['in_use'].append(name)
+                continue
+            if name in pinned or unpacked_by(entry) in keep:
+                result['kept'].append(name)
+                continue
+        elif not (name.startswith(LEFTOVER) and entry.is_dir() and not entry.is_symlink()):
+            result['unknown'].append(name)
+            continue
+        fd = unheld(entry)
+        if fd is None:
+            # An unpack (or another prune) running now holds it.
+            result['in_use'].append(name)
+            continue
+        os.rename(str(entry), str(trash / name))
+        os.close(fd)
+        if name in roots:
+            result['removed'].append(name)
+# Removed outside the lock: nothing can claim what is in the trash.
+shutil.rmtree(str(trash))
+print(json.dumps(result))
+"""
+)
 
 #: Run one pod container from its unpacked root. argv: the container's spec (a root-only
 #: JSON file written by ``PODS_START``). PID 1 of its own PID namespace reaps for it and
