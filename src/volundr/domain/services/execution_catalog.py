@@ -105,14 +105,6 @@ class ExecutionPlanResolver:
         default = next(plan for plan in plans if plan.execution == snapshot.default_execution)
         return default, plans
 
-    def launch_plans(self) -> tuple[CatalogRef, tuple[ResolvedExecutionPlan, ...]]:
-        """The default execution and those a launch may choose between, in the
-        catalog's order, from one catalog read."""
-        snapshot = self._catalog.load()
-        return snapshot.default_execution, tuple(
-            self._resolve(snapshot, reference) for reference in snapshot.launch_executions
-        )
-
     @staticmethod
     def _selection(
         selection: str | CatalogRef | None,

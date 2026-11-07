@@ -157,8 +157,9 @@ export interface IVolundrService {
    */
   getLivePreviewConfig(instanceId?: string): Promise<LivePreviewConfig>;
   /**
-   * What a launch on the host may run as ("Runs as"), with warm readiness. Empty when the
-   * host offers no choice. Each Forge host offers its own, so ask the one that will run it.
+   * What the host runs every session as ("Runs as"), with warm readiness: one offer, or
+   * none when the host declares none. A host runs exactly one runtime and sessions never
+   * choose, so ask the host that will run the session.
    */
   getSessionRuntimes(instanceId?: string): Promise<SessionRuntimeOffer[]>;
 
