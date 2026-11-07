@@ -1,0 +1,118 @@
+Adapted from 131a3a66c5f400b588f9fd2732a5ed4e89623ee3 (gh-160898) for the
+pure-Python module-replacement mechanism of containers/python-security.
+
+Upstream rejects null bytes in socket.getaddrinfo() host and port inside
+Modules/socketmodule.c. The interpreter's compiled _socket module cannot be
+replaced on every image (it is statically linked into the uv-managed OpenShell
+interpreter, and a compiled module would change the build platform and the
+interpreter binary). This patch therefore applies the same check, with the same
+ValueError messages, in Lib/socket.py before the arguments reach _socket.
+
+The Modules/socketmodule.c section is dropped. The Doc, Lib/test and
+Misc/NEWS.d sections are copied verbatim from the upstream patch; build.py
+fails unless they match it byte for byte.
+
+diff --git a/Lib/socket.py b/Lib/socket.py
+index 9ac0bad..03353af 100644
+--- a/Lib/socket.py
++++ b/Lib/socket.py
+@@ -969,6 +969,16 @@ def create_server(address, *, family=AF_INET, backlog=None, reuse_port=False,
+         raise
+ 
+ 
++def _contains_null(value):
++    # The unbound methods read the real data, so a str or bytes subclass that
++    # overrides __contains__ cannot hide a null byte from the check.
++    if isinstance(value, str):
++        return str.__contains__(value, '\0')
++    if isinstance(value, bytes):
++        return bytes.__contains__(value, b'\0')
++    return False
++
++
+ def getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+     """Resolve host and port into list of address info entries.
+ 
+@@ -985,6 +995,14 @@ def getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+     """
+     # We override this function since we want to translate the numeric family
+     # and socket type values to enum constants.
++    #
++    # gh-160898 (CVE-2026-116566): _socket.getaddrinfo() truncates the host and
++    # port at an embedded null byte. Upstream rejects them in C; this guard
++    # raises the same ValueError before the arguments reach the C layer.
++    if _contains_null(host):
++        raise ValueError("getaddrinfo() host must not contain null characters")
++    if _contains_null(port):
++        raise ValueError("getaddrinfo() port must not contain null characters")
+     addrlist = []
+     for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+         af, socktype, proto, canonname, sa = res
+diff --git a/Doc/library/socket.rst b/Doc/library/socket.rst
+index 054ccc556740c20..5a1cd95da527ea8 100644
+--- a/Doc/library/socket.rst
++++ b/Doc/library/socket.rst
+@@ -1065,6 +1065,9 @@ The :mod:`!socket` module also offers various network-related services:
+       for IPv6 multicast addresses, string representing an address will not
+       contain ``%scope_id`` part.
+ 
++   .. versionchanged:: next
++      Null characters are now rejected in the *host* and *port* parameters.
++
+ .. _Happy Eyeballs: https://en.wikipedia.org/wiki/Happy_Eyeballs
+ 
+ .. function:: getfqdn([name])
+diff --git a/Lib/test/test_socket.py b/Lib/test/test_socket.py
+index 51b666bbaba8271..b37925af1e2d0f7 100644
+--- a/Lib/test/test_socket.py
++++ b/Lib/test/test_socket.py
+@@ -2104,6 +2104,39 @@ def test_getnameinfo_ipv6_scopeid_numeric(self):
+         nameinfo = socket.getnameinfo(sockaddr, socket.NI_NUMERICHOST | socket.NI_NUMERICSERV)
+         self.assertEqual(nameinfo, ('ff02::1de:c0:face:8d%' + str(ifindex), '1234'))
+ 
++    def test_getaddrinfo_null_bytes(self):
++        # getaddrinfo() must reject embedded null bytes instead of silently
++        # truncating the host or port at the C boundary.  The checks run
++        # before any name resolution, so no network access is needed.
++        hosts = [
++            # embedded
++            'local\0host', b'local\0host',
++            # trailing
++            'localhost\0', b'localhost\0',
++            # leading (truncates to '')
++            '\0localhost', b'\0localhost',
++            '\0', b'\0',
++            # non-ASCII, goes through IDNA
++            'b\xfccher\0.example',
++        ]
++        for host in hosts:
++            with self.subTest(host=host):
++                with self.assertRaisesRegex(ValueError, 'host'):
++                    socket.getaddrinfo(host, 80)
++
++        ports = [
++            '8\x000',
++            b'8\x000',
++            'http\0',
++            b'http\0',
++            '\0',
++            b'\0'
++        ]
++        for port in ports:
++            with self.subTest(port=port):
++                with self.assertRaisesRegex(ValueError, 'port'):
++                    socket.getaddrinfo("localhost", port)
++
+     def test_str_for_enums(self):
+         # Make sure that the AF_* and SOCK_* constants have enum-like string
+         # reprs.
+diff --git a/Misc/NEWS.d/next/Security/2026-10-27-16-25-40.gh-issue-160898.epi53X.rst b/Misc/NEWS.d/next/Security/2026-10-27-16-25-40.gh-issue-160898.epi53X.rst
+new file mode 100644
+index 000000000000000..2eb04454cbd9a7f
+--- /dev/null
++++ b/Misc/NEWS.d/next/Security/2026-10-27-16-25-40.gh-issue-160898.epi53X.rst
+@@ -0,0 +1,4 @@
++.. cve: CVE-2026-116566
++
++:func:`socket.getaddrinfo` now rejects null bytes within *host* and *port*
++parameters as this previously caused the values to be silently truncated.
