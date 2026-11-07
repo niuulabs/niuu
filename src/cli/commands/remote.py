@@ -32,24 +32,31 @@ def _fail(message: str) -> None:
 
 
 def build_api(settings: CLISettings, url: str):  # noqa: ANN201 - lazy import keeps --help fast
-    """The Niuu host's compute-host API as the operator who ran `niuu login`."""
+    """The active context's compute-host API, as the operator who ran `niuu login`.
+
+    ``url`` replaces the context's URL for one run; the login rules stay the context's.
+    """
     from cli.api.client import APIClient
     from cli.api.compute_hosts import ComputeHostsAPI
     from cli.auth.credentials import CredentialStore
-    from cli.auth.oidc import OIDCClient
+    from cli.context import active, login_for, refresher
 
-    base = url or settings.remote.url or f"http://{settings.server.host}:{settings.server.port}"
+    context = active(settings)
     store = CredentialStore()
-    tokens = store.load()
-    refresh = None
-    if tokens and tokens.refresh_token and tokens.issuer and tokens.client_id:
-        refresh = OIDCClient(
-            issuer=tokens.issuer, client_id=tokens.client_id, credential_store=store
-        ).refresh
+    tokens = login_for(context, store)
     client = APIClient(
-        base, access_token=tokens.access_token if tokens else None, refresh_token_fn=refresh
+        url or context.url,
+        access_token=tokens.access_token if tokens else None,
+        refresh_token_fn=refresher(tokens, store),
     )
     return ComputeHostsAPI(client)
+
+
+def _forge(settings: CLISettings, forge: str) -> str:
+    """``--forge``, else the active context's Forge."""
+    from cli.context import active
+
+    return forge or active(settings).forge
 
 
 def _parse_slots(raw: str) -> tuple[int | None, bool]:
@@ -66,11 +73,12 @@ def _parse_slots(raw: str) -> tuple[int | None, bool]:
 
 def _run(main: Callable[[], Coroutine[Any, Any, None]]) -> None:
     from cli.api.compute_hosts import ForgeAPIError
+    from cli.context import ContextError
     from cli.services.remote_hosts import RemoteError
 
     try:
         asyncio.run(main())
-    except (RemoteError, ForgeAPIError) as exc:
+    except (RemoteError, ForgeAPIError, ContextError) as exc:
         _fail(str(exc))
 
 
@@ -83,10 +91,12 @@ def create_remote_commands(settings: CLISettings) -> typer.Typer:
     )
 
     url_option = typer.Option(
-        "", "--url", help="The Niuu host (default: remote.url, else this machine's server)."
+        "", "--url", help="The Niuu host for this run (default: the active context's)."
     )
     forge_option = typer.Option(
-        "", "--forge", help="The Forge's id, slug or name (needed when there are several)."
+        "",
+        "--forge",
+        help="The Forge's id, slug or name (default: the context's Forge).",
     )
     port_option = typer.Option(None, "--port", "-p", help="SSH port on the machine.")
     jump_option = typer.Option("", "--jump", "-J", help="SSH jump host, as `ssh -J` takes it.")
@@ -175,7 +185,7 @@ def create_remote_commands(settings: CLISettings) -> typer.Typer:
             from cli.services.remote_hosts import find_host, resolve_forge
 
             api = build_api(settings, url)
-            instance = resolve_forge(await api.forges(), forge)
+            instance = resolve_forge(await api.forges(), _forge(settings, forge))
             overview = await api.overview(instance["id"])
             if host:
                 shown = find_host(overview.get("hosts") or [], host)
@@ -204,7 +214,7 @@ def create_remote_commands(settings: CLISettings) -> typer.Typer:
             from cli.services.remote_hosts import find_host, resolve_forge
 
             api = build_api(settings, url)
-            instance = resolve_forge(await api.forges(), forge)
+            instance = resolve_forge(await api.forges(), _forge(settings, forge))
             found = find_host((await api.overview(instance["id"])).get("hosts") or [], host)
             updated = await api.set_slots(instance["id"], found["id"], count)
             typer.echo(f"✓ {updated['name']}: {updated['slots']} slots, {updated['state']}")
@@ -279,7 +289,7 @@ async def _join(
     )
 
     api = build_api(settings, url)
-    instance = resolve_forge(await api.forges(), forge)
+    instance = resolve_forge(await api.forges(), _forge(settings, forge))
     overview = await api.overview(instance["id"])
     body = mint_body(
         overview,
@@ -372,7 +382,7 @@ async def _leave(
     )
 
     api = build_api(settings, url)
-    instance = resolve_forge(await api.forges(), forge)
+    instance = resolve_forge(await api.forges(), _forge(settings, forge))
     host = find_host((await api.overview(instance["id"])).get("hosts") or [], ref)
     target = parse_target(ssh or host["name"], port=port, jump=jump)
     await api.drain(instance["id"], host["id"], remove=True)

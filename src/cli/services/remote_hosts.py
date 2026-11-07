@@ -111,30 +111,31 @@ def run_streaming(
         )
     except FileNotFoundError as exc:
         raise RemoteError(f"Cannot run {argv[0]!r}: {exc.strerror}. Install OpenSSH.") from exc
-    assert process.stdout is not None
-    fd = process.stdout.fileno()
-    at_line_start = True
-    current = bytearray()
-    last = b""
-    while chunk := os.read(fd, io.DEFAULT_BUFFER_SIZE):
-        shown = bytearray()
-        for byte in chunk:
-            if at_line_start and byte not in b"\r\n":
-                shown += indent
-                at_line_start = False
-            shown.append(byte)
-            if byte == ord("\n"):
-                at_line_start = True
-                if current.strip():
-                    last = bytes(current)
-                current.clear()
-            elif byte != ord("\r"):
-                current.append(byte)
-        sink.write(bytes(shown))
-        sink.flush()
-    if current.strip():
-        last = bytes(current)
-    returncode = process.wait()
+    with process:
+        assert process.stdout is not None
+        fd = process.stdout.fileno()
+        at_line_start = True
+        current = bytearray()
+        last = b""
+        while chunk := os.read(fd, io.DEFAULT_BUFFER_SIZE):
+            shown = bytearray()
+            for byte in chunk:
+                if at_line_start and byte not in b"\r\n":
+                    shown += indent
+                    at_line_start = False
+                shown.append(byte)
+                if byte == ord("\n"):
+                    at_line_start = True
+                    if current.strip():
+                        last = bytes(current)
+                    current.clear()
+                elif byte != ord("\r"):
+                    current.append(byte)
+            sink.write(bytes(shown))
+            sink.flush()
+        if current.strip():
+            last = bytes(current)
+        returncode = process.wait()
     return RunResult(returncode=returncode, last_line=last.decode("utf-8", "replace").strip())
 
 

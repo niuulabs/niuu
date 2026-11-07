@@ -54,6 +54,4 @@ class NiuuPlugin(ServicePlugin):
         )
 
     def create_api_client(self) -> Any:
-        from niuu.cli_api_client import CLIAPIClient
-
-        return CLIAPIClient(base_url="http://localhost:8080", service_name="Niuu")
+        return self.cli_client("Niuu")

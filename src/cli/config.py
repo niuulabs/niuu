@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -462,17 +464,51 @@ class ServerConfig(BaseModel):
     )
 
 
-class RemoteConfig(BaseModel):
-    """`niuu remote`: the Niuu host whose Forge registered hosts join, and how long to follow."""
+#: The context that is always there: this machine's own server.
+LOCAL_CONTEXT = "local"
+_CONTEXT_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
-    url: str = Field(
+
+class ContextConfig(BaseModel):
+    """A named Niuu host the CLI talks to (`niuu context add`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(description="Base URL of the Niuu host (http:// or https://).")
+    forge: str = Field(
+        default="",
+        description="The Forge (id, slug or name) commands use on it when it has several.",
+    )
+    issuer: str = Field(
         default="",
         description=(
-            "Base URL of the Niuu host whose Guild facade reaches the Forge "
-            "(/api/v1/forge/compute/hosts?instance_id=). Empty means this machine's own "
-            "server (server.host:server.port)."
+            "OIDC issuer of its login: `niuu login` uses it, and commands refuse a stored "
+            "login from another issuer."
         ),
     )
+
+    @field_validator("url")
+    @classmethod
+    def _http_url(cls, value: str) -> str:
+        parts = urlsplit(value.strip())
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError(f"a context URL is http:// or https:// with a host, not {value!r}")
+        return value.strip().rstrip("/")
+
+
+def validate_context_name(name: str) -> str:
+    if not _CONTEXT_NAME.match(name):
+        raise ValueError(
+            f"a context name is lowercase letters, digits, '.', '_' or '-', not {name!r}"
+        )
+    if name == LOCAL_CONTEXT:
+        raise ValueError(f"'{LOCAL_CONTEXT}' is this machine's own server; pick another name")
+    return name
+
+
+class RemoteConfig(BaseModel):
+    """`niuu remote`: how long to follow a joining or leaving host, and how often to look."""
+
     poll_interval_seconds: float = Field(
         default=2.0,
         gt=0,
@@ -1075,6 +1111,33 @@ def clear_guild_join(*, config_file: Path | None = None) -> None:
     persist_guild_join(url="", node_id="", config_file=config_file)
 
 
+def persist_contexts(
+    *,
+    contexts: dict[str, ContextConfig] | None = None,
+    active: str | None = None,
+    config_file: Path | None = None,
+) -> None:
+    """Write ``contexts`` and/or the active ``context`` into the CLI's config.yaml.
+
+    Merges into the existing file, as `niuu join` does, so unrelated configuration stays.
+    """
+    import yaml
+
+    target = config_file or config_paths()[0]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing: dict[str, Any] = {}
+    if target.exists():
+        existing = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    if contexts is not None:
+        existing["contexts"] = {
+            name: context.model_dump(mode="json", exclude_defaults=True)
+            for name, context in contexts.items()
+        }
+    if active is not None:
+        existing["context"] = active
+    target.write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+
+
 class CLISettings(BaseSettings):
     """Root configuration for the niuu CLI."""
 
@@ -1128,11 +1191,27 @@ class CLISettings(BaseSettings):
         description="Per-service enabled/port overrides keyed by service name.",
     )
     tui: TUIConfig = Field(default_factory=TUIConfig)
+    contexts: dict[str, ContextConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Named Niuu hosts (`niuu context add`). 'local', this machine's own server, "
+            "is built in."
+        ),
+    )
     context: str = Field(
-        default="local",
-        description="Active context (local, remote, etc.).",
+        default=LOCAL_CONTEXT,
+        description="The active context's name (`niuu context use`, env NIUU_CONTEXT).",
     )
     version: str = Field(default="0.1.0")
+
+    @model_validator(mode="after")
+    def _context_names_are_valid(self) -> CLISettings:
+        for name in self.contexts:
+            try:
+                validate_context_name(name)
+            except ValueError as exc:
+                raise ValueError(f"contexts.{name}: {exc}") from exc
+        return self
 
     @model_validator(mode="after")
     def _docker_compute_uses_vm_pod_manager(self) -> CLISettings:

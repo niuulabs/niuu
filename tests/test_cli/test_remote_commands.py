@@ -14,7 +14,7 @@ from cli.api.compute_hosts import ForgeAPIError
 from cli.app import build_app
 from cli.auth.credentials import StoredTokens
 from cli.commands import remote
-from cli.config import CLISettings
+from cli.config import CLISettings, ContextConfig
 from cli.registry import PluginRegistry
 from cli.services.remote_hosts import RunResult
 
@@ -507,11 +507,38 @@ class TestBuildApi:
         assert api.base_url == "http://127.0.0.1:9090"
         assert api._client._headers() == {}
 
-    def test_remote_url_from_config_and_old_tokens_do_not_refresh(self) -> None:
-        settings = CLISettings()
-        settings.remote.url = "https://configured.example"
+    def test_the_active_context_url_and_old_tokens_do_not_refresh(self) -> None:
+        settings = CLISettings(
+            contexts={"ymir": ContextConfig(url="https://ymir.example")}, context="ymir"
+        )
         tokens = StoredTokens(access_token="t", refresh_token="r", issuer="https://idp")
         with patch("cli.auth.credentials.CredentialStore.load", return_value=tokens):
             api = remote.build_api(settings, "")
-        assert api.base_url == "https://configured.example"
+        assert api.base_url == "https://ymir.example"
         assert api._client._refresh_token_fn is None
+
+    def test_a_login_from_another_issuer_is_refused(self) -> None:
+        settings = CLISettings(
+            contexts={"ymir": ContextConfig(url="https://ymir.example", issuer="https://kc/ymir")},
+            context="ymir",
+        )
+        tokens = StoredTokens(access_token="t", issuer="https://kc/other")
+        with patch("cli.auth.credentials.CredentialStore.load", return_value=tokens):
+            result = runner.invoke(
+                build_app(settings=settings, registry=PluginRegistry()), ["remote", "hosts"]
+            )
+        assert result.exit_code == 1
+        assert "logged in to https://kc/other" in result.output
+        assert "Run `niuu login`" in result.output
+
+
+class TestContextForge:
+    def test_the_context_forge_is_the_default(self) -> None:
+        fake = FakeNiuuHost()
+        fake.forge_list.append({"id": "f2", "slug": "valhalla", "name": "Valhalla"})
+        settings = _settings()
+        settings.contexts = {"ymir": ContextConfig(url="https://ymir.example", forge="ymir")}
+        settings.context = "ymir"
+        result, _ = _invoke(fake, ["hosts"], settings=settings)
+        assert result.exit_code == 0, result.output
+        assert result.output.startswith("Ymir · pool hosts")

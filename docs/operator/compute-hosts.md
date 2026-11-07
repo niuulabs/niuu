@@ -244,11 +244,19 @@ Next: `niuu remote hosts gpu-box` · leave with `niuu remote leave gpu-box`
 - **Which host:** any `ssh` destination: `user@host`, a `~/.ssh/config` alias, or
   `ssh://user@host:port`. Use `-p` and `-J` for the port and a jump host; keys
   come from your SSH config and agent.
-- **Which Forge:** `--url` is the Niuu host (default: this machine's own server, or
-  `remote.url` in `~/.niuu/config.yaml`). Use `--forge` to pick a Forge by id, slug
-  or name when the Niuu host has more than one.
+- **Which Forge:** the active context's Niuu host (`local`, this machine's own
+  server, unless you switched). Add a shared one once, then log in:
+
+  ```bash
+  niuu context add ymir https://niuu.ymir.example --issuer https://idp.example/realms/niuu --use
+  niuu login
+  ```
+
+  `--url` replaces the context's URL for one run. Use `--forge` (or `--forge` on
+  `niuu context add`) to pick a Forge by id, slug or name when the Niuu host has
+  more than one.
 - **Login:** run `niuu login` first, unless the Forge is a local mini stack without
-  identity.
+  identity. A context with an issuer refuses a login from another issuer.
 - **Flags:** `--execution`, `--connector`, `--tag` (repeat it), `--slots N|suggested`
   and `--isolation measured|systemd|cgroupfs|none`, as in the Add host form. You can
   leave out `--execution` and `--connector` when the Forge offers only one of each.
@@ -360,7 +368,7 @@ is retried. Capacity is never freed on a host nobody checked.
 | `compute.hosts.command_timeout_seconds` | 120 | One facts read or audit on a host | The check fails: the host is unreachable, with the reason |
 | `compute.hosts.reserved_cpu` / `reserved_memory_mib` | required | What slot sizing leaves for the host itself | Too many slots is refused (422) or quarantines the host, with the arithmetic |
 | `compute.hosts.min_free_disk_mib` | required | Free space on `/` | Quarantined until space is freed |
-| `remote.url` (CLI) | this machine's server | The Niuu host `niuu remote` talks to; `--url` per run | — |
+| `context` / `contexts` (CLI) | `local` | The Niuu host every CLI command talks to (`niuu context`); `--url` per run on `niuu remote` | An unconfigured active context fails every such command, naming `niuu context use` |
 | `remote.follow_timeout_seconds` (CLI) | 900 | How long `niuu remote join` follows a host to ready; `--timeout` per run | Exit 1, naming the host's step; Forge goes on |
 | `remote.leave_timeout_seconds` (CLI) | 3600 | How long `niuu remote leave` waits for sessions to end; `--timeout` per run | Exit 1; Forge still removes the host once it is empty |
 | `remote.poll_interval_seconds` (CLI) | 2 | How often `niuu remote` re-reads the host | — |

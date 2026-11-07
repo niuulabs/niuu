@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any
 
 import typer
 
-from niuu.cli_api_client import CLIAPIClient
 from niuu.cli_output import print_json, print_success, print_table
 from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin, TUIPageSpec
 
@@ -119,7 +118,7 @@ class TingPlugin(ServicePlugin):
         )
 
     def create_api_client(self) -> Any:
-        return CLIAPIClient(base_url="http://localhost:8080", service_name="Ting")
+        return self.cli_client("Ting")
 
     def register_commands(self, app: typer.Typer) -> None:
         """Mount workflow commands directly on the main app."""

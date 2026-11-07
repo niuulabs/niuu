@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any
 
 import typer
 
-from niuu.cli_api_client import CLIAPIClient
 from niuu.cli_output import print_json, print_success, print_table
 from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin, TUIPageSpec
 
@@ -43,7 +42,7 @@ class RavnPlugin(ServicePlugin):
         return create_app()
 
     def create_api_client(self) -> Any:
-        return CLIAPIClient(base_url="http://localhost:8080", service_name="Ravn")
+        return self.cli_client("Ravn")
 
     def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
         return (

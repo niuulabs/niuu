@@ -316,12 +316,24 @@ niuu remote leave HOST [--ssh DEST] [-p PORT] [-J JUMP] [--url URL] [--forge FOR
   key prompt or a `sudo` password prompt reaches the operator's terminal (`ssh -t`
   when stdin is a terminal). A destination that starts with `-` is refused.
 - **The Forge is reached through the Niuu host's facade**, as the UI does:
-  `/api/v1/forge/compute/hosts…?instance_id=<forge>`. `--url` (or
-  `remote.url` in `~/.niuu/config.yaml`, env `NIUU_REMOTE__URL`) is the Niuu host;
-  its default is this machine's own server (`server.host:server.port`), the mini
-  stack. `--forge` names the Forge by id, slug or name from
-  `GET /api/v1/niuu/instances`. It may be left out when exactly one Forge is
-  visible; with more, the error lists them.
+  `/api/v1/forge/compute/hosts…?instance_id=<forge>`. The Niuu host is the
+  active **context** (`niuu context add|use`, below); `--url` replaces its URL
+  for one run. `--forge` names the Forge by id, slug or name from
+  `GET /api/v1/niuu/instances`, defaulting to the context's `forge`. It may be left
+  out when exactly one Forge is visible; with more, the error lists them.
+- **Contexts.** A context is a named Niuu host in `~/.niuu/config.yaml`:
+  `contexts: {<name>: {url, forge?, issuer?}}` and the active `context:` (env
+  `NIUU_CONTEXT`). `local`, this machine's own server (`server.host:server.port`),
+  is built in and cannot be redefined. `niuu context add <name> <url> [--forge F]
+  [--issuer I] [--use]`, `use`, `list` and `delete` manage them. Every command
+  that talks to a Niuu host uses the active one: `niuu remote`, and the plugins'
+  commands (`sessions`, `sagas`, …), which get the context's URL and the login's
+  bearer through `ServicePlugin.cli_client`. An active context that is not
+  configured is an error naming `niuu context use`, never a switch to `local`.
+  `niuu login` takes the context's `issuer` when `--issuer` is left out. A context
+  with an `issuer` refuses a stored login from another issuer ("run `niuu login`")
+  rather than send a token that only earns a 401. There is one stored login at a
+  time, so moving between contexts with different issuers needs a new `niuu login`.
 - **Auth is the operator's own login.** The bearer is the token `niuu login` stored
   (refreshed once on a 401, as every CLI client does). No token is sent when there
   is none, which a mini Forge with the allow-all adapter accepts; anything else

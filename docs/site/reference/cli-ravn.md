@@ -134,6 +134,8 @@ ravn [OPTIONS] COMMAND [ARGS]...
 | [`gateway`](#ravn-gateway) | Start the Ravn gateway (Telegram polling + local HTTP server). |
 | [`inbox-migrate`](#ravn-inbox-migrate) | Move flat resident inbox signal files into the archive and slot queue. |
 | [`join`](#ravn-join) | Put a persona-typed Ravn into a room as an addressable member. |
+| [`learned-tools-plan`](#ravn-learned-tools-plan) | Print what the next consolidation dream would retire from the learned tools. |
+| [`learnings-curate`](#ravn-learnings-curate) | Run one learning-curation pass now, outside the dream schedule. |
 | [`leave`](#ravn-leave) | Stop a member's daemon and remove it from the room. |
 | [`listen`](#ravn-listen) | Listen for remotely dispatched tasks via Sleipnir (NIU-505). |
 | [`memory-backfill-embeddings`](#ravn-memory-backfill-embeddings) | Embed indexed episodes that predate embeddings being enabled. |
@@ -248,6 +250,7 @@ ravn flock init --discovery static   # use cluster.yaml instead of mDNS
 ravn flock init --base-port 8480 coordinator coding-agent
 ravn flock init --force   # regenerate from defaults
 ravn flock init --room desk reviewer coder   # nodes join room 'desk'
+ravn flock init --llm-config ./local-model.yaml   # llm: from that file
 ```
 
 | Argument | Required | Description |
@@ -264,7 +267,8 @@ ravn flock init --room desk reviewer coder   # nodes join room 'desk'
 | `--http-gateway`, `--no-http-gateway` | flag | `True` | Enable per-node HTTP/WebSocket gateways. |
 | `--room` | STR |  | Join every node to this room (see 'ravn room ls'). Env: `RAVN_ROOM` |
 | `--rooms-dir` | STR |  | Override the rooms state directory. |
-| `--autonomous`, `--responsive` | flag |  | With --room, keep the self-driving triggers on. Responsive (the default) makes room nodes answer what is addressed to them. |
+| `--autonomous`, `--responsive` | flag |  | Keep or disable self-driving triggers. By default, standalone flocks are autonomous and room flocks are responsive. |
+| `--llm-config` | STR |  | Ravn config file whose llm: section every node uses. Defaults to ~/.ravn/config.yaml when it exists. |
 
 ##### `ravn flock list`
 
@@ -410,6 +414,34 @@ ravn join --persona coder --room desk --here
 | `--here` | flag |  | Run the member in this terminal instead of detaching. |
 | `--force`, `-f` | flag |  | Replace an existing member with the same handle. |
 | `--autonomous` | flag |  | Also enable the self-driving triggers (cron, staleness, wakefulness). |
+
+#### `ravn learned-tools-plan`
+
+Print what the next consolidation dream would retire from the learned tools.
+
+```bash
+ravn learned-tools-plan [OPTIONS]
+```
+
+Read-only: it computes the same plan the dream applies, with the same lifecycle usage, capability judge and never-used window, and prints it as JSON. Nothing is moved, archived or written; retirement happens only in the dream, so the running resident's lifecycle registry stays the one writer.
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config` | STR |  | Path to the ravn config file. |
+
+#### `ravn learnings-curate`
+
+Run one learning-curation pass now, outside the dream schedule.
+
+```bash
+ravn learnings-curate [OPTIONS]
+```
+
+The same pass the consolidation dream runs: every lesson not yet curated has its neighbourhood judged once, paraphrases fold into one lesson, and the lesson is marked ``curated``. Useful to consolidate a backlog at once rather than over the next dream, and safe to repeat — a second run only judges lessons recorded since. Every change is recorded on a Mímir audit page.
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config` | STR |  | Path to the ravn config file. |
 
 #### `ravn leave`
 
@@ -597,6 +629,7 @@ ravn resident [OPTIONS] COMMAND [ARGS]...
 | Subcommand | Description |
 | --- | --- |
 | [`answer`](#ravn-resident-answer) | Answer the operator question a case is blocked on. |
+| [`attention-calibrate`](#ravn-resident-attention-calibrate) | Replay this resident's judged inbox slots through the configured decision model. |
 | [`case`](#ravn-resident-case) | Show one case: every ref it holds, and what resumes it. |
 | [`case-drop`](#ravn-resident-case-drop) | Delete one case and everything under it. |
 | [`cases`](#ravn-resident-cases) | List durable cases and say which of them can still resume. |
@@ -628,6 +661,22 @@ The one repair here that adds rather than removes: it unblocks the case the resi
 | --- | --- | --- | --- |
 | `--config`, `-c` | STR |  | Path to ravn config YAML. |
 | `--yes`, `-y` | flag |  | Skip the confirmation. |
+
+##### `ravn resident attention-calibrate`
+
+Replay this resident's judged inbox slots through the configured decision model.
+
+```bash
+ravn resident attention-calibrate [OPTIONS]
+```
+
+Measures, at every skip probability in the data, how many routine slots the attention gate would have skipped and how many of those the resident itself judged worth a turn. Fit ``decision.resident_first_opinion.gate.min_skip_probability`` from this report; nothing here changes the resident. Run it in the resident's pod so it reads the live inbox and state.
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--out`, `-o` | STR |  | Where to write the JSON report. **Required.** |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--limit` | INT | `0` | Newest judged slots to replay; 0 replays every one the inbox holds. |
 
 ##### `ravn resident case`
 

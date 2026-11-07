@@ -317,17 +317,20 @@ NIUU_TASKS: list[tuple[str, str, list[str]]] = [
     ),
     (
         "Authenticate and switch servers",
-        "A context is a named server the CLI talks to, so you can move between "
-        "a local stack and a shared one.",
+        "A context is a named Niuu host the CLI talks to, so you can move between "
+        "a local stack and a shared one. `local` (this machine) is built in; every "
+        "command uses the active context, and `niuu login` uses its issuer.",
         [
-            "niuu login",
-            "niuu whoami",
-            "",
             "niuu context list",
             "printf 'Server URL: '",
             "read -r NIUU_CONTEXT_URL",
-            'niuu context add staging "$NIUU_CONTEXT_URL"',
-            "niuu context use staging",
+            "printf 'OIDC issuer: '",
+            "read -r NIUU_CONTEXT_ISSUER",
+            'niuu context add staging "$NIUU_CONTEXT_URL" --issuer "$NIUU_CONTEXT_ISSUER" --use',
+            "niuu login",
+            "niuu whoami",
+            "",
+            "niuu context use local",
         ],
     ),
     (

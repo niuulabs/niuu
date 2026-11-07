@@ -75,7 +75,7 @@ class ComputeHostsAPI:
         except httpx.RequestError as exc:
             raise ForgeAPIError(
                 f"{what}: cannot reach {self._client.base_url} ({type(exc).__name__}: {exc}). "
-                "Set --url or remote.url to the Niuu host."
+                "Check the context's URL (`niuu context list`) or pass --url."
             ) from exc
         return _checked(response, what)
 

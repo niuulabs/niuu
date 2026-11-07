@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from niuu.cli_api_client import CLIAPIClient
 from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin
 
 
@@ -77,4 +76,4 @@ class ObservatoryPlugin(ServicePlugin):
         )
 
     def create_api_client(self) -> Any:
-        return CLIAPIClient(base_url="http://localhost:8080", service_name="Observatory")
+        return self.cli_client("Observatory")

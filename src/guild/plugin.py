@@ -84,6 +84,4 @@ class GuildPlugin(ServicePlugin):
         return tuple(route_domains)
 
     def create_api_client(self) -> Any:
-        from niuu.cli_api_client import CLIAPIClient
-
-        return CLIAPIClient(base_url="http://localhost:8080", service_name="Guild")
+        return self.cli_client("Guild")
