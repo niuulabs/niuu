@@ -559,19 +559,53 @@ FILE_EXECUTION_CATALOG_ADAPTER = (
     "volundr.adapters.outbound.file_execution_catalog.FileExecutionCatalog"
 )
 DIRECT_SSH_CONNECTOR_ADAPTER = "volundr.adapters.outbound.host_connectors.DirectSshConnector"
+#: compute.hosts.join_listener.port's default (HostJoinListenerConfig).
+_JOIN_LISTENER_PORT = 8443
+
+
+BUILTIN_HOST_CATALOG_ADAPTER = "volundr.adapters.outbound.builtin_host_catalog.BuiltinHostCatalog"
+#: The release's session images a checkout runs (the latest dev build); pinned by digest
+#: when Forge starts.
+DEFAULT_LINUX_SESSION_IMAGE = "ghcr.io/niuulabs/openshell:dev"
+DEFAULT_DARWIN_SESSION_BUNDLE = "ghcr.io/niuulabs/skuld-darwin:dev"
+
+
+class HostSessionImagesConfig(BaseModel):
+    """``hosts.session_images``: what joined machines run (compute.session_images)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    linux: str = Field(
+        default=DEFAULT_LINUX_SESSION_IMAGE,
+        min_length=1,
+        description="Skuld image Linux hosts unpack; a tag is pinned by digest at startup.",
+    )
+    darwin: str = Field(
+        default=DEFAULT_DARWIN_SESSION_BUNDLE,
+        min_length=1,
+        description="macOS session bundle Macs fetch; a tag is pinned by digest at startup.",
+    )
 
 
 class HostsConfig(BaseModel):
     """Registered hosts next to this machine's own sessions (mini mode).
 
-    ``enabled: true`` renders a Forge compute pool on registered hosts and places a
-    session there only when it asks for a host (``workload_config.host_selector`` or
-    ``execution_profile``); every other session keeps running on this machine.
+    On by default in mini mode: ``niuu platform up`` serves a pool of registered hosts with
+    Niuu's built-in host execution (Linux machines and Macs alike), and ``niuu remote
+    join <ssh destination>`` or Add host joins one. A session is placed there only when it
+    asks for a host (``workload_config.host_selector`` or ``execution_profile``); every
+    other session keeps running on this machine.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = Field(default=False, description="Run sessions on registered hosts too.")
+    enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Run sessions on registered hosts too. Unset: on in mini mode (unless compute: "
+            "defines this Forge's pool), off in other modes."
+        ),
+    )
     pool_id: str = Field(
         default="local-hosts", min_length=1, description="The hosts pool's compute pool id."
     )
@@ -591,13 +625,35 @@ class HostsConfig(BaseModel):
     execution_catalog: str = Field(
         default="",
         description=(
-            "Directory of the execution catalog the hosts run (catalog.yaml). Required "
-            "until a default host-mode execution ships with Niuu."
+            "Directory of an execution catalog the hosts run (catalog.yaml). Empty: Niuu's "
+            "built-in host execution."
+        ),
+    )
+    session_images: HostSessionImagesConfig = Field(
+        default_factory=HostSessionImagesConfig,
+        description="What the built-in host execution runs on joined machines.",
+    )
+    data_dir: str = Field(
+        default="~/.niuu/hosts",
+        min_length=1,
+        description=(
+            "Forge's own directory for the hosts: its generated SSH key, the hosts' pinned "
+            "keys and session archives."
+        ),
+    )
+    join_host: str = Field(
+        default="",
+        description=(
+            "The address other machines reach this one at, for the pinned join listener. "
+            "Empty: server.external_host, else the address of this machine's default route."
         ),
     )
     join_url: str = Field(
         default="",
-        description="compute.hosts.join_url: Forge's base URL as hosts reach it.",
+        description=(
+            "compute.hosts.join_url: Forge's base URL as hosts reach it. Empty: the pinned "
+            "join listener at join_host."
+        ),
     )
     allow_plaintext_join: bool = Field(
         default=False,
@@ -627,13 +683,19 @@ class HostsConfig(BaseModel):
         description="Forge's own key that signs host pairing codes in mini mode.",
     )
 
-    def compute(self) -> ComputeConfig:
-        """The Forge ``compute:`` section for the hosts pool."""
-        if not self.execution_catalog.strip():
-            raise ValueError(
-                "hosts.enabled needs hosts.execution_catalog, the directory of the "
-                "execution catalog the hosts run; set it, or set hosts.enabled: false"
-            )
+    def active(self, mode: str, compute_configured: bool) -> bool:
+        """Whether this Forge serves a hosts pool in ``mode``."""
+        if self.enabled is not None:
+            return self.enabled
+        return mode == "mini" and not compute_configured
+
+    def compute(self, *, platform_port: int, join_host: str = "") -> ComputeConfig:
+        """The Forge ``compute:`` section for the hosts pool.
+
+        ``join_host`` is where other machines reach this one; it names the pinned join
+        listener unless ``join_url`` is set. ``platform_port`` is this Forge's own port,
+        where Skuld on a host calls back through its SSH tunnel.
+        """
         hosts: dict[str, Any] = {
             "allow_plaintext_join": self.allow_plaintext_join,
             "connectors": [
@@ -650,6 +712,28 @@ class HostsConfig(BaseModel):
         }
         if self.join_url:
             hosts["join_url"] = self.join_url
+        elif join_host:
+            # The pinned listener, at the address other machines reach: no CA is needed.
+            hosts["join_listener"] = {}
+            hosts["join_url"] = f"https://{join_host}:{_JOIN_LISTENER_PORT}"
+        if self.execution_catalog.strip():
+            catalog = {
+                "adapter": FILE_EXECUTION_CATALOG_ADAPTER,
+                "kwargs": {"root": str(Path(self.execution_catalog).expanduser())},
+            }
+            images = None
+        else:
+            catalog = {
+                "adapter": BUILTIN_HOST_CATALOG_ADAPTER,
+                "kwargs": {
+                    "pool_id": self.pool_id,
+                    "provider_binding": self.pool_id,
+                    "profile": self.profile,
+                    "data_dir": str(Path(self.data_dir).expanduser()),
+                    "platform_port": platform_port,
+                },
+            }
+            images = self.session_images.model_dump()
         return ComputeConfig.model_validate(
             {
                 "pool_id": self.pool_id,
@@ -660,10 +744,8 @@ class HostsConfig(BaseModel):
                     "adapter": REGISTERED_HOST_PROVIDER_ADAPTER,
                     "kwargs": {"profiles": {self.profile: {"label": "Registered host"}}},
                 },
-                "execution_catalog": {
-                    "adapter": FILE_EXECUTION_CATALOG_ADAPTER,
-                    "kwargs": {"root": str(Path(self.execution_catalog).expanduser())},
-                },
+                "execution_catalog": catalog,
+                **({"session_images": images} if images is not None else {}),
                 "hosts": hosts,
             }
         )
@@ -1233,7 +1315,7 @@ class CLISettings(BaseSettings):
 
     @model_validator(mode="after")
     def _hosts_pool_is_the_only_pool(self) -> CLISettings:
-        if not self.hosts.enabled:
+        if not self.hosts_active:
             return self
         if self.mode != "mini":
             raise ValueError(
@@ -1245,8 +1327,13 @@ class CLISettings(BaseSettings):
                 "hosts.enabled and compute: both define this Forge's compute pool; "
                 "remove compute:, or set hosts.enabled: false"
             )
-        self.hosts.compute()
+        self.hosts.compute(platform_port=self.server.port)
         return self
+
+    @property
+    def hosts_active(self) -> bool:
+        """Whether this Forge serves a pool of registered hosts (``hosts``)."""
+        return self.hosts.active(self.mode, self.compute is not None)
 
     #: Plugins that do not yet go through any auth.mode-aware identity check
     #: (they trust x-auth-* headers, or accept requests unauthenticated,

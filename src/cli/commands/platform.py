@@ -624,6 +624,50 @@ def _effective_bifrost_config(settings: CLISettings) -> BifrostConfig:
     )
 
 
+#: Where the route lookup for this machine's own address points; nothing is sent there.
+_ROUTE_PROBE = ("192.0.2.1", 9)  # TEST-NET-1 (RFC 5737): routed by the default route only
+
+
+def _default_route_address() -> str:
+    """The address this machine sends from on its default route (no packet is sent)."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect(_ROUTE_PROBE)
+        return probe.getsockname()[0]
+
+
+def _hosts_join_host(settings: CLISettings) -> str:
+    """Where other machines reach this one to join: configured, else the default route's."""
+    import ipaddress
+
+    configured = settings.hosts.join_host.strip() or settings.server.external_host.strip()
+    if configured:
+        try:
+            address = ipaddress.ip_address(configured)
+        except ValueError:
+            address = None
+        if configured == "localhost" or (
+            address is not None and (address.is_loopback or address.is_unspecified)
+        ):
+            raise typer.BadParameter(
+                f"Other machines cannot reach this one at {configured!r} to join it. Set "
+                "hosts.join_host (or server.external_host) to its LAN address or name, or "
+                "set hosts.enabled: false.",
+                param_hint="hosts.join_host",
+            )
+        return configured
+    try:
+        return _default_route_address()
+    except OSError as exc:
+        raise typer.BadParameter(
+            f"This machine has no default route ({exc}), so other machines have no address "
+            "to join it at. Set server.external_host (or hosts.join_host) to the address "
+            "they reach it at, or set hosts.enabled: false.",
+            param_hint="hosts.join_host",
+        ) from exc
+
+
 def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
     """Build env overrides for Volundr host-local runtime configuration."""
     from pathlib import Path
@@ -646,16 +690,18 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
             }
         ),
     }
-    if settings.hosts.enabled:
+    if settings.hosts_active:
         # This machine keeps its own sessions; the placement pod manager adds the
         # registered-hosts pool next to them.
         env.pop("POD_MANAGER__ADAPTER")
         env["POD_MANAGER"] = json.dumps(
             settings.hosts.pod_manager(settings.pod_manager.adapter, kwargs)
         )
-        env["COMPUTE"] = json.dumps(
-            settings.hosts.compute().model_dump(mode="json", exclude_none=True)
+        compute = settings.hosts.compute(
+            platform_port=settings.server.port,
+            join_host="" if settings.hosts.join_url else _hosts_join_host(settings),
         )
+        env["COMPUTE"] = json.dumps(compute.model_dump(mode="json", exclude_none=True))
     elif settings.compute is not None:
         env.pop("POD_MANAGER__ADAPTER")
         env["POD_MANAGER"] = json.dumps(
