@@ -44,7 +44,7 @@ from niuu.adapters.workload_identity.key_file import (
     read_private_file,
     write_private_file_once,
 )
-from niuu.observability import get_observability
+from niuu.observability import get_observability, install_uvicorn_log_redaction
 from volundr.adapters.inbound.rest_compute_hosts import create_host_join_router
 from volundr.domain.services.compute_hosts import ComputeHostService
 
@@ -150,6 +150,8 @@ class HostJoinListener:
         return self._port
 
     async def start(self) -> None:
+        # The join routes carry pairing codes in their Authorization header.
+        install_uvicorn_log_redaction()
         config = uvicorn.Config(
             self._app,
             ssl_certfile=str(self._tls.cert_file),
