@@ -2,7 +2,7 @@
   "name": "devrunner-cli-tools",
   "private": true,
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.316",
+    "@anthropic-ai/claude-code": "2.1.318",
     "@earendil-works/pi-coding-agent": "1.5.0",
     "@openai/codex": "0.166.0",
     "@xai-official/grok": "1.0.70",
