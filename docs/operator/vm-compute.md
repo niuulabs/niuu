@@ -377,6 +377,8 @@ compute:
   runtime:
     adapter: volundr.adapters.outbound.ssh_vm_runtime.SshContainerVmRuntime
     kwargs:
+      # Optional; both or neither. Without them Forge generates
+      # <data_dir>/host-access/id_ed25519 on first start.
       ssh_private_key_file: /secure/niuu/ssh_key
       ssh_public_key_file: /secure/niuu/ssh_key.pub
       data_dir: /var/lib/niuu/vm-sessions
@@ -396,7 +398,16 @@ tunnel to the app port reaches Forge unauthenticated and the broker's calls
 (delivery claims, notifications) are refused with 401. A Forge without Envoy in
 front, as in the standalone example above, points it at its own HTTP port.
 
-Generate a real SSH client keypair and configure its paths. The guest must have
+`ssh_private_key_file` and `ssh_public_key_file` are optional. Set both to use a
+keypair you manage (a real SSH client keypair; set only one and startup fails). Set
+neither and Forge generates its own Ed25519 key at
+`<data_dir>/host-access/id_ed25519` on first start (private key 0600 in a 0700
+directory, public key 0644), never overwrites it and reuses it on every restart. Keep
+`data_dir` on a persistent volume; deleting the files makes a new key, and every guest
+that trusts the old one must be bootstrapped again. Forge logs the key it uses and the
+public key's `SHA256:` fingerprint, never the private key. An incomplete or mismatched
+pair, a key that is not Ed25519, or a private key readable by others stops startup,
+naming the path and the fix. The guest must have
 OpenSSH, passwordless sudo for `ssh_user` (default `ubuntu`), Python 3.12+, Git,
 Docker and the QEMU guest agent. The controller needs OpenSSH and network access
 to the guest SSH port. Each start pulls the configured Skuld image; an existing
@@ -1173,7 +1184,7 @@ OpenShell's preflight, and starts the systemd service. No Kubernetes installatio
 is involved. Warm readiness requires an authenticated gateway RPC and a cached
 sandbox image, before a session can claim the guest.
 
-Alongside the SSH runtime's key paths, local `data_dir`, `skuld_image`, timeout
+Alongside the SSH runtime's optional key paths, local `data_dir`, `skuld_image`, timeout
 and callback settings, configure:
 
 | Runtime kwarg | Purpose |

@@ -1010,3 +1010,28 @@ def test_start_program_can_run_only_the_pod_containers(tmp_path: Path):
     assert "--name niuu-sidecar-agent" in recorded
     assert "niuu-skuld" not in recorded
     assert (tmp_path / "tokens").is_dir()
+
+
+def test_a_runtime_without_key_files_uses_the_key_forge_generates(tmp_path):
+    runtime = SshContainerVmRuntime(
+        data_dir=str(tmp_path / "runtime-data"), skuld_image="test/skuld:dev"
+    )
+
+    generated = tmp_path / "runtime-data" / "host-access" / "id_ed25519"
+    assert generated.is_file()
+    assert runtime._private_key == str(generated.resolve())
+    assert runtime._public_key.startswith("ssh-ed25519 ")
+
+
+def test_a_runtime_without_key_files_still_needs_a_data_dir():
+    with pytest.raises(ValueError, match="Configure data_dir"):
+        SshContainerVmRuntime(skuld_image="test/skuld:dev")
+
+
+def test_a_runtime_with_half_a_key_pair_names_both_kwargs(tmp_path):
+    with pytest.raises(ValueError, match="ssh_private_key_file and ssh_public_key_file"):
+        SshContainerVmRuntime(
+            ssh_private_key_file=str(tmp_path / "key"),
+            data_dir=str(tmp_path / "runtime-data"),
+            skuld_image="test/skuld:dev",
+        )

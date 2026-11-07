@@ -422,8 +422,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             raise ValueError("VM machine commands must contain non-empty arguments")
         self._owns_guest_access = guest_access is None
         if guest_access is None:
-            if not ssh_private_key_file or not ssh_public_key_file or not data_dir:
-                raise ValueError("Configure SSH key files and data_dir, or inject guest_access")
+            if not data_dir:
+                raise ValueError("Configure data_dir, or inject guest_access")
             guest_access = SshGuestAccess(
                 ssh_private_key_file=ssh_private_key_file,
                 ssh_public_key_file=ssh_public_key_file,

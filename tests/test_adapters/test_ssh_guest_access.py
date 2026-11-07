@@ -4,7 +4,11 @@ The subprocess is faked the way the SSH runtime tests fake it; nothing here reac
 """
 
 import asyncio
+import base64
+import hashlib
 import json
+import logging
+import stat
 from pathlib import Path
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -13,6 +17,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from niuu.adapters.workload_identity import key_file
 from volundr.adapters.outbound.ssh_guest_access import (
     HOST_KEY_CONFIG_PATH,
     HOST_KEY_PATH,
@@ -115,6 +120,226 @@ def test_the_other_accesses_refuse_the_registered_trust_mode(tmp_path, keys, del
 def test_an_unknown_bootstrap_delivery_names_all_three_modes(tmp_path, keys):
     with pytest.raises(ValueError, match="'provider', 'ssh' or 'registered'"):
         _access(tmp_path, keys, bootstrap_delivery="automatic")
+
+
+# -- the key Forge generates --------------------------------------------------------------------
+
+
+def _generated(tmp_path: Path, **kwargs) -> SshGuestAccess:
+    return SshGuestAccess(data_dir=str(tmp_path / "data"), **kwargs)
+
+
+def _host_access(tmp_path: Path) -> Path:
+    return tmp_path / "data" / "host-access"
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+def test_without_key_files_forge_generates_its_own_key_on_first_start(tmp_path, caplog):
+    with caplog.at_level(logging.INFO):
+        access = _generated(tmp_path)
+
+    private, public = (
+        _host_access(tmp_path) / "id_ed25519",
+        _host_access(tmp_path) / "id_ed25519.pub",
+    )
+    assert access.private_key == str(private.resolve())
+    assert _mode(_host_access(tmp_path)) == 0o700
+    assert _mode(private) == 0o600
+    assert _mode(public) == 0o644
+    assert access.public_key == public.read_text().strip()
+    assert access.public_key.startswith("ssh-ed25519 AAAA")
+    assert access.public_key.endswith(" forge-host-access")
+    key = serialization.load_ssh_private_key(private.read_bytes(), password=None)
+    assert isinstance(key, Ed25519PrivateKey)
+    assert private.read_bytes().startswith(b"-----BEGIN OPENSSH PRIVATE KEY-----")
+    blob = base64.b64decode(access.public_key.split()[1])
+    fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
+    logged = [record.getMessage() for record in caplog.records if "host access" in record.message]
+    assert len(logged) == 1
+    assert "generated" in logged[0] and fingerprint in logged[0]
+    assert "PRIVATE KEY" not in logged[0]
+    assert not list(_host_access(tmp_path).glob(".niuu-*"))
+
+
+def test_the_generated_key_is_reused_across_restarts_and_never_overwritten(tmp_path, caplog):
+    first = _generated(tmp_path)
+    private = _host_access(tmp_path) / "id_ed25519"
+    before = private.read_bytes()
+
+    with caplog.at_level(logging.INFO):
+        second = _generated(tmp_path)
+
+    assert second.public_key == first.public_key
+    assert private.read_bytes() == before
+    assert any("using the SSH key" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize("missing", ["id_ed25519", "id_ed25519.pub"])
+def test_one_half_of_the_generated_pair_is_refused(tmp_path, missing):
+    _generated(tmp_path)
+    (_host_access(tmp_path) / missing).unlink()
+
+    with pytest.raises(key_file.SshKeyFileError, match="incomplete") as raised:
+        _generated(tmp_path)
+
+    assert str(_host_access(tmp_path) / missing) in str(raised.value)
+    assert "every host must then join again" in str(raised.value)
+    assert not (_host_access(tmp_path) / missing).exists()
+
+
+def test_a_generated_private_key_others_can_read_is_refused(tmp_path):
+    _generated(tmp_path)
+    private = _host_access(tmp_path) / "id_ed25519"
+    private.chmod(0o640)
+
+    with pytest.raises(key_file.SshKeyFileError, match="chmod 600") as raised:
+        _generated(tmp_path)
+
+    assert str(private) in str(raised.value)
+
+
+def test_a_public_file_that_is_not_the_private_keys_is_refused(tmp_path):
+    _generated(tmp_path)
+    public = _host_access(tmp_path) / "id_ed25519.pub"
+    public.write_text(_openssh_public(Ed25519PrivateKey.generate()) + " other\n")
+
+    with pytest.raises(key_file.SshKeyFileError, match="does not belong to the private key"):
+        _generated(tmp_path)
+
+
+def test_a_public_file_that_is_unreadable_is_refused(tmp_path):
+    _generated(tmp_path)
+    public = _host_access(tmp_path) / "id_ed25519.pub"
+    public.write_bytes(b"\xff\xfe")
+
+    with pytest.raises(key_file.SshKeyFileError, match="cannot read the SSH public key"):
+        _generated(tmp_path)
+
+
+def test_a_private_key_that_is_not_openssh_is_refused(tmp_path):
+    _generated(tmp_path)
+    private = _host_access(tmp_path) / "id_ed25519"
+    private.write_text("not a key")
+
+    with pytest.raises(key_file.SshKeyFileError, match="not a valid unencrypted OpenSSH"):
+        _generated(tmp_path)
+
+
+def test_a_private_key_that_is_not_ed25519_is_refused(tmp_path):
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    _generated(tmp_path)
+    private = _host_access(tmp_path) / "id_ed25519"
+    rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private.write_bytes(
+        rsa_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.OpenSSH,
+            serialization.NoEncryption(),
+        )
+    )
+
+    with pytest.raises(key_file.SshKeyFileError, match="not an Ed25519 key"):
+        _generated(tmp_path)
+
+
+def test_a_directory_that_cannot_be_made_is_refused(tmp_path):
+    blocker = tmp_path / "data" / "host-access"
+    blocker.parent.mkdir(parents=True)
+    blocker.write_text("a file where the directory belongs")
+
+    with pytest.raises(key_file.SshKeyFileError, match="cannot use the SSH key directory"):
+        _generated(tmp_path)
+
+
+def test_a_failed_write_of_the_public_file_is_refused_and_leaves_no_temporary_file(
+    tmp_path, monkeypatch
+):
+    def refuse(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(key_file.os, "replace", refuse)
+
+    with pytest.raises(key_file.SshKeyFileError, match="cannot write the SSH public key"):
+        _generated(tmp_path)
+
+    assert not list(_host_access(tmp_path).glob(".niuu-public-*"))
+
+
+def test_an_unwritable_public_file_directory_is_refused(tmp_path, monkeypatch):
+    def refuse(*_args, **_kwargs):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(key_file.tempfile, "mkstemp", refuse)
+
+    with pytest.raises(key_file.SshKeyFileError, match="cannot write the SSH private key"):
+        _generated(tmp_path)
+
+
+def test_a_process_that_loses_the_creation_race_adopts_the_winners_key(tmp_path, monkeypatch):
+    winner = Ed25519PrivateKey.generate()
+    real_write = key_file.write_private_file_once
+
+    def lose_the_race(path, data, *, what):
+        # Another process creates the private file between our check and our write.
+        real_write(
+            path,
+            winner.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.OpenSSH,
+                serialization.NoEncryption(),
+            ),
+            what=what,
+        )
+        real_write(path, data, what=what)  # ours finds the file and keeps theirs
+
+    monkeypatch.setattr(key_file, "write_private_file_once", lose_the_race)
+
+    access = _generated(tmp_path)
+
+    assert access.public_key.split()[:2] == _openssh_public(winner).split()
+    assert _generated(tmp_path).public_key == access.public_key
+
+
+def test_concurrent_starts_share_one_generated_key(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        accesses = list(pool.map(lambda _: _generated(tmp_path), range(8)))
+
+    assert len({access.public_key for access in accesses}) == 1
+
+
+def test_a_configured_key_is_still_used_and_logged(tmp_path, keys, caplog):
+    with caplog.at_level(logging.INFO):
+        access = _access(tmp_path, keys)
+
+    assert access.private_key == str(keys[0].resolve())
+    assert access.public_key == keys[1].read_text().strip()
+    assert not (_host_access(tmp_path)).exists()
+    assert any("configured SSH key" in record.getMessage() for record in caplog.records)
+
+
+def test_a_configured_key_that_is_missing_is_still_fatal(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        _generated(
+            tmp_path,
+            ssh_private_key_file=str(tmp_path / "absent"),
+            ssh_public_key_file=str(tmp_path / "absent.pub"),
+        )
+
+
+@pytest.mark.parametrize("given", ["ssh_private_key_file", "ssh_public_key_file"])
+def test_one_of_the_two_key_kwargs_alone_is_refused(tmp_path, keys, given):
+    kwargs = {given: str(keys[0] if given == "ssh_private_key_file" else keys[1])}
+
+    with pytest.raises(ValueError, match="ssh_private_key_file and ssh_public_key_file"):
+        _generated(tmp_path, **kwargs)
+
+    assert not _host_access(tmp_path).exists()
 
 
 # -- machine bootstrap --------------------------------------------------------------------------
@@ -336,3 +561,21 @@ async def test_ensure_in_provider_mode_still_waits_for_cloud_init(tmp_path, keys
 
     assert len(calls) == 1
     assert calls[0][0][-1] == "sudo -n cloud-init status --wait"
+
+
+def test_a_public_file_that_cannot_be_started_is_refused(tmp_path, monkeypatch):
+    real_mkstemp = key_file.tempfile.mkstemp
+    calls = []
+
+    def second_one_fails(*args, **kwargs):
+        calls.append(kwargs["prefix"])
+        if kwargs["prefix"] == ".niuu-public-":
+            raise OSError("no inodes")
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(key_file.tempfile, "mkstemp", second_one_fails)
+
+    with pytest.raises(key_file.SshKeyFileError, match="cannot write the SSH public key"):
+        _generated(tmp_path)
+
+    assert calls == [".niuu-private-", ".niuu-public-"]
