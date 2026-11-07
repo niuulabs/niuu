@@ -204,6 +204,48 @@ class TestVolumes:
         assert "volumes" not in [s.key for s in stages]
 
 
+class TestFinishedStagesKeepTheirOwnWords:
+    """Seen live on Valhalla: done stages showed a retry warning and the next stage's pull."""
+
+    def events(self):
+        return [
+            event(
+                "SuccessfulAttachVolume", 'AttachVolume.Attach succeeded for volume "pvc-1"', at(5)
+            ),
+            event("FailedMount", "MountVolume.SetUp failed: hot-plug volume not ready", at(9)),
+            event("Pulling", 'Pulling image "openbao"', at(20)),
+            event("Pulled", 'Successfully pulled image "openbao"', at(23)),
+            event("Pulling", 'Pulling image "nginx:alpine"', at(43)),
+        ]
+
+    def test_a_finished_volume_stage_names_the_attach_that_succeeded(self):
+        stages = by_key(pod_startup_stages(release(), scheduled_pod(pvc=True), self.events()))
+
+        assert stages["volumes"].state is StartupStageState.DONE
+        assert stages["volumes"].finished_at == at(20)
+        assert stages["volumes"].detail == 'AttachVolume.Attach succeeded for volume "pvc-1"'
+
+    def test_an_attaching_volume_stage_shows_the_latest_warning(self):
+        stages = by_key(pod_startup_stages(release(), scheduled_pod(pvc=True), self.events()[:2]))
+
+        assert stages["volumes"].state is StartupStageState.ACTIVE
+        assert stages["volumes"].detail == "MountVolume.SetUp failed: hot-plug volume not ready"
+
+    def test_finished_init_and_container_stages_carry_no_progress_words(self):
+        ready = scheduled_pod(
+            pvc=True,
+            init=True,
+            conditions=[cond("Initialized", when=at(42)), cond("ContainersReady", when=at(60))],
+        )
+
+        stages = by_key(pod_startup_stages(release(), ready, self.events()))
+
+        assert stages["init"].state is StartupStageState.DONE
+        assert stages["init"].detail is None
+        assert stages["containers"].state is StartupStageState.DONE
+        assert stages["containers"].detail is None
+
+
 class TestInitContainers:
     def test_pod_without_init_containers_skips_the_stage(self):
         stages = pod_startup_stages(release(), scheduled_pod(), [])
