@@ -30,6 +30,42 @@ def test_join_script_carries_the_code_once_and_quoted():
     assert "__" not in script.replace("__name__", "")
 
 
+def test_an_unpinned_join_script_has_an_empty_pin_and_keeps_wget():
+    script = render_join_script(forge_url="https://f", code="c")
+    assert "PIN=''" in script
+    assert "wget -qO-" in script
+
+
+def test_a_pinned_join_script_posts_only_through_curl_with_the_pin():
+    script = render_join_script(forge_url="https://f:8443", code="c", pin="sha256//a+b/c=")
+    assert "PIN=sha256//a+b/c=" in script
+    pinned = script[script.index('if [ -n "$PIN" ]; then') : script.index("elif command -v curl")]
+    assert "only curl checks a pin" in pinned
+    assert '-k --pinnedpubkey "$PIN"' in pinned
+    assert "wget -" not in pinned
+
+
+@_needs_sh
+def test_a_pinned_join_without_curl_says_so_and_changes_nothing(tmp_path):
+    # Only the tool block, with a PATH that has no curl: it fails before anything is written.
+    script = render_join_script(forge_url="https://f", code="c", pin="sha256//x=")
+    block = script[script.index("say() {") : script.index('if [ "$(uname -s)" = Darwin ]')]
+    pinned = script[script.index('if [ -n "$PIN" ]; then') : script.index("elif command -v curl")]
+    probe = f"PIN=sha256//x=\n{block}\n{pinned}fi\necho reached\n"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    result = subprocess.run(
+        [shutil.which("sh"), "-c", probe],
+        capture_output=True,
+        cwd=tmp_path,
+        env={"PATH": str(bin_dir)},
+    )
+    assert result.returncode == 1
+    assert b"only curl checks a pin" in result.stderr
+    assert b"reached" not in result.stdout
+    assert list(tmp_path.iterdir()) == [bin_dir]
+
+
 def test_join_script_registers_sshds_own_key_and_never_reconfigures_sshd():
     script = render_join_script(forge_url="https://f", code="c")
     assert "SSHD_KEY=/etc/ssh/ssh_host_ed25519_key" in script
@@ -48,6 +84,7 @@ def test_join_script_embeds_the_leave_script():
 def test_rendered_scripts_are_valid_posix_sh():
     for script in (
         render_join_script(forge_url="https://f", code="c"),
+        render_join_script(forge_url="https://f", code="c", pin="sha256//x="),
         render_leave_script(),
         render_darwin_join_script(),
         render_darwin_leave_script(),
@@ -147,3 +184,10 @@ class TestMacPreflight:
         result = self._run(tmp_path, id="echo 501")
         assert result.returncode == 1
         assert b"run this as root" in result.stderr
+
+
+def test_a_mac_posts_with_the_listeners_pin():
+    script = render_join_script(forge_url="https://f", code="c", pin="sha256//x=")
+    darwin = render_darwin_join_script()
+    assert 'PIN="$PIN"' in script
+    assert '--pinnedpubkey "$PIN"' in darwin

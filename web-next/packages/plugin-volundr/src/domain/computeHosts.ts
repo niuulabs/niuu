@@ -161,7 +161,12 @@ export interface PairingCodeRequest {
 export interface NewPairingCode extends PairingCode {
   code: string;
   command: string;
-  commandWget: string;
+  /** Null when the join is pinned: wget cannot check a pin, so only curl is offered. */
+  commandWget: string | null;
+  /** Where hosts reach this Forge's join routes. */
+  joinUrl: string;
+  /** The pinned certificate key (`sha256//…`) the command checks; null without a pin. */
+  pin: string | null;
 }
 
 export interface ComputeHostChanges {

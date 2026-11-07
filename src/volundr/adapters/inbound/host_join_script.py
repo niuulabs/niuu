@@ -27,6 +27,7 @@ _JOIN = r"""#!/bin/sh
 set -eu
 FORGE_URL=__FORGE_URL__
 CODE=__CODE__
+PIN=__PIN__
 CONFIG=__CONFIG__
 LEAVE=__LEAVE__
 NIUU_KEY=__NIUU_KEY__
@@ -45,7 +46,13 @@ for tool in sh ssh-keygen python3 sudo systemctl ip awk sed; do
   command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 [ -x /usr/sbin/sshd ] || command -v sshd >/dev/null 2>&1 || missing="$missing sshd"
-if command -v curl >/dev/null 2>&1; then
+if [ -n "$PIN" ]; then
+  # The Forge's certificate is pinned, and wget cannot check a pin.
+  command -v curl >/dev/null 2>&1 || \
+    fail "this Forge's join is pinned and only curl checks a pin: install curl, then run the command again"
+  post() { curl -fsS --fail-with-body -k --pinnedpubkey "$PIN" -H "Authorization: Bearer $CODE" \
+    -H 'Content-Type: application/json' --data "$1" "$2"; }
+elif command -v curl >/dev/null 2>&1; then
   post() { curl -fsS --fail-with-body -H "Authorization: Bearer $CODE" \
     -H 'Content-Type: application/json' --data "$1" "$2"; }
 elif command -v wget >/dev/null 2>&1; then
@@ -178,8 +185,8 @@ rm -f "$0"
 # script runs it with the code and paths in the environment, so the code is in the script
 # once.
 _DARWIN_BRANCH = r"""if [ "$(uname -s)" = Darwin ]; then
-  FORGE_URL="$FORGE_URL" CODE="$CODE" CONFIG="$CONFIG" LEAVE="$LEAVE" NIUU_KEY="$NIUU_KEY" \
-    sh -s <<'NIUU_JOIN_DARWIN'
+  FORGE_URL="$FORGE_URL" CODE="$CODE" PIN="$PIN" CONFIG="$CONFIG" LEAVE="$LEAVE" \
+    NIUU_KEY="$NIUU_KEY" sh -s <<'NIUU_JOIN_DARWIN'
 __DARWIN_JOIN__
 NIUU_JOIN_DARWIN
   exit
@@ -204,12 +211,17 @@ for tool in sh ssh-keygen python3 sudo launchctl dscl dseditgroup route ipconfig
   command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 [ -x /usr/sbin/sshd ] || command -v sshd >/dev/null 2>&1 || missing="$missing sshd"
-if command -v curl >/dev/null 2>&1; then
-  post() { curl -fsS --fail-with-body -H "Authorization: Bearer $CODE" \
-    -H 'Content-Type: application/json' --data "$1" "$2"; }
-else
-  missing="$missing curl"
-fi
+command -v curl >/dev/null 2>&1 || missing="$missing curl"
+# A pinned Forge (its own join listener) is reached with its certificate's key pinned.
+post() {
+  if [ -z "$PIN" ]; then
+    curl -fsS --fail-with-body -H "Authorization: Bearer $CODE" \
+      -H 'Content-Type: application/json' --data "$1" "$2"
+  else
+    curl -fsS --fail-with-body -k --pinnedpubkey "$PIN" -H "Authorization: Bearer $CODE" \
+      -H 'Content-Type: application/json' --data "$1" "$2"
+  fi
+}
 [ -z "$missing" ] || fail "missing:$missing; these come with macOS and its Command Line Tools (xcode-select --install)"
 # /usr/bin/python3 is a stub until the Command Line Tools are installed.
 python3 -c 'import json' >/dev/null 2>&1 || \
@@ -358,14 +370,19 @@ def render_darwin_join_script() -> str:
     )
 
 
-def render_join_script(*, forge_url: str, code: str) -> str:
-    """The join script for one code; ``code`` is the caller's own bearer, echoed back."""
+def render_join_script(*, forge_url: str, code: str, pin: str | None = None) -> str:
+    """The join script for one code; ``code`` is the caller's own bearer, echoed back.
+
+    ``pin`` is the join listener's ``curl --pinnedpubkey`` pin; the script then posts
+    only through curl, pinned.
+    """
     return (
         _JOIN.replace(
             "__DARWIN__", _DARWIN_BRANCH.replace("__DARWIN_JOIN__", render_darwin_join_script())
         )
         .replace("__FORGE_URL__", shlex.quote(forge_url))
         .replace("__CODE__", shlex.quote(code))
+        .replace("__PIN__", shlex.quote(pin or ""))
         .replace("__CONFIG__", shlex.quote(HOST_CONFIG_PATH))
         .replace("__LEAVE__", shlex.quote(LEAVE_PATH))
         .replace("__NIUU_KEY__", shlex.quote(NIUU_HOST_KEY_PATH))

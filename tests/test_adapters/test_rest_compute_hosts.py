@@ -23,7 +23,10 @@ from tests.compute_host_fakes import (
     make_host,
 )
 from volundr.adapters.inbound.auth import extract_principal
-from volundr.adapters.inbound.rest_compute_hosts import create_compute_hosts_router
+from volundr.adapters.inbound.rest_compute_hosts import (
+    create_compute_hosts_router,
+    create_host_join_router,
+)
 from volundr.domain.compute import ComputePoolPolicy
 from volundr.domain.compute_hosts import HostHealth, HostService
 from volundr.domain.services.compute_hosts import ComputeHostService
@@ -44,7 +47,7 @@ class Pool:
         return ComputePoolPolicy(profile="bm", max_machines=4, warm_min=4, reuse_policy="reuse")
 
 
-def _client(*hosts, principal=ADMIN, issuer=None):
+def _client(*hosts, principal=ADMIN, issuer=None, pin=None):
     repository = HostRepository(*hosts)
     issuer = issuer or Issuer()
     service = ComputeHostService(
@@ -59,6 +62,7 @@ def _client(*hosts, principal=ADMIN, issuer=None):
         },
         token_issuer=issuer,
         join_url="https://forge.example",
+        join_pin=pin,
         pairing_code_ttl_seconds=600,
         check_interval_seconds=300,
         pending_check_interval_seconds=5,
@@ -67,6 +71,7 @@ def _client(*hosts, principal=ADMIN, issuer=None):
     )
     app = FastAPI()
     app.include_router(create_compute_hosts_router(service, Pool()))
+    app.include_router(create_host_join_router(service))
     app.dependency_overrides[extract_principal] = lambda: principal
     return TestClient(app), repository, issuer
 
@@ -199,6 +204,61 @@ class TestHostFacing:
         assert response.headers["cache-control"] == "no-store"
         assert "FORGE_URL=https://forge.example" in response.text
         assert code in response.text
+
+    def test_mint_answers_the_join_url_and_pin(self):
+        client, *_ = _client(pin="sha256//abc=")
+        body = client.post(
+            "/api/v1/forge/compute/hosts/pairing-codes",
+            json={"execution": "host@1", "connector": "direct-ssh"},
+        ).json()
+        assert body["join_url"] == "https://forge.example"
+        assert body["pin"] == "sha256//abc="
+        assert "--pinnedpubkey sha256//abc=" in body["command"]
+        assert body["command_wget"] is None
+
+    def test_mint_without_a_pin_answers_a_null_pin_and_a_wget_line(self):
+        client, *_ = _client()
+        body = client.post(
+            "/api/v1/forge/compute/hosts/pairing-codes",
+            json={"execution": "host@1", "connector": "direct-ssh"},
+        ).json()
+        assert body["pin"] is None
+        assert body["command_wget"].startswith("wget ")
+
+    def test_a_pinned_join_script_posts_with_the_same_pin(self):
+        client, *_ = _client(pin="sha256//abc=")
+        code = self._mint(client)
+        script = client.get("/api/v1/forge/compute/hosts/join.sh", headers=_scoped(code)).text
+        assert "PIN=sha256//abc=" in script
+        assert '--pinnedpubkey "$PIN"' in script
+
+    def test_the_admin_router_alone_serves_no_host_facing_route(self):
+        app = FastAPI()
+        app.include_router(
+            create_compute_hosts_router(
+                ComputeHostService(
+                    pool_id=POOL,
+                    repository=HostRepository(),
+                    compute_repository=SlotLedger(),
+                    connectors={"direct-ssh": Connector()},
+                    inspector=Inspector(),
+                    executions={"host@1": make_execution()},
+                    token_issuer=Issuer(),
+                    join_url="https://forge.example",
+                    join_pin=None,
+                    pairing_code_ttl_seconds=600,
+                    check_interval_seconds=300,
+                    pending_check_interval_seconds=5,
+                    reserved_cpu=4,
+                    reserved_memory_mib=8192,
+                ),
+                Pool(),
+            )
+        )
+        paths = app.openapi()["paths"]
+        assert "/api/v1/forge/compute/hosts/pairing-codes" in paths
+        assert "/api/v1/forge/compute/hosts/join.sh" not in paths
+        assert "/api/v1/forge/compute/hosts/join" not in paths
 
     def test_join_registers_and_answers_what_join_sh_needs(self):
         client, repository, _ = _client()
