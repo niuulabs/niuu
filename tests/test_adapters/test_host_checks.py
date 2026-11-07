@@ -17,6 +17,7 @@ from volundr.adapters.outbound.host_checks import (
     LEAVE_PATH,
     SshHostInspector,
     parse_check_output,
+    slot_audit_arguments,
     summarize_findings,
 )
 from volundr.adapters.outbound.host_connectors import DirectSshConnector
@@ -219,6 +220,121 @@ def _shims(directory, programs):
         path.write_text("#!/bin/sh\n" + body + "\n")
         path.chmod(0o755)
     return directory
+
+
+class TestSlotAuditArguments:
+    def test_one_slot_is_audited_alone_with_no_floor_and_no_clean_up(self):
+        assert slot_audit_arguments(uid_base=61000, slot=3) == (
+            "61000",
+            "4",
+            "",
+            "0",
+            "check",
+            "3",
+        )
+
+    def test_slot_zero_is_a_slot(self):
+        assert slot_audit_arguments(uid_base=70000, slot=0) == (
+            "70000",
+            "1",
+            "",
+            "0",
+            "check",
+            "0",
+        )
+
+    def test_a_negative_slot_is_refused(self):
+        with pytest.raises(ValueError, match="never negative"):
+            slot_audit_arguments(uid_base=61000, slot=-1)
+
+
+#: Executables that stand in for a Linux host's tools. Slots 0 and 1 both left everything.
+_LINUX_LEFTOVERS = {
+    "getent": 'case "$1" in\n'
+    '  passwd) printf "root:x:0:0:root:/root:/bin/sh\\nniuu-slot-0:x:61000:61000::/:/bin/false\\n'
+    'niuu-slot-1:x:61001:61001::/:/bin/false\\n" ;;\n'
+    '  group) printf "%s:x:1:\\n" "$2" ;;\n'
+    "esac",
+    "pgrep": 'case "$2" in 61000) echo 4000 ;; 61001) echo 4001 ;; esac',
+    "ps": "echo sleeper",
+    # One directory is enough: the audit looks in each of them.
+    "find": '[ "$1" = /tmp ] && echo "/tmp/left-by-$4"; true',
+    "ip": 'case "$1 $2" in\n'
+    '  "netns list") printf "niuu-slot-0 (id: 0)\\nniuu-slot-1\\n" ;;\n'
+    "  *) exit 0 ;;\nesac",
+    "systemctl": 'echo "$5 loaded active"',
+    "ipcs": 'printf "m 1 61000 --rw\\nm 2 61001 --rw\\n"',
+}
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX sh")
+class TestLinuxSlotAudit:
+    def _run(self, tmp_path, *args):
+        shims = _shims(tmp_path / "bin", _LINUX_LEFTOVERS)
+        result = subprocess.run(
+            ["sh", "-s", "--", *args],
+            input=AUDIT_SH.encode(),
+            capture_output=True,
+            env={"PATH": f"{shims}:/usr/bin:/bin"},
+            check=True,
+        )
+        findings = parse_check_output(result.stdout.decode()).findings
+        # What the machine running the test has in /etc/nix is not what is under test.
+        return tuple(f for f in findings if not f.startswith("nix trusted-users"))
+
+    def _slots_named(self, findings):
+        """The slots (0 or 1) any finding is about, by the names and uids a finding carries."""
+        return {
+            slot
+            for slot in ("0", "1")
+            if any(
+                marker in finding
+                for finding in findings
+                for marker in (f"-slot-{slot}", f"slot{slot}", f"slot_{slot}", f"6100{slot}")
+            )
+        }
+
+    def test_every_dead_slot_is_audited_when_none_is_named(self, tmp_path):
+        findings = self._run(tmp_path, "61000", "2", "", "0", "check")
+
+        assert "user niuu-slot-0 still exists" in findings
+        assert "user niuu-slot-1 still exists" in findings
+        assert self._slots_named(findings) == {"0", "1"}
+
+    def test_naming_a_slot_audits_that_slot_alone(self, tmp_path):
+        findings = self._run(tmp_path, "61000", "2", "", "0", "check", "1")
+
+        assert findings == (
+            "user niuu-slot-1 still exists",
+            "process sleeper (pid 4001) still runs as uid 61001",
+            "/tmp/left-by-61001 is owned by uid 61001",
+            "network namespace niuu-slot-1 still exists",
+            "link niuuslot1 still exists",
+            "slice niuu_slot_1.slice still exists",
+            "IPC objects created by uid 61001 still exist",
+        )
+
+    def test_the_other_slot_is_audited_alone_too(self, tmp_path):
+        findings = self._run(tmp_path, "61000", "2", "", "0", "check", "0")
+
+        assert "user niuu-slot-0 still exists" in findings
+        assert self._slots_named(findings) == {"0"}
+
+    def test_a_named_slot_that_is_live_is_left_alone(self, tmp_path):
+        assert self._run(tmp_path, "61000", "2", "1", "0", "check", "1") == ()
+
+    def test_without_a_named_slot_a_live_slot_is_still_skipped(self, tmp_path):
+        findings = self._run(tmp_path, "61000", "2", "0", "0", "check")
+
+        assert self._slots_named(findings) == {"1"}
+
+    def test_the_per_slot_audit_arguments_run_the_program(self, tmp_path):
+        arguments = slot_audit_arguments(uid_base=61000, slot=1)
+
+        findings = self._run(tmp_path, *arguments)
+
+        assert "user niuu-slot-1 still exists" in findings
+        assert self._slots_named(findings) == {"1"}
 
 
 _TAB = "\t"

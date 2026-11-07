@@ -1,13 +1,15 @@
 """SshHostVmRuntime: sessions directly on the VM, inside their slot's boundary.
 
-The controller side runs against a recording guest access; the image unpack runs
-for real against a fake ``docker`` that exports a small image tree.
+The controller side runs against a recording guest access. The guest programs it ships
+(image fetch and unpack, the pod containers' units) are proven in
+``test_linux_guest_programs``.
 """
 
+import ast
 import io
 import json
 import os
-import stat
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -18,16 +20,60 @@ from uuid import uuid4
 import pytest
 
 from tests.test_adapters.test_ssh_vm_runtime_slots import ISOLATION, SlotView, _keys
+from volundr.adapters.outbound import linux_guest_programs as programs
 from volundr.adapters.outbound import ssh_host_vm_runtime as module
 from volundr.adapters.outbound import ssh_vm_runtime
+from volundr.adapters.outbound.host_checks import AUDIT_SH
 from volundr.adapters.outbound.ssh_host_vm_runtime import SshHostVmRuntime
+from volundr.adapters.outbound.ssh_vm_runtime import SlotNotCleanError
 from volundr.domain.compute import Machine, MachineBootstrap, MachineState
 from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
 from volundr.domain.session_runtimes import SessionRuntimeKind
+from volundr.domain.vm_runtime import SessionImages
 
 IMAGE = "ghcr.io/niuulabs/openshell@sha256:" + "a" * 64
-UNPACKED = {"venv": "/opt/niuu", "python_root": "/sandbox/.uv/python", "digest": "a" * 64}
+DIGEST = "a" * 64
+#: What ``linux_guest_programs.IMAGE`` prints for the session image (its ``host.json``).
+UNPACKED = {
+    "venv": "/opt/niuu",
+    "python_root": "/sandbox/.uv/python",
+    "digest": f"sha256:{DIGEST}",
+    "reference": IMAGE,
+    "env": [],
+    "user": "",
+    "workdir": "",
+    "entrypoint": [],
+    "cmd": [],
+}
+#: The same as the runtime hands it on, with where it was unpacked.
+FETCHED = {
+    **UNPACKED,
+    "root": f"/var/lib/niuu/host-images/{DIGEST}",
+    "rootfs": f"/var/lib/niuu/host-images/{DIGEST}/rootfs",
+}
+#: The commands the session takes from its image: the agent CLIs and the fallback tools.
+_SESSION_IMAGE_WRAPPERS = {
+    "agents": module.AGENT_COMMANDS,
+    "tools": module.FALLBACK_TOOLS,
+    "view": module.HOST_IMAGE_VIEW,
+}
+AGENT = "ghcr.io/niuulabs/guest-agent@sha256:" + "b" * 64
+OPENBAO = "quay.io/openbao/openbao@sha256:" + "c" * 64
+
+
+def _description(reference: str) -> dict:
+    """What the image program prints for a pod image (a plain image, no relocatable Python)."""
+    digest = "d" * 64 if reference == AGENT else "e" * 64
+    return {
+        "digest": f"sha256:{digest}",
+        "reference": reference,
+        "env": ["PATH=/usr/bin:/bin"],
+        "user": "1000",
+        "workdir": "/app",
+        "entrypoint": ["/agent"],
+        "cmd": ["serve"],
+    }
 
 
 def _runtime(tmp_path: Path, **kwargs) -> SshHostVmRuntime:
@@ -40,7 +86,11 @@ def _runtime(tmp_path: Path, **kwargs) -> SshHostVmRuntime:
         "slot_isolation": {**ISOLATION, "image_user": "sandbox"},
         "command_timeout_seconds": 0.05,
     }
-    return SshHostVmRuntime(**{**options, **kwargs})
+    options.update(kwargs)
+    if options["skuld_image"] is None:
+        # Not configured: the release's session image is the one to run.
+        del options["skuld_image"]
+    return SshHostVmRuntime(**options)
 
 
 def _session() -> Session:
@@ -71,9 +121,11 @@ def host(tmp_path):
     lease = SlotView(allocation, session.id, 2, machine)
 
     async def execute(lease_, bootstrap_, command, **kwargs):
-        if command.startswith(runtime._python(module._UNPACK, IMAGE)[:60]) and IMAGE in command:
-            return GuestCommandResult(0, json.dumps(UNPACKED).encode())
-        return GuestCommandResult(0, b"{}")
+        if not command.startswith(runtime._python(programs.IMAGE) + " "):
+            return GuestCommandResult(0, b"{}")
+        reference = shlex.split(command)[-3]
+        description = UNPACKED if reference == IMAGE else _description(reference)
+        return GuestCommandResult(0, json.dumps(description).encode())
 
     runtime._guest_access.execute = AsyncMock(side_effect=execute)
     runtime._guest_access.open_tunnel = AsyncMock()
@@ -100,6 +152,42 @@ def test_host_mode_needs_separated_slots(tmp_path):
 def test_host_mode_needs_a_digest_pinned_image(tmp_path):
     with pytest.raises(ValueError, match="pin skuld_image"):
         _runtime(tmp_path, skuld_image="ghcr.io/niuulabs/openshell:dev")
+
+
+def test_host_mode_needs_no_root_daemon_and_reuses_cleaned_slots(tmp_path):
+    runtime = _runtime(tmp_path)
+
+    assert runtime.requires_root_daemon is False
+    assert runtime.supports_reuse is True
+
+
+def test_the_releases_session_image_stands_in_for_skuld_image(tmp_path):
+    runtime = _runtime(tmp_path, skuld_image=None, session_images=SessionImages(linux=IMAGE))
+
+    assert runtime._image == IMAGE
+    assert runtime.session_runtime is SessionRuntimeKind.HOST
+
+
+def test_the_releases_session_image_and_a_configured_one_are_not_both_accepted(tmp_path):
+    with pytest.raises(ValueError, match="remove skuld_image to run the release's"):
+        _runtime(tmp_path, session_images=SessionImages(linux=IMAGE))
+
+
+@pytest.mark.parametrize(
+    "images", [None, SessionImages(), SessionImages(darwin="ghcr.io/niuulabs/x@sha256:" + "b" * 64)]
+)
+def test_host_mode_needs_a_session_image_from_one_place_or_the_other(tmp_path, images):
+    with pytest.raises(ValueError, match="compute.session_images.linux"):
+        _runtime(tmp_path, skuld_image=None, session_images=images)
+
+
+def test_a_slot_has_no_holder_container_and_names_its_units_after_itself(host):
+    runtime, bootstrap, lease = host
+
+    layout = runtime._slot(lease)
+
+    assert layout.supervisor_spec(image=IMAGE, platform_port=18080)["holder"] is None
+    assert layout.unit_prefix == "niuu-slot-2-"
 
 
 def test_host_mode_needs_a_positive_start_timeout(tmp_path):
@@ -208,20 +296,26 @@ async def test_start_runs_the_slot_agents_unpacks_skuld_then_starts_it_as_the_sl
     await runtime.start(lease, bootstrap)
 
     calls = _calls(runtime)
-    programs = [_program(call) for call in calls]
-    assert programs[0] == runtime._python(runtime._supervisor, "up")
-    containers = json.loads(calls[3].kwargs["data"])
-    assert programs[3] == runtime._python(ssh_vm_runtime._START)
-    assert containers["containers_only"] is True
-    assert containers["slot"]["holder"] == "niuu-slot-2-holder"
-    assert IMAGE in programs[4]
-    assert programs[5] == runtime._python(module._HOST_START)
+    commands = [_program(call) for call in calls]
+    assert commands[0] == runtime._python(runtime._supervisor, "up")
+    # The slot keeps no holder container: its namespace is the supervisor's own.
+    assert json.loads(calls[0].kwargs["data"])["holder"] is None
+    pods = json.loads(calls[3].kwargs["data"])
+    assert commands[3] == runtime._python(programs.PODS_START)
+    assert "containers_only" not in pods and pods["pods"]["images"] == {}
+    assert commands[4] == runtime._python(
+        programs.IMAGE, IMAGE, "/var/lib/niuu/host-images", json.dumps(_SESSION_IMAGE_WRAPPERS)
+    )
+    assert commands[5] == runtime._python(module._HOST_START)
     started = json.loads(calls[5].kwargs["data"])
     host_spec = started["host"]
     key = f"{lease.id}-slot-2"
     assert host_spec["pidfile"] == f"/run/niuu/host-sessions/{key}.pid"
     assert host_spec["log"] == f"/var/log/niuu/host-sessions/{key}.log"
     assert host_spec["user"] == "niuu-slot-2"
+    # Skuld runs in a delegated systemd scope of the slot's slice, named per start.
+    assert host_spec["scope_prefix"] == "niuu-slot-2-session-"
+    assert started["slot"]["slice"] == "niuu_slot_2.slice"
     # Slot 2's own subordinate ids, its runtime directory, and the VM's credentials hidden.
     assert host_spec["containers"] == {"first": 1_000_000 + 2 * 65536, "count": 65536}
     assert host_spec["keep_owners"] == [
@@ -233,12 +327,13 @@ async def test_start_runs_the_slot_agents_unpacks_skuld_then_starts_it_as_the_sl
     assert host_spec["init"] == module._HOST_INIT and host_spec["boot"] == module._BOOT
     mounts = {item["target"]: item for item in host_spec["mounts"]}
     assert mounts["/opt/niuu-skuld"] == {
-        "source": f"/var/lib/niuu/host-images/{'a' * 64}",
+        "source": f"/var/lib/niuu/host-images/{DIGEST}",
         "target": "/opt/niuu-skuld",
         "readonly": True,
     }
-    assert mounts["/opt/niuu"]["source"].endswith("/rootfs/opt/niuu")
+    assert mounts["/opt/niuu"]["source"] == f"/var/lib/niuu/host-images/{DIGEST}/rootfs/opt/niuu"
     assert mounts["/sandbox/.uv/python"]["readonly"] is True
+    assert mounts["/etc/resolv.conf"]["source"] == "/run/systemd/resolve/resolv.conf"
     assert mounts["/workspace"]["source"] == "/var/lib/niuu/slots/2/session/workspace"
     assert mounts["/home/skuld"]["readonly"] is False
     assert mounts["/tmp"]["source"] == mounts["/var/tmp"]["source"] == "/var/lib/niuu/slots/2/tmp"
@@ -261,6 +356,138 @@ async def test_start_runs_the_slot_agents_unpacks_skuld_then_starts_it_as_the_sl
         "guest_image",
         "guest_host",
     ]
+    # Nothing in a daemonless start asks a container engine for anything.
+    assert not [command for command in commands if "docker" in command]
+
+
+def _pod_payload() -> dict:
+    """What a launch carries beyond Skuld: the credential agent's init and its sidecars."""
+    agent = {
+        "name": "guest-agent-init",
+        "image": AGENT,
+        "command": [],
+        "args": [],
+        "environment": {"MODE": "init"},
+        "mounts": [{"source": "/etc/niuu/slots/2/guest-agent", "target": "/etc/niuu/guest-agent"}],
+    }
+    return {
+        "environment": {},
+        "init_containers": [agent],
+        "sidecars": [
+            {**agent, "name": "guest-agent"},
+            {**agent, "name": "openbao-agent", "image": OPENBAO},
+        ],
+    }
+
+
+async def test_a_launch_with_agents_fetches_each_distinct_pod_image_once_before_starting_them(host):
+    runtime, bootstrap, lease = host
+    steps = []
+    runtime.report_startup_to(lambda sid, key, label: steps.append(key))
+    payload = _pod_payload()
+
+    await runtime._launch_skuld(lease, bootstrap, payload)
+
+    calls = _calls(runtime)
+    commands = [_program(call) for call in calls]
+    fetched = [shlex.split(command)[-3] for command in commands[:2]]
+    # In order of first use, the guest agent image once for its init container and sidecar.
+    assert fetched == [AGENT, OPENBAO]
+    for command in commands[:2]:
+        assert command.startswith(runtime._python(programs.IMAGE) + " ")
+        assert shlex.split(command)[-2:] == ["/var/lib/niuu/host-images", "null"]
+    assert commands[2] == runtime._python(programs.PODS_START)
+    sent = json.loads(calls[2].kwargs["data"])
+    assert sent["init_containers"] == payload["init_containers"]
+    assert sent["sidecars"] == payload["sidecars"]
+    described = sent["pods"]["images"]
+    assert list(described) == [AGENT, OPENBAO]
+    assert described[AGENT] == {
+        "rootfs": f"/var/lib/niuu/host-images/{'d' * 64}/rootfs",
+        "env": ["PATH=/usr/bin:/bin"],
+        "user": "1000",
+        "workdir": "/app",
+        "entrypoint": ["/agent"],
+        "cmd": ["serve"],
+    }
+    assert described[OPENBAO]["rootfs"] == f"/var/lib/niuu/host-images/{'e' * 64}/rootfs"
+    assert commands[3].startswith(runtime._python(programs.IMAGE) + " ")
+    assert commands[4] == runtime._python(module._HOST_START)
+    assert steps == ["guest_images", "guest_skuld", "guest_image", "guest_host"]
+
+
+async def test_a_launch_without_agents_fetches_no_pod_image(host):
+    runtime, bootstrap, lease = host
+    steps = []
+    runtime.report_startup_to(lambda sid, key, label: steps.append(key))
+
+    await runtime._launch_skuld(lease, bootstrap, {"environment": {}})
+
+    assert "guest_images" not in steps
+    assert len(_calls(runtime)) == 3  # the pods program, the session image, the session
+
+
+def test_the_pods_spec_names_the_slots_units_state_and_images(host):
+    runtime, _, lease = host
+    layout = runtime._slot(lease)
+    image = {**_description(AGENT), "rootfs": "/r", "root": "/x", "digest": "sha256:" + "d" * 64}
+
+    spec = runtime._pods_spec(layout, {AGENT: image})
+
+    key = f"{lease.id}-slot-2"
+    assert spec == {
+        "prefix": "niuu-slot-2-",
+        "slice": "niuu_slot_2.slice",
+        "state": f"/run/niuu/host-sessions/{key}-pods",
+        "logs": f"/var/log/niuu/host-sessions/{key}",
+        "work": f"/run/niuu/host-pods/{key}",
+        "resolv_conf": "/run/systemd/resolve/resolv.conf",
+        "program": programs.CONTAINER,
+        "images": {
+            AGENT: {
+                "rootfs": "/r",
+                "env": ["PATH=/usr/bin:/bin"],
+                "user": "1000",
+                "workdir": "/app",
+                "entrypoint": ["/agent"],
+                "cmd": ["serve"],
+            }
+        },
+        "stop_timeout": 30,
+        "poll": 2,
+        "start_timeout": 30,
+    }
+
+
+async def test_a_fetched_image_is_described_with_its_unpacked_root(host):
+    runtime, bootstrap, lease = host
+
+    fetched = await runtime._fetch_image(lease, bootstrap, AGENT)
+
+    assert fetched == {
+        **_description(AGENT),
+        "root": f"/var/lib/niuu/host-images/{'d' * 64}",
+        "rootfs": f"/var/lib/niuu/host-images/{'d' * 64}/rootfs",
+    }
+
+
+@pytest.mark.parametrize("name", ["_HOST_INIT", "_HOST_START", "_HOST_STOP"])
+def test_the_host_programs_parse(name):
+    ast.parse(getattr(module, name))
+
+
+def test_the_session_starts_in_a_delegated_scope_not_beside_a_holder_container():
+    start, init = module._HOST_START, module._HOST_INIT
+
+    # Skuld's init is started by systemd-run into the slot's slice, with its cgroup delegated.
+    assert "'systemd-run', '--scope'" in start
+    assert "'--slice', s['slice']" in start and "'Delegate=yes'" in start
+    assert "h['scope_prefix']" in start
+    # The init finds its scope from its own cgroup, never from a container's process.
+    assert "/proc/self/cgroup" in init
+    for program in (start, init):
+        assert "docker inspect" not in program and "s['holder']" not in program
+    assert "cgroup_procs" not in init and "cgroup_procs" not in start
 
 
 async def test_the_pod_mounts_keep_their_targets_parents_first(host):
@@ -277,7 +504,7 @@ async def test_the_pod_mounts_keep_their_targets_parents_first(host):
         "environment": {},
     }
 
-    spec = runtime._host_spec(runtime._slot(lease), payload, UNPACKED)
+    spec = runtime._host_spec(runtime._slot(lease), payload, FETCHED)
 
     declared = spec["mounts"][-2:]
     # The image's /var/run is /run, as the VM's is.
@@ -294,7 +521,7 @@ async def test_without_containers_a_slot_gets_no_subordinate_ids(tmp_path):
     spec = runtime._host_spec(
         runtime._slot(SlotView(machine.allocation_id, uuid4(), 1, machine)),
         {"environment": {}},
-        UNPACKED,
+        FETCHED,
     )
 
     assert (spec["containers"], spec["keep_owners"]) == (None, [])
@@ -306,9 +533,10 @@ async def test_stop_ends_the_host_session_before_archiving_and_removing_the_slot
 
     await runtime.stop(lease, bootstrap)
 
-    programs = [_program(call) for call in _calls(runtime)]
+    calls = _calls(runtime)
+    commands = [_program(call) for call in calls]
     key = f"{lease.id}-slot-2"
-    assert programs[0] == runtime._python(
+    assert commands[0] == runtime._python(
         module._HOST_STOP,
         json.dumps(
             {
@@ -321,147 +549,131 @@ async def test_stop_ends_the_host_session_before_archiving_and_removing_the_slot
             }
         ),
     )
-    assert programs[1].startswith(runtime._python(ssh_vm_runtime._STOP, str(lease.id))[:40])
-    assert "-C /var/lib/niuu/slots/2/session" in programs[2]
-    assert programs[-1] == runtime._python(runtime._supervisor, "down")
+    # Then the agents, after Skuld has flushed through them.
+    assert commands[1] == runtime._python(
+        programs.PODS_STOP,
+        json.dumps(
+            {"prefix": "niuu-slot-2-", "data_root": "/var/lib/niuu/slots/2/session", "marker": key}
+        ),
+    )
+    assert calls[1].kwargs["expected_exit_codes"] == (0, 42)
+    assert "-C /var/lib/niuu/slots/2/session" in commands[2]
+    assert commands[3] == runtime._python(runtime._supervisor, "limits")
+    assert commands[4] == runtime._python(runtime._supervisor, "down")
+    assert len(commands) == 5
+    runtime._guest_access.close_tunnel.assert_awaited_once()
+    # No container engine is asked to stop or remove anything.
+    assert not [command for command in commands if "docker" in command]
 
 
-async def test_warm_pulls_then_unpacks_the_session_image(host):
+async def test_stop_stops_the_credential_delivery_between_the_agents_and_the_archive(host):
+    runtime, bootstrap, lease = host
+    order = []
+    delivery = AsyncMock()
+    delivery.serves_slots = True
+    delivery.stop = AsyncMock(side_effect=lambda *_: order.append("delivery"))
+    runtime.configure_credential_delivery(delivery)
+    original = runtime._guest_access.execute.side_effect
+
+    async def record(lease_, bootstrap_, command, **kwargs):
+        order.append("archive" if " tar " in command else "guest")
+        return await original(lease_, bootstrap_, command, **kwargs)
+
+    runtime._guest_access.execute.side_effect = record
+
+    await runtime.stop(lease, bootstrap)
+
+    delivery.stop.assert_awaited_once_with(lease, bootstrap)
+    assert order[:4] == ["guest", "guest", "delivery", "archive"]
+
+
+async def test_a_session_cancelled_before_its_storage_was_prepared_keeps_the_previous_archive(host):
+    runtime, bootstrap, lease = host
+    original = runtime._guest_access.execute.side_effect
+    pods_stop = runtime._python(programs.PODS_STOP)
+
+    async def execute(lease_, bootstrap_, command, **kwargs):
+        if command.startswith(pods_stop + " "):
+            return GuestCommandResult(42, b"")
+        return await original(lease_, bootstrap_, command, **kwargs)
+
+    runtime._guest_access.execute.side_effect = execute
+
+    await runtime.stop(lease, bootstrap)
+
+    commands = [_program(call) for call in _calls(runtime)]
+    assert not [command for command in commands if " tar " in command]
+    # The slot is still reported and removed, and the tunnel closed.
+    assert commands[-2:] == [
+        runtime._python(runtime._supervisor, "limits"),
+        runtime._python(runtime._supervisor, "down"),
+    ]
+    runtime._guest_access.close_tunnel.assert_awaited_once()
+
+
+async def test_warm_prepares_the_machine_and_unpacks_the_session_image_without_a_daemon(host):
     runtime, bootstrap, lease = host
 
     await runtime.warm(lease, bootstrap)
 
-    programs = [_program(call) for call in _calls(runtime)]
-    assert "docker pull" in programs[-2]
-    assert IMAGE in programs[-1] and "/var/lib/niuu/host-images" in programs[-1]
+    commands = [_program(call) for call in _calls(runtime)]
+    assert not [command for command in commands if "docker" in command]
+    assert commands[-1].startswith(runtime._python(programs.IMAGE) + " ")
+    assert shlex.split(commands[-1])[-3:] == [
+        IMAGE,
+        "/var/lib/niuu/host-images",
+        json.dumps(_SESSION_IMAGE_WRAPPERS),
+    ]
 
 
-# -- the image unpack, run for real ------------------------------------------------------------
+# -- recycling a stopped slot ------------------------------------------------------------------
 
 
-def _image_tree() -> bytes:
-    """An image with a relocatable Python, a native CLI and a node script CLI."""
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as archive:
+async def test_recycle_verifies_the_removed_slot_then_audits_it_alone(host):
+    runtime, bootstrap, lease = host
 
-        def add(name, content=b"", mode=0o755, link=None):
-            info = tarfile.TarInfo(name)
-            if link is not None:
-                info.type, info.linkname = tarfile.SYMTYPE, link
-            elif content is None:
-                info.type, info.mode = tarfile.DIRTYPE, 0o755
-            else:
-                info.size, info.mode = len(content), mode
-            archive.addfile(info, io.BytesIO(content or b"") if info.isreg() else None)
+    await runtime.recycle(lease, bootstrap)
 
-        add("sandbox/.uv/python/cpython-3.14.10-linux-x86_64-gnu/bin/python3.14", b"\x7fELF")
-        add(
-            "sandbox/.uv/python/cpython-3.14-linux-x86_64-gnu",
-            link="cpython-3.14.10-linux-x86_64-gnu",
-        )
-        add(
-            "opt/niuu/bin/python",
-            link="/sandbox/.uv/python/cpython-3.14-linux-x86_64-gnu/bin/python3.14",
-        )
-        add("opt/tools/claude.exe", b"\x7fELF")
-        add("usr/local/bin/claude", link="/opt/tools/claude.exe")
-        add("usr/bin/node", b"\x7fELF")
-        add("usr/lib/codex/codex.js", b"#!/usr/bin/env node\nconsole.log(1)\n")
-        add("usr/bin/codex", link="../lib/codex/codex.js")
-        add("dev/null", b"")
-    return buffer.getvalue()
+    calls = _calls(runtime)
+    assert [_program(call) for call in calls[:1]] == [
+        runtime._python(runtime._supervisor, "verify")
+    ]
+    audit = calls[1]
+    assert _program(audit) == "sudo -n sh -s -- 61000 3 '' 0 check 2"
+    assert audit.kwargs["data"] == AUDIT_SH.encode()
+    assert len(calls) == 2
 
 
-def _fake_docker(tmp_path: Path, env: list[str]) -> Path:
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    image_tar = tmp_path / "image.tar"
-    image_tar.write_bytes(_image_tree())
-    log = tmp_path / "docker.log"
-    docker = bin_dir / "docker"
-    docker.write_text(
-        f"""#!{sys.executable}
-import json, sys
-args = sys.argv[1:]
-open({str(log)!r}, 'a').write(' '.join(args) + '\\n')
-if args[:2] == ['image', 'inspect']:
-    print(json.dumps([{{'Config': {{'Env': {env!r}}}}}]))
-elif args[0] == 'create':
-    print('container-1')
-elif args[0] == 'export':
-    sys.stdout.buffer.write(open({str(image_tar)!r}, 'rb').read())
-"""
-    )
-    docker.chmod(docker.stat().st_mode | stat.S_IEXEC)
-    return bin_dir
+async def test_a_slot_the_supervisor_cannot_verify_is_not_audited_or_reused(host):
+    runtime, bootstrap, lease = host
+    original = runtime._guest_access.execute.side_effect
+
+    async def execute(lease_, bootstrap_, command, **kwargs):
+        if command == runtime._python(runtime._supervisor, "verify"):
+            raise RuntimeError("Slot 2 teardown left: user niuu-slot-2")
+        return await original(lease_, bootstrap_, command, **kwargs)
+
+    runtime._guest_access.execute.side_effect = execute
+
+    with pytest.raises(RuntimeError, match="teardown left"):
+        await runtime.recycle(lease, bootstrap)
+
+    assert len(_calls(runtime)) == 1
 
 
-def _unpack(tmp_path: Path, env: list[str]) -> subprocess.CompletedProcess:
-    bin_dir = _fake_docker(tmp_path, env)
-    return subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            module._UNPACK,
-            IMAGE,
-            str(tmp_path / "cache"),
-            json.dumps(["claude", "codex", "grok"]),
-            json.dumps(["node", "gh"]),
-            "/opt/niuu-skuld",
-        ],
-        capture_output=True,
-        text=True,
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
-    )
+async def test_a_slot_whose_audit_finds_anything_is_not_recycled(host):
+    runtime, bootstrap, lease = host
+    original = runtime._guest_access.execute.side_effect
 
+    async def execute(lease_, bootstrap_, command, **kwargs):
+        if command.startswith("sudo -n sh -s"):
+            return GuestCommandResult(0, b"finding /tmp/x is owned by uid 61002\n")
+        return await original(lease_, bootstrap_, command, **kwargs)
 
-ENV = [
-    "PATH=/opt/niuu/bin:/usr/local/bin:/usr/bin:/bin",
-    "VIRTUAL_ENV=/opt/niuu",
-    "UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python",
-]
+    runtime._guest_access.execute.side_effect = execute
 
-
-def test_unpack_extracts_the_image_once_and_wraps_its_commands(tmp_path):
-    result = _unpack(tmp_path, ENV)
-
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == UNPACKED
-    root = tmp_path / "cache" / ("a" * 64)
-    assert (root / "rootfs/opt/niuu/bin/python").is_symlink()
-    assert not (root / "rootfs/dev/null").exists()
-    claude = (root / "agents/claude").read_text()
-    assert claude == '#!/bin/sh\nexec /opt/niuu-skuld/rootfs/opt/tools/claude.exe "$@"\n'
-    # A node script runs on the image's node, whatever node the VM has.
-    codex = (root / "agents/codex").read_text()
-    assert codex == (
-        "#!/bin/sh\nexec /opt/niuu-skuld/rootfs/usr/bin/node "
-        '/opt/niuu-skuld/rootfs/usr/lib/codex/codex.js "$@"\n'
-    )
-    assert not (root / "agents/grok").exists()
-    assert (root / "tools/node").exists() and not (root / "tools/gh").exists()
-
-    second = subprocess.run(
-        [sys.executable, "-c", module._UNPACK, IMAGE, str(tmp_path / "cache"), "[]", "[]", "/v"],
-        capture_output=True,
-        text=True,
-    )
-    assert second.returncode == 0 and json.loads(second.stdout) == UNPACKED
-
-
-def test_unpack_refuses_an_image_on_the_distributions_python(tmp_path):
-    result = _unpack(tmp_path, ["PATH=/opt/venv/bin:/usr/bin", "VIRTUAL_ENV=/opt/venv"])
-
-    assert result.returncode != 0
-    assert "relocatable Python" in result.stderr
-    assert not (tmp_path / "cache" / ("a" * 64)).exists()
-
-
-def test_unpack_refuses_a_venv_whose_python_is_outside_its_python_root(tmp_path):
-    result = _unpack(tmp_path, [*ENV[:2], "UV_PYTHON_INSTALL_DIR=/usr/lib/python"])
-
-    assert result.returncode != 0
-    assert "does not run on its own Python" in result.stderr
+    with pytest.raises(SlotNotCleanError, match="/tmp/x is owned by uid 61002"):
+        await runtime.recycle(lease, bootstrap)
 
 
 async def test_a_host_session_restores_its_links_to_absolute_paths(host):

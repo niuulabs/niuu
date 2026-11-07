@@ -50,6 +50,9 @@ class FakeVm:
         self.netns_inode = 7
         self.holder_inode = 7
         self.chowned: list[tuple[str, int, int]] = []
+        # The slot's systemd units, in a slot that runs no container daemon.
+        self.units: list[str] = []
+        self.reset: list[str] = []
 
     # -- account database -----------------------------------------------
 
@@ -127,6 +130,9 @@ class FakeVm:
                 netns.mkdir(exist_ok=True)
                 (netns / name).write_text("")
                 self.netns_inode = self.holder_inode
+            case ["ip", "netns", "add", name]:
+                netns.mkdir(exist_ok=True)
+                (netns / name).write_text("")
             case ["ip", "netns", "delete", name]:
                 (netns / name).unlink()
             case ["ip", "-j", "route", "show", "default"]:
@@ -153,8 +159,14 @@ class FakeVm:
             case ["systemctl", "set-property", "--runtime", name, *_]:
                 (self.root / "control" / f"{name}.d").mkdir(parents=True, exist_ok=True)
                 (self.root / "cgroup" / name).mkdir(parents=True, exist_ok=True)
+            case ["systemctl", "list-units", *_]:
+                return "".join(f"{unit} loaded active running Pod\n" for unit in self.units)
             case ["systemctl", "stop", name]:
                 self.slice_active = False
+                if name in self.units:
+                    self.units.remove(name)
+            case ["systemctl", "reset-failed", name]:
+                self.reset.append(name)
             case ["systemctl", "revert", name]:
                 (self.root / "control" / f"{name}.d").rmdir()
                 (self.root / "cgroup" / name).rmdir()
@@ -468,6 +480,145 @@ def test_leftovers_list_every_kind_of_slot_state(vm):
     ):
         assert any(item.startswith(expected) for item in left), expected
     assert sum(item.startswith(("filter rule", "nat rule")) for item in left) == 9
+
+
+# -- a slot without a container daemon (the host runtime on registered hosts) ---------------------
+
+
+UNITS = ["niuu-slot-3-sidecar-agent.service", "niuu-slot-3-session-1.scope"]
+
+
+def _daemonless(vm: FakeVm, **overrides) -> SlotSupervisor:
+    return _supervisor(vm, holder=None, **overrides)
+
+
+def test_a_slot_without_a_holder_is_daemonless(vm):
+    assert _daemonless(vm).daemonless is True
+    assert _supervisor(vm).daemonless is False
+    assert _daemonless(vm).unit_prefix == "niuu-slot-3-"
+
+
+def test_up_without_a_holder_keeps_a_namespace_of_its_own_and_runs_no_container_engine(vm):
+    supervisor = _daemonless(vm)
+
+    assert supervisor.up() == {"slot": 3, "address": "10.249.0.14", "gateway": "10.249.0.13"}
+
+    assert vm.ran("ip", "netns", "add") == [["ip", "netns", "add", "niuu-slot-3"]]
+    assert not vm.ran("docker") and not vm.ran("ip", "netns", "attach")
+    assert (vm.root / "netns" / "niuu-slot-3").exists()
+    # No image is read for the slot's identity files: the pod containers read their own.
+    assert not (supervisor.identity_directory / "passwd").exists()
+    assert vm.users["niuu-slot-3"] == Account("niuu-slot-3", 61003, 61003)
+    assert vm.links == {"niuuslot3"} and vm.slot_addresses == {"10.249.0.14/30"}
+    assert vm.ran("systemctl", "set-property")
+
+
+def test_up_again_without_a_holder_keeps_its_namespace(vm):
+    supervisor = _daemonless(vm)
+    supervisor.up()
+    vm.commands.clear()
+
+    supervisor.up()
+
+    assert not vm.ran("ip", "netns", "add") and not vm.ran("docker")
+    assert not vm.ran("useradd") and not vm.ran("ip", "link", "add")
+
+
+def test_the_slots_units_are_listed_by_their_prefix_services_and_scopes(vm):
+    vm.units = [*UNITS]
+    supervisor = _daemonless(vm)
+
+    assert supervisor.units() == UNITS
+    assert vm.ran("systemctl", "list-units") == [
+        [
+            "systemctl",
+            "list-units",
+            "--all",
+            "--plain",
+            "--no-legend",
+            "--type=service,scope",
+            "niuu-slot-3-*",
+        ]
+    ]
+
+
+def test_a_daemonless_slot_has_no_containers_to_list(vm):
+    assert _daemonless(vm).containers() == []
+    assert not vm.ran("docker")
+
+
+def test_down_without_a_holder_stops_and_resets_every_unit_then_proves_it(vm):
+    supervisor = _daemonless(vm)
+    supervisor.up()
+    vm.units = [*UNITS]
+
+    supervisor.down()
+
+    for unit in UNITS:
+        assert ["systemctl", "stop", unit] in vm.commands
+        assert ["systemctl", "reset-failed", unit] in vm.commands
+    assert vm.units == [] and supervisor.leftovers() == []
+    assert vm.rules == [] and vm.links == set() and vm.users == {}
+    assert not vm.ran("docker")
+
+
+def test_down_resets_a_unit_without_failing_when_it_was_never_failed(vm):
+    supervisor = _daemonless(vm)
+    supervisor.up()
+    vm.units = [UNITS[0]]
+    original = vm.run
+
+    def run(argv, **kwargs):
+        # ``systemctl reset-failed`` exits non-zero for a unit that is not failed.
+        if argv[:2] == ["systemctl", "reset-failed"]:
+            assert kwargs["check"] is False
+        return original(argv, **kwargs)
+
+    supervisor._run = run
+
+    supervisor.down()
+
+    assert supervisor.leftovers() == []
+
+
+def test_a_unit_that_will_not_stop_fails_down_naming_it(vm):
+    supervisor = _daemonless(vm)
+    supervisor.up()
+    vm.units = [UNITS[0]]
+    original = vm.run
+
+    def run(argv, **kwargs):
+        if argv == ["systemctl", "stop", UNITS[0]]:
+            vm.commands.append(argv)
+            return ""
+        return original(argv, **kwargs)
+
+    supervisor._run = run
+
+    with pytest.raises(SlotError, match=f"teardown left: unit {UNITS[0]}"):
+        supervisor.down()
+
+
+def test_leftovers_of_a_daemonless_slot_list_its_loaded_units_not_containers(vm):
+    supervisor = _daemonless(vm)
+    supervisor.up()
+    vm.units = [*UNITS]
+
+    left = supervisor.leftovers()
+
+    assert [item for item in left if item.startswith("unit ")] == [f"unit {u}" for u in UNITS]
+    assert not [item for item in left if item.startswith("container ")]
+    assert "network namespace niuu-slot-3" in left
+
+
+def test_a_slot_with_a_holder_never_lists_units(vm):
+    supervisor = _supervisor(vm)
+    supervisor.up()
+
+    supervisor.leftovers()
+    supervisor.down()
+
+    assert not vm.ran("systemctl", "list-units") and not vm.ran("systemctl", "reset-failed")
 
 
 def test_down_refuses_a_symlinked_slot_directory(vm, tmp_path):

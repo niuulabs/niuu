@@ -316,7 +316,13 @@ async def test_reuse_preserves_machine_clears_binding_and_expires_idle(setup):
     assert lease.id not in provider.machines
 
 
-async def test_failed_recycle_keeps_session_bound_until_retry(setup):
+async def test_a_slot_that_cannot_be_recycled_is_retired_loudly_and_the_machine_drains(
+    setup, monkeypatch, caplog
+):
+    import logging
+
+    from niuu.observability import get_observability
+
     pool, leases, repo, provider, runtime, _ = setup
     runtime.supports_reuse = True
     await pool.configure((await pool.policy()).model_copy(update={"reuse_policy": "reuse"}))
@@ -324,17 +330,76 @@ async def test_failed_recycle_keeps_session_bound_until_retry(setup):
     async with repo.operation(lease.id):
         bound = await leases.bind(lease, uuid4(), "owner", "tenant", MachineBootstrap(), 120)
     await request_stop(repo, bound.binding)
-    runtime.recycle.side_effect = RuntimeError("cleanup failed")
-    with pytest.raises(RuntimeError, match="cleanup failed"):
+    runtime.recycle.side_effect = RuntimeError("slot 0 has leftovers")
+    count = MagicMock()
+    monkeypatch.setattr(get_observability(), "count", count, raising=False)
+
+    with caplog.at_level(logging.ERROR, logger="volundr.domain.services.compute_pool"):
         await pool.maintain()
-    kept = repo.bindings[bound.binding.id]
-    assert kept.session_id == bound.session_id and kept.stop_requested
-    assert kept.state == SlotState.STARTING
-    assert lease.id in provider.machines
-    runtime.recycle.side_effect = None
+
+    # Nothing is re-raised (a retry would repeat the same stop), the slot takes no other
+    # session, and the machine with no other live session drains.
+    runtime.recycle.assert_awaited_once()
+    assert repo.bindings[bound.binding.id].state in {SlotState.RETIRED, SlotState.DRAINING}
+    assert repo.leases[lease.id].state != LeaseState.IDLE
+    failures = [
+        c for c in count.call_args_list if c.args[0] == "volundr.compute.slot.recycle_failures"
+    ]
+    assert len(failures) == 1
+    assert failures[0].args[1] == 1 and failures[0].kwargs["attributes"] == {"pool": "pool"}
+    [record] = [r for r in caplog.records if "could not be cleaned for reuse" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert "retired" in record.getMessage() and "slot 0 has leftovers" in record.getMessage()
+    assert record.exc_info is not None
     await pool.maintain()
+    assert lease.id not in provider.machines
+
+
+async def test_a_slot_that_cannot_be_recycled_leaves_the_machine_serving_its_other_sessions(
+    setup,
+):
+    pool, leases, repo, provider, runtime, _ = setup
+    runtime.supports_reuse = True
+    await pool.configure((await pool.policy()).model_copy(update={"reuse_policy": "reuse"}))
+    spare = await leases.acquire_standby(profile="small", slots=2)
+    await leases.reconcile(spare.id)
+    async with repo.operation(spare.id):
+        await repo.save(repo.leases[spare.id].model_copy(update={"state": LeaseState.IDLE}))
+        one = await leases.bind(repo.leases[spare.id], uuid4(), "o", "t", MachineBootstrap(), 60)
+        two = await leases.bind(repo.leases[spare.id], uuid4(), "o", "t", MachineBootstrap(), 60)
+    stopping = await request_stop(repo, one.binding)
+    runtime.recycle.side_effect = RuntimeError("audit finding")
+
+    async with repo.operation(spare.id):
+        machine, binding = await pool.finish_stop(repo.leases[spare.id], stopping)
+
+    assert binding.state == SlotState.RETIRED
+    assert machine.state == LeaseState.IDLE
+    assert repo.bindings[two.binding.id].state == SlotState.STARTING
+    assert spare.id in provider.machines
+
+
+async def test_a_slot_that_recycles_cleanly_is_released_for_the_next_session(setup, monkeypatch):
+    from niuu.observability import get_observability
+
+    pool, leases, repo, _, runtime, _ = setup
+    runtime.supports_reuse = True
+    await pool.configure((await pool.policy()).model_copy(update={"reuse_policy": "reuse"}))
+    lease = await warm(setup)
+    async with repo.operation(lease.id):
+        bound = await leases.bind(lease, uuid4(), "owner", "tenant", MachineBootstrap(), 120)
+    await request_stop(repo, bound.binding)
+    count = MagicMock()
+    monkeypatch.setattr(get_observability(), "count", count, raising=False)
+
+    await pool.maintain()
+
+    runtime.recycle.assert_awaited_once()
     assert repo.leases[lease.id].state == LeaseState.IDLE
     assert repo.bindings[bound.binding.id].state == SlotState.RELEASED
+    assert not [
+        c for c in count.call_args_list if c.args[0] == "volundr.compute.slot.recycle_failures"
+    ]
 
 
 async def test_reuse_requires_runtime_capability(setup):
@@ -800,6 +865,23 @@ async def test_registered_hosts_with_a_rootless_runtime_are_accepted():
 
     assert (await pool.policy()).profile == "small"
     await pool.validate_policy(await pool.policy())
+
+
+async def test_registered_hosts_accept_the_linux_and_mac_host_runtimes(tmp_path):
+    from tests.test_adapters.test_ssh_darwin_host_runtime import _runtime as mac_runtime
+    from tests.test_adapters.test_ssh_host_vm_runtime import _runtime as linux_runtime
+
+    linux, mac = linux_runtime(tmp_path), mac_runtime(tmp_path)
+    assert linux.requires_root_daemon is False and mac.requires_root_daemon is False
+    pool, _, _, _, _ = _fixed_pool(1)
+
+    for runtime in (linux, mac):
+        pool.runtime = runtime
+        assert (await pool.policy()).profile == "small"
+        await pool.validate_policy(await pool.policy())
+
+    pool._execution_runtimes = {"linux": linux, "mac": mac}
+    assert (await pool.policy()).profile == "small"
 
 
 async def test_a_fixed_inventory_is_claimed_up_to_what_it_can_serve():

@@ -29,11 +29,13 @@ from volundr.adapters.outbound.ssh_darwin_host_runtime import (
     _group_mode,
     translate,
 )
+from volundr.adapters.outbound.ssh_vm_runtime import SlotNotCleanError
 from volundr.domain.compute import Machine, MachineBootstrap, MachineState
 from volundr.domain.compute_hosts import HostPlatform
 from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
 from volundr.domain.session_runtimes import SessionRuntimeKind
+from volundr.domain.vm_runtime import SessionImages
 
 DIGEST = "b" * 64
 BUNDLE = f"ghcr.io/niuulabs/skuld-darwin@sha256:{DIGEST}"
@@ -156,7 +158,7 @@ def test_a_mac_runtime_runs_sessions_on_darwin_hosts_only(tmp_path):
     assert runtime.session_runtime is SessionRuntimeKind.HOST
     assert runtime.requires_root_daemon is False
     assert runtime.supports_slots is False
-    assert runtime.supports_reuse is False
+    assert runtime.supports_reuse is True
     limits = runtime.slot_limits
     assert (limits.uid_base, limits.cpu, limits.memory_mib, limits.pids) == (
         61000,
@@ -180,6 +182,51 @@ def test_a_mac_runtime_runs_sessions_on_darwin_hosts_only(tmp_path):
 def test_configuration_a_mac_cannot_honour_is_refused(tmp_path, kwargs, message):
     with pytest.raises(ValueError, match=message):
         _runtime(tmp_path, **kwargs)
+
+
+def test_the_release_bundle_stands_in_for_skuld_bundle(tmp_path):
+    runtime = _runtime(tmp_path, skuld_bundle=None, session_images=SessionImages(darwin=BUNDLE))
+
+    assert runtime._python("print(1)").startswith(f"sudo -n {ROOT}/python/bin/python3 -I -c ")
+
+
+def test_the_release_bundle_and_a_configured_one_are_not_both_accepted(tmp_path):
+    with pytest.raises(ValueError, match="remove skuld_bundle to run the release's"):
+        _runtime(tmp_path, session_images=SessionImages(darwin=BUNDLE))
+
+
+def test_a_mac_runtime_needs_a_bundle_from_one_place_or_the_other(tmp_path):
+    for images in (None, SessionImages(linux="ghcr.io/niuulabs/openshell@sha256:" + "a" * 64)):
+        with pytest.raises(ValueError, match="compute.session_images.darwin"):
+            _runtime(tmp_path, skuld_bundle=None, session_images=images)
+
+
+def test_a_release_bundle_must_still_be_digest_pinned(tmp_path):
+    images = SessionImages(darwin="ghcr.io/niuulabs/skuld-darwin:dev")
+
+    with pytest.raises(ValueError, match="digest-pinned"):
+        _runtime(tmp_path, skuld_bundle=None, session_images=images)
+
+
+async def test_recycling_a_mac_slot_audits_slot_zero_alone(mac):
+    runtime, bootstrap, lease = mac
+    runtime._guest_access.execute = AsyncMock(return_value=GuestCommandResult(0, b""))
+
+    await runtime.recycle(lease, bootstrap)
+
+    [call] = runtime._guest_access.execute.await_args_list
+    assert call.args[2] == "sudo -n sh -s -- 61000 1 '' 0 check 0"
+    assert call.kwargs["data"] == DARWIN_AUDIT_SH.encode()
+
+
+async def test_a_mac_slot_with_anything_left_is_not_recycled(mac):
+    runtime, bootstrap, lease = mac
+    runtime._guest_access.execute = AsyncMock(
+        return_value=GuestCommandResult(0, b"finding user niuu-slot-0 still exists\n")
+    )
+
+    with pytest.raises(SlotNotCleanError, match="user niuu-slot-0 still exists"):
+        await runtime.recycle(lease, bootstrap)
 
 
 def test_guest_programs_run_under_the_bundles_isolated_python_as_root(tmp_path):

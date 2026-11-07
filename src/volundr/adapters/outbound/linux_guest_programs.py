@@ -172,7 +172,9 @@ try:
                     continue
                 if member.isdev() or member.isfifo():
                     continue
-                if member.islnk() and not within(rootfs / member.linkname.lstrip('/')):
+                # A hard link names a member of the archive. tarfile joins the name to the
+                # root, and an absolute one replaces it: it would link a file of this host.
+                if member.islnk() and not within(rootfs / member.linkname):
                     raise RuntimeError('Image layer hard link outside the root: ' + member.name)
                 target = rootfs.joinpath(*parts)
                 if os.path.lexists(str(target)) and not (member.isdir() and target.is_dir()

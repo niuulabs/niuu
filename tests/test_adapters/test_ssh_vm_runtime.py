@@ -1035,3 +1035,52 @@ def test_a_runtime_with_half_a_key_pair_names_both_kwargs(tmp_path):
             data_dir=str(tmp_path / "runtime-data"),
             skuld_image="test/skuld:dev",
         )
+
+
+# -- the per-slot audit a reusing runtime runs before a slot takes another session ----------------
+
+
+def _audit_runtime(tmp_path, **kwargs):
+    from tests.test_adapters.test_ssh_vm_runtime_slots import ISOLATION, SlotView
+    from tests.test_adapters.test_ssh_vm_runtime_slots import _runtime as slot_runtime
+
+    runtime = slot_runtime(tmp_path, **({"slot_isolation": ISOLATION} | kwargs))
+    machine = Machine(
+        allocation_id=uuid4(), resource_id="vm", state=MachineState.RUNNING, addresses=("x",)
+    )
+    return runtime, SlotView(machine.allocation_id, uuid4(), 3, machine)
+
+
+async def test_audit_slot_runs_the_program_on_stdin_for_that_slot_alone(tmp_path):
+    runtime, lease = _audit_runtime(tmp_path)
+    runtime._guest_access.execute = AsyncMock(return_value=GuestCommandResult(0, b"fact cpus 4\n"))
+
+    await runtime._audit_slot(lease, MachineBootstrap(), "echo audit", 3)
+
+    [call] = runtime._guest_access.execute.await_args_list
+    assert call.args[2] == "sudo -n sh -s -- 61000 4 '' 0 check 3"
+    assert call.kwargs == {"data": b"echo audit", "capture_stdout": True}
+
+
+async def test_audit_slot_names_every_finding_and_the_slot_it_is_not_reusing(tmp_path):
+    runtime, lease = _audit_runtime(tmp_path)
+    output = b"finding process sleep (pid 9) still runs as uid 61003\nfinding crontab left\n"
+    runtime._guest_access.execute = AsyncMock(return_value=GuestCommandResult(0, output))
+
+    with pytest.raises(module.SlotNotCleanError) as raised:
+        await runtime._audit_slot(lease, MachineBootstrap(), "echo audit", 3)
+
+    message = str(raised.value)
+    assert f"Slot 3 of allocation {lease.id} is not clean after its session" in message
+    assert "process sleep (pid 9) still runs as uid 61003; crontab left" in message
+    assert isinstance(raised.value, RuntimeError)
+
+
+async def test_audit_slot_needs_a_runtime_that_keeps_slots(tmp_path):
+    runtime, lease = _audit_runtime(tmp_path, slot_isolation=None)
+    runtime._guest_access.execute = AsyncMock()
+
+    with pytest.raises(ValueError, match="keeps no slots to audit"):
+        await runtime._audit_slot(lease, MachineBootstrap(), "echo audit", 0)
+
+    runtime._guest_access.execute.assert_not_awaited()
