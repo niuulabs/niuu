@@ -812,6 +812,10 @@ sessions pack onto few machines and empty ones stay free to expire. The choice i
 checked again under the machine's lock; a machine with a stop pending on any slot,
 past its limits, or no longer idle is not offered. Only when no slot is free does
 the session boot a machine (with `slots_per_machine` slots, itself in slot 0).
+Every status check of a session already on a machine holds that lock for a moment,
+so placement waits for a busy machine up to `podManager.kwargs.placement_lock_wait_seconds`
+(default 15) before trying the next one; a machine skipped that way is logged and
+counted on `volundr.compute.placement.busy_skips`.
 
 **Free warm slots.** `warm_min` (**Free warm slots**) counts free, usable slots on
 compatible machines that are provisioning, ready or idle, not machines. The pool

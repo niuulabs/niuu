@@ -11,6 +11,7 @@ import pytest
 from niuu.adapters.memory_credential_store import MemoryCredentialStore
 from niuu.ports.session_proxy import SessionProxyTarget
 from tests.compute_fakes import LeaseRepository, Provider
+from volundr.adapters.outbound import vm_pod_manager
 from volundr.adapters.outbound.vm_pod_manager import VmPodManager
 from volundr.domain.compute import (
     ComputeCapacityError,
@@ -717,6 +718,11 @@ async def test_a_lease_expiring_while_the_runtime_is_unprepared_still_names_it(s
     message = str(raised.value)
     assert message.startswith(f"VM runtime did not become ready within 30s: {reason}. ")
     assert message.endswith("Provisioning expired; preserve data and release the allocation")
+
+
+def test_the_placement_wait_must_be_positive():
+    with pytest.raises(ValueError, match="positive"):
+        VmPodManager(profile="small", pool_id="pool", max_machines=1, placement_lock_wait_seconds=0)
 
 
 def test_runtime_wait_reporting_counts_must_be_positive():
@@ -1691,11 +1697,20 @@ async def test_a_warm_machine_taken_while_choosing_is_not_claimed_twice(setup, t
     assert await manager._claim_warm(session, SPEC) is None
 
 
-async def test_a_busy_warm_machine_is_skipped_for_the_next(setup):
+async def test_a_machine_busy_past_the_placement_wait_is_skipped_and_counted(
+    setup, monkeypatch, caplog
+):
     pool, manager, repository, session = _warm_pool(setup)
     await pool.maintain()
     await pool.maintain()
+    manager._placement_lock_wait = 0.01
     attempts = 0
+    counted = []
+    monkeypatch.setattr(
+        vm_pod_manager,
+        "get_observability",
+        lambda: type("O", (), {"count": lambda self, name, **kw: counted.append(name)})(),
+    )
 
     @asynccontextmanager
     async def contested(lease_id):
@@ -1706,8 +1721,37 @@ async def test_a_busy_warm_machine_is_skipped_for_the_next(setup):
 
     repository.operation = contested
 
-    assert await manager._claim_warm(session, SPEC) is None
-    assert attempts == 1
+    with caplog.at_level("WARNING"):
+        assert await manager._claim_warm(session, SPEC) is None
+    # It waited for the machine before giving up on it, and said so.
+    assert attempts > 1
+    assert counted == ["volundr.compute.placement.busy_skips"]
+    assert "placement_lock_wait_seconds" in caplog.text
+
+
+async def test_placement_waits_for_a_machine_its_neighbours_hold_for_a_moment(setup):
+    pool, manager, repository, session = _warm_pool(setup)
+    await pool.maintain()
+    await pool.maintain()
+    spare = next(iter(repository.leases.values()))
+    original = repository.operation
+    busy_for = 3
+
+    @asynccontextmanager
+    async def briefly_busy(lease_id):
+        # A neighbour session's status check holds the lock for the first attempts.
+        nonlocal busy_for
+        if busy_for:
+            busy_for -= 1
+            raise ComputeLeaseBusyError("a status check")
+        async with original(lease_id):
+            yield
+
+    repository.operation = briefly_busy
+
+    placed = await manager._claim_warm(session, SPEC)
+
+    assert placed is not None and placed.id == spare.id
 
 
 async def test_close_cancels_recoveries_that_are_still_running(setup):
