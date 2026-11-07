@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.compute import AllocationRef, MachineBootstrap
 from volundr.domain.execution_catalog import HostRecipe
 
 
@@ -62,7 +62,7 @@ class HostPreparation(ABC):
     @abstractmethod
     async def ensure(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         recipe: HostRecipe,
     ) -> HostPreparationResult:
@@ -71,7 +71,7 @@ class HostPreparation(ABC):
     @abstractmethod
     async def observe(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         recipe: HostRecipe,
     ) -> HostPreparationResult:

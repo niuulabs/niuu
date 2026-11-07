@@ -76,6 +76,63 @@ class TestCLISettings:
         assert configured.compute is not None
         assert configured.compute.pool_id == "acme"
 
+    def test_compute_slot_settings_default_to_one_session_per_machine(self) -> None:
+        compute = CLISettings(
+            mode="docker",
+            compute=self._compute(),
+            pod_manager=self._pod_manager(),
+        ).compute
+
+        assert compute is not None
+        assert compute.slots_per_machine == 1
+        assert compute.max_sessions_per_machine is None
+        assert compute.max_machine_age_seconds is None
+
+    def test_compute_slot_settings_are_read_from_the_config_file(self) -> None:
+        compute = CLISettings(
+            mode="docker",
+            compute=self._compute(
+                slots_per_machine=4, max_sessions_per_machine=8, max_machine_age_seconds=86400
+            ),
+            pod_manager=self._pod_manager(),
+        ).compute
+
+        assert compute is not None
+        assert (compute.slots_per_machine, compute.max_sessions_per_machine) == (4, 8)
+        assert compute.max_machine_age_seconds == 86400
+
+    @pytest.mark.parametrize(
+        "field", ["slots_per_machine", "max_sessions_per_machine", "max_machine_age_seconds"]
+    )
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_compute_slot_settings_must_be_positive(self, field: str, value: int) -> None:
+        with pytest.raises(ValueError):
+            CLISettings(
+                mode="docker",
+                compute=self._compute(**{field: value}),
+                pod_manager=self._pod_manager(),
+            )
+
+    @staticmethod
+    def _compute(**extra) -> dict:
+        return {
+            "pool_id": "acme",
+            "max_machines": 1,
+            "provider": {"adapter": "private.Provider"},
+            "auth": {"adapter": "private.Auth"},
+            "runtime": {"adapter": "private.Runtime"},
+            **extra,
+        }
+
+    @staticmethod
+    def _pod_manager() -> dict:
+        return {
+            "adapter": "volundr.adapters.outbound.vm_pod_manager.VmPodManager",
+            "profile": "cpu",
+            "pool_id": "acme",
+            "max_machines": 1,
+        }
+
 
 class TestDatabaseConfig:
     def test_defaults(self) -> None:

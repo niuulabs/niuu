@@ -21,9 +21,11 @@ from volundr.adapters.outbound.ssh_vm_runtime import SshContainerVmRuntime
 from volundr.domain.compute import (
     BootstrapFile,
     ComputeLease,
+    ComputeSlot,
     Machine,
     MachineBootstrap,
     MachineState,
+    SlotLease,
 )
 from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
@@ -111,13 +113,10 @@ def setup(tmp_path):
     )
     bootstrap = runtime.bootstrap(session, spec, MachineBootstrap())
     allocation = uuid4()
-    lease = ComputeLease(
+    machine = ComputeLease(
         id=allocation,
-        session_id=session.id,
         pool_id="test",
         profile="small",
-        owner_id="owner",
-        tenant_id="tenant",
         request_fingerprint="test",
         machine=Machine(
             allocation_id=allocation,
@@ -126,6 +125,16 @@ def setup(tmp_path):
             addresses=("192.0.2.10",),
         ),
     )
+    binding = ComputeSlot(
+        id=uuid4(),
+        allocation_id=allocation,
+        slot=0,
+        pool_id="test",
+        session_id=session.id,
+        owner_id="owner",
+        tenant_id="tenant",
+    )
+    lease = SlotLease(allocation=machine, binding=binding)
     return runtime, session, spec, bootstrap, lease
 
 
@@ -386,12 +395,11 @@ def test_warm_spares_use_allocation_scoped_ssh_bootstrap_paths(setup, tmp_path):
         skuld_image="test/skuld:dev",
         bootstrap_delivery="ssh",
     )
-    first = lease.model_copy(update={"session_id": None})
+    first = lease.allocation
     second_id = uuid4()
-    second = lease.model_copy(
+    second = lease.allocation.model_copy(
         update={
             "id": second_id,
-            "session_id": None,
             "machine": lease.machine.model_copy(update={"allocation_id": second_id}),
         }
     )
@@ -739,13 +747,15 @@ async def test_warm_bootstrap_is_unbound_and_binding_keeps_machine_identity(setu
     ]["SESSION_ID"] == str(session.id)
     runtime._guest_access.ensure = AsyncMock()
     runtime._guest_access.execute = AsyncMock(return_value=GuestCommandResult(0))
-    spare = lease.model_copy(update={"session_id": None})
+    spare = lease.allocation
     await runtime.warm(spare, machine)
     assert runtime._guest_access.execute.await_args.args[2] == (
         "sudo -n docker pull test/skuld:dev"
     )
-    with pytest.raises(ValueError, match="unbound"):
-        await runtime.start(spare, machine)
+    # A machine with no session has no credentials to resume, even given a launch payload.
+    runtime._credential_delivery = AsyncMock()
+    await runtime._resume_delivery(spare, bound)
+    runtime._credential_delivery.resume.assert_not_awaited()
 
 
 def test_restore_excludes_runtime_cache_but_rejects_other_escaping_links(tmp_path):

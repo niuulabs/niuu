@@ -51,6 +51,31 @@ class ComputeConfig(BaseModel):
     bootstrap: MachineBootstrap = Field(default_factory=MachineBootstrap)
     provisioning_timeout_seconds: float = Field(default=600, gt=0)
     cleanup_timeout_seconds: float = Field(default=300, gt=0)
+    slots_per_machine: int = Field(
+        default=1,
+        gt=0,
+        description=(
+            "Sessions one machine serves at once. Above 1 needs a runtime that supports slots; "
+            "startup fails when the configured runtime does not"
+        ),
+    )
+    max_sessions_per_machine: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Sessions a machine serves before it drains and is replaced (reuse_policy: replace). "
+            "Unset means slots_per_machine, one session per slot. Above slots_per_machine the "
+            "cleaned slots are reused, which needs a runtime that supports reuse"
+        ),
+    )
+    max_machine_age_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Age after which a machine takes no new sessions and drains once empty "
+            "(reuse_policy: replace). Unset means no age limit"
+        ),
+    )
     reuse_policy: Literal["replace", "reuse"] = "replace"
     warm_min: int = Field(default=0, ge=0)
     max_provisioning: int = Field(default=1, gt=0)

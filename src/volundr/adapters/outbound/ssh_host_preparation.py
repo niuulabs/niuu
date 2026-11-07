@@ -8,7 +8,7 @@ import json
 import shlex
 from pathlib import Path
 
-from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.compute import AllocationRef, MachineBootstrap
 from volundr.domain.execution_catalog import HostRecipe, ScriptArtifact, ScriptMediaType
 from volundr.domain.guest_access import GuestAccess
 from volundr.domain.host_preparation import (
@@ -236,7 +236,7 @@ class SshHostPreparation(HostPreparation):
 
     async def ensure(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         recipe: HostRecipe,
     ) -> HostPreparationResult:
@@ -244,7 +244,7 @@ class SshHostPreparation(HostPreparation):
 
     async def observe(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         recipe: HostRecipe,
     ) -> HostPreparationResult:
@@ -252,7 +252,7 @@ class SshHostPreparation(HostPreparation):
 
     async def _run_recipe(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         recipe: HostRecipe,
         *,
@@ -284,7 +284,7 @@ class SshHostPreparation(HostPreparation):
         except Exception as exc:
             raise HostPreparationError(str(exc)) from exc
 
-    def _payload(self, lease: ComputeLease, recipe: HostRecipe, *, apply: bool) -> dict:
+    def _payload(self, lease: AllocationRef, recipe: HostRecipe, *, apply: bool) -> dict:
         self._validate_recipe(recipe)
         artifacts = {artifact.id: artifact for artifact in recipe.artifacts}
         return {

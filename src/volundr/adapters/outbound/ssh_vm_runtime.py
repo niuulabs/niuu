@@ -49,7 +49,13 @@ from volundr.adapters.outbound.vm_slot_layout import (
     SlotLayout,
     slot_index,
 )
-from volundr.domain.compute import BootstrapFile, ComputeLease, MachineBootstrap
+from volundr.domain.compute import (
+    AllocationRef,
+    BootstrapFile,
+    ComputeLease,
+    MachineBootstrap,
+    SlotLease,
+)
 from volundr.domain.guest_access import GuestAccess
 from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestCredentialPlan
 from volundr.domain.models import Session, SessionSpec
@@ -465,8 +471,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         """Name each step of ``start`` as it begins, for the session's launch stages."""
         self._report_startup = report
 
-    def _step(self, lease: ComputeLease, key: str, label: str) -> None:
-        if self._report_startup is not None and lease.session_id is not None:
+    def _step(self, lease: SlotLease, key: str, label: str) -> None:
+        if self._report_startup is not None:
             self._report_startup(lease.session_id, key, label)
 
     def configure_credential_delivery(self, delivery: GuestCredentialDelivery) -> None:
@@ -484,7 +490,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
     #: Whether ``slot_isolation`` applies: runtimes with their own sandbox refuse it.
     _separates_slots = True
 
-    def _layout(self, lease: ComputeLease) -> SlotLayout | None:
+    def _layout(self, lease: AllocationRef) -> SlotLayout | None:
         """The lease's slot, or ``None`` for the whole VM without slot isolation."""
         if self._slot_isolation is None:
             slot = slot_index(lease)
@@ -497,7 +503,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         return SlotLayout.for_lease(self._slot_isolation, lease)
 
     async def _supervise(
-        self, lease: ComputeLease, bootstrap: MachineBootstrap, layout: SlotLayout, action: str
+        self, lease: SlotLease, bootstrap: MachineBootstrap, layout: SlotLayout, action: str
     ) -> bytes:
         result = await self._guest_access.execute(
             lease,
@@ -522,7 +528,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             self._credential_delivery.discard_forge_session(session_id)
 
     async def write_files(
-        self, lease: ComputeLease, bootstrap: MachineBootstrap, items: list[dict]
+        self, lease: AllocationRef, bootstrap: MachineBootstrap, items: list[dict]
     ) -> None:
         # Deliveries name the session's paths; a slot keeps them in its own directories.
         layout = self._layout(lease)
@@ -533,7 +539,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         )
 
     async def file_exists(
-        self, lease: ComputeLease, bootstrap: MachineBootstrap, path: str
+        self, lease: AllocationRef, bootstrap: MachineBootstrap, path: str
     ) -> bool:
         layout = self._layout(lease)
         result = await self._guest_access.execute(
@@ -924,32 +930,32 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             "mounts": [{**m, "readonly": True} for m in secret] + volume,
         }
 
-    def _ssh(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> list[str]:
+    def _ssh(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> list[str]:
         if not isinstance(self._guest_access, SshGuestAccess):
             raise TypeError("Raw SSH command inspection requires SshGuestAccess")
         return self._guest_access.command_argv(lease, bootstrap)
 
-    def _bootstrap_ssh(self, lease: ComputeLease) -> list[str]:
+    def _bootstrap_ssh(self, lease: AllocationRef) -> list[str]:
         """Build the explicit first-contact SSH command for post-connect bootstrap."""
         if not isinstance(self._guest_access, SshGuestAccess):
             raise TypeError("Raw SSH command inspection requires SshGuestAccess")
         return self._guest_access.bootstrap_argv(lease)
 
-    def _bootstrap_verified_marker(self, lease: ComputeLease) -> Path:
+    def _bootstrap_verified_marker(self, lease: AllocationRef) -> Path:
         if not isinstance(self._guest_access, SshGuestAccess):
             raise TypeError("SSH bootstrap markers require SshGuestAccess")
         return self._guest_access.bootstrap_verified_marker(lease)
 
-    def _allocation_directory(self, lease: ComputeLease) -> Path:
+    def _allocation_directory(self, lease: AllocationRef) -> Path:
         return self._data / str(lease.id)
 
-    def _has_host_pin(self, lease: ComputeLease) -> bool:
+    def _has_host_pin(self, lease: AllocationRef) -> bool:
         if not isinstance(self._guest_access, SshGuestAccess):
             raise TypeError("SSH host pin inspection requires SshGuestAccess")
         return self._guest_access._has_host_pin(lease)
 
     @staticmethod
-    def _host_alias(lease: ComputeLease) -> str:
+    def _host_alias(lease: AllocationRef) -> str:
         return SshGuestAccess._host_alias(lease)
 
     @staticmethod
@@ -967,7 +973,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         )
 
     async def _deliver_bootstrap_over_ssh(
-        self, lease: ComputeLease, bootstrap: MachineBootstrap
+        self, lease: AllocationRef, bootstrap: MachineBootstrap
     ) -> None:
         machine = self._ssh_machine_bootstrap(bootstrap)
         await self._guest_access.ensure(lease, machine)
@@ -1018,7 +1024,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             "SKULD__PREVIEW__ROUTER_AUTH": json.dumps(self._preview_router_auth),
         }
 
-    async def target(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> SessionProxyTarget:
+    async def target(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> SessionProxyTarget:
         layout = self._layout(lease)
         if layout is None:
             target = await self._guest_access.open_tunnel(
@@ -1052,9 +1058,12 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         launch = next((f.content for f in bootstrap.files if f.path == _LAUNCH), None)
         return json.loads(launch) if launch is not None else None
 
-    async def _resume_delivery(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def _resume_delivery(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
+        # A machine with no session has no credentials to resume.
+        if not isinstance(lease, SlotLease):
+            return
         launch = self._launch(bootstrap)
-        if self._credential_delivery is None or lease.session_id is None or launch is None:
+        if self._credential_delivery is None or launch is None:
             return
         plan = GuestCredentialPlan.from_launch(launch)
         if not plan.empty:
@@ -1069,7 +1078,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             f"127.0.0.1:{self._guest_platform_port}:{self._platform_host}:{self._platform_port}",
         ]
 
-    async def prepare(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def prepare(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
         if self._host_prepared:
             await self._guest_access.execute(lease, bootstrap, "true")
             return
@@ -1078,9 +1087,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             access_bootstrap = self._ssh_machine_bootstrap(bootstrap)
         await self._guest_access.ensure(lease, access_bootstrap)
 
-    async def start(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
-        if lease.session_id is None:
-            raise ValueError("Cannot start an unbound guest")
+    async def start(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         layout = self._layout(lease)
         session_directory = self._data / str(lease.session_id)
         session_directory.mkdir(mode=0o700, exist_ok=True, parents=True)
@@ -1148,14 +1155,14 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             "per-slot credential delivery"
         )
 
-    def _prepare_arguments(self, lease: ComputeLease, mode: str) -> tuple[str, ...]:
+    def _prepare_arguments(self, lease: SlotLease, mode: str) -> tuple[str, ...]:
         layout = self._layout(lease)
         excludes = json.dumps(self._archive_excludes)
         if layout is None:
             return (str(lease.id), mode, excludes)
         return (layout.key, mode, excludes, layout.session_data)
 
-    async def _restore_data(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def _restore_data(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         archive = self._data / str(lease.session_id) / "session.tar"
         if archive.exists():
             self._step(lease, "guest_restore", "Restoring the workspace")
@@ -1173,7 +1180,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 self._python(_PREPARE, *self._prepare_arguments(lease, "empty")),
             )
 
-    async def ready(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> bool:
+    async def ready(self, lease: SlotLease, bootstrap: MachineBootstrap) -> bool:
         target = await self.target(lease, bootstrap)
         try:
             async with httpx.AsyncClient(timeout=self._health_timeout) as client:
@@ -1182,7 +1189,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             return False
         return response.status_code == 200
 
-    async def stop(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         layout = self._layout(lease)
         arguments = [str(lease.id), str(self._stop_timeout)]
         if layout is not None:
@@ -1193,7 +1200,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             self._python(_STOP, *arguments),
             expected_exit_codes=(0, 42),
         )
-        if self._credential_delivery is not None and lease.session_id is not None:
+        if self._credential_delivery is not None:
             await self._credential_delivery.stop(lease, bootstrap)
         # Exit 42: cancelled before storage restore; retain any previous local archive.
         if result.exit_code != 42:
@@ -1206,7 +1213,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         await self._close_tunnel(layout.key if layout else str(lease.id))
 
     async def _report_slot_limits(
-        self, lease: ComputeLease, bootstrap: MachineBootstrap, layout: SlotLayout
+        self, lease: SlotLease, bootstrap: MachineBootstrap, layout: SlotLayout
     ) -> None:
         """Count every time the ending slot hit its memory or PID limit."""
         events = json.loads(await self._supervise(lease, bootstrap, layout, "limits") or b"{}")
@@ -1229,9 +1236,9 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 "pids" if event.startswith("pids") else "memory_mib",
             )
 
-    async def _archive_data(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def _archive_data(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         layout = self._layout(lease)
-        directory = self._data / str(lease.session_id or lease.id)
+        directory = self._data / str(lease.session_id)
         directory.mkdir(mode=0o700, exist_ok=True, parents=True)
         fd, temporary = tempfile.mkstemp(prefix="session-", suffix=".tar", dir=directory)
         try:

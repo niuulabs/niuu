@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from niuu.ports.session_proxy import SessionProxyTarget
-from volundr.domain.compute import BootstrapFile, ComputeLease, MachineBootstrap
+from volundr.domain.compute import AllocationRef, BootstrapFile, MachineBootstrap
 from volundr.domain.guest_access import GuestAccess, GuestCommandResult
 from volundr.domain.vm_runtime import VmRuntimeStageError, VmRuntimeUnavailableError
 
@@ -261,7 +261,7 @@ class SshGuestAccess(GuestAccess):
             ssh_authorized_keys=(*defaults.ssh_authorized_keys, self._public_key),
         )
 
-    def command_argv(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> list[str]:
+    def command_argv(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> list[str]:
         if not lease.machine or not lease.machine.addresses:
             raise RuntimeError("VM has no observed network address")
         alias = self._host_alias(lease)
@@ -279,10 +279,10 @@ class SshGuestAccess(GuestAccess):
             )
         return self._base_ssh(lease, strict="yes")
 
-    def bootstrap_argv(self, lease: ComputeLease) -> list[str]:
+    def bootstrap_argv(self, lease: AllocationRef) -> list[str]:
         return self._base_ssh(lease, strict="accept-new")
 
-    def _base_ssh(self, lease: ComputeLease, *, strict: str) -> list[str]:
+    def _base_ssh(self, lease: AllocationRef, *, strict: str) -> list[str]:
         if not lease.machine or not lease.machine.addresses:
             raise RuntimeError("VM has no observed network address")
         directory = self._allocation_directory(lease)
@@ -316,14 +316,14 @@ class SshGuestAccess(GuestAccess):
             f"{self._ssh_user}@{lease.machine.addresses[0]}",
         ]
 
-    async def ensure(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def ensure(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
         if self._bootstrap_delivery == "provider":
             await self.execute(lease, bootstrap, "sudo -n cloud-init status --wait")
             return
         await self._deliver_bootstrap_over_ssh(lease, bootstrap)
 
     async def _deliver_bootstrap_over_ssh(
-        self, lease: ComputeLease, bootstrap: MachineBootstrap
+        self, lease: AllocationRef, bootstrap: MachineBootstrap
     ) -> None:
         serialized = bootstrap.model_dump(mode="json")
         payload = {
@@ -347,7 +347,7 @@ class SshGuestAccess(GuestAccess):
 
     async def execute(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         command: str,
         *,
@@ -460,7 +460,7 @@ class SshGuestAccess(GuestAccess):
 
     async def open_tunnel(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         *,
         remote_port: int,
@@ -530,20 +530,20 @@ class SshGuestAccess(GuestAccess):
         for key in list(self._tunnels):
             await self.close_tunnel(key)
 
-    def bootstrap_verified_marker(self, lease: ComputeLease) -> Path:
+    def bootstrap_verified_marker(self, lease: AllocationRef) -> Path:
         directory = self._allocation_directory(lease)
         directory.mkdir(mode=0o700, exist_ok=True, parents=True)
         return directory / "bootstrap.verified"
 
-    def _allocation_directory(self, lease: ComputeLease) -> Path:
+    def _allocation_directory(self, lease: AllocationRef) -> Path:
         return self._data / str(lease.id)
 
-    def _has_host_pin(self, lease: ComputeLease) -> bool:
+    def _has_host_pin(self, lease: AllocationRef) -> bool:
         known = self._allocation_directory(lease) / "known_hosts"
         return known.is_file() and bool(known.read_text().strip())
 
     @staticmethod
-    def _host_alias(lease: ComputeLease) -> str:
+    def _host_alias(lease: AllocationRef) -> str:
         return "niuu-" + str(lease.id)
 
     @staticmethod

@@ -13,7 +13,7 @@ from volundr.adapters.outbound.vm_slot_layout import (
     slot_index,
     state_key,
 )
-from volundr.domain.compute import ComputeLease
+from volundr.domain.compute import ComputeLease, ComputeSlot, SlotLease
 
 LIMITS = {"cpu": 2, "memory_mib": 4096, "pids": 1024}
 ALLOCATION = uuid4()
@@ -35,20 +35,26 @@ def test_limits_must_be_written_down_and_unknown_keys_are_refused():
     assert SlotIsolation(cpu=None, memory_mib=None, pids=None).slot_capacity == 16384
 
 
-def test_whole_vm_leases_are_slot_zero_and_keep_the_allocation_key():
-    lease = ComputeLease(
-        id=ALLOCATION,
-        session_id=None,
+def test_machine_leases_are_slot_zero_and_slot_leases_name_their_slot():
+    machine = ComputeLease(
+        id=ALLOCATION, pool_id="pool", profile="small", request_fingerprint="f", slots=4
+    )
+    binding = ComputeSlot(
+        id=uuid4(),
+        allocation_id=ALLOCATION,
+        slot=2,
         pool_id="pool",
-        profile="small",
-        request_fingerprint="f",
+        session_id=uuid4(),
         owner_id="o",
         tenant_id="t",
     )
+    lease = SlotLease(allocation=machine, binding=binding)
 
-    assert slot_index(lease) == 0
-    assert state_key(lease) == str(ALLOCATION)
-    assert state_key(SimpleNamespace(id=ALLOCATION, slot=2)) == f"{ALLOCATION}-slot-2"
+    assert slot_index(machine) == 0
+    assert state_key(machine) == str(ALLOCATION)
+    assert slot_index(lease) == 2
+    assert state_key(lease) == f"{ALLOCATION}-slot-2"
+    assert SlotLayout.for_lease(SlotIsolation(**LIMITS), lease).slot == 2
 
 
 @pytest.mark.parametrize("slot", [-1, True, "1", 1.0])
