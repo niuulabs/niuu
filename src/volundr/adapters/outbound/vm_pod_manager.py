@@ -76,11 +76,20 @@ class VmPodManager(PodManager):
         poll_interval_seconds: float = 2,
         runtime_wait_log_every: int = 10,
         runtime_wait_surface_after: int = 3,
+        placement_lock_wait_seconds: float = 15,
         **_extra,
     ):
         if not profile or not pool_id or max_machines < 1:
             raise ValueError("VM sessions require a profile, pool_id and positive max_machines")
-        if min(provisioning_timeout_seconds, cleanup_timeout_seconds, poll_interval_seconds) <= 0:
+        if (
+            min(
+                provisioning_timeout_seconds,
+                cleanup_timeout_seconds,
+                poll_interval_seconds,
+                placement_lock_wait_seconds,
+            )
+            <= 0
+        ):
             raise ValueError("VM session timeouts must be positive")
         if min(runtime_wait_log_every, runtime_wait_surface_after) < 1:
             raise ValueError("VM runtime wait reporting counts must be positive")
@@ -89,6 +98,10 @@ class VmPodManager(PodManager):
         self._provisioning_timeout = provisioning_timeout_seconds
         self._cleanup_timeout = cleanup_timeout_seconds
         self._poll = poll_interval_seconds
+        # A machine with a free slot is held for a moment by its other sessions'
+        # status checks (each takes the allocation lock); placement waits this long
+        # for it before trying the next machine or booting one.
+        self._placement_lock_wait = placement_lock_wait_seconds
         # A guest that stays "not ready" (e.g. a runner without the configured Skuld)
         # is logged on the first and every Nth attempt, and its reason becomes the
         # session's visible wait detail after M attempts.
@@ -937,6 +950,34 @@ class VmPodManager(PodManager):
                 < 1
             ):
                 continue
+            bound = await self._bind_when_free(
+                candidate, session, spec, policy, plan, profile, runtime
+            )
+            if bound is not None:
+                return bound
+        return None
+
+    async def _bind_when_free(
+        self,
+        candidate: ComputeLease,
+        session: Session,
+        spec: SessionSpec,
+        policy,
+        plan: ResolvedExecutionPlan | None,
+        profile: str,
+        runtime: VmRuntime,
+    ) -> SlotLease | None:
+        """Bind the session to a free slot of ``candidate``, waiting while it is busy.
+
+        Every status check of a session already on the machine holds its allocation
+        lock for a moment, so a machine with free slots is often briefly busy. Placement
+        waits up to ``placement_lock_wait_seconds`` for it; past that it moves on, and
+        says so, rather than booting a machine while one has room.
+        """
+        service, repository, _ = self._configured()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._placement_lock_wait
+        while True:
             try:
                 async with repository.operation(candidate.id):
                     lease = await repository.get(candidate.id)
@@ -950,7 +991,7 @@ class VmPodManager(PodManager):
                         < 1
                         or not await service.compatible(lease)
                     ):
-                        continue
+                        return None
                     machine_bootstrap = await service.machine_bootstrap_for(lease)
                     if isinstance(runtime, ProfileAwareVmRuntime):
                         bootstrap = runtime.session_bootstrap_for(
@@ -973,8 +1014,22 @@ class VmPodManager(PodManager):
                     )
                     return bound
             except ComputeLeaseBusyError:
-                continue
-        return None
+                if loop.time() >= deadline:
+                    get_observability().count(
+                        "volundr.compute.placement.busy_skips",
+                        attributes={"pool": self._pool_id},
+                    )
+                    logger.warning(
+                        "Machine %s with a free slot stayed busy for %ss while placing session "
+                        "%s; trying the next machine. Raise podManager.kwargs."
+                        "placement_lock_wait_seconds if machines are skipped while sessions "
+                        "on them are active",
+                        candidate.id,
+                        self._placement_lock_wait,
+                        session.id,
+                    )
+                    return None
+                await asyncio.sleep(self._poll)
 
     async def _requested_profile(self, session: Session) -> str:
         """Resolve an operator-approved compute profile for this session.
