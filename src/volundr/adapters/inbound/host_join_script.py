@@ -27,6 +27,7 @@ _JOIN = r"""#!/bin/sh
 set -eu
 FORGE_URL=__FORGE_URL__
 CODE=__CODE__
+PIN=__PIN__
 CONFIG=__CONFIG__
 LEAVE=__LEAVE__
 NIUU_KEY=__NIUU_KEY__
@@ -45,7 +46,13 @@ for tool in sh ssh-keygen python3 sudo systemctl ip awk sed; do
   command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 [ -x /usr/sbin/sshd ] || command -v sshd >/dev/null 2>&1 || missing="$missing sshd"
-if command -v curl >/dev/null 2>&1; then
+if [ -n "$PIN" ]; then
+  # The Forge's certificate is pinned, and wget cannot check a pin.
+  command -v curl >/dev/null 2>&1 || \
+    fail "this Forge's join is pinned and only curl checks a pin: install curl, then run the command again"
+  post() { curl -fsS --fail-with-body -k --pinnedpubkey "$PIN" -H "Authorization: Bearer $CODE" \
+    -H 'Content-Type: application/json' --data "$1" "$2"; }
+elif command -v curl >/dev/null 2>&1; then
   post() { curl -fsS --fail-with-body -H "Authorization: Bearer $CODE" \
     -H 'Content-Type: application/json' --data "$1" "$2"; }
 elif command -v wget >/dev/null 2>&1; then
@@ -180,11 +187,16 @@ def render_leave_script() -> str:
     )
 
 
-def render_join_script(*, forge_url: str, code: str) -> str:
-    """The join script for one code; ``code`` is the caller's own bearer, echoed back."""
+def render_join_script(*, forge_url: str, code: str, pin: str | None = None) -> str:
+    """The join script for one code; ``code`` is the caller's own bearer, echoed back.
+
+    ``pin`` is the join listener's ``curl --pinnedpubkey`` pin; the script then posts
+    only through curl, pinned.
+    """
     return (
         _JOIN.replace("__FORGE_URL__", shlex.quote(forge_url))
         .replace("__CODE__", shlex.quote(code))
+        .replace("__PIN__", shlex.quote(pin or ""))
         .replace("__CONFIG__", shlex.quote(HOST_CONFIG_PATH))
         .replace("__LEAVE__", shlex.quote(LEAVE_PATH))
         .replace("__NIUU_KEY__", shlex.quote(NIUU_HOST_KEY_PATH))

@@ -33,7 +33,7 @@ compute:
     adapter: volundr.adapters.outbound.guest_identity_host_key.HostKeyGuestIdentity
     kwargs: {key_source: registered}
   hosts:
-    join_url: https://forge-hosts.valhalla.asgard.niuu.world
+    join_url: https://forge-hosts.valhalla.asgard.niuu.world   # unset: see Local mode
     connectors:
       - binding_id: direct-ssh
         adapter: volundr.adapters.outbound.host_connectors.DirectSshConnector
@@ -68,6 +68,72 @@ Pairing codes are short-lived scoped JWTs. Which key signs them:
 
 Any other combination fails at startup and names the fix.
 
+## Where hosts join
+
+Joining sends a pairing code that leads to root on the host, so the join never
+crosses the network in clear unless you ask for that.
+
+- **`join_url` set, no `join_listener`** (clusters): Forge's API serves the two join
+  routes, and `join_url` is its https address behind an ingress with a real
+  certificate. `http://` is refused unless `allow_plaintext_join: true`.
+- **`join_listener`**: Forge serves the two join routes on its own TLS listener, and
+  only there; the API stops serving them. The certificate is self-signed and the join
+  command pins its key, so no CA is needed. Hosts reach it at `join_url` when set
+  (for example a port forward to the listener), else at
+  `https://<server_public_host>:<port>`.
+- **Neither**: Forge runs `join_listener` with its defaults. This is local mode.
+
+## Local mode
+
+A Forge run by `niuu platform up` serves plain http on :8080 and has no CA. Leave
+`join_url` unset and Forge serves the join itself, pinned:
+
+```yaml
+compute:
+  hosts:
+    connectors: […]          # as above
+    reserved_cpu: 2
+    reserved_memory_mib: 4096
+    min_free_disk_mib: 20480
+    # join_listener:          # all optional; these are the defaults
+    #   bind_host: 0.0.0.0
+    #   port: 8443
+    #   cert_file: ~/.niuu/forge-host-join-cert.pem
+    #   key_file: ~/.niuu/forge-host-join-key.pem
+```
+
+- The URL host is `server_public_host`: what `server.external_host` in the niuu
+  config sets for `niuu platform up` (or `NIUU_SERVER_PUBLIC_HOST`). Set it to the
+  LAN address or name your other machines reach this one at. A loopback or
+  unspecified address (`127.0.0.1`, `localhost`, `0.0.0.0`) cannot be reached from
+  another machine, so startup fails and names both fixes. An IPv6 address is
+  refused too; use a name.
+- On first start Forge generates an RSA key and a self-signed certificate (both
+  mode 0600, the directory 0700). It never overwrites them and reuses them on every
+  restart, so the pin stays the same. Delete only the certificate and it is made
+  again from the key with the same pin. Delete the key and a new pin is made: mint
+  new commands. A certificate that does not belong to the key, or a file other users
+  can read, stops startup.
+- A listener that cannot load its key or bind its port stops startup. If it ends
+  while Forge runs, that is an error log and a count on
+  `volundr.compute.hosts.join_listener_stopped`, and hosts cannot join until Forge
+  restarts.
+- The command becomes:
+
+  ```bash
+  curl -fsSL -k --pinnedpubkey sha256//<pin> -H 'Authorization: Bearer <code>' https://192.168.1.20:8443/api/v1/forge/compute/hosts/join.sh | sudo sh
+  ```
+
+  `-k` skips the CA check, which a self-signed certificate cannot pass, and
+  `--pinnedpubkey` is the trust: curl refuses any server whose key is not the
+  pinned one before it sends the code. `join.sh` posts the join with the same pin.
+  wget cannot check a pin, so a pinned join offers no wget line, and the script
+  stops and changes nothing if the host has no curl. The Add host screen shows the
+  join URL and the pin under the command.
+- Open the listener's port (8443 by default) to your hosts in the Forge machine's
+  firewall. The listener serves only `join.sh` and `join`: no UI, no API docs, no
+  admin route.
+
 ## Add a host
 
 In the UI, open **Forge → Compute → Hosts → Add host**. Choose the runtime, tags, how
@@ -78,7 +144,7 @@ curl -fsSL -H 'Authorization: Bearer <code>' https://forge-hosts…/api/v1/forge
 ```
 
 The host needs systemd, cgroup v2, OpenSSH server, `sudo`, `python3`, `iproute2` and
-`curl` or `wget`. A stock Ubuntu server has all of these. The script checks them
+`curl` or `wget` (`curl` for a pinned join, see Local mode). A stock Ubuntu server has all of these. The script checks them
 first and changes nothing if any are missing. Then it:
 
 1. Registers the host's **own** sshd Ed25519 key, linked as
@@ -168,6 +234,9 @@ is retried. Capacity is never freed on a host nobody checked.
 | `compute.hosts.reserved_cpu` / `reserved_memory_mib` | required | What slot sizing leaves for the host itself | Too many slots is refused (422) or quarantines the host, with the arithmetic |
 | `compute.hosts.min_free_disk_mib` | required | Free space on `/` | Quarantined until space is freed |
 | `compute.hosts.pairing_signing_key_file` | `~/.niuu/forge-host-pairing-key.pem` | Used only without a workload-identity key, with the allow-all identity adapter | Unreadable or unwritable: startup fails, naming the knob |
+| `compute.hosts.join_listener.bind_host` / `port` | `0.0.0.0` / `8443` | Where the pinned join listener listens | Cannot bind: startup fails, naming the knob |
+| `compute.hosts.join_listener.cert_file` / `key_file` | `~/.niuu/forge-host-join-{cert,key}.pem` | The listener's certificate and the key the pin comes from | Unreadable, readable by others or not matching: startup fails |
+| `compute.hosts.join_listener.key_bits` | 2048 | Size of a generated key | — |
 
 ## Not built yet
 
