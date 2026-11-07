@@ -604,7 +604,7 @@ runtime:
     nix: true                    # the host recipe installs multi-user Nix
     native_images:               # pod images whose commands the bundle carries
       - quay.io/openbao/openbao@sha256:fdc6da21…   # OpenBao 2.5.3, the agent's bao
-  secret_kwargs_env: {skuld_bundle: FORGE_MACOS_SKULD_BUNDLE}
+    skuld_bundle: ghcr.io/niuulabs/skuld-darwin@sha256:…   # or compute.session_images.darwin
 ```
 
 Its access binding is `SshGuestAccess` with `ssh_user: root`, and its connector's

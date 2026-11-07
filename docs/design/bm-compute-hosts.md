@@ -943,11 +943,9 @@ reserve (`reserved_cpu: 2`, `reserved_memory_mib: 4096`, `min_free_disk_mib:
 20480`), and the pairing key file under `~/.niuu`. With `compute:` set as well, it
 fails, because both would define the pool.
 
-**Dependency:** the default host execution needs the rootless host-mode runtime
-(`SshHostVmRuntime`, niuulabs/niuu#1267). Until that runtime is on this branch,
-`hosts.execution_catalog` is required and names the operator's catalog. The join URL
-comes from `server_public_host` once the pinned-TLS join listener lands. Until then,
-`hosts.join_url` is passed through as it is.
+The pool runs Niuu's built-in host execution (`BuiltinHostCatalog`, see "Bring your own
+machine" below), and hosts join at the pinned join listener, at `server.external_host`
+or this machine's default-route address; `hosts.join_url` replaces it.
 
 ## PR plan
 

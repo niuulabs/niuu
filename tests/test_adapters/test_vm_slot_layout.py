@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from volundr.adapters.outbound.guest_credential_delivery import AGENT_CONFIG_DIRECTORY
 from volundr.adapters.outbound.vm_slot_layout import (
+    SESSION_LAUNCH,
     SlotIsolation,
     SlotLayout,
     slot_index,
@@ -212,4 +213,4 @@ def test_supervisor_and_stop_specs_name_the_same_slot():
         "skuld": "niuu-slot-2-skuld",
         "slot_label": "compute.niuu.io/slot=2",
     }
-    assert layout.launch_path == "/var/lib/niuu/slots/2/etc/session-launch.json"
+    assert layout.relocate(SESSION_LAUNCH) == "/var/lib/niuu/slots/2/etc/session-launch.json"

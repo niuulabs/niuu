@@ -196,10 +196,6 @@ class SlotLayout(SlotPlace):
         return f"{SLOT_AGENT_BASE}/{self.slot}"
 
     @property
-    def launch_path(self) -> str:
-        return self.relocate(SESSION_LAUNCH)
-
-    @property
     def holder(self) -> str:
         return f"{self.name}-holder"
 
