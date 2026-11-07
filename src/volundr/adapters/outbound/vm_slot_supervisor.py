@@ -610,6 +610,7 @@ class SlotSupervisor:
         self._run(["systemctl", "stop", self.slice])
         if (_SYSTEMD_CONTROL / f"{self.slice}.d").exists():
             self._run(["systemctl", "revert", self.slice])
+        self._remove_empty_cgroup()
         for root in (self.data_root, self.run_root, self.agent_root):
             if root.is_symlink():
                 raise SlotError(f"Slot directory {root} is a symbolic link")
@@ -622,6 +623,27 @@ class SlotSupervisor:
         left = self.leftovers()
         if left:
             raise SlotError(f"Slot {self.slot} teardown left: {'; '.join(left)}")
+
+    def _remove_empty_cgroup(self) -> None:
+        """Remove the slot's cgroup once nothing runs in it.
+
+        Setting the slice's limits makes systemd create its cgroup. When no unit ever ran in
+        it (a start cut short), stopping the inactive slice leaves the directory, and
+        teardown would report it on every try. A cgroup that still holds processes cannot
+        be removed; it stays, and ``leftovers`` names it.
+        """
+        if not self.cgroup.is_dir():
+            return
+        children = sorted(
+            (path for path in self.cgroup.rglob("*") if path.is_dir()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        )
+        for directory in (*children, self.cgroup):
+            try:
+                directory.rmdir()
+            except OSError:
+                return
 
     def _account_exists(self, lookup) -> bool:
         try:

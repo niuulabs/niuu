@@ -427,6 +427,28 @@ def test_down_of_an_absent_slot_is_a_verified_no_op(vm):
     assert vm.ran("systemctl", "stop") == [["systemctl", "stop", "niuu_slot_3.slice"]]
 
 
+def test_down_removes_the_cgroup_a_start_cut_short_left(vm):
+    # The slice's limits were set, so systemd made its cgroup, but no unit ever ran in it:
+    # stopping the inactive slice leaves the directory, here with an empty child.
+    supervisor = _supervisor(vm)
+    (supervisor.cgroup / "session.scope").mkdir(parents=True)
+
+    supervisor.down()
+
+    assert not supervisor.cgroup.exists()
+    assert supervisor.leftovers() == []
+
+
+def test_a_cgroup_that_still_holds_processes_is_left_and_named(vm):
+    supervisor = _supervisor(vm)
+    busy = supervisor.cgroup / "session.scope"
+    busy.mkdir(parents=True)
+    (busy / "cgroup.procs").write_text("4242\n")  # rmdir refuses it, as the kernel would
+
+    with pytest.raises(SlotError, match="teardown left: cgroup .*niuu_slot_3.slice"):
+        supervisor.down()
+
+
 def test_down_fails_loudly_naming_what_is_left(vm):
     supervisor = _supervisor(vm)
     supervisor.up()
