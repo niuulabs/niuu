@@ -5,7 +5,7 @@ provider-specific manifests never cross this boundary.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal, Protocol
@@ -351,6 +351,13 @@ class ComputeLeaseRepository(ABC):
     @abstractmethod
     async def list_slots(self, pool_id: str, *, live_only: bool = True) -> list[ComputeSlot]: ...
 
+    @abstractmethod
+    async def machine_slots(self, pool_id: str) -> dict[UUID, list[ComputeSlot]]:
+        """Every binding of each machine in the pool that is not released, by machine.
+
+        What placement and capacity need: a released machine's history never counts.
+        """
+
     # ``list`` shadows the builtin inside this class: keep it after every ``list[...]`` hint.
     @abstractmethod
     async def list(self, pool_id: str, *, include_released: bool = True) -> list[ComputeLease]: ...
@@ -438,6 +445,14 @@ def usable_slots(
     if limit is not None:
         free = min(free, limit - len(bindings))
     return max(0, free)
+
+
+def bindings_by_allocation(bindings: Iterable[ComputeSlot]) -> dict[UUID, list[ComputeSlot]]:
+    """Group bindings by the machine they are on, keeping their order."""
+    grouped: dict[UUID, list[ComputeSlot]] = {}
+    for binding in bindings:
+        grouped.setdefault(binding.allocation_id, []).append(binding)
+    return grouped
 
 
 def next_free_slot(machine: ComputeLease, bindings: Sequence[ComputeSlot]) -> int:

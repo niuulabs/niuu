@@ -30,6 +30,7 @@ from volundr.domain.compute import (
     LeaseState,
     SlotLease,
     SlotState,
+    bindings_by_allocation,
     usable_slots,
 )
 
@@ -196,6 +197,14 @@ class PostgresComputeLeaseRepository(ComputeLeaseRepository):
             _LIVE,
         )
         return [ComputeSlot.model_validate_json(row["data"]) for row in rows]
+
+    async def machine_slots(self, pool_id: str) -> dict[UUID, list[ComputeSlot]]:
+        rows = await self._reader().fetch(
+            "SELECT s.data FROM compute_slots s JOIN compute_leases l ON l.id = s.allocation_id "
+            "WHERE l.pool_id = $1 AND l.state != 'released' ORDER BY s.created_at, s.slot",
+            pool_id,
+        )
+        return bindings_by_allocation(ComputeSlot.model_validate_json(row["data"]) for row in rows)
 
     async def list(self, pool_id: str, *, include_released: bool = True) -> list[ComputeLease]:
         rows = await self._pool.fetch(

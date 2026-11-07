@@ -17,6 +17,7 @@ from volundr.domain.compute import (
     ComputeLease,
     ComputeLeaseBusyError,
     ComputeLeaseRepository,
+    ComputePoolFullError,
     ComputePoolPolicy,
     ComputeSlot,
     LeaseState,
@@ -24,6 +25,7 @@ from volundr.domain.compute import (
     MachineProvider,
     SlotLease,
     SlotState,
+    bindings_by_allocation,
     display_state,
     session_limit,
     usable_slots,
@@ -39,13 +41,6 @@ logger = logging.getLogger(__name__)
 
 def _live(bindings: Iterable[ComputeSlot]) -> list[ComputeSlot]:
     return [binding for binding in bindings if binding.state in LIVE_SLOT_STATES]
-
-
-def _by_allocation(bindings: Iterable[ComputeSlot]) -> dict[UUID, list[ComputeSlot]]:
-    grouped: dict[UUID, list[ComputeSlot]] = {}
-    for binding in bindings:
-        grouped.setdefault(binding.allocation_id, []).append(binding)
-    return grouped
 
 
 class ComputePoolService:
@@ -70,6 +65,8 @@ class ComputePoolService:
         self.pool_id, self.defaults, self.bootstrap = pool_id, defaults, bootstrap
         self.interval = interval_seconds
         self.last_error: str | None = None
+        # Why the pool holds fewer warm slots than its policy asks, while that lasts.
+        self.capacity_shortfall: str | None = None
         self.last_reconciled: datetime | None = None
         self._execution_resolver: ExecutionPlanResolver | None = None
         self._execution_runtimes: dict[str, VmRuntime] = {}
@@ -159,7 +156,9 @@ class ComputePoolService:
 
     async def snapshot(self) -> dict:
         machines = await self.repository.list(self.pool_id, include_released=False)
-        bindings = _by_allocation(await self.repository.list_slots(self.pool_id, live_only=True))
+        bindings = bindings_by_allocation(
+            await self.repository.list_slots(self.pool_id, live_only=True)
+        )
         shown = [machine for machine in machines if machine.state != LeaseState.RELEASED]
         states = {m.id: display_state(m, bindings.get(m.id, [])) for m in shown}
         allocations = []
@@ -197,6 +196,7 @@ class ComputePoolService:
             "counts": dict(Counter(state.value for state in states.values())),
             "allocations": allocations,
             "last_error": self.last_error,
+            "capacity_shortfall": self.capacity_shortfall,
             "last_reconciled": self.last_reconciled,
         }
 
@@ -213,7 +213,7 @@ class ComputePoolService:
                     "Compute pool policy profile must match the default execution plan"
                 )
         leases = await self.repository.list(self.pool_id, include_released=False)
-        bindings = _by_allocation(await self.repository.list_slots(self.pool_id, live_only=False))
+        bindings = await self.repository.machine_slots(self.pool_id)
         known = {lease.id for lease in leases if lease.state != LeaseState.RELEASED}
         # Inventory is authoritative for owned but unrecorded infrastructure. Never
         # destroy unknown data automatically: expose quarantine and charge capacity.
@@ -234,7 +234,7 @@ class ComputePoolService:
             and not isinstance(result, ComputeLeaseBusyError | VmRuntimeUnavailableError)
         ]
         leases = await self.repository.list(self.pool_id, include_released=False)
-        bindings = _by_allocation(await self.repository.list_slots(self.pool_id, live_only=False))
+        bindings = await self.repository.machine_slots(self.pool_id)
         # Retire surplus spares after policy reductions, without touching bound guests.
         spares = [
             lease
@@ -251,7 +251,7 @@ class ComputePoolService:
             except (ComputeLeaseBusyError, ValueError):
                 pass  # Concurrent assignment owns the guest now; never dispose its data.
         leases = await self.repository.list(self.pool_id, include_released=False)
-        bindings = _by_allocation(await self.repository.list_slots(self.pool_id, live_only=False))
+        bindings = await self.repository.machine_slots(self.pool_id)
         # Idle expiry only trims capacity above the warm minimum. The configured
         # spares stay warm indefinitely; churning them would just reprovision.
         now = datetime.now(UTC)
@@ -276,6 +276,8 @@ class ComputePoolService:
             except (ComputeLeaseBusyError, ValueError):
                 continue  # Concurrent assignment owns the guest now; never dispose its data.
             warm -= 1
+        if warm >= policy.warm_min:
+            self.capacity_shortfall = None
         if not failures and not policy.paused and not policy.drain and warm < policy.warm_min:
             for _ in range(policy.warm_min - warm):
                 try:
@@ -300,10 +302,33 @@ class ComputePoolService:
                         timeout_seconds=policy.provisioning_timeout_seconds,
                         slots=policy.slots_per_machine,
                     )
+                except ComputePoolFullError:
+                    # A cap, not a pause: the pool runs short of its warm minimum. Say so
+                    # once when it starts, count every hit, and show it in the pool status.
+                    get_observability().count(
+                        "volundr.compute.warm.capacity_hits", attributes={"pool": self.pool_id}
+                    )
+                    if self.capacity_shortfall is None:
+                        logger.error(
+                            "Compute pool %s holds %d of %d warm machines: it is at its "
+                            "maximum of %d machines",
+                            self.pool_id,
+                            warm,
+                            policy.warm_min,
+                            policy.max_machines,
+                        )
+                    self.capacity_shortfall = (
+                        f"{warm} of {policy.warm_min} warm machines: the pool is at its maximum "
+                        f"of {policy.max_machines} machines; raise the maximum or lower the "
+                        "warm minimum"
+                    )
+                    break
                 except ComputeCapacityError:
-                    break  # Atomic admission bounds concurrent controllers and pending cleanup.
+                    break  # Standby target met or provisioning limit: both clear on their own.
         leases = await self.repository.list(self.pool_id, include_released=False)
-        bindings = _by_allocation(await self.repository.list_slots(self.pool_id, live_only=True))
+        bindings = bindings_by_allocation(
+            await self.repository.list_slots(self.pool_id, live_only=True)
+        )
         counts = Counter(display_state(lease, bindings.get(lease.id, [])) for lease in leases)
         for state in LeaseState:
             get_observability().gauge(

@@ -374,9 +374,7 @@ class VmPodManager(PodManager):
         """Session slots, not machines: a machine counts as many as it has slots."""
         _, repository, _ = self._configured()
         machines = await repository.list(self._pool_id, include_released=False)
-        bindings: dict[UUID, list[ComputeSlot]] = {}
-        for binding in await repository.list_slots(self._pool_id, live_only=False):
-            bindings.setdefault(binding.allocation_id, []).append(binding)
+        bindings = await repository.machine_slots(self._pool_id)
         policy = await self._pool_service.policy() if self._pool_service else None
         if policy and (policy.paused or policy.drain):
             return SessionCapacity(limit=0, active=0, remedy="resume the pool in admin settings")
@@ -817,9 +815,7 @@ class VmPodManager(PodManager):
             plan.provider_profile if plan is not None else await self._requested_profile(session)
         )
         runtime = self._execution_runtimes[plan.plan_digest] if plan is not None else legacy_runtime
-        bindings: dict[UUID, list[ComputeSlot]] = {}
-        for binding in await repository.list_slots(self._pool_id, live_only=False):
-            bindings.setdefault(binding.allocation_id, []).append(binding)
+        bindings = await repository.machine_slots(self._pool_id)
         for candidate in await repository.list(self._pool_id, include_released=False):
             if candidate.state != LeaseState.IDLE or candidate.profile != profile:
                 continue

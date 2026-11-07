@@ -637,3 +637,47 @@ async def test_a_machine_a_session_took_after_the_pools_snapshot_is_not_warmed(s
 
     runtime.warm.assert_not_awaited()
     assert repo.leases[claim.id].state == LeaseState.READY
+
+
+async def test_a_pool_at_its_machine_cap_short_of_warm_slots_is_loud_and_counted(
+    setup, monkeypatch, caplog
+):
+    import logging
+
+    from niuu.observability import get_observability
+    from volundr.domain.compute import ComputePoolFullError
+
+    pool, _, _, _, _, _ = setup
+    await pool.configure((await pool.policy()).model_copy(update={"warm_min": 1}))
+    acquire = pool.leases.acquire_standby
+    pool.leases.acquire_standby = AsyncMock(side_effect=ComputePoolFullError("full"))
+    count = MagicMock()
+    monkeypatch.setattr(get_observability(), "count", count, raising=False)
+
+    with caplog.at_level(logging.ERROR, logger="volundr.domain.services.compute_pool"):
+        await pool.maintain()
+        await pool.maintain()
+
+    hits = [c for c in count.call_args_list if c.args[0] == "volundr.compute.warm.capacity_hits"]
+    assert len(hits) == 2
+    # Logged once when the shortfall starts, not on every tick.
+    assert sum("at its maximum" in record.getMessage() for record in caplog.records) == 1
+    shortfall = (await pool.snapshot())["capacity_shortfall"]
+    assert shortfall.startswith("0 of 1 warm machines") and "raise the maximum" in shortfall
+
+    pool.leases.acquire_standby = acquire
+    await pool.maintain()
+    await pool.maintain()
+    assert (await pool.snapshot())["capacity_shortfall"] is None
+
+
+async def test_a_standby_target_already_met_is_not_a_shortfall(setup):
+    from volundr.domain.compute import ComputeStandbyTargetMetError
+
+    pool, _, _, _, _, _ = setup
+    await pool.configure((await pool.policy()).model_copy(update={"warm_min": 1}))
+    pool.leases.acquire_standby = AsyncMock(side_effect=ComputeStandbyTargetMetError())
+
+    await pool.maintain()
+
+    assert (await pool.snapshot())["capacity_shortfall"] is None

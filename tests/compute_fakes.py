@@ -102,6 +102,14 @@ class LeaseRepository:
             if item.pool_id == pool_id and (not live_only or item.state in LIVE_SLOT_STATES)
         ]
 
+    async def machine_slots(self, pool_id):
+        grouped = {}
+        for item in self.bindings.values():
+            machine = self.leases.get(item.allocation_id)
+            if item.pool_id == pool_id and machine and machine.state != LeaseState.RELEASED:
+                grouped.setdefault(item.allocation_id, []).append(item)
+        return grouped
+
     async def active_for_session(self, pool_id, session_id):
         binding = next(
             (

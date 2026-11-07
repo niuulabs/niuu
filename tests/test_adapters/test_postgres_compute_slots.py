@@ -365,3 +365,19 @@ async def test_binding_requires_a_pool_policy_row(setup):
     async with repo.operation(idle.id):
         with pytest.raises(ValueError):
             await repo.bind(idle, binding(idle))
+
+
+async def test_machine_slots_groups_every_binding_of_machines_that_are_not_released(setup):
+    repo, pool, _ = setup
+    first, second = machine(), machine()
+    serving, ended, other = (
+        binding(first),
+        binding(first, slot=1, state=SlotState.RELEASED),
+        binding(second),
+    )
+    pool.fetch.return_value = rows(serving, ended, other)
+
+    assert await repo.machine_slots("pool") == {first.id: [serving, ended], second.id: [other]}
+    sql = pool.fetch.call_args.args[0]
+    assert "JOIN compute_leases" in sql and "l.state != 'released'" in sql
+    assert pool.fetch.call_args.args[1] == "pool"
