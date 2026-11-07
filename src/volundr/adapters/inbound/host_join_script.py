@@ -55,10 +55,10 @@ if [ -n "$PIN" ]; then
   # The Forge's certificate is pinned, and wget cannot check a pin.
   command -v curl >/dev/null 2>&1 || \
     fail "this Forge's join is pinned and only curl checks a pin: install curl, then run the command again"
-  post() { curl -fsS --fail-with-body -k --pinnedpubkey "$PIN" -H "Authorization: Bearer $CODE" \
+  post() { curl -sS --fail-with-body -k --pinnedpubkey "$PIN" -H "Authorization: Bearer $CODE" \
     -H 'Content-Type: application/json' --data "$1" "$2"; }
 elif command -v curl >/dev/null 2>&1; then
-  post() { curl -fsS --fail-with-body -H "Authorization: Bearer $CODE" \
+  post() { curl -sS --fail-with-body -H "Authorization: Bearer $CODE" \
     -H 'Content-Type: application/json' --data "$1" "$2"; }
 elif command -v wget >/dev/null 2>&1; then
   post() { wget -qO- --content-on-error --header="Authorization: Bearer $CODE" \
@@ -225,10 +225,10 @@ if ! command -v curl >/dev/null 2>&1; then
   missing="$missing curl"
 elif [ -n "$PIN" ]; then
   # The Forge's certificate is pinned: -k skips the CA, the pin is the trust.
-  post() { curl -fsS --fail-with-body -k --pinnedpubkey "$PIN" -H "Authorization: Bearer $CODE" \
+  post() { curl -sS --fail-with-body -k --pinnedpubkey "$PIN" -H "Authorization: Bearer $CODE" \
     -H 'Content-Type: application/json' --data "$1" "$2"; }
 else
-  post() { curl -fsS --fail-with-body -H "Authorization: Bearer $CODE" \
+  post() { curl -sS --fail-with-body -H "Authorization: Bearer $CODE" \
     -H 'Content-Type: application/json' --data "$1" "$2"; }
 fi
 [ -z "$missing" ] || fail "missing:$missing; these come with macOS and its Command Line Tools (xcode-select --install)"

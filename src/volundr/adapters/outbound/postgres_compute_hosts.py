@@ -73,10 +73,12 @@ class PostgresRegisteredHostRepository(RegisteredHostRepository):
     ) -> RegisteredHost | None:
         async with self._pool.acquire() as conn, conn.transaction():
             consumed = await conn.fetchval(
+                # $2 is the host's uuid in both places: a second type for it (text) is a
+                # statement Postgres refuses to prepare.
                 "UPDATE compute_host_pairing_codes SET consumed_at = NOW(), "
-                "consumed_by_host_id = $2, data = data "
+                "consumed_by_host_id = $2::uuid, data = data "
                 "|| jsonb_build_object('consumed_at', to_jsonb(NOW()), "
-                "'consumed_by_host_id', to_jsonb($2::text)) "
+                "'consumed_by_host_id', to_jsonb($2::uuid)) "
                 f"WHERE code_hash = $1 AND {_USABLE_CODE} RETURNING id",
                 code_hash,
                 host.id,
