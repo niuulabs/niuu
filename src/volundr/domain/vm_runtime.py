@@ -12,6 +12,7 @@ from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.compute import ComputeLease, MachineBootstrap, SlotLease
+from volundr.domain.compute_hosts import LINUX_ONLY, HostPlatform
 from volundr.domain.guest_credentials import GuestCredentialDelivery
 from volundr.domain.models import Session, SessionSpec
 from volundr.domain.session_runtimes import SessionGrant, SessionRuntimeKind
@@ -180,6 +181,15 @@ class VmRuntime(ABC):
         registered hosts refuses the runtime: a host is not disposable like a VM.
         """
         return False
+
+    @property
+    def host_platforms(self) -> frozenset[HostPlatform]:
+        """The registered-host platforms this runtime runs sessions on.
+
+        Linux only until a runtime has a macOS path: a Mac is refused at join for any
+        execution whose runtime does not name ``darwin`` here.
+        """
+        return LINUX_ONLY
 
     @property
     def session_runtime(self) -> SessionRuntimeKind | None:

@@ -21,6 +21,17 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 from volundr.domain.compute import HostSelector, Machine, validate_tag
 
 
+class HostPlatform(StrEnum):
+    """A host's operating system as ``uname -s`` names it, lowercased; fixed at join."""
+
+    LINUX = "linux"
+    DARWIN = "darwin"
+
+
+#: What a host runs on unless its runtime or connector declares more.
+LINUX_ONLY: frozenset[HostPlatform] = frozenset({HostPlatform.LINUX})
+
+
 class HostHealth(StrEnum):
     """What the last check of the host found. Written only by checks."""
 
@@ -81,6 +92,18 @@ class RegisteredHost(BaseModel):
     @classmethod
     def normalize_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return normalize_tags(value)
+
+    @property
+    def platform(self) -> HostPlatform:
+        """The platform the host joined as; the join records it, and checks never change it."""
+        value = self.facts.get("platform")
+        try:
+            return HostPlatform(value)
+        except ValueError:
+            raise ValueError(
+                f"Host {self.name} has no known platform fact ({value!r}); remove it and join "
+                "it again with this Forge's join.sh"
+            ) from None
 
     @property
     def claimable(self) -> bool:
@@ -290,6 +313,11 @@ class HostConnector(ABC):
     @abstractmethod
     def join_setup(self, host: RegisteredHost) -> HostJoinSetup:
         """What join.sh sets up on the host for this connector."""
+
+    @property
+    def platforms(self) -> frozenset[HostPlatform]:
+        """The platforms ``join_setup`` works on; a host on any other is refused at join."""
+        return LINUX_ONLY
 
     @abstractmethod
     async def admit(

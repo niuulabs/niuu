@@ -111,6 +111,7 @@ class TestAdmin:
         refused = next(r for r in body["runtimes"] if r["execution"] == "docker@1")
         assert refused["allowed"] is False
         assert "root daemon" in refused["refusal"]
+        assert refused["platforms"] == ["linux"]
 
     def test_list_needs_admin(self):
         client, *_ = _client(principal=USER)
@@ -287,7 +288,12 @@ class TestHostFacing:
         response = client.post(
             "/api/v1/forge/compute/hosts/join",
             headers=_scoped(code),
-            json={"name": "glad", "public_key": HOST_KEY, "address": "10.0.0.9", "facts": {}},
+            json={
+                "name": "glad",
+                "public_key": HOST_KEY,
+                "address": "10.0.0.9",
+                "facts": {"platform": "linux"},
+            },
         )
         assert response.status_code == 201
         body = response.json()

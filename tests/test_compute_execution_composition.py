@@ -20,7 +20,7 @@ from volundr.adapters.outbound.profiled_vm_runtime import ProfiledVmRuntime
 from volundr.adapters.outbound.ssh_guest_access import SshGuestAccess
 from volundr.compute import main as module
 from volundr.compute.config import ComputeConfig
-from volundr.domain.compute_hosts import HostConnector, HostInspector
+from volundr.domain.compute_hosts import LINUX_ONLY, HostConnector, HostInspector
 from volundr.domain.guest_access import GuestAccess
 from volundr.domain.host_preparation import HostPreparation
 from volundr.domain.services.compute_hosts import HostExecution
@@ -583,6 +583,7 @@ def test_registered_hosts_describe_each_execution_with_its_runtime_limits_and_ss
         slot_limits=limits,
         forge_public_key=accesses["vm"].public_key,
         ssh_user="ubuntu",
+        platforms=LINUX_ONLY,
     )
     assert container.refusal is not None
     host = hosts.executions[str(plans["vm-b"].execution)]

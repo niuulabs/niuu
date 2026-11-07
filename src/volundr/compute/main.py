@@ -151,6 +151,7 @@ def build_registered_hosts(
             slot_limits=runtime.slot_limits,
             forge_public_key=access.public_key,
             ssh_user=access.principal,
+            platforms=runtime.host_platforms,
         )
         accesses[str(plan.execution)] = access
 

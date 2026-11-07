@@ -285,3 +285,6 @@ is retried. Capacity is never freed on a host nobody checked.
 - The reverse SSH connector for hosts behind NAT (design: "Connection"). Today a
   host must be reachable from Forge.
 - macOS hosts.
+- **Sessions on a Mac.** A Mac runs the same join line and is checked and audited
+  (design: "macOS hosts"), always with one slot, but no runtime runs on macOS yet,
+  so the join refuses it: "… does not run sessions on macOS hosts".

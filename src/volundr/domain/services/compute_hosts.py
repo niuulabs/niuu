@@ -42,6 +42,7 @@ from volundr.domain.compute_hosts import (
     HostHealth,
     HostInspector,
     HostPairingCode,
+    HostPlatform,
     HostService,
     RegisteredHost,
     RegisteredHostRepository,
@@ -59,6 +60,13 @@ _HOST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
 FORGE_KEY_COMMENT = "niuu-forge"
 #: The file the "download and read first" commands save the join script to.
 JOIN_SCRIPT_FILENAME = "niuu-join.sh"
+#: How the host list and refusals name a platform.
+PLATFORM_LABELS = {HostPlatform.LINUX: "Linux", HostPlatform.DARWIN: "macOS"}
+#: Why a Mac takes one session at a time: there is nothing to keep two apart.
+MACOS_ONE_SLOT = (
+    "macOS hosts run one session at a time: macOS has no network namespaces or cgroups, so "
+    "there is no boundary between two sessions on one Mac"
+)
 
 
 class ComputeHostError(Exception):
@@ -90,6 +98,7 @@ class HostExecution:
     slot_limits: SlotLimits | None
     forge_public_key: str
     ssh_user: str
+    platforms: frozenset[HostPlatform]
 
     @property
     def refusal(self) -> str | None:
@@ -355,6 +364,24 @@ class ComputeHostService:
         pairing = await self.usable_code(raw_code)
         execution = self._execution(pairing.execution)
         connector = self._connector(pairing.connector)
+        platform = _joining_platform(facts)
+        label = PLATFORM_LABELS[platform]
+        if platform not in execution.platforms:
+            raise ComputeHostError(
+                f"{execution.execution} does not run sessions on {label} hosts; mint a code "
+                "for an execution whose runtime does"
+            )
+        if platform not in connector.platforms:
+            raise ComputeHostError(
+                f"Connector {pairing.connector!r} cannot set up {label} hosts; mint a code "
+                "with another connector"
+            )
+        if platform is HostPlatform.DARWIN and pairing.slots not in (None, 1):
+            raise ComputeHostError(
+                f"{MACOS_ONE_SLOT}. This code was minted for {pairing.slots} slots: mint one "
+                "for this Mac with slots 1, or with slots left open"
+            )
+        slots = _platform_slots(platform, pairing.slots)
         host = RegisteredHost(
             id=uuid4(),
             pool_id=self._pool_id,
@@ -365,7 +392,7 @@ class ComputeHostService:
             execution=pairing.execution,
             connector=pairing.connector,
             host_public_key=key,
-            slots=pairing.slots,
+            slots=slots,
             facts=_known_facts(facts),
             registered_by=pairing.created_by,
         )
@@ -457,6 +484,7 @@ class ComputeHostService:
                     "Drain the host before changing its slots: sessions are placed by them"
                 )
             self._require_slot_count(self._execution(host.execution), slots)
+            _platform_slots(host.platform, slots)
             self._require_capacity(host, slots)
             changes["slots"] = slots
         if not changes:
@@ -586,10 +614,24 @@ class ComputeHostService:
         live = await self.live_sessions(host)
         now = datetime.now(UTC)
         try:
+            platform = host.platform
+        except ValueError as exc:
+            # Forge cannot tell which checks the host needs; nothing is placed on it.
+            return await self._record(host, host.facts, (str(exc),), HostHealth.QUARANTINED, now)
+        try:
             facts = await self._inspector.facts(host)
             findings = await self._inspector.audit(
                 host, live_slots=[binding.slot for binding in live], clean=False
             )
+            observed = facts.get("platform")
+            if observed != platform.value:
+                findings = (
+                    *findings,
+                    f"the host now reports platform {observed!r}, but it joined as "
+                    f"{platform.value}; remove it and join it again",
+                )
+            # The platform stays what the host joined as; it picks the checks.
+            facts = {**facts, "platform": platform.value}
             findings = (*findings, *self._capacity_findings(host, facts))
             health = HostHealth.QUARANTINED if findings else HostHealth.HEALTHY
         except (RuntimeError, OSError) as exc:
@@ -598,6 +640,16 @@ class ComputeHostService:
             facts = host.facts
             findings = (f"Forge could not reach the host: {_reason(exc)}",)
             health = HostHealth.UNREACHABLE
+        return await self._record(host, facts, findings, health, now)
+
+    async def _record(
+        self,
+        host: RegisteredHost,
+        facts: Mapping[str, JsonValue],
+        findings: tuple[str, ...],
+        health: HostHealth,
+        now: datetime,
+    ) -> RegisteredHost:
         if health is not HostHealth.HEALTHY and health != host.health:
             get_observability().count(
                 "volundr.compute.host.quarantined"
@@ -613,7 +665,7 @@ class ComputeHostService:
                 "; ".join(findings),
             )
         return await self._repository.record_check(
-            host.id, facts=facts, findings=findings, health=health, checked_at=now
+            host.id, facts=dict(facts), findings=findings, health=health, checked_at=now
         )
 
     async def check_now(self, principal: Principal, host_id: UUID) -> RegisteredHost:
@@ -702,6 +754,8 @@ class ComputeHostService:
         """A slot count the measured host cannot hold is a finding, with the arithmetic."""
         if host.slots is None:
             return ()
+        if host.platform is HostPlatform.DARWIN and host.slots != 1:
+            return (f"{MACOS_ONE_SLOT}; this host is set to {host.slots} slots: set it to 1",)
         execution = self._executions.get(host.execution)
         suggestion = suggest_slots(
             facts,
@@ -719,8 +773,38 @@ class ComputeHostService:
 
 def _known_facts(facts: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     """The facts the host list shows; anything else a host sends is dropped, not stored."""
-    known = ("cpus", "memory_mib", "disk_free_mib", "kernel", "arch", "cgroup_v2", "gpus", "os")
+    known = (
+        "platform",
+        "cpus",
+        "memory_mib",
+        "disk_free_mib",
+        "kernel",
+        "arch",
+        "cgroup_v2",
+        "gpus",
+        "os",
+    )
     return {key: facts[key] for key in known if key in facts}
+
+
+def _joining_platform(facts: Mapping[str, JsonValue]) -> HostPlatform:
+    value = facts.get("platform")
+    try:
+        return HostPlatform(value)
+    except ValueError:
+        raise ComputeHostError(
+            f"The host reported platform {value!r}; only Linux and macOS hosts can join, with "
+            "the join.sh this Forge serves"
+        ) from None
+
+
+def _platform_slots(platform: HostPlatform, slots: int | None) -> int | None:
+    """The slots a host on ``platform`` runs: a Mac runs exactly one, never more."""
+    if platform is not HostPlatform.DARWIN:
+        return slots
+    if slots is not None and slots != 1:
+        raise ComputeHostError(f"{MACOS_ONE_SLOT}; set slots to 1, not {slots}")
+    return 1
 
 
 def _reason(exc: Exception) -> str:

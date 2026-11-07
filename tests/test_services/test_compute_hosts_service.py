@@ -25,7 +25,7 @@ from tests.compute_host_fakes import (
     other_host_key,
 )
 from volundr.domain.compute import ComputeSlot, SlotState
-from volundr.domain.compute_hosts import HostHealth, HostService
+from volundr.domain.compute_hosts import LINUX_ONLY, HostHealth, HostPlatform, HostService
 from volundr.domain.services.compute_hosts import (
     ComputeHostAccessError,
     ComputeHostError,
@@ -39,6 +39,7 @@ from volundr.domain.services.compute_hosts import (
 )
 from volundr.domain.vm_runtime import SlotLimits
 
+LINUX = {"platform": "linux"}
 ADMIN = Principal(user_id="admin", email="a@x", tenant_id="tenant", roles=["volundr:admin"])
 USER = Principal(user_id="user", email="u@x", tenant_id="tenant", roles=["volundr:developer"])
 
@@ -259,14 +260,14 @@ class TestJoin:
             name="glad",
             public_key=HOST_KEY + " root@glad",
             address="192.168.90.35",
-            facts={"cpus": 48, "memory_mib": 196608, "secret": "dropped"},
+            facts={"platform": "linux", "cpus": 48, "memory_mib": 196608, "secret": "dropped"},
         )
 
         host = joined.host
         assert (host.name, host.tags, host.slots, host.execution) == ("glad", ("gpu",), 2, "host@1")
         assert host.health is HostHealth.PENDING
         assert host.connection == {"address": "192.168.90.35", "port": 22}
-        assert host.facts == {"cpus": 48, "memory_mib": 196608}
+        assert host.facts == {"platform": "linux", "cpus": 48, "memory_mib": 196608}
         assert host.registered_by == "admin"
         assert joined.ssh_user == "root"
         assert joined.forge_public_key == "ssh-ed25519 FORGEKEY forge"
@@ -278,10 +279,12 @@ class TestJoin:
     async def test_a_code_is_used_once(self):
         service, *_ = _service()
         minted = await self._minted(service)
-        await service.join(minted.code, name="a", public_key=HOST_KEY, address="10.0.0.2", facts={})
+        await service.join(
+            minted.code, name="a", public_key=HOST_KEY, address="10.0.0.2", facts=LINUX
+        )
         with pytest.raises(PairingCodeRejectedError):
             await service.join(
-                minted.code, name="b", public_key=other_host_key(1), address="10.0.0.3", facts={}
+                minted.code, name="b", public_key=other_host_key(1), address="10.0.0.3", facts=LINUX
             )
 
     async def test_conflict_keeps_the_code_and_revokes_the_connection(self):
@@ -290,7 +293,11 @@ class TestJoin:
         minted = await self._minted(service)
         with pytest.raises(ComputeHostStateError):
             await service.join(
-                minted.code, name="glad", public_key=other_host_key(3), address="10.0.0.4", facts={}
+                minted.code,
+                name="glad",
+                public_key=other_host_key(3),
+                address="10.0.0.4",
+                facts=LINUX,
             )
         assert len(connector.revoked) == 1
         assert await service.usable_code(minted.code)
@@ -307,12 +314,14 @@ class TestJoin:
         service, *_ = _service()
         minted = await self._minted(service)
         with pytest.raises(error):
-            await service.join(minted.code, name=name, public_key=key, address=address, facts={})
+            await service.join(minted.code, name=name, public_key=key, address=address, facts=LINUX)
 
     async def test_unknown_code(self):
         service, *_ = _service()
         with pytest.raises(PairingCodeRejectedError):
-            await service.join("forged", name="x", public_key=HOST_KEY, address="1.2.3.4", facts={})
+            await service.join(
+                "forged", name="x", public_key=HOST_KEY, address="1.2.3.4", facts=LINUX
+            )
 
     async def test_lost_race_revokes_the_connection(self):
         service, repository, connector, _ = _service()
@@ -324,7 +333,7 @@ class TestJoin:
         repository.consume_and_register = consumed
         with pytest.raises(PairingCodeRejectedError):
             await service.join(
-                minted.code, name="x", public_key=HOST_KEY, address="1.2.3.4", facts={}
+                minted.code, name="x", public_key=HOST_KEY, address="1.2.3.4", facts=LINUX
             )
         assert len(connector.revoked) == 1
 
@@ -597,3 +606,107 @@ class TestChecks:
         service, *_ = _service(host)
         with pytest.raises(ComputeHostError, match="no longer configured"):
             await service.remove(ADMIN, host.id)
+
+
+MAC = {"platform": "darwin", "cpus": 10, "memory_mib": 32768}
+BOTH = frozenset(HostPlatform)
+
+
+def _mac_service(*hosts, execution_platforms=BOTH, connector_platforms=BOTH, inspector=None):
+    return _service(
+        *hosts,
+        inspector=inspector,
+        connector=Connector(platforms=connector_platforms),
+        executions={"host@1": make_execution(platforms=execution_platforms)},
+    )
+
+
+class TestMacHosts:
+    async def _join(self, service, *, slots, facts=MAC):
+        minted = await service.mint(
+            ADMIN, execution="host@1", connector="direct-ssh", tags=[], slots=slots
+        )
+        joined = await service.join(
+            minted.code, name="mini", public_key=HOST_KEY, address="10.0.0.7", facts=facts
+        )
+        return minted, joined.host
+
+    @pytest.mark.parametrize("slots", [None, 1])
+    async def test_a_mac_joins_with_one_slot(self, slots):
+        service, *_ = _mac_service()
+        _, host = await self._join(service, slots=slots)
+        assert host.slots == 1
+        assert host.platform is HostPlatform.DARWIN
+        assert host.facts["platform"] == "darwin"
+
+    async def test_a_mac_minted_for_more_slots_is_refused_before_anything_changes(self):
+        service, repository, connector, _ = _mac_service()
+        minted = await service.mint(
+            ADMIN, execution="host@1", connector="direct-ssh", tags=[], slots=4
+        )
+        with pytest.raises(ComputeHostError, match="one session at a time") as refused:
+            await service.join(
+                minted.code, name="mini", public_key=HOST_KEY, address="10.0.0.7", facts=MAC
+            )
+        assert "minted for 4 slots" in str(refused.value)
+        assert (repository.hosts, connector.admitted) == ({}, [])
+
+    async def test_a_linux_host_keeps_the_codes_slots(self):
+        service, *_ = _mac_service()
+        _, host = await self._join(service, slots=4, facts={"platform": "linux", "cpus": 48})
+        assert (host.slots, host.platform) == (4, HostPlatform.LINUX)
+
+    async def test_a_mac_needs_a_runtime_that_runs_on_macos(self):
+        service, repository, *_ = _mac_service(execution_platforms=LINUX_ONLY)
+        with pytest.raises(ComputeHostError, match="does not run sessions on macOS hosts"):
+            await self._join(service, slots=1)
+        assert repository.hosts == {}
+
+    async def test_a_mac_needs_a_connector_that_sets_up_macos(self):
+        service, *_ = _mac_service(connector_platforms=LINUX_ONLY)
+        with pytest.raises(ComputeHostError, match="cannot set up macOS hosts"):
+            await self._join(service, slots=1)
+
+    @pytest.mark.parametrize("facts", [{}, {"platform": "windows"}])
+    async def test_a_host_must_say_what_it_runs(self, facts):
+        service, *_ = _mac_service()
+        with pytest.raises(ComputeHostError, match="only Linux and macOS"):
+            await self._join(service, slots=1, facts=facts)
+
+    async def test_a_macs_slots_stay_one(self):
+        mac = make_host(slots=1, facts=MAC)
+        service, *_ = _mac_service(mac)
+        with pytest.raises(
+            ComputeHostError,
+            match="no boundary between two sessions on one Mac; set slots to 1, not 2",
+        ):
+            await service.update(ADMIN, mac.id, slots=2)
+
+    async def test_a_mac_set_to_more_slots_is_quarantined(self):
+        mac = make_host(slots=2, facts=MAC)
+        service, *_ = _mac_service(mac, inspector=Inspector(facts=MAC))
+        checked = await service.check(mac)
+        assert checked.health is HostHealth.QUARANTINED
+        assert "set to 2 slots: set it to 1" in checked.findings[0]
+
+    async def test_a_host_that_changed_platform_is_quarantined_and_keeps_its_own(self):
+        host = make_host()  # joined as linux
+        service, *_ = _service(host, inspector=Inspector(facts=MAC))
+        checked = await service.check(host)
+        assert checked.health is HostHealth.QUARANTINED
+        assert "now reports platform 'darwin', but it joined as linux" in checked.findings[0]
+        assert checked.facts["platform"] == "linux"
+
+    async def test_a_host_without_a_platform_is_quarantined_without_being_reached(self):
+        host = make_host(facts={"cpus": 8})
+        inspector = Inspector()
+        service, *_ = _service(host, inspector=inspector)
+        with patch("volundr.domain.services.compute_hosts.get_observability") as observe:
+            checked = await service.check(host)
+        assert checked.health is HostHealth.QUARANTINED
+        assert "no known platform fact" in checked.findings[0]
+        assert "join it again" in checked.findings[0]
+        assert inspector.audits == []
+        observe.return_value.count.assert_called_once_with(
+            "volundr.compute.host.quarantined", attributes={"pool": POOL}
+        )

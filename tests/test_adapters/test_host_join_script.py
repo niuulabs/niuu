@@ -10,10 +10,12 @@ import pytest
 from volundr.adapters.inbound.host_join_script import (
     HOST_CONFIG_PATH,
     NIUU_HOST_KEY_PATH,
+    render_darwin_join_script,
+    render_darwin_leave_script,
     render_join_script,
     render_leave_script,
 )
-from volundr.adapters.outbound.host_checks import LEAVE_PATH
+from volundr.adapters.outbound.host_checks import DARWIN_FACTS_SH, FACTS_SH, LEAVE_PATH
 
 _needs_sh = pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX sh")
 
@@ -47,7 +49,7 @@ def test_a_pinned_join_script_posts_only_through_curl_with_the_pin():
 def test_a_pinned_join_without_curl_says_so_and_changes_nothing(tmp_path):
     # Only the tool block, with a PATH that has no curl: it fails before anything is written.
     script = render_join_script(forge_url="https://f", code="c", pin="sha256//x=")
-    block = script[script.index("say() {") : script.index('[ "$(id -u)" = 0 ]')]
+    block = script[script.index("say() {") : script.index("\n", script.index("ok() {"))]
     pinned = script[script.index('if [ -n "$PIN" ]; then') : script.index("elif command -v curl")]
     probe = f"PIN=sha256//x=\n{block}\n{pinned}fi\necho reached\n"
     bin_dir = tmp_path / "bin"
@@ -84,6 +86,8 @@ def test_rendered_scripts_are_valid_posix_sh():
         render_join_script(forge_url="https://f", code="c"),
         render_join_script(forge_url="https://f", code="c", pin="sha256//x="),
         render_leave_script(),
+        render_darwin_join_script(),
+        render_darwin_leave_script(),
     ):
         subprocess.run(["sh", "-n"], input=script.encode(), check=True)
 
@@ -96,3 +100,94 @@ def test_join_refuses_to_run_as_a_normal_user_before_changing_anything(tmp_path)
     result = subprocess.run(["sh"], input=script.encode(), capture_output=True, cwd=tmp_path)
     assert result.returncode == 1
     assert b"run this as root" in result.stderr
+
+
+def test_a_mac_takes_its_own_branch_with_its_own_facts_and_leave():
+    script = render_join_script(forge_url="https://f", code="c")
+    darwin = render_darwin_join_script()
+    assert 'if [ "$(uname -s)" = Darwin ]; then' in script
+    assert darwin in script
+    assert script.index(darwin) < script.index('[ "$(uname -s)" = Linux ]')
+    assert DARWIN_FACTS_SH.strip() in darwin and FACTS_SH.strip() not in darwin
+    assert render_darwin_leave_script() in darwin
+    assert "dscl . -read" in render_darwin_leave_script()
+    assert "getent" not in darwin
+    assert "systemctl" not in darwin and "cgroup" not in darwin.replace("cgroup_v2", "")
+
+
+def _shims(directory, programs):
+    directory.mkdir(exist_ok=True)
+    for name, body in programs.items():
+        path = directory / name
+        path.write_text("#!/bin/sh\n" + body + "\n")
+        path.chmod(0o755)
+    return directory
+
+
+#: Every tool the macOS join looks for, standing in for a Mac whose preflight passes.
+_MAC_TOOLS = {
+    name: "true"
+    for name in (
+        "ssh-keygen",
+        "python3",
+        "sudo",
+        "dscl",
+        "dseditgroup",
+        "route",
+        "ipconfig",
+        "sysctl",
+        "sw_vers",
+        "awk",
+        "sed",
+        "curl",
+        "sshd",
+    )
+}
+
+
+@_needs_sh
+class TestMacPreflight:
+    """Each run stops at a check before the join changes anything: nothing here is root."""
+
+    def _run(self, tmp_path, **programs):
+        tools = {"id": "echo 0", "uname": "echo Darwin", "launchctl": "exit 113", **_MAC_TOOLS}
+        tools.update({name: body for name, body in programs.items() if body is not None})
+        for name in [name for name, body in programs.items() if body is None]:
+            tools.pop(name)
+        shims = _shims(tmp_path / "bin", tools)
+        (shims / "sh").symlink_to(shutil.which("sh"))
+        script = render_join_script(forge_url="https://f", code="c")
+        return subprocess.run(
+            [shutil.which("sh")],
+            input=script.encode(),
+            capture_output=True,
+            cwd=tmp_path,
+            env={"PATH": str(shims)},
+        )
+
+    def test_remote_login_must_be_on(self, tmp_path):
+        result = self._run(tmp_path)
+        assert result.returncode == 1
+        assert b"Remote Login is off" in result.stderr
+
+    def test_missing_tools_are_named(self, tmp_path):
+        result = self._run(tmp_path, dscl=None, curl=None)
+        assert result.returncode == 1
+        assert b"missing: dscl curl;" in result.stderr
+
+    def test_the_python3_stub_without_command_line_tools(self, tmp_path):
+        result = self._run(tmp_path, python3="exit 1")
+        assert result.returncode == 1
+        assert b"xcode-select --install" in result.stderr
+
+    def test_root_first(self, tmp_path):
+        result = self._run(tmp_path, id="echo 501")
+        assert result.returncode == 1
+        assert b"run this as root" in result.stderr
+
+
+def test_a_pinned_mac_join_posts_with_the_pin():
+    script = render_join_script(forge_url="https://f", code="c", pin="sha256//x=")
+    darwin = render_darwin_join_script()
+    assert 'PIN="$PIN"' in script
+    assert '--pinnedpubkey "$PIN"' in darwin
