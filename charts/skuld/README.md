@@ -265,6 +265,9 @@ A session joins a flock as a mesh peer when `mesh.enabled` is true: it announces
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `room.enabled` | bool | `false` | Host a room (`room.enabled`); the session keeps its own agent. Forge turns it on for a workflow run's first session |
+| `room.environmentId` | string | `""` | Environment of the room's participants (`room.environment_id`); empty uses `mesh.realmId` |
+| `room.realmRoom` | bool | `false` | Show every member of the mesh realm, not only events tagged with this session (`room.realm_room`) |
 | `mesh.enabled` | bool | `false` | Join the flock as a mesh peer (`mesh.enabled`) |
 | `mesh.transport` | string | `"nng"` | Mesh transport: `nng`, `nats`, `in_process` or a Sleipnir transport class path (`mesh.transport`) |
 | `mesh.peerPorts` | list | `[]` | Container ports to expose for direct mesh peers; not a Skuld setting |

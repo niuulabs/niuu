@@ -1592,3 +1592,34 @@ class TestMeshDiscoveryRbac:
         ):
             kinds = {d["kind"] for d in self._rbac(self._docs("skuld", *extra))}
             assert not kinds & {"ClusterRole", "ClusterRoleBinding"}
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_an_ordinary_session_hosts_no_room():
+    assert "room" not in _rendered_skuld_config("skuld")
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_runs_first_session_hosts_its_realms_room_and_keeps_its_agent():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld",
+        "--set",
+        "mesh.enabled=true",
+        "--set",
+        "mesh.realmId=workflow-run-1",
+        "--set",
+        "room.enabled=true",
+        "--set",
+        "room.realmRoom=true",
+    )
+
+    room = SkuldSettings(**config).room
+    assert (room.enabled, room.environment_id, room.realm_room) == (
+        True,
+        "workflow-run-1",
+        True,
+    )
+    # The host keeps its own agent: chat is not routed into the room.
+    assert (room.routed, room.default_target_peer_id) == (False, "")

@@ -608,6 +608,18 @@ extraVolumeMounts: []
 # configured persistent storage.
 replicaCount: 1
 
+# The room this session hosts (Skuld's `room` settings). Off by default: an ordinary session
+# pays for no collaboration wiring. Forge turns it on for a workflow run's first session, so
+# the run's other members show in it as workers.
+room:
+  # -- Host a room (room.enabled). The session keeps its own agent.
+  enabled: false
+  # -- Environment of the room's participants (room.environment_id); empty uses mesh.realmId
+  environmentId: ""
+  # -- Show every member of the mesh realm, not only events tagged with this session
+  # (room.realm_room). A workflow run's realm is the run's own.
+  realmRoom: false
+
 # Mesh configuration for session-local agent flocks. Every value below is a key of Skuld's
 # `mesh` settings (skuld.config.MeshConfig), rendered into the broker's config file. A value
 # left null (or empty) keeps Skuld's own default. Forge sets them per session through the

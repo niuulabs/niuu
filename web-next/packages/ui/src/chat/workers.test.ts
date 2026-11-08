@@ -153,6 +153,27 @@ describe('roomWorkers and workerStages', () => {
     expect(workers.find((w) => w.persona === 'capability-publisher')?.latest).toBeUndefined();
   });
 
+  it("counts a workflow run's other sessions as workers of the run's first session", () => {
+    const runRoom = new Map<string, RoomParticipant>(
+      [
+        // The host: the run's first session (its peer id is its session id).
+        participant('coder-session', 'Skuld', [], [], { participantType: 'skuld' }),
+        participant('reviewer-session', '', ['code.changed'], ['review.passed'], {
+          participantType: 'skuld',
+          displayName: 'wf-run-1-reviewer',
+        }),
+      ].map((p) => [p.peerId, p]),
+    );
+
+    const workers = roomWorkers(runRoom, [], [], 'coder-session');
+
+    expect(workers.map((w) => [w.peerId, w.name])).toEqual([
+      ['reviewer-session', 'wf-run-1-reviewer'],
+    ]);
+    // Without knowing the host, a Skuld participant still leads, as before.
+    expect(roomWorkers(runRoom, [], [])).toEqual([]);
+  });
+
   it('keeps a worker that took part and left the room, marked as left', () => {
     // The live room lists only who is connected: the reviewer and framer have gone.
     const now = new Map([...room].filter(([id]) => !['flock-reviewer', 'flock-spec'].includes(id)));

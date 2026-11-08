@@ -3637,8 +3637,8 @@ function LiveSessionDetailPageInner({
   const ravnWorkers = useMemo(
     () =>
       isReady
-        ? roomWorkers(chat.participants, chat.meshEvents, chat.messages)
-        : roomWorkers(replayParticipants, replayMeshEvents, replayMessages),
+        ? roomWorkers(chat.participants, chat.meshEvents, chat.messages, sessionId)
+        : roomWorkers(replayParticipants, replayMeshEvents, replayMessages, sessionId),
     [
       isReady,
       chat.participants,
@@ -3647,6 +3647,7 @@ function LiveSessionDetailPageInner({
       replayParticipants,
       replayMeshEvents,
       replayMessages,
+      sessionId,
     ],
   );
   const panelHasContent = sessionPanelHasContent({

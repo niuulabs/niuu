@@ -1133,7 +1133,7 @@ class Broker(
                         handle_frame=self._room_bridge.handle_collaboration_frame,
                         register_peer=self._room_bridge.register_mesh_peer,
                         has_participant=self._room_bridge.has_participant,
-                        session_id=self.session_id,
+                        session_id=self._room_event_session(),
                         environment_id=mesh_cfg.realm_id,
                     )
                     await self._collaboration_mesh_bridge.start()
@@ -1260,6 +1260,23 @@ class Broker(
     def _log_refresh_failure(task: asyncio.Task) -> None:
         if not task.cancelled() and task.exception() is not None:
             logger.error("refreshing the nng peers failed", exc_info=task.exception())
+
+    def _room_event_session(self) -> str | None:
+        """The session the room's mesh events must be tagged with; None for a realm room.
+
+        A realm's room (a workflow run's, hosted by its first session) shows what every
+        member of the realm publishes, each under its own session; any other room shows
+        only what is tagged with this session.
+        """
+        return None if self._settings.room.realm_room else self.session_id
+
+    def _room_copies_cli_replies(self) -> bool:
+        """Whether this broker's CLI replies are also posted into its room.
+
+        A realm room's host keeps its own agent: each reply is already its own turn, so a
+        copy would show it twice.
+        """
+        return not self._settings.room.realm_room
 
     def _room_default_target_peer_id(self) -> str:
         """Peer that untargeted browser messages route to (resident sessions)."""
@@ -2714,9 +2731,14 @@ class Broker(
                 self._flush_pending_assistant_turn(metadata=turn_metadata)
             self._live_tool_details.clear()
 
-            # Emit CLI turn as room_message so it shows participant color
+            # Emit CLI turn as room_message so it shows participant color. A realm room's
+            # host keeps its own agent: its reply is already its own turn, so it is not
+            # copied into the room a second time.
             if self._room_bridge is not None and self._mesh_adapter is not None and content:
-                await self._room_bridge.broadcast_cli_message(self._mesh_adapter.peer_id, content)
+                if self._room_copies_cli_replies():
+                    await self._room_bridge.broadcast_cli_message(
+                        self._mesh_adapter.peer_id, content
+                    )
                 await self._room_bridge.broadcast_cli_activity(self._mesh_adapter.peer_id, "idle")
             if explicit_room_reply and self._pending_explicit_human_response_count > 0:
                 self._pending_explicit_human_response_count -= 1

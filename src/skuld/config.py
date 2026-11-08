@@ -237,6 +237,16 @@ class RoomConfig(BaseModel):
             "disables the check."
         ),
     )
+    realm_room: bool = Field(
+        default=False,
+        description=(
+            "The room is its mesh realm's room: it shows what every member of the realm "
+            "publishes, not only what is tagged with this session. A workflow run's first "
+            "session hosts one for the run's members (its realm is the run's own), so "
+            "opening it shows every member as a worker of the run. The host keeps its own "
+            "agent: its replies stay its own turns and are not copied into the room."
+        ),
+    )
 
 
 class TelegramConfig(BaseModel):

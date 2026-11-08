@@ -160,3 +160,28 @@ async def test_mesh_bridge_drops_collaboration_copy_already_delivered_directly()
 
 def test_mesh_peer_identity_uses_outer_mesh_publisher() -> None:
     assert mesh_peer_id(_event([], source="ravn:stable-peer")) == "stable-peer"
+
+
+@pytest.mark.asyncio
+async def test_a_realm_room_shows_what_every_member_of_its_realm_publishes() -> None:
+    """A workflow run's room (no session filter) renders each member session's own events."""
+    subscriber = _Subscriber()
+    handle = AsyncMock()
+    bridge = MeshCollaborationBridge(
+        subscriber,
+        handle_frame=handle,
+        register_peer=AsyncMock(),
+        has_participant=lambda _peer: True,
+        session_id=None,
+        environment_id="workflow-run-1",
+    )
+    await bridge.start()
+
+    outcome = {"kind": "outcome", "persona": "reviewer", "eventType": "code.changed"}
+    await subscriber.handler(
+        _event([outcome], source="ravn:reviewer-session", session_id="reviewer-session")
+    )
+
+    handle.assert_awaited_once_with(
+        "reviewer-session", {"type": "collaboration.events", "events": [outcome]}
+    )

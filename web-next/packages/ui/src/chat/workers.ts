@@ -98,8 +98,14 @@ export function verdictLabel(verdict: string | undefined): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-function isWorker(participant: RoomParticipant): boolean {
-  return !LEAD_TYPES.has(participant.participantType ?? 'ravn');
+/**
+ * A participant that works in the room. A Skuld session leads its own room; another Skuld
+ * session in it (a member of the workflow run the room's host started) works there.
+ */
+function isWorker(participant: RoomParticipant, hostPeerId?: string): boolean {
+  const type = participant.participantType ?? 'ravn';
+  if (type === 'skuld' && hostPeerId && participant.peerId !== hostPeerId) return true;
+  return !LEAD_TYPES.has(type);
 }
 
 function workerStatus(status: string | undefined): WorkerStatus {
@@ -192,12 +198,13 @@ function departedWorkers(
   participants: ReadonlyMap<string, RoomParticipant>,
   meshEvents: readonly MeshEvent[],
   messages: readonly ChatMessage[],
+  hostPeerId?: string,
 ): RoomParticipant[] {
   const departed = new Map<string, RoomParticipant>();
   for (const message of messages) {
     const participant = message.participant;
     if (!participant || participants.has(participant.peerId)) continue;
-    if (departed.has(participant.peerId) || !isWorker(participant)) continue;
+    if (departed.has(participant.peerId) || !isWorker(participant, hostPeerId)) continue;
     departed.set(participant.peerId, { ...participant, status: 'left' });
   }
   for (const event of meshEvents) {
@@ -220,10 +227,15 @@ export function roomWorkers(
   participants: ReadonlyMap<string, RoomParticipant>,
   meshEvents: readonly MeshEvent[],
   messages: readonly ChatMessage[],
+  /** The mesh peer of the session whose room this is (its session id): it leads, not works. */
+  hostPeerId?: string,
 ): Worker[] {
   const outcomes = workerOutcomes(meshEvents, messages);
-  const present = [...participants.values()].filter(isWorker);
-  return [...present, ...departedWorkers(participants, meshEvents, messages)].map((participant) => {
+  const present = [...participants.values()].filter((participant) =>
+    isWorker(participant, hostPeerId),
+  );
+  const departed = departedWorkers(participants, meshEvents, messages, hostPeerId);
+  return [...present, ...departed].map((participant) => {
     const own = outcomes.filter((outcome) => outcome.peerId === participant.peerId);
     return {
       peerId: participant.peerId,
