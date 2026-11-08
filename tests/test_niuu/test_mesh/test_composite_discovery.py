@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from niuu.adapters.discovery._failures import DiscoveryError
 from niuu.adapters.discovery.composite import CompositeDiscoveryAdapter
 from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer
 
@@ -155,16 +156,15 @@ class TestCompositeDiscoveryPeers:
         assert "a" in merged
         assert "b" in merged
 
-    def test_peers_skips_failing_backend(self) -> None:
-        """Exception in peers() is caught, other backends still contribute (lines 107-108)."""
-        peer_b = _peer("b")
+    def test_a_failing_backend_is_not_hidden_behind_a_partial_table(self) -> None:
         b1 = _mock_backend()
         b1.peers = MagicMock(side_effect=RuntimeError("broken"))
         b2 = _mock_backend()
-        b2.peers = MagicMock(return_value={"b": peer_b})
+        b2.peers = MagicMock(return_value={"b": _peer("b")})
         adapter = CompositeDiscoveryAdapter([b1, b2])
-        merged = adapter.peers()
-        assert "b" in merged
+
+        with pytest.raises(RuntimeError, match="broken"):
+            adapter.peers()
 
 
 class TestCompositeDiscoveryOwnIdentity:
@@ -178,24 +178,20 @@ class TestCompositeDiscoveryOwnIdentity:
         assert result is identity
 
     @pytest.mark.asyncio
-    async def test_own_identity_skips_failures(self) -> None:
-        """Exception in own_identity() is caught, tries next (lines 116-117)."""
-        identity = _identity()
+    async def test_own_identity_is_the_first_backends_and_its_failure_is_raised(self) -> None:
         b1 = _mock_backend()
         b1.own_identity = AsyncMock(side_effect=RuntimeError("no"))
         b2 = _mock_backend()
-        b2.own_identity = AsyncMock(return_value=identity)
+        b2.own_identity = AsyncMock(return_value=_identity())
         adapter = CompositeDiscoveryAdapter([b1, b2])
-        result = await adapter.own_identity()
-        assert result is identity
+
+        with pytest.raises(RuntimeError, match="no"):
+            await adapter.own_identity()
 
     @pytest.mark.asyncio
-    async def test_own_identity_raises_when_all_fail(self) -> None:
-        b1 = _mock_backend()
-        b1.own_identity = AsyncMock(side_effect=RuntimeError("fail"))
-        adapter = CompositeDiscoveryAdapter([b1])
-        with pytest.raises(RuntimeError, match="no backend"):
-            await adapter.own_identity()
+    async def test_no_backend_has_no_identity(self) -> None:
+        with pytest.raises(DiscoveryError, match="no backend"):
+            await CompositeDiscoveryAdapter([]).own_identity()
 
 
 class TestCompositeDiscoveryCallbacks:

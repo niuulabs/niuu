@@ -368,6 +368,27 @@ one:
    its answer, `send_message(to=<name>)` to hand it work without waiting, or
    `mesh_send(peer=<peer_id>)` for a mesh peer that is not a Forge session.
 
+## When discovery fails
+
+Discovery is how a session is seen, so none of its failures is quiet: a failed announce means
+peers stop seeing the session, and a failed list means a peer table that is wrong without
+saying so. Every adapter (`event_bus`, `sleipnir`, `mdns`, `k8s`, `static`, and the composite
+that runs several) follows the same rules (`niuu.adapters.discovery._failures`):
+
+| Failure | What happens | Why |
+|---|---|---|
+| The adapter is configured but cannot run: a missing package (`aio_pika`, `zeroconf`, `pynng`, `kubernetes`), an AMQP URL that is not set or does not connect, no cluster credentials, no LAN address, a named `cluster_file` that is absent or unreadable, the first announce that cannot be published | `start()` raises `DiscoveryError` with the remedy, and the session's mesh does not start | the operator asked for discovery; running without it is the fallback this avoids. A composite raises for any backend that fails and stops the ones that started |
+| A background iteration fails: a heartbeat that cannot be published, a Kubernetes list that fails, a static file that cannot be reloaded or has vanished, an mDNS responder error | error log, counted on `ravn.degraded` as `niuu.discovery.<adapter>.<operation>`, and the loop tries again at the next interval | it cannot raise into nothing, and stopping the loop would end discovery for good. Until a heartbeat succeeds peers age this session out, which is why it is an error and not a debug line |
+| A list or reload fails | the peer table is left as it was | an empty result would read as "every peer left" |
+| A consumer's `on_join` / `on_leave` callback raises | reported and counted (`<adapter>.join` / `<adapter>.leave`); the peer table is already updated and the other callbacks still run | one consumer's bug must not stop the others or corrupt the table |
+| A message from another peer is bad: not JSON, no identity object or `peer_id`, a SPIFFE token that does not verify, an mDNS handshake step that fails its HMAC or is malformed, a candidate with no handshake port | refused, logged at error and counted on `niuu.discovery.refusals` by `adapter` and `reason` (`malformed`, `spiffe_invalid`, `hmac_mismatch`, `no_handshake_port`, `rejected`); it does not raise | a refusal is deterministic, so a retry fails the same way; and one peer's bad message must not stop the consumer for every other peer. Signed announcements are refused and counted by the mesh attestation (`niuu.mesh.attestation.refusals`) |
+| One mDNS handshake attempt fails (a timeout, PAIR socket contention) | a counted retry (`ravn.retries`); after three attempts an error | transient, and the retry is bounded and named |
+
+Two things stay quiet because they are the expected steady state, not failures: an
+announcement from another realm (peers of other flocks share the network), and a session's own
+announcement coming back to it. A `cluster_file` left at its default location may be absent: a
+host with no cluster file is normal; one the operator named must exist.
+
 ## Configuring the mesh
 
 Everything under Skuld's `mesh` settings (`skuld.config.MeshConfig`) is a value of the skuld

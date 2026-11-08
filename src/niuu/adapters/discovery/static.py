@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from niuu.adapters.discovery._failures import DiscoveryError, notify, report_failure
 from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer, unannounced_facts
 from niuu.ports.discovery import PeerCallback
 
@@ -52,6 +53,8 @@ if TYPE_CHECKING:
     from niuu.mesh.config import DiscoveryConfig
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_CLUSTER_FILE = "~/.ravn/cluster.yaml"
 
 #: The chooser facts a cluster file entry can carry; what a peer is doing it cannot.
 _CARRIED_FACTS = ("role", "description", "consumes_event_types", "emits_event_types")
@@ -83,7 +86,7 @@ class StaticDiscoveryAdapter:
         self,
         own_identity: MeshIdentity,
         *,
-        cluster_file: str = "~/.ravn/cluster.yaml",
+        cluster_file: str | None = None,
         peers: list[dict[str, Any]] | None = None,
         poll_interval_s: float = 30.0,
         heartbeat_interval_s: float = 30.0,  # noqa: ARG002 — ignored
@@ -93,7 +96,10 @@ class StaticDiscoveryAdapter:
         **kwargs: Any,  # noqa: ARG002 — ignored
     ) -> None:
         self._identity = own_identity
-        self._cluster_file = Path(cluster_file).expanduser()
+        # A file the operator named must exist; the default location may be absent, which is
+        # the normal state of a host that has no cluster file.
+        self._cluster_file_named = cluster_file is not None
+        self._cluster_file = Path(cluster_file or _DEFAULT_CLUSTER_FILE).expanduser()
         self._inline_peers = list(peers or [])
         self._poll_interval_s = poll_interval_s
 
@@ -180,27 +186,38 @@ class StaticDiscoveryAdapter:
                 content = self._cluster_file.read_text(encoding="utf-8")
                 data = yaml.safe_load(content) or {}
                 self._last_mtime = self._cluster_file.stat().st_mtime
-            except Exception as exc:
-                logger.warning("static_discovery: failed to read cluster file: %s", exc)
-                return
+            except (OSError, yaml.YAMLError) as exc:
+                raise DiscoveryError(
+                    f"static discovery could not read {self._cluster_file}: {exc}. "
+                    "Fix the file; the peer table is left as it was"
+                ) from exc
+        elif self._cluster_file_named:
+            raise DiscoveryError(
+                f"static discovery is configured with cluster_file {self._cluster_file} and it "
+                "does not exist: create it, or configure inline peers"
+            )
         else:
-            logger.debug("static_discovery: cluster file not found: %s", self._cluster_file)
+            logger.info("static_discovery: no cluster file at %s and no peers", self._cluster_file)
             return
 
-        if not isinstance(data, dict) or "peers" not in data:
-            logger.warning("static_discovery: invalid cluster file format (missing 'peers' key)")
-            return
+        if not isinstance(data, dict) or not isinstance(data.get("peers"), list):
+            raise DiscoveryError(
+                f"static discovery found no `peers` list in {self._cluster_file}: the file "
+                "must be a mapping with a `peers:` list; the peer table is left as it was"
+            )
 
         new_peers: dict[str, MeshPeer] = {}
         now = datetime.now(UTC)
 
-        for entry in data.get("peers", []):
-            if not isinstance(entry, dict):
-                continue
-
-            peer_id = entry.get("peer_id", "")
-            if not peer_id or peer_id == self._identity.peer_id:
-                continue  # Skip self and invalid entries
+        for index, entry in enumerate(data["peers"]):
+            peer_id = entry.get("peer_id", "") if isinstance(entry, dict) else ""
+            if not peer_id:
+                raise DiscoveryError(
+                    f"static discovery: entry {index} of {self._cluster_file} is not a mapping "
+                    "with a `peer_id`; fix it, the peer table is left as it was"
+                )
+            if peer_id == self._identity.peer_id:
+                continue  # this session's own entry
 
             peer = MeshPeer(
                 peer_id=peer_id,
@@ -232,40 +249,32 @@ class StaticDiscoveryAdapter:
         # Peers that left
         for peer_id in old_ids - new_ids:
             peer = self._peers[peer_id]
-            for cb in self._on_leave:
-                with suppress(Exception):
-                    cb(peer)
+            notify("static", "leave", self._on_leave, peer)
             logger.debug("static_discovery: peer left: %s", peer_id)
 
         # Peers that joined
         for peer_id in new_ids - old_ids:
             peer = new_peers[peer_id]
-            for cb in self._on_join:
-                with suppress(Exception):
-                    cb(peer)
+            notify("static", "join", self._on_join, peer)
             logger.debug("static_discovery: peer joined: %s", peer_id)
 
         self._peers = new_peers
 
     async def _poll_loop(self) -> None:
-        """Periodically check for file changes and reload."""
+        """Periodically check for file changes and reload; a failure is reported each time."""
         while True:
+            await asyncio.sleep(self._poll_interval_s)
             try:
-                await asyncio.sleep(self._poll_interval_s)
-
                 if not self._cluster_file.exists():
+                    if self._cluster_file_named and not self._inline_peers:
+                        raise DiscoveryError(
+                            f"the cluster file {self._cluster_file} no longer exists; the peer "
+                            "table is left as it was"
+                        )
                     continue
-
-                try:
-                    current_mtime = self._cluster_file.stat().st_mtime
-                except Exception:
-                    continue
-
+                current_mtime = self._cluster_file.stat().st_mtime
                 if current_mtime > self._last_mtime:
-                    logger.debug("static_discovery: cluster file changed, reloading")
+                    logger.info("static_discovery: cluster file changed, reloading")
                     await self._load_peers()
-
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:
-                logger.debug("static_discovery: poll_loop error: %s", exc)
+            except (DiscoveryError, OSError) as exc:
+                report_failure("static", "reload", str(exc))

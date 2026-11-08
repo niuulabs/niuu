@@ -29,6 +29,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from niuu.adapters.discovery._failures import DiscoveryError, notify, report_failure
 from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer, unannounced_facts
 from niuu.ports.discovery import PeerCallback
 
@@ -112,16 +113,22 @@ class K8sDiscoveryAdapter:
     async def start(self) -> None:
         """Load K8s in-cluster config and run initial scan."""
         if k8s_client is None:  # pragma: no cover
-            logger.warning("k8s_discovery: kubernetes not installed — discovery disabled")
-            return
+            raise DiscoveryError(
+                "kubernetes discovery needs the kubernetes package and it is not installed: "
+                "install it, or remove the k8s entry from the discovery adapters"
+            )
 
         try:
             k8s_config.load_incluster_config()
-        except Exception:
+        except Exception as in_cluster:  # not in a cluster: try a kubeconfig, then give up
             try:
                 k8s_config.load_kube_config()
             except Exception as exc:
-                logger.debug("k8s_discovery: could not load kubeconfig: %s", exc)
+                raise DiscoveryError(
+                    "kubernetes discovery found no cluster credentials: not in a cluster "
+                    f"({in_cluster}) and no usable kubeconfig ({exc}). Run it in a cluster or "
+                    "give it a kubeconfig, or remove the k8s entry from the discovery adapters"
+                ) from exc
 
         await self._do_scan()
         self._poll_task = asyncio.create_task(self._poll_loop(), name="k8s_discovery_poll")
@@ -198,22 +205,18 @@ class K8sDiscoveryAdapter:
                 last_heartbeat=now,
             )
             self._peers[peer_id] = peer
-            for cb in self._on_join:
-                with suppress(Exception):
-                    cb(peer)
+            notify("k8s", "join", self._on_join, peer)
 
         # Evict peers no longer visible
         to_remove = [pid for pid in self._peers if pid not in seen_ids]
         for pid in to_remove:
             peer = self._peers.pop(pid, None)
             if peer is not None:
-                for cb in self._on_leave:
-                    with suppress(Exception):
-                        cb(peer)
+                notify("k8s", "leave", self._on_leave, peer)
 
     def _list_candidates(self) -> list[MeshCandidate]:
         if k8s_client is None:
-            return []
+            raise DiscoveryError("kubernetes discovery cannot list pods: the package is missing")
         try:
             v1 = k8s_client.CoreV1Api()
             label_selector = f"{_LABEL_REALM}={self._identity.realm_id}," + self._label_selector
@@ -259,15 +262,16 @@ class K8sDiscoveryAdapter:
                 candidates.append(candidate)
             return candidates
         except Exception as exc:
-            logger.debug("k8s_discovery: list_candidates failed: %s", exc)
-            return []
+            # Never "no pods": the caller would read an empty list as every peer having left.
+            raise DiscoveryError(
+                f"kubernetes discovery could not list pods ({type(exc).__name__}: {exc}); "
+                "the peer table is left as it was"
+            ) from exc
 
     async def _poll_loop(self) -> None:
         while True:
+            await asyncio.sleep(self._heartbeat_interval_s)
             try:
-                await asyncio.sleep(self._heartbeat_interval_s)
                 await self._do_scan()
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:
-                logger.debug("k8s_discovery: poll_loop error: %s", exc)
+            except Exception as exc:  # the loop goes on; this scan's result is not applied
+                report_failure("k8s", "scan", f"{type(exc).__name__}: {exc}")
