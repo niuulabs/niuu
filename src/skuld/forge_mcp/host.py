@@ -711,7 +711,8 @@ class BrokerForgeMcpHost(ForgeMcpHost):
             "peers_not_announcing_produces": unknown,
         }
         if wait_s > 0:
-            answer.update(await self._wait_for_answers(question_id, wait_s))
+            asked = {outcome["peer"] for outcome in delivered}
+            answer.update(await self._wait_for_answers(question_id, wait_s, asked))
         return answer
 
     async def _ask_one(
@@ -750,21 +751,40 @@ class BrokerForgeMcpHost(ForgeMcpHost):
         self._count_question(peer.peer_id, OUTCOME_ASKED)
         return who
 
-    async def _wait_for_answers(self, question_id: str, wait_s: float) -> dict[str, Any]:
-        """Wait ``wait_s`` and return every answer to the question so far, taken from the inbox.
+    async def _wait_for_answers(
+        self, question_id: str, wait_s: float, asked: set[str]
+    ) -> dict[str, Any]:
+        """Wait up to ``wait_s`` for the answers to the question and return them, taken.
 
-        It does not stop at the first answer or at a count: answers can come from any number
-        of peers, and counting them toward "done" is what this avoids.
+        It returns as soon as every peer the question reached has answered (``asked`` is the
+        asker's own choice, not a guessed count), else at the deadline with the answers so
+        far; ``ended`` says which. Answers from peers that were not asked are returned too and
+        never end the wait. A sender is one id: the mesh-verified peer however it answered, or
+        the claimed sender id when the mesh verified nothing.
         """
         broker = self._broker
+        deadline = time.monotonic() + wait_s
+        ended = "deadline"
         async with broker.awaiting_question_answers(question_id) as wait:
-            await asyncio.sleep(wait_s)
+            while True:
+                wait.arrived.clear()
+                if asked <= broker.question_answerers(wait):
+                    ended = "all_asked_answered"
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(wait.arrived.wait(), timeout=remaining)
             taken = await broker.take_question_answers(wait)
         answers = []
         for item in taken:
             envelope = item.envelope
+            identity, kind = item.identity
             entry = {
                 "from": envelope.sender.label(),
+                "identity": identity,
+                "identity_kind": kind,
                 "message_id": envelope.message_id,
                 "content": envelope.content,
                 "answered_at": envelope.sent_at.isoformat(),
@@ -772,10 +792,13 @@ class BrokerForgeMcpHost(ForgeMcpHost):
             if item.already_delivered:
                 entry["note"] = "already handed to you as a message at an earlier turn boundary"
             answers.append(entry)
+        answered = {answer["identity"] for answer in answers}
         return {
             "waited_s": wait_s,
+            "ended": ended,
             "answers": answers,
-            "answered": len({answer["from"] for answer in answers}),
+            "answered": len(answered),
+            "not_yet_answered": sorted(asked - answered),
         }
 
     def _count_question(self, recipient: str, outcome: str) -> None:

@@ -1322,11 +1322,13 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
             "any number of recipients or from none, to your inbox at your turn boundaries, "
             "grouped by thread, and nothing waits. A recipient answers with `reply` (to you "
             "alone) or by publishing with `in_reply_to` (everyone following the thread sees it "
-            "too). Pass `wait_s` to also wait: the call returns after wait_s seconds with every "
-            "answer so far (taken by the call, not delivered to you again), at most "
-            "ask.wait_max_s. It does not stop at the first answer or at a count, because "
-            "answers can come from any number of peers. Retries with the same request_id ask "
-            "once. Listed only on a session whose mesh is enabled."
+            "too). Pass `wait_s` to also wait, at most ask.wait_max_s: the call returns every "
+            "answer so far (taken by the call, not delivered to you again) as soon as every "
+            "peer the question reached has answered (`ended`: all_asked_answered), else at the "
+            "deadline (`ended`: deadline). Answers from peers you did not ask are returned too "
+            "and never end the wait early; one answerer counts once however it answered. "
+            "Retries with the same request_id ask once. Listed only on a session whose mesh is "
+            "enabled."
         ),
         input_schema=_object(
             {

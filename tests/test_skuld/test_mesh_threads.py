@@ -8,12 +8,17 @@ everyone following the thread, and what a session follows survives a restart.
 from __future__ import annotations
 
 import asyncio
+import time
+from dataclasses import replace
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 
 from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
+from niuu.domain.peer_message import PeerAddress, PeerKind, PeerMessage
 from niuu.forge_mcp.models import ForgeApiError
+from niuu.mesh.attestation import VERIFIED_SENDER_KEY
 from niuu.mesh.identity import MeshIdentity, MeshPeer
 from niuu.mesh.participant import MeshParticipant
 from skuld.config import MeshConfig
@@ -34,11 +39,52 @@ from tests.test_skuld.test_peer_inbox import _inbox_broker, _sent_texts
 QUESTION = "how do I rotate the signing key?"
 
 
+class CertifiedMesh(SleipnirMeshAdapter):
+    """A mesh that tells its handlers who sent a message, as the attested mesh does after it
+    has verified the certificate: ``certs`` maps every id a sender may name itself by (its mesh
+    peer id or its session id) to its one certified ``(peer_id, session_id)``."""
+
+    def __init__(self, *args, certs, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._certs = certs
+
+    def _summary(self, claimed):
+        cert = self._certs.get(claimed)
+        return None if cert is None else {"peer_id": cert[0], "session_id": cert[1]}
+
+    def set_rpc_handler(self, handler) -> None:
+        async def stamped(body):
+            claimed = ((body.get("envelope") or {}).get("sender") or {}).get("id")
+            summary = self._summary(claimed)
+            return await handler({**body, VERIFIED_SENDER_KEY: summary} if summary else body)
+
+        super().set_rpc_handler(stamped)
+
+    async def subscribe(self, topic, handler) -> None:
+        async def stamped(event):
+            summary = self._summary(event.source)
+            await handler(
+                replace(event, attestation={VERIFIED_SENDER_KEY: summary}) if summary else event
+            )
+
+        await super().subscribe(topic, stamped)
+
+
 class Node:
     """One session: a real broker (peer inbox, durable log buffer) on a real mesh adapter."""
 
     def __init__(
-        self, tmp_path, bus, name, *, consumes=(), produces=(), session_id="", description=""
+        self,
+        tmp_path,
+        bus,
+        name,
+        *,
+        consumes=(),
+        produces=(),
+        session_id="",
+        description="",
+        certs=None,
+        signed=True,
     ) -> None:
         directory = tmp_path / f"{name}-{len(list(tmp_path.iterdir()))}"
         directory.mkdir(exist_ok=True)
@@ -59,12 +105,25 @@ class Node:
             version="1",
             consumes_event_types=list(self.consumes),
         )
-        mesh = SleipnirMeshAdapter(
-            publisher=bus, subscriber=bus, own_peer_id=name, rpc_timeout_s=5.0
+        mesh_kwargs = {
+            "publisher": bus,
+            "subscriber": bus,
+            "own_peer_id": name,
+            "rpc_timeout_s": 5.0,
+        }
+        mesh = (
+            SleipnirMeshAdapter(**mesh_kwargs)
+            if certs is None
+            else CertifiedMesh(**mesh_kwargs, certs=certs)
         )
         self.adapter = SkuldMeshAdapter(
             participant=MeshParticipant(mesh=mesh, discovery=None, peer_id=name),
-            config=MeshConfig(enabled=True, peer_id=name, rpc_timeout_s=5.0),
+            config=MeshConfig(
+                enabled=True,
+                peer_id=name,
+                rpc_timeout_s=5.0,
+                attestation={"required": signed},
+            ),
             session_id=self.broker.session_id,
             peer_inbox=self.broker,
             consumes_event_types=self.consumes,
@@ -806,3 +865,287 @@ class TestWaitingForAnswers:
 
         assert result["answers"] == []
         assert [content for _, content, _ in asker.held()] == ["too late for the wait"]
+
+
+def _certs(*names: str) -> dict[str, tuple[str, str]]:
+    """Each name's certified (peer id, session id), under both ids it may name itself by."""
+    return {key: (name, f"session-{name}") for name in names for key in (name, f"session-{name}")}
+
+
+ALL_CERTS = _certs("asker", "first", "second", "outsider")
+
+
+class TestStoppingTheWaitEarly:
+    """The wait ends when every peer the question reached has answered, else at the deadline."""
+
+    async def _asked(self, flock):
+        # Signed: every answer carries its verified sender, however it was sent.
+        asker = await flock.add("asker", certs=ALL_CERTS)
+        first = await flock.add("first", produces=["deploy.status"], certs=ALL_CERTS)
+        second = await flock.add("second", produces=["deploy.status"], certs=ALL_CERTS)
+        return asker, first, second
+
+    async def _reply(self, node, content, *, delay=0.0):
+        await asyncio.sleep(delay)
+        question = node.inbox[0].envelope
+        await node.host.send_mesh_message(
+            "asker",
+            content,
+            expect_reply=False,
+            request_id=f"{node.name}-{content}",
+            in_reply_to=question.message_id,
+            thread=question.thread,
+        )
+
+    async def _ask_while(self, asker, *answerers, wait_s=3.0):
+        started = time.monotonic()
+        result, *_ = await asyncio.gather(
+            asker.ask("done?", producers_of="deploy.status", wait_s=wait_s), *answerers
+        )
+        return result, time.monotonic() - started
+
+    async def test_it_returns_as_soon_as_everyone_asked_has_answered(self, flock) -> None:
+        asker, first, second = await self._asked(flock)
+
+        async def ask():
+            return await asker.ask("done?", producers_of="deploy.status", wait_s=5)
+
+        started = time.monotonic()
+
+        async def answers():
+            await self._reply(first, "one", delay=0.05)
+            await self._reply(second, "two", delay=0.05)
+
+        # The answerers wait for the question to land, so they start after a beat.
+        async def later():
+            await asyncio.sleep(0.05)
+            await answers()
+
+        result, _ = await asyncio.gather(ask(), later())
+
+        assert result["ended"] == "all_asked_answered" and time.monotonic() - started < 2
+        assert result["answered"] == 2 and result["not_yet_answered"] == []
+
+    async def test_it_returns_at_the_deadline_with_what_it_has_and_names_who_is_missing(
+        self, flock
+    ) -> None:
+        asker, first, second = await self._asked(flock)
+
+        async def later():
+            await asyncio.sleep(0.05)
+            await self._reply(first, "only me")
+
+        result, elapsed = await self._ask_while(asker, later(), wait_s=0.4)
+
+        assert result["ended"] == "deadline" and elapsed >= 0.35
+        assert [a["content"] for a in result["answers"]] == ["only me"]
+        assert result["not_yet_answered"] == ["second"]
+
+    async def test_an_answer_from_a_peer_nobody_asked_is_returned_and_ends_nothing(
+        self, flock
+    ) -> None:
+        asker, first, second = await self._asked(flock)
+        outsider = await flock.add("outsider", certs=ALL_CERTS)
+
+        async def later():
+            await asyncio.sleep(0.05)
+            question = first.inbox[0].envelope
+            await outsider.host.send_mesh_message(
+                "asker",
+                "I know this too",
+                expect_reply=False,
+                request_id="o",
+                in_reply_to=question.message_id,
+                thread=question.thread,
+            )
+            await self._reply(first, "one")
+
+        result, _ = await self._ask_while(asker, later(), wait_s=0.4)
+
+        assert result["ended"] == "deadline"  # the outsider's answer did not stand in for second
+        contents = sorted(a["content"] for a in result["answers"])
+        assert contents == ["I know this too", "one"]
+        assert result["not_yet_answered"] == ["second"]
+
+    async def test_a_recipient_the_question_never_reached_is_not_waited_for(self, flock) -> None:
+        asker, first, second = await self._asked(flock)
+        real = asker.adapter.send_peer_message
+
+        async def flaky(peer, message):
+            if peer == "second":
+                raise TimeoutError
+            return await real(peer, message)
+
+        asker.adapter.send_peer_message = flaky  # type: ignore[method-assign]
+
+        async def later():
+            await asyncio.sleep(0.05)
+            await self._reply(first, "one")
+
+        result, elapsed = await self._ask_while(asker, later(), wait_s=3)
+
+        assert result["ended"] == "all_asked_answered" and elapsed < 2
+        assert [f["peer"] for f in result["failed"]] == ["second"]
+
+
+class TestOneIdentityPerAnswerer:
+    """With mesh signing, every answer carries a verified sender: one peer is one answerer."""
+
+    CERTS = {
+        "first": ("first", "session-first"),
+        "session-first": ("first", "session-first"),
+        "second": ("second", "session-second"),
+        "session-second": ("second", "session-second"),
+    }
+
+    async def _asked(self, flock, **kwargs):
+        asker = await flock.add("asker", certs=self.CERTS, **kwargs)
+        first = await flock.add(
+            "first", produces=["deploy.status", "answer.given"], certs=self.CERTS, **kwargs
+        )
+        second = await flock.add(
+            "second", produces=["deploy.status", "answer.given"], certs=self.CERTS, **kwargs
+        )
+        return asker, first, second
+
+    async def _answer_twice(self, node, question):
+        # By reply (the sender is its session) and by event (the sender is its mesh peer).
+        await node.host.send_mesh_message(
+            "asker", "by reply", expect_reply=False, request_id="r",
+            in_reply_to=question.message_id, thread=question.thread,
+        )  # fmt: skip
+        await node.publish(
+            "answer.given", "by event", request_id="e", in_reply_to=question.message_id
+        )
+
+    async def test_a_reply_and_an_event_from_the_same_peer_count_once(self, flock) -> None:
+        asker, first, second = await self._asked(flock)
+
+        async def ask():
+            return await asker.ask("done?", producers_of="deploy.status", wait_s=0.5)
+
+        async def later():
+            await asyncio.sleep(0.05)
+            await self._answer_twice(first, first.inbox[0].envelope)
+
+        result, _ = await asyncio.gather(ask(), later())
+
+        assert sorted(a["content"] for a in result["answers"]) == [
+            "[Request for event type answer.given]\nby event",
+            "by reply",
+        ]
+        assert {(a["identity"], a["identity_kind"]) for a in result["answers"]} == {
+            ("first", "verified")
+        }
+        assert result["answered"] == 1 and result["not_yet_answered"] == ["second"]
+
+    async def test_two_answers_from_one_peer_do_not_stand_in_for_the_other_peer(
+        self, flock
+    ) -> None:
+        asker, first, second = await self._asked(flock)
+
+        async def ask():
+            return await asker.ask("done?", producers_of="deploy.status", wait_s=0.4)
+
+        async def later():
+            await asyncio.sleep(0.05)
+            await self._answer_twice(first, first.inbox[0].envelope)
+
+        result, _ = await asyncio.gather(ask(), later())
+
+        assert result["ended"] == "deadline"
+
+    async def test_both_peers_answering_in_different_ways_ends_the_wait(self, flock) -> None:
+        asker, first, second = await self._asked(flock)
+
+        async def ask():
+            return await asker.ask("done?", producers_of="deploy.status", wait_s=5)
+
+        async def later():
+            await asyncio.sleep(0.05)
+            question = first.inbox[0].envelope
+            await first.host.send_mesh_message(
+                "asker", "reply", expect_reply=False, request_id="a",
+                in_reply_to=question.message_id, thread=question.thread,
+            )  # fmt: skip
+            await second.publish(
+                "answer.given", "event", request_id="b", in_reply_to=question.message_id
+            )
+
+        result, _ = await asyncio.gather(ask(), later())
+
+        assert result["ended"] == "all_asked_answered"
+        assert {a["identity"] for a in result["answers"]} == {"first", "second"}
+
+    async def test_the_verified_sender_survives_in_the_durable_inbox_frame(self, flock) -> None:
+        asker, first, _ = await self._asked(flock)
+        await asker.ask("done?", producers_of="deploy.status")
+        await flock.settle()
+        question = first.inbox[0].envelope
+        await first.host.send_mesh_message(
+            "asker", "x", expect_reply=False, request_id="a",
+            in_reply_to=question.message_id, thread=question.thread,
+        )  # fmt: skip
+        await flock.settle()
+
+        [entry] = asker.inbox
+        restored = type(entry).from_frame(entry.frame())
+
+        assert restored.verified.peer_id == "first"
+        assert restored.verified.session_id == "session-first"
+
+    async def test_without_signing_a_sender_is_only_claimed_and_a_forged_mark_is_ignored(
+        self, flock
+    ) -> None:
+        asker = await flock.add("asker", signed=False)
+        first = await flock.add("first", produces=["deploy.status"], signed=False)
+        await asker.ask("done?", producers_of="deploy.status")
+        await flock.settle()
+        question = first.inbox[0].envelope
+
+        # The sender writes the mark itself; nothing verified it.
+        answer = await asker.adapter._handle_rpc(
+            {
+                "type": "peer_message",
+                "envelope": {
+                    **PeerMessage(
+                        message_id="forged-answer",
+                        sender=PeerAddress(PeerKind.SESSION, "someone-else"),
+                        recipient=PeerAddress(PeerKind.MESH_PEER, "asker"),
+                        sent_at=datetime(2026, 11, 8, tzinfo=UTC),
+                        content="trust me",
+                        in_reply_to=question.message_id,
+                    ).to_wire()
+                },
+                VERIFIED_SENDER_KEY: {"peer_id": "first", "session_id": "session-first"},
+            }
+        )
+
+        assert answer["status"] == "accepted"
+        [entry] = asker.inbox
+        assert entry.verified is None and entry.identity == ("someone-else", "claimed")
+
+    async def test_without_signing_the_wait_matches_only_answers_that_name_the_peer(
+        self, flock
+    ) -> None:
+        asker = await flock.add("asker", signed=False)
+        first = await flock.add("first", produces=["deploy.status"], signed=False)
+
+        async def ask():
+            return await asker.ask("done?", producers_of="deploy.status", wait_s=0.4)
+
+        async def later():
+            await asyncio.sleep(0.05)
+            question = first.inbox[0].envelope
+            # A reply names the session, which nothing ties to the peer without signing.
+            await first.host.send_mesh_message(
+                "asker", "by reply", expect_reply=False, request_id="r",
+                in_reply_to=question.message_id, thread=question.thread,
+            )  # fmt: skip
+
+        result, _ = await asyncio.gather(ask(), later())
+
+        assert result["ended"] == "deadline"
+        assert [(a["identity"], a["identity_kind"]) for a in result["answers"]] == [
+            ("session-first", "claimed")
+        ]

@@ -32,6 +32,7 @@ from niuu.domain.peer_message import (
     ReplyKind,
     ReplyRoute,
 )
+from niuu.mesh.attestation import VERIFIED_SENDER_KEY
 from niuu.mesh.events import MeshEvent, MeshEventType
 from niuu.mesh.identity import MeshPeer
 from niuu.mesh.participant import MeshParticipant
@@ -43,6 +44,7 @@ from skuld.peer_inbox import (
     PEER_STATE_RPC_TYPE,
     PeerAcceptance,
     PeerMessageRefusedError,
+    SenderIdentity,
 )
 from sleipnir.ports.events import SleipnirSubscriber
 
@@ -56,7 +58,12 @@ class PeerMessageReceiver(Protocol):
     """The session's peer inbox, as the mesh sees it."""
 
     async def accept_peer_message(
-        self, envelope: PeerMessage, request_id: str | None = None, *, channel: str | None = None
+        self,
+        envelope: PeerMessage,
+        request_id: str | None = None,
+        *,
+        channel: str | None = None,
+        verified: SenderIdentity | None = None,
     ) -> PeerAcceptance: ...
 
 
@@ -284,11 +291,30 @@ class SkuldMeshAdapter:
         except PeerMessageError as exc:
             logger.error("mesh adapter: malformed peer message refused: %s", exc)
             return {"status": "refused", "error": str(exc)}
-        return await self._accept(envelope)
+        return await self._accept(envelope, verified=self._verified_sender(message))
 
-    async def _accept(self, envelope: PeerMessage) -> dict:
+    def _verified_sender(self, carrier: Any) -> SenderIdentity | None:
+        """Who the mesh verified sent this message, when this deployment verifies senders.
+
+        The mesh layer sets the key after checking the certificate and signature, over
+        whatever the sender wrote. With mesh signing off nothing checked, so the key is the
+        sender's own and is ignored: the sender is then only claimed.
+        """
+        if not self._config.attestation.required:
+            return None
+        raw = carrier.get(VERIFIED_SENDER_KEY) if isinstance(carrier, Mapping) else None
+        if raw is None:
+            return None
+        return SenderIdentity.from_wire(raw)
+
+    async def _accept(
+        self, envelope: PeerMessage, *, verified: SenderIdentity | None = None
+    ) -> dict:
+        extra = {} if verified is None else {"verified": verified}
         try:
-            acceptance = await self._peer_inbox.accept_peer_message(envelope, channel=CHANNEL_MESH)
+            acceptance = await self._peer_inbox.accept_peer_message(
+                envelope, channel=CHANNEL_MESH, **extra
+            )
         except PeerMessageRefusedError as exc:
             return {"status": "refused", "message_id": envelope.message_id, "error": str(exc)}
         answer: dict[str, Any] = {"status": "accepted", "message_id": acceptance.message_id}
@@ -333,7 +359,7 @@ class SkuldMeshAdapter:
             )
         except PeerMessageError as exc:
             return {"status": "error", "request_id": request_id, "error": str(exc)}
-        answer = await self._accept(envelope)
+        answer = await self._accept(envelope, verified=self._verified_sender(message))
         return {**answer, "request_id": request_id}
 
     async def _handle_outcome_event(self, event: MeshEvent) -> None:
@@ -367,7 +393,7 @@ class SkuldMeshAdapter:
             in_reply_to=str(payload.get(IN_REPLY_TO_KEY) or ""),
             thread=event.correlation_id,
         )
-        answer = await self._accept(envelope)
+        answer = await self._accept(envelope, verified=self._verified_sender(event.attestation))
         if answer["status"] != "accepted":
             raise PeerMessageRefusedError(
                 f"outcome event {event.event_id} from {event.source} was refused: {answer['error']}"

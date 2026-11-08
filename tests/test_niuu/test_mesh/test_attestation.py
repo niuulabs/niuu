@@ -521,7 +521,10 @@ class TestRpc:
         b = await make_peer(bus, authority, "b")
         reply = await a.mesh.send("b", {"type": "peer_state"})
         assert reply == {"status": "accepted", "echo": "peer_state"}
-        assert b.requests == [{"type": "peer_state"}]
+        # The handler is told who was verified, over anything the sender wrote.
+        assert b.requests == [
+            {"type": "peer_state", "verified_sender": {"peer_id": "a", "session_id": "sess-a"}}
+        ]
         assert "attestation" not in reply
 
     async def test_a_session_envelope_and_mesh_reply_route_are_bound(self, bus, authority) -> None:

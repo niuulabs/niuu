@@ -136,17 +136,34 @@ puts the answer on the thread's topic and in the asker's inbox (see "Answers are
 number of recipients answer, or none. They reach the asker's inbox as they come, at its turn
 boundaries, grouped by thread. Nothing waits by default.
 
-**Waiting is optional.** With `wait_s`, `mesh_ask` also waits that long (at most
-`ask.wait_max_s`, the longest one MCP tool call may run; a larger value is refused and counted
-as a cap hit) and **returns every answer so far**, taken by the call so they are not handed to
-the harness again. It does not return at the first answer, and it does not stop at a count of
-answers. The reasons: the first answer hides the others that arrive moments later and makes a
-partial picture look settled; a count of answers is the "done" condition this design avoids,
-since answers can come from any number of peers, including ones that were not asked; and the
-asker chose how long it is willing to wait. The result carries `answers` and `answered` (the
-number of distinct senders) so the asker sees how many of those asked responded. An answer that
-arrives after the wait is delivered as a message at the next turn boundary. `ask` keeps its own,
-different meaning: one session, one answer, with the outcomes it reports.
+**Waiting is optional.** With `wait_s`, `mesh_ask` also waits (at most `ask.wait_max_s`, the
+longest one MCP tool call may run; a larger value is refused and counted as a cap hit) and
+returns every answer so far, taken by the call so they are not handed to the harness again.
+It ends one of two ways, named in `ended`:
+
+- `all_asked_answered`: every peer the question reached has answered. That set is the asker's
+  own choice (the producers it asked, or the peers it named), not a guessed count, so ending
+  on it is not a "done" rule. A recipient the question never reached (listed under `failed`) is
+  not waited for.
+- `deadline`: the time ran out. `not_yet_answered` names who had not answered.
+
+An answer from a peer that was not asked is returned too and never ends the wait early. It does
+not return at the first answer, because that would make a partial picture look settled.
+
+**One identity per answerer.** With mesh signing on (`mesh.attestation.required`, the default),
+the mesh verifies every sender and tells the inbox the certified peer id and session. An
+answer names its sender as a session (`reply`) or as a mesh peer (an event); the verified
+identity is what makes those one answerer, so a `reply` and an event from the same peer count
+once, in `answered`, in the early stop and in `not_yet_answered`. Each answer carries
+`identity` and `identity_kind` (`verified`). The identity is stored with the message in the
+durable inbox frame. With signing off nothing is verified: the sender is only claimed,
+`identity_kind` is `claimed`, a forged `verified_sender` mark is ignored, and a `reply`
+(which names a session, not the peer) cannot be matched to the peer it was asked of, so the
+early stop only sees answers that name the peer (events) and a `reply`-only wait runs to the
+deadline.
+
+An answer that arrives after the wait is delivered as a message at the next turn boundary.
+`ask` keeps its own, different meaning: one session, one answer, with the outcomes it reports.
 
 ## Following topics and threads
 
