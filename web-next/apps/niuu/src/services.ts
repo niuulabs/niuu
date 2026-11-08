@@ -1,12 +1,7 @@
 import { forgeHistoryEndpoint, type ISessionHistoryLocator } from '@niuulabs/ui';
 import { buildBifrostHttpAdapter, createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import type { IBifrostService } from '@niuulabs/plugin-bifrost';
-import {
-  createMockPersonaStore,
-  createMockTriggerStore,
-  buildRavnPersonaAdapter,
-  buildRavnTriggerAdapter,
-} from '@niuulabs/plugin-ravn';
+import { createMockPersonaStore, buildRavnPersonaAdapter } from '@niuulabs/plugin-ravn';
 import {
   createMockTingService,
   createMockDispatcherService,
@@ -527,7 +522,6 @@ export function resolveSettingsServiceBase(
     | 'ting'
     | 'volundr'
     | 'mimir'
-    | 'ravn'
     | 'observatory'
     | 'bifrost'
     | 'runtime',
@@ -555,8 +549,6 @@ export function resolveSettingsServiceBase(
       return resolveForgeSettingsBase(config);
     case 'mimir':
       return resolveDirectServiceBase(config, 'mimir');
-    case 'ravn':
-      return resolveDirectServiceBase(config, 'ravn');
     case 'observatory':
       return resolveDirectServiceBase(config, 'observatory');
     case 'bifrost':
@@ -566,57 +558,29 @@ export function resolveSettingsServiceBase(
   }
 }
 
-function resolveRavnServiceBase(
-  config: Pick<NiuuConfig, 'services'>,
-  serviceKey: 'ravn.personas' | 'ravn.triggers',
-): string | null {
-  const explicitBase =
-    serviceKey === 'ravn.personas'
-      ? resolveDirectServiceBase(config, serviceKey, 'personas')
-      : resolveDirectServiceBase(config, serviceKey);
-  if (!explicitBase) {
-    return serviceKey === 'ravn.personas'
-      ? resolveSharedApiBase(config)
-      : resolveDirectServiceBase(config, 'ravn');
-  }
-
-  switch (serviceKey) {
-    case 'ravn.personas':
-      return explicitBase.replace(/\/(?:ravn\/)?personas\/?$/, '');
-    case 'ravn.triggers':
-      return explicitBase.replace(/\/triggers\/?$/, '');
-    default:
-      return explicitBase;
-  }
+function resolveRavnPersonaBase(config: Pick<NiuuConfig, 'services'>): string | null {
+  const explicitBase = resolveDirectServiceBase(config, 'ravn.personas', 'personas');
+  if (!explicitBase) return resolveSharedApiBase(config);
+  return explicitBase.replace(/\/(?:ravn\/)?personas\/?$/, '');
 }
 
-function resolveRavnServiceStatus(
-  config: Pick<NiuuConfig, 'services'>,
-  serviceKey: 'ravn.personas' | 'ravn.triggers',
-): ServiceBackendStatus {
-  const explicit =
-    serviceKey === 'ravn.personas'
-      ? resolveDirectServiceStatus(config, 'http', serviceKey, 'personas')
-      : resolveDirectServiceStatus(config, 'http', serviceKey);
+function resolveRavnPersonaStatus(config: Pick<NiuuConfig, 'services'>): ServiceBackendStatus {
+  const explicit = resolveDirectServiceStatus(config, 'http', 'ravn.personas', 'personas');
   if (explicit.mode === 'live' && explicit.target) {
-    if (serviceKey === 'ravn.personas')
-      return { ...explicit, target: explicit.target.replace(/\/(?:ravn\/)?personas\/?$/, '') };
-    return { ...explicit, target: explicit.target.replace(/\/triggers\/?$/, '') };
+    return { ...explicit, target: explicit.target.replace(/\/(?:ravn\/)?personas\/?$/, '') };
   }
 
-  if (serviceKey === 'ravn.personas') {
-    const sharedBase = resolveSharedApiBase(config);
-    if (sharedBase) {
-      return {
-        mode: 'live',
-        transport: 'http',
-        target: sharedBase,
-        source: 'shared-api',
-      };
-    }
+  const sharedBase = resolveSharedApiBase(config);
+  if (sharedBase) {
+    return {
+      mode: 'live',
+      transport: 'http',
+      target: sharedBase,
+      source: 'shared-api',
+    };
   }
 
-  return resolveDirectServiceStatus(config, 'http', 'ravn');
+  return explicit;
 }
 
 export function buildSharedFeatureCatalogService(
@@ -709,8 +673,7 @@ export function buildServiceBackendStatus(
     'observatory.topology': resolveObservatoryServiceStatus(config, 'observatory.topology'),
     'observatory.events': resolveObservatoryServiceStatus(config, 'observatory.events'),
     'observatory.agents': resolveObservatoryServiceStatus(config, 'observatory.agents'),
-    'ravn.personas': resolveRavnServiceStatus(config, 'ravn.personas'),
-    'ravn.triggers': resolveRavnServiceStatus(config, 'ravn.triggers'),
+    'ravn.personas': resolveRavnPersonaStatus(config),
     [REALM_GOVERNANCE_SERVICE_KEY]: resolveRealmGovernanceStatus(config),
     'niuu.repos': resolveRepoCatalogStatus(config),
     forge: resolveDirectServiceStatus(config, 'http', 'forge'),
@@ -1381,15 +1344,11 @@ function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
 export function buildServices(config: NiuuConfig): ServicesMap {
   const mimirSvc = config.services['mimir'];
 
-  // ── Ravn: personas and triggers ──
-  const ravnPersonaBase = resolveRavnServiceBase(config, 'ravn.personas');
-  const ravnTriggerBase = resolveRavnServiceBase(config, 'ravn.triggers');
+  // ── Ravn: personas ──
+  const ravnPersonaBase = resolveRavnPersonaBase(config);
   const ravnPersonas = ravnPersonaBase
     ? buildRavnPersonaAdapter(createApiClient(ravnPersonaBase))
     : demoService(config, 'ravn.personas', createMockPersonaStore);
-  const ravnTriggers = ravnTriggerBase
-    ? buildRavnTriggerAdapter(createApiClient(ravnTriggerBase))
-    : demoService(config, 'ravn.triggers', createMockTriggerStore);
 
   // ── First-launch setup wizard ──
   const setupBase = resolveSetupServiceBase(config);
@@ -1586,7 +1545,6 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'ting.settings': tingSettingsService,
     'ting.audit': tingAuditLogService,
     'ravn.personas': ravnPersonas,
-    'ravn.triggers': ravnTriggers,
     setup,
     mimir,
     bifrost,

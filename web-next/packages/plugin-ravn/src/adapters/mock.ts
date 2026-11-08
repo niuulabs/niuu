@@ -7,14 +7,12 @@
 
 import type {
   IPersonaStore,
-  ITriggerStore,
   PersonaSummary,
   PersonaDetail,
   PersonaCreateRequest,
   PersonaForkRequest,
   PersonaFilter,
 } from '../ports';
-import type { CreatedTrigger, Trigger } from '../domain/trigger';
 
 // ---------------------------------------------------------------------------
 // Seed data — mirrors web/src/modules/ravn/api/mockData.ts
@@ -259,119 +257,6 @@ const SEED_PERSONAS: PersonaSummary[] = [
   },
 ];
 
-const SEED_TRIGGERS: Trigger[] = [
-  {
-    id: 'aa000001-0000-4000-8000-000000000001',
-    kind: 'cron',
-    personaName: 'eir',
-    spec: '0 * * * *',
-    repo: '',
-    enabled: true,
-    createdAt: '2026-01-01T00:00:00Z',
-    lastFiredAt: '2026-01-15T08:24:12Z',
-    fireCount: 336,
-  },
-  {
-    id: 'aa000001-0000-4000-8000-000000000002',
-    kind: 'event',
-    personaName: 'fjölnir',
-    spec: 'code.changed',
-    repo: '',
-    enabled: true,
-    createdAt: '2026-01-01T00:00:00Z',
-    lastFiredAt: '2026-01-15T08:25:50Z',
-    fireCount: 47,
-  },
-  {
-    id: 'aa000001-0000-4000-8000-000000000003',
-    kind: 'event',
-    personaName: 'höðr',
-    spec: 'review.completed',
-    repo: '',
-    enabled: true,
-    createdAt: '2026-01-01T00:00:00Z',
-    lastFiredAt: '2026-01-15T08:27:03Z',
-    fireCount: 31,
-  },
-  {
-    id: 'aa000001-0000-4000-8000-000000000004',
-    kind: 'cron',
-    personaName: 'sindri',
-    spec: '/hooks/dispatch',
-    repo: '',
-    enabled: false,
-    createdAt: '2026-01-10T12:00:00Z',
-    lastFiredAt: '2026-01-15T08:18:44Z',
-    fireCount: 3,
-  },
-  {
-    id: 'aa000001-0000-4000-8000-000000000005',
-    kind: 'event',
-    personaName: 'nótt',
-    spec: 'investigate-incident',
-    repo: '',
-    enabled: true,
-    createdAt: '2026-01-12T09:00:00Z',
-    lastFiredAt: '2026-01-15T08:23:31Z',
-    fireCount: 8,
-  },
-  {
-    id: 'aa000001-0000-4000-8000-000000000006',
-    kind: 'cron',
-    personaName: 'sindri',
-    spec: '/hooks/dispatch',
-    repo: '',
-    enabled: true,
-    createdAt: '2026-01-10T12:00:00Z',
-    lastFiredAt: '2026-01-15T08:26:48Z',
-    fireCount: 5,
-  },
-  {
-    id: 'aa000001-0000-4000-8000-000000000007',
-    kind: 'event',
-    personaName: 'muninn',
-    spec: 'mimir.index.requested',
-    repo: '',
-    enabled: true,
-    createdAt: '2026-01-04T12:00:00Z',
-    lastFiredAt: '2026-01-15T08:26:31Z',
-    fireCount: 28,
-  },
-  {
-    id: 'aa000001-0000-4000-8000-000000000008',
-    kind: 'event',
-    personaName: 'gefjon',
-    spec: 'security.audit.requested',
-    repo: '',
-    enabled: true,
-    createdAt: '2026-01-05T12:00:00Z',
-    lastFiredAt: '2026-01-15T08:24:58Z',
-    fireCount: 19,
-  },
-  {
-    id: 'aa000001-0000-4000-8000-000000000009',
-    kind: 'event',
-    personaName: 'víðar',
-    spec: 'drain-incident-queue',
-    repo: '',
-    enabled: true,
-    createdAt: '2026-01-06T12:00:00Z',
-    lastFiredAt: '2026-01-15T08:27:12Z',
-    fireCount: 11,
-  },
-  {
-    id: 'aa000001-0000-4000-8000-000000000010',
-    kind: 'event',
-    personaName: 'saga',
-    spec: 'recap.requested',
-    repo: '',
-    enabled: true,
-    createdAt: '2026-01-08T12:00:00Z',
-    lastFiredAt: '2026-01-15T08:25:12Z',
-    fireCount: 42,
-  },
-];
-
 function toDetail(summary: PersonaSummary, req?: PersonaCreateRequest): PersonaDetail {
   const isReviewer = summary.name === 'reviewer';
   return {
@@ -529,40 +414,6 @@ export function createMockPersonaStore(): IPersonaStore {
       const forked: PersonaSummary = { ...source, name: req.newName, isBuiltin: false };
       store.set(req.newName, forked);
       return toDetail(forked);
-    },
-  };
-}
-
-/** Create a mock ITriggerStore with seeded triggers. */
-export function createMockTriggerStore(): ITriggerStore {
-  const store = new Map<string, Trigger>(SEED_TRIGGERS.map((t) => [t.id, t]));
-  let nextSeq = SEED_TRIGGERS.length + 1;
-  function nextTriggerUuid(): string {
-    const n = nextSeq++;
-    return `aa000001-0000-4000-8000-${String(n).padStart(12, '0')}`;
-  }
-
-  return {
-    async listTriggers() {
-      return Array.from(store.values());
-    },
-
-    async createTrigger(t) {
-      const trigger: Trigger = {
-        ...t,
-        id: nextTriggerUuid(),
-        createdAt: new Date().toISOString(),
-      };
-      store.set(trigger.id, trigger);
-      // Mock/demo posture: execution is assumed enabled so the standalone
-      // UI demo (no real resident behind it) does not warn about a real
-      // deployment concern it cannot represent.
-      const created: CreatedTrigger = { ...trigger, executionEnabled: true };
-      return created;
-    },
-
-    async deleteTrigger(id: string) {
-      store.delete(id);
     },
   };
 }

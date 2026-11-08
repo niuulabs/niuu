@@ -6,7 +6,6 @@
  */
 
 import type { FieldType, IPersonaCatalog, PersonaRole, PersonaSummary } from '@niuulabs/domain';
-import type { CreatedTrigger, Trigger } from './domain/trigger';
 
 // ---------------------------------------------------------------------------
 // Persona API types — migrated from web/src/modules/ravn/api/types.ts
@@ -95,11 +94,4 @@ export interface IPersonaStore extends IPersonaCatalog {
   updatePersona(name: string, req: PersonaCreateRequest): Promise<PersonaDetail>;
   deletePersona(name: string): Promise<void>;
   forkPersona(name: string, req: PersonaForkRequest): Promise<PersonaDetail>;
-}
-
-/** CRUD store for Triggers. */
-export interface ITriggerStore {
-  listTriggers(): Promise<Trigger[]>;
-  createTrigger(t: Omit<Trigger, 'id' | 'createdAt'>): Promise<CreatedTrigger>;
-  deleteTrigger(id: string): Promise<void>;
 }

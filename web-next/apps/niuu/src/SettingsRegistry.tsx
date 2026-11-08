@@ -219,14 +219,6 @@ const REMOTE_PROVIDER_DEFS = [
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'bifrost'),
   },
   {
-    id: 'ravn',
-    pluginId: 'ravn',
-    title: 'Agents',
-    subtitle: 'runtime and agent settings',
-    scope: 'service' as const,
-    resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'ravn'),
-  },
-  {
     id: 'observatory',
     pluginId: 'observatory',
     title: 'Observatory',

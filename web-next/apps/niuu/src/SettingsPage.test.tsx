@@ -1478,11 +1478,9 @@ describe('SettingsPage', () => {
           theme: 'ice',
           plugins: {
             ting: { enabled: true, order: 1 },
-            ravn: { enabled: true, order: 2 },
           },
           services: {
             ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
-            ravn: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn' },
           },
         }}
       >

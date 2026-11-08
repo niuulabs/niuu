@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createMockPersonaStore, createMockTriggerStore } from './mock';
+import { createMockPersonaStore } from './mock';
 
 // ---------------------------------------------------------------------------
 // IPersonaStore mock
@@ -186,41 +186,5 @@ describe('createMockPersonaStore', () => {
   it('forkPersona throws for unknown source', async () => {
     const store = createMockPersonaStore();
     await expect(store.forkPersona('ghost', { newName: 'copy' })).rejects.toThrow();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ITriggerStore mock
-// ---------------------------------------------------------------------------
-
-describe('createMockTriggerStore', () => {
-  it('returns seeded triggers', async () => {
-    const store = createMockTriggerStore();
-    const triggers = await store.listTriggers();
-    expect(triggers.length).toBe(10);
-  });
-
-  it('createTrigger adds a trigger and returns it', async () => {
-    const store = createMockTriggerStore();
-    const trigger = await store.createTrigger({
-      kind: 'manual',
-      personaName: 'architect',
-      spec: 'run-audit',
-      enabled: true,
-    });
-    expect(trigger.id).toBeDefined();
-    expect(trigger.personaName).toBe('architect');
-    expect(trigger.createdAt).toBeDefined();
-    expect(trigger.executionEnabled).toBe(true);
-
-    const all = await store.listTriggers();
-    expect(all.length).toBe(11);
-  });
-
-  it('deleteTrigger removes a trigger', async () => {
-    const store = createMockTriggerStore();
-    await store.deleteTrigger('aa000001-0000-4000-8000-000000000001');
-    const all = await store.listTriggers();
-    expect(all.length).toBe(9);
   });
 });

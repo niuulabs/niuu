@@ -29,15 +29,14 @@ export const ravnPlugin = definePlugin({
 });
 
 // Mock adapters
-export { createMockPersonaStore, createMockTriggerStore } from './adapters/mock';
+export { createMockPersonaStore } from './adapters/mock';
 
 // HTTP adapters
-export { buildRavnPersonaAdapter, buildRavnTriggerAdapter } from './adapters/http';
+export { buildRavnPersonaAdapter } from './adapters/http';
 
 // Port interfaces + types
 export type {
   IPersonaStore,
-  ITriggerStore,
   PersonaSummary,
   PersonaDetail,
   PersonaCreateRequest,
@@ -48,12 +47,3 @@ export type {
   PersonaConsumes,
   PersonaFanIn,
 } from './ports';
-
-// Domain types
-export {
-  triggerKindSchema,
-  triggerSchema,
-  type TriggerKind,
-  type Trigger,
-  type CreatedTrigger,
-} from './domain/trigger';

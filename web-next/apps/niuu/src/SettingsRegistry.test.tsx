@@ -13,7 +13,6 @@ describe('buildMountedSettingsProviders', () => {
         integrations: { enabled: true, order: 2 },
         ting: { enabled: true, order: 3 },
         bifrost: { enabled: true, order: 4 },
-        ravn: { enabled: true, order: 5 },
       },
       services: {
         identity: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1' },
@@ -21,7 +20,6 @@ describe('buildMountedSettingsProviders', () => {
         integrations: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/integrations' },
         ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
         bifrost: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/bifrost' },
-        ravn: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn' },
       },
     });
 
@@ -31,7 +29,6 @@ describe('buildMountedSettingsProviders', () => {
       'integrations',
       'ting',
       'bifrost',
-      'ravn',
     ]);
     expect(providers[0]).toMatchObject({
       source: 'remote',
@@ -58,11 +55,6 @@ describe('buildMountedSettingsProviders', () => {
       id: 'bifrost',
       baseUrl: 'http://localhost:8080/api/v1/bifrost',
     });
-    expect(providers[5]).toMatchObject({
-      source: 'remote',
-      id: 'ravn',
-      baseUrl: 'http://localhost:8080/api/v1/ravn',
-    });
   });
 
   it('omits disabled plugin providers', () => {
@@ -71,7 +63,6 @@ describe('buildMountedSettingsProviders', () => {
       theme: 'ice',
       plugins: {
         ting: { enabled: false, order: 2 },
-        ravn: { enabled: false, order: 4 },
       },
       services: {},
     });
