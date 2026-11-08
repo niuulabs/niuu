@@ -1117,6 +1117,39 @@ describe('coordinators and their workers', () => {
     expect(screen.queryByTestId('session-leads-lone')).toBeNull();
   });
 
+  it('shows a workflow run as one thread: its first session names its role, not Coordinator', async () => {
+    localStorage.setItem('niuu.forge.details', '1');
+    wrap(
+      createSessionStoreWithSessions([
+        coordinator({
+          id: 'coder',
+          name: 'wf-probe-9-coder',
+          coordination: { projectId: 'lexi', role: 'coder', objective: 'Probe: say hello' },
+          runId: 'probe-9',
+        }),
+        worker({
+          id: 'reviewer',
+          name: 'wf-probe-9-reviewer',
+          coordination: {
+            projectId: 'lexi',
+            role: 'reviewer',
+            parent: { instanceId: 'thor', sessionId: 'coder' },
+          },
+          runId: 'probe-9',
+        }),
+      ]),
+    );
+    await screen.findByTestId('pod-entry-coder');
+
+    expect(screen.getByTestId('session-leads-coder')).toHaveTextContent(/^Coder · 1 session$/);
+    expect(screen.getByTestId('pod-entry-reviewer').closest('.forge-session-row')).toHaveAttribute(
+      'data-nested',
+      'true',
+    );
+    // Each row names the run it belongs to.
+    expect(within(screen.getByTestId('pod-entry-coder')).getByText('probe-9')).toBeInTheDocument();
+  });
+
   it('keeps a filtered-out coordinator as a dimmed path to the worker that matches', async () => {
     localStorage.setItem('niuu.forge.filter', 'attention');
     wrap(

@@ -473,6 +473,68 @@ class TestGetSession:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_get_session_reads_its_project_and_parent(self, adapter: VolundrHTTPAdapter):
+        respx.get(f"{SESSIONS_URL}/ses-2").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "ses-2",
+                    "name": "wf-run-reviewer",
+                    "status": "running",
+                    "coordination": {
+                        "project_id": "p-1",
+                        "role": "reviewer",
+                        "parent": {"instance_id": "forge-a", "session_id": "ses-1"},
+                    },
+                },
+            )
+        )
+
+        session = await adapter.get_session("ses-2")
+
+        assert session is not None
+        assert (session.project_id, session.parent_session_id) == ("p-1", "ses-1")
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_listed_sessions_carry_their_project_and_parent(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        respx.get(SESSIONS_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "ses-1",
+                        "name": "a",
+                        "status": "running",
+                        "coordination": {"project_id": "p-1", "role": "coder", "parent": None},
+                    },
+                    {
+                        "id": "ses-2",
+                        "name": "b",
+                        "status": "running",
+                        "coordination": {
+                            "project_id": "p-1",
+                            "role": "reviewer",
+                            "parent": {"instance_id": "f", "session_id": "ses-1"},
+                        },
+                    },
+                    {"id": "ses-3", "name": "c", "status": "running"},
+                ],
+            )
+        )
+
+        sessions = await adapter.list_sessions()
+
+        assert [(s.project_id, s.parent_session_id) for s in sessions] == [
+            ("p-1", ""),
+            ("p-1", "ses-1"),
+            ("", ""),
+        ]
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_not_found(self, adapter: VolundrHTTPAdapter):
         respx.get(f"{SESSIONS_URL}/nonexistent").mock(return_value=httpx.Response(404))
 

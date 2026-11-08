@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -19,7 +20,7 @@ from ting.adapters.forge_step_sessions import (
 )
 from ting.domain.models import Saga, SagaStatus, WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.run_thread import FORGE_OBJECTIVE_MAX, RunProjectError, run_objective
-from ting.ports.volundr import SessionMembership
+from ting.ports.volundr import ForgeProjectRef, SessionMembership
 from ting.ports.workflow_steps import (
     DeliveredEvent,
     PersonaRef,
@@ -671,15 +672,25 @@ def _with(campaign: WorkflowCampaign, **metadata) -> WorkflowCampaign:
     )
 
 
+PROJECT_ID = "11111111-1111-1111-1111-111111111111"
+
+
+def _in_project(forge: FakeForge | None = None) -> FakeForge:
+    forge = forge or FakeForge()
+    forge.projects[PROJECT_ID] = ForgeProjectRef(id=PROJECT_ID, name="Probe", instance_id="forge-a")
+    return forge
+
+
 async def test_a_run_launched_into_a_project_puts_each_member_in_it() -> None:
-    campaign = _with(_campaign(), forge_project_id="11111111-1111-1111-1111-111111111111")
-    sessions, forge = _sessions(campaign)
+    campaign = _with(_campaign(), forge_project_id=PROJECT_ID)
+    sessions, forge = _sessions(campaign, _in_project())
 
     await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
 
     [request] = forge.create_requests
+    # The run's first session is the root of its thread: it nests under nothing.
     assert request.membership == SessionMembership(
-        project_id="11111111-1111-1111-1111-111111111111",
+        project_id=PROJECT_ID,
         role="coder",
         objective="Build: Add the export endpoint",
         labels=("workflow-run:add-endpoint-abc123",),
@@ -734,3 +745,91 @@ def test_an_objective_past_forges_limit_is_cut_and_counted(monkeypatch) -> None:
     assert objective.endswith("…")
     [hit] = hits
     assert hit["kept"] == FORGE_OBJECTIVE_MAX
+
+
+def _two_members() -> WorkflowCampaign:
+    reviewer = {**PERSONA_DOCUMENT, "id": "reviewer"}
+    campaign = _with(_campaign(), forge_project_id=PROJECT_ID)
+    snapshot = campaign.workflow_snapshot
+    nodes = [
+        *snapshot["graph"]["nodes"],
+        {
+            "id": "review",
+            "kind": "stage",
+            "stageMembers": [{"personaId": "reviewer", "model": "gpt-5.6-terra"}],
+        },
+    ]
+    return replace(
+        campaign,
+        workflow_snapshot={
+            **snapshot,
+            "graph": {"nodes": nodes},
+            "persona_definitions": {**snapshot["persona_definitions"], "reviewer": reviewer},
+        },
+    )
+
+
+REVIEWER_REF = PersonaRef(
+    alias="reviewer", id="reviewer", revision="r1", digest="sha256:" + "0" * 64
+)
+
+
+async def test_a_runs_later_sessions_nest_under_its_first_one() -> None:
+    campaign = _two_members()
+    sessions, forge = _sessions(campaign, _in_project())
+
+    coder = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    await sessions.ensure_session(campaign.id, "reviewer", REVIEWER_REF)
+
+    first, second = forge.create_requests
+    assert first.membership is not None and first.membership.parent_session_id == ""
+    assert second.membership is not None
+    assert (second.membership.parent_instance_id, second.membership.parent_session_id) == (
+        "forge-a",
+        coder,
+    )
+    assert second.membership.role == "reviewer"
+
+
+async def test_members_that_start_together_still_make_one_thread() -> None:
+    campaign = _two_members()
+    sessions, forge = _sessions(campaign, _in_project())
+    listed = forge.list_sessions
+
+    async def list_slowly(*args, **kwargs):
+        # Forge answers over the network: the list is taken, then the answer travels while
+        # the other member's create runs.
+        answer = await listed(*args, **kwargs)
+        await asyncio.sleep(0)
+        return answer
+
+    forge.list_sessions = list_slowly  # type: ignore[method-assign]
+
+    await asyncio.gather(
+        sessions.ensure_session(campaign.id, "coder", PERSONA_REF),
+        sessions.ensure_session(campaign.id, "reviewer", REVIEWER_REF),
+    )
+
+    roots = [r for r in forge.create_requests if not r.membership.parent_session_id]
+    assert len(roots) == 1
+
+
+async def test_a_replaced_first_session_keeps_the_thread_under_the_original() -> None:
+    campaign = _two_members()
+    sessions, forge = _sessions(campaign, _in_project())
+    coder = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    forge.sessions[coder] = replace(forge.sessions[coder], status="failed")
+
+    await sessions.replace_session(campaign.id, "coder", PERSONA_REF, coder)
+
+    replacement = forge.create_requests[-1]
+    assert replacement.membership.parent_session_id == coder
+
+
+async def test_a_project_its_forge_lacks_stops_the_session_create() -> None:
+    campaign = _with(_campaign(), forge_project_id=PROJECT_ID)
+    sessions, forge = _sessions(campaign)
+
+    with pytest.raises(StepSessionError, match="does not have"):
+        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    assert forge.create_requests == []

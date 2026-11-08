@@ -137,6 +137,28 @@ async def test_local_parent_validation_and_remote_link(rig):
     assert remote.coordination.parent.instance_id == "spark"
 
 
+@pytest.mark.parametrize(
+    ("role", "relation"),
+    [("worker", "Coordinator session"), ("reviewer", "Parent session")],
+)
+async def test_only_a_worker_is_told_its_parent_coordinates_it(rig, role, relation):
+    service, forge, project, _, pods = rig
+    service.workspace.context.return_value = ("", "revision")
+    parent = await forge.create_and_start_session(launch(project, role="coder"))
+    await forge.create_and_start_session(
+        launch(
+            project,
+            role=role,
+            parent=SessionReference(instance_id="thor", session_id=parent.id),
+        )
+    )
+    await asyncio.gather(*service.sessions._provisioning_tasks.values())
+    prompt = pods.start_calls[-1][1].values["session"]["systemPrompt"]
+    assert f"{relation}: instance_id=thor, session_id={parent.id}" in prompt
+    if role != "worker":
+        assert "Coordinator session" not in prompt
+
+
 async def test_stale_context_revision_is_rejected_and_dispatch_id_is_optional(rig):
     _, forge, project, repo, _ = rig
     with pytest.raises(ProjectConflictError, match="context changed"):

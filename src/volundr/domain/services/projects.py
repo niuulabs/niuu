@@ -342,8 +342,11 @@ class ProjectService:
         coordination = coordination.model_copy(update={"context_revision": revision})
         lines = [f"Project: {project.name} ({project.id})", f"Project role: {coordination.role}"]
         if coordination.parent is not None:
+            # A worker's parent coordinates it; any other role (a workflow run's member
+            # under the run's first session) is only nested there.
+            relation = "Coordinator session" if coordination.role == "worker" else "Parent session"
             lines.append(
-                "Coordinator session: "
+                f"{relation}: "
                 f"instance_id={coordination.parent.instance_id}, "
                 f"session_id={coordination.parent.session_id}"
             )

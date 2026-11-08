@@ -90,7 +90,7 @@ import type {
   VolundrSessionTraceSummary,
 } from '../models/volundr.model';
 import { useSessionDetail, useSessionList } from './hooks/useSessionStore';
-import { coordinationOf } from '../domain/projectTree';
+import { coordinationOf, isCoordinationRole, leaderTag } from '../domain/projectTree';
 import { buildSessionLinks } from './sessions/sessionLinks';
 import { CoordinatorTag, WorkerOf } from './detail/Coordination';
 import { DecisionDock } from './detail/DecisionDock';
@@ -4268,7 +4268,12 @@ function LiveSessionDetailPageInner({
                             id: 'host',
                             node: <span data-testid="session-host">{forgeBadgeLabel}</span>,
                           },
-                          isCoordinator && { id: 'coordinator', node: <CoordinatorTag /> },
+                          isCoordinator && {
+                            id: 'coordinator',
+                            node: (
+                              <CoordinatorTag label={leaderTag(liveSession?.coordination?.role)} />
+                            ),
+                          },
                           sessionTrackerIssue && {
                             id: 'ticket',
                             node: <TicketLink issue={sessionTrackerIssue} />,
@@ -4322,7 +4327,11 @@ function LiveSessionDetailPageInner({
                         ]}
                       />
                       {hasCoordinator ? (
-                        <WorkerOf coordinator={coordination.coordinator} onOpen={openSession} />
+                        <WorkerOf
+                          coordinator={coordination.coordinator}
+                          onOpen={openSession}
+                          coordinated={isCoordinationRole(liveSession?.coordination?.role)}
+                        />
                       ) : null}
                     </div>
                   </details>

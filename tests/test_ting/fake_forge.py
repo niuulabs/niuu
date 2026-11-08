@@ -67,11 +67,14 @@ class FakeForge(VolundrPort):
         if any(session.name == request.name for session in self.sessions.values()):
             raise RuntimeError(f"a session named {request.name!r} already exists")
         self.create_requests.append(request)
+        membership = request.membership
         session = VolundrSession(
             id=f"ses-{len(self.sessions) + 1}",
             name=request.name,
             status="creating",
             tracker_issue_id=request.tracker_issue_id,
+            project_id=membership.project_id if membership else "",
+            parent_session_id=membership.parent_session_id if membership else "",
         )
         self.sessions[session.id] = session
         return session

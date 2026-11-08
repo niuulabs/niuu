@@ -137,6 +137,9 @@ class ForgeStepSessions(StepSessionPort):
         self._default_model = default_model
         self._prefix = name_prefix
         self._locks: dict[tuple[UUID, str], asyncio.Lock] = {}
+        #: One create at a time per run, so the run's first session is the root every
+        #: later one nests under, even when members start in parallel.
+        self._run_locks: dict[UUID, asyncio.Lock] = {}
 
     async def ensure_session(self, run_id: UUID, member: str, persona_ref: PersonaRef) -> str:
         campaign, forge = await self._run(run_id)
@@ -276,7 +279,29 @@ class ForgeStepSessions(StepSessionPort):
             campaign.slug, member, campaign.id, prefix=self._prefix, epoch=epoch
         )
         document = self._persona_document(campaign, member, persona_ref)
-        created = await forge.create_step_session(
+        async with self._run_locks.setdefault(campaign.id, asyncio.Lock()):
+            created = await self._create_in_run(
+                forge, campaign, member, name=name, document=document
+            )
+        logger.info(
+            "Created step session %s (%s) for member %s of run %s",
+            created.id,
+            name,
+            member,
+            campaign.slug,
+        )
+        return created.id
+
+    async def _create_in_run(
+        self,
+        forge: VolundrPort,
+        campaign: WorkflowCampaign,
+        member: str,
+        *,
+        name: str,
+        document: dict[str, Any],
+    ) -> VolundrSession:
+        return await forge.create_step_session(
             StepSessionRequest(
                 name=name,
                 model=self._model_of(campaign, member),
@@ -291,31 +316,54 @@ class ForgeStepSessions(StepSessionPort):
                 membership=await self._membership(forge, campaign, member),
             )
         )
-        logger.info(
-            "Created step session %s (%s) for member %s of run %s",
-            created.id,
-            name,
-            member,
-            campaign.slug,
-        )
-        return created.id
 
     async def _membership(
         self, forge: VolundrPort, campaign: WorkflowCampaign, member: str
     ) -> SessionMembership | None:
-        """The run's project, with the member as its role and the run as its objective."""
+        """The run's project, with the member as its role and the run as its objective.
+
+        The run's first session is the root of its thread; every later session of the run
+        nests under it, so Forge shows the run as one thread in its project.
+        """
         project = await run_project(campaign, self._sagas)
         if project is None:
             return None
         if project.name is not None:
             # A ticket's project is created on Forge under the id Work uses for it.
-            await forge.ensure_project(project.id, project.name)
+            ref = await forge.ensure_project(project.id, project.name)
+        else:
+            ref = await forge.get_project(project.id)
+        if ref is None:
+            raise StepSessionError(
+                f"run {campaign.slug} belongs to project {project.id}, which Forge "
+                f"{forge.name} does not have; create it there or launch the run elsewhere"
+            )
+        root = await self._root(forge, campaign, project.id)
         return SessionMembership(
             project_id=project.id,
             role=member,
             objective=run_objective(campaign),
             labels=(run_label(campaign),),
+            parent_instance_id=ref.instance_id if root else "",
+            parent_session_id=root.id if root else "",
         )
+
+    @staticmethod
+    async def _root(
+        forge: VolundrPort, campaign: WorkflowCampaign, project_id: str
+    ) -> VolundrSession | None:
+        """The run's first session in its project: the one nested under none."""
+        tag = step_session_tag(campaign.slug)
+        roots = [
+            session
+            for session in await forge.list_sessions()
+            if session.tracker_issue_id == tag
+            and session.project_id == project_id
+            and not session.parent_session_id
+        ]
+        # One create at a time per run leaves one root; a run whose sessions predate that
+        # nests under the first by name, which is stable across Ting restarts.
+        return min(roots, key=lambda session: session.name) if roots else None
 
     async def _stop_replaced(
         self, forge: VolundrPort, session: VolundrSession, campaign: WorkflowCampaign

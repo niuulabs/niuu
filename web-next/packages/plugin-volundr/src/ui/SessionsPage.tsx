@@ -58,6 +58,7 @@ import {
   buildSessionTree,
   groupByProject,
   isCoordinator,
+  leadLabel,
   nestSessions,
   type SessionTreeNode,
 } from '../domain/projectTree';
@@ -492,9 +493,7 @@ function PodEntry({
                   className="forge-session-row__leads"
                   data-testid={`session-leads-${session.id}`}
                 >
-                  {coordinatorWorkers === 0
-                    ? 'Coordinator'
-                    : `Coordinator · ${coordinatorWorkers} ${coordinatorWorkers === 1 ? 'worker' : 'workers'}`}
+                  {leadLabel(session, coordinatorWorkers)}
                 </span>
               )}
               {unreadNote ? (

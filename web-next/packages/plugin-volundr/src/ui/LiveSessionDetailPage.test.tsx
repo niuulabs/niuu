@@ -3733,6 +3733,55 @@ describe('LiveSessionDetailPage', () => {
       expect(within(panel).getByText('Refuse agent approval on human gates')).toBeInTheDocument();
     });
 
+    it("names a workflow run's sessions by their roles, not as coordinator and worker", async () => {
+      localStorage.setItem('niuu.forge.sidePanel', 'open');
+      mockChatState();
+      const coder = listed(leadId, 'wf-probe-9-coder', 'running', {
+        projectId: 'lexi',
+        role: 'coder',
+      });
+      const reviewer = listed(workerId, 'wf-probe-9-reviewer', 'running', {
+        projectId: 'lexi',
+        role: 'reviewer',
+        parent: { instanceId: 'local', sessionId: leadId },
+      });
+      const runStore = { listSessions: async () => [coder, reviewer], listSources: undefined };
+      wrap(leadId, {
+        session: { ...COORDINATOR_SESSION, coordination: { projectId: 'lexi', role: 'coder' } },
+        sessionStore: runStore,
+      });
+      expect(await screen.findByTestId('session-coordinator-tag')).toHaveTextContent(/^Coder$/);
+    });
+
+    it("says a run's later session is nested under the first, not its worker", async () => {
+      mockChatState();
+      const coder = listed(leadId, 'wf-probe-9-coder', 'running', {
+        projectId: 'lexi',
+        role: 'coder',
+      });
+      const reviewer = listed(workerId, 'wf-probe-9-reviewer', 'running', {
+        projectId: 'lexi',
+        role: 'reviewer',
+        parent: { instanceId: 'local', sessionId: leadId },
+      });
+      wrap(workerId, {
+        session: {
+          ...WORKER_SESSION,
+          coordination: {
+            projectId: 'lexi',
+            role: 'reviewer',
+            parent: { instanceId: 'local', sessionId: leadId },
+          },
+        },
+        sessionStore: { listSessions: async () => [coder, reviewer], listSources: undefined },
+      });
+      const nested = await screen.findByTestId('worker-of');
+      await waitFor(() => expect(nested).toHaveTextContent('Nested under wf-probe-9-coder'));
+      expect(
+        within(nested).getByRole('button', { name: /Open parent session/ }),
+      ).toBeInTheDocument();
+    });
+
     it('says only Worker when the list does not know the coordinator', async () => {
       mockChatState();
       wrap(workerId, {

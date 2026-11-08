@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -71,6 +71,16 @@ def _local_mount_path(value: str) -> str | None:
     if not _looks_like_local_path(value):
         return None
     return str(Path(value).expanduser().resolve())
+
+
+def _coordination_fields(data: Mapping[str, Any]) -> dict[str, str]:
+    """A Forge session's project and the session it is nested under, as Ting reads them."""
+    coordination = data.get("coordination") or {}
+    parent = coordination.get("parent") or {}
+    return {
+        "project_id": str(coordination.get("project_id") or ""),
+        "parent_session_id": str(parent.get("session_id") or ""),
+    }
 
 
 def _coordination_payload(membership: SessionMembership) -> dict[str, Any]:
@@ -379,6 +389,7 @@ class VolundrHTTPAdapter(VolundrPort):
             workload_type=data.get("workload_type", "default"),
             activity_state=data.get("activity_state"),
             activity_metadata=data.get("activity_metadata") or {},
+            **_coordination_fields(data),
         )
 
     async def spawn_session(
@@ -654,6 +665,7 @@ class VolundrHTTPAdapter(VolundrPort):
                 last_active=_parse_timestamp(data.get("last_active")),
                 activity_state_since=_parse_timestamp(data.get("activity_state_since")),
                 updated_at=_parse_timestamp(data.get("updated_at")),
+                **_coordination_fields(data),
             )
 
     async def list_sessions(
@@ -684,6 +696,7 @@ class VolundrHTTPAdapter(VolundrPort):
                     workload_type=s.get("workload_type", "default"),
                     activity_state=s.get("activity_state"),
                     activity_metadata=s.get("activity_metadata") or {},
+                    **_coordination_fields(s),
                 )
                 for s in resp.json()
             ]

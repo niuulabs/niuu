@@ -152,6 +152,9 @@ class VolundrSession:
     # Advanced by recorded work (usage reports, session changes), never by an
     # activity heartbeat, unlike ``last_active``.
     updated_at: datetime | None = None
+    #: The Forge project the session is in, and the session it is nested under there.
+    project_id: str = ""
+    parent_session_id: str = ""
 
 
 @dataclass(frozen=True)
