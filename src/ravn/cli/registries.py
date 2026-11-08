@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import typer
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+from personas.adapters.loader import FilesystemPersonaAdapter
 from ravn.adapters.profiles.loader import ProfileLoader
 
 personas_app = typer.Typer(

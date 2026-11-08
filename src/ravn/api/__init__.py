@@ -59,7 +59,7 @@ from ravn.ports.trigger_store import TriggerStorePort
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from ravn.ports.persona import PersonaRegistryPort
+    from personas.ports.persona import PersonaRegistryPort
 
 
 logger = logging.getLogger(__name__)
@@ -865,7 +865,7 @@ def create_app(
         return _budget_to_payload(totals)
 
     if persona_loader is not None:
-        from ravn.api.personas import create_personas_router
+        from personas.api.personas import create_personas_router
 
         app.include_router(create_personas_router(persona_loader))
 

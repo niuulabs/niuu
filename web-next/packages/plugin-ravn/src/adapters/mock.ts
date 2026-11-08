@@ -2,7 +2,7 @@
  * Mock adapters for all Ravn ports.
  *
  * Seeded from the built-in persona definitions that mirror
- * the backend YAML files in src/ravn/personas/.
+ * the backend YAML files in src/personas/builtin/.
  */
 
 import type {

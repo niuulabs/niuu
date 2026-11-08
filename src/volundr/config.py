@@ -62,7 +62,7 @@ from niuu.domain.presented_files import (
 )
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.forge_mcp.models import ForgeMcpGrant
-from ravn.config import PersonaSourceConfig
+from personas.config import PersonaSourceConfig
 from skuld.tool_result_preview import PREVIEW_EDGE_LIMIT, PREVIEW_MAX_EDGE, PREVIEW_MIN_EDGE
 from volundr.compute.config import ComputeConfig
 from volundr.domain.mcp_hosts import normalize_internal_host_pattern

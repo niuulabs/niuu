@@ -27,7 +27,7 @@ from grpc import server as grpc_server
 from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from niuu.domain.models import Principal
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+from personas.adapters.loader import FilesystemPersonaAdapter
 from ting.api import a2a as a2a_api
 from ting.api.a2a import (
     _launch_digest,

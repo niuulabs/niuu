@@ -7,9 +7,10 @@ FilesystemPersonaAdapter.
 
 from __future__ import annotations
 
-from ravn.adapters.personas.loader import PersonaConfig
-from ravn.config import PersonaSourceConfig, Settings
-from ravn.ports.persona import PersonaRegistryPort
+from personas.config import PersonaSourceConfig
+from personas.domain.persona import PersonaConfig
+from personas.ports.persona import PersonaRegistryPort
+from ravn.config import Settings
 
 # ---------------------------------------------------------------------------
 # Recording stub adapter
@@ -56,7 +57,7 @@ class RecordingPersonaAdapter(PersonaRegistryPort):
 class TestPersonaSourceConfig:
     def test_default_adapter_is_filesystem(self) -> None:
         cfg = PersonaSourceConfig()
-        assert cfg.adapter == "ravn.adapters.personas.loader.FilesystemPersonaAdapter"
+        assert cfg.adapter == "personas.adapters.loader.FilesystemPersonaAdapter"
 
     def test_custom_adapter_class_path(self) -> None:
         cfg = PersonaSourceConfig(
@@ -136,9 +137,9 @@ class TestResolvePersonaWiring:
         """Without settings, _resolve_persona uses default FilesystemPersonaAdapter."""
         from ravn.cli.commands import _resolve_persona
 
-        result = _resolve_persona("coding-agent", None)
+        result = _resolve_persona("coder", None)
         assert result is not None
-        assert result.name == "coding-agent"
+        assert result.name == "coder"
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +152,7 @@ class TestSettingsPersonaSource:
         settings = Settings()
         assert hasattr(settings, "persona_source")
         assert settings.persona_source.adapter == (
-            "ravn.adapters.personas.loader.FilesystemPersonaAdapter"
+            "personas.adapters.loader.FilesystemPersonaAdapter"
         )
 
     def test_settings_custom_persona_source(self) -> None:

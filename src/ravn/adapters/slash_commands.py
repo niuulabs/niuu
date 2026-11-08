@@ -426,7 +426,7 @@ class PersonaCommand(SlashCommandPort):
         raise AssertionError("Unreachable handle fallthrough")
 
     def _list(self) -> str:
-        from ravn.adapters.personas.loader import FilesystemPersonaAdapter  # noqa: PLC0415
+        from personas.adapters.loader import FilesystemPersonaAdapter  # noqa: PLC0415
 
         loader = FilesystemPersonaAdapter()
         names = loader.list_names()
@@ -447,7 +447,7 @@ class PersonaCommand(SlashCommandPort):
         if not name:
             return "Usage: /persona show <name>"
 
-        from ravn.adapters.personas.loader import FilesystemPersonaAdapter  # noqa: PLC0415
+        from personas.adapters.loader import FilesystemPersonaAdapter  # noqa: PLC0415
 
         loader = FilesystemPersonaAdapter()
         persona = loader.load(name)
@@ -512,7 +512,7 @@ class PersonaCommand(SlashCommandPort):
         if not name:
             return "Usage: /persona delete <name>"
 
-        from ravn.adapters.personas.loader import FilesystemPersonaAdapter  # noqa: PLC0415
+        from personas.adapters.loader import FilesystemPersonaAdapter  # noqa: PLC0415
 
         loader = FilesystemPersonaAdapter()
 

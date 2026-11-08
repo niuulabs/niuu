@@ -232,7 +232,7 @@ force-exclude = true
 select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.coverage.run]
-source = ["src/audit", "src/volundr", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/ting", "src/tracker", "src/niuu", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/yggdrasil"]
+source = ["src/audit", "src/volundr", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/ting", "src/tracker", "src/niuu", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/personas", "src/yggdrasil"]
 branch = true
 # Textual TUI widgets require a running terminal and cannot be exercised with
 # plain pytest. They are excluded from coverage measurement until Textual

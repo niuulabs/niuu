@@ -20,7 +20,7 @@ from uuid import uuid4
 
 import pytest
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+from personas.adapters.loader import FilesystemPersonaAdapter
 from tests.test_ting.test_workflow_execution_service import (
     AcceptingEvidenceVerifier,
     InMemoryWorkflowRepository,

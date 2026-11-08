@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
+from personas.domain.permission_mode import valid_permission_mode_spellings
 from ravn.config import _VALID_PERSONAS, ProjectConfig
-from ravn.domain.permission_mode import valid_permission_mode_spellings
 
 _FULL_RAVN_MD = """\
 # RAVN Project: my-service

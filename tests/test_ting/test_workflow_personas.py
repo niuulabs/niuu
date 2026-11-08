@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from niuu.domain.models import Principal
-from ravn.domain.persona_document import PortablePersonaDefinition
+from personas.domain.persona_document import PortablePersonaDefinition
 from ting.api.workflow_personas import authoring_persona_source
 
 

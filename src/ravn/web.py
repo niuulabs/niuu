@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+from personas.adapters.loader import FilesystemPersonaAdapter
 from ravn.api import create_app
 
 logger = logging.getLogger(__name__)

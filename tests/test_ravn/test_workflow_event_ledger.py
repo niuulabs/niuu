@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from niuu.mesh.events import MeshEvent, MeshEventType
-from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes
+from personas.domain.persona import PersonaConfig, PersonaConsumes
 from ravn.config import Settings
 from tests.test_ravn.conftest import _make_drive_loop
 

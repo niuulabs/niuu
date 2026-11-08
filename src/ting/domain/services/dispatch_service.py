@@ -26,7 +26,7 @@ except ImportError:
 
 from niuu.domain.models import Principal
 from niuu.domain.tags import matches_tags, residual_selector, satisfiable, validate_match
-from ravn.domain.persona_document import PortablePersonaSource
+from personas.domain.persona_document import PortablePersonaSource
 from ting.domain.exceptions import WorkflowStepsHaveNoRunnerError
 from ting.domain.models import (
     DispatcherState,

@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from niuu.domain.models import Principal
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+from personas.adapters.loader import FilesystemPersonaAdapter
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflow_runner_refusal import register_workflow_runner_refusal
 from ting.api.workflows import (

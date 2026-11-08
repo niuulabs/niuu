@@ -46,7 +46,8 @@ from mimir.client_config import MimirConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.mesh.config import DiscoveryConfig, MeshConfig
-from ravn.domain.permission_mode import (
+from personas.config import PersonaSourceConfig
+from personas.domain.permission_mode import (
     PermissionMode,
     parse_optional_permission_mode,
     parse_permission_mode,
@@ -2730,39 +2731,6 @@ class SlashCommandAdapterConfig(BaseModel):
     )
 
 
-class PersonaSourceConfig(BaseModel):
-    """Config for a custom persona configuration source.
-
-    By default Ravn loads personas from ``~/.ravn/personas/*.yaml`` and the
-    built-in set.  Point ``persona_source.adapter`` at any class implementing
-    :class:`~ravn.ports.persona.PersonaPort` to use a different source
-    (database, remote API, generated at runtime, etc.).
-
-    Constructor kwargs are forwarded directly to the adapter class, so the
-    ``kwargs`` dict must match the adapter's ``__init__`` signature.
-
-    Example ``ravn.yaml``::
-
-        persona_source:
-          adapter: ravn.adapters.personas.loader.FilesystemPersonaAdapter
-          kwargs:
-            persona_dirs: [".ravn/personas", "~/.ravn/personas"]
-    """
-
-    adapter: str = Field(
-        default="ravn.adapters.personas.loader.FilesystemPersonaAdapter",
-        description="Fully-qualified class path for the PersonaPort implementation.",
-    )
-    kwargs: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Keyword arguments passed to the adapter constructor.",
-    )
-    secret_kwargs_env: dict[str, str] = Field(
-        default_factory=dict,
-        description="Map of kwarg name → env var name for secret values.",
-    )
-
-
 class ProfileSourceConfig(BaseModel):
     """Config for a custom deployment profile source.
 
@@ -2800,7 +2768,7 @@ class PersonaOverridesConfig(BaseModel):
     when the flock workload has per-persona ``system_prompt_extra`` or
     ``iteration_budget`` settings.  Ravn reads them here and applies them to
     the loaded PersonaConfig via
-    :func:`ravn.adapters.personas.overrides.apply_config_overrides`.
+    :func:`personas.adapters.overrides.apply_config_overrides`.
 
     Example sidecar YAML snippet::
 
@@ -2825,14 +2793,6 @@ class PersonaOverridesConfig(BaseModel):
         description=(
             "Optional replacement event subscription list for the resolved persona. "
             "Empty keeps the persona's built-in consumes.event_types."
-        ),
-    )
-    executor: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Optional executor override applied to the resolved persona at runtime. "
-            "Used by workflow dispatch to select the session transport independently "
-            "from the persona definition."
         ),
     )
 

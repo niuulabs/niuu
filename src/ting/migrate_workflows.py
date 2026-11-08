@@ -7,9 +7,9 @@ import asyncio
 import json
 from pathlib import Path
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
-from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
-from ravn.domain.persona_document import PortablePersonaCollection, PortablePersonaSource
+from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.adapters.postgres_registry import PostgresPersonaRegistry
+from personas.domain.persona_document import PortablePersonaCollection, PortablePersonaSource
 from ting.adapters.filesystem_workflows import FilesystemWorkflowRepository
 from ting.adapters.postgres_workflows import PostgresWorkflowRepository
 from ting.config import DatabaseConfig, Settings

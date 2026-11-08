@@ -563,7 +563,7 @@ def flock_init(
         raise typer.Exit(1)
 
     # Validate personas exist before writing anything.
-    from ravn.adapters.personas.loader import FilesystemPersonaAdapter  # noqa: PLC0415
+    from personas.adapters.loader import FilesystemPersonaAdapter  # noqa: PLC0415
 
     loader = FilesystemPersonaAdapter()
     for persona in resolved_personas:
@@ -809,7 +809,7 @@ def flock_status(
 @flock_app.command("list")
 def flock_list() -> None:
     """List available personas (built-in and user-defined)."""
-    from ravn.adapters.personas.loader import FilesystemPersonaAdapter  # noqa: PLC0415
+    from personas.adapters.loader import FilesystemPersonaAdapter  # noqa: PLC0415
 
     loader = FilesystemPersonaAdapter()
     builtin_names = set(loader.list_builtin_names())

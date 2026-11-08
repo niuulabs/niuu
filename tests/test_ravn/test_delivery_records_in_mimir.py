@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-PERSONAS = Path(__file__).resolve().parents[2] / "src" / "ravn" / "personas"
+PERSONAS = Path(__file__).resolve().parents[2] / "src" / "personas" / "builtin"
 
 
 def _persona(name: str) -> dict:

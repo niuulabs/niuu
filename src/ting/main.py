@@ -31,8 +31,8 @@ from niuu.service_runtime import (
     create_workload_identity_service,
 )
 from niuu.utils import import_class, resolve_secret_kwargs
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
-from ravn.ports.persona import PersonaPort
+from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.ports.persona import PersonaPort
 from ting.adapters.a2a_push_dispatcher import A2APushDispatcher
 from ting.adapters.github_git import GitHubGitAdapter
 from ting.adapters.guild_instances import GuildInstanceRegistryClient

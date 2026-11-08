@@ -31,7 +31,7 @@ from niuu.domain.delivery import (
 )
 from niuu.domain.models import Principal
 from niuu.ports.http_auth import HttpAuthPort
-from ravn.domain.persona_document import PortablePersonaDefinition, parse_portable_persona
+from personas.domain.persona_document import PortablePersonaDefinition, parse_portable_persona
 from ting.domain.models import PRStatus
 from ting.ports.volundr import (
     ActivityEvent,

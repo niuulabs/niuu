@@ -17,7 +17,6 @@ and the WebSocket.
   config that routes your chat to a stray Claude Code process instead of the
   Ravn — silently, with no error.
 - A model backend the Ravn can reach (whatever you already use).
-- For the tmux persona below: `tmux` and an authenticated `claude` on `PATH`.
 
 ## 1. Create the room
 
@@ -30,7 +29,7 @@ Prints the broker URL. `ravn room ls|show|start|stop|rm` manage it.
 
 ## 2. Write a persona
 
-A persona says who the Ravn is and which backend runs it. It is required —
+A persona says who the Ravn is. It is required —
 `ravn join` refuses to start without one. `ravn personas list` shows the
 built-ins, but they are nearly all specialists; for a general steward start
 here (`damien-steward.yaml`):
@@ -54,19 +53,10 @@ allowed_tools:
   - ask_user
 permission_mode: full-access
 iteration_budget: 80
-executor:
-  adapter: ravn.adapters.executors.cli.CliTransportExecutor
-  kwargs:
-    transport_adapter: skuld.transports.tmux_interactive.TmuxInteractiveTransport
 ```
 
-The `executor` block is what runs the Ravn on tmux Claude instead of a direct
-LLM loop. Ravn's own tools stay available — they are injected into the Claude
-session as an MCP server, so Claude drives execution while Ravn keeps
-judgment, memory, and continuation. Swap `transport_adapter` for
-`skuld.transports.codex_ws.CodexWebSocketTransport` to run on Codex (what
-platform-deployed residents use), or drop the `executor` block entirely to use
-Ravn's own LLM loop.
+A persona no longer names the backend that runs it, and a persona document that
+still carries an `executor` block is refused.
 
 The system prompt above describes an autonomous resident that goes and does
 work. For a Ravn that mostly sits in the room and answers, rewrite it — that

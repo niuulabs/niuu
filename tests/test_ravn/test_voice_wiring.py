@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from personas.domain.persona import PersonaConfig, PersonaVoiceConfig
 from ravn.adapters.channels.voice.gateway import VoiceGateway
 from ravn.adapters.channels.voice.room import VoiceRoomCopier
-from ravn.adapters.personas.loader import PersonaConfig, PersonaVoiceConfig
 from ravn.cli import voice_wiring
 from ravn.cli.commands import _make_channel_tasks
 from ravn.config import GatewayChannelsConfig, Settings, VoiceChannelConfig, VoiceMinterConfig

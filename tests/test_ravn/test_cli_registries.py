@@ -13,8 +13,8 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-import ravn
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+import personas
+from personas.adapters.loader import FilesystemPersonaAdapter
 from ravn.cli.commands import (
     _looks_like_path,
     _require_persona,
@@ -27,7 +27,7 @@ from ravn.cli.commands import (
 # The bundled persona file. These tests need a persona that exists on disk in
 # every checkout; resolving one through the loader instead picks up whatever
 # project-local .ravn/personas/ the developer happens to have.
-_BUILTIN_REVIEWER = Path(ravn.__file__).parent / "personas" / "reviewer.yaml"
+_BUILTIN_REVIEWER = Path(personas.__file__).parent / "builtin" / "reviewer.yaml"
 
 
 runner = CliRunner()

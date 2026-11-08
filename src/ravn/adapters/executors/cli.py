@@ -22,12 +22,12 @@ from niuu.mesh.events import MeshEvent
 from niuu.observability import get_observability
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
+from personas.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.adapters.executors.cli_threads import CliThreadStore
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.harness_telemetry import HarnessStepTelemetryRecord
 from ravn.domain.models import Episode, Message, Outcome, Session, TokenUsage, ToolCall, TurnResult
 from ravn.domain.notification_channel import current_notification_channel
-from ravn.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.harness_telemetry import emit_harness_step
 from ravn.ports.channel import ChannelPort
 from ravn.ports.checkpoint import CheckpointPort

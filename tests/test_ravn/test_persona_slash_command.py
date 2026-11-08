@@ -56,7 +56,7 @@ class TestPersonaCommandList:
     def test_list_returns_builtin_personas(self):
         result = self.cmd.handle("list", self.ctx)
         # Built-in personas should always be present
-        assert "coding-agent" in result or "Personas" in result
+        assert "coder" in result or "Personas" in result
 
     def test_list_shows_source(self):
         result = self.cmd.handle("list", self.ctx)
@@ -64,7 +64,7 @@ class TestPersonaCommandList:
         assert "[built-in]" in result or "personas" in result.lower()
 
     def test_list_includes_custom_persona(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        from ravn.adapters.personas import loader as _loader_module
+        from personas.adapters import loader as _loader_module
 
         # Monkeypatch the bundled personas directory to include tmp_path
         monkeypatch.setattr(
@@ -97,8 +97,8 @@ class TestPersonaCommandShow:
         self.ctx = _ctx()
 
     def test_show_existing_builtin(self):
-        result = self.cmd.handle("show coding-agent", self.ctx)
-        assert "coding-agent" in result
+        result = self.cmd.handle("show coder", self.ctx)
+        assert "coder" in result
         assert "permission" in result.lower() or "Permission" in result
 
     def test_show_nonexistent_returns_not_found(self):
@@ -110,11 +110,11 @@ class TestPersonaCommandShow:
         assert "Usage" in result or "usage" in result.lower()
 
     def test_show_displays_permission_mode(self):
-        result = self.cmd.handle("show coding-agent", self.ctx)
+        result = self.cmd.handle("show coder", self.ctx)
         assert "workspace-write" in result or "permission" in result.lower()
 
     def test_show_displays_allowed_tools(self):
-        result = self.cmd.handle("show coding-agent", self.ctx)
+        result = self.cmd.handle("show coder", self.ctx)
         assert "tools" in result.lower() or "file" in result
 
     def test_show_pipeline_persona_displays_produces(self):
@@ -134,13 +134,13 @@ class TestPersonaCommandDelete:
         assert "Usage" in result or "usage" in result.lower()
 
     def test_delete_builtin_is_refused(self):
-        result = self.cmd.handle("delete coding-agent", self.ctx)
+        result = self.cmd.handle("delete coder", self.ctx)
         assert "built-in" in result.lower() or "Cannot" in result
 
     def test_delete_custom_persona_removes_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        from ravn.adapters.personas import loader as _loader_module
+        from personas.adapters import loader as _loader_module
 
         persona_name = "delete-test-persona"
         _make_custom_persona(tmp_path, persona_name)
@@ -187,6 +187,6 @@ class TestPersonaCommandRegistration:
         assert len(result) > 0
 
     def test_persona_show_via_registry(self):
-        result = default_registry.handle("/persona show coding-agent", _ctx())
+        result = default_registry.handle("/persona show coder", _ctx())
         assert result is not None
-        assert "coding-agent" in result
+        assert "coder" in result

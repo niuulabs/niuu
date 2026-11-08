@@ -9,11 +9,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ravn.adapters.personas.loader import PersonaConfig, PersonaLLMConfig
-from volundr.adapters.personas.configmap import (
-    _BUILTIN_NAMES,
-    KubernetesConfigMapPersonaRegistry,
-)
+from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.domain.persona import PersonaConfig, PersonaLLMConfig
+from volundr.adapters.personas.configmap import KubernetesConfigMapPersonaRegistry
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -241,7 +239,7 @@ class TestIsBuiltin:
     def test_known_builtin_returns_true(self) -> None:
         registry, _ = _make_registry()
         assert registry.is_builtin("reviewer") is True
-        assert registry.is_builtin("coordinator") is True
+        assert registry.is_builtin("security-auditor") is True
         assert registry.is_builtin("coder") is True
 
     def test_custom_persona_returns_false(self) -> None:
@@ -251,7 +249,7 @@ class TestIsBuiltin:
 
     def test_all_builtin_names_are_recognized(self) -> None:
         registry, _ = _make_registry()
-        for name in _BUILTIN_NAMES:
+        for name in FilesystemPersonaAdapter().list_builtin_names():
             assert registry.is_builtin(name) is True, f"Expected {name!r} to be builtin"
 
 
@@ -329,7 +327,7 @@ class TestSource:
 
 class TestPersonaRegistryPortCompliance:
     def test_implements_persona_registry_port(self) -> None:
-        from ravn.ports.persona import PersonaRegistryPort
+        from personas.ports.persona import PersonaRegistryPort
 
         registry, _ = _make_registry()
         assert isinstance(registry, PersonaRegistryPort)

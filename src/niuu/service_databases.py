@@ -242,6 +242,15 @@ NIUU_SHARED_BOOTSTRAP_SQL: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_ravn_personas_owner_updated
         ON ravn_personas(owner_id, updated_at DESC);
     """,
+    # Mirrors migrations/000112_strip_persona_executor.up.sql. Runs on every start, so it
+    # stays idempotent.
+    """
+    UPDATE ravn_personas
+    SET config_json = config_json - 'executor',
+        runtime_config_json = runtime_config_json - 'executor'
+    WHERE config_json ? 'executor'
+       OR runtime_config_json ? 'executor';
+    """,
     # Mirrors migrations/000091_realm_project.up.sql.
     """
     ALTER TABLE realms ADD COLUMN IF NOT EXISTS project_id UUID;

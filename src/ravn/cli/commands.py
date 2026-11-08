@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import json
 import logging
@@ -179,7 +180,6 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _resolve_workspace,
     _runtime_cli_transport_kwargs,
     _transport_mcp_servers,
-    _uses_cli_transport_executor,
     _uses_cli_transport_runtime,
 )
 from ravn.cli.tool_builders import (  # noqa: E402, F401
@@ -240,7 +240,7 @@ def _resolve_persona(
     themselves, so an operator never sees both a warning and an error.
     """
     from niuu.utils import import_class, resolve_secret_kwargs  # noqa: PLC0415
-    from ravn.adapters.personas.loader import FilesystemPersonaAdapter  # noqa: PLC0415
+    from personas.adapters.loader import FilesystemPersonaAdapter  # noqa: PLC0415
 
     if settings is not None:
         cfg = settings.persona_source
@@ -272,18 +272,33 @@ def _resolve_persona(
     # sidecar YAML was generated with per-persona system_prompt_extra /
     # iteration_budget overrides (NIU-638).
     if settings is not None:
-        from ravn.adapters.personas.overrides import apply_config_overrides  # noqa: PLC0415
+        from personas.adapters.overrides import apply_config_overrides  # noqa: PLC0415
 
         overrides = settings.persona_overrides.model_dump(exclude_defaults=True)
         if overrides:
             persona = apply_config_overrides(persona, overrides)
 
     if project_config is not None:
-        # merge() is a pure data transform on PersonaConfig + ProjectConfig,
-        # not adapter-specific — safe to call on the concrete class directly.
-        persona = FilesystemPersonaAdapter.merge(persona, project_config)
+        persona = _merge_project_overrides(persona, project_config)
 
     return persona
+
+
+def _merge_project_overrides(persona: Any, project: ProjectConfig) -> Any:
+    """Return *persona* with RAVN.md *project* overrides applied.
+
+    Non-empty / non-zero project fields take precedence over persona fields.
+    The persona's ``name``, ``llm``, ``produces``, ``consumes``, and ``fan_in``
+    settings are never overridden by ProjectConfig (which has no equivalent
+    fields).
+    """
+    return dataclasses.replace(
+        persona,
+        allowed_tools=project.allowed_tools or persona.allowed_tools,
+        forbidden_tools=project.forbidden_tools or persona.forbidden_tools,
+        permission_mode=project.permission_mode or persona.permission_mode,
+        iteration_budget=project.iteration_budget or persona.iteration_budget,
+    )
 
 
 def _require_persona(
@@ -493,7 +508,7 @@ def _build_agent(
 
     workspace = _resolve_workspace(settings)
     permission_mode = _effective_permission_mode(settings, persona_config)
-    cli_transport_executor = _uses_cli_transport_executor(persona_config)
+    cli_transport_executor = _uses_cli_transport_runtime()
     llm = None if cli_transport_executor else _build_llm(settings)
     session = session or Session()
     base_channel: CliChannel = CliChannel()
@@ -543,7 +558,7 @@ def _build_agent(
     )
 
     cp_cfg = settings.checkpoint
-    executor = _build_executor(persona_config)
+    executor = _build_executor()
     agent = executor.build(
         llm=llm,
         tools=tools,
@@ -1321,7 +1336,7 @@ async def _run_gateway(
 
     # Shared resources (safe to reuse across sessions)
     workspace = _resolve_workspace(settings)
-    cli_transport_executor = _uses_cli_transport_executor(persona_config)
+    cli_transport_executor = _uses_cli_transport_runtime()
     llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings, llm=llm)
     compressor, native_compaction = (
@@ -1377,7 +1392,7 @@ async def _run_gateway(
             )
             effective_channel = CompositeChannel([channel, sleipnir_ch])
 
-        executor = _build_executor(persona_config)
+        executor = _build_executor()
         return executor.build(
             llm=llm,
             tools=tools,

@@ -710,11 +710,11 @@ data:
           namespace: {{ .Release.Namespace | quote }}
           configmap_name: {{ .Values.personaSource.configmapName | default "ravn-personas" | quote }}
         {{- else if eq $mode "http" }}
-        adapter: "ravn.adapters.personas.http.HttpPersonaAdapter"
+        adapter: "personas.adapters.http.HttpPersonaAdapter"
         kwargs:
           base_url: {{ .Values.personaSource.httpBaseUrl | default "http://volundr:8080" | quote }}
         {{- else }}
-        adapter: "ravn.adapters.personas.loader.FilesystemPersonaAdapter"
+        adapter: "personas.adapters.loader.FilesystemPersonaAdapter"
         kwargs: {}
         {{- end }}
     {{- end }}

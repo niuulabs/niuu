@@ -15,7 +15,7 @@ import yaml
 
 from niuu.domain.json_schema import PortableSchemaError, validate_object_instance
 from niuu.domain.workflow_evidence import validate_evidence_gate_nodes
-from ravn.domain.persona_document import PersonaDocumentError, validate_persona_identifier
+from personas.domain.persona_document import PersonaDocumentError, validate_persona_identifier
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import (
     PersonaDependency,

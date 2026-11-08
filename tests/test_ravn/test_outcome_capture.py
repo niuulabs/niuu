@@ -20,10 +20,7 @@ import pytest
 
 from niuu.domain.mimir import MimirPage, MimirPageMeta, MimirSource, compute_content_hash
 from niuu.domain.outcome import OutcomeField
-from ravn.adapters.personas.loader import (
-    PersonaConfig,
-    PersonaProduces,
-)
+from personas.domain.persona import PersonaConfig, PersonaProduces
 from ravn.agent import (
     RavnAgent,
     _parse_outcome_block_for_persona,
@@ -75,7 +72,7 @@ def _make_llm_with_response(response_text: str) -> LLMPort:
 
 def _reviewer_persona() -> PersonaConfig:
     """Return the built-in reviewer persona config (with schema)."""
-    from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+    from personas.adapters.loader import FilesystemPersonaAdapter
 
     persona = FilesystemPersonaAdapter().load("reviewer")
     assert persona is not None, "reviewer persona must exist in built-ins"

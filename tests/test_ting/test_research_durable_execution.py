@@ -22,7 +22,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+from personas.adapters.loader import FilesystemPersonaAdapter
 from tests.test_ting.test_research_api import (
     InMemoryWorkflowCampaignRepository,
     InMemoryWorkflowRepository,

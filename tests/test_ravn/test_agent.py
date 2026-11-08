@@ -11,7 +11,7 @@ import pytest
 from niuu.domain.outcome import OutcomeField
 from niuu.domain.tool import ToolResult
 from niuu.mesh.events import MeshEventType
-from ravn.adapters.personas.loader import PersonaConfig, PersonaProduces
+from personas.domain.persona import PersonaConfig, PersonaProduces
 from ravn.agent import RavnAgent, _build_assistant_content
 from ravn.budget import IterationBudget
 from ravn.domain.exceptions import MaxIterationsError, PromptBudgetExceededError

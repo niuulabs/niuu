@@ -8,7 +8,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from ravn.domain.persona_document import PersonaDependency
+from personas.domain.persona_document import PersonaDependency
 from ting.domain.exceptions import InvalidStateTransitionError
 
 # ---------------------------------------------------------------------------

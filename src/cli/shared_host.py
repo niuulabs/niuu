@@ -51,7 +51,7 @@ from niuu.service_runtime import (
     seed_development_identity,
 )
 from niuu.utils import import_class
-from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
+from personas.adapters.postgres_registry import PostgresPersonaRegistry
 from volundr.adapters.inbound.rest_credentials import create_canonical_credentials_router
 from volundr.adapters.inbound.rest_features import create_features_router
 from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router

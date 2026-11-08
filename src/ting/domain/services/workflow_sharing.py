@@ -13,7 +13,7 @@ import re
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from ravn.domain.persona_document import (
+from personas.domain.persona_document import (
     PortablePersonaDefinition,
     PortablePersonaSource,
     parse_portable_persona,

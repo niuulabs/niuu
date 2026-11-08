@@ -15,7 +15,7 @@ Modes
 - full_access     — unrestricted (explicit opt-in required)
 - prompt          — interactive confirmation for every non-trivially safe action
 
-Modes are parsed into :class:`~ravn.domain.permission_mode.PermissionMode` on
+Modes are parsed into :class:`~personas.domain.permission_mode.PermissionMode` on
 entry.  A mode no branch handles raises — it is never read as a permissive
 default.
 
@@ -47,6 +47,7 @@ from mimir.file_security import (
     is_binary,
     resolve_safe,
 )
+from personas.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.adapters.memory.approval import ApprovalMemory
 from ravn.adapters.permission.bash_validator import (
     _ALWAYS_BLOCKED,
@@ -61,7 +62,6 @@ from ravn.adapters.permission.bash_validator import (
     unwrap_sudo,
 )
 from ravn.config import PermissionConfig
-from ravn.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.ports.permission import (
     Allow,
     CommandIntent,

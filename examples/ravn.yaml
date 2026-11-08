@@ -144,7 +144,7 @@ trust:
 #   <cwd>/.ravn/personas/ → ~/.ravn/personas/ → bundled
 # ---------------------------------------------------------------------------
 # persona_source:
-#   adapter: ravn.adapters.personas.loader.FilesystemPersonaAdapter
+#   adapter: personas.adapters.loader.FilesystemPersonaAdapter
 #   kwargs:
 #     persona_dirs: [".ravn/personas"]
 

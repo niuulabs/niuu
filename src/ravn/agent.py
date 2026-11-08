@@ -56,7 +56,7 @@ from ravn.prompt_builder import PromptBuilder
 
 if TYPE_CHECKING:
     from niuu.domain.outcome import ParsedOutcome
-    from ravn.adapters.personas.loader import PersonaConfig
+    from personas.domain.persona import PersonaConfig
 
 try:
     from sleipnir.domain.catalog import ravn_session_ended, ravn_session_started

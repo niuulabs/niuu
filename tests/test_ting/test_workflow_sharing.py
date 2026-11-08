@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from ravn.domain.persona_document import PortablePersonaDefinition, portable_persona_yaml
+from personas.domain.persona_document import PortablePersonaDefinition, portable_persona_yaml
 from tests.test_ting.test_workflows_api import (
     InMemoryWorkflowRepository,
     _headers,

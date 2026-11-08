@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from personas.domain.permission_mode import PermissionMode
 from ravn.adapters.permission.bash_validator import unwrap_sudo
 from ravn.adapters.permission.enforcer import (
     BashValidator,
@@ -15,7 +16,6 @@ from ravn.adapters.permission.enforcer import (
 from ravn.adapters.tools.hooks import EnforcerHook
 from ravn.config import PermissionConfig, PermissionRuleConfig
 from ravn.domain.exceptions import PermissionDeniedError
-from ravn.domain.permission_mode import PermissionMode
 from ravn.ports.permission import (
     Allow,
     CommandIntent,

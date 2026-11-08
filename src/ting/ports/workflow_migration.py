@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 from uuid import UUID
 
-from ravn.domain.persona_document import PortablePersonaSource
+from personas.domain.persona_document import PortablePersonaSource
 from ting.domain.models import WorkflowDefinition
 
 WorkflowPersonaSourceResolver = Callable[[WorkflowDefinition], Awaitable[PortablePersonaSource]]

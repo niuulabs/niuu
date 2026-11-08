@@ -56,7 +56,7 @@ async def _run_daemon(
     from ravn.cli.tool_builders import _build_learned_tool_resolver  # noqa: PLC0415
 
     learned_tool_resolver = _build_learned_tool_resolver(settings, workspace)
-    cli_transport_executor = _uses_cli_transport_executor(persona_config)
+    cli_transport_executor = _uses_cli_transport_runtime()
     llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings)
     # Built here for the persona's own model so an impossible compaction setting
@@ -232,11 +232,11 @@ async def _run_daemon(
         # A CLI agent's tool server reaches the broker through the daemon's relay.
         present_file_relay_socket = _present_file_relay_socket(tools, present_file_relay)
 
-        executor = _build_executor(resolved_persona)
+        executor = _build_executor()
         resolved_extended_thinking = _resolve_extended_thinking(
             settings,
             resolved_persona,
-            cli_transport_executor=_uses_cli_transport_executor(resolved_persona),
+            cli_transport_executor=_uses_cli_transport_runtime(),
         )
         compressor, native_compaction = (
             _build_compaction(settings, llm, resolved_model) if llm is not None else (None, None)

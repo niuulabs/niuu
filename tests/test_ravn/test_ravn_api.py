@@ -79,7 +79,7 @@ def client(monkeypatch) -> TestClient:
 def client_with_personas(tmp_path) -> TestClient:
     """TestClient wired with a filesystem persona loader."""
 
-    from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+    from personas.adapters.loader import FilesystemPersonaAdapter
 
     persona_dir = tmp_path / "personas"
     persona_dir.mkdir()

@@ -117,7 +117,7 @@ class TestApplyProfile:
         assert len(settings.mcp_servers) == 1
 
     def test_persona_config_overrides_applied_before_extra(self) -> None:
-        from ravn.adapters.personas.loader import PersonaConfig, PersonaLLMConfig
+        from personas.domain.persona import PersonaConfig, PersonaLLMConfig
         from ravn.cli.commands import _apply_profile
         from ravn.config import Settings
 

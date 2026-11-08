@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from ravn.domain.persona_document import PersonaDependency
+from personas.domain.persona_document import PersonaDependency
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import (

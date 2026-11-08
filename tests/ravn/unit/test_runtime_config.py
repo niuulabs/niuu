@@ -1,6 +1,6 @@
 """Tests for shared CLI runtime configuration resolution."""
 
-from ravn.adapters.personas.loader import PersonaConfig, PersonaLLMConfig
+from personas.domain.persona import PersonaConfig, PersonaLLMConfig
 from ravn.cli.runtime_config import _resolve_extended_thinking
 from ravn.config import Settings
 

@@ -871,7 +871,7 @@ def create_app(
             pg_event_sink = PostgresEventSink(
                 pool, buffer_size=settings.event_pipeline.postgres_buffer_size
             )
-            from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
+            from personas.adapters.postgres_registry import PostgresPersonaRegistry
 
             persona_registry = PostgresPersonaRegistry(pool)
             app.state.persona_registry = persona_registry

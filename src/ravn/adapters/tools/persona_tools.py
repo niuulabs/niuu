@@ -22,8 +22,8 @@ import yaml as _yaml
 
 from niuu.domain.tool import ToolResult
 from niuu.ports.tool import ToolPort
-from ravn.adapters.personas.loader import _VALID_FAN_IN_STRATEGIES
-from ravn.domain.permission_mode import parse_optional_permission_mode
+from personas.domain.permission_mode import parse_optional_permission_mode
+from personas.domain.persona import VALID_FAN_IN_STRATEGIES, parse_persona
 
 logger = logging.getLogger(__name__)
 
@@ -94,10 +94,10 @@ def _validate_yaml(yaml_content: str) -> tuple[list[str], list[str], dict | None
     fan_in_raw = raw.get("fan_in")
     if isinstance(fan_in_raw, dict):
         strategy = str(fan_in_raw.get("strategy", "")).strip()
-        if strategy and strategy not in _VALID_FAN_IN_STRATEGIES:
+        if strategy and strategy not in VALID_FAN_IN_STRATEGIES:
             errors.append(
                 f"Invalid 'fan_in.strategy': {strategy!r}. "
-                f"Must be one of: {sorted(_VALID_FAN_IN_STRATEGIES)}."
+                f"Must be one of: {sorted(VALID_FAN_IN_STRATEGIES)}."
             )
 
     produces_raw = raw.get("produces")
@@ -127,12 +127,14 @@ def _validate_yaml(yaml_content: str) -> tuple[list[str], list[str], dict | None
     if errors:
         return errors, warnings, None
 
-    from ravn.adapters.personas.loader import FilesystemPersonaAdapter  # noqa: PLC0415
-
-    parsed = FilesystemPersonaAdapter.parse(yaml_content)
+    try:
+        parsed = parse_persona(yaml_content)
+    except ValueError as exc:
+        errors.append(str(exc))
+        return errors, warnings, None
     if parsed is None:
         errors.append(
-            "FilesystemPersonaAdapter.parse() returned None — the YAML is structurally invalid. "
+            "parse_persona() returned None — the YAML is structurally invalid. "
             "Ensure 'name' is present and the document is a valid YAML mapping."
         )
         return errors, warnings, None
@@ -175,7 +177,7 @@ class PersonaValidateTool(ToolPort):
     """Validate a persona YAML string without writing anything.
 
     Checks syntax, required fields, known enum values, and verifies that
-    ``FilesystemPersonaAdapter.parse()`` can parse the result.  Returns a success
+    ``parse_persona()`` can parse the result.  Returns a success
     summary or detailed diagnostic messages with line numbers.
     """
 
@@ -307,7 +309,7 @@ class PersonaSaveTool(ToolPort):
                 is_error=True,
             )
 
-        from ravn.adapters.personas.loader import FilesystemPersonaAdapter  # noqa: PLC0415
+        from personas.adapters.loader import FilesystemPersonaAdapter  # noqa: PLC0415
 
         loader = FilesystemPersonaAdapter(
             persona_dirs=[str(target_dir)],

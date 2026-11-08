@@ -9,14 +9,15 @@ import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
-from ravn.adapters.personas.postgres_registry import (
+from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.adapters.postgres_registry import (
     PersonaView,
     _config_to_payload,
     _normalize_payload,
     _payload_to_config,
 )
-from ravn.domain.persona_document import (
+from personas.domain.persona import parse_persona, persona_to_yaml
+from personas.domain.persona_document import (
     PortablePersonaDefinition,
     portable_persona_from_config,
 )
@@ -87,7 +88,7 @@ class _InMemoryPersonaRegistry:
         view = await self.get_persona(owner_id, name)
         if view is None:
             return None
-        return FilesystemPersonaAdapter.to_yaml(view.config)
+        return persona_to_yaml(view.config)
 
     async def get_current_portable_persona(
         self,
@@ -100,7 +101,7 @@ class _InMemoryPersonaRegistry:
         builtin = self._builtin_loader.load_current_portable(name)
         fallback = None
         if builtin is not None:
-            fallback = FilesystemPersonaAdapter.parse(
+            fallback = parse_persona(
                 yaml.safe_dump(
                     builtin.definition,
                     allow_unicode=True,
@@ -284,13 +285,13 @@ class TestRavnPersonaRoutes:
 
     def test_builtin_override_and_delete_restore_builtin(self) -> None:
         client, _ = _make_client()
-        payload = _make_payload("coding-agent") | {
+        payload = _make_payload("coder") | {
             "summary": "Overridden coding agent",
             "system_prompt_template": "Override built-in coding agent.",
         }
 
         put_resp = client.put(
-            "/api/v1/ravn/personas/coding-agent",
+            "/api/v1/ravn/personas/coder",
             json=payload,
             headers={"Authorization": "Bearer token"},
         )
@@ -302,13 +303,13 @@ class TestRavnPersonaRoutes:
         assert updated["override_source"] == "[user:user-1]"
 
         delete_resp = client.delete(
-            "/api/v1/ravn/personas/coding-agent",
+            "/api/v1/ravn/personas/coder",
             headers={"Authorization": "Bearer token"},
         )
         assert delete_resp.status_code == 204
 
         detail_resp = client.get(
-            "/api/v1/ravn/personas/coding-agent",
+            "/api/v1/ravn/personas/coder",
             headers={"Authorization": "Bearer token"},
         )
         assert detail_resp.status_code == 200

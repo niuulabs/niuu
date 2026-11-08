@@ -74,7 +74,6 @@ _RAVN_MODULES = (
     "harness_telemetry",
     "huddle_archiver",
     "main",
-    "personas",
     "plugin",
     "ports",
     "prompt_builder",
@@ -99,24 +98,42 @@ def test_niuu_does_not_import_ravn() -> None:
     assert actual == set()
 
 
+def _ravn_module_strings(package: str) -> set[str]:
+    """Locations in *package* of a string constant that names a ``ravn`` module."""
+    package_root = SRC_ROOT / package
+    violations: set[str] = set()
+
+    for path in package_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if _RAVN_MODULE_PATH.search(node.value):
+                violations.add(f"{path.relative_to(package_root).as_posix()}:{node.lineno}")
+
+    return violations
+
+
 def test_niuu_does_not_name_ravn_modules_in_strings() -> None:
     """Dynamic-adapter paths, ``import_class`` arguments and docstrings are covered.
 
     A dotted-path string is an import the AST walk above cannot see; niuu reaching
     into ``ravn`` through one is the same dependency.
     """
-    niuu_root = SRC_ROOT / "niuu"
-    violations: set[str] = set()
+    assert _ravn_module_strings("niuu") == set()
 
-    for path in niuu_root.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
-                continue
-            if _RAVN_MODULE_PATH.search(node.value):
-                violations.add(f"{path.relative_to(niuu_root).as_posix()}:{node.lineno}")
 
-    assert violations == set()
+def test_personas_does_not_import_ravn() -> None:
+    actual = {
+        path for path, imported in _external_package_imports("personas") if imported == "ravn"
+    }
+
+    assert actual == set()
+
+
+def test_personas_does_not_name_ravn_modules_in_strings() -> None:
+    """Personas are neutral: a dotted-path string into ``ravn`` is the same dependency."""
+    assert _ravn_module_strings("personas") == set()
 
 
 def test_mimir_does_not_import_ravn() -> None:

@@ -26,7 +26,7 @@ from niuu.domain.workflow_kickoff import (
     is_workflow_kickoff_payload,
 )
 from niuu.mesh.events import MeshEvent, MeshEventType
-from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes
+from personas.domain.persona import PersonaConfig, PersonaConsumes
 from ravn.config import Settings
 from ravn.workflow_kickoff import WorkflowKickoffAcknowledger
 from tests.test_ravn.conftest import _make_drive_loop

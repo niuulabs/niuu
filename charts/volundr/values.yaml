@@ -2536,22 +2536,22 @@ initContainers: []
 # -- Container lifecycle hooks
 lifecycle: {}
 
-# Ravn persona distribution — controls how persona YAML is delivered to ravn sidecars.
+# Persona distribution — controls how persona YAML is delivered to workloads.
 #
 # Three modes:
 #
 #   mountedVolume (default for cluster deployments)
 #     Volundr writes personas to a Kubernetes ConfigMap ("ravn-personas").
-#     Flock pods receive the ConfigMap as a read-only volume mount at mountPath.
+#     Workload pods receive the ConfigMap as a read-only volume mount at mountPath.
 #     The RBAC Role in rbac-personas.yaml grants volundr write access.
 #
 #   http
-#     Ravn sidecars fetch personas at runtime via the volundr REST API.
-#     No ConfigMap volume is needed. Sidecars authenticate with their
+#     Workloads fetch personas at runtime via the volundr REST API.
+#     No ConfigMap volume is needed. Workloads authenticate with their
 #     projected workload identity and the configured Envoy-facing Volundr URL.
 #
 #   filesystem (dev / single-node)
-#     Sidecars use only the bundled built-in personas shipped in the ravn image.
+#     Workloads use only the bundled built-in personas shipped in the personas package.
 #     No volumes, secrets, or RBAC additions required.
 #
 personaSource:
@@ -2559,9 +2559,9 @@ personaSource:
   mode: mountedVolume
   # -- ConfigMap name for mountedVolume mode
   configmapName: ravn-personas
-  # -- Mount path inside ravn sidecar containers (mountedVolume mode)
+  # -- Mount path inside workload containers (mountedVolume mode)
   mountPath: /etc/ravn/personas
-  # -- Volundr base URL that sidecars call to fetch personas (http mode)
+  # -- Volundr base URL that workloads call to fetch personas (http mode)
   httpBaseUrl: http://volundr:8080
 
 pat:

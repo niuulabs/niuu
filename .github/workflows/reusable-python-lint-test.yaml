@@ -181,7 +181,7 @@ jobs:
             -m 'not integration and not broker and not live_cli' \
             --cov=src/audit --cov=src/volundr --cov=src/cli --cov=src/credentials \
             --cov=src/features --cov=src/identity --cov=src/integrations --cov=src/niuu \
-            --cov=src/tracker --cov=src/skuld --cov=src/mimir \
+            --cov=src/tracker --cov=src/skuld --cov=src/mimir --cov=src/personas \
             --cov-report= 2>&1 | tee "$output_file"
           status=${PIPESTATUS[0]}
           set -e

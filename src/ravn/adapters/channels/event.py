@@ -28,10 +28,10 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.ports.persona import PersonaPort
 from ravn.adapters.channels._rabbitmq_base import RabbitMQPublishMixin
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.domain.models import AgentTask, OutputMode
-from ravn.ports.persona import PersonaPort
 from ravn.ports.trigger import TriggerPort
 
 if TYPE_CHECKING:
@@ -106,7 +106,7 @@ class TaskDispatchChannel(TriggerPort, RabbitMQPublishMixin):
     config:
         Sleipnir section from Ravn settings.
     persona_loader:
-        Any :class:`~ravn.ports.persona.PersonaPort` implementation used to
+        Any :class:`~personas.ports.persona.PersonaPort` implementation used to
         validate persona names.  Defaults to ``FilesystemPersonaAdapter``.
     """
 

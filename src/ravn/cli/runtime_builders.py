@@ -17,8 +17,8 @@ from niuu.adapters.outbound.http_auth import (
     WorkloadIdentityBearerTokenAuthAdapter,
 )
 from niuu.ports.http_auth import HttpAuthPort
+from personas.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.config import PermissionConfig, PlatformToolsConfig, Settings, ToolGroupConfig
-from ravn.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.ports.executor import ExecutorPort
 
 logger = logging.getLogger(__name__)
@@ -123,56 +123,23 @@ def _build_llm(settings: Settings) -> Any:
     return primary
 
 
-def _build_executor(
-    persona_config: Any | None = None,
-    settings: Settings | None = None,
-) -> ExecutorPort:
+def _build_executor(settings: Settings | None = None) -> ExecutorPort:
     """Build the runtime-selected executor adapter.
 
-    Persona-level runtime overrides win so mixed-provider workflows can run
-    different transports in one flock. Session/workload transport settings are
-    used as the default when a persona does not override them.
+    The session/workload transport settings choose the executor; without a
+    configured transport the in-process agent executor runs the turn.
     """
     loaded_settings = settings or Settings()
     adapter_path = "ravn.adapters.executors.agent.AgentExecutor"
     kwargs: dict[str, Any] = {}
 
-    executor_cfg = getattr(persona_config, "executor", None)
-    if executor_cfg is not None and getattr(executor_cfg, "adapter", ""):
-        adapter_path = str(executor_cfg.adapter)
-        raw_kwargs = getattr(executor_cfg, "kwargs", {})
-        if isinstance(raw_kwargs, dict):
-            kwargs = dict(raw_kwargs)
-        if adapter_path == "ravn.adapters.executors.cli.CliTransportExecutor":
-            transport_adapter = str(kwargs.get("transport_adapter") or "").strip()
-            runtime_kwargs = _runtime_cli_transport_kwargs(
-                transport_adapter,
-                loaded_settings,
-            )
-            configured_kwargs = kwargs.get("transport_kwargs")
-            if runtime_kwargs and (
-                configured_kwargs is None or isinstance(configured_kwargs, dict)
-            ):
-                kwargs["transport_kwargs"] = {
-                    **runtime_kwargs,
-                    **(configured_kwargs or {}),
-                }
-            if kwargs.get("model_gateway"):
-                # The persona asked for the gateway; the session supplies where
-                # it is. The executor refuses to build if it has none.
-                runtime = loaded_settings.runtime_executor
-                kwargs["model_gateway_url"] = runtime.model_gateway_url
-                kwargs["model_gateway_token"] = runtime.model_gateway_token
-    else:
-        runtime_transport_adapter = loaded_settings.runtime_executor.transport_adapter.strip()
-        if runtime_transport_adapter:
-            adapter_path = "ravn.adapters.executors.cli.CliTransportExecutor"
-            kwargs = {"transport_adapter": runtime_transport_adapter}
-            transport_kwargs = _runtime_cli_transport_kwargs(
-                runtime_transport_adapter, loaded_settings
-            )
-            if transport_kwargs:
-                kwargs["transport_kwargs"] = transport_kwargs
+    runtime_transport_adapter = loaded_settings.runtime_executor.transport_adapter.strip()
+    if runtime_transport_adapter:
+        adapter_path = "ravn.adapters.executors.cli.CliTransportExecutor"
+        kwargs = {"transport_adapter": runtime_transport_adapter}
+        transport_kwargs = _runtime_cli_transport_kwargs(runtime_transport_adapter, loaded_settings)
+        if transport_kwargs:
+            kwargs["transport_kwargs"] = transport_kwargs
 
     cls = _import_class(adapter_path)
     return cls(**kwargs)
@@ -343,18 +310,6 @@ def _transport_mcp_servers(settings: Settings) -> list[dict[str, Any]]:
 def _uses_cli_transport_runtime(settings: Settings | None = None) -> bool:
     """Return True when the daemon is configured to execute turns via CLI transport."""
     return bool((settings or Settings()).runtime_executor.transport_adapter.strip())
-
-
-def _uses_cli_transport_executor(
-    persona_config: Any | None = None,
-    settings: Settings | None = None,
-) -> bool:
-    """Return True when the effective executor is the CLI transport wrapper."""
-    executor_cfg = getattr(persona_config, "executor", None)
-    adapter_path = str(getattr(executor_cfg, "adapter", "") or "").strip()
-    if adapter_path:
-        return adapter_path == "ravn.adapters.executors.cli.CliTransportExecutor"
-    return _uses_cli_transport_runtime(settings)
 
 
 # ---------------------------------------------------------------------------

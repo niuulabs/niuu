@@ -1,4 +1,4 @@
-"""Volundr-hosted Ravn persona registry routes."""
+"""Forge-hosted persona registry routes."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from pydantic import BaseModel, Field
 
 from niuu.domain.models import Principal
-from ravn.adapters.personas.postgres_registry import PersonaView, PostgresPersonaRegistry
-from ravn.domain.persona_document import PersonaDocumentError
+from personas.adapters.postgres_registry import PersonaView, PostgresPersonaRegistry
+from personas.domain.persona_document import PersonaDocumentError
 from volundr.adapters.inbound.auth import extract_principal, get_current_user
 from volundr.domain.models import User
 
 _NAME_PATTERN = r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$"
-_VALID_FAN_IN_STRATEGIES = {
+VALID_FAN_IN_STRATEGIES = {
     "all_must_pass",
     "any_passes",
     "quorum",
@@ -147,7 +147,6 @@ class PersonaCreateRequest(BaseModel):
             "allowed_tools": list(self.allowed_tools),
             "forbidden_tools": list(self.forbidden_tools),
             "permission_mode": self.permission_mode,
-            "executor": None,
             "iteration_budget": self.iteration_budget,
             "llm_primary_alias": "",
             "llm_thinking_enabled": self.llm_thinking_enabled,
@@ -211,10 +210,10 @@ def create_ravn_personas_router(registry: PostgresPersonaRegistry | None = None)
         overlap = sorted(set(data.allowed_tools) & set(data.forbidden_tools))
         if overlap:
             errors.append(f"allowed_tools and forbidden_tools overlap: {', '.join(overlap)}")
-        if data.fan_in_strategy and data.fan_in_strategy not in _VALID_FAN_IN_STRATEGIES:
+        if data.fan_in_strategy and data.fan_in_strategy not in VALID_FAN_IN_STRATEGIES:
             errors.append(
                 f"Invalid fan_in_strategy '{data.fan_in_strategy}'. "
-                f"Must be one of: {', '.join(sorted(_VALID_FAN_IN_STRATEGIES))}"
+                f"Must be one of: {', '.join(sorted(VALID_FAN_IN_STRATEGIES))}"
             )
         return PersonaValidateResponse(valid=not errors, errors=errors)
 

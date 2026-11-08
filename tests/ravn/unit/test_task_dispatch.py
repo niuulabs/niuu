@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.domain.persona import PersonaConfig
 from ravn.adapters.channels.event import (
     ROUTING_ACCEPTED,
     ROUTING_COMPLETED,
@@ -20,7 +22,6 @@ from ravn.adapters.channels.event import (
     _build_initiative_context,
     _parse_deadline,
 )
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter, PersonaConfig
 from ravn.config import SleipnirConfig
 from ravn.domain.models import AgentTask, OutputMode
 

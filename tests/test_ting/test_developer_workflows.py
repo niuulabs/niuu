@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+from personas.adapters.loader import FilesystemPersonaAdapter
 from ting.adapters.parent_workflow_continuation import VolundrParentWorkflowContinuation
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDependency
@@ -74,14 +74,16 @@ def test_developer_workflows_pin_current_integration_reviewer_content() -> None:
 
 def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_is_bounded() -> None:
     files = [
-        *Path("src/ravn/personas").glob("developer-*.yaml"),
+        *Path("src/personas/builtin").glob("developer-*.yaml"),
         *BUNDLED_SYSTEM_WORKFLOWS_PATH.glob("developer-*.yaml"),
     ]
     rendered = "\n".join(path.read_text(encoding="utf-8").casefold() for path in files)
     assert "github" not in rendered
     assert "gitlab" not in rendered
 
-    coordinator = Path("src/ravn/personas/developer-coordinator.yaml").read_text(encoding="utf-8")
+    coordinator = Path("src/personas/builtin/developer-coordinator.yaml").read_text(
+        encoding="utf-8"
+    )
     for tool in (
         "delivery_expand_workstreams",
         "workflow_execution_reconcile",
@@ -132,9 +134,9 @@ def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_i
         coordinator_persona.system_prompt_template
     )
 
-    integration_reviewer = Path("src/ravn/personas/developer-integration-verifier.yaml").read_text(
-        encoding="utf-8"
-    )
+    integration_reviewer = Path(
+        "src/personas/builtin/developer-integration-verifier.yaml"
+    ).read_text(encoding="utf-8")
     assert "delivery_workspace.inspect" in integration_reviewer
     assert "bounded exact-candidate patch" in integration_reviewer
     assert "allowed_tools: [delivery_workspace]" in integration_reviewer

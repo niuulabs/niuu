@@ -615,7 +615,7 @@ def _wire_cascade(
         # When discovery is active, only include personas that are actual
         # peers in the flock — not all installed personas.
         if persona_config and persona_config.fan_in.contributes_to:
-            from ravn.adapters.personas.loader import FilesystemPersonaAdapter  # noqa: PLC0415
+            from personas.adapters.loader import FilesystemPersonaAdapter  # noqa: PLC0415
 
             loader = FilesystemPersonaAdapter()
             target = persona_config.fan_in.contributes_to

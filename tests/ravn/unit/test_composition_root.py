@@ -8,9 +8,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ravn.adapters.personas.loader import PersonaConfig, PersonaExecutorConfig
+from personas.domain.permission_mode import PermissionMode
+from personas.domain.persona import PersonaConfig
 from ravn.config import Settings
-from ravn.domain.permission_mode import PermissionMode
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -200,18 +200,6 @@ class TestBuildExecutor:
         executor = _build_executor()
         assert type(executor).__name__ == "AgentExecutor"
 
-    def test_persona_executor_override_is_loaded(self) -> None:
-        from ravn.cli.commands import _build_executor
-
-        persona = MagicMock(
-            executor=PersonaExecutorConfig(
-                adapter="ravn.adapters.executors.agent.AgentExecutor",
-                kwargs={"mode": "default"},
-            )
-        )
-        executor = _build_executor(persona)
-        assert type(executor).__name__ == "AgentExecutor"
-
 
 # ---------------------------------------------------------------------------
 # _build_memory
@@ -363,8 +351,8 @@ class TestBuildPermission:
         Regression: ``read-only`` reached the enforcer verbatim, matched none of
         its underscore branches and fell through to "allow by default".
         """
+        from personas.domain.persona import PersonaConfig
         from ravn.adapters.permission.enforcer import PermissionEnforcer
-        from ravn.adapters.personas.loader import PersonaConfig
         from ravn.cli.commands import _build_permission
 
         persona = PersonaConfig(name="auditor", permission_mode=spelling)
@@ -381,7 +369,7 @@ class TestBuildPermission:
         tmp_path: Path,
     ) -> None:
         """Control for the read-only assertions: the same probes pass when writes are allowed."""
-        from ravn.adapters.personas.loader import PersonaConfig
+        from personas.domain.persona import PersonaConfig
         from ravn.adapters.tools.file_tools import WriteFileTool
         from ravn.cli.commands import _build_permission
         from ravn.ports.permission import Allow
@@ -408,8 +396,8 @@ class TestBuildPermission:
         settings: Settings,
         tmp_path: Path,
     ) -> None:
+        from personas.domain.persona import PersonaConfig
         from ravn.adapters.permission.allow_deny import DenyAllPermission
-        from ravn.adapters.personas.loader import PersonaConfig
         from ravn.cli.commands import _build_permission
 
         settings.permission.mode = "deny_all"
@@ -423,7 +411,7 @@ class TestBuildPermission:
         tmp_path: Path,
     ) -> None:
         """The effective config is re-validated from Settings, not rebuilt from scratch."""
-        from ravn.adapters.personas.loader import PersonaConfig
+        from personas.domain.persona import PersonaConfig
         from ravn.cli.commands import _build_permission
 
         settings.permission.deny = ["web:*"]
@@ -435,7 +423,7 @@ class TestBuildPermission:
 
 class TestEffectivePermissionMode:
     def test_persona_mode_wins(self, settings: Settings) -> None:
-        from ravn.adapters.personas.loader import PersonaConfig
+        from personas.domain.persona import PersonaConfig
         from ravn.cli.commands import _effective_permission_mode
 
         settings.permission.mode = "full_access"
@@ -463,24 +451,14 @@ class TestEffectivePermissionMode:
 
 
 def _builtin_read_only_personas() -> list[tuple[str, PersonaConfig]]:
-    """Every shipped persona (bundled, archived, in-code) whose mode is read-only."""
-    from ravn.adapters.personas.loader import (
-        _ARCHIVED_BUILTIN_PERSONAS_DIR,
-        _BUILTIN_PERSONAS,
-        _BUILTIN_PERSONAS_DIR,
-        FilesystemPersonaAdapter,
-    )
+    """Every bundled persona whose mode is read-only."""
+    from personas.adapters.loader import _BUILTIN_PERSONAS_DIR, FilesystemPersonaAdapter
 
     adapter = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
     candidates: list[tuple[str, PersonaConfig | None]] = [
         (f"bundled:{path.stem}", adapter.load_from_file(path))
         for path in sorted(_BUILTIN_PERSONAS_DIR.glob("*.yaml"))
     ]
-    candidates += [
-        (f"archived:{path.stem}", adapter.load_from_file(path))
-        for path in sorted(_ARCHIVED_BUILTIN_PERSONAS_DIR.glob("*.yaml"))
-    ]
-    candidates += [(f"in-code:{name}", persona) for name, persona in _BUILTIN_PERSONAS.items()]
     return [
         (label, persona)
         for label, persona in candidates
@@ -1250,7 +1228,7 @@ class TestBuildTools:
         settings: Settings,
         tmp_path: Path,
     ) -> None:
-        from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+        from personas.adapters.loader import FilesystemPersonaAdapter
         from ravn.cli.commands import _build_tools
         from ravn.config import CapabilitySourceConfig
         from ravn.domain.models import Session

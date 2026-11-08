@@ -75,7 +75,7 @@ from sleipnir.domain.events import SleipnirEvent
 
 if TYPE_CHECKING:
     from niuu.ports.mesh import MeshPort
-    from ravn.adapters.personas.loader import PersonaConfig
+    from personas.domain.persona import PersonaConfig
 
 try:
     from sleipnir.domain.catalog import (

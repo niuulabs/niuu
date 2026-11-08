@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
 
-from ravn.domain.persona_document import (
+from personas.domain.persona_document import (
     PersonaDependency,
     PersonaDocumentError,
     PortablePersonaDefinition,

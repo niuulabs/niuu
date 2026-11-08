@@ -21,6 +21,7 @@ from niuu.domain.delivery import (
     WorkstreamSpec,
 )
 from niuu.domain.tool import ToolResult
+from personas.adapters.loader import FilesystemPersonaAdapter
 from ravn.adapters.child_task_a2a import (
     ConfiguredRavnChildTaskA2AGateway,
     RavnChildTaskA2AGateway,
@@ -30,7 +31,6 @@ from ravn.adapters.delivery_http import (
     HttpDeliveryExecutionClient,
     HttpDeliveryServiceClient,
 )
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.adapters.tool_build.http import HttpResponse
 from ravn.adapters.tools.delivery import (
     DeliveryCompleteTool,

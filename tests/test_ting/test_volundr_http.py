@@ -11,8 +11,8 @@ import pytest
 import respx
 
 from niuu.domain.models import Principal
-from ravn.adapters.personas.loader import PersonaConfig
-from ravn.domain.persona_document import portable_persona_from_config
+from personas.domain.persona import PersonaConfig
+from personas.domain.persona_document import portable_persona_from_config
 from ting.adapters.volundr_http import VolundrHTTPAdapter
 from ting.ports.volundr import (
     ActivityStreamConnected,

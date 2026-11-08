@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from niuu.service_runtime import configure_logging
-from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
+from personas.adapters.postgres_registry import PostgresPersonaRegistry
 from volundr.adapters.inbound.rest_ravn_personas import create_ravn_personas_router
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
@@ -54,7 +54,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Persona Registry API",
-        description="Canonical persona registry surface for Ravn, Ting, and runtime consumers.",
+        description="Canonical persona registry surface for Ting, Forge, and runtime consumers.",
         version="0.1.0",
         docs_url=None,
         redoc_url=None,
