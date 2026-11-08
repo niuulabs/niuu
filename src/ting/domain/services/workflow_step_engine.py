@@ -19,7 +19,7 @@ end.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -44,25 +44,36 @@ from ting.domain.step_engine import (
     next_actions,
     plan_close,
     plan_gate_resolution,
+    plan_retry,
 )
 from ting.domain.step_graph import NodeKind, StepGraph, compile_step_graph
+from ting.domain.step_recovery import check_recoverable
+from ting.domain.step_stuck import Condition
 from ting.domain.workflow_document import validate_workflow_graph
 from ting.domain.workflow_steps import (
     EVENT_CLOSE_REJECTED,
+    EVENT_RECOVERY,
     EVENT_RUN_COMPLETED,
     EVENT_RUN_FAILED,
     EVENT_RUN_LAUNCHED,
+    EVENT_STEP_FLAGGED,
     EVENT_STEP_UNCLOSED,
+    SYSTEM_ACTOR_ID,
+    SYSTEM_ACTOR_KIND,
     TERMINAL_RUN_EVENTS,
     Ending,
+    FlagKind,
     GateActor,
     GateDecision,
     InvalidEndingError,
+    RecoveryAction,
+    RecoveryRefusedError,
     RunEvent,
     RunState,
     RunStateError,
     StepEngineError,
     StepFencingError,
+    StepFlag,
     StepKind,
     StepState,
     WorkflowStep,
@@ -71,6 +82,7 @@ from ting.domain.workflow_steps import (
 from ting.ports.workflow_steps import (
     DeliveredEvent,
     LedgerTransaction,
+    SessionLiveness,
     StepActivation,
     StepRunDefinition,
     StepRunDefinitions,
@@ -94,6 +106,14 @@ class StepRunRequest:
     trigger_node_id: str | None = None
 
 
+@dataclass(frozen=True)
+class Recovered:
+    """The outcome of a retry or reassign: the run as it is now and the new attempt."""
+
+    state: RunState
+    step: WorkflowStep
+
+
 class _Ledger:
     """One transaction's view of a run: applies changes and keeps the state they make."""
 
@@ -101,6 +121,7 @@ class _Ledger:
         self._tx = tx
         self._now = now
         self.run_id = state.run_id
+        self.flags = state.flags
         self.steps: dict[UUID, WorkflowStep] = {step.id: step for step in state.steps}
         self.events: list[RunEvent] = list(state.events)
         self.generation = state.generation
@@ -114,6 +135,7 @@ class _Ledger:
             run_id=self.run_id,
             steps=tuple(self.steps.values()),
             events=tuple(self.events),
+            flags=self.flags,
         )
 
     async def save(self, step: WorkflowStep) -> None:
@@ -366,8 +388,11 @@ class WorkflowStepEngine:
             await self._commit_close(ledger, graph, plan, now)
         return await self._after(ledger, definition, graph)
 
-    async def cancel(self, run_id: UUID, reason: str) -> RunState:
-        """Cancel a run: its open steps are canceled and its sessions stopped."""
+    async def cancel(self, run_id: UUID, reason: str, by: GateActor | None = None) -> RunState:
+        """Cancel a run: its open steps are canceled and its sessions stopped.
+
+        ``by`` names the person who aborted it; the log then records who, when and why.
+        """
         if not reason.strip():
             raise RunStateError("a run is canceled with a reason")
         definition, graph = await self._definition(run_id)
@@ -379,8 +404,311 @@ class WorkflowStepEngine:
             if state.finished:
                 raise RunStateError(f"run {run_id} already finished")
             ledger = _Ledger(tx, state, now)
+            if by is not None:
+                await ledger.append(
+                    EVENT_RECOVERY,
+                    {"action": RecoveryAction.ABORT.value, "by": _actor_json(by), "reason": reason},
+                )
             await ledger.apply(cancel_actions(state, reason=reason))
         return await self._after(ledger, definition, graph)
+
+    # -- stuck steps (NIU-1181) -------------------------------------------------
+
+    async def raise_flags(self, run_id: UUID, conditions: Sequence[Condition]) -> list[StepFlag]:
+        """Flag the stuck steps, once per step and kind; returns the flags that are new.
+
+        A flag already on the step (open or resolved) is left alone, so a pass that
+        finds the same condition again raises nothing. Each new flag is written to the
+        run's log, logged at error and counted by kind.
+        """
+        if not conditions:
+            return []
+        now = self._clock()
+        raised: list[StepFlag] = []
+        async with self._repository.transaction(run_id) as tx:
+            state = await tx.load()
+            ledger = _Ledger(tx, state, now)
+            for condition in conditions:
+                step = state.step(condition.step.id)
+                if step is None or not step.is_open:
+                    continue
+                if state.flag(step.id, condition.kind) is not None:
+                    continue
+                flag = StepFlag(
+                    run_id=run_id,
+                    activation_id=step.id,
+                    kind=condition.kind,
+                    since=condition.since,
+                    raised_at=now,
+                    detail=condition.detail,
+                )
+                if not await tx.raise_flag(flag):
+                    continue
+                await ledger.append(
+                    EVENT_STEP_FLAGGED,
+                    {
+                        "activation_id": str(step.id),
+                        "node_id": step.node_id,
+                        "member": step.member,
+                        "attempt": step.attempt,
+                        "kind": condition.kind.value,
+                        "since": condition.since.isoformat(),
+                        "detail": condition.detail,
+                    },
+                    source=step.id,
+                )
+                raised.append(flag)
+        for flag in raised:
+            step = state.step(flag.activation_id)
+            logger.error(
+                "Workflow step %s (%s/%s) of run %s is stuck (%s): %s",
+                flag.activation_id,
+                step.node_id if step else "?",
+                step.member if step else "?",
+                run_id,
+                flag.kind.value,
+                flag.detail,
+            )
+            get_observability().count(
+                "ting_workflow_step_flags_raised_total",
+                attributes={"kind": flag.kind.value},
+                description=(
+                    "Open workflow steps flagged as stuck by the sweep, by kind. Each step is "
+                    "flagged once per kind."
+                ),
+            )
+        return raised
+
+    async def resolve_flags(
+        self,
+        run_id: UUID,
+        still_holding: Collection[tuple[UUID, FlagKind]],
+        *,
+        unobserved: Collection[UUID] = (),
+    ) -> int:
+        """Resolve the run's open flags that no longer hold; returns how many.
+
+        A flag holds while its step is open and ``still_holding`` names it. The flags
+        of ``unobserved`` steps are left alone: a step Ting could not ask about is not
+        known to have recovered.
+        """
+        now = self._clock()
+        resolved = 0
+        async with self._repository.transaction(run_id) as tx:
+            state = await tx.load()
+            for flag in state.flags:
+                if flag.is_resolved or flag.activation_id in unobserved:
+                    continue
+                step = state.step(flag.activation_id)
+                open_step = step is not None and step.is_open
+                if open_step and (flag.activation_id, flag.kind) in still_holding:
+                    continue
+                resolution = (
+                    "condition cleared"
+                    if open_step
+                    else f"step is {step.state.value if step else 'gone'}"
+                )
+                await tx.resolve_flag(flag.activation_id, flag.kind, at=now, resolution=resolution)
+                resolved += 1
+        return resolved
+
+    async def mark_notified(self, run_id: UUID, flags: Sequence[StepFlag]) -> None:
+        """Record that a person was told about each flag."""
+        if not flags:
+            return
+        now = self._clock()
+        async with self._repository.transaction(run_id) as tx:
+            for flag in flags:
+                await tx.mark_flag_notified(flag.activation_id, flag.kind, at=now)
+
+    async def resume_start(self, run_id: UUID, activation_id: UUID, reason: str) -> bool:
+        """Finish starting a step whose start was interrupted; True if it was resumed.
+
+        Creates or finds the member's session, records it on the step and delivers the
+        same activation again (delivery is idempotent by activation id). Nothing about
+        the outcome changes, so unlike the engine's own start this never fails the step
+        when the session cannot be reached: the error is raised for the caller to count,
+        and the step stays as it was. A step that is no longer ``active`` is left alone.
+        """
+        definition, graph = await self._definition(run_id)
+        now = self._clock()
+        async with self._repository.transaction(run_id) as tx:
+            state = await tx.load()
+            step = state.step(activation_id)
+            if (
+                state.finished
+                or step is None
+                or step.run_id != run_id
+                or step.kind is not StepKind.STAGE_MEMBER
+                or step.state is not StepState.ACTIVE
+            ):
+                return False
+            ledger = _Ledger(tx, state, now)
+            await ledger.append(
+                EVENT_RECOVERY,
+                _recovery_payload("resume_start", _system_actor(), reason, step),
+                source=step.id,
+            )
+        member = step.member or ""
+        session_id = await self._sessions.ensure_session(
+            run_id, member, definition.persona_refs[member]
+        )
+        bound = await self._bind_session(step, session_id)
+        if bound is None:
+            return False
+        activation = self._activation(
+            bound, graph, await self._repository.load(run_id), definition.workflow_name
+        )
+        await self._sessions.deliver(activation)
+        return True
+
+    async def fail_step(self, run_id: UUID, activation_id: UUID, reason: str) -> bool:
+        """Fail an open step because its session is gone; True if it was failed.
+
+        The step ends like any step that ended ``failed``: the engine's sibling and
+        run-failure rules apply to it. A step that is no longer open is left alone.
+        """
+        definition, graph = await self._definition(run_id)
+        now = self._clock()
+        async with self._repository.transaction(run_id) as tx:
+            state = await tx.load()
+            step = state.step(activation_id)
+            if (
+                state.finished
+                or step is None
+                or step.run_id != run_id
+                or step.kind is not StepKind.STAGE_MEMBER
+                or step.state not in (StepState.ACTIVE, StepState.WAITING)
+            ):
+                return False
+            plan = plan_close(graph, state, step, Ending.failed(reason), now=now)
+            ledger = _Ledger(tx, state, now)
+            await ledger.append(
+                EVENT_RECOVERY,
+                _recovery_payload("fail_step", _system_actor(), reason, step),
+                source=step.id,
+            )
+            await self._commit_close(ledger, graph, plan, now)
+        await self._after(ledger, definition, graph)
+        return True
+
+    async def retry_step(
+        self, run_id: UUID, activation_id: UUID, *, by: GateActor, reason: str
+    ) -> Recovered:
+        """Replace a failed or stuck step by a new attempt on the member's session.
+
+        The old attempt is closed first (a failed step already is; an open one is
+        canceled), so a late close from it is fenced out. A member whose session has
+        failed gets a fresh one. Refused with ``RecoveryRefusedError`` when the step is
+        in no state to retry, or when its session still holds the old attempt open and
+        cannot let go of it: that needs ``reassign_step``.
+        """
+        return await self._redo(RecoveryAction.RETRY, run_id, activation_id, by, reason)
+
+    async def reassign_step(
+        self, run_id: UUID, activation_id: UUID, *, by: GateActor, reason: str
+    ) -> Recovered:
+        """Move an open or failed step to a fresh session of the same member.
+
+        For when the session itself is broken: the old session is stopped, the old
+        attempt closed and a new attempt starts on the new session.
+        """
+        return await self._redo(RecoveryAction.REASSIGN, run_id, activation_id, by, reason)
+
+    async def _redo(
+        self,
+        action: RecoveryAction,
+        run_id: UUID,
+        activation_id: UUID,
+        by: GateActor,
+        reason: str,
+    ) -> Recovered:
+        if not reason.strip():
+            raise RecoveryRefusedError(action, "a recovery is recorded with a reason")
+        definition, graph = await self._definition(run_id)
+        step = check_recoverable(action, await self._repository.load(run_id), run_id, activation_id)
+        await self._prepare_session(action, definition, step)
+        now = self._clock()
+        async with self._repository.transaction(run_id) as tx:
+            state = await tx.load()
+            step = check_recoverable(action, state, run_id, activation_id)
+            actions = plan_retry(
+                graph, state, step, reason=reason, now=now, settings=self._settings
+            )
+            successor = next(
+                item.step for item in actions if isinstance(item, ActivateStep | QueueStep)
+            )
+            ledger = _Ledger(tx, state, now)
+            await ledger.append(
+                EVENT_RECOVERY,
+                _recovery_payload(
+                    action.value,
+                    _actor_json(by),
+                    reason,
+                    step,
+                    new_activation_id=str(successor.id),
+                    new_attempt=successor.attempt,
+                ),
+                source=step.id,
+            )
+            await ledger.apply(actions)
+        logger.warning(
+            "Workflow step %s (%s/%s) of run %s: %s by %s (%s); attempt %d is %s",
+            step.id,
+            step.node_id,
+            step.member,
+            run_id,
+            action.value,
+            by.id,
+            reason,
+            successor.attempt,
+            successor.state.value,
+        )
+        get_observability().count(
+            "ting_workflow_step_recoveries_total",
+            attributes={"action": action.value},
+            description="Recovery actions an operator took on workflow steps, by action.",
+        )
+        final = await self._after(ledger, definition, graph)
+        created = next(item for item in final.steps if item.id == successor.id)
+        return Recovered(final, created)
+
+    async def _prepare_session(
+        self, action: RecoveryAction, definition: StepRunDefinition, step: WorkflowStep
+    ) -> None:
+        """Make the member's session fit for the new attempt, or refuse the retry."""
+        if not step.session_id:
+            return
+        if action is RecoveryAction.REASSIGN:
+            await self._replace(definition, step)
+            return
+        observed = await self._sessions.observe(step.run_id, step.session_id, step.id)
+        if observed.liveness is SessionLiveness.FAILED:
+            await self._replace(definition, step)
+            return
+        held = observed.reported
+        if held is None:
+            return
+        where = f"{step.node_id}/{step.member}"
+        if str(held.get("state") or "") in ("active", "waiting"):
+            raise RecoveryRefusedError(
+                action,
+                f"session {step.session_id} still holds {where} open and cannot let go of it, "
+                "so a new attempt could not be delivered there; reassign the step to a fresh "
+                "session instead",
+            )
+        if step.is_open:
+            raise RecoveryRefusedError(
+                action,
+                f"session {step.session_id} already closed {where} but that close is not "
+                "recorded yet; the sweep records it, then recover the step if it is still needed",
+            )
+
+    async def _replace(self, definition: StepRunDefinition, step: WorkflowStep) -> None:
+        member = step.member or ""
+        await self._sessions.replace_session(
+            step.run_id, member, definition.persona_refs[member], step.session_id
+        )
 
     # -- deciding ---------------------------------------------------------------
 
@@ -622,4 +950,32 @@ class WorkflowStepEngine:
         )
 
 
-__all__ = ["StepRunRequest", "WorkflowStepEngine"]
+def _actor_json(by: GateActor) -> dict[str, str]:
+    return {"kind": by.kind.value, "id": by.id}
+
+
+def _system_actor() -> dict[str, str]:
+    return {"kind": SYSTEM_ACTOR_KIND, "id": SYSTEM_ACTOR_ID}
+
+
+def _recovery_payload(
+    action: str,
+    by: dict[str, str],
+    reason: str,
+    step: WorkflowStep,
+    **extra: Any,
+) -> dict[str, Any]:
+    """The log entry of a recovery: what was done, to which step, by whom and why."""
+    return {
+        "action": action,
+        "by": by,
+        "reason": reason,
+        "activation_id": str(step.id),
+        "node_id": step.node_id,
+        "member": step.member,
+        "attempt": step.attempt,
+        **extra,
+    }
+
+
+__all__ = ["Recovered", "StepRunRequest", "WorkflowStepEngine"]

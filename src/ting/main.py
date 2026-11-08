@@ -137,8 +137,10 @@ from ting.domain.services.workflow_execution import WorkflowExecutionService
 from ting.domain.services.workflow_migration import workflow_catalog_migration_is_current
 from ting.domain.services.workflow_runs import WorkflowRuns
 from ting.domain.services.workflow_step_engine import WorkflowStepEngine
+from ting.domain.services.workflow_step_watch import StuckStepSweeper
 from ting.domain.services.workflow_wait import WorkflowWaitService
 from ting.domain.step_engine import EngineSettings
+from ting.domain.step_stuck import StuckSettings
 from ting.infrastructure.database import database_pool
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.event_bus import EventBusPort
@@ -1331,15 +1333,16 @@ def create_app(
                     "campaigns": workflow_campaign_repo,
                 }
             )
-            workflow_runs = WorkflowRuns(
-                engine=WorkflowStepEngine(
-                    repository=workflow_step_repo,
-                    sessions=step_sessions,
-                    definitions=CampaignStepRunDefinitions(workflow_campaign_repo),
-                    settings=EngineSettings(
-                        step_deadline_seconds=settings.workflow_steps.step_deadline_seconds
-                    ),
+            step_engine = WorkflowStepEngine(
+                repository=workflow_step_repo,
+                sessions=step_sessions,
+                definitions=CampaignStepRunDefinitions(workflow_campaign_repo),
+                settings=EngineSettings(
+                    step_deadline_seconds=settings.workflow_steps.step_deadline_seconds
                 ),
+            )
+            workflow_runs = WorkflowRuns(
+                engine=step_engine,
                 steps=workflow_step_repo,
                 campaigns=workflow_campaign_repo,
                 sink=workflow_campaign_projector,
@@ -1497,6 +1500,23 @@ def create_app(
             app.state.subscriber = subscriber
             await subscriber.start()
 
+            # Stuck detection for workflow steps (NIU-1181)
+            stuck_cfg = settings.workflow_steps.stuck
+            stuck_sweeper: StuckStepSweeper | None = None
+            if stuck_cfg.enabled:
+                stuck_sweeper = StuckStepSweeper(
+                    engine=step_engine,
+                    runs=workflow_runs,
+                    steps=workflow_step_repo,
+                    campaigns=workflow_campaign_repo,
+                    sessions=step_sessions,
+                    event_bus=event_bus,
+                    settings=StuckSettings(start_grace_seconds=stuck_cfg.start_grace_seconds),
+                    interval_seconds=stuck_cfg.sweep_interval_seconds,
+                )
+                await stuck_sweeper.start()
+            app.state.stuck_step_sweeper = stuck_sweeper
+
             # Wire EventTriggerAdapter (requires Sleipnir subscriber)
             event_trigger_adapter = None
             if settings.event_triggers.enabled and sleipnir_bus is not None:
@@ -1529,6 +1549,8 @@ def create_app(
             # Lifecycle cleanup
             if event_trigger_adapter is not None:
                 await event_trigger_adapter.stop()
+            if stuck_sweeper is not None:
+                await stuck_sweeper.stop()
             await subscriber.stop()
             if ting_sleipnir_bridge is not None:
                 await ting_sleipnir_bridge.stop()

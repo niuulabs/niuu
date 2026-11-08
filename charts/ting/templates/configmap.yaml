@@ -188,6 +188,10 @@ data:
         adapter: {{ .Values.workflowSteps.sessions.adapter | quote }}
         kwargs:
           {{- toYaml .Values.workflowSteps.sessions.kwargs | nindent 10 }}
+      stuck:
+        enabled: {{ .Values.workflowSteps.stuckDetection.enabled | toJson }}
+        sweep_interval_seconds: {{ .Values.workflowSteps.stuckDetection.sweepIntervalSeconds }}
+        start_grace_seconds: {{ .Values.workflowSteps.stuckDetection.startGraceSeconds }}
 
     workflow_execution:
       enabled: {{ .Values.workflowExecution.enabled }}

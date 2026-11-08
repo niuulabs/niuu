@@ -215,6 +215,32 @@ class TestConfigMapTemplate:
         assert default.workflow_steps.step_deadline_seconds == 4 * 3600.0
         assert tightened.workflow_steps.step_deadline_seconds == 900.0
 
+    def test_stuck_detection_renders_from_values_into_settings(self, tmp_path):
+        default = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
+        tuned = Settings(
+            **_config_from_rendered(
+                _render_ting_chart(
+                    tmp_path,
+                    {
+                        "workflowSteps": {
+                            "stuckDetection": {
+                                "enabled": False,
+                                "sweepIntervalSeconds": 45,
+                                "startGraceSeconds": 90,
+                            }
+                        }
+                    },
+                )
+            )
+        )
+
+        assert default.workflow_steps.stuck.enabled is True
+        assert default.workflow_steps.stuck.sweep_interval_seconds == 120.0
+        assert default.workflow_steps.stuck.start_grace_seconds == 600.0
+        assert tuned.workflow_steps.stuck.enabled is False
+        assert tuned.workflow_steps.stuck.sweep_interval_seconds == 45.0
+        assert tuned.workflow_steps.stuck.start_grace_seconds == 90.0
+
     def test_default_values_render_the_documented_watcher_defaults(self, tmp_path):
         settings = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
 
