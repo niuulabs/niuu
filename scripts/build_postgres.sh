@@ -100,8 +100,9 @@ fi
 echo "Building pgvector ${PGVECTOR_VERSION}..."
 cd "$VEC_SRC"
 unset MAKELEVEL MAKEFLAGS MFLAGS 2>/dev/null || true
-PG_CONFIG="$INSTALL_PREFIX/bin/pg_config" make -j"$NPROC"
-PG_CONFIG="$INSTALL_PREFIX/bin/pg_config" make install
+# Distributed bundles must run on other CPUs of the same architecture.
+PG_CONFIG="$INSTALL_PREFIX/bin/pg_config" make OPTFLAGS="" -j"$NPROC"
+PG_CONFIG="$INSTALL_PREFIX/bin/pg_config" make OPTFLAGS="" install
 cd ..
 
 # -------------------------------------------------------------------------

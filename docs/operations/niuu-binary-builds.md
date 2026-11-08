@@ -52,7 +52,8 @@ same reusable build workflow.
 | `niuu-darwin-amd64` | `macos-15-intel` |
 | `niuu-darwin-arm64` | `macos-15` |
 
-The web build runs once and feeds all four jobs. Each job measures packaging,
+The web build runs once and feeds all four jobs. pgvector uses portable compiler
+flags so it does not require the build runner's particular CPU instruction set. Each job measures packaging,
 first CLI launch with an empty installation cache, and three warm launches of
 `niuu --version`. It also checks `niuu platform --help` and
 `niuu platform up --help`, then runs the existing isolated quick-start check:
