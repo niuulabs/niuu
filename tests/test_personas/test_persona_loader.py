@@ -507,3 +507,23 @@ class TestFilesystemPersonaAdapterLoad:
         # Just ensure it doesn't crash; no ~/.ravn/personas likely in test env.
         result = loader.load("coder")
         assert result is not None  # falls back to builtin
+
+
+class TestPersonaNamePaths:
+    """A persona name from a caller can never leave the persona directories."""
+
+    @pytest.mark.parametrize("name", ["../secrets", "a/b", "/etc/passwd", "", ".hidden"])
+    def test_every_name_to_path_lookup_refuses_unsafe_names(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        loader = FilesystemPersonaAdapter(persona_dirs=[str(tmp_path)])
+        for lookup in (loader.load, loader.delete, loader.is_builtin, loader.source):
+            with pytest.raises(PersonaDocumentError):
+                lookup(name)
+
+    def test_save_refuses_a_name_that_leaves_the_directory(self, tmp_path: Path) -> None:
+        loader = FilesystemPersonaAdapter(persona_dirs=[str(tmp_path / "personas")])
+        config = dataclasses.replace(PersonaConfig(name="ok"), name="../escape")
+        with pytest.raises(PersonaDocumentError):
+            loader.save(config)
+        assert not (tmp_path / "escape.yaml").exists()

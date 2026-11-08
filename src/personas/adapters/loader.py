@@ -7,6 +7,7 @@ built-in catalogue shipped with this package (``personas/builtin``).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,22 @@ from personas.ports.persona import PersonaRegistryPort
 
 # Built-in personas shipped with this package (src/personas/builtin/*.yaml)
 _BUILTIN_PERSONAS_DIR = Path(__file__).parent.parent / "builtin"
+
+
+def _persona_file(directory: Path, name: str) -> Path:
+    """Return ``<directory>/<name>.yaml``, refusing a name that leaves *directory*.
+
+    Persona names reach this adapter from API callers, so a name is checked
+    against the persona identifier rules and the joined path must stay inside
+    *directory*. A name that fails either check raises; it is never treated as
+    "not found".
+    """
+    validate_persona_identifier(name, field="Persona name")
+    base = os.path.normpath(str(directory))
+    candidate = os.path.normpath(os.path.join(base, f"{name}.yaml"))
+    if not candidate.startswith(base + os.sep):
+        raise PersonaDocumentError(f"Persona name {name!r} resolves outside {directory}")
+    return Path(candidate)
 
 
 class FilesystemPersonaAdapter(PersonaRegistryPort):
@@ -112,7 +129,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
         instruction is automatically appended to its system prompt.
         """
         for directory in self._resolve_dirs():
-            file_path = directory / f"{name}.yaml"
+            file_path = _persona_file(directory, name)
             if file_path.is_file():
                 persona = self.load_from_file(file_path)
                 if persona is not None:
@@ -216,7 +233,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
         else:
             dest_dir = Path.home() / ".ravn" / "personas"
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / f"{config.name}.yaml"
+        dest = _persona_file(dest_dir, config.name)
         payload: dict[str, Any] = config.to_dict()
         dest.write_text(yaml.dump(payload, allow_unicode=True), encoding="utf-8")
 
@@ -230,7 +247,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
         for directory in self._resolve_dirs():
             if directory == _BUILTIN_PERSONAS_DIR:
                 continue
-            file_path = directory / f"{name}.yaml"
+            file_path = _persona_file(directory, name)
             if file_path.is_file():
                 file_path.unlink()
                 return True
@@ -238,7 +255,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
 
     def is_builtin(self, name: str) -> bool:
         """Return ``True`` when *name* is a built-in persona."""
-        return (_BUILTIN_PERSONAS_DIR / f"{name}.yaml").is_file()
+        return _persona_file(_BUILTIN_PERSONAS_DIR, name).is_file()
 
     def load_all(self) -> list[PersonaConfig]:
         """Return all resolvable personas with outcome instructions injected."""
@@ -257,7 +274,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
         persona cannot be resolved at all.
         """
         for directory in self._resolve_dirs():
-            file_path = directory / f"{name}.yaml"
+            file_path = _persona_file(directory, name)
             if file_path.is_file():
                 if directory == _BUILTIN_PERSONAS_DIR:
                     return "[built-in]"

@@ -400,7 +400,7 @@ def create_personas_router(loader: PersonaRegistryPort) -> APIRouter:
         tags=["Personas"],
     )
     def get_persona(
-        name: str = Path(description="Persona name"),
+        name: str = Path(description="Persona name", pattern=_NAME_PATTERN),
     ) -> PersonaDetail:
         """Get full detail for a named persona."""
         config = loader.load(name)
@@ -421,7 +421,7 @@ def create_personas_router(loader: PersonaRegistryPort) -> APIRouter:
         tags=["Personas"],
     )
     def get_persona_yaml(
-        name: str = Path(description="Persona name"),
+        name: str = Path(description="Persona name", pattern=_NAME_PATTERN),
     ) -> Response:
         """Return the raw YAML text for a named persona."""
         config = loader.load(name)
@@ -467,7 +467,7 @@ def create_personas_router(loader: PersonaRegistryPort) -> APIRouter:
         tags=["Personas"],
     )
     def replace_persona(
-        name: str = Path(description="Persona name"),
+        name: str = Path(description="Persona name", pattern=_NAME_PATTERN),
         data: PersonaCreate = ...,
     ) -> PersonaDetail:
         """Full replace a persona. Creates an override file for built-ins."""
@@ -493,7 +493,7 @@ def create_personas_router(loader: PersonaRegistryPort) -> APIRouter:
         tags=["Personas"],
     )
     def delete_persona(
-        name: str = Path(description="Persona name"),
+        name: str = Path(description="Persona name", pattern=_NAME_PATTERN),
     ) -> None:
         """Delete a custom persona file. Returns 400 for built-ins without an override."""
         if not loader.load(name):
