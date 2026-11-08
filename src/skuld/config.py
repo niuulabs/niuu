@@ -109,8 +109,6 @@ class MeshConfig(BaseModel):
     nats: MeshNatsConfig = Field(default_factory=MeshNatsConfig)
     rpc_timeout_s: float = Field(default=10.0)
     rpc_reply_cache_size: int = Field(default=DEFAULT_RPC_REPLY_CACHE_SIZE, ge=1)
-    default_work_timeout_s: float = Field(default=120.0)
-    default_response_urgency: float = Field(default=0.3)
     diff_max_bytes: int = Field(default=8192)
     diff_timeout_s: float = Field(default=10.0)
     consumes_event_types: list[str] = Field(
@@ -1007,6 +1005,26 @@ class WorkflowStepsConfig(BaseModel):
     )
 
 
+class PeerInboxConfig(BaseModel):
+    """The inbox through which other agents' messages reach this session's harness.
+
+    Every message from another agent (a session, a room, a mesh peer) is held durably in the
+    session's event log and handed to the harness at a turn boundary. The inbox has no
+    capacity: loops between agents are made visible through the per-pair counts in the
+    session status and the ``skuld.peer.messages`` counter, never capped.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Accept peer messages. A session that turns this off refuses every one with that "
+            "reason. Accepting needs the durable event log (event_log_enabled and "
+            "volundr_api_url): without it a message is refused loudly, never held in memory "
+            "only."
+        ),
+    )
+
+
 class SkuldSettings(BaseSettings):
     """Skuld broker settings.
 
@@ -1273,6 +1291,7 @@ class SkuldSettings(BaseSettings):
     room: RoomConfig = Field(default_factory=RoomConfig)
     mesh: MeshConfig = Field(default_factory=MeshConfig)
     workflow_steps: WorkflowStepsConfig = Field(default_factory=WorkflowStepsConfig)
+    peer_inbox: PeerInboxConfig = Field(default_factory=PeerInboxConfig)
 
     @model_validator(mode="after")
     def _resolve_transport_adapter(self) -> "SkuldSettings":

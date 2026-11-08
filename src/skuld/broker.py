@@ -28,6 +28,7 @@ from fastapi import WebSocket, WebSocketDisconnect  # noqa: F401
 from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
 from niuu.domain.logging import LoggingConfig
 from niuu.domain.outcome import parse_outcome_block
+from niuu.domain.peer_message import PEER_MESSAGE_FRAME, PeerMessage, PeerMessageError
 from niuu.domain.presented_files import PRESENT_FILE_RPC_TYPE
 from niuu.domain.text_projection import projection_revision
 from niuu.domain.transcript_reducer import (
@@ -99,6 +100,7 @@ from skuld.file_routes import (  # noqa: F401
 )
 from skuld.forge_mcp.integration import ForgeSessionMixin
 from skuld.history_hydration import fetch_durable_history, merge_history_turns
+from skuld.peer_inbox import PeerInboxMixin
 from skuld.preview import PreviewForwarder, PreviewPortWatcher
 from skuld.service_manager import (  # noqa: F401
     ServiceCreateRequest,
@@ -402,6 +404,9 @@ _OWNER_ONLY_MESSAGE_TYPES = frozenset(
         "set_max_thinking_tokens",
         "resend_initial_prompt",
         "publish_event",
+        # Forge hands another agent's message to this session. It claims a sender, so only the
+        # session's owner connection (Forge acting for it) may send one.
+        PEER_MESSAGE_FRAME,
     }
 )
 _ROOM_ROLE_RANK = {"viewer": 0, "approver": 1, "owner": 2}
@@ -467,6 +472,7 @@ class Broker(
     ActivityReportingMixin,
     ChronicleMixin,
     WorkflowStepMixin,
+    PeerInboxMixin,
 ):
     """WebSocket broker for Claude Code sessions.
 
@@ -481,6 +487,7 @@ class Broker(
     ):
         self._settings = settings or SkuldSettings()
         self._init_workflow_steps()
+        self._init_peer_inbox()
         self._ws_identity = None
         self._ws_authorization = None
         if self._settings.ws_auth.enforce_ownership:
@@ -978,9 +985,9 @@ class Broker(
 
         self._mesh_adapter = SkuldMeshAdapter(
             participant=participant,
-            transport=self._transport,
             config=mesh_cfg,
             session_id=self.session_id,
+            peer_inbox=self,
             # Flock members share the workspace, not this broker's loopback secret:
             # their present-file comes over the mesh they already speak.
             rpc_handlers={PRESENT_FILE_RPC_TYPE: _present_peer_file},
@@ -2922,6 +2929,12 @@ class Broker(
                         },
                     )
 
+            # Another agent's message, from Forge (a session message, or a room's relay to a
+            # member session). Answered with user_delivered / user_delivery_failed for the
+            # request_id once the message is durably in the inbox.
+            case "peer_message":
+                await self._accept_peer_message_frame(data)
+
             # Room: forward a directed message to a specific Ravn participant
             case "directed_message":
                 if self._room_bridge is None:
@@ -3117,6 +3130,20 @@ class Broker(
                 await self._submit_user_turn(
                     content_str, msg_id=msg_id, request_id=request_id, source="browser"
                 )
+
+    async def _accept_peer_message_frame(self, data: dict) -> None:
+        """Take a ``peer_message`` frame into the inbox and acknowledge it by ``request_id``."""
+        request_id = data.get("request_id")
+        request_id = request_id if isinstance(request_id, str) and request_id else None
+        raw = data.get("envelope")
+        message_id = str(raw.get("message_id") or "") if isinstance(raw, dict) else ""
+        try:
+            envelope = PeerMessage.from_wire(raw)
+            acceptance = await self.accept_peer_message(envelope, request_id)
+        except PeerMessageError as exc:
+            await self._emit_delivery_ack(request_id, message_id, "failed", error=str(exc))
+            return
+        await self._emit_delivery_ack(request_id, acceptance.message_id, "delivered")
 
     async def _submit_user_turn(
         self,
@@ -4281,6 +4308,7 @@ class Broker(
         """Restore broker-owned state from the frozen durable-log horizon."""
         self._restore_durable_controls(frames)
         self._restore_durable_workflow_steps(frames)
+        self._restore_durable_peer_inbox(frames)
         self._restore_durable_room_members(frames)
 
     def _restore_durable_room_members(self, frames: list) -> None:

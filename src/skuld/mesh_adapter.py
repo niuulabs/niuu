@@ -1,29 +1,42 @@
-"""SkuldMeshAdapter — mesh peer bridge for Claude CLI sessions (NIU-612).
+"""SkuldMeshAdapter — mesh peer bridge for Skuld sessions (NIU-612).
 
-Gives Skuld a mesh identity so it can participate in the mesh as a peer.
-Subscribes to task topics and feeds received prompts to the CLI transport.
-Results (including outcome blocks) are published back as response events.
+Gives Skuld a mesh identity so it can participate in the mesh as a peer. What other peers
+send this session lands in the session's peer inbox (``skuld.peer_inbox``) and reaches the
+harness at the next turn boundary like any other peer message:
+
+* an RPC of type ``peer_message`` carries a :class:`~niuu.domain.peer_message.PeerMessage`;
+* a ``work_request`` RPC and an outcome event on a consumed topic become a peer message from
+  the mesh peer, whose reply route is the mesh back to it.
+
+Nothing here waits for the harness. A sender is told its message is held; the answer comes
+later, from the harness, through the ``reply`` tool.
 
 NIU-634: wired to use niuu.mesh.MeshParticipant for lifecycle management.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import socket
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
-from niuu.adapters.cli import CliTurnRunner
-from niuu.domain.outcome import parse_outcome_block
+from niuu.domain.peer_message import (
+    PEER_MESSAGE_FRAME,
+    PeerAddress,
+    PeerKind,
+    PeerMessage,
+    PeerMessageError,
+    ReplyKind,
+    ReplyRoute,
+)
 from niuu.mesh.events import MeshEvent, MeshEventType
 from niuu.mesh.participant import MeshParticipant
-from niuu.ports.cli import CLITransport
 from niuu.ports.mesh import MeshPort
 from skuld.config import MeshConfig
+from skuld.peer_inbox import CHANNEL_MESH, PeerAcceptance, PeerMessageRefusedError
 from sleipnir.ports.events import SleipnirSubscriber
 
 logger = logging.getLogger("skuld.mesh_adapter")
@@ -32,8 +45,16 @@ logger = logging.getLogger("skuld.mesh_adapter")
 RpcHandler = Callable[[dict], Awaitable[dict]]
 
 
+class PeerMessageReceiver(Protocol):
+    """The session's peer inbox, as the mesh sees it."""
+
+    async def accept_peer_message(
+        self, envelope: PeerMessage, request_id: str | None = None, *, channel: str | None = None
+    ) -> PeerAcceptance: ...
+
+
 class SkuldMeshAdapter:
-    """Bridge between the mesh and the CLI transport.
+    """Bridge between the mesh and the session's peer inbox.
 
     Lifecycle:
         start() — start participant (mesh + discovery), subscribe to task topics
@@ -43,22 +64,19 @@ class SkuldMeshAdapter:
     def __init__(
         self,
         participant: MeshParticipant,
-        transport: CLITransport,
         config: MeshConfig,
         session_id: str,
+        peer_inbox: PeerMessageReceiver,
         rpc_handlers: Mapping[str, RpcHandler] | None = None,
     ) -> None:
         self._participant = participant
         self._rpc_handlers = dict(rpc_handlers or {})
         self._mesh: MeshPort | None = participant.mesh
-        self._transport = transport
+        self._peer_inbox = peer_inbox
         self._config = config
         self._session_id = session_id
         self._peer_id = participant.peer_id or config.peer_id or socket.gethostname()
         self._running = False
-        self._turn_runner = CliTurnRunner(transport)
-        self._pending_responses = self._turn_runner.pending_responses
-        self._execute_lock = self._turn_runner.execute_lock
 
     @property
     def peer_id(self) -> str:
@@ -115,9 +133,6 @@ class SkuldMeshAdapter:
             for event_type in self._config.consumes_event_types:
                 await self._mesh.unsubscribe(event_type)
 
-        # Cancel any pending response futures
-        await self._turn_runner.cancel_pending()
-
         await self._participant.stop()
 
         logger.info("mesh adapter: stopped (peer_id=%s)", self._peer_id)
@@ -149,8 +164,11 @@ class SkuldMeshAdapter:
         )
 
     async def _handle_rpc(self, message: dict) -> dict:
-        """Handle incoming RPC messages (work_request, task_dispatch)."""
+        """Handle incoming RPC messages (peer_message, work_request, and the broker's own)."""
         msg_type = message.get("type", "")
+
+        if msg_type == PEER_MESSAGE_FRAME:
+            return await self._handle_peer_message(message)
 
         if msg_type == "work_request":
             return await self._handle_work_request(message)
@@ -161,77 +179,69 @@ class SkuldMeshAdapter:
 
         return {"error": "unknown_message_type", "type": msg_type}
 
+    async def _handle_peer_message(self, message: dict) -> dict:
+        """A peer message RPC: ``{"envelope": <wire>}`` goes into the inbox."""
+        try:
+            envelope = PeerMessage.from_wire(message.get("envelope"))
+        except PeerMessageError as exc:
+            logger.error("mesh adapter: malformed peer message refused: %s", exc)
+            return {"status": "refused", "error": str(exc)}
+        return await self._accept(envelope)
+
+    async def _accept(self, envelope: PeerMessage) -> dict:
+        try:
+            acceptance = await self._peer_inbox.accept_peer_message(envelope, channel=CHANNEL_MESH)
+        except PeerMessageRefusedError as exc:
+            return {"status": "refused", "message_id": envelope.message_id, "error": str(exc)}
+        answer: dict[str, Any] = {"status": "accepted", "message_id": acceptance.message_id}
+        if acceptance.duplicate:
+            answer["duplicate"] = True
+        return answer
+
     async def _handle_work_request(self, message: dict) -> dict:
-        """Process a work_request: send prompt to CLI, collect result."""
+        """A work_request becomes a message from the requesting peer; its answer comes by reply.
+
+        The requester must name itself (``source_peer_id``): the answer is routed back to it
+        over the mesh, and the harness is told who asked.
+        """
         prompt = message.get("prompt", "")
-        event_type = message.get("event_type", "")
-        request_id = message.get("request_id", str(uuid.uuid4()))
-        timeout_s = float(message.get("timeout_s", self._config.default_work_timeout_s))
+        request_id = message.get("request_id") or str(uuid.uuid4())
 
         if not prompt:
+            return {"status": "error", "request_id": request_id, "error": "empty prompt"}
+        source_peer_id = message.get("source_peer_id")
+        if not isinstance(source_peer_id, str) or not source_peer_id.strip():
             return {
                 "status": "error",
                 "request_id": request_id,
-                "error": "empty prompt",
+                "error": (
+                    "work_request needs source_peer_id: the answer is sent back to that peer "
+                    "over the mesh"
+                ),
             }
 
         logger.info(
-            "mesh adapter: work_request %s (event_type=%s, timeout=%.0fs)",
+            "mesh adapter: work_request %s from %s (event_type=%s)",
             request_id,
-            event_type,
-            timeout_s,
+            source_peer_id,
+            message.get("event_type", ""),
         )
-
         try:
-            result_text = await asyncio.wait_for(
-                self._execute_prompt(prompt, request_id),
-                timeout=timeout_s,
+            envelope = self._mesh_message(
+                message_id=str(request_id),
+                source_peer_id=source_peer_id,
+                prompt=prompt,
+                event_type=str(message.get("event_type", "")),
             )
-
-            response: dict[str, Any] = {
-                "status": "complete",
-                "request_id": request_id,
-                "output": result_text,
-                "event_type": event_type,
-            }
-
-            parsed = parse_outcome_block(result_text)
-            if parsed is not None:
-                response["outcome"] = {
-                    "fields": parsed.fields,
-                    "valid": parsed.valid,
-                    "errors": parsed.errors,
-                }
-
-            return response
-        except TimeoutError:
-            logger.warning("mesh adapter: work_request %s timed out", request_id)
-            return {
-                "status": "timeout",
-                "request_id": request_id,
-                "event_type": event_type,
-            }
-        except Exception as exc:
-            logger.error("mesh adapter: work_request %s failed: %s", request_id, exc)
-            return {
-                "status": "error",
-                "request_id": request_id,
-                "error": str(exc),
-            }
-
-    async def _execute_prompt(self, prompt: str, request_id: str) -> str:
-        """Send prompt to CLI transport and collect the result text.
-
-        Serialized via ``_execute_lock`` — the CLI handles one prompt at
-        a time, so overlapping calls would corrupt the event callback chain.
-        """
-        return await self._turn_runner.run_prompt(prompt, request_id)
+        except PeerMessageError as exc:
+            return {"status": "error", "request_id": request_id, "error": str(exc)}
+        answer = await self._accept(envelope)
+        return {**answer, "request_id": request_id}
 
     async def _handle_outcome_event(self, event: MeshEvent) -> None:
-        """Handle incoming outcome events from mesh subscriptions.
+        """An outcome event on a consumed topic becomes a message from the emitting peer.
 
-        When an outcome event arrives that matches our subscribed topics,
-        feed the prompt to the CLI transport and publish the result back.
+        A message this session refuses raises: the event is not silently dropped.
         """
         if event.type != MeshEventType.OUTCOME:
             return
@@ -243,62 +253,32 @@ class SkuldMeshAdapter:
             return
 
         event_type = payload.get("event_type", "")
-        request_id = str(uuid.uuid4())
-
         logger.info(
             "mesh adapter: handling outcome event (event_type=%s, source=%s)",
             event_type,
             event.source,
         )
-
-        try:
-            timeout_s = float(self._config.default_work_timeout_s)
-            result_text = await asyncio.wait_for(
-                self._execute_prompt(prompt, request_id),
-                timeout=timeout_s,
-            )
-        except TimeoutError:
-            logger.warning(
-                "mesh adapter: outcome event handling timed out (event_type=%s, timeout=%.0fs)",
-                event_type,
-                timeout_s,
-            )
-            result_text = (
-                "---outcome---\n"
-                "verdict: blocked\n"
-                f"summary: Timed out after {int(timeout_s)}s while handling {event_type}.\n"
-                "---end---"
-            )
-        except Exception as exc:
-            logger.error("mesh adapter: outcome event handling failed: %s", exc)
-            result_text = f"Error: {exc}"
-
-        # Publish result back to mesh
-        parsed = parse_outcome_block(result_text)
-        outcome_payload: dict[str, Any] = {
-            "event_type": event_type,
-            "persona": self._config.persona,
-            "source_peer_id": self._peer_id,
-            "output": result_text,
-        }
-        if parsed is not None:
-            outcome_payload["outcome"] = {
-                "fields": parsed.fields,
-                "valid": parsed.valid,
-                "errors": parsed.errors,
-            }
-
-        response_event = MeshEvent(
-            type=MeshEventType.OUTCOME,
-            source=self._peer_id,
-            payload=outcome_payload,
-            timestamp=datetime.now(UTC),
-            urgency=self._config.default_response_urgency,
-            correlation_id=event.correlation_id,
-            session_id=self._session_id,
+        envelope = self._mesh_message(
+            message_id=event.event_id,
+            source_peer_id=event.source,
+            prompt=prompt,
+            event_type=event_type,
         )
+        answer = await self._accept(envelope)
+        if answer["status"] != "accepted":
+            raise PeerMessageRefusedError(
+                f"outcome event {event.event_id} from {event.source} was refused: {answer['error']}"
+            )
 
-        if self._mesh is not None:
-            topic = f"{self._config.persona}.completed"
-            await self._mesh.publish(response_event, topic=topic)
-            logger.info("mesh adapter: published response to topic %r", topic)
+    def _mesh_message(
+        self, *, message_id: str, source_peer_id: str, prompt: str, event_type: str
+    ) -> PeerMessage:
+        content = f"[Request for event type {event_type}]\n{prompt}" if event_type else prompt
+        return PeerMessage(
+            message_id=message_id,
+            sender=PeerAddress(PeerKind.MESH_PEER, source_peer_id, name=source_peer_id),
+            recipient=PeerAddress(PeerKind.SESSION, str(self._session_id)),
+            sent_at=datetime.now(UTC),
+            content=content,
+            reply=ReplyRoute(ReplyKind.MESH, source_peer_id),
+        )

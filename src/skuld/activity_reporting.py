@@ -36,6 +36,7 @@ class ActivityReportingMixin:
     """Broker behavior for activity transitions and attention state."""
 
     _RUNNING_RAW_STATES = ("active", "tool_executing")
+    _BLOCKED_RAW_STATES = ("awaiting_input",)
     _TURN_END_RAW_STATES = ("idle", "stopped", "error")
 
     async def _report_session_start(self) -> None:
@@ -161,9 +162,10 @@ class ActivityReportingMixin:
         # event can advance the broker while credentials or the HTTP request waits.
         payload = self._build_activity_payload(state, extra_metadata)
 
-        # A turn starting or ending is what a workflow step host keys on: it hands over the
-        # step's instructions at a boundary and reports a turn that ended with its step open.
-        await self._observe_workflow_step_activity(state)
+        # A turn starting or ending is what the inbound paths key on: a workflow step host
+        # reports a turn that ended with its step open, and whatever waits (the step's
+        # instructions, then peer messages) is handed to the harness when it goes idle.
+        await self._observe_turn_boundary(state)
 
         if not self.volundr_api_url or not self._settings.activity_reporting_enabled:
             return False
@@ -198,6 +200,9 @@ class ActivityReportingMixin:
         if extra_metadata:
             metadata.update(extra_metadata)
         metadata["open_controls"] = self._open_controls(state)
+        peer_status = self.peer_message_status()
+        if peer_status["pairs"]:
+            metadata["peer_messages"] = peer_status
         return {
             "state": state,
             "state_since": self._state_since_iso(self._activity_state_since),
@@ -352,6 +357,18 @@ class ActivityReportingMixin:
             return
         if is_work_row(kind, data):
             self._prompt_work_seen = True
+
+    def _turn_boundary_open(self) -> bool:
+        """Whether the harness is between turns, so handing it input interrupts nothing.
+
+        The one gate everything that waits for a turn boundary shares (a workflow step's
+        instructions, peer messages). A turn in flight, a question or approval waiting on a
+        person, or a transport that says its turn is active all mean no. The check is
+        repeated at every turn end.
+        """
+        if self._activity_state in (*self._RUNNING_RAW_STATES, *self._BLOCKED_RAW_STATES):
+            return False
+        return not (self._transport_tracks_turns() and self._transport_turn_active())
 
     def _transport_turn_active(self) -> bool:
         return getattr(self._transport, "is_turn_active", False) is True

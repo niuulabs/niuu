@@ -62,6 +62,9 @@ _EXPECTED_OWNER_ONLY = {
     "rewind_files",
     "resend_initial_prompt",
     "publish_event",
+    # Another agent's message, with a sender it claims: only the owner connection (Forge
+    # acting for the session) may hand one over.
+    "peer_message",
 }
 
 

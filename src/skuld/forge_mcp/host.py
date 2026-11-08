@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from niuu.build_identity import build_identity
 from niuu.domain.artifact_reports import ArtifactReport, build_report_turn
 from niuu.domain.notifications import NotificationDraft, build_notification_turn
+from niuu.domain.peer_message import PeerMessage
 from niuu.domain.services.forge_session_token import SESSION_ID_CLAIM
 from niuu.domain.workflow_step import WorkflowStepCloseArgs
 from niuu.forge_mcp.credentials import is_forge_session_claims, token_scopes, unverified_claims
@@ -220,6 +221,10 @@ class BrokerForgeMcpHost(ForgeMcpHost):
             "url": report.url,
             "state": STATE_COMMITTED if stored else STATE_PENDING,
         }
+
+    async def received_peer_message(self, message_id: str) -> PeerMessage:
+        """A message this session's inbox holds, by id; an unknown id raises PeerMessageError."""
+        return self._broker.received_peer_message(message_id)
 
     def workflow_step_host(self) -> bool:
         return self._broker._settings.workflow_steps.enabled

@@ -47,7 +47,6 @@ _STEP_TURN_NAMESPACE = "workflow-step"
 STEP_TURN_SOURCE = "workflow_step"
 
 _RUNNING_STATES = ("active", "tool_executing")
-_BLOCKED_STATES = ("awaiting_input",)
 _TURN_END_STATES = ("idle", "stopped", "error")
 
 
@@ -369,9 +368,7 @@ class WorkflowStepMixin:
             step = WorkflowStep.from_request(request)
             await self._record_workflow_step(step, confirm=True)
             self._workflow_steps[step.activation_id] = step
-        self._spawn_workflow_step_task(
-            self._maybe_inject_workflow_step(), f"workflow-step-inject-{step.activation_id}"
-        )
+        self._spawn_boundary_injection(f"workflow-step-inject-{step.activation_id}")
         return True, step
 
     def get_workflow_step(self, activation_id: str) -> WorkflowStep:
@@ -414,26 +411,20 @@ class WorkflowStepMixin:
 
     # -- injection at a turn boundary
 
-    def _workflow_step_boundary_open(self) -> bool:
-        """Whether the harness is between turns, so the instructions interrupt nothing.
+    async def _maybe_inject_workflow_step(self) -> bool:
+        """Hand the open step's instructions to the harness if it is between turns.
 
-        A turn in flight, a question or approval waiting on a person, or a transport that says
-        its turn is active all mean no. The check is repeated at every turn end.
+        True when it did, so the caller leaves any peer messages for the next boundary: the
+        step goes in first. The gate is the one peer messages share (``_turn_boundary_open``).
         """
-        if self._activity_state in (*_RUNNING_STATES, *_BLOCKED_STATES):
-            return False
-        return not (self._transport_tracks_turns() and self._transport_turn_active())
-
-    async def _maybe_inject_workflow_step(self) -> None:
-        """Hand the open step's instructions to the harness if it is between turns."""
         async with self._workflow_step_lock:
             step = self._open_workflow_step()
             if step is None or step.injected or step.state != STEP_STATE_ACTIVE:
-                return
+                return False
             if self._transport is None or self._activity_state in ("stopped", "error"):
-                return
-            if not self._workflow_step_boundary_open():
-                return
+                return False
+            if not self._turn_boundary_open():
+                return False
             step.injected = True
             step.turn_seen = False
             try:
@@ -458,10 +449,11 @@ class WorkflowStepMixin:
                 await self._fail_workflow_step(
                     step, f"could not hand the step to the harness: {exc}"
                 )
-                return
+                return False
         self._spawn_workflow_step_task(
             self._finish_step_delivery(step, task), f"workflow-step-delivered-{step.activation_id}"
         )
+        return True
 
     async def _finish_step_delivery(self, step: WorkflowStep, task: asyncio.Task[None]) -> None:
         """A step whose instructions never reached the harness fails loudly, never waits."""
@@ -535,7 +527,10 @@ class WorkflowStepMixin:
     # -- turn boundaries
 
     async def _observe_workflow_step_activity(self, state: str) -> None:
-        """Track the harness's turns against the open step; inject at a boundary."""
+        """Track the harness's turns against the open step.
+
+        Handing instructions over at an idle boundary is ``_observe_turn_boundary``'s job.
+        """
         step = self._open_workflow_step()
         if step is None:
             return
@@ -557,11 +552,6 @@ class WorkflowStepMixin:
                     "activation_id": step.activation_id,
                     "attempt": step.attempt,
                 }
-            )
-            return
-        if state == "idle":
-            self._spawn_workflow_step_task(
-                self._maybe_inject_workflow_step(), f"workflow-step-inject-{step.activation_id}"
             )
 
     # -- restore
