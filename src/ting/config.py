@@ -1293,6 +1293,18 @@ class Settings(BaseSettings):
         loc_by_alias=False,
     )
 
+    @field_validator("server_workers")
+    @classmethod
+    def _one_worker(cls, value: int) -> int:
+        if value > 1:
+            raise ValueError(
+                f"server_workers is {value}, but Ting runs one worker: each worker runs its "
+                "own activity subscriber, stuck sweep and notification loop, so every session "
+                "report would be handled once per worker. Set WORKERS (chart config.workers) "
+                "to 1"
+            )
+        return value
+
     @model_validator(mode="before")
     @classmethod
     def _reject_removed_keys(cls, data: Any) -> Any:
@@ -1381,9 +1393,15 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("server_port", "PORT"),
     )
     server_workers: int = Field(
-        default=4,
+        default=1,
         ge=1,
         validation_alias=AliasChoices("server_workers", "WORKERS"),
+        description=(
+            "Uvicorn worker processes. Must be 1: every worker runs Ting's whole lifespan, "
+            "so a second worker runs a second activity subscriber, stuck sweep, notification "
+            "loop and workflow execution worker, and every session report is handled twice. "
+            "Scale Ting by its async event loop, not by workers."
+        ),
     )
     local_platform_host: str = Field(
         default="127.0.0.1",

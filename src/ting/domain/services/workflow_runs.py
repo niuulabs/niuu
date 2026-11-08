@@ -174,11 +174,17 @@ class WorkflowRuns:
         return state
 
     async def record_step_unclosed(
-        self, *, run_id: UUID, activation_id: UUID, session_id: str, attempt: int
+        self,
+        *,
+        run_id: UUID,
+        activation_id: UUID,
+        session_id: str,
+        attempt: int,
+        turn: int | None = None,
     ) -> RunState:
-        """Record that a session ended a turn with the step still open."""
+        """Record that a session ended a turn (``turn``, when known) with the step still open."""
         await self._require_run(run_id, activation_id)
-        return await self._engine.note_unclosed(activation_id, session_id, attempt)
+        return await self._engine.note_unclosed(activation_id, session_id, attempt, turn)
 
     async def resolve_gate(
         self,

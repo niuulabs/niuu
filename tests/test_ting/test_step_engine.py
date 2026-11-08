@@ -276,8 +276,9 @@ async def test_a_step_that_already_closed_cannot_be_closed_again(workstream: Run
     coder = workstream.current("workstream-code")
     await workstream.close(coder, "ready")
 
+    # The same close again is a repeat (see below); another ending is fenced.
     with pytest.raises(StepFencingError, match="is done"):
-        await workstream.close(coder, "ready")
+        await workstream.close(coder, "blocked")
 
 
 async def test_a_stale_step_cannot_close() -> None:
@@ -448,6 +449,51 @@ async def test_a_step_that_cannot_be_delivered_fails_loudly(
     assert coder.state is StepState.FAILED
     assert "developer-coder is unreachable" in coder.note
     assert run.finished_with() == "engine.run.failed"
+
+
+# --- the same report delivered more than once -----------------------------------
+
+
+async def test_a_close_delivered_again_is_accepted_once_and_records_no_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = Recorder()
+    run = make_run(bundled("Developer Workstream"), monkeypatch=monkeypatch, recorder=recorder)
+    await run.launch()
+    coder = run.current("workstream-code")
+    await run.close(coder, "ready")
+    after_first = run.state
+
+    for _ in range(3):  # two workers x two owner streams saw the same close
+        await run.close(coder, "ready")
+
+    assert run.state == after_first
+    assert "engine.close.rejected" not in run.event_types()
+    assert recorder.counted("ting_workflow_step_reports_repeated_total", report="closed") == 3
+    assert recorder.total("ting_workflow_step_close_rejections_total") == 0
+
+
+async def test_a_different_ending_after_a_close_is_still_fenced() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    await run.launch()
+    coder = run.current("workstream-code")
+    await run.close(coder, "ready")
+
+    with pytest.raises(StepFencingError, match="not active or waiting"):
+        await run.fail(coder, "changed my mind")
+
+
+async def test_an_unclosed_turn_reported_again_is_recorded_once() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    await run.launch()
+    coder = run.current("workstream-code")
+
+    for turn in (1, 1, 1, 2):
+        await run.engine.note_unclosed(coder.id, coder.session_id, coder.attempt, turn)
+    await run.engine.note_unclosed(coder.id, coder.session_id, coder.attempt)
+
+    unclosed = [e for e in run.state.events if e.event_type == "engine.step.unclosed"]
+    assert [e.payload.get("turn") for e in unclosed] == [1, 2, None]
 
 
 # --- a session that is still starting ---------------------------------------------

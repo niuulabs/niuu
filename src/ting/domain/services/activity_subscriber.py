@@ -826,6 +826,7 @@ class SessionActivitySubscriber:
                 activation_id=activation_id,
                 session_id=event.session_id,
                 attempt=attempt,
+                turn=_turn_of(event.metadata),
             )
         except (StepFencingError, InvalidEndingError) as exc:
             logger.error(
@@ -1258,3 +1259,11 @@ def _is_duplicate_help_request(messages: list[SessionMessage], serialized_payloa
     if latest_user is None:
         return True
     return latest_user.created_at <= latest_help.created_at
+
+
+def _turn_of(metadata: dict) -> int | None:
+    """The session's turn count from an activity report's metadata, or None when absent."""
+    raw = metadata.get("turn_count")
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None
+    return raw

@@ -91,7 +91,10 @@ config:
   observability: {}
   host: "0.0.0.0"
   port: 8081
-  workers: 2
+  # -- Uvicorn workers. Must be 1 (Ting refuses more at startup): each worker runs its own
+  # activity subscriber, stuck sweep and notification loop, so a second worker handles every
+  # session report twice.
+  workers: 1
   # -- Browser-facing Niuu origin used in notification links
   publicOrigin: ""
   cors:

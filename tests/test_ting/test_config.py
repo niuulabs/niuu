@@ -129,7 +129,7 @@ class TestSettings:
     def test_server_and_platform_legacy_aliases(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HOST", "127.0.0.2")
         monkeypatch.setenv("PORT", "8181")
-        monkeypatch.setenv("WORKERS", "2")
+        monkeypatch.setenv("WORKERS", "1")
         monkeypatch.setenv("NIUU_SERVER_HOST", "192.0.2.10")
         monkeypatch.setenv("NIUU_SERVER_PORT", "9090")
 
@@ -137,7 +137,7 @@ class TestSettings:
 
         assert settings.server_host == "127.0.0.2"
         assert settings.server_port == 8181
-        assert settings.server_workers == 2
+        assert settings.server_workers == 1
         assert settings.local_platform_host == "192.0.2.10"
         assert settings.local_platform_port == 9090
 
@@ -147,6 +147,7 @@ class TestSettings:
             ("PORT", "invalid", "server_port"),
             ("PORT", "70000", "server_port"),
             ("WORKERS", "0", "server_workers"),
+            ("WORKERS", "2", "server_workers"),
             ("NIUU_SERVER_PORT", "0", "local_platform_port"),
         ],
     )

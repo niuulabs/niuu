@@ -79,6 +79,7 @@ from ting.domain.workflow_steps import (
     StepState,
     WorkflowStep,
     check_fence,
+    is_repeat_close,
 )
 from ting.ports.workflow_steps import (
     DeliveredEvent,
@@ -323,6 +324,14 @@ class WorkflowStepEngine:
         try:
             async with self._repository.transaction(found.run_id) as tx:
                 state = await tx.load()
+                if is_repeat_close(
+                    state.step(activation_id),
+                    session_id=session_id,
+                    attempt=attempt,
+                    ending=ending,
+                ):
+                    self._count_repeat("closed")
+                    return state
                 step = check_fence(
                     state.step(activation_id),
                     activation_id=activation_id,
@@ -345,13 +354,15 @@ class WorkflowStepEngine:
         activation_id: UUID,
         session_id: str | None,
         attempt: int,
+        turn: int | None = None,
     ) -> RunState:
         """Record that a session ended its turn with the step still open.
 
         The step stays open: nothing is guessed from what the session said. The fact
         is written to the run's event log and counted, for stuck detection to act on.
         A report for a step the session does not own is a fencing rejection, as for a
-        close.
+        close. ``turn`` is the session's turn count when the report names one: a second
+        report of the same turn is the same report delivered again and is not recorded.
         """
         found = await self._repository.find_step(activation_id)
         if found is None:
@@ -366,6 +377,9 @@ class WorkflowStepEngine:
                 session_id=session_id,
                 attempt=attempt,
             )
+            if turn is not None and _unclosed_turn_recorded(state, step, session_id, turn):
+                self._count_repeat("unclosed")
+                return state
             ledger = _Ledger(tx, state, now)
             await ledger.append(
                 EVENT_STEP_UNCLOSED,
@@ -375,6 +389,7 @@ class WorkflowStepEngine:
                     "member": step.member,
                     "attempt": step.attempt,
                     "session_id": session_id,
+                    **({"turn": turn} if turn is not None else {}),
                 },
                 source=step.id,
             )
@@ -1111,6 +1126,19 @@ class WorkflowStepEngine:
             )
 
     @staticmethod
+    def _count_repeat(report: str) -> None:
+        """A session report Ting already applied, delivered again; accepted, changed nothing."""
+        logger.debug("Ignored a repeated workflow step %s report", report)
+        get_observability().count(
+            "ting_workflow_step_reports_repeated_total",
+            attributes={"report": report},
+            description=(
+                "Workflow step reports delivered again after Ting applied them "
+                "(a reconnected or second activity stream); accepted, changed nothing."
+            ),
+        )
+
+    @staticmethod
     def _count_rejection(kind: str) -> None:
         get_observability().count(
             "ting_workflow_step_close_rejections_total",
@@ -1162,3 +1190,16 @@ def _recovery_payload(
 
 
 __all__ = ["Recovered", "StepRunRequest", "WorkflowStepEngine"]
+
+
+def _unclosed_turn_recorded(
+    state: RunState, step: WorkflowStep, session_id: str | None, turn: int
+) -> bool:
+    """Whether this session's turn ``turn`` was already recorded as ending the step unclosed."""
+    return any(
+        event.event_type == EVENT_STEP_UNCLOSED
+        and event.source_activation_id == step.id
+        and event.payload.get("session_id") == session_id
+        and event.payload.get("turn") == turn
+        for event in state.events
+    )

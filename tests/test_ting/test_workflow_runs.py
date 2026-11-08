@@ -361,7 +361,8 @@ async def test_a_close_from_a_session_that_does_not_own_the_step_is_fenced(
     with caplog.at_level("ERROR", logger="ting.domain.services.activity_subscriber"):
         await harness.harness_says("implemented", outcome={"summary": "x"})
         before = len(harness.forge.deliveries)
-        # A second close of the same activation, from the right session: the step is done.
+        # A different close of the same activation, from the right session: the step is
+        # done. (The same close again is a repeat delivery and is accepted silently.)
         delivered_to, _ = harness.forge.deliveries[0]
         body = harness.forge.deliveries[0][1]
         await harness.subscriber._on_activity_event(
@@ -374,7 +375,7 @@ async def test_a_close_from_a_session_that_does_not_own_the_step_is_fenced(
                         "run_id": body["run_id"],
                         "activation_id": body["activation_id"],
                         "attempt": 1,
-                        "ending": {"kind": "verdict", "verdict": "implemented"},
+                        "ending": {"kind": "failed", "note": "second thoughts"},
                     }
                 },
                 owner_id=OWNER,
@@ -385,6 +386,42 @@ async def test_a_close_from_a_session_that_does_not_own_the_step_is_fenced(
 
     assert len(harness.forge.deliveries) == before
     assert any("was rejected" in record.getMessage() for record in caplog.records)
+
+
+async def test_the_same_close_delivered_again_changes_nothing_and_is_not_rejected(
+    harness: Harness, caplog
+) -> None:
+    await harness.launch()
+
+    with caplog.at_level("ERROR", logger="ting.domain.services.activity_subscriber"):
+        await harness.harness_says("implemented", outcome={"summary": "x"})
+        state = await harness.steps.load(harness.campaign.id)
+        before = len(harness.forge.deliveries)
+        delivered_to, body = harness.forge.deliveries[0]
+        repeat = ActivityEvent(
+            session_id=delivered_to,
+            state="idle",
+            metadata={
+                "workflow_step": {
+                    "event": "closed",
+                    "run_id": body["run_id"],
+                    "activation_id": body["activation_id"],
+                    "attempt": 1,
+                    "ending": {
+                        "kind": "verdict",
+                        "verdict": "implemented",
+                        "outcome": {"summary": "x"},
+                    },
+                }
+            },
+            owner_id=OWNER,
+        )
+        for _ in range(3):
+            await harness.subscriber._on_activity_event(repeat, harness.forge, OWNER)
+
+    assert len(harness.forge.deliveries) == before
+    assert await harness.steps.load(harness.campaign.id) == state
+    assert not any("was rejected" in record.getMessage() for record in caplog.records)
 
 
 async def test_a_verdict_the_persona_does_not_declare_changes_nothing(

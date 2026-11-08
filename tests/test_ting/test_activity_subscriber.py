@@ -2014,6 +2014,17 @@ class TestWorkflowStepReports:
         assert runs.closed == []
 
     @pytest.mark.asyncio
+    async def test_an_unclosed_report_carries_the_turn_of_the_envelope(self) -> None:
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+        metadata = {**contract.UNCLOSED_METADATA, "turn_count": 3}
+
+        await sub._on_activity_event(self._event(metadata), volundr, OWNER_ID)
+        await sub._on_activity_event(self._event(contract.UNCLOSED_METADATA), volundr, OWNER_ID)
+
+        assert [call["turn"] for call in runs.unclosed] == [3, None]
+
+    @pytest.mark.asyncio
     async def test_a_fenced_close_is_logged_at_error_and_the_stream_moves_on(self, caplog) -> None:
         runs = _RecordingRuns(reject=StepFencingError(UUID(contract.ACTIVATION_ID), "stale"))
         sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)

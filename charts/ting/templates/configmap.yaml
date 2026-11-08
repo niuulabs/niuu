@@ -16,7 +16,7 @@ data:
   LOG_FORMAT: {{ .Values.config.logFormat | default "json" | quote }}
   HOST: {{ .Values.config.host | default "0.0.0.0" | quote }}
   PORT: {{ .Values.service.targetPort | default 8000 | quote }}
-  WORKERS: {{ .Values.config.workers | default 2 | quote }}
+  WORKERS: {{ .Values.config.workers | default 1 | quote }}
   {{- with .Values.config.extra }}
   {{- range $key, $value := . }}
   {{ $key }}: {{ $value | quote }}

@@ -470,6 +470,38 @@ def activation_id_for(run_id: UUID, node_id: str, member: str | None, attempt: i
     return uuid5(NAMESPACE_URL, f"niuu:workflow-step:{run_id}:{node_id}:{member or ''}:{attempt}")
 
 
+def is_repeat_close(
+    step: WorkflowStep | None,
+    *,
+    session_id: str | None,
+    attempt: int,
+    ending: Ending,
+) -> bool:
+    """True when ``ending`` is the close this session already gave this step.
+
+    Session activity is delivered at least once: a stream that reconnects, or two
+    subscriptions that see the same session, hand Ting the same close again. The same
+    session closing the same attempt the same way is that repeat, not a second close,
+    so it is accepted without changing anything. A different ending after a close is
+    not a repeat and is fenced as before.
+    """
+    if step is None or step.closed_at is None:
+        return False
+    if step.session_id != session_id or step.attempt != attempt:
+        return False
+    match ending.kind:
+        case EndingKind.VERDICT:
+            return step.state in (StepState.DONE, StepState.FAILED) and step.verdict == (
+                (ending.verdict or "").strip()
+            )
+        case EndingKind.FAILED:
+            return step.state is StepState.FAILED and not step.verdict and step.note == ending.note
+        case EndingKind.DONE:
+            return step.state is StepState.DONE and not step.verdict and step.note == ending.note
+    # A waiting ending leaves the step open, so a repeat of it is closed again as usual.
+    return False
+
+
 def check_fence(
     step: WorkflowStep | None,
     *,
