@@ -542,7 +542,10 @@ def _durable_name_for_subject(consumer_group: str, subject: str) -> str:
     """
     safe_group = "".join(ch if ch.isalnum() or ch in ("_", "-") else "-" for ch in consumer_group)
     safe_group = safe_group.strip("-_") or "group"
-    digest = hashlib.sha1(subject.encode("utf-8")).hexdigest()[:12]
+    # A name, not a secret: the digest only keeps durable names short and unique per subject.
+    # It stays SHA-1 because a different digest renames every existing durable, and a renamed
+    # durable starts at DeliverPolicy.NEW, so messages sent during a rollout would be missed.
+    digest = hashlib.sha1(subject.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
     return f"{safe_group[:48]}-{digest}"
 
 
