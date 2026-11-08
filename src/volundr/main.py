@@ -185,6 +185,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_secret_injection_adapter,
     _create_workflow_execution_credential_service,
     _runtime_backend,
+    _start_sleipnir_bus,
     _validate_remote_room_role_config,
     create_oauth_client_registry,
     create_presented_file_store,
@@ -964,24 +965,7 @@ def create_app(
             git_registry = create_git_registry(settings.git)
 
             # Sleipnir integration (optional — enabled via sleipnir.enabled config)
-            sleipnir_bus = None
-            if settings.sleipnir.enabled:
-                try:
-                    sl_cls = import_class(settings.sleipnir.adapter)
-                    sleipnir_kwargs = resolve_secret_kwargs(
-                        settings.sleipnir.kwargs,
-                        settings.sleipnir.secret_kwargs_env,
-                    )
-                    sleipnir_bus = sl_cls(**sleipnir_kwargs)
-                    if hasattr(sleipnir_bus, "start"):
-                        await sleipnir_bus.start()
-                    logger.info(
-                        "Sleipnir integration enabled: adapter=%s",
-                        settings.sleipnir.adapter.rsplit(".", 1)[-1],
-                    )
-                except Exception:
-                    logger.exception("Failed to initialise Sleipnir integration")
-                    sleipnir_bus = None
+            sleipnir_bus = await _start_sleipnir_bus(settings)
 
             # Mesh identity: certificates for session peers and Forge-hosted residents,
             # signed with the session-credential key. Revocations ride the Sleipnir bus;
@@ -996,7 +980,7 @@ def create_app(
                     settings, mesh_certificate_issuer, mesh_peer_claims, sleipnir_bus
                 )
             elif mesh_certificate_issuer is not None:
-                logger.info(
+                logger.warning(
                     "Mesh revocations are not published: Forge has no Sleipnir bus "
                     "(sleipnir.enabled); a stopped session's certificate lasts until it "
                     "expires (forge_mcp.mesh_identity.ttl_seconds)"

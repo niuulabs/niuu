@@ -10,17 +10,20 @@ import yaml
 
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "volundr"
 BIFROST_URL = ("--set", "bifrost.url=http://bifrost.test")
-#: The smallest cluster setup for durable presented files: the quota, session
-#: credentials, and their projection into session pods.
+#: The smallest cluster setup for durable presented files: the quota and a signing key
+#: for session credentials, which then follow into session pods by themselves.
+WORKLOAD_SIGNING_KEY = (
+    "--set",
+    "workloadIdentity.enabled=true",
+    "--set",
+    "workloadIdentity.signingKey.existingSecret=wi-key",
+)
 PRESENTED_FILES_ON = (
     "--set",
     "presentedFiles.enabled=true",
     "--set",
     "presentedFiles.maxTotalBytes=5368709120",
-    "--set",
-    "forgeMcp.session_tokens.enabled=true",
-    "--set",
-    "sessionCredentialProjection.enabled=true",
+    *WORKLOAD_SIGNING_KEY,
     "--set",
     "podManager.kwargs.namespace=volundr-sessions",
 )
@@ -959,16 +962,12 @@ class TestConfigMapTemplate:
             )
             return yaml.safe_load(configmap["data"]["config.yaml"])
 
-        # The read-only root filesystem rules out the key file: session credentials
-        # default on only when workload identity signs with a configured key.
+        # The read-only root filesystem rules out Forge's default key file: session
+        # credentials default on only where Forge has a key it can keep.
         assert render()["forge_mcp"] == {"session_tokens": {"enabled": False}}
-        signed = render(
-            "--set",
-            "workloadIdentity.enabled=true",
-            "--set",
-            "workloadIdentity.signingKey.existingSecret=wi-key",
-        )
-        assert signed["forge_mcp"] == {"session_tokens": {"enabled": True}}
+        signed = render(*WORKLOAD_SIGNING_KEY)["forge_mcp"]["session_tokens"]
+        assert signed["enabled"] is True
+        assert signed["projection_adapter"].endswith("KubernetesExecutionCredentialProjection")
         config = render(
             "--set-json",
             'forgeMcp={"default_grants":["message"],"session_tokens":{"ttl_seconds":604800},'
@@ -2045,8 +2044,16 @@ class TestPresentedFilesOnACluster:
         ("drop", "extra", "message"),
         [
             ("presentedFiles.maxTotalBytes=5368709120", (), "presentedFiles.maxTotalBytes"),
-            ("forgeMcp.session_tokens.enabled=true", (), "Forge session credentials"),
-            ("sessionCredentialProjection.enabled=true", (), "sessionCredentialProjection"),
+            (
+                "workloadIdentity.enabled=true",
+                (),
+                "presentedFiles.enabled needs Forge session credentials",
+            ),
+            (
+                None,
+                ("sessionCredentialProjection.enabled=false",),
+                "needs session pods to hold their Forge credential",
+            ),
             (
                 None,
                 ("presentedFiles.persistence.accessMode=ReadWriteOnce", "rollout.colocate=false"),
@@ -2066,11 +2073,7 @@ class TestPresentedFilesOnACluster:
 
     def test_an_openshell_forge_needs_no_projection(self):
         """The OpenShell pod manager writes the credential into the sandbox itself."""
-        args: list[str] = []
-        pairs = list(zip(PRESENTED_FILES_ON[::2], PRESENTED_FILES_ON[1::2], strict=True))
-        for flag, value in pairs:
-            if value != "sessionCredentialProjection.enabled=true":
-                args += [flag, value]
+        args: list[str] = list(PRESENTED_FILES_ON)
         args += [
             "--set",
             "podManager.adapter=volundr.adapters.outbound.openshell_gateway."
@@ -2083,6 +2086,136 @@ class TestPresentedFilesOnACluster:
     def test_read_write_once_is_accepted_with_colocated_pods(self):
         args = (*PRESENTED_FILES_ON, "--set", "presentedFiles.persistence.accessMode=ReadWriteOnce")
         assert _rendered_configmap(*args)["presented_files"]["enabled"] is True
+
+
+SESSION_CREDENTIALS_ROLE = "test-volundr-session-credentials"
+DIRECT_K8S = "volundr.adapters.outbound.direct_k8s_pod_manager.DirectK8sPodManager"
+OPENSHELL = "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager"
+KEY_FILE = ("--set", "forgeMcp.session_tokens.signing_key_file=/keys/forge-session.pem")
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestSessionCredentialsNeedNoSetup:
+    """A session broker asks Forge for its mesh certificate with the credential Forge mints
+    at launch, so a cluster that can sign gets the credential, its Secret projection and
+    the RBAC for it without further values."""
+
+    @staticmethod
+    def _tokens(*args: str) -> dict:
+        return _rendered_configmap(*args)["forge_mcp"]["session_tokens"]
+
+    @staticmethod
+    def _has_secret_role(*args: str) -> bool:
+        return any(
+            doc["kind"] == "Role" and doc["metadata"]["name"] == SESSION_CREDENTIALS_ROLE
+            for doc in _rendered_documents(*args)
+        )
+
+    def test_workload_identity_key_turns_on_credentials_projection_and_rbac(self):
+        tokens = self._tokens(*WORKLOAD_SIGNING_KEY)
+        assert tokens["enabled"] is True
+        assert tokens["projection_adapter"] == (
+            "volundr.adapters.outbound.execution_credential_k8s."
+            "KubernetesExecutionCredentialProjection"
+        )
+        assert tokens["projection_kwargs"]["mount_path"] == "/var/run/secrets/niuu-forge-session"
+        assert self._has_secret_role(*WORKLOAD_SIGNING_KEY)
+
+    def test_an_operator_key_file_is_a_key_forge_keeps(self):
+        tokens = self._tokens(*KEY_FILE)
+        assert tokens["enabled"] is True
+        assert tokens["signing_key_file"] == "/keys/forge-session.pem"
+        assert "projection_adapter" in tokens
+        assert self._has_secret_role(*KEY_FILE)
+
+    def test_the_direct_kubernetes_pod_manager_is_projected_too(self):
+        args = (*WORKLOAD_SIGNING_KEY, "--set", f"podManager.adapter={DIRECT_K8S}")
+        assert "projection_adapter" in self._tokens(*args)
+        assert self._has_secret_role(*args)
+
+    def test_a_pod_manager_that_delivers_itself_gets_no_projection_or_role(self):
+        args = (*WORKLOAD_SIGNING_KEY, "--set", f"podManager.adapter={OPENSHELL}")
+        assert self._tokens(*args) == {"enabled": True}
+        assert not self._has_secret_role(*args)
+
+    def test_no_key_means_off_and_nothing_is_rendered_for_it(self):
+        assert self._tokens() == {"enabled": False}
+        assert not self._has_secret_role()
+
+    def test_credentials_can_still_be_switched_off(self):
+        args = (*WORKLOAD_SIGNING_KEY, "--set", "forgeMcp.session_tokens.enabled=false")
+        assert self._tokens(*args) == {"enabled": False}
+        assert not self._has_secret_role(*args)
+        # The mesh identity follows them, so it is not asked for while they are off.
+        assert "mesh_identity" not in _rendered_configmap(*args)["forge_mcp"]
+
+    def test_the_projection_can_be_switched_off_on_its_own(self):
+        args = (*WORKLOAD_SIGNING_KEY, "--set", "sessionCredentialProjection.enabled=false")
+        assert self._tokens(*args) == {"enabled": True}
+        assert not self._has_secret_role(*args)
+
+    def test_rbac_follows_rbac_create(self):
+        args = (*WORKLOAD_SIGNING_KEY, "--set", "rbac.create=false")
+        assert "projection_adapter" in self._tokens(*args)
+        assert not self._has_secret_role(*args)
+
+    def test_an_operator_projection_adapter_is_kept(self):
+        args = (
+            *WORKLOAD_SIGNING_KEY,
+            "--set",
+            "forgeMcp.session_tokens.projection_adapter=acme.Projection",
+        )
+        assert self._tokens(*args)["projection_adapter"] == "acme.Projection"
+
+    def test_mesh_identity_stays_on_with_credentials(self):
+        from volundr.config import ForgeMcpConfig
+
+        args = (*WORKLOAD_SIGNING_KEY, "--set", "forgeMcp.mesh_identity.ttl_seconds=600")
+        parsed = ForgeMcpConfig.model_validate(_rendered_configmap(*args)["forge_mcp"])
+        assert parsed.session_tokens.enabled is True
+        assert parsed.mesh_identity.enabled is True
+        assert parsed.mesh_identity.ttl_seconds == 600
+
+    def test_enabling_credentials_without_a_key_is_refused_with_the_remedy(self):
+        error = _render_failure("--set", "forgeMcp.session_tokens.enabled=true")
+        assert "needs a signing key Forge can keep" in error
+        for remedy in ("workloadIdentity", "signing_key_file", "enabled: false"):
+            assert remedy in error
+
+    def test_workload_identity_without_its_key_secret_is_not_a_key(self):
+        error = _render_failure(
+            "--set",
+            "workloadIdentity.enabled=true",
+            "--set",
+            "forgeMcp.session_tokens.enabled=true",
+        )
+        assert "needs a signing key Forge can keep" in error
+
+    def test_mesh_identity_without_credentials_is_refused(self):
+        error = _render_failure("--set", "forgeMcp.mesh_identity.enabled=true")
+        assert "forgeMcp.mesh_identity.enabled needs session credentials" in error
+        assert "forgeMcp.mesh_identity.enabled: false" in error
+
+    def test_mesh_identity_can_be_switched_off_explicitly(self):
+        args = (*WORKLOAD_SIGNING_KEY, "--set", "forgeMcp.mesh_identity.enabled=false")
+        config = _rendered_configmap(*args)["forge_mcp"]
+        assert config["mesh_identity"] == {"enabled": False}
+        assert config["session_tokens"]["enabled"] is True
+
+    def test_a_projection_with_nothing_to_project_is_refused(self):
+        error = _render_failure("--set", "sessionCredentialProjection.enabled=true")
+        assert "sessionCredentialProjection.enabled has no credential to project" in error
+
+    def test_an_explicit_projection_is_honoured_for_any_pod_manager(self):
+        args = (
+            *WORKLOAD_SIGNING_KEY,
+            "--set",
+            f"podManager.adapter={OPENSHELL}",
+            "--set",
+            "sessionCredentialProjection.enabled=true",
+        )
+        assert "projection_adapter" in self._tokens(*args)
+        assert self._has_secret_role(*args)
 
 
 GUEST_METADATA_ON = ("--set", "guestMetadata.enabled=true")

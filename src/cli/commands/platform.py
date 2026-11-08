@@ -1005,10 +1005,12 @@ def _build_init_config(mode: str) -> dict[str, Any]:
 
         return {"mode": "docker", "docker": DockerConfig().model_dump(exclude={"vllm"})}
     if mode == "cluster":
-        return {
-            "mode": "cluster",
-            "pod_manager": dict(CLUSTER_POD_MANAGER_DEFAULTS),
-        }
+        from cli.config import ServerConfig
+
+        pod_manager = dict(CLUSTER_POD_MANAGER_DEFAULTS)
+        # Session pods reach this Forge at the same host alias they reach its database at.
+        pod_manager["volundr_api_url"] = f"http://{pod_manager['db_host']}:{ServerConfig().port}"
+        return {"mode": "cluster", "pod_manager": pod_manager}
     if mode == "openshell":
         return {
             "mode": "openshell",

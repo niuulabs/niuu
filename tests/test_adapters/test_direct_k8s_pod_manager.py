@@ -21,7 +21,7 @@ from volundr.adapters.outbound.direct_k8s_pod_manager import (
     SESSION_SERVICE_PORT,
     DirectK8sPodManager,
 )
-from volundr.domain.models import GitSource, Session, SessionStatus
+from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec, SessionStatus
 
 
 @pytest.fixture
@@ -847,3 +847,121 @@ class TestClose:
         # Should not raise.
         await pod_manager.close()
         assert pod_manager._api_client is None
+
+
+FORGE_MOUNT = "/var/run/secrets/niuu-forge-session"
+
+
+def _projected_spec(**values) -> SessionSpec:
+    """A spec as SessionService leaves it once the projection has mounted the credential."""
+    spec = SessionSpec(
+        values={
+            "forgeMcp": {"tokenFile": f"{FORGE_MOUNT}/token", "grants": ["lifecycle", "message"]},
+            **values,
+        },
+        pod_spec=PodSpecAdditions(
+            volumes=(
+                {"name": "forge-session-abc", "secret": {"secretName": "forge-session-abc"}},
+                {"name": "other", "emptyDir": {}},
+            ),
+            volume_mounts=(
+                {"name": "forge-session-abc", "mountPath": FORGE_MOUNT, "readOnly": True},
+                {"name": "other", "mountPath": "/other"},
+            ),
+        ),
+    )
+    return spec
+
+
+class TestForgeSessionCredential:
+    """A mounted session credential reaches only the broker, with a Forge URL to use it."""
+
+    @pytest.fixture
+    def forge_manager(self) -> DirectK8sPodManager:
+        return DirectK8sPodManager(
+            namespace="test-ns",
+            volundr_api_url="http://host.k3d.internal:8080/",
+        )
+
+    @staticmethod
+    def _env(env: list[dict]) -> dict[str, str]:
+        return {e["name"]: e["value"] for e in env if "value" in e}
+
+    def test_broker_env_names_the_file_grants_and_forge_url(
+        self, forge_manager: DirectK8sPodManager, sample_session: Session
+    ) -> None:
+        env = self._env(forge_manager._build_env(sample_session, _projected_spec()))
+        assert env["SKULD__FORGE_MCP__TOKEN_FILE"] == f"{FORGE_MOUNT}/token"
+        assert env["SKULD__FORGE_MCP__GRANTS"] == "lifecycle,message"
+        assert env["SKULD__VOLUNDR_API_URL"] == "http://host.k3d.internal:8080"
+        assert "SKULD__FORGE_MCP__TOKEN" not in env
+
+    def test_launch_spec_api_url_overrides_the_configured_one(
+        self, forge_manager: DirectK8sPodManager, sample_session: Session
+    ) -> None:
+        spec = _projected_spec(volundr={"apiUrl": "http://forge.test/"})
+        env = self._env(forge_manager._build_env(sample_session, spec))
+        assert env["SKULD__VOLUNDR_API_URL"] == "http://forge.test"
+
+    def test_values_env_cannot_supply_a_credential(
+        self, forge_manager: DirectK8sPodManager, sample_session: Session
+    ) -> None:
+        spec = make_spec(
+            env={
+                "SKULD__FORGE_MCP__TOKEN": "spec-token",
+                "SKULD__FORGE_MCP__TOKEN_FILE": "/tmp/elsewhere",
+                "SKULD__FORGE_MCP__GRANTS": "lifecycle",
+            }
+        )
+        env = self._env(forge_manager._build_env(sample_session, spec))
+        assert not {name for name in env if name.startswith("SKULD__FORGE_MCP__")}
+
+        mounted = _projected_spec(env={"SKULD__FORGE_MCP__TOKEN": "spec-token"})
+        names = [e["name"] for e in forge_manager._build_env(sample_session, mounted)]
+        assert "SKULD__FORGE_MCP__TOKEN" not in names
+        assert names.count("SKULD__FORGE_MCP__TOKEN_FILE") == 1
+
+    def test_no_credential_adds_only_the_forge_url(
+        self, forge_manager: DirectK8sPodManager, sample_session: Session
+    ) -> None:
+        env = self._env(forge_manager._build_env(sample_session, make_spec()))
+        assert env["SKULD__VOLUNDR_API_URL"] == "http://host.k3d.internal:8080"
+        assert not {name for name in env if name.startswith("SKULD__FORGE_MCP__")}
+
+    def test_nothing_is_set_without_a_url_or_credential(
+        self, pod_manager: DirectK8sPodManager, sample_session: Session
+    ) -> None:
+        env = self._env(pod_manager._build_env(sample_session, make_spec()))
+        assert "SKULD__VOLUNDR_API_URL" not in env
+
+    def test_credential_without_a_forge_url_is_refused(
+        self, pod_manager: DirectK8sPodManager, sample_session: Session
+    ) -> None:
+        with pytest.raises(ValueError, match="volundr_api_url"):
+            pod_manager._build_env(sample_session, _projected_spec())
+
+    def test_only_the_broker_container_mounts_the_credential(
+        self, forge_manager: DirectK8sPodManager, sample_session: Session
+    ) -> None:
+        manifest = forge_manager._build_deployment_manifest(sample_session, _projected_spec())
+        pod = manifest["spec"]["template"]["spec"]
+        mounts = {
+            container["name"]: {m["mountPath"] for m in container["volumeMounts"]}
+            for container in pod["containers"]
+        }
+        assert FORGE_MOUNT in mounts["skuld"]
+        for name in ("nginx", "vscode-reh", "devrunner"):
+            assert FORGE_MOUNT not in mounts[name]
+        for name in ("skuld", "vscode-reh", "devrunner"):
+            assert "/other" in mounts[name]
+        for init in pod["initContainers"]:
+            assert FORGE_MOUNT not in {m["mountPath"] for m in init.get("volumeMounts", [])}
+        assert "forge-session-abc" in {volume["name"] for volume in pod["volumes"]}
+        skuld = next(c for c in pod["containers"] if c["name"] == "skuld")
+        assert self._env(skuld["env"])["SKULD__FORGE_MCP__TOKEN_FILE"] == f"{FORGE_MOUNT}/token"
+
+    def test_cli_cluster_defaults_name_the_forge_url(self) -> None:
+        from cli.commands.platform import _build_init_config
+
+        pod_manager = _build_init_config("cluster")["pod_manager"]
+        assert pod_manager["volundr_api_url"] == f"http://{pod_manager['db_host']}:8080"

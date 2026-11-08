@@ -923,3 +923,30 @@ def _create_contributors(
         logger.info("Session contributor: session_mcp (auto-wired)")
 
     return contributors
+
+
+async def _start_sleipnir_bus(settings: Settings) -> Any | None:
+    """Start the configured Sleipnir bus, or ``None`` when ``sleipnir.enabled`` is false.
+
+    Enabled but unable to start is fatal: Forge running on without its bus would silently
+    stop events, audit and mesh revocations.
+    """
+    if not settings.sleipnir.enabled:
+        return None
+    try:
+        bus_class = import_class(settings.sleipnir.adapter)
+        bus = bus_class(
+            **resolve_secret_kwargs(settings.sleipnir.kwargs, settings.sleipnir.secret_kwargs_env)
+        )
+        if hasattr(bus, "start"):
+            await bus.start()
+    except Exception as exc:
+        raise RuntimeError(
+            f"sleipnir.enabled is true but the bus {settings.sleipnir.adapter!r} could not "
+            f"start: {exc!r}. Fix sleipnir.adapter / sleipnir.kwargs, or set "
+            "sleipnir.enabled: false to run without a bus"
+        ) from exc
+    logger.info(
+        "Sleipnir integration enabled: adapter=%s", settings.sleipnir.adapter.rsplit(".", 1)[-1]
+    )
+    return bus

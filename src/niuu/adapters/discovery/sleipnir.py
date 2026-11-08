@@ -71,6 +71,9 @@ class SleipnirDiscoveryAdapter:
         Ignored — allows forward compatibility with new config fields.
     """
 
+    #: ``build_discovery_adapters`` passes ``attestor`` to adapters that set this.
+    signs_announcements = True
+
     def __init__(
         self,
         own_identity: MeshIdentity,
@@ -82,8 +85,10 @@ class SleipnirDiscoveryAdapter:
         peer_ttl_s: float = 90.0,
         # Legacy: accept config objects for backward compatibility
         config: DiscoveryConfig | None = None,
+        attestor: Any | None = None,
         **kwargs: Any,
     ) -> None:
+        self._attestor = attestor
         self._identity = own_identity
         self._amqp_url_env = amqp_url_env
         self._convergence_wait_s = convergence_wait_s
@@ -217,15 +222,18 @@ class SleipnirDiscoveryAdapter:
     ) -> None:
         if self._exchange is None:
             return
+        announcement: dict[str, Any] = {
+            "identity": self._identity_dict(),
+            "action": action,
+            "status": status,
+            "task_count": task_count,
+        }
+        if self._attestor is not None:
+            announcement = self._attestor.sign(announcement)
         payload = {
             "event_type": "ravn.mesh.announce",
             "source": f"ravn:{self._identity.peer_id}",
-            "payload": {
-                "identity": self._identity_dict(),
-                "action": action,
-                "status": status,
-                "task_count": task_count,
-            },
+            "payload": announcement,
         }
         body = json.dumps(payload).encode()
         try:
@@ -268,6 +276,9 @@ class SleipnirDiscoveryAdapter:
         peer_id = identity_raw.get("peer_id", "")
 
         if not peer_id or peer_id == self._identity.peer_id:
+            return
+
+        if self._attestor is not None and not self._attestor.accept(payload):
             return
 
         if not self._validate_spiffe(raw, peer_id):

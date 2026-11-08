@@ -209,7 +209,7 @@ subjects:
 {{- end }}
 {{- end }}
 {{- end }}
-{{- if and .Values.rbac.create .Values.sessionCredentialProjection.enabled }}
+{{- if and .Values.rbac.create (include "volundr.sessionCredentialProjectionEnabled" .) }}
 ---
 # Each session's Forge credential (forge_session) is one Secret Forge writes in the
 # session pods' namespace and deletes when the session stops.

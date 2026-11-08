@@ -16,11 +16,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import posixpath
 import re
 import shlex
 from typing import Any
 
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
+from volundr.adapters.outbound.local_process import (
+    FORGE_MCP_GRANTS_ENV,
+    FORGE_MCP_TOKEN_ENV,
+    FORGE_MCP_TOKEN_FILE_ENV,
+)
 from volundr.domain.models import Session, SessionSpec, SessionStatus
 from volundr.domain.ports import CredentialStorePort, PodManager, PodStartResult
 from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
@@ -183,6 +189,11 @@ http {{
 """
 
 
+_FORGE_MCP_ENV_NAMES = frozenset(
+    {FORGE_MCP_TOKEN_ENV, FORGE_MCP_GRANTS_ENV, FORGE_MCP_TOKEN_FILE_ENV}
+)
+
+
 class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
     """Direct Kubernetes API implementation of PodManager.
 
@@ -217,14 +228,21 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
         readiness_timeout: float = DEFAULT_READINESS_TIMEOUT,
         codex_auth_adapter: str = "skuld.codex_auth.VolundrCodexAuthProvider",
         codex_auth_kwargs: dict | None = None,
+        volundr_api_url: str = "",
         **_extra: object,
     ):
+        """``volundr_api_url`` is where a session pod reaches this Forge (the cluster-side
+        name of the host, e.g. ``http://host.k3d.internal:8080``); a launch spec's
+        ``volundr.apiUrl`` overrides it. A session whose Forge credential is mounted
+        needs it (the broker asks that Forge for its mesh certificate), so a launch
+        that has one and no URL is refused."""
         self._namespace = namespace
         self._kubeconfig = kubeconfig
         self._base_path = base_path
         self._ingress_class = ingress_class
         self._ingress_backend = ingress_backend
         self._external_url = external_url.rstrip("/")
+        self._volundr_api_url = str(volundr_api_url).strip().rstrip("/")
         self._skuld_image = skuld_image
         self._reh_image = reh_image
         self._nginx_image = nginx_image
@@ -534,7 +552,56 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
                 }
             )
 
+        # Nothing but this launch's mounted credential may name a session credential.
+        env = [e for e in env if e.get("name") not in _FORGE_MCP_ENV_NAMES]
+        env.extend(self._forge_env(spec))
         return env
+
+    def _forge_env(self, spec: SessionSpec) -> list[dict[str, str]]:
+        """Where the broker reaches this Forge, and the mounted session credential.
+
+        Only the credential's file path and grants are env: the token itself is in
+        the Secret the projection mounts. Applied last, so neither the launch spec's
+        env nor a contributor can name a credential this launch did not mount.
+        """
+        forge_mcp = spec.values.get("forgeMcp") or {}
+        token_file = str(forge_mcp.get("tokenFile") or "")
+        api_url = str(
+            (spec.values.get("volundr") or {}).get("apiUrl") or self._volundr_api_url
+        ).rstrip("/")
+        if token_file and not api_url:
+            raise ValueError(
+                "A Forge session credential is mounted into this session, but its broker "
+                "has no Forge URL to use it against; set volundr_api_url on the "
+                "DirectK8sPodManager (the address session pods reach Forge at), or set "
+                "forge_mcp.session_tokens.enabled: false"
+            )
+        env: list[dict[str, str]] = []
+        if api_url:
+            env.append({"name": "SKULD__VOLUNDR_API_URL", "value": api_url})
+        if token_file:
+            grants = ",".join(str(grant) for grant in forge_mcp.get("grants") or [])
+            env.append({"name": FORGE_MCP_TOKEN_FILE_ENV, "value": token_file})
+            env.append({"name": FORGE_MCP_GRANTS_ENV, "value": grants})
+        return env
+
+    @staticmethod
+    def _forge_session_mount_path(spec: SessionSpec) -> str:
+        """The directory the session credential is mounted at, or empty."""
+        token_file = str((spec.values.get("forgeMcp") or {}).get("tokenFile") or "")
+        return posixpath.dirname(token_file) if token_file else ""
+
+    def _pod_mounts(self, spec: SessionSpec) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Contributor volume mounts, split into those every container gets and the
+        session credential's, which only the broker container may hold (the editor and
+        terminal containers run the user's code)."""
+        mounts = list(spec.pod_spec.volume_mounts) if spec.pod_spec else []
+        credential_path = self._forge_session_mount_path(spec)
+        shared = [m for m in mounts if not credential_path or m.get("mountPath") != credential_path]
+        broker_only = [
+            m for m in mounts if credential_path and m.get("mountPath") == credential_path
+        ]
+        return shared, broker_only
 
     def _build_workspace_volume(self, session: Session) -> dict[str, Any]:
         """Build the workspace volume spec.
@@ -746,7 +813,7 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
                 {"name": "home", "mountPath": home_path, "readOnly": True}
             )
         if spec.pod_spec:
-            containers[-1]["volumeMounts"].extend(spec.pod_spec.volume_mounts)
+            containers[-1]["volumeMounts"].extend(self._pod_mounts(spec)[0])
 
         # Append contributor-provided init containers (e.g. credential writers).
         if spec.pod_spec:
@@ -768,7 +835,7 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
 
         # Merge contributor-provided volumes and volume mounts.
         extra_volumes = list(spec.pod_spec.volumes) if spec.pod_spec else []
-        extra_mounts = list(spec.pod_spec.volume_mounts) if spec.pod_spec else []
+        extra_mounts, broker_only_mounts = self._pod_mounts(spec)
 
         volumes = [
             self._build_workspace_volume(session),
@@ -886,7 +953,7 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
                         "runAsUser": 1000,
                         "allowPrivilegeEscalation": False,
                     },
-                    "volumeMounts": workload_mounts,
+                    "volumeMounts": workload_mounts + broker_only_mounts,
                     "resources": skuld_res,
                 },
                 {

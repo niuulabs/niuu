@@ -77,26 +77,45 @@ When session credentials are enabled but no key is usable, Forge refuses to star
 the error names the remedy. Set `forge_mcp.session_tokens.enabled: false` to turn
 session credentials off on purpose: sessions then run on their broker credential and
 get no Forge MCP grants, while read tools and `notify` still work through the broker.
-The Volundr Helm chart leaves them off unless `workloadIdentity` is enabled with
-`signingKey.existingSecret` (the pod's root filesystem is read-only, so the key file
-cannot be created there); set `forgeMcp.session_tokens.enabled` to override.
+The Volundr Helm chart turns them on wherever Forge has a key it can keep:
+`workloadIdentity` enabled with `signingKey.existingSecret`, or
+`forgeMcp.session_tokens.signing_key_file` set to a path on a persistent volume you
+mount into the pod (the root filesystem is read-only, so the default key file under the
+home directory cannot be created, and a key kept only in the pod would be lost with it,
+invalidating every running session's credential and mesh certificate). Without a key
+they stay off, and `forgeMcp.session_tokens.enabled: true` without one fails the render
+with that remedy. `forgeMcp.session_tokens.enabled: false` turns them off wherever a
+key exists.
 `GET /api/v1/forge/feature-flags` reports `capabilities.forge_session_tokens` and
 `capabilities.forge_session_token_key` (`workload_identity` or `key_file`).
 
 ### Where the credential is delivered
 
 - **Local process mode (mini mode):** the broker's process environment.
+- **Docker container pod manager:** a private file. Forge writes the token (0600, in a
+  0700 directory beside the session's workspace) and bind-mounts it read-only at
+  `/run/secrets/niuu-forge-session/token`; only the file path and grants are in the
+  container's environment, which `docker inspect` prints. The container must run as
+  Forge's user (`run_as_host_user: true`, the default); with another user the launch is
+  refused. The file is rewritten on every start and removed when the session stops.
 - **Flux and Kubernetes pod managers:** a Secret per session, when
-  `forge_mcp.session_tokens.projection_adapter` is set (the Volundr chart's
-  `sessionCredentialProjection.enabled`). `KubernetesExecutionCredentialProjection`
+  `forge_mcp.session_tokens.projection_adapter` is set (the Volundr chart sets it, and
+  the Role for the Secrets, wherever session credentials are on; switch it off with
+  `sessionCredentialProjection.enabled: false`).
+  `KubernetesExecutionCredentialProjection`
   writes `forge-session-<session hex>` in the session namespace and mounts it
   read-only; the HelmRelease values carry only the file path (Skuld's
   `forge_mcp.token_file`), never the token, because values are readable by anyone who
   can read HelmReleases. The Secret is re-written on every start and deleted when the
-  session stops.
-- **OpenShell pod manager, or Flux/Kubernetes without a projection:** not delivered.
-  Forge does not mint for them; those sessions keep their broker credential and have
-  no grants.
+  session stops. The direct Kubernetes pod manager (`niuu platform` cluster mode) does
+  the same and mounts it into the broker container only; it also needs
+  `volundr_api_url`, the address session pods reach this Forge at (the CLI's cluster
+  defaults set it), and refuses a launch that has a credential and no URL.
+- **OpenShell pod manager:** a private file in the sandbox
+  (`~/.volundr/forge-session/token`, 0600) written before the broker starts.
+- **Flux/Kubernetes without a projection** (`sessionCredentialProjection.enabled:
+  false`): not delivered. Forge does not mint for them; those sessions keep their broker
+  credential and have no grants (and no mesh certificate).
 
 ## Grants
 
