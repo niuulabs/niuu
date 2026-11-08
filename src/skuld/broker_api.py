@@ -65,11 +65,13 @@ from skuld.presented_durable import (
 from skuld.preview import PreviewMiddleware
 from skuld.room_role_port import RoomRoleResolutionError
 from skuld.service_manager import ServiceCreateRequest, ServiceStatus
+from skuld.workflow_steps import (
+    WorkflowStepConflictError,
+    WorkflowStepNotHostedError,
+    WorkflowStepRequest,
+    WorkflowStepUnavailableError,
+)
 from volundr.log_aggregate import aggregate_workspace_logs
-
-WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
-WORKFLOW_GATE_INTENT_RESOLVE = "resolve"
-ROOM_ROLES_MAY_RESOLVE_GATES = frozenset({"owner", "approver"})
 
 logger = logging.getLogger("skuld.broker")
 _BUILD_IDENTITY = build_identity()
@@ -1491,17 +1493,6 @@ class _RoomCapabilityRequest(BaseModel):
     capability: str
 
 
-class _WorkflowGateResolveRequest(BaseModel):
-    """Request body for resolving a pending workflow gate."""
-
-    decision: str
-    notes: str = ""
-    source: str = "human"
-    decided_by: str = ""
-    # The workload acting for the caller. Claiming one can only narrow what may be answered.
-    actor: str = ""
-
-
 @app.post("/api/message", dependencies=_LOOPBACK_GUARD)
 async def send_message_to_session(body: _SendMessageRequest) -> dict:
     """Send a message to another session via Volundr's WS proxy.
@@ -1756,12 +1747,6 @@ async def get_room_participants(environment_id: str | None = Query(default=None)
     return {"participants": broker.get_room_participants(environment_id=environment_id)}
 
 
-@app.get("/api/workflow/gates")
-async def get_workflow_gates() -> dict:
-    """Return native workflow gate states for the active session."""
-    return {"gates": broker.list_workflow_gates()}
-
-
 class _HelpAnswerRequest(BaseModel):
     """Request body answering a peer's pending help request."""
 
@@ -1793,45 +1778,34 @@ async def answer_help_request(request: Request, request_id: str, body: _HelpAnsw
     return {"status": "answered", "message_id": message_id}
 
 
-@app.post("/api/workflow/gates/{gate_id}/resolve")
-async def resolve_workflow_gate(
-    request: Request,
-    gate_id: str,
-    body: _WorkflowGateResolveRequest,
-) -> dict:
-    """Resolve a pending native workflow gate and publish its outcome."""
-    if (
-        request.headers.get(WORKFLOW_GATE_INTENT_HEADER, "").strip().lower()
-        != WORKFLOW_GATE_INTENT_RESOLVE
-    ):
-        raise HTTPException(428, "Missing explicit workflow gate intent header")
-    # x-niuu-room-role, set by Volundr's REST layer after its own Cedar
-    # check when reachable, or _effective_room_role's own resolution
-    # (ws_auth.room_role_source) otherwise, cached on request.state by
-    # _enforce_room_role — the SAME resolution the middleware and every
-    # other role-gated route here uses, so this can never disagree with
-    # what already admitted the request.
-    if await _room_role_from_state(request) not in ROOM_ROLES_MAY_RESOLVE_GATES:
-        raise HTTPException(403, "Only the session owner or an approver may resolve this gate")
-    try:
-        gate = await broker.resolve_workflow_gate(
-            gate_id,
-            body.decision,
-            notes=body.notes,
-            source=body.source,
-            decided_by=body.decided_by,
-            actor=body.actor,
-        )
-    except LookupError as exc:
-        raise HTTPException(404, str(exc))
-    except PermissionError as exc:
-        raise HTTPException(403, str(exc))
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(503, str(exc))
+@app.post("/api/workflow/steps")
+async def activate_workflow_step(body: WorkflowStepRequest, response: Response) -> dict:
+    """Hold a workflow step on this session and hand its instructions to the harness.
 
-    return {"status": "resolved", "gate": gate}
+    202 when the step is new, 200 when this exact activation is already here (nothing
+    changes), 409 when a different step is open, 404 when this is not a step host.
+    """
+    try:
+        created, step = await broker.accept_workflow_step(body)
+    except WorkflowStepNotHostedError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except WorkflowStepConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except WorkflowStepUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    response.status_code = status.HTTP_202_ACCEPTED if created else status.HTTP_200_OK
+    return step.status()
+
+
+@app.get("/api/workflow/steps/{activation_id}")
+async def get_workflow_step(activation_id: str) -> dict:
+    """The step's durable state: active, waiting, or closed with its ending."""
+    try:
+        return broker.get_workflow_step(activation_id).status()
+    except WorkflowStepNotHostedError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @app.get("/api/communication/routes")

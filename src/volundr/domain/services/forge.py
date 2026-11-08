@@ -8,6 +8,13 @@ from niuu.domain.session_description import DESCRIPTION_FIELDS, SessionDescripti
 from niuu.forge_mcp.credentials import normalize_grants
 from volundr.domain.services.forge_session_launch import FORGE_MCP_KEY, GRANTS_KEY
 from volundr.domain.session_broker import broker_base_url
+from volundr.domain.workflow_session import (
+    PERSONA_DEFINITION_KEY,
+    PERSONA_NAME_KEY,
+    WORKFLOW_MEMBER_KEY,
+    WORKFLOW_RUN_ID_KEY,
+    WORKFLOW_STEP_HOST_KEY,
+)
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -180,7 +187,16 @@ class ForgeService:
         workload_config = dict(data.workload_config or {})
         persona_name = getattr(data, "persona_name", "")
         if persona_name:
-            workload_config["persona"] = persona_name
+            workload_config[PERSONA_NAME_KEY] = persona_name
+        persona_definition = getattr(data, "persona_definition", None)
+        if persona_definition is not None:
+            workload_config[PERSONA_DEFINITION_KEY] = persona_definition
+        if getattr(data, "workflow_step_host", False) is True:
+            workload_config[WORKFLOW_STEP_HOST_KEY] = True
+        workflow_run_id = getattr(data, "workflow_run_id", None)
+        if workflow_run_id is not None:
+            workload_config[WORKFLOW_RUN_ID_KEY] = str(workflow_run_id)
+            workload_config[WORKFLOW_MEMBER_KEY] = data.workflow_member
         if requested_grants:
             workload_config[FORGE_MCP_KEY] = {
                 GRANTS_KEY: [grant.value for grant in normalize_grants(requested_grants)]

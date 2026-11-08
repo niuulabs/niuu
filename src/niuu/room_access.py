@@ -47,7 +47,6 @@ _VIEWER_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("GET", re.compile(r"^conversation/tool-result/[^/]+$")),
     ("GET", re.compile(r"^conversation/tool-result/[^/]+/files/[^/]+$")),
     ("GET", re.compile(r"^capabilities$")),
-    ("GET", re.compile(r"^workflow/gates$")),
     ("GET", re.compile(r"^room/participants$")),
     ("GET", re.compile(r"^help/requests$")),
     ("GET", re.compile(r"^files/presented/[^/]+$")),
@@ -56,7 +55,6 @@ _VIEWER_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 # Approver gets everything viewer gets, plus these.
 _APPROVER_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("POST", re.compile(r"^workflow/gates/[^/]+/resolve$")),
     # Answering a peer's help request is an operator decision, same tier as
     # the WS ask_user_answer/permission_response approval wait.
     ("POST", re.compile(r"^help/requests/[^/]+/answer$")),

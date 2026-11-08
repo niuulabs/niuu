@@ -145,6 +145,7 @@ def spec() -> SessionSpec:
             "anthropic_api_key": "sk-ant-test",
             "env": {"EXTRA": "1"},
             "broker": {"cliType": "codex"},
+            "workflowSteps": {"enabled": True},
         },
         pod_spec=PodSpecAdditions(env=[{"name": "FROM_POD", "value": "yes"}]),
     )
@@ -222,6 +223,7 @@ class TestStart:
         assert env["SKULD__SESSION__OWNER_ID"] == "dev-user"
         assert env["SKULD__SESSION__SYSTEM_PROMPT"] == "be helpful"
         assert json.loads(env["SKULD__SESSION__PERSONA"])["id"] == "reviewer"
+        assert env["SKULD__WORKFLOW_STEPS__ENABLED"] == "true"
         assert env["SKULD__SESSION__INITIAL_PROMPT"] == "start"
         assert env["HOME"] == "/home/skuld"
         assert env["SKULD__PERSISTENCE_MOUNT_PATH"] == "/home/skuld"

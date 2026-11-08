@@ -811,12 +811,21 @@ def _create_contributors(
     # from the launch request (or dispatch) are injected into the spec.
     from volundr.adapters.outbound.contributors.prompt import PromptContributor
 
-    persona_provider = ports.get("persona_provider")
-    if persona_provider is not None and not _has_contributor("persona"):
+    # Always wired: a launch may carry its pinned persona document, which needs no catalog.
+    # A persona requested by name on a host without a catalog is refused by the contributor.
+    if not _has_contributor("persona"):
         from volundr.adapters.outbound.contributors.persona import PersonaContributor
 
-        contributors.append(PersonaContributor(persona_provider=persona_provider))
+        contributors.append(PersonaContributor(persona_provider=ports.get("persona_provider")))
         logger.info("Session contributor: persona (auto-wired)")
+
+    if not _has_contributor("workflow_step_host"):
+        from volundr.adapters.outbound.contributors.workflow_step_host import (
+            WorkflowStepHostContributor,
+        )
+
+        contributors.append(WorkflowStepHostContributor())
+        logger.info("Session contributor: workflow_step_host (auto-wired)")
 
     contributors.append(PromptContributor())
 

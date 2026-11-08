@@ -143,6 +143,7 @@ from volundr.domain.ports import (
     SessionRepository,
 )
 from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
+from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -1996,6 +1997,8 @@ class OpenShellGatewayPodManager(
                 prompts.append(
                     "SKULD__SESSION__PERSONA=" + json.dumps(persona, separators=(",", ":"))
                 )
+            if workflow_steps_enabled(spec.values):
+                prompts.append(f"{WORKFLOW_STEPS_ENABLED_ENV}=true")
             command = (
                 ["env", *prompts, *self._sandbox_command] if prompts else self._sandbox_command
             )

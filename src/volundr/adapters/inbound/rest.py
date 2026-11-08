@@ -110,6 +110,7 @@ from volundr.domain.models import (
     WorkspaceStatus,
     require_workload_type_available,
 )
+from volundr.domain.pinned_persona import pinned_persona_document
 from volundr.domain.ports import (
     DeviceTokenRepository,
     EventBroadcaster,
@@ -178,11 +179,21 @@ from volundr.domain.session_read_state import (
 )
 from volundr.domain.session_runtimes import SessionRuntimeOffer
 from volundr.domain.session_startup import SessionStartup
+from volundr.domain.workflow_session import (
+    WORKFLOW_MEMBER_KEY,
+    WORKFLOW_RUN_ID_KEY,
+    WORKFLOW_STEP_HOST_KEY,
+    session_persona_name,
+)
 from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import load_workspace_transcript
 
 logger = logging.getLogger(__name__)
 WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
+# How long Forge waits for a session's broker to accept or answer one workflow step call. The
+# broker only records the step (it injects it later), so a call that takes longer than this
+# means the broker is not answering, which the caller must hear about (409 after reconcile).
+_WORKFLOW_STEP_PROXY_TIMEOUT_SECONDS = 10.0
 # How long send_session_message holds the WS open waiting for the broker's
 # correlated delivery ACK before reporting the message as "pending" (the broker's
 # bounded retry then drives it to delivered/failed). Named so it is not a magic
@@ -686,6 +697,39 @@ class SessionCreate(BaseModel):
         max_length=255,
         description="Persona from the authenticated user's Ravn persona catalog",
     )
+    persona_definition: dict | None = Field(
+        default=None,
+        description=(
+            "The exact pinned portable persona document to play (schema_version, id, "
+            "revision, definition), used verbatim instead of a catalog lookup by name. "
+            "Its content digest is checked against the document: an optional 'digest' "
+            "(sha256:<hex>) must match it, and a content-addressed revision "
+            "('content-<hex>') must match its content; a mismatch is refused with 422. "
+            "Mutually exclusive with persona_name."
+        ),
+    )
+    workflow_step_host: bool = Field(
+        default=False,
+        description=(
+            "Mark the session as a workflow step host: its Skuld enables the workflow step "
+            "API and the workflow_step_close tool."
+        ),
+    )
+    workflow_run_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The workflow run this session works for; recorded in the session metadata so the "
+            "run can find the session again. Requires workflow_member."
+        ),
+    )
+    workflow_member: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        description=(
+            "The workflow stage member (persona id) this session serves. Requires workflow_run_id."
+        ),
+    )
     source: SessionSource = Field(
         default_factory=GitSource,
         description="Workspace source (git repo or local mount)",
@@ -785,6 +829,24 @@ class SessionCreate(BaseModel):
                 "set Forge MCP grants with the top-level forge_mcp field, not workload_config"
             )
         return value
+
+    @field_validator("persona_definition")
+    @classmethod
+    def _persona_definition_matches_its_digest(cls, value: dict | None) -> dict | None:
+        if value is None:
+            return value
+        return pinned_persona_document(value)
+
+    @model_validator(mode="after")
+    def _persona_and_workflow_identity_agree(self) -> "SessionCreate":
+        if self.persona_name.strip() and self.persona_definition is not None:
+            raise ValueError(
+                "persona_name and persona_definition are mutually exclusive: send the persona "
+                "to look up by name, or the exact pinned document to play, not both"
+            )
+        if (self.workflow_run_id is None) != (self.workflow_member is None):
+            raise ValueError("workflow_run_id and workflow_member must be sent together")
+        return self
 
     @model_validator(mode="before")
     @classmethod
@@ -1222,6 +1284,18 @@ class SessionResponse(BaseModel):
     name: str = Field(description="Human-readable session name")
     model: str = Field(description="LLM model identifier")
     persona_name: str = Field(default="", description="Persona attached at launch")
+    workflow_run_id: str | None = Field(
+        default=None,
+        description="The workflow run this session works for, if it is a workflow step session",
+    )
+    workflow_member: str | None = Field(
+        default=None,
+        description="The workflow stage member this session serves, if it is a step session",
+    )
+    workflow_step_host: bool = Field(
+        default=False,
+        description="Whether the session hosts workflow steps (step API and close tool on)",
+    )
     source: SessionSource = Field(description="Workspace source config")
     status: SessionStatus = Field(description="Current lifecycle status")
     chat_endpoint: str | None = Field(
@@ -1433,7 +1507,10 @@ class SessionResponse(BaseModel):
             coordination=session.coordination,
             name=session.name,
             model=session.effective_model,
-            persona_name=str(session.workload_config.get("persona") or ""),
+            persona_name=session_persona_name(session.workload_config),
+            workflow_run_id=session.workload_config.get(WORKFLOW_RUN_ID_KEY),
+            workflow_member=session.workload_config.get(WORKFLOW_MEMBER_KEY),
+            workflow_step_host=session.workload_config.get(WORKFLOW_STEP_HOST_KEY) is True,
             source=session.source,
             status=session.status,
             chat_endpoint=_public_session_endpoint(
@@ -5636,6 +5713,97 @@ def create_router(
                     f"Gate not resolved: {e}"
                 ),
             )
+
+    async def _proxy_workflow_step_call(
+        request: Request,
+        session_id: UUID,
+        method: Literal["GET", "POST"],
+        *path_segments: str,
+        body: dict | None = None,
+    ) -> Response:
+        """Relay one workflow step call to the session's broker, status and body unchanged.
+
+        Skuld answers a step delivery with 202 (accepted), 200 (the same activation again) or
+        409 (a different step is open), and the step state with 200 or 404. The caller (the
+        workflow engine) acts on exactly those, so none is re-mapped; a pod Forge cannot
+        reach is a 409 after the stale row is reconciled, never an accepted step.
+        """
+        action = "read" if method == "GET" else "update"
+        principal = await _optional_principal(request)
+        with _chronicle_errors():
+            await forge.get_authorized_session(session_id, principal=principal, action=action)
+        try:
+            session, base_url = await forge.get_session_proxy_target(session_id)
+            proxy_url, routing_headers = await _broker_request(
+                session, base_url, "api", "workflow", "steps", *path_segments
+            )
+        except LookupError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} has no active endpoint",
+            )
+        headers: dict[str, str] = {}
+        auth = request.headers.get("authorization")
+        if auth:
+            headers["Authorization"] = auth
+        headers.update(routing_headers)
+        try:
+            async with httpx.AsyncClient(timeout=_WORKFLOW_STEP_PROXY_TIMEOUT_SECONDS) as client:
+                response = await client.request(method, proxy_url, headers=headers, json=body)
+        except httpx.RequestError as e:
+            reconciled = await forge.reconcile_session(session_id)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Session {session_id} is no longer reachable; "
+                    f"reconciled to {reconciled.status.value if reconciled else 'unknown'}. "
+                    f"Workflow step call not delivered: {e}"
+                ),
+            )
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            media_type=response.headers.get("content-type", "application/json"),
+        )
+
+    @router.post(
+        "/sessions/{session_id}/workflow/steps",
+        tags=["Sessions"],
+        responses={
+            200: {"description": "The same activation was already delivered; nothing changed"},
+            202: {"description": "The step was recorded and will be injected at a turn boundary"},
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+        },
+    )
+    async def deliver_workflow_step(
+        request: Request,
+        body: dict,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> Response:
+        """Deliver a workflow step activation to a step-host session's broker."""
+        return await _proxy_workflow_step_call(request, session_id, "POST", body=body)
+
+    @router.get(
+        "/sessions/{session_id}/workflow/steps/{activation_id}",
+        tags=["Sessions"],
+        responses={
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+        },
+    )
+    async def get_workflow_step(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+        activation_id: UUID = Path(description="Workflow step activation identifier"),
+    ) -> Response:
+        """Return a workflow step's current durable state from the session's broker."""
+        return await _proxy_workflow_step_call(request, session_id, "GET", str(activation_id))
 
     @router.get(
         "/sessions/{session_id}/help/requests",

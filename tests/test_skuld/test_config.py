@@ -1,13 +1,10 @@
 """Tests for Skuld configuration."""
 
-import json
-
 import pytest
 
 from skuld.config import (
     SkuldSessionConfig,
     SkuldSettings,
-    WorkflowRuntimeConfig,
     WsAuthConfig,
 )
 
@@ -100,10 +97,7 @@ class TestSkuldSettings:
         assert s.session.model == "claude-opus-5-5"
         assert s.observability.service_name == "skuld"
         assert s.persistence_mount_path == "/volundr/sessions"
-        assert s.peer_watchdog.enabled is True
-        assert s.peer_watchdog.poll_seconds == 5.0
-        assert s.peer_watchdog.silence_seconds == 300.0
-        assert s.peer_watchdog.tool_silence_seconds == 300.0
+        assert s.workflow_steps.enabled is False
 
     def test_workspace_path_computed(self, monkeypatch):
         """Test workspace_path computed from session ID when workspace_dir is None."""
@@ -156,13 +150,10 @@ class TestSkuldSettings:
         assert s.session.id == "nested-id"
         assert s.session.model == "opus"
 
-    def test_peer_watchdog_nested_env_vars(self, monkeypatch):
-        monkeypatch.setenv("SKULD__PEER_WATCHDOG__SILENCE_SECONDS", "600")
-        monkeypatch.setenv("SKULD__PEER_WATCHDOG__TOOL_SILENCE_SECONDS", "900")
+    def test_workflow_steps_nested_env_var(self, monkeypatch):
+        monkeypatch.setenv("SKULD__WORKFLOW_STEPS__ENABLED", "true")
 
-        s = SkuldSettings()
-        assert s.peer_watchdog.silence_seconds == 600.0
-        assert s.peer_watchdog.tool_silence_seconds == 900.0
+        assert SkuldSettings().workflow_steps.enabled is True
 
     def test_mcp_servers_from_env(self, monkeypatch):
         monkeypatch.setenv(
@@ -481,65 +472,3 @@ class TestBehaviorSettingsAliases:
 
         assert settings.cli_binary == "claude-custom"
         assert settings.remote_control_permission_mode == "acceptEdits"
-
-
-def test_workflow_trace_context_loads_from_nested_env(monkeypatch) -> None:
-    monkeypatch.setenv(
-        "SKULD__WORKFLOW__TRACE_CONTEXT",
-        '{"traceparent":"00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"}',
-    )
-
-    settings = SkuldSettings()
-
-    assert settings.workflow.trace_context == {
-        "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
-    }
-
-
-class TestWorkflowRuntimeConfigInitialContext:
-    """The brief travels as a container env value, and the sandbox provisioner
-    rejects any value holding a newline. Volundr JSON-encodes it so the
-    newlines are escaped; these tests hold the decode to that contract."""
-
-    def test_json_encoded_multiline_brief_round_trips(self):
-        brief = "Search the repo for error code 7.\n\nReport what you find.\r\nEnd."
-
-        config = WorkflowRuntimeConfig(initial_context=json.dumps(brief))
-
-        assert config.initial_context == brief
-
-    def test_plain_prose_is_left_alone(self):
-        """An older Volundr sends the value raw. Decoding must not mangle it."""
-        config = WorkflowRuntimeConfig(initial_context="just some prose")
-
-        assert config.initial_context == "just some prose"
-
-    def test_prose_that_happens_to_be_json_stays_literal(self):
-        """A brief whose text parses as a JSON object is still the author's
-        prose, not a structure — decoding it would change the instruction."""
-        config = WorkflowRuntimeConfig(initial_context='{"not": "a brief"}')
-
-        assert config.initial_context == '{"not": "a brief"}'
-
-    def test_prose_that_is_a_bare_json_number_stays_literal(self):
-        config = WorkflowRuntimeConfig(initial_context="42")
-
-        assert config.initial_context == "42"
-
-    def test_empty_stays_empty(self):
-        assert WorkflowRuntimeConfig().initial_context == ""
-
-
-class TestModelGatewayConfig:
-    def test_defaults_to_the_vendor_apis(self, monkeypatch):
-        monkeypatch.delenv("SKULD__MODEL_GATEWAY__URL", raising=False)
-        s = SkuldSettings()
-        assert s.model_gateway.url == ""
-        assert s.model_gateway.token == ""
-
-    def test_platform_sets_it_through_the_env(self, monkeypatch):
-        monkeypatch.setenv("SKULD__MODEL_GATEWAY__URL", "http://niuu:8080/api/v1/bifrost")
-        monkeypatch.setenv("SKULD__MODEL_GATEWAY__TOKEN", "pat")
-        s = SkuldSettings()
-        assert s.model_gateway.url == "http://niuu:8080/api/v1/bifrost"
-        assert s.model_gateway.token == "pat"

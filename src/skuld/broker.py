@@ -18,7 +18,6 @@ import time
 import uuid
 from contextlib import suppress
 from dataclasses import asdict, dataclass
-from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -46,19 +45,11 @@ from niuu.domain.transcript_reducer import (
     steering_state_from_frame,
     steering_target_id,
 )
-from niuu.domain.workflow_evidence import evaluate_workflow_evidence, validate_evidence_gate_nodes
-from niuu.domain.workflow_gate import AGENT_ANSWERABLE_GATE_MODE, WORKFLOW_GATE_FRAME
-from niuu.domain.workflow_kickoff import (
-    WORKFLOW_KICKOFF_ID_KEY,
-    WORKFLOW_KICKOFF_REDELIVERY_KEY,
-    is_workflow_kickoff_ack_payload,
-)
 from niuu.mesh.cluster import read_cluster_pub_addresses
 from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
 from niuu.observability import get_observability
 from niuu.ports.cli import CLITransport
-from niuu.ports.evidence import ArtifactDigestResolver, EvidenceGateVerifier
 from niuu.utils import import_class, resolve_secret_kwargs
 from skuld.activity_reporting import (
     ActivityReportingMixin,
@@ -134,17 +125,7 @@ from skuld.websocket_auth import (  # noqa: F401
     _resolve_ws_principal,
 )
 from skuld.websocket_lifecycle import WebSocketLifecycleMixin
-from skuld.workflow_runtime import (
-    ROOM_MEMBER_FRAME,
-    WorkflowGateNode,
-    WorkflowGateState,
-    WorkflowTerminalNode,
-    _merge_workflow_terminal_outcomes,
-    _workflow_gate_nodes,
-    _workflow_join_satisfied,
-    _workflow_review_attestation,
-    _workflow_terminal_nodes,
-)
+from skuld.workflow_steps import WorkflowStepMixin
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher
@@ -206,8 +187,8 @@ FORGE_TRACE_SPANS_COMPLETE_PATH = "/api/v1/forge/spans/complete"
 FORGE_PERMISSION_AUTO_APPROVAL_EVALUATE_PATH = (
     f"{FORGE_SESSIONS_PATH}/{{session_id}}/permissions/auto-approval/evaluate"
 )
-WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
-WORKFLOW_GATE_INTENT_RESOLVE = "resolve"
+#: Durable log frame for an agent from another session joining or leaving the room.
+ROOM_MEMBER_FRAME = "room_member"
 
 
 def _sanitize_log(value: object) -> str:
@@ -346,62 +327,6 @@ def _normalize_browser_message_content(content: object) -> str:
     return "\n\n".join(lines).strip()
 
 
-def _peer_error_message(frame: dict[str, Any]) -> str:
-    """Extract a bounded, human-readable error from a room peer frame."""
-    data = frame.get("data")
-    if isinstance(data, str):
-        message = data
-    elif isinstance(data, dict):
-        raw_error = data.get("error")
-        if isinstance(raw_error, dict):
-            message = str(raw_error.get("message") or raw_error.get("error") or "")
-        else:
-            message = str(
-                raw_error
-                or data.get("message")
-                or data.get("content")
-                or "Peer workflow agent failed"
-            )
-    else:
-        message = str(frame.get("error") or "Peer workflow agent failed")
-    return message.strip()[:2000] or "Peer workflow agent failed"
-
-
-@dataclass
-class PeerWatchState:
-    """Tracks one active flock peer task for Skuld's silence watchdog."""
-
-    peer_id: str
-    task_id: str
-    title: str
-    started_at: float
-    last_progress_at: float
-    last_status: str = "busy"
-    warned: bool = False
-
-
-def _peer_frame_task_id(frame: dict[str, Any]) -> str:
-    """The flock peer task a lifecycle frame belongs to."""
-    metadata = frame.get("metadata")
-    task_id = metadata.get("task_id") if isinstance(metadata, dict) else None
-    return str(task_id or frame.get("task_id") or "").strip()
-
-
-@dataclass
-class WorkflowKickoffAckTracker:
-    """Acks received for one logical workflow kickoff dispatch.
-
-    Populated by :meth:`Broker._consume_workflow_kickoff_ack` as flock peers
-    acknowledge the kickoff over the mesh; awaited by
-    :meth:`Broker._publish_workflow_trigger` between redelivery attempts.
-    """
-
-    kickoff_id: str
-    acked_peer_ids: set[str] = dataclass_field(default_factory=set)
-    acked_personas: set[str] = dataclass_field(default_factory=set)
-    ack_received: asyncio.Event = dataclass_field(default_factory=asyncio.Event)
-
-
 @dataclass
 class PendingHelpRequest:
     """A peer's genuine question, awaiting an answer from the commissioner.
@@ -428,27 +353,6 @@ class PendingHelpRequest:
     answered_at: str = ""
     answer: str = ""
     answer_source: str = ""
-
-
-def _workflow_terminal_requirements_satisfied(
-    node: WorkflowTerminalNode,
-    artifacts: SessionArtifacts,
-    *,
-    git_checkpoint: GitWorkspaceCheckpoint | None = None,
-) -> bool:
-    """Return True when deterministic completion rules are satisfied."""
-    commit_ok = artifacts.git_commit_count > 0
-    push_ok = artifacts.git_push_count > 0
-    if git_checkpoint is not None:
-        checkpoint_commit_ok, checkpoint_push_ok = _git_workspace_checkpoint_status(git_checkpoint)
-        commit_ok = commit_ok or checkpoint_commit_ok
-        push_ok = push_ok or checkpoint_push_ok
-
-    if node.require_git_commit and not commit_ok:
-        return False
-    if node.require_git_push and not push_ok:
-        return False
-    return True
 
 
 # WebSocket auth helpers are imported above for compatibility.
@@ -562,6 +466,7 @@ class Broker(
     EventLogMixin,
     ActivityReportingMixin,
     ChronicleMixin,
+    WorkflowStepMixin,
 ):
     """WebSocket broker for Claude Code sessions.
 
@@ -573,26 +478,9 @@ class Broker(
         self,
         settings: SkuldSettings | None = None,
         sleipnir_publisher: SleipnirPublisher | None = None,
-        evidence_verifier: EvidenceGateVerifier | None = None,
-        evidence_artifacts: ArtifactDigestResolver | None = None,
     ):
         self._settings = settings or SkuldSettings()
-        validate_evidence_gate_nodes(self._settings.workflow.graph)
-        self._evidence_verifier = evidence_verifier
-        self._evidence_artifacts = evidence_artifacts
-        self._evidence_gate_outputs = {
-            str(node[field])
-            for node in self._settings.workflow.graph.get("nodes", [])
-            if node.get("kind") == "gate" and node.get("mode") == "evidence"
-            for field in ("approvalEvent", "changesRequestedEvent")
-        }
-        if self._evidence_gate_outputs and (
-            evidence_verifier is None or evidence_artifacts is None
-        ):
-            raise ValueError(
-                "Evidence gates require workflow.evidence_verifier and "
-                "workflow.evidence_artifacts deployment configuration"
-            )
+        self._init_workflow_steps()
         self._ws_identity = None
         self._ws_authorization = None
         if self._settings.ws_auth.enforce_ownership:
@@ -650,17 +538,8 @@ class Broker(
             saga_id=self._settings.session.saga_id,
             run_id=self._settings.session.run_id,
         )
-        self._flock_completion_reported = False
-        self._flock_failure_reported = False
-        self._pending_terminal_activity: dict[str, Any] | None = None
-        self._restored_workflow_terminal_completion: tuple[str, dict[str, Any]] | None = None
         self._session_start_reported = False
         self._event_sequence = 0
-        # Authenticated peer outcomes retained for deterministic developer
-        # evidence projection. Persona identity comes from the registered room
-        # participant, never from model-authored fields.
-        self._attested_review_outcomes: dict[str, dict[str, Any]] = {}
-        self._review_attestation = _workflow_review_attestation(self._settings.workflow.graph)
         # Durable full-fidelity event log (session_event_log). Every CLI frame is
         # buffered here and flushed to Volundr by a background worker, independent
         # of any attached channel — so nothing is dropped when no client is
@@ -727,47 +606,19 @@ class Broker(
         self._pending_explicit_human_messages: list[tuple[str, str]] = []
         self._pending_explicit_human_response_count = 0
         self._chronicle_watcher: ChronicleWatcher | None = None
-        self._peer_watchdog_task: asyncio.Task[None] | None = None
-        self._workflow_trigger_task: asyncio.Task[None] | None = None
-        self._workflow_kickoff_tracker: WorkflowKickoffAckTracker | None = None
         self._startup_ready = False
         self._startup_state = "created"
         self._startup_failure = ""
-        self._peer_watches: dict[str, PeerWatchState] = {}
-        # Task ids each flock peer has started and not yet completed. A peer can
-        # run several at once, so this, not the per-peer watch, says whether
-        # any work is in flight.
-        self._peer_tasks_in_flight: dict[str, set[str]] = {}
-        # The latest outcome a flock peer reported, named when the flock goes idle.
-        self._last_flock_outcome: dict[str, str] = {}
         self._peer_pending_commands: dict[str, list[str]] = {}
         self._git_workspace_checkpoint: GitWorkspaceCheckpoint | None = None
-        self._workflow_gate_nodes = _workflow_gate_nodes(self._settings.workflow.graph)
-        self._workflow_gate_index: dict[str, list[WorkflowGateNode]] = {}
-        for node in self._workflow_gate_nodes:
-            for event_type in node.event_types:
-                self._workflow_gate_index.setdefault(event_type, []).append(node)
-        self._workflow_gate_slots: dict[tuple[str, str], set[str]] = {}
-        self._workflow_gate_attempts: dict[tuple[str, str], int] = {}
-        self._workflow_gate_state_ids_by_key: dict[tuple[str, str], str] = {}
-        self._workflow_gate_states: dict[str, WorkflowGateState] = {}
         # Genuine agent questions: a peer that emits help_needed is asking the
         # party that commissioned this session for information it cannot
         # responsibly guess. Tracked like gate states so callers (Volundr
         # proxy -> Ting -> A2A) can list them and deliver an answer back to
         # the asking peer as a directed room message.
         self._pending_help_requests: dict[str, PendingHelpRequest] = {}
-        self._workflow_terminal_nodes = _workflow_terminal_nodes(self._settings.workflow.graph)
-        self._workflow_terminal_index: dict[str, list[WorkflowTerminalNode]] = {}
-        for node in self._workflow_terminal_nodes:
-            for event_type in node.event_types:
-                self._workflow_terminal_index.setdefault(event_type, []).append(node)
-        self._workflow_terminal_slots: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
-        self._workflow_terminal_emitted: set[tuple[str, str]] = set()
         self._trace_id = self._parse_trace_uuid(self.session_id)
         self._trace_session_span_id: uuid.UUID | None = None
-        self._trace_workflow_span_id: uuid.UUID | None = None
-        self._trace_workflow_gate_spans: dict[str, uuid.UUID] = {}
         self._trace_assistant_span_id: uuid.UUID | None = None
         self._trace_assistant_tool_spans: dict[str, uuid.UUID] = {}
         self._trace_assistant_tool_order: list[str] = []
@@ -831,11 +682,6 @@ class Broker(
                 observe_peer_event=self._observe_room_peer_event,
                 publish_presence_event=self._publish_room_presence_event,
                 report_usage=self._report_usage,
-                attestable_review_event_types=(
-                    frozenset({self._review_attestation.event_type})
-                    if self._review_attestation is not None
-                    else frozenset()
-                ),
                 deliver_to_session=self._deliver_to_member_session,
             )
         self._restored_room_members: dict[str, dict[str, Any]] = {}
@@ -991,43 +837,6 @@ class Broker(
         self._pending_assistant_parts = []
         self._pending_reasoning_text = ""
         self._pending_assistant_last_ts = None
-
-    async def _ensure_workflow_prompt_turn(self) -> None:
-        """Persist the workflow trigger prompt without executing it locally."""
-        prompt = self._settings.session.initial_prompt
-        if not prompt:
-            return
-
-        if any(turn.role == "user" and turn.content == prompt for turn in self._conversation_turns):
-            return
-
-        turn_id = str(uuid.uuid4())
-        self._append_turn(
-            ConversationTurn(
-                id=turn_id,
-                role="user",
-                content=prompt,
-            )
-        )
-        self._enqueue_human_turn_event(prompt, turn_id)
-        await self._complete_trace_span(
-            kind="turn.user",
-            name=prompt[:120] or "workflow prompt",
-            parent_span_id=self._trace_session_span_id,
-            actor_type="user",
-            actor_id="workflow-trigger",
-            actor_label="workflow trigger",
-            attributes={"source": "workflow_trigger"},
-            started_at=datetime.now(UTC),
-            ended_at=datetime.now(UTC),
-        )
-        await self._emit_broker_frame(
-            {
-                "type": "user_confirmed",
-                "id": turn_id,
-                "content": prompt,
-            }
-        )
 
     async def _start_mesh_adapter(self) -> None:
         """Build and start the mesh adapter when mesh.enabled is True.
@@ -1276,19 +1085,6 @@ class Broker(
             self._mesh_adapter = None
             raise
 
-    def _has_workflow_trigger(self) -> bool:
-        cfg = self._settings.workflow_trigger
-        return bool(cfg.enabled and cfg.event_type and self._settings.session.initial_prompt)
-
-    def _is_room_only_workflow_session(self) -> bool:
-        """Return True when flock workflow sessions should stay room-only.
-
-        In these sessions, browser traffic should observe and direct mesh peers
-        through the room bridge. Lazy-starting Skuld's own CLI transport on
-        browser connect would spawn a second agent and confuse session state.
-        """
-        return bool(self._has_workflow_trigger() and self._settings.room.enabled)
-
     def _room_default_target_peer_id(self) -> str:
         """Peer that untargeted browser messages route to (resident sessions)."""
         if self._room_bridge is None:
@@ -1308,16 +1104,11 @@ class Broker(
     def _is_room_routed_session(self) -> bool:
         """True when browser traffic flows through the room, not a CLI transport.
 
-        Covers flock workflow sessions (mesh peers do the work), resident
-        sessions (one long-lived ravn behind ``room.default_target_peer_id``),
-        and brokers that declare ``room.routed``. None may lazy-start the
-        broker's own CLI transport.
+        Covers resident sessions (one long-lived ravn behind
+        ``room.default_target_peer_id``) and brokers that declare
+        ``room.routed``. Neither may lazy-start the broker's own CLI transport.
         """
-        return (
-            self._is_room_only_workflow_session()
-            or bool(self._room_default_target_peer_id())
-            or self._is_declared_room_routed()
-        )
+        return bool(self._room_default_target_peer_id()) or self._is_declared_room_routed()
 
     def _sole_room_ravn_peer_id(self) -> str:
         """Peer id of the room's only ravn, or "" when that is ambiguous.
@@ -1338,8 +1129,8 @@ class Broker(
             return ""
         return peer_ids[0]
 
-    def _workflow_trigger_consumer_peer_ids(self, event_type: str) -> set[str]:
-        """Return flock peer ids that subscribe to the workflow trigger event."""
+    def _event_consumer_peer_ids(self, event_type: str) -> set[str]:
+        """Return room peer ids that subscribe to ``event_type``."""
         if self._room_bridge is None or not event_type:
             return set()
         peer_ids: set[str] = set()
@@ -1350,8 +1141,8 @@ class Broker(
                 peer_ids.add(participant.peer_id)
         return peer_ids
 
-    def _workflow_trigger_peer_ready(self, peer_id: str) -> bool:
-        """Return True when a workflow-trigger consumer can receive mesh events."""
+    def _event_consumer_ready(self, peer_id: str) -> bool:
+        """Return True when an event consumer can receive mesh events."""
         if self._room_bridge is None:
             return True
         participant = self._room_bridge.participants.get(peer_id)
@@ -1371,20 +1162,17 @@ class Broker(
 
         Events are pub/sub outcomes. If we publish them before the first
         consumer peer finishes its registration, the event can be dropped.
-        Initial workflow dispatches can request an additional startup settle;
-        interactive events publish as soon as consumers are ready.
+        Interactive events publish as soon as consumers are ready.
         """
-        required_peers = self._workflow_trigger_consumer_peer_ids(event_type)
+        required_peers = self._event_consumer_peer_ids(event_type)
         if not required_peers or self._room_bridge is None:
             return True
 
         deadline = time.monotonic() + max(0.0, timeout_s)
-        missing = {
-            peer_id for peer_id in required_peers if not self._workflow_trigger_peer_ready(peer_id)
-        }
+        missing = {peer_id for peer_id in required_peers if not self._event_consumer_ready(peer_id)}
         if missing:
             logger.info(
-                "Workflow trigger waiting for consumers event_type=%s peers=%s timeout=%.1fs",
+                "Mesh event waiting for consumers event_type=%s peers=%s timeout=%.1fs",
                 event_type,
                 sorted(missing),
                 max(0.0, timeout_s),
@@ -1393,15 +1181,12 @@ class Broker(
         while missing and time.monotonic() < deadline:
             await asyncio.sleep(poll_interval_s)
             missing = {
-                peer_id
-                for peer_id in required_peers
-                if not self._workflow_trigger_peer_ready(peer_id)
+                peer_id for peer_id in required_peers if not self._event_consumer_ready(peer_id)
             }
 
         if missing:
             logger.error(
-                "Workflow trigger consumers failed to connect before dispatch "
-                "event_type=%s peers=%s",
+                "Mesh event consumers failed to connect before dispatch event_type=%s peers=%s",
                 event_type,
                 sorted(missing),
             )
@@ -1410,192 +1195,9 @@ class Broker(
         if settle_s > 0:
             await asyncio.sleep(settle_s)
         logger.info(
-            "Workflow trigger consumers ready event_type=%s peers=%s",
+            "Mesh event consumers ready event_type=%s peers=%s",
             event_type,
             sorted(required_peers),
-        )
-        return True
-
-    async def _publish_workflow_trigger(self) -> None:
-        """Publish the initial Ting task into the flock as a mesh outcome event.
-
-        The mesh retains nothing for late subscribers, so a kickoff published
-        while a cold-starting persona is still arming its subscription simply
-        evaporates — participant registration only proves the peer exists, not
-        that it can receive events yet. Each dispatch therefore carries a
-        kickoff id and is republished until a consuming persona acknowledges
-        it with a ``workflow.kickoff.acknowledged`` mesh event; after the
-        configured redelivery budget the session fails loudly instead of
-        idling forever.
-        """
-        if self._mesh_adapter is None or not self._has_workflow_trigger():
-            return
-
-        cfg = self._settings.workflow_trigger
-        # Workflow kickoff is a required dependency for flock-backed workflows.
-        # Large flocks can take several seconds to finish peer startup, so we
-        # give them a more realistic readiness window and fail closed rather
-        # than silently dropping the first workflow event.
-        wait_timeout_s = max(float(cfg.startup_delay_s or 0.0), 20.0)
-        consumers_ready = await self._wait_for_event_consumers(
-            cfg.event_type,
-            wait_timeout_s,
-        )
-        if not consumers_ready:
-            raise RuntimeError(f"workflow trigger consumers for {cfg.event_type} did not connect")
-
-        delay_s = max(0.0, float(cfg.startup_delay_s or 0.0))
-        if delay_s and not self._workflow_trigger_consumer_peer_ids(cfg.event_type):
-            logger.info(
-                "Workflow trigger waiting %.1fs for flock subscribers before mesh dispatch",
-                delay_s,
-            )
-            await asyncio.sleep(delay_s)
-
-        tracker = WorkflowKickoffAckTracker(kickoff_id=str(uuid.uuid4()))
-        self._workflow_kickoff_tracker = tracker
-        attempts = 1 + max(0, int(cfg.ack_max_redeliveries))
-        for attempt in range(attempts):
-            await self._publish_mesh_event(
-                cfg.event_type,
-                self._settings.session.initial_prompt,
-                source=cfg.source,
-                correlation_id=self.session_id,
-                extra_payload={
-                    "summary": f"Workflow dispatch: {cfg.label or cfg.event_type}",
-                    "workflow_trigger_label": cfg.label,
-                    "workflow_trigger_node_id": cfg.node_id,
-                    "workspace_path": self.workspace_dir,
-                    WORKFLOW_KICKOFF_ID_KEY: tracker.kickoff_id,
-                    WORKFLOW_KICKOFF_REDELIVERY_KEY: attempt,
-                },
-            )
-            logger.info(
-                "Workflow trigger dispatched onto mesh event_type=%s node_id=%s attempt=%d/%d",
-                cfg.event_type,
-                cfg.node_id,
-                attempt + 1,
-                attempts,
-            )
-            if self._room_bridge is None:
-                # Kickoff acks travel through the room mesh bridge; without a
-                # room there is no way to observe them, so the legacy
-                # fire-and-forget dispatch is all this session can get.
-                logger.info("Workflow trigger published without ack tracking (room disabled)")
-                return
-            if await self._wait_for_workflow_kickoff_acks(
-                tracker, timeout_s=float(cfg.ack_timeout_s)
-            ):
-                logger.info(
-                    "Workflow kickoff acknowledged event_type=%s peers=%s",
-                    cfg.event_type,
-                    sorted(tracker.acked_peer_ids),
-                )
-                return
-            if attempt + 1 < attempts:
-                logger.warning(
-                    "Workflow kickoff unacknowledged after %.1fs "
-                    "(attempt %d/%d, missing=%s) — republishing",
-                    float(cfg.ack_timeout_s),
-                    attempt + 1,
-                    attempts,
-                    sorted(self._missing_workflow_kickoff_ack_peers(tracker)),
-                )
-
-        missing = sorted(self._missing_workflow_kickoff_ack_peers(tracker))
-        raise RuntimeError(
-            f"workflow kickoff for {cfg.event_type} was never acknowledged by "
-            f"{missing or 'any flock peer'} after {attempts} attempts"
-        )
-
-    def _missing_workflow_kickoff_ack_peers(self, tracker: WorkflowKickoffAckTracker) -> set[str]:
-        """Required kickoff consumers that have not acknowledged yet.
-
-        Peers are matched by their room participant id, falling back to the
-        persona name the ack carries — flock personas derive both from the
-        same configuration, but the fallback keeps a cosmetic id mismatch
-        from failing an otherwise healthy session.
-        """
-        cfg = self._settings.workflow_trigger
-        required = self._workflow_trigger_consumer_peer_ids(cfg.event_type)
-        missing: set[str] = set()
-        for peer_id in required:
-            if peer_id in tracker.acked_peer_ids:
-                continue
-            participant = (
-                self._room_bridge.participants.get(peer_id)
-                if self._room_bridge is not None
-                else None
-            )
-            persona = str(getattr(participant, "persona", "") or "").strip()
-            if persona and persona in tracker.acked_personas:
-                continue
-            missing.add(peer_id)
-        return missing
-
-    def _workflow_kickoff_acks_satisfied(self, tracker: WorkflowKickoffAckTracker) -> bool:
-        """True when every required consumer acked (or anyone, if none are known)."""
-        cfg = self._settings.workflow_trigger
-        required = self._workflow_trigger_consumer_peer_ids(cfg.event_type)
-        if not required:
-            return bool(tracker.acked_peer_ids or tracker.acked_personas)
-        return not self._missing_workflow_kickoff_ack_peers(tracker)
-
-    async def _wait_for_workflow_kickoff_acks(
-        self,
-        tracker: WorkflowKickoffAckTracker,
-        *,
-        timeout_s: float,
-    ) -> bool:
-        """Wait until the kickoff is acknowledged or *timeout_s* elapses."""
-        deadline = time.monotonic() + max(0.0, timeout_s)
-        while not self._workflow_kickoff_acks_satisfied(tracker):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            tracker.ack_received.clear()
-            with suppress(TimeoutError):
-                await asyncio.wait_for(tracker.ack_received.wait(), timeout=remaining)
-        return True
-
-    def _consume_workflow_kickoff_ack(self, peer_id: str, frame: dict[str, Any]) -> bool:
-        """Absorb a ``workflow.kickoff.acknowledged`` outcome frame from a peer.
-
-        Returns True when the frame was a kickoff ack — acks are handshake
-        signals and must never reach the outcome pipeline or gate machinery.
-        Acks for a stale kickoff id (an earlier dispatch of this session) are
-        consumed without being recorded.
-        """
-        data = frame.get("data")
-        if not isinstance(data, dict) or not is_workflow_kickoff_ack_payload(data):
-            return False
-
-        tracker = self._workflow_kickoff_tracker
-        if tracker is None:
-            logger.info(
-                "Ignoring workflow kickoff ack without an active kickoff peer=%s",
-                peer_id,
-            )
-            return True
-        ack_kickoff_id = str(data.get(WORKFLOW_KICKOFF_ID_KEY) or "").strip()
-        if ack_kickoff_id and ack_kickoff_id != tracker.kickoff_id:
-            logger.info(
-                "Ignoring stale workflow kickoff ack peer=%s kickoff_id=%s",
-                peer_id,
-                ack_kickoff_id,
-            )
-            return True
-
-        tracker.acked_peer_ids.add(peer_id)
-        persona = str(data.get("persona") or "").strip()
-        if persona:
-            tracker.acked_personas.add(persona)
-        tracker.ack_received.set()
-        logger.info(
-            "Workflow kickoff ack received peer=%s persona=%s duplicate=%s",
-            peer_id,
-            persona or "-",
-            bool(data.get("duplicate")),
         )
         return True
 
@@ -1611,8 +1213,6 @@ class Broker(
         """Publish one task event through Skuld's configured mesh adapter."""
         from niuu.mesh.events import MeshEvent, MeshEventType
 
-        if event_type.strip() in self._evidence_gate_outputs:
-            raise ValueError("Only the evidence verifier can publish evidence gate output events")
         if self._mesh_adapter is None:
             raise RuntimeError("Flock mesh is not available")
         event_id = correlation_id or str(uuid.uuid4())
@@ -1636,9 +1236,7 @@ class Broker(
             session_id=self.session_id,
             task_id=None if correlation_id else event_id,
             root_correlation_id=self.session_id,
-            trace_context=(
-                get_observability().inject() or dict(self._settings.workflow.trace_context)
-            ),
+            trace_context=get_observability().inject(),
         )
         await self._mesh_adapter.publish(event, event_type)
         return event_id
@@ -1657,8 +1255,6 @@ class Broker(
         task_description = task_description.strip()
         if not event_type:
             raise ValueError("Event type is required")
-        if event_type in self._evidence_gate_outputs:
-            raise ValueError("Only the evidence verifier can publish evidence gate output events")
         if not task_description:
             raise ValueError("Event task description is required")
         if self._mesh_adapter is None:
@@ -1690,86 +1286,6 @@ class Broker(
             extra_payload=payload,
         )
 
-    async def _run_workflow_trigger_task(self) -> None:
-        """Dispatch the initial workflow trigger after broker startup completes."""
-        cfg = self._settings.workflow_trigger
-        marker_path = (
-            Path(self.workspace_dir)
-            / CONVERSATION_HISTORY_DIR
-            / f"workflow_kickoff_{self.session_id}.json"
-        )
-        marker = {
-            "workflow_id": str(self._settings.workflow.workflow_id or ""),
-            "event_type": cfg.event_type,
-            "node_id": cfg.node_id,
-        }
-        try:
-            if json.loads(marker_path.read_text(encoding="utf-8")) == marker:
-                logger.info("Workflow kickoff already acknowledged — skipping restart dispatch")
-                return
-        except FileNotFoundError:
-            # No acknowledgment exists before the first successful kickoff.
-            pass
-        if self._workflow_gate_states:
-            # A restored gate proves the run started, even when the marker's workspace is gone.
-            logger.info("Workflow gates restored — skipping restart dispatch")
-            return
-        telemetry = get_observability()
-        workflow_name = (
-            str(getattr(self._settings.workflow, "name", "") or "").strip()
-            or cfg.label
-            or "workflow"
-        )
-        if self._trace_workflow_span_id is None:
-            self._trace_workflow_span_id = await self._start_trace_span(
-                kind="session.workflow",
-                name=workflow_name,
-                parent_span_id=self._trace_session_span_id,
-                actor_type="workflow",
-                actor_id=cfg.node_id or cfg.event_type or "workflow",
-                actor_label=cfg.label or workflow_name,
-                attributes={
-                    "event_type": cfg.event_type,
-                    "node_id": cfg.node_id,
-                    "source": cfg.source,
-                },
-            )
-        attributes = {
-            "skuld.workflow.id": str(self._settings.workflow.workflow_id or ""),
-            "skuld.workflow.name": workflow_name,
-            "skuld.workflow.trigger.event_type": cfg.event_type,
-            "skuld.workflow.trigger.node_id": cfg.node_id,
-        }
-        with telemetry.span(
-            "skuld.workflow.dispatch",
-            attributes=attributes,
-            carrier=dict(self._settings.workflow.trace_context),
-        ) as span:
-            try:
-                await self._publish_workflow_trigger()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                telemetry.mark_error(span, type(exc).__name__, str(exc))
-                telemetry.event(
-                    "skuld.workflow.dispatch.failed",
-                    attributes={**attributes, "error.type": type(exc).__name__},
-                    content={"error": str(exc)},
-                )
-                await self._finish_trace_span(
-                    self._trace_workflow_span_id,
-                    status="failed",
-                    attributes={"reason": "workflow_trigger_failed"},
-                )
-                self._trace_workflow_span_id = None
-                logger.exception("Workflow trigger dispatch failed")
-                raise
-            marker_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = marker_path.with_name(f".{marker_path.name}.{uuid.uuid4().hex}.tmp")
-            temporary.write_text(json.dumps(marker, sort_keys=True), encoding="utf-8")
-            temporary.replace(marker_path)
-            telemetry.event("skuld.workflow.dispatched", attributes=attributes)
-
     def _observer_peer_id(self) -> str:
         """Return Skuld's room participant id when available."""
         if self._mesh_adapter is not None and getattr(self._mesh_adapter, "peer_id", ""):
@@ -1795,13 +1311,11 @@ class Broker(
         event_type: str,
         frame: dict[str, Any],
     ) -> None:
-        """Track flock peer progress so Skuld can surface silent failures."""
+        """Fold a room peer's events into traces, artifacts, outcomes and help requests."""
         if self._room_bridge is None:
             return
         observer_peer_id = self._observer_peer_id()
         if peer_id == observer_peer_id:
-            return
-        if event_type == "outcome" and self._consume_workflow_kickoff_ack(peer_id, frame):
             return
         participant = self._room_bridge.participants.get(peer_id)
         peer_label = (
@@ -1812,30 +1326,11 @@ class Broker(
 
         if event_type == "outcome":
             await self._emit_peer_outcome_pipeline_event(peer_id, frame)
-            self._record_last_flock_outcome(peer_label, frame)
         elif event_type == "help_needed":
             request = self._record_pending_help_request(peer_id, frame)
             if request is None:
                 return
             await self._report_peer_help_needed_activity(request, frame)
-            await self._emit_peer_help_needed_sleipnir_event(peer_id, frame)
-        elif event_type == "error":
-            await self._maybe_report_flock_failure(peer_id, frame)
-        elif event_type in self._PEER_WORK_EVENT_TYPES:
-            await self._report_room_peer_working()
-
-        task_id = _peer_frame_task_id(frame)
-        if event_type == "task_started" and task_id:
-            self._peer_tasks_in_flight.setdefault(peer_id, set()).add(task_id)
-        elif event_type == "task_complete":
-            in_flight = self._peer_tasks_in_flight.get(peer_id, set())
-            in_flight.discard(task_id)
-            if not in_flight:
-                self._peer_tasks_in_flight.pop(peer_id, None)
-            await self._report_room_flock_idle()
-
-        now = time.monotonic()
-        watch = self._peer_watches.get(peer_id)
 
         if event_type == "task_started":
             metadata = frame.get("metadata", {})
@@ -1852,14 +1347,6 @@ class Broker(
                     actor_label=peer_label,
                     attributes={"task_id": task_id},
                 )
-            self._peer_watches[peer_id] = PeerWatchState(
-                peer_id=peer_id,
-                task_id=task_id,
-                title=title,
-                started_at=now,
-                last_progress_at=now,
-                last_status="busy",
-            )
             return
 
         if event_type == "tool_start":
@@ -1947,32 +1434,6 @@ class Broker(
                     },
                 )
 
-        if watch is None:
-            if event_type == "outcome":
-                await self._maybe_report_flock_completion(peer_id, frame)
-            if event_type in {"response", "error", "task_complete"}:
-                peer_span_id = self._trace_peer_turn_spans.pop(peer_id, None)
-                await self._finish_trace_span(
-                    peer_span_id,
-                    status="failed" if event_type == "error" else "completed",
-                    attributes={"event_type": event_type, "peer_id": peer_id},
-                )
-            return
-
-        watch.last_progress_at = now
-        watch.warned = False
-        if event_type == "tool_start":
-            watch.last_status = "tool_executing"
-        elif event_type in {"thought", "thinking"}:
-            watch.last_status = "thinking"
-        elif event_type in {"tool_result", "task_complete"}:
-            watch.last_status = "idle"
-        elif event_type == "error":
-            watch.last_status = "error"
-            self._peer_watches.pop(peer_id, None)
-        elif event_type in {"response", "outcome", "help_needed"}:
-            self._peer_watches.pop(peer_id, None)
-
         if event_type in {"response", "error", "task_complete"}:
             peer_span_id = self._trace_peer_turn_spans.pop(peer_id, None)
             await self._finish_trace_span(
@@ -1980,24 +1441,6 @@ class Broker(
                 status="failed" if event_type == "error" else "completed",
                 attributes={"event_type": event_type, "peer_id": peer_id},
             )
-
-        if event_type == "outcome":
-            await self._maybe_report_flock_completion(peer_id, frame)
-
-    def _record_last_flock_outcome(self, persona: str, frame: dict[str, Any]) -> None:
-        data = frame.get("data")
-        data = data if isinstance(data, dict) else {}
-        metadata = frame.get("metadata")
-        metadata = metadata if isinstance(metadata, dict) else {}
-        event_type = str(metadata.get("event_type") or data.get("event_type") or "").strip()
-        if not event_type:
-            return
-        self._last_flock_outcome = {
-            "event_type": event_type,
-            "verdict": str(data.get("verdict") or "").strip(),
-            "persona": persona,
-            "summary": str(data.get("summary") or "").strip(),
-        }
 
     async def _emit_peer_outcome_pipeline_event(
         self,
@@ -2013,20 +1456,10 @@ class Broker(
         event_type = str(metadata.get("event_type") or data.get("event_type") or "").strip()
         if not event_type:
             return
-        if event_type in self._evidence_gate_outputs:
-            raise ValueError("Agent outcomes cannot impersonate deterministic evidence gate events")
-
         participant = self._room_bridge.participants.get(peer_id)
         persona = (
             participant.persona if participant is not None else str(data.get("persona") or "")
         ).strip()
-        is_attested_review = (
-            participant is not None
-            and self._review_attestation is not None
-            and persona in self._review_attestation.personas
-            and event_type == self._review_attestation.event_type
-        )
-
         fields = data.get("fields")
         if not isinstance(fields, dict):
             nested_outcome = data.get("outcome")
@@ -2038,9 +1471,7 @@ class Broker(
             "event_type": event_type,
             "canonical_event_type": str(data.get("canonical_event_type") or event_type),
             "fields": fields,
-            "valid": (
-                data.get("valid") is True if is_attested_review else bool(data.get("valid", True))
-            ),
+            "valid": bool(data.get("valid", True)),
         }
         verdict = data.get("verdict") or fields.get("verdict")
         if verdict:
@@ -2054,140 +1485,6 @@ class Broker(
 
         if not data.get("routing_only") and data.get("bubble_up") is not False:
             await self._emit_pipeline_event("outcome", payload)
-        if is_attested_review:
-            review_outcome = self._attested_review_outcome(
-                peer_id=peer_id,
-                persona=persona,
-                event_type=event_type,
-                fields=fields,
-                valid=data.get("valid"),
-                event_id=str(metadata.get("task_id") or frame.get("source_event_id") or "").strip(),
-                verdict=data.get("verdict"),
-                summary=data.get("summary"),
-            )
-            if review_outcome is None:
-                logger.warning(
-                    "Ignoring malformed developer review evidence peer=%s persona=%s event_type=%s",
-                    peer_id,
-                    persona,
-                    event_type,
-                )
-                return
-            if not self._record_attested_review_outcome(review_outcome):
-                return
-            await self._report_activity_state(
-                "active",
-                extra_metadata={
-                    "attested_review": {
-                        "schemaVersion": 1,
-                        **review_outcome,
-                    }
-                },
-            )
-        await self._maybe_activate_workflow_gate(frame, payload)
-        await self._maybe_emit_workflow_terminal_outcome(peer_id, frame, payload)
-
-    def _attested_review_outcome(
-        self,
-        *,
-        peer_id: str,
-        persona: str,
-        event_type: str,
-        fields: dict[str, Any],
-        valid: object,
-        event_id: str,
-        verdict: object = "",
-        summary: object = "",
-    ) -> dict[str, Any] | None:
-        """Build immutable review evidence from authenticated room metadata."""
-        binding = self._review_attestation
-        role = binding.personas.get(persona) if binding is not None else None
-        if role is None or event_type != binding.event_type:
-            return None
-        if valid is not True:
-            return None
-        findings = fields.get("findings")
-        if not isinstance(findings, list) or any(
-            not isinstance(finding, dict) for finding in findings
-        ):
-            return None
-        attempt_id = str(fields.get("attempt_id") or fields.get("attemptId") or "").strip()
-        candidate_sha = str(fields.get("candidate_sha") or fields.get("candidateSha") or "").strip()
-        candidate_tree = str(
-            fields.get("candidate_tree") or fields.get("candidateTree") or ""
-        ).strip()
-        if not attempt_id or not candidate_sha or not candidate_tree:
-            return None
-        source_identity = (
-            f"event:{event_id}"
-            if event_id
-            else f"binding:{attempt_id}:{candidate_sha}:{candidate_tree}"
-        )
-        stable_event_id = str(
-            uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"niuulabs:attested-review:{self.session_id}:{peer_id}:{source_identity}",
-            )
-        )
-        return {
-            "eventId": stable_event_id,
-            "sessionId": self.session_id,
-            "role": role,
-            "scope": binding.scope,
-            "reviewerId": peer_id,
-            "personaId": persona,
-            "attemptId": attempt_id,
-            "candidateSha": candidate_sha,
-            "candidateTree": candidate_tree,
-            "verdict": str(fields.get("verdict") or verdict or ""),
-            "summary": str(fields.get("summary") or summary or ""),
-            "findings": list(findings),
-            "valid": True,
-        }
-
-    def _record_attested_review_outcome(self, outcome: dict[str, Any]) -> bool:
-        """Record an event once; conflicting reuse cannot replace original proof."""
-        event_id = str(outcome["eventId"])
-        existing = self._attested_review_outcomes.get(event_id)
-        if existing is None:
-            self._attested_review_outcomes[event_id] = outcome
-            return True
-        if existing == outcome:
-            return True
-        logger.warning("Ignoring conflicting developer review event_id=%s", event_id)
-        return False
-
-    async def _emit_peer_help_needed_sleipnir_event(
-        self,
-        peer_id: str,
-        frame: dict[str, Any],
-    ) -> None:
-        """Publish a canonical help-needed event so Ting can request human input."""
-        payload = self._build_peer_help_needed_payload(peer_id, frame)
-        if payload is None:
-            return
-        session_id = str(payload.get("session_id") or "").strip()
-
-        event = SleipnirEvent(
-            event_type="ravn.help.needed",
-            source=f"ravn:{peer_id}",
-            payload=payload,
-            urgency=float(frame.get("metadata", {}).get("urgency", 0.85)),
-            correlation_id=session_id or self.session_id,
-            summary=f"Help needed ({payload.get('persona') or peer_id}): {payload['summary']}",
-            domain="code",
-            timestamp=SleipnirEvent.now(),
-        )
-        try:
-            await self._sleipnir_publisher.publish(event)
-            logger.info(
-                "Peer help-needed event emitted: peer=%s session=%s run=%s",
-                peer_id,
-                session_id or "-",
-                self._artifacts.run_id or "-",
-            )
-        except Exception:
-            logger.warning("Failed to emit peer help-needed event", exc_info=True)
 
     def _build_peer_help_needed_payload(
         self,
@@ -2235,15 +1532,6 @@ class Broker(
         if self._artifacts.saga_id:
             payload["saga_id"] = self._artifacts.saga_id
         return payload
-
-    def list_workflow_gates(self) -> list[dict[str, Any]]:
-        """Return workflow gate states ordered from newest to oldest."""
-        states = sorted(
-            self._workflow_gate_states.values(),
-            key=lambda state: (state.updated_at, state.requested_at),
-            reverse=True,
-        )
-        return [asdict(state) for state in states]
 
     def _record_pending_help_request(
         self, peer_id: str, frame: dict[str, Any]
@@ -2354,185 +1642,6 @@ class Broker(
         )
         return message_id
 
-    def _workflow_activation_id_from_frame(self, frame: dict[str, Any]) -> str:
-        data = frame.get("data", {})
-        if not isinstance(data, dict):
-            data = {}
-        metadata = frame.get("metadata", {})
-        if not isinstance(metadata, dict):
-            metadata = {}
-        return (
-            str(
-                data.get("workflow_parent_event_id")
-                or data.get("workflow_activation_id")
-                or metadata.get("task_id")
-                or frame.get("root_correlation_id")
-                or self.session_id
-            ).strip()
-            or self.session_id
-        )
-
-    def _build_workflow_gate_help_needed_payload(
-        self,
-        state: WorkflowGateState,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "session_id": self.session_id,
-            "persona": "workflow-gate",
-            "summary": state.summary
-            or f"{state.label} is waiting for human approval before the workflow can continue.",
-            "reason": "needs_human_approval",
-            "recommendation": state.condition
-            or ("Review the pending gate and decide whether to approve or request changes."),
-            "context": {
-                "gate_id": state.id,
-                "gate_label": state.label,
-                "gate_node_id": state.node_id,
-                "gate_status": state.status,
-                "workflow_activation_id": state.activation_id,
-                "mode": state.mode,
-                "pending_behavior": state.pending_behavior,
-                "instructions": state.instructions,
-                "auto_forward_after": state.auto_forward_after,
-            },
-            "target_peer_id": self._observer_peer_id() or "workflow-gate",
-        }
-        if self._artifacts.run_id:
-            payload["run_id"] = self._artifacts.run_id
-        if self._artifacts.saga_id:
-            payload["saga_id"] = self._artifacts.saga_id
-        return payload
-
-    async def _emit_workflow_gate_help_needed_sleipnir_event(
-        self,
-        state: WorkflowGateState,
-    ) -> None:
-        payload = self._build_workflow_gate_help_needed_payload(state)
-        event = SleipnirEvent(
-            event_type="ravn.help.needed",
-            source=f"workflow-gate:{state.node_id}",
-            payload=payload,
-            urgency=0.85,
-            correlation_id=state.activation_id or self.session_id,
-            summary=f"Workflow gate pending ({state.label}): {payload['summary']}",
-            domain="code",
-            timestamp=SleipnirEvent.now(),
-        )
-        try:
-            await self._sleipnir_publisher.publish(event)
-            logger.info(
-                "Workflow gate help-needed emitted: gate=%s activation=%s",
-                state.node_id,
-                state.activation_id,
-            )
-        except Exception:
-            logger.warning("Failed to emit workflow gate help-needed event", exc_info=True)
-
-    async def _activate_workflow_gate(
-        self,
-        node: WorkflowGateNode,
-        activation_id: str,
-        triggering_event_type: str,
-        *,
-        summary: str = "",
-    ) -> WorkflowGateState:
-        key = (node.node_id, activation_id)
-        existing_state_id = self._workflow_gate_state_ids_by_key.get(key)
-        if existing_state_id is not None:
-            existing_state = self._workflow_gate_states.get(existing_state_id)
-            if existing_state is not None and existing_state.status == "pending":
-                return existing_state
-
-        attempt = self._workflow_gate_attempts.get(key, 0) + 1
-        self._workflow_gate_attempts[key] = attempt
-        now = datetime.now(UTC).isoformat()
-        gate_id = f"{node.node_id}:{activation_id}:{attempt}"
-        state = WorkflowGateState(
-            id=gate_id,
-            node_id=node.node_id,
-            activation_id=activation_id,
-            label=node.label,
-            condition=node.condition,
-            status="pending",
-            mode=node.mode,
-            pending_behavior=node.pending_behavior,
-            instructions=node.instructions,
-            auto_forward_after=node.auto_forward_after,
-            requested_at=now,
-            updated_at=now,
-            triggered_by_event_type=triggering_event_type,
-            approval_event_type=node.approval_event_type,
-            changes_requested_event_type=node.changes_requested_event_type,
-            attempt=attempt,
-            summary=summary,
-        )
-        self._workflow_gate_states[gate_id] = state
-        self._workflow_gate_state_ids_by_key[key] = gate_id
-        await self._record_workflow_gate(state)
-        self._trace_workflow_gate_spans[gate_id] = await self._start_trace_span(
-            kind="wait.workflow_gate",
-            name=state.label or state.node_id,
-            parent_span_id=self._trace_session_span_id,
-            actor_type="workflow",
-            actor_id=state.node_id,
-            actor_label=state.label or state.node_id,
-            attributes={
-                "gate_id": state.id,
-                "activation_id": state.activation_id,
-                "pending_behavior": state.pending_behavior,
-                "triggered_by_event_type": state.triggered_by_event_type,
-            },
-        ) or self._trace_workflow_gate_spans.get(gate_id)
-        await self._emit_pipeline_event(
-            "workflow.gate.pending",
-            {
-                "gate_id": state.id,
-                "gate_node_id": state.node_id,
-                "workflow_activation_id": state.activation_id,
-                "label": state.label,
-                "condition": state.condition,
-                "mode": state.mode,
-                "pending_behavior": state.pending_behavior,
-                "instructions": state.instructions,
-                "auto_forward_after": state.auto_forward_after,
-                "triggered_by_event_type": state.triggered_by_event_type,
-                "status": state.status,
-                "summary": state.summary,
-            },
-        )
-        if state.pending_behavior == "help_needed":
-            await self._emit_workflow_gate_help_needed_sleipnir_event(state)
-            await self._enter_gate_attention(state)
-            await self._tell_joined_sessions(
-                f"Workflow gate opened: {state.label or state.node_id} in session "
-                f"{self.session_id} is waiting for a person's decision. {state.summary}".strip()
-            )
-        return state
-
-    async def _enter_gate_attention(self, state: WorkflowGateState) -> None:
-        """A gate waiting for a person blocks the session on that person.
-
-        It is ``awaiting_input``, not ``idle``: Forge counts it under "needs
-        you", notifies, and keeps the session alive while it waits.
-        """
-        await self._enter_attention(
-            state.id,
-            "confirmation",
-            prompt=f"{state.label or state.node_id}: {state.summary}".strip(": "),
-            extra_metadata={"help_needed": self._build_workflow_gate_help_needed_payload(state)},
-        )
-
-    async def _reenter_restored_gate_attention(self) -> None:
-        """After a restart, a gate still pending is still waiting on its person."""
-        for state in self._workflow_gate_states.values():
-            if state.status == "pending" and state.pending_behavior == "help_needed":
-                await self._enter_gate_attention(state)
-
-    async def _tell_joined_sessions(self, content: str) -> None:
-        """Tell agents that joined this room from another session what happened."""
-        if self._room_bridge is not None:
-            await self._room_bridge.tell_joined_sessions(content)
-
     async def _deliver_to_member_session(self, session_id: str, content: str) -> bool:
         """Hand a room delivery to the session a member joined from, through Forge."""
         if not self.volundr_api_url:
@@ -2549,134 +1658,6 @@ class Broker(
             return False
         return True
 
-    async def _record_workflow_gate(self, state: WorkflowGateState) -> None:
-        """Log a gate durably, so a restarted session still holds it."""
-        await self._emit_broker_frame({"type": WORKFLOW_GATE_FRAME, "gate": asdict(state)})
-
-    async def resolve_workflow_gate(
-        self,
-        gate_id: str,
-        decision: str,
-        *,
-        notes: str = "",
-        source: str = "human",
-        decided_by: str = "",
-        actor: str = "",
-    ) -> dict[str, Any]:
-        state = self._workflow_gate_states.get(gate_id)
-        if state is None:
-            raise LookupError(f"Workflow gate not found: {gate_id}")
-        if state.status != "pending":
-            raise ValueError(f"Workflow gate {gate_id} is already resolved")
-        if state.mode == "evidence":
-            raise ValueError("Evidence gates can only be resolved by the configured verifier")
-        if actor and state.mode != AGENT_ANSWERABLE_GATE_MODE:
-            get_observability().count("skuld.workflow.gate_agent_answer_refused")
-            raise PermissionError(
-                f"Workflow gate {gate_id} waits for a person, so {actor} cannot answer it. "
-                f"Ask the operator to decide, or set the gate's mode to "
-                f"{AGENT_ANSWERABLE_GATE_MODE} if an agent may answer it"
-            )
-        normalized = decision.strip().upper()
-        if normalized not in {"APPROVE", "CHANGES_REQUESTED"}:
-            raise ValueError("decision must be APPROVE or CHANGES_REQUESTED")
-        if self._mesh_adapter is None:
-            raise RuntimeError("Workflow gate cannot resolve because mesh is not active")
-        event_type = (
-            state.approval_event_type
-            if normalized == "APPROVE"
-            else state.changes_requested_event_type
-        )
-        # A session that just restarted may not have its flock back yet, and the
-        # mesh keeps nothing for late subscribers. The gate stays pending until
-        # its answer can be heard.
-        wait_s = self._settings.workflow.gate_consumer_wait_s
-        if not await self._wait_for_event_consumers(event_type, wait_s):
-            get_observability().count("skuld.workflow.gate_consumer_wait.hits")
-            raise RuntimeError(
-                f"Workflow gate cannot resolve: nothing consuming {event_type} connected "
-                f"within workflow.gate_consumer_wait_s={wait_s}; try again once the flock is up"
-            )
-
-        human_message = normalized if not notes.strip() else f"{normalized}\n\n{notes.strip()}"
-        await self.handle_human_room_message(
-            human_message,
-            source=source,
-            metadata={
-                "workflow_gate_id": state.id,
-                "workflow_gate_node_id": state.node_id,
-                "workflow_activation_id": state.activation_id,
-            },
-            deliver_to_transport=False,
-        )
-
-        now = datetime.now(UTC)
-        state.status = "approved" if normalized == "APPROVE" else "changes_requested"
-        await self._exit_attention(state.id)
-        state.updated_at = now.isoformat()
-        state.decision = normalized
-        state.notes = notes.strip()
-        state.source = source
-        state.decided_by = decided_by
-        verdict = "approved" if normalized == "APPROVE" else "changes_requested"
-        reviewer = decided_by or "human reviewer"
-        summary = (
-            f"{state.label} approved by {reviewer}."
-            if normalized == "APPROVE"
-            else f"{state.label} sent back with requested changes by {reviewer}."
-        )
-        state.summary = summary
-        payload: dict[str, Any] = {
-            "event_type": event_type,
-            "session_id": self.session_id,
-            "persona": "workflow-gate",
-            "peer_id": f"workflow-gate:{state.node_id}",
-            "workflow_node_id": state.node_id,
-            "workflow_activation_id": state.activation_id,
-            "summary": summary,
-            "verdict": verdict,
-            "valid": True,
-            "fields": {
-                "verdict": verdict,
-                "summary": summary,
-                "approved": normalized == "APPROVE",
-                "gate_id": state.id,
-                "gate_node_id": state.node_id,
-                "gate_label": state.label,
-                "decision_source": source,
-                "decided_by": decided_by,
-                "notes": state.notes,
-            },
-        }
-        from niuu.mesh.events import MeshEvent, MeshEventType
-
-        event = MeshEvent(
-            type=MeshEventType.OUTCOME,
-            source=f"workflow-gate:{state.node_id}",
-            payload=payload,
-            timestamp=now,
-            urgency=0.7,
-            correlation_id=state.activation_id,
-            session_id=self.session_id,
-            root_correlation_id=state.activation_id,
-        )
-        await self._mesh_adapter.publish(event, event_type)
-        await self._record_workflow_gate(state)
-        await self._emit_pipeline_event("outcome", payload)
-        gate_span_id = self._trace_workflow_gate_spans.pop(gate_id, None)
-        await self._finish_trace_span(
-            gate_span_id,
-            status="completed",
-            attributes={
-                "decision": normalized,
-                "source": source,
-                "decided_by": decided_by,
-                "notes": state.notes,
-                "event_type": event_type,
-            },
-        )
-        return asdict(state)
-
     async def _report_peer_help_needed_activity(
         self,
         request: PendingHelpRequest,
@@ -2691,582 +1672,6 @@ class Broker(
             "question",
             prompt=request.summary,
             extra_metadata={"help_needed": payload},
-        )
-
-    async def _maybe_activate_workflow_gate(
-        self,
-        frame: dict[str, Any],
-        payload: dict[str, Any],
-    ) -> None:
-        """Evaluate native gate nodes against bubbled-up workflow outcomes."""
-        event_type = str(payload.get("event_type") or "").strip()
-        if not event_type:
-            return
-
-        matching_nodes = self._workflow_gate_index.get(event_type) or []
-        if not matching_nodes:
-            return
-
-        activation_id = self._workflow_activation_id_from_frame(frame)
-        summary = str(payload.get("summary") or "").strip()
-        fields = payload.get("fields")
-        reason = ""
-        if isinstance(fields, dict):
-            reason = str(fields.get("reason") or fields.get("rationale") or "").strip()
-        if reason and reason not in summary:
-            summary = f"{summary} — {reason}" if summary else reason
-
-        for node in matching_nodes:
-            if node.mode == "evidence":
-                await self._evaluate_workflow_evidence_gate(node, activation_id, frame, payload)
-                continue
-            key = (node.node_id, activation_id)
-            slot = self._workflow_gate_slots.setdefault(key, set())
-            slot.add(event_type)
-            if not all(required in slot for required in node.event_types):
-                continue
-            self._workflow_gate_slots.pop(key, None)
-            await self._activate_workflow_gate(
-                node,
-                activation_id,
-                event_type,
-                summary=summary,
-            )
-
-    async def _evaluate_workflow_evidence_gate(
-        self,
-        node: WorkflowGateNode,
-        activation_id: str,
-        frame: dict[str, Any],
-        payload: dict[str, Any],
-    ) -> None:
-        """Execute an evidence node without an agent turn or a human override."""
-        if (
-            self._evidence_verifier is None
-            or self._evidence_artifacts is None
-            or self._mesh_adapter is None
-        ):
-            raise RuntimeError("Evidence gate requires its verifier and active workflow mesh")
-        artifact = node.artifact or {}
-        fields = payload.get("fields") or {}
-        evidence = fields.get("evidence") if isinstance(fields, dict) else None
-        try:
-            observed_digest = await asyncio.to_thread(
-                self._evidence_artifacts.digest,
-                artifact_kind=artifact["kind"],
-                artifact_id=artifact["id"],
-            )
-            if payload.get("valid") is not True:
-                raise ValueError("Evidence gate received an invalid upstream outcome")
-            if not isinstance(evidence, dict) or not isinstance(evidence.get("identity"), dict):
-                raise ValueError("Evidence gate requires fields.evidence with an artifact identity")
-            if evidence["identity"].get("attempt_id") != activation_id:
-                raise ValueError("Evidence belongs to a different workflow activation")
-            if evidence["identity"].get("execution_id") != self.session_id:
-                raise ValueError("Evidence belongs to a different workflow execution")
-            if (
-                evidence["identity"].get("artifact_kind") != artifact["kind"]
-                or evidence["identity"].get("artifact_id") != artifact["id"]
-                or evidence["identity"].get("artifact_digest") != observed_digest
-            ):
-                raise ValueError("Evidence does not match the current workflow artifact")
-            report = evaluate_workflow_evidence(
-                self._evidence_verifier, evidence=evidence, policy=node.evidence_policy
-            ).model_dump(mode="json")
-        except ValueError as exc:
-            report = {"accepted": False, "blocking_reasons": [str(exc)]}
-        accepted = report["accepted"]
-        event_type = node.approval_event_type if accepted else node.changes_requested_event_type
-        outcome = {
-            "event_type": event_type,
-            "session_id": self.session_id,
-            "persona": "workflow-evidence",
-            "peer_id": f"workflow-evidence:{node.node_id}",
-            "workflow_node_id": node.node_id,
-            "workflow_activation_id": activation_id,
-            "valid": True,
-            "verdict": "pass" if accepted else "fail",
-            "summary": f"{node.label}: evidence {'accepted' if accepted else 'rejected'}",
-            "fields": {"evidence_report": report},
-        }
-        from niuu.mesh.events import MeshEvent, MeshEventType
-
-        event = MeshEvent(
-            type=MeshEventType.OUTCOME,
-            source=outcome["peer_id"],
-            payload=outcome,
-            timestamp=datetime.now(UTC),
-            urgency=0.0,
-            correlation_id=activation_id,
-            session_id=self.session_id,
-            root_correlation_id=activation_id,
-        )
-        # Persist the deterministic decision as a normal public workflow outcome.
-        # Publishing may be retried: receipt verification itself has no side effects.
-        await self._emit_broker_frame(
-            {
-                "type": "room_outcome",
-                "participantId": outcome["peer_id"],
-                "persona": outcome["persona"],
-                "eventType": event_type,
-                "workflowNodeId": node.node_id,
-                "valid": True,
-                "verdict": outcome["verdict"],
-                "summary": outcome["summary"],
-                "fields": outcome["fields"],
-            }
-        )
-        await self._emit_pipeline_event("outcome", outcome)
-        await self._mesh_adapter.publish(event, event_type)
-        await self._maybe_emit_workflow_terminal_outcome(outcome["peer_id"], frame, outcome)
-
-    async def _maybe_emit_workflow_terminal_outcome(
-        self,
-        peer_id: str,
-        frame: dict[str, Any],
-        payload: dict[str, Any],
-    ) -> None:
-        """Evaluate deterministic end nodes against bubbled-up peer outcomes."""
-        if str(peer_id).startswith("workflow-stop:"):
-            return
-        event_type = str(payload.get("event_type") or "").strip()
-        if not event_type or event_type == "ravn.task.completed":
-            return
-
-        matching_nodes = self._workflow_terminal_index.get(event_type) or []
-        if not matching_nodes:
-            return
-
-        data = frame.get("data", {})
-        if not isinstance(data, dict):
-            return
-
-        metadata = frame.get("metadata", {})
-        activation_id = str(
-            data.get("workflow_parent_event_id")
-            or data.get("workflow_activation_id")
-            or metadata.get("task_id")
-            or frame.get("root_correlation_id")
-            or self.session_id
-        ).strip()
-        if not activation_id:
-            return
-
-        for node in matching_nodes:
-            key = (node.node_id, activation_id)
-            slot = self._workflow_terminal_slots.setdefault(key, {})
-            slot[event_type] = dict(payload)
-
-            if not all(required in slot for required in node.event_types):
-                continue
-
-            collected = [slot[required] for required in node.event_types if required in slot]
-            self._workflow_terminal_slots.pop(key, None)
-
-            if not _workflow_join_satisfied(
-                node.join_mode,
-                collected,
-                passing_verdicts=node.passing_verdicts,
-            ):
-                logger.info(
-                    "workflow runtime: terminal node %s rejected activation=%s outcomes=%s",
-                    node.node_id,
-                    activation_id,
-                    [outcome.get("event_type", "") for outcome in collected],
-                )
-                self._workflow_terminal_emitted.discard(key)
-                continue
-
-            self._refresh_git_workspace_artifacts()
-            if not _workflow_terminal_requirements_satisfied(
-                node,
-                self._artifacts,
-                git_checkpoint=self._git_workspace_checkpoint,
-            ):
-                logger.info(
-                    "workflow runtime: terminal node %s waiting for durable checkpoint "
-                    "(commit=%d push=%d activation=%s)",
-                    node.node_id,
-                    self._artifacts.git_commit_count,
-                    self._artifacts.git_push_count,
-                    activation_id,
-                )
-                self._workflow_terminal_emitted.discard(key)
-                continue
-
-            if key in self._workflow_terminal_emitted:
-                continue
-            self._workflow_terminal_emitted.add(key)
-            await self._emit_workflow_terminal_completion(peer_id, node, activation_id, collected)
-
-    async def _emit_workflow_terminal_completion(
-        self,
-        _peer_id: str,
-        node: WorkflowTerminalNode,
-        activation_id: str,
-        outcomes: list[dict[str, Any]],
-    ) -> None:
-        """Emit the deterministic terminal completion for a satisfied end node."""
-        fields = _merge_workflow_terminal_outcomes(outcomes)
-        terminal_peer_id = f"workflow-stop:{node.node_id}"
-        payload: dict[str, Any] = {
-            "peer_id": terminal_peer_id,
-            "persona": "workflow-runtime",
-            "event_type": node.completion_event_type,
-            "canonical_event_type": node.completion_event_type,
-            "workflow_node_id": node.node_id,
-            "workflow_activation_id": activation_id,
-            "fields": fields,
-            "valid": True,
-            "verdict": fields.get("verdict", "approve"),
-            "summary": fields.get("summary", ""),
-        }
-        files_changed = fields.get("files_changed")
-        if isinstance(files_changed, list) and files_changed:
-            payload["files_changed"] = files_changed
-        if "tests_passing" in fields:
-            payload["tests_passing"] = fields["tests_passing"]
-        if "scope_adherence" in fields:
-            payload["scope_adherence"] = fields["scope_adherence"]
-
-        await self._emit_pipeline_event("outcome", payload)
-        await self._finish_trace_span(
-            self._trace_workflow_span_id,
-            status="completed",
-            attributes={
-                "workflow_node_id": node.node_id,
-                "workflow_activation_id": activation_id,
-                "completion_event_type": node.completion_event_type,
-                "fields": fields,
-            },
-        )
-        self._trace_workflow_span_id = None
-        logger.info(
-            "workflow runtime: terminal node %s emitted %s activation=%s",
-            node.node_id,
-            node.completion_event_type,
-            activation_id,
-        )
-
-        frame = {
-            "type": "outcome",
-            "metadata": {"event_type": node.completion_event_type},
-            "data": {
-                "event_type": node.completion_event_type,
-                "canonical_event_type": node.completion_event_type,
-                "fields": fields,
-                "valid": True,
-                "verdict": payload.get("verdict"),
-                "summary": payload.get("summary"),
-                "bubble_up": False,
-            },
-        }
-        if self._room_bridge is not None:
-            await self._room_bridge.register_mesh_peer(
-                peer_id=terminal_peer_id,
-                persona="workflow-runtime",
-                display_name="workflow-runtime",
-                participant_type="workflow",
-                participant_kind="workflow",
-                heartbeat_ttl_s=0.0,
-            )
-            await self._room_bridge.handle_collaboration_frame(
-                terminal_peer_id,
-                {
-                    "kind": "outcome",
-                    "sourceEventType": "outcome",
-                    "eventType": node.completion_event_type,
-                    "fields": fields,
-                    "valid": True,
-                    "verdict": payload.get("verdict"),
-                    "summary": payload.get("summary"),
-                },
-            )
-        await self._maybe_report_flock_completion(terminal_peer_id, frame)
-
-    async def _maybe_report_flock_completion(
-        self,
-        peer_id: str,
-        frame: dict[str, Any],
-    ) -> None:
-        """Report authoritative flock completion through Volundr activity metadata.
-
-        Local multi-peer workflows already flow through Skuld -> Volundr SSE -> Ting.
-        Use that existing path for ravn_flock completion instead of relying on an
-        out-of-process Sleipnir transport during co-hosted development runs.
-        """
-        if (
-            self._flock_completion_reported
-            or self._flock_failure_reported
-            or self._pending_terminal_activity is not None
-            or not self._is_room_only_workflow_session()
-        ):
-            return
-        if self._room_bridge is None:
-            return
-
-        metadata = frame.get("metadata", {})
-        outcome_event_type = str(metadata.get("event_type") or "")
-        is_workflow_terminal = str(peer_id).startswith("workflow-stop:")
-        if not is_workflow_terminal and outcome_event_type != "ravn.task.completed":
-            return
-
-        data = frame.get("data", {})
-        if isinstance(data, str):
-            return
-
-        fields = data.get("fields", data)
-        if not isinstance(fields, dict) or not fields:
-            return
-        if is_workflow_terminal:
-            normalized = self._authoritative_workflow_terminal_frame(
-                peer_id=peer_id,
-                event_type=outcome_event_type,
-                fields=fields,
-                valid=data.get("valid"),
-            )
-            if normalized is None:
-                return
-            frame = normalized
-            data = frame["data"]
-            fields = data["fields"]
-            persona = "workflow-runtime"
-        else:
-            participant = self._room_bridge.participants.get(peer_id)
-            persona = (participant.persona if participant is not None else "").strip()
-        structured_outcome = (
-            fields.get("outcome") if isinstance(fields.get("outcome"), dict) else fields
-        )
-        if not isinstance(structured_outcome, dict) or not structured_outcome:
-            return
-
-        extra_metadata: dict[str, Any] = {
-            "completion_source": "ravn_flock",
-            "completion_event_type": outcome_event_type,
-            "completion_persona": persona,
-            "completion_peer_id": peer_id,
-            "structured_outcome": structured_outcome,
-            "outcome_valid": bool(data.get("valid", True)),
-        }
-        files_changed = structured_outcome.get("files_changed") or fields.get("files_changed")
-        if isinstance(files_changed, list) and files_changed:
-            extra_metadata["files_changed"] = files_changed
-        is_attested_terminal = self._review_attestation is not None and any(
-            node.completion_event_type == outcome_event_type
-            for node in self._workflow_terminal_nodes
-        )
-        if is_attested_terminal:
-            result = structured_outcome.get("result")
-            if isinstance(result, dict):
-                extra_metadata["delivery"] = {
-                    "schemaVersion": 1,
-                    "result": dict(result),
-                    "reviews": self._attested_reviews_for_terminal_result(result),
-                }
-
-        if await self._report_activity_state("idle", extra_metadata=extra_metadata):
-            self._flock_completion_reported = True
-
-    def _authoritative_workflow_terminal_frame(
-        self,
-        *,
-        peer_id: str,
-        event_type: str,
-        fields: dict[str, Any],
-        valid: object,
-    ) -> dict[str, Any] | None:
-        """Normalize only a configured runtime-owned workflow stop outcome."""
-        prefix = "workflow-stop:"
-        if not peer_id.startswith(prefix) or valid is not True or not fields:
-            return None
-        node_id = peer_id[len(prefix) :]
-        if self._workflow_terminal_nodes:
-            if not any(
-                node.node_id == node_id and node.completion_event_type == event_type
-                for node in self._workflow_terminal_nodes
-            ):
-                return None
-        else:
-            participant = self._room_bridge.participants.get(peer_id) if self._room_bridge else None
-            if str(getattr(participant, "persona", "") or "").strip() != "workflow-runtime":
-                return None
-        return {
-            "type": "outcome",
-            "metadata": {"event_type": event_type},
-            "data": {
-                "event_type": event_type,
-                "canonical_event_type": event_type,
-                "fields": dict(fields),
-                "valid": True,
-                "bubble_up": False,
-            },
-        }
-
-    def _attested_reviews_for_terminal_result(
-        self,
-        result: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """Select the latest exact-candidate review from each workstream role.
-
-        The in-memory ledger intentionally retains prior review cycles for audit
-        reporting.  A repaired candidate must not carry those superseded reviews
-        into Ting's terminal attestation envelope.
-        """
-        attempt_id = str(result.get("attemptId") or "").strip()
-        candidate_sha = str(result.get("candidateSha") or "").strip()
-        candidate_tree = str(result.get("candidateTree") or "").strip()
-        if not attempt_id or not candidate_sha or not candidate_tree:
-            return []
-
-        binding = self._review_attestation
-        if binding is None or binding.scope != "workstream":
-            return []
-        workstream_roles = set(binding.roles)
-        selected: dict[str, dict[str, Any]] = {}
-        for outcome in self._attested_review_outcomes.values():
-            role = str(outcome.get("role") or "")
-            if (
-                role not in workstream_roles
-                or outcome.get("scope") != "workstream"
-                or outcome.get("valid") is not True
-                or str(outcome.get("attemptId") or "") != attempt_id
-                or str(outcome.get("candidateSha") or "") != candidate_sha
-                or str(outcome.get("candidateTree") or "") != candidate_tree
-            ):
-                continue
-            # Dictionary iteration preserves observation order, so a repeated
-            # authenticated role for the same immutable candidate supersedes its
-            # earlier observation without erasing the retained audit history.
-            selected[role] = outcome
-        return [selected[role] for role in sorted(selected)]
-
-    async def _maybe_report_flock_failure(
-        self,
-        peer_id: str,
-        frame: dict[str, Any],
-    ) -> None:
-        """Report a terminal peer error for unattended flock workflows.
-
-        A peer ``error`` frame is terminal for that agent turn. Previously it
-        was visible in chat and tracing only, leaving the workflow campaign in
-        ``running`` forever. Report an explicit terminal activity state so
-        Volundr, Ting, and A2A clients agree that the workflow failed.
-        """
-        if (
-            self._flock_failure_reported
-            or self._flock_completion_reported
-            or self._pending_terminal_activity is not None
-            or not self._is_room_only_workflow_session()
-        ):
-            return
-
-        participant = self._room_bridge.participants.get(peer_id) if self._room_bridge else None
-        persona = (participant.persona if participant is not None else "").strip()
-        error = _peer_error_message(frame)
-        extra_metadata = {
-            "failure_source": "ravn_flock",
-            "failure_peer_id": peer_id,
-            "failure_persona": persona,
-            "error": error,
-        }
-        # The workflow node and task the peer was running when it failed, so
-        # Ting can record which stage failed rather than only which peer.
-        frame_metadata = frame.get("metadata")
-        if isinstance(frame_metadata, dict):
-            node_id = str(frame_metadata.get("workflow_node_id") or "").strip()
-            if node_id:
-                extra_metadata["failure_workflow_node_id"] = node_id
-            if not persona:
-                extra_metadata["failure_persona"] = str(frame_metadata.get("persona") or "").strip()
-            failure_kind = str(frame_metadata.get("failure_kind") or "").strip()
-            if failure_kind:
-                extra_metadata["failure_kind"] = failure_kind
-        task_id = str(frame.get("task_id") or "").strip()
-        if task_id:
-            extra_metadata["failure_task_id"] = task_id
-
-        if await self._report_activity_state("error", extra_metadata=extra_metadata):
-            self._flock_failure_reported = True
-        await self._finish_trace_span(
-            self._trace_workflow_span_id,
-            status="failed",
-            attributes={
-                "reason": "peer_error",
-                "peer_id": peer_id,
-                "persona": persona,
-            },
-        )
-        self._trace_workflow_span_id = None
-
-    async def _peer_watchdog_loop(self) -> None:
-        """Warn in chat when a flock peer accepted work but goes quiet."""
-        try:
-            while True:
-                await asyncio.sleep(self._settings.peer_watchdog.poll_seconds)
-                await self._check_peer_watchdog_once()
-        except asyncio.CancelledError:
-            return
-
-    async def _check_peer_watchdog_once(self) -> None:
-        """Run one silence-watchdog pass for active flock peers."""
-        if not self._settings.peer_watchdog.enabled:
-            return
-        now = time.monotonic()
-        for peer_id, watch in list(self._peer_watches.items()):
-            threshold = (
-                self._settings.peer_watchdog.tool_silence_seconds
-                if watch.last_status == "tool_executing"
-                else self._settings.peer_watchdog.silence_seconds
-            )
-            silence_seconds = now - watch.last_progress_at
-            if silence_seconds < threshold or watch.warned:
-                continue
-            watch.warned = True
-            await self._emit_peer_silence_warning(watch, int(silence_seconds))
-
-    async def _emit_peer_silence_warning(
-        self,
-        watch: PeerWatchState,
-        silence_seconds: int,
-    ) -> None:
-        """Surface a stalled-peer warning in chat and peer status."""
-        if self._room_bridge is None:
-            return
-
-        participant = self._room_bridge.participants.get(watch.peer_id)
-        peer_name = (
-            (participant.display_name or participant.persona or watch.peer_id)
-            if participant is not None
-            else watch.peer_id
-        )
-        status_hint = (
-            "while waiting on a tool result"
-            if watch.last_status == "tool_executing"
-            else "after accepting work"
-        )
-        content = (
-            f"Skuld watchdog: `{peer_name}` has shown no visible progress for "
-            f"{silence_seconds}s {status_hint} on `{watch.title}`. "
-            "The agent may be blocked on an upstream LLM/backend failure or a stalled tool."
-        )
-        await self._room_bridge.broadcast_cli_activity(
-            watch.peer_id,
-            "blocked",
-            f"silent for {silence_seconds}s",
-        )
-        observer_peer_id = self._observer_peer_id()
-        if observer_peer_id:
-            await self._room_bridge.broadcast_cli_message(
-                observer_peer_id,
-                content,
-                is_error=True,
-            )
-        await self._report_timeline_event(
-            {
-                "t": self._artifacts.duration_seconds,
-                "type": "error",
-                "label": content[:120],
-            }
         )
 
     @staticmethod
@@ -4681,18 +3086,6 @@ class Broker(
                             )
                     return
 
-                if self._is_room_only_workflow_session():
-                    error_msg = (
-                        "Direct chat is disabled for flock workflow sessions. "
-                        "Target a mesh peer instead."
-                    )
-                    logger.info("_dispatch_browser_message: %s", error_msg)
-                    if sender_ws:
-                        await self._send_broker_frame_to(
-                            sender_ws, control_error_frame(error_msg, data)
-                        )
-                    return
-
                 # Record user turn in conversation history
                 msg_id = str(uuid.uuid4())
                 request_id = data.get("request_id")
@@ -4721,73 +3114,94 @@ class Broker(
                         )
                         return
                     self._message_claim_tokens[request_id] = token
-                now = datetime.now(UTC)
-                input_timeline = self._enqueue_human_turn_event(
-                    content_str, msg_id, request_id=request_id, ts=now
-                )
-                self._append_turn(
-                    ConversationTurn(
-                        id=msg_id,
-                        role="user",
-                        content=content_str,
-                        created_at=now.isoformat(),
-                        # The message has been accepted but not yet consumed by the
-                        # agent. It rides as "pending" (the client renders it greyed /
-                        # italic) until the correlated UserPromptSubmit flips it to
-                        # "active". Survives reconnect + REST since metadata is
-                        # serialized with the turn.
-                        metadata={
-                            "steering_state": "pending",
-                            **({"request_id": request_id} if request_id else {}),
-                            **({TIMELINE_KEY: input_timeline} if input_timeline else {}),
-                        },
-                    )
-                )
-                # Mirror the human turn into the durable event log so log-only
-                # transcript replay (web/iOS) includes it.
-                await self._complete_trace_span(
-                    kind="turn.user",
-                    name=content_str[:120] or "user turn",
-                    parent_span_id=self._trace_session_span_id,
-                    actor_type="user",
-                    actor_id=request_id or msg_id,
-                    actor_label="user",
-                    attributes={"source": "browser"},
-                    started_at=now,
-                    ended_at=now,
+                await self._submit_user_turn(
+                    content_str, msg_id=msg_id, request_id=request_id, source="browser"
                 )
 
-                # Echo back to all browsers so the message is confirmed
-                # immediately (rendering as a user turn) — the actual transport
-                # delivery happens asynchronously below.
-                await self._emit_broker_frame(
-                    {
-                        "type": "user_confirmed",
-                        "id": msg_id,
-                        "content": content_str,
-                        "request_id": request_id,
-                        "steering_state": "pending",
-                        "created_at": now.isoformat(),
-                        **({TIMELINE_KEY: input_timeline} if input_timeline else {}),
-                    }
-                )
+    async def _submit_user_turn(
+        self,
+        content_str: str,
+        *,
+        msg_id: str,
+        request_id: str | None,
+        source: str,
+        extra_metadata: dict[str, Any] | None = None,
+    ) -> asyncio.Task[None]:
+        """Record a user turn, echo it to every client and deliver it to the transport.
 
-                # Fire-and-forget so the WS receive loop isn't pinned on a turn that may
-                # run for minutes (the transport serialises its own deliveries, so order
-                # holds). BUG-3 / INV-7: the delivery is wrapped so its OUTCOME is durable
-                # and observable — bounded retry on a transient failure, a VISIBLE failed
-                # turn on terminal failure — instead of being silently swallowed on a
-                # wedged input channel while the API says "sent". The redirect-vs-send
-                # routing is recomputed AT DELIVERY TIME (not snapshotted here) so a turn
-                # boundary that moves between accept and delivery routes correctly.
-                asyncio.create_task(
-                    self._deliver_user_message_and_ack(
-                        content_str,
-                        request_id=request_id,
-                        msg_id=msg_id,
-                    ),
-                    name=f"transport-deliver-{msg_id}",
-                )
+        The one path a human message and a workflow step's instructions both take, so a step
+        is steered into the harness exactly as a person's message is: same durable turn, same
+        bounded-retry delivery, same acknowledgement. Returns the delivery task, which ends
+        once the outcome is decided (delivered, or the turn marked failed).
+        """
+        now = datetime.now(UTC)
+        input_timeline = self._enqueue_human_turn_event(
+            content_str, msg_id, request_id=request_id, ts=now
+        )
+        self._append_turn(
+            ConversationTurn(
+                id=msg_id,
+                role="user",
+                content=content_str,
+                created_at=now.isoformat(),
+                # The message has been accepted but not yet consumed by the
+                # agent. It rides as "pending" (the client renders it greyed /
+                # italic) until the correlated UserPromptSubmit flips it to
+                # "active". Survives reconnect + REST since metadata is
+                # serialized with the turn.
+                metadata={
+                    "steering_state": "pending",
+                    **({"request_id": request_id} if request_id else {}),
+                    **({TIMELINE_KEY: input_timeline} if input_timeline else {}),
+                    **(extra_metadata or {}),
+                },
+            )
+        )
+        # Mirror the human turn into the durable event log so log-only
+        # transcript replay (web/iOS) includes it.
+        await self._complete_trace_span(
+            kind="turn.user",
+            name=content_str[:120] or "user turn",
+            parent_span_id=self._trace_session_span_id,
+            actor_type="user",
+            actor_id=request_id or msg_id,
+            actor_label="user",
+            attributes={"source": source},
+            started_at=now,
+            ended_at=now,
+        )
+
+        # Echo back to all browsers so the message is confirmed
+        # immediately (rendering as a user turn) — the actual transport
+        # delivery happens asynchronously below.
+        await self._emit_broker_frame(
+            {
+                "type": "user_confirmed",
+                "id": msg_id,
+                "content": content_str,
+                "request_id": request_id,
+                "steering_state": "pending",
+                "created_at": now.isoformat(),
+                **({TIMELINE_KEY: input_timeline} if input_timeline else {}),
+            }
+        )
+
+        # Fire-and-forget so the WS receive loop isn't pinned on a turn that may
+        # run for minutes (the transport serialises its own deliveries, so order
+        # holds). BUG-3 / INV-7: the delivery is wrapped so its OUTCOME is durable
+        # and observable — bounded retry on a transient failure, a VISIBLE failed
+        # turn on terminal failure — instead of being silently swallowed on a
+        # wedged input channel while the API says "sent". The redirect-vs-send
+        # routing is recomputed AT DELIVERY TIME (not snapshotted here) so a turn
+        # boundary that moves between accept and delivery routes correctly.
+        return asyncio.create_task(
+            self._deliver_user_message_and_ack(
+                content_str,
+                request_id=request_id,
+                msg_id=msg_id,
+            ),
+            name=f"transport-deliver-{msg_id}",
+        )
 
     async def _try_route_pending_help_reply(self, data: dict, content: str) -> bool:
         """Route a Telegram reply to the single Ravn peer waiting on help_needed."""
@@ -5578,7 +3992,7 @@ class Broker(
         source: str = "external",
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        """Resend the configured initial prompt into an active room/flock session."""
+        """Resend the configured initial prompt into an active room session."""
         if self._room_bridge is None:
             raise RuntimeError("Room mode is not enabled")
         prompt = self._settings.session.initial_prompt.strip()
@@ -5590,17 +4004,12 @@ class Broker(
             "resend_prompt": True,
             "initial_prompt": True,
         }
-        if self._has_workflow_trigger() and self._mesh_adapter is None:
-            raise RuntimeError("Workflow mesh is not available")
-        message_id = await self.handle_human_room_message(
+        return await self.handle_human_room_message(
             prompt,
             source=source,
             metadata=metadata_payload,
-            deliver_to_transport=not self._has_workflow_trigger(),
+            deliver_to_transport=True,
         )
-        if self._has_workflow_trigger():
-            await self._publish_workflow_trigger()
-        return message_id
 
     async def join_environment(
         self,
@@ -5802,7 +4211,11 @@ class Broker(
         """Recover a resumed native session's durable prefix before the CLI starts."""
         if (
             not self._settings.history_hydration_enabled
-            or (not self._settings.session.resume_session_id and not self._settings.room.enabled)
+            or (
+                not self._settings.session.resume_session_id
+                and not self._settings.room.enabled
+                and not self._settings.workflow_steps.enabled
+            )
             or not self.volundr_api_url
             or not self._settings.event_log_enabled
         ):
@@ -5823,10 +4236,10 @@ class Broker(
             )
             hydrated = [ConversationTurn(**turn) for turn in merged]
         except Exception as exc:
-            if self._is_room_only_workflow_session():
+            if self._settings.workflow_steps.enabled:
                 raise RuntimeError(
-                    "Workflow room durable history could not be restored; refusing to "
-                    "start without complete review evidence"
+                    "The durable history of this workflow step host could not be restored; "
+                    "refusing to start without knowing which step is open"
                 ) from exc
             logger.warning(
                 "Durable history hydration skipped for session %s; preserving local cache: %s",
@@ -5840,10 +4253,6 @@ class Broker(
         self._save_conversation_history()
         logger.info("Hydrated %d conversation turns from durable history", len(hydrated))
         await self._rejoin_room_members()
-        await self._reenter_restored_gate_attention()
-        if self._restored_workflow_terminal_completion is not None:
-            peer_id, frame = self._restored_workflow_terminal_completion
-            await self._maybe_report_flock_completion(peer_id, frame)
 
     def _control_state_path(self) -> Path:
         return self._conversation_history_path().with_name(f"controls_{self.session_id}.json")
@@ -5871,9 +4280,7 @@ class Broker(
     def _restore_durable_runtime_state(self, frames: list) -> None:
         """Restore broker-owned state from the frozen durable-log horizon."""
         self._restore_durable_controls(frames)
-        self._restore_durable_attested_reviews(frames)
-        self._restore_durable_workflow_terminal_completion(frames)
-        self._restore_durable_workflow_gates(frames)
+        self._restore_durable_workflow_steps(frames)
         self._restore_durable_room_members(frames)
 
     def _restore_durable_room_members(self, frames: list) -> None:
@@ -5894,83 +4301,6 @@ class Broker(
         for participant_id, member in self._restored_room_members.items():
             await self._room_bridge.join_environment(participant_id, **member)
 
-    def _restore_durable_workflow_gates(self, frames: list) -> None:
-        """Rebuild workflow gates, each at its latest logged state."""
-        for frame in frames:
-            if getattr(frame, "kind", "") != WORKFLOW_GATE_FRAME:
-                continue
-            state = WorkflowGateState(**frame.payload["gate"])
-            key = (state.node_id, state.activation_id)
-            self._workflow_gate_states[state.id] = state
-            self._workflow_gate_state_ids_by_key[key] = state.id
-            self._workflow_gate_attempts[key] = max(
-                self._workflow_gate_attempts.get(key, 0), state.attempt
-            )
-
-    def _restore_durable_workflow_terminal_completion(self, frames: list) -> None:
-        """Recover an authenticated workflow-runtime stop outcome for republishing."""
-        for frame in frames:
-            if getattr(frame, "kind", "") != "room_outcome":
-                continue
-            payload = getattr(frame, "payload", None)
-            if not isinstance(payload, dict) or payload.get("type") != "room_outcome":
-                continue
-            participant = payload.get("participant")
-            if not isinstance(participant, dict):
-                continue
-            peer_id = str(payload.get("participantId") or "").strip()
-            if (
-                not peer_id
-                or str(participant.get("peer_id") or "").strip() != peer_id
-                or str(participant.get("persona") or "").strip() != "workflow-runtime"
-                or str(participant.get("participant_type") or "").strip() != "workflow"
-                or str(participant.get("participant_kind") or "").strip() != "workflow"
-                or str(payload.get("sourceEventType") or "").strip() != "outcome"
-            ):
-                continue
-            fields = payload.get("fields")
-            if not isinstance(fields, dict):
-                continue
-            normalized = self._authoritative_workflow_terminal_frame(
-                peer_id=peer_id,
-                event_type=str(payload.get("eventType") or "").strip(),
-                fields=fields,
-                valid=payload.get("valid"),
-            )
-            if normalized is not None:
-                self._restored_workflow_terminal_completion = (peer_id, normalized)
-
-    def _restore_durable_attested_reviews(self, frames: list) -> None:
-        """Rebuild authenticated developer review evidence from room outcomes."""
-        for frame in frames:
-            if getattr(frame, "kind", "") != "room_outcome":
-                continue
-            payload = getattr(frame, "payload", None)
-            if not isinstance(payload, dict) or payload.get("type") != "room_outcome":
-                continue
-            participant = payload.get("participant")
-            if not isinstance(participant, dict):
-                continue
-            peer_id = str(payload.get("participantId") or "").strip()
-            if not peer_id or str(participant.get("peer_id") or "").strip() != peer_id:
-                continue
-            persona = str(participant.get("persona") or "").strip()
-            fields = payload.get("fields")
-            if not isinstance(fields, dict):
-                continue
-            outcome = self._attested_review_outcome(
-                peer_id=peer_id,
-                persona=persona,
-                event_type=str(payload.get("eventType") or "").strip(),
-                fields=fields,
-                valid=payload.get("valid"),
-                event_id=str(payload.get("taskId") or payload.get("sourceEventId") or "").strip(),
-                verdict=payload.get("verdict"),
-                summary=payload.get("summary"),
-            )
-            if outcome is not None:
-                self._record_attested_review_outcome(outcome)
-
     def _load_control_state(self) -> None:
         try:
             self._unrestored_questions, self._unrestored_permissions = load_control_state(
@@ -5987,15 +4317,8 @@ async def _present_peer_file(message: dict) -> dict:
     return await present_peer_file(message)
 
 
-# Global broker instance; deployment trust is composed outside the graph/runtime.
-from skuld.main import create_evidence_artifacts, create_evidence_verifier  # noqa: E402
-
-_broker_settings = SkuldSettings()
-broker = Broker(
-    _broker_settings,
-    evidence_verifier=create_evidence_verifier(_broker_settings),
-    evidence_artifacts=create_evidence_artifacts(_broker_settings),
-)
+# Global broker instance.
+broker = Broker(SkuldSettings())
 
 
 # API imports remain late because they bind the completed Broker instance.
@@ -6040,7 +4363,6 @@ from skuld.broker_api import (  # noqa: E402, F401
     _RoomLeaveRequest,
     _RoomCloseRequest,
     _RoomCapabilityRequest,
-    _WorkflowGateResolveRequest,
     send_message_to_session,
     send_room_message,
     send_directed_room_message,
@@ -6051,8 +4373,6 @@ from skuld.broker_api import (  # noqa: E402, F401
     close_room,
     require_room_capability,
     get_room_participants,
-    get_workflow_gates,
-    resolve_workflow_gate,
     get_communication_routes,
     _TokenRedactFilter,
     app,

@@ -246,6 +246,21 @@ class TestEnvironment:
         assert json.loads(env_dict["SKULD__SESSION__PERSONA"]) == persona
         assert env_dict["SKULD__SESSION__SYSTEM_PROMPT"] == "Be brief."
 
+    def test_build_env_enables_workflow_steps_only_for_a_step_host(
+        self,
+        pod_manager: DirectK8sPodManager,
+        sample_session: Session,
+    ) -> None:
+        plain = {e["name"] for e in pod_manager._build_env(sample_session, make_spec())}
+        assert "SKULD__WORKFLOW_STEPS__ENABLED" not in plain
+
+        spec = make_spec()
+        spec.values["workflowSteps"] = {"enabled": True}
+        env = pod_manager._build_env(sample_session, spec)
+
+        env_dict = {e["name"]: e["value"] for e in env if "value" in e}
+        assert env_dict["SKULD__WORKFLOW_STEPS__ENABLED"] == "true"
+
     def test_build_env_with_initial_prompt(
         self,
         pod_manager: DirectK8sPodManager,

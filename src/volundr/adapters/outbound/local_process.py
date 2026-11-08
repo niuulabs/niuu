@@ -46,6 +46,7 @@ from volundr.domain.models import (
 )
 from volundr.domain.ports import PodManager, PodStartResult, SessionCapacity
 from volundr.domain.services.session import SessionCapacityError
+from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -911,6 +912,8 @@ class LocalProcessPodManager(PodManager):
             env["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
         if initial_prompt:
             env["SKULD__SESSION__INITIAL_PROMPT"] = initial_prompt
+        if workflow_steps_enabled(spec.values):
+            env[WORKFLOW_STEPS_ENABLED_ENV] = "true"
 
         # Claude transports still need the CLI binary location.
         if env.get("SKULD__CLI_TYPE", "claude") == "claude":
