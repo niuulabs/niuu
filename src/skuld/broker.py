@@ -4246,6 +4246,7 @@ class Broker(
                 not self._settings.session.resume_session_id
                 and not self._settings.room.enabled
                 and not self._settings.workflow_steps.enabled
+                and not self._settings.peer_inbox.enabled
             )
             or not self.volundr_api_url
             or not self._settings.event_log_enabled
@@ -4272,6 +4273,8 @@ class Broker(
                     "The durable history of this workflow step host could not be restored; "
                     "refusing to start without knowing which step is open"
                 ) from exc
+            if self._settings.peer_inbox.enabled:
+                self._refuse_peer_messages_after_failed_restore(exc)
             logger.warning(
                 "Durable history hydration skipped for session %s; preserving local cache: %s",
                 self.session_id,

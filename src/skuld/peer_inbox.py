@@ -147,6 +147,7 @@ class PeerInboxMixin:
         self._boundary_injection_lock = asyncio.Lock()
         self._peer_inbox_tasks = set()
         self._peer_pair_counts = {}
+        self._peer_inbox_restore_failure: str | None = None
 
     # -- accepting
 
@@ -203,6 +204,12 @@ class PeerInboxMixin:
             raise PeerMessageRefusedError(
                 f"the message is addressed to {envelope.recipient.label()}, but this is "
                 f"session {self.session_id}"
+            )
+        if self._peer_inbox_restore_failure is not None:
+            raise PeerMessageRefusedError(
+                "this session could not restore its inbox from the durable log "
+                f"({self._peer_inbox_restore_failure}), so it cannot tell which messages it "
+                "already holds; restart the session once Forge's log is reachable"
             )
         if self._startup_state == "failed":
             raise PeerMessageRefusedError(
@@ -354,10 +361,31 @@ class PeerInboxMixin:
             "skuld.peer_inbox.delivery",
             f"the harness did not accept the turn carrying peer messages {', '.join(message_ids)} "
             "after the delivery retries (delivery.max_attempts); see the session's "
-            "user_delivery_failed frame. They are marked delivered and will not be sent again.",
+            "user_delivery_failed frame. They go back to waiting for the next turn boundary.",
         )
+        async with self._peer_inbox_lock:
+            entries = [
+                self._peer_inbox[message_id]
+                for message_id in message_ids
+                if message_id in self._peer_inbox
+            ]
+            await self._return_to_waiting(entries)
 
     # -- restore
+
+    def _refuse_peer_messages_after_failed_restore(self, exc: BaseException) -> None:
+        """The log could not be read back: refuse peer messages loudly, never take them blind.
+
+        Without the restored inbox this session cannot dedup or hand over what it already
+        accepted, so taking new messages would lose or repeat them. The session keeps running
+        for the person using it; only peers are refused, each with this reason.
+        """
+        self._peer_inbox_restore_failure = str(exc) or type(exc).__name__
+        record_degraded(
+            "skuld.peer_inbox.restore",
+            f"session {self.session_id} could not restore its peer inbox from the durable log "
+            f"({self._peer_inbox_restore_failure}); it refuses peer messages until restarted",
+        )
 
     def _restore_durable_peer_inbox(self, frames: list) -> None:
         """Rebuild the inbox from the log: each message at its latest logged state."""

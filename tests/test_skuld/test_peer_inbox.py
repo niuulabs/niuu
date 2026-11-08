@@ -514,6 +514,44 @@ class TestWorkflowStepsGoFirst:
 
 
 class TestRestart:
+    async def test_a_fresh_start_restores_the_inbox_even_without_a_resume(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        before = _inbox_broker(tmp_path, activity="active")
+        await _accept(before, _message())
+        frames = _restart_frames(before)
+
+        async def fetch(*_args, on_frames, **_kwargs):
+            on_frames(frames)
+            return []
+
+        monkeypatch.setattr("skuld.broker.fetch_durable_history", fetch)
+        after = _inbox_broker(tmp_path)
+        after._rejoin_room_members = AsyncMock()
+        assert not after._settings.session.resume_session_id
+
+        await after._hydrate_conversation_history()
+
+        assert after._peer_messages_waiting() is True
+
+    async def test_an_inbox_that_could_not_be_restored_refuses_peers_loudly(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        cap_telemetry.reset_cap_hits()
+
+        async def fetch(*_args, **_kwargs):
+            raise RuntimeError("forge log unreachable")
+
+        monkeypatch.setattr("skuld.broker.fetch_durable_history", fetch)
+        broker = _inbox_broker(tmp_path)
+
+        await broker._hydrate_conversation_history()
+
+        assert cap_telemetry.degraded_counts()["skuld.peer_inbox.restore"] == 1
+        with pytest.raises(PeerMessageRefusedError, match="could not restore its inbox"):
+            await broker.accept_peer_message(_message())
+        assert _peer_frames(broker) == []
+
     async def test_a_message_not_yet_handed_over_is_delivered_after_the_restart(
         self, tmp_path
     ) -> None:
@@ -608,7 +646,9 @@ class TestWhenTheHarnessDoesNotGetIt:
 
         assert cap_telemetry.degraded_counts()["skuld.peer_inbox.inject"] == 1
 
-    async def test_a_turn_the_harness_never_accepted_is_reported(self, tmp_path) -> None:
+    async def test_a_turn_the_harness_never_accepted_is_reported_and_waits_again(
+        self, tmp_path
+    ) -> None:
         cap_telemetry.reset_cap_hits()
         broker = _inbox_broker(
             tmp_path, delivery={"max_attempts": 1, "initial_backoff_seconds": 0.001}
@@ -619,6 +659,8 @@ class TestWhenTheHarnessDoesNotGetIt:
 
         assert cap_telemetry.degraded_counts()["skuld.peer_inbox.delivery"] == 1
         assert broker._conversation_turns[0].metadata["steering_state"] == "failed"
+        assert broker._peer_messages_waiting() is True
+        assert _peer_frames(broker)[-1]["injected"] is False
 
     async def test_a_background_task_that_fails_is_logged(self, tmp_path, caplog) -> None:
         broker = _inbox_broker(tmp_path)
