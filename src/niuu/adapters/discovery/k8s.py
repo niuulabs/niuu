@@ -14,6 +14,7 @@ for subsequent Sleipnir communication — no handshake socket is opened.
     ravn.niuu.world/description: "Reviews pull requests."   # optional
     ravn.niuu.world/consumes: "review.requested,code.changed"   # optional, comma separated
     ravn.niuu.world/emits: "review.completed"                   # optional, comma separated
+    ravn.niuu.world/pub-address: "tcp://10.0.3.4:7480"          # optional, the nng PUB address
 
 Annotations are written by whatever deploys the pod and are read when the peer is first
 seen, so the live facts a peer would announce itself (its activity state and busy flag) can
@@ -53,6 +54,7 @@ _ANN_ROLE = "ravn.niuu.world/role"
 _ANN_DESCRIPTION = "ravn.niuu.world/description"
 _ANN_CONSUMES = "ravn.niuu.world/consumes"
 _ANN_EMITS = "ravn.niuu.world/emits"
+_ANN_PUB_ADDRESS = "ravn.niuu.world/pub-address"
 #: The chooser facts a pod annotation can carry; the rest change while the peer runs.
 _CARRIED_FACTS = ("role", "description", "consumes_event_types", "emits_event_types")
 _LABEL_REALM = "ravn.niuu.world/realm"
@@ -75,6 +77,10 @@ class K8sDiscoveryAdapter:
         Label selector used to list Ravn pods.
     heartbeat_interval_s:
         Seconds between pod list refreshes.
+    nng_port:
+        The port every peer's nng PUB socket listens on (``mesh.nng.pub_sub_address``). A pod
+        without a ``pub-address`` annotation is dialed at ``tcp://<pod IP>:<nng_port>``; a pod
+        with neither has no address, and a peer with no address cannot be dialed.
     **kwargs:
         Ignored — allows forward compatibility with new config fields.
     """
@@ -86,11 +92,13 @@ class K8sDiscoveryAdapter:
         namespace: str = "",
         label_selector: str = "ravn.niuu.world/role=agent",
         heartbeat_interval_s: float = 30.0,
+        nng_port: int | None = None,
         # Legacy: accept config object for backward compatibility
         config: DiscoveryConfig | None = None,
         **kwargs: Any,
     ) -> None:
         self._identity = own_identity
+        self._nng_port = nng_port
         self._namespace = namespace
         self._label_selector = label_selector
         self._heartbeat_interval_s = heartbeat_interval_s
@@ -181,6 +189,8 @@ class K8sDiscoveryAdapter:
             seen_ids.add(peer_id)
             if peer_id in self._peers:
                 self._peers[peer_id].last_seen = now
+                # A restarted pod keeps its peer id and gets a new IP.
+                self._peers[peer_id].pub_address = candidate.pub_address
                 continue
 
             peer = MeshPeer(
@@ -214,6 +224,14 @@ class K8sDiscoveryAdapter:
             if peer is not None:
                 notify("k8s", "leave", self._on_leave, peer)
 
+    def _pub_address(self, annotations: dict[str, str], pod_ip: str) -> str | None:
+        declared = annotations.get(_ANN_PUB_ADDRESS, "")
+        if declared:
+            return declared
+        if pod_ip and self._nng_port:
+            return f"tcp://{pod_ip}:{self._nng_port}"
+        return None
+
     def _list_candidates(self) -> list[MeshCandidate]:
         if k8s_client is None:
             raise DiscoveryError("kubernetes discovery cannot list pods: the package is missing")
@@ -240,7 +258,7 @@ class K8sDiscoveryAdapter:
                     realm_id_hash="",  # K8s doesn't transmit the hash
                     host=pod.status.pod_ip or "",
                     rep_address=None,
-                    pub_address=None,
+                    pub_address=self._pub_address(annotations, pod.status.pod_ip or ""),
                     handshake_port=None,
                     metadata={
                         "persona": annotations.get(_ANN_PERSONA, ""),
