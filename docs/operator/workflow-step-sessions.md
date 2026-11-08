@@ -47,7 +47,9 @@ stopped session being started again), Ting does not deliver it and does not fail
 step stays active and bound to the session, and Ting delivers it once Forge reports the
 session running, polling every `workflow_steps.session_poll_seconds`. Forge can report a
 session running a moment before its broker answers (its proxy then answers 502, 503 or 504);
-such a delivery reached nothing, so its claim is given back and Ting keeps waiting. The caller (a launch,
+such a delivery reached nothing, so its claim is given back and Ting keeps waiting. Forge
+answers 503 to every step call for a session still created, starting or provisioning, without
+dialling it; Ting's catch-up read after a stream reconnect skips such sessions. The caller (a launch,
 or the close of the step before it) is not held for the boot. The wait ends when the
 session is running, when it is stopped, failed or gone (the step fails and says so), or at
 the step's deadline (the step fails naming `workflow_steps.step_deadline_seconds`).

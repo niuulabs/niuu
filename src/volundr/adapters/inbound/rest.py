@@ -536,6 +536,11 @@ def _live_body_has_in_progress_turn(payload: object) -> bool:
 _session_proxy_url = session_proxy_url
 _server_side_http_proxy_target = server_side_http_proxy_target
 
+#: A session on its way up: no broker to relay a workflow step call to yet.
+_BOOTING_SESSION_STATUSES = frozenset(
+    {SessionStatus.CREATED, SessionStatus.STARTING, SessionStatus.PROVISIONING}
+)
+
 
 def _fallback_workspace_logs(
     session: Session,
@@ -5899,7 +5904,20 @@ def create_router(
         action = "read" if method == "GET" else "update"
         principal = await _optional_principal(request)
         with _chronicle_errors():
-            await forge.get_authorized_session(session_id, principal=principal, action=action)
+            authorized = await forge.get_authorized_session(
+                session_id, principal=principal, action=action
+            )
+        if authorized.status in _BOOTING_SESSION_STATUSES:
+            # Its broker is not serving yet, and its chat endpoint may already name a route
+            # (Forge's own session proxy, for an OpenShell sandbox) that refuses a call it
+            # cannot attribute. Say what is true: not up yet; the caller waits and retries.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    f"Session {session_id} is {authorized.status.value}: its broker is not up "
+                    "yet; workflow step calls reach it once it is running"
+                ),
+            )
         try:
             session, base_url = await forge.get_session_proxy_target(session_id)
             proxy_url, routing_headers = await _broker_request(

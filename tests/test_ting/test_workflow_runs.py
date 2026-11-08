@@ -587,6 +587,25 @@ async def test_a_run_that_cannot_be_reconciled_is_loud_and_the_others_still_are(
     assert harness.current.active_stage_id == "review"
 
 
+async def test_reconnecting_does_not_ask_a_session_that_is_still_starting(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await harness.launch()
+    session_id, _ = harness.last_delivery()
+    harness.forge.sessions[session_id] = replace(
+        harness.forge.sessions[session_id], status="starting"
+    )
+
+    async def refused(*_args, **_kwargs):
+        raise AssertionError("a starting session's steps are not read")
+
+    monkeypatch.setattr(harness.forge, "get_workflow_step", refused)
+
+    await harness.runs.reconcile_owner(OWNER)
+
+    assert harness.current.active_stage_id == "implement"
+
+
 async def test_reconnecting_with_a_session_that_never_saw_the_step_changes_nothing(
     harness: Harness,
 ) -> None:

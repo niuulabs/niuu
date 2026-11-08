@@ -356,6 +356,11 @@ class WorkflowRuns:
             return
         forge = await self._forge(campaign)
         for step in steps:
+            session = await forge.get_session(step.session_id or "")
+            if session is not None and session.status.strip().lower() in _BOOTING:
+                # A session that is still coming up has closed nothing, and Forge answers
+                # 503 for its steps until it runs; the step's delivery waits for it.
+                continue
             reported = await forge.get_workflow_step(step.session_id or "", str(step.id))
             await self.apply_reported_close(campaign.id, step, reported)
 
@@ -386,6 +391,10 @@ class WorkflowRuns:
         if not projection.differs_from(campaign):
             return
         await self._sink.apply_run_projection(campaign, projection)
+
+
+#: Forge statuses of a session still coming up (Forge's own ``SessionStatus``).
+_BOOTING = frozenset({"created", "starting", "provisioning"})
 
 
 def _closed_report(reported: Mapping[str, Any] | None) -> Mapping[str, Any] | None:

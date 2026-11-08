@@ -324,6 +324,32 @@ class TestWorkflowStepProxy:
         )
         assert upstream.request.call_args.kwargs["json"] == STEP_ACTIVATION
 
+    @pytest.mark.parametrize(
+        "booting", [SessionStatus.CREATED, SessionStatus.STARTING, SessionStatus.PROVISIONING]
+    )
+    async def test_a_session_still_coming_up_answers_503_without_dialling_anything(
+        self, client: TestClient, running: Session, service: SessionService, booting
+    ) -> None:
+        # An OpenShell sandbox's chat endpoint is Forge's own session proxy, which refused
+        # the unattributable loopback call with 403 while the session was starting.
+        await service._repository.update(running.with_status(booting))
+        patcher, upstream = self._upstream(httpx.Response(403, json={"detail": "no"}))
+        try:
+            read = client.get(
+                f"/api/v1/forge/sessions/{running.id}/workflow/steps/"
+                f"{STEP_ACTIVATION['activation_id']}"
+            )
+            delivered = client.post(
+                f"/api/v1/forge/sessions/{running.id}/workflow/steps", json=STEP_ACTIVATION
+            )
+        finally:
+            patcher.stop()
+
+        for response in (read, delivered):
+            assert response.status_code == 503
+            assert f"is {booting.value}: its broker is not up yet" in response.json()["detail"]
+        upstream.request.assert_not_called()
+
     async def test_state_is_read_from_the_broker(
         self, client: TestClient, running: Session
     ) -> None:
