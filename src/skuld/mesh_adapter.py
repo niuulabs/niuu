@@ -1,6 +1,6 @@
 """SkuldMeshAdapter — mesh peer bridge for Claude CLI sessions (NIU-612).
 
-Gives Skuld a mesh identity so it can participate in a ravn flock as a peer.
+Gives Skuld a mesh identity so it can participate in the mesh as a peer.
 Subscribes to task topics and feeds received prompts to the CLI transport.
 Results (including outcome blocks) are published back as response events.
 
@@ -28,12 +28,12 @@ from sleipnir.ports.events import SleipnirSubscriber
 
 logger = logging.getLogger("skuld.mesh_adapter")
 
-#: A broker-side answer to one mesh RPC ``type`` a flock member may send.
+#: A broker-side answer to one mesh RPC ``type`` a mesh peer may send.
 RpcHandler = Callable[[dict], Awaitable[dict]]
 
 
 class SkuldMeshAdapter:
-    """Bridge between the ravn mesh and the CLI transport.
+    """Bridge between the mesh and the CLI transport.
 
     Lifecycle:
         start() — start participant (mesh + discovery), subscribe to task topics
