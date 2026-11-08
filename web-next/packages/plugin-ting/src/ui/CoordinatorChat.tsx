@@ -137,7 +137,7 @@ export function CoordinatorChat({
   if (!coordinator.sessionId) {
     return (
       <p className="ting-board-panel__text">
-        This ticket's workflow runs in its own sessions, so there is no coordinator to talk to.
+        This ticket&apos;s workflow runs in its own sessions, so there is no coordinator to talk to.
       </p>
     );
   }

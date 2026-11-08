@@ -20,6 +20,7 @@ from skuld.config import SkuldSettings
 from skuld.personas import registry
 from skuld.personas.projection import PersonaProjectionError
 from skuld.transports.claude_policy import ClaudeToolPolicy
+from skuld.transports.owned_codex_process import OwnedCodexProcess
 
 SESSION_ID = "0b6c1d7e-3f0a-4a8e-9a57-6a9c2f1d0e11"
 ADAPTERS = {
@@ -368,6 +369,9 @@ async def test_codex_app_server_is_started_without_the_web_tool_the_persona_forb
             "skuld.transports.codex_ws.ensure_codex_tool_shims",
             return_value=(tmp_path / "bin", {}),
         ),
+        # On Linux the transport records the child's /proc identity; the fake pid
+        # is not a real child, and ownership is not what this test is about.
+        patch.object(OwnedCodexProcess, "record_child"),
     ):
         spawn.return_value = process
         await transport._spawn_app_server()
