@@ -3,7 +3,7 @@ id: 3f0e6a14-9b2d-5c47-8e61-4d7a2c91b5e3
 name: Ticket Planning Flow
 description: Plans one tracker ticket, has an agent review the plan, then waits for a person to approve
   it before recording the approved plan for the work that follows.
-version: 1.3.0
+version: 1.3.1
 persona_dependencies:
   ticket-plan-publisher:
     id: ticket-plan-publisher
@@ -154,6 +154,8 @@ graph:
     source: plan-check
     target: plan-draft
     label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+    rework: true
+    maxIterations: 3
   - id: edge-plan-check-to-gate
     source: plan-check
     target: plan-review-gate
@@ -170,10 +172,14 @@ graph:
     source: plan-blocked
     target: plan-draft
     label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+    rework: true
+    maxIterations: 5
   - id: edge-plan-gate-to-draft
     source: plan-review-gate
     target: plan-draft
     label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+    rework: true
+    maxIterations: 5
   - id: edge-plan-gate-to-publish
     source: plan-review-gate
     target: plan-publish

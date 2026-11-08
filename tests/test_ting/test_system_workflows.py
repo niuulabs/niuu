@@ -269,13 +269,17 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "kind": "gate",
         "label": "Delivery blocked",
         "condition": (
-            "Review the coder's stated reason, correct the ticket, then re-commission the delivery."
+            "Review the coder's stated reason and correct the ticket, then send the delivery "
+            "back to the coder."
         ),
         "mode": "human_approval",
         "pendingBehavior": "help_needed",
+        "approvalEvent": "review.changes_requested",
+        "changesRequestedEvent": "review.changes_requested",
         "instructions": (
             "The requested change could not be completed as written. Review the implementation "
-            "outcome and update the ticket before re-commissioning."
+            "outcome and update the ticket, then answer to send the delivery back to the coder "
+            "for another attempt."
         ),
         "position": {"x": 704, "y": 480},
     }

@@ -3,7 +3,7 @@ id: a4c7067a-ac22-5b64-bde1-ec8ad1507e73
 name: Saga Planning
 description: Focused planning workflow that clarifies a brief, drafts a saga breakdown, and pauses for
   review before publishing the plan.
-version: 1.0.2
+version: 1.0.3
 persona_dependencies:
   saga-brief-framer:
     id: saga-brief-framer
@@ -164,6 +164,8 @@ graph:
     source: plan-brief-gate
     target: plan-clarify
     label: plan.brief.changes_requested -> plan.brief.changes_requested
+    rework: true
+    maxIterations: 5
   - id: edge-plan-breakdown-to-review
     source: plan-breakdown
     target: plan-review
@@ -172,6 +174,8 @@ graph:
     source: plan-review
     target: plan-breakdown
     label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+    rework: true
+    maxIterations: 3
   - id: edge-plan-review-to-review-gate
     source: plan-review
     target: plan-review-gate
@@ -180,6 +184,8 @@ graph:
     source: plan-review-gate
     target: plan-breakdown
     label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+    rework: true
+    maxIterations: 5
   - id: edge-plan-review-gate-to-publish
     source: plan-review-gate
     target: plan-publish

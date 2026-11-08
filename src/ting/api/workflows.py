@@ -51,6 +51,7 @@ from ting.domain.workflow_document import (
     dump_workflow_document,
     load_workflow_document,
     validate_resolved_workflow_graph,
+    validate_workflow_graph,
     workflow_document_payload,
     workflow_document_revision,
 )
@@ -1044,6 +1045,12 @@ async def _save_workflow(
                 schema_version=document.schema_version,
                 persona_dependencies=document.persona_dependencies,
                 workflow_dependencies=document.workflow_dependencies,
+                persona_definitions=workflow.persona_definitions,
+            )
+        else:
+            # A saved workflow must be one the step engine can run to an end.
+            validate_workflow_graph(
+                document.graph, persona_definitions=workflow.persona_definitions
             )
         if versioned:
             if base_revision is None:

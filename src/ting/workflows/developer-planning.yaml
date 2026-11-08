@@ -2,7 +2,7 @@ schema_version: 2
 id: 195d5026-7adb-4ce7-97ee-fb1e18ea4c3a
 name: Developer Planning
 description: Investigate a delivery request and produce an exact-revision plan approved by three independent reviewers.
-version: 1.1.0
+version: 1.1.1
 persona_dependencies:
   developer-analyst:
     id: developer-analyst
@@ -83,5 +83,5 @@ graph:
   edges:
     - {id: planning-request-analysis, source: planning-request, target: planning-analysis, label: delivery.requested -> delivery.requested}
     - {id: planning-analysis-review, source: planning-analysis, target: planning-reviews, label: developer.plan.revised -> developer.plan.revised}
-    - {id: planning-review-revise, source: planning-reviews, target: planning-analysis, label: plan.review.completed -> plan.review.completed}
+    - {id: planning-review-revise, source: planning-reviews, target: planning-analysis, label: plan.review.completed -> plan.review.completed, rework: true, maxIterations: 3}
     - {id: planning-analysis-complete, source: planning-analysis, target: planning-complete, label: developer.plan.approved -> developer.plan.approved}

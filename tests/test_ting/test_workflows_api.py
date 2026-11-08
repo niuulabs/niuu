@@ -297,6 +297,30 @@ class RecordingVolundrFactory:
         return list(self._adapters)
 
 
+def _runnable_graph(entry_id: str) -> dict:
+    """The smallest graph the step engine accepts: a trigger that leads straight to an end."""
+    return {
+        "nodes": [
+            {"id": entry_id, "kind": "trigger", "dispatchEvent": "work.requested"},
+            {"id": f"{entry_id}-end", "kind": "end", "completionEvent": "work.completed"},
+        ],
+        "edges": [
+            {
+                "id": f"{entry_id}-to-end",
+                "source": entry_id,
+                "target": f"{entry_id}-end",
+                "label": "work.requested -> work.requested",
+            }
+        ],
+    }
+
+
+def _runnable_payload() -> dict:
+    """The nodes and edges of a smallest saveable workflow, as a create/update request has them."""
+    graph = _runnable_graph("entry")
+    return {"nodes": graph["nodes"], "edges": graph["edges"]}
+
+
 def _make_workflow(
     *,
     workflow_id: UUID | None = None,
@@ -312,7 +336,7 @@ def _make_workflow(
         version="1.0.0",
         scope=scope,
         owner_id=owner_id,
-        graph={"nodes": [{"id": "n1", "kind": "stage"}], "edges": []},
+        graph=_runnable_graph("n1"),
         created_at=now,
         updated_at=now,
     )
@@ -478,7 +502,13 @@ class TestWorkflowCatalogAPI:
                 "version": "1.0.0",
                 "scope": "user",
                 "nodes": [
-                    {"id": "trigger-1", "kind": "trigger", "label": "Start", "source": "manual"},
+                    {
+                        "id": "trigger-1",
+                        "kind": "trigger",
+                        "label": "Start",
+                        "source": "manual",
+                        "dispatchEvent": "code.requested",
+                    },
                     {
                         "id": "stage-1",
                         "kind": "stage",
@@ -491,8 +521,18 @@ class TestWorkflowCatalogAPI:
                     {"id": "end-1", "kind": "end", "label": "Done"},
                 ],
                 "edges": [
-                    {"id": "e1", "source": "trigger-1", "target": "stage-1"},
-                    {"id": "e2", "source": "stage-1", "target": "end-1"},
+                    {
+                        "id": "e1",
+                        "source": "trigger-1",
+                        "target": "stage-1",
+                        "label": "code.requested -> code.changed",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "stage-1",
+                        "target": "end-1",
+                        "label": "review.passed -> review.passed",
+                    },
                 ],
             },
         )
@@ -504,6 +544,140 @@ class TestWorkflowCatalogAPI:
         node_ids = {node["id"] for node in body["nodes"]}
         assert node_ids == {"trigger-1", "stage-1", "end-1"}
 
+    def test_a_workflow_the_step_engine_could_not_run_is_refused_at_save(self) -> None:
+        repo = InMemoryWorkflowRepository()
+        client = _make_client(repo)
+        graph = _runnable_payload()
+        graph["nodes"].append({"id": "branch", "kind": "cond", "label": "If", "predicate": "a > b"})
+
+        response = client.post(
+            "/api/v1/ting/workflows",
+            headers=_headers(),
+            json={"name": "Branching", "scope": "user", **graph},
+        )
+
+        assert response.status_code == 422
+        assert "cond nodes are not supported" in response.json()["detail"]
+        assert repo._workflows == {}
+
+    def test_an_unbounded_loop_is_refused_at_save_naming_the_cycle(self) -> None:
+        repo = InMemoryWorkflowRepository()
+        client = _make_client(repo)
+
+        response = client.post(
+            "/api/v1/ting/workflows",
+            headers=_headers(),
+            json={
+                "name": "Loop",
+                "scope": "user",
+                "nodes": [
+                    {"id": "start", "kind": "trigger", "dispatchEvent": "code.requested"},
+                    {
+                        "id": "code",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "coder"}],
+                    },
+                    {
+                        "id": "review",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "reviewer"}],
+                    },
+                    {"id": "finish", "kind": "end"},
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "start",
+                        "target": "code",
+                        "label": "code.requested -> review.changes_requested",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "code",
+                        "target": "review",
+                        "label": "code.changed -> code.changed",
+                    },
+                    {
+                        "id": "e3",
+                        "source": "review",
+                        "target": "code",
+                        "label": "review.changes_requested -> review.changes_requested",
+                    },
+                    {
+                        "id": "e4",
+                        "source": "review",
+                        "target": "finish",
+                        "label": "review.passed -> review.passed",
+                    },
+                ],
+            },
+        )
+
+        assert response.status_code == 422
+        assert "cycle with no rework edge" in response.json()["detail"]
+
+    def test_rework_edges_survive_a_save_and_a_read(self) -> None:
+        repo = InMemoryWorkflowRepository()
+        client = _make_client(repo)
+
+        response = client.post(
+            "/api/v1/ting/workflows",
+            headers=_headers(),
+            json={
+                "name": "Bounded loop",
+                "scope": "user",
+                "nodes": [
+                    {"id": "start", "kind": "trigger", "dispatchEvent": "code.requested"},
+                    {
+                        "id": "code",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "coder"}],
+                    },
+                    {
+                        "id": "review",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "reviewer"}],
+                    },
+                    {"id": "finish", "kind": "end"},
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "start",
+                        "target": "code",
+                        "label": "code.requested -> review.changes_requested",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "code",
+                        "target": "review",
+                        "label": "code.changed -> code.changed",
+                    },
+                    {
+                        "id": "e3",
+                        "source": "review",
+                        "target": "code",
+                        "label": "review.changes_requested -> review.changes_requested",
+                        "rework": True,
+                        "maxIterations": 3,
+                    },
+                    {
+                        "id": "e4",
+                        "source": "review",
+                        "target": "finish",
+                        "label": "review.passed -> review.passed",
+                    },
+                ],
+            },
+        )
+
+        assert response.status_code == 201, response.text
+        saved = next(iter(repo._workflows.values()))
+        rework = next(edge for edge in saved.graph["edges"] if edge["id"] == "e3")
+        assert (rework["rework"], rework["maxIterations"]) == (True, 3)
+        fetched = client.get(f"/api/v1/ting/workflows/{saved.id}", headers=_headers())
+        assert next(e for e in fetched.json()["edges"] if e["id"] == "e3")["maxIterations"] == 3
+
     def test_non_admin_cannot_create_system_workflow(self) -> None:
         repo = InMemoryWorkflowRepository()
         client = _make_client(repo)
@@ -514,8 +688,7 @@ class TestWorkflowCatalogAPI:
             json={
                 "name": "Shared Flow",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -534,7 +707,7 @@ class TestWorkflowCatalogAPI:
         response = client.post(
             "/api/v1/ting/workflows",
             headers={**_headers(roles=roles), "x-auth-tenant": tenant},
-            json={"name": "Shared Flow", "scope": "system", "nodes": [], "edges": []},
+            json={"name": "Shared Flow", "scope": "system", **_runnable_payload()},
         )
 
         assert response.status_code == 403
@@ -549,8 +722,7 @@ class TestWorkflowCatalogAPI:
             json={
                 "name": "Shared Flow",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -569,8 +741,7 @@ class TestWorkflowCatalogAPI:
             json={
                 "name": "Shared Flow",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -621,6 +792,7 @@ class TestWorkflowCatalogAPI:
                         "maxConcurrent": 3,
                         "joinMode": "all",
                     },
+                    {"id": "end-1", "kind": "end", "label": "Done"},
                     {
                         "id": "mimir-1",
                         "kind": "resource",
@@ -632,7 +804,18 @@ class TestWorkflowCatalogAPI:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "trigger-1", "target": "stage-1"},
+                    {
+                        "id": "e1",
+                        "source": "trigger-1",
+                        "target": "stage-1",
+                        "label": "code.requested -> code.changed",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "stage-1",
+                        "target": "end-1",
+                        "label": "review.passed -> review.passed",
+                    },
                 ],
                 "resourceBindings": [
                     {
@@ -677,8 +860,18 @@ class TestWorkflowCatalogAPI:
                 "description": "Updated",
                 "version": "2.0.0",
                 "scope": "user",
-                "nodes": [{"id": "stage-2", "kind": "stage"}],
-                "edges": [{"id": "edge-1", "source": "a", "target": "b"}],
+                "nodes": [
+                    {"id": "stage-2", "kind": "trigger", "dispatchEvent": "work.requested"},
+                    {"id": "stage-2-end", "kind": "end"},
+                ],
+                "edges": [
+                    {
+                        "id": "edge-1",
+                        "source": "stage-2",
+                        "target": "stage-2-end",
+                        "label": "work.requested -> work.requested",
+                    }
+                ],
             },
         )
 
@@ -706,8 +899,7 @@ class TestWorkflowCatalogAPI:
                 "scope": "user",
                 "expected_revision": "head:1",
                 "base_revision": original_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
         assert response.status_code == 201, response.text
@@ -760,7 +952,7 @@ class TestWorkflowCatalogAPI:
         no_base = client.post(
             f"/api/v1/ting/workflows/{workflow.id}/versions",
             headers=_headers(),
-            json={"name": "No base", "scope": "user", "nodes": [], "edges": []},
+            json={"name": "No base", "scope": "user", **_runnable_payload()},
         )
         assert no_base.status_code == 422
         unknown_base = client.post(
@@ -771,15 +963,14 @@ class TestWorkflowCatalogAPI:
                 "scope": "user",
                 "expected_revision": "head:1",
                 "base_revision": "sha256:" + "f" * 64,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
         assert unknown_base.status_code == 404
         unknown_update = client.put(
             f"/api/v1/ting/workflows/{missing_id}",
             headers=_headers(),
-            json={"name": "Missing", "scope": "user", "nodes": [], "edges": []},
+            json={"name": "Missing", "scope": "user", **_runnable_payload()},
         )
         assert unknown_update.status_code == 404
         changed_scope = client.put(
@@ -789,8 +980,7 @@ class TestWorkflowCatalogAPI:
                 "name": "Changed scope",
                 "scope": "system",
                 "expected_revision": "head:1",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
         assert changed_scope.status_code == 422
@@ -813,8 +1003,7 @@ class TestWorkflowCatalogAPI:
                 "scope": "user",
                 "expected_revision": "head:1",
                 "base_revision": revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -833,7 +1022,7 @@ class TestWorkflowCatalogAPI:
             child_base,
             version="1.1.0",
             name="Child v2",
-            graph={"nodes": [{"id": "new-child", "kind": "stage"}], "edges": []},
+            graph=_runnable_graph("new-child"),
             revision="child-head:2",
             document_revision=None,
         )
@@ -883,8 +1072,18 @@ class TestWorkflowCatalogAPI:
                 "schema_version": 2,
                 "expected_revision": "parent-head:2",
                 "base_revision": parent_base_revision,
-                "nodes": [{"id": "branched-parent", "kind": "stage"}],
-                "edges": [],
+                "nodes": [
+                    {"id": "branched-parent", "kind": "trigger", "dispatchEvent": "work.requested"},
+                    {"id": "branched-parent-end", "kind": "end"},
+                ],
+                "edges": [
+                    {
+                        "id": "branched-parent-to-end",
+                        "source": "branched-parent",
+                        "target": "branched-parent-end",
+                        "label": "work.requested -> work.requested",
+                    }
+                ],
             },
         )
 
@@ -929,8 +1128,7 @@ class TestWorkflowCatalogAPI:
                 "schema_version": 2,
                 "expected_revision": "parent-head:1",
                 "base_revision": parent_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -947,7 +1145,7 @@ class TestWorkflowCatalogAPI:
             child_v1,
             name="Child v2",
             version="2.0.0",
-            graph={"nodes": [{"id": "child-v2", "kind": "stage"}], "edges": []},
+            graph=_runnable_graph("child-v2"),
             document_revision=None,
         )
         child_v2_revision = workflow_document_revision(child_v2)
@@ -994,8 +1192,7 @@ class TestWorkflowCatalogAPI:
                         "digest": child_v1_revision,
                     }
                 },
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1052,8 +1249,7 @@ class TestWorkflowCatalogAPI:
                         "digest": private_revision,
                     }
                 },
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1112,8 +1308,7 @@ class TestWorkflowCatalogAPI:
                         "digest": selected_revision,
                     }
                 },
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1155,8 +1350,7 @@ class TestWorkflowCatalogAPI:
                 "schema_version": 2,
                 "expected_revision": "parent-head:1",
                 "base_revision": parent_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1213,8 +1407,9 @@ class TestWorkflowCatalogAPI:
                         "path": "/legacy",
                         "authRef": "legacy-secret",
                     },
+                    *_runnable_payload()["nodes"],
                 ],
-                "edges": [],
+                "edges": _runnable_payload()["edges"],
             },
         )
 
@@ -1290,8 +1485,7 @@ class TestWorkflowCatalogAPI:
                 "scope": "system",
                 "expected_revision": base_revision,
                 "base_revision": base_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
         assert response.status_code == 201, response.text
@@ -1334,8 +1528,7 @@ class TestWorkflowCatalogAPI:
                 "scope": "system",
                 "expected_revision": base_revision,
                 "base_revision": base_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1355,8 +1548,7 @@ class TestWorkflowCatalogAPI:
             "scope": "user",
             "expected_revision": "head:1",
             "base_revision": base_revision,
-            "nodes": [],
-            "edges": [],
+            **_runnable_payload(),
         }
 
         first = client.post(
@@ -1402,8 +1594,7 @@ class TestWorkflowCatalogAPI:
                 "description": "Updated",
                 "version": "2.0.0",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1426,8 +1617,7 @@ class TestWorkflowCatalogAPI:
                 "description": "Updated",
                 "version": "2.0.0",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 

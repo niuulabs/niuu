@@ -2,7 +2,7 @@ schema_version: 2
 id: 98133eab-cd89-44d1-b32d-26c82f99dddc
 name: Developer Workstream
 description: Implement one isolated work order, run trusted verification, and independently review its immutable candidate.
-version: 1.0.1
+version: 1.0.2
 persona_dependencies:
   developer-coordinator:
     id: developer-coordinator
@@ -133,7 +133,7 @@ graph:
     - {id: workstream-request-code, source: workstream-request, target: workstream-code, label: developer.workstream.requested -> developer.workstream.requested}
     - {id: workstream-code-verify, source: workstream-code, target: workstream-verify, label: developer.candidate.produced -> developer.candidate.produced}
     - {id: workstream-verify-review, source: workstream-verify, target: workstream-reviews, label: developer.candidate.verified -> developer.candidate.verified}
-    - {id: workstream-verify-repair, source: workstream-verify, target: workstream-code, label: developer.workstream.repair_requested -> developer.workstream.repair_requested}
+    - {id: workstream-verify-repair, source: workstream-verify, target: workstream-code, label: developer.workstream.repair_requested -> developer.workstream.repair_requested, rework: true, maxIterations: 3}
     - {id: workstream-review-acceptance, source: workstream-reviews, target: workstream-acceptance, label: developer.review.completed -> developer.review.completed}
-    - {id: workstream-acceptance-repair, source: workstream-acceptance, target: workstream-code, label: developer.workstream.repair_requested -> developer.workstream.repair_requested}
+    - {id: workstream-acceptance-repair, source: workstream-acceptance, target: workstream-code, label: developer.workstream.repair_requested -> developer.workstream.repair_requested, rework: true, maxIterations: 3}
     - {id: workstream-acceptance-complete, source: workstream-acceptance, target: workstream-complete, label: developer.workstream.completed -> developer.workstream.completed}

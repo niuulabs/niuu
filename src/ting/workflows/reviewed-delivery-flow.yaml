@@ -4,7 +4,7 @@ name: Reviewed Delivery Flow
 description: Tracker-driven developer workflow that implements a ticket, iterates through agent
   review, then waits for a person to approve the merge before it merges the branch and publishes a
   durable delivery record.
-version: 1.0.0
+version: 1.0.1
 persona_dependencies:
   closer:
     id: closer
@@ -142,10 +142,12 @@ graph:
   - id: delivery-blocked
     kind: gate
     label: Delivery blocked
-    condition: Review the coder's stated reason, correct the ticket, then re-commission the delivery.
+    condition: Review the coder's stated reason and correct the ticket, then send the delivery back to the coder.
     mode: human_approval
     pendingBehavior: help_needed
-    instructions: The requested change could not be completed as written. Review the implementation outcome and update the ticket before re-commissioning.
+    approvalEvent: review.changes_requested
+    changesRequestedEvent: review.changes_requested
+    instructions: The requested change could not be completed as written. Review the implementation outcome and update the ticket, then answer to send the delivery back to the coder for another attempt.
     position:
       x: 704
       y: 480
@@ -170,10 +172,18 @@ graph:
     source: delivery-implement
     target: delivery-blocked
     label: code.blocked -> code.blocked
+  - id: edge-delivery-blocked-to-implement
+    source: delivery-blocked
+    target: delivery-implement
+    label: review.changes_requested -> review.changes_requested
+    rework: true
+    maxIterations: 5
   - id: edge-delivery-review-to-implement
     source: delivery-review
     target: delivery-implement
     label: review.changes_requested -> review.changes_requested
+    rework: true
+    maxIterations: 3
   - id: edge-delivery-review-to-gate
     source: delivery-review
     target: delivery-code-gate
@@ -182,6 +192,8 @@ graph:
     source: delivery-code-gate
     target: delivery-implement
     label: review.changes_requested -> review.changes_requested
+    rework: true
+    maxIterations: 5
   - id: edge-delivery-gate-to-close
     source: delivery-code-gate
     target: delivery-close
