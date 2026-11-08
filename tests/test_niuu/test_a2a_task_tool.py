@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
 from contextlib import nullcontext
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+from niuu.adapters.a2a_task import A2ATaskTool
+from niuu.adapters.outbound.http_json_client import HttpResponse
+from niuu.cap_telemetry import cap_hit_counts
 from niuu.domain.agent_directory import (
     AgentDirectoryEntry,
     AgentDirectoryPage,
@@ -15,15 +17,6 @@ from niuu.domain.agent_directory import (
     AgentProvenance,
     AgentSkill,
 )
-from niuu.mesh.events import MeshEventType
-from ravn.adapters.permission.allow_deny import AllowAllPermission
-from ravn.adapters.tool_build.http import HttpResponse
-from ravn.adapters.tools.a2a_task import A2ATaskTool
-from ravn.adapters.tools.capability_catalog import CapabilityListTool
-from ravn.agent import RavnAgent
-from ravn.cap_telemetry import cap_hit_counts
-from ravn.domain.models import StreamEvent, StreamEventType, TokenUsage, ToolCall
-from tests.ravn.fixtures.fakes import InMemoryChannel
 
 
 def _agent() -> AgentDirectoryEntry:
@@ -374,7 +367,7 @@ async def test_a2a_task_propagates_active_trace_in_message_metadata(monkeypatch)
     }
     telemetry.span.side_effect = lambda *_args, **_kwargs: nullcontext(MagicMock())
     monkeypatch.setattr(
-        "ravn.adapters.tools.a2a_task.get_observability",
+        "niuu.adapters.a2a_task.get_observability",
         lambda: telemetry,
     )
     tool = A2ATaskTool(agent_directory=_Directory(_agent()), client=client)
@@ -528,156 +521,6 @@ async def test_a2a_task_bounds_outbound_messages_and_model_facing_results() -> N
     malformed_payload = json.loads(malformed.content)
     assert len(malformed.content) <= 1_000
     assert malformed_payload["truncated"].startswith("peer identifiers")
-
-
-class _ScriptedLLM:
-    def __init__(self, calls: list[ToolCall], final: str) -> None:
-        self._calls = iter(calls)
-        self._remaining = len(calls)
-        self._final = final
-        self.messages: list[list[dict[str, Any]]] = []
-
-    async def stream(
-        self,
-        messages: list[dict[str, Any]],
-        **_kwargs: Any,
-    ) -> AsyncIterator[StreamEvent]:
-        self.messages.append(messages)
-        if self._remaining:
-            self._remaining -= 1
-            yield StreamEvent(type=StreamEventType.TOOL_CALL, tool_call=next(self._calls))
-        else:
-            yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=self._final)
-        yield StreamEvent(
-            type=StreamEventType.MESSAGE_DONE,
-            usage=TokenUsage(input_tokens=20, output_tokens=10),
-        )
-
-
-@pytest.mark.asyncio
-async def test_agent_discovers_peer_handles_question_and_uses_returned_artifact() -> None:
-    directory = _Directory(_agent())
-    client = _Client(
-        [
-            {"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}},
-            {
-                "id": "task-1",
-                "status": {"state": "TASK_STATE_INPUT_REQUIRED"},
-                "metadata": {
-                    "pendingQuestions": [
-                        {"requestId": "q-1", "question": "Which branch should I review?"}
-                    ]
-                },
-            },
-            {"task": {"id": "task-1", "status": {"state": "TASK_STATE_WORKING"}}},
-            {
-                "id": "task-1",
-                "status": {"state": "TASK_STATE_COMPLETED"},
-                "artifacts": [
-                    {
-                        "artifactId": "review-1",
-                        "parts": [{"text": "No blocking findings; tests cover the change."}],
-                    }
-                ],
-            },
-        ]
-    )
-    a2a = A2ATaskTool(agent_directory=directory, client=client)
-    tools: list[Any] = []
-    catalog = CapabilityListTool(
-        tools_provider=lambda: tools,
-        agent_directory=directory,
-    )
-    tools.extend([catalog, a2a])
-    llm = _ScriptedLLM(
-        [
-            ToolCall(
-                id="catalog",
-                name="capability_list",
-                input={"kind": "agent_skill", "query": "review"},
-            ),
-            ToolCall(
-                id="start",
-                name="a2a_task",
-                input={
-                    "operation": "start",
-                    "agent_id": "agent-aggregate-1",
-                    "skill_id": "review",
-                    "prompt": "Review the resident-loop change.",
-                },
-            ),
-            ToolCall(
-                id="inspect",
-                name="a2a_task",
-                input={
-                    "operation": "get",
-                    "agent_id": "agent-aggregate-1",
-                    "task_id": "task-1",
-                },
-            ),
-            ToolCall(
-                id="reply",
-                name="a2a_task",
-                input={
-                    "operation": "reply",
-                    "agent_id": "agent-aggregate-1",
-                    "task_id": "task-1",
-                    "answer": "Review codex/resident-judgment-loop.",
-                    "metadata": {"requestId": "q-1"},
-                },
-            ),
-            ToolCall(
-                id="complete",
-                name="a2a_task",
-                input={
-                    "operation": "get",
-                    "agent_id": "agent-aggregate-1",
-                    "task_id": "task-1",
-                },
-            ),
-        ],
-        final=(
-            "Peer review completed. My judgment uses artifact review-1: "
-            "no blocking findings, with tests covering the change."
-        ),
-    )
-    channel = InMemoryChannel()
-    agent = RavnAgent(
-        llm=llm,
-        tools=tools,
-        channel=channel,
-        permission=AllowAllPermission(),
-        system_prompt="Choose capabilities from evidence and retain peer provenance.",
-        model="test-model",
-        max_tokens=1024,
-        max_iterations=10,
-    )
-
-    result = await agent.run_turn("Get the best available review and judge the result.")
-
-    assert "artifact review-1" in result.response
-    tool_names = [
-        event.payload["tool_name"]
-        for event in channel.events
-        if event.type == MeshEventType.TOOL_START
-    ]
-    assert tool_names == [
-        "capability_list",
-        "a2a_task",
-        "a2a_task",
-        "a2a_task",
-        "a2a_task",
-    ]
-    assert [body["method"] for _, body, _ in client.posts] == [
-        "SendMessage",
-        "GetTask",
-        "SendMessage",
-        "GetTask",
-    ]
-    assert any(
-        "No blocking findings; tests cover the change." in str(message)
-        for message in llm.messages[-1]
-    )
 
 
 @pytest.mark.asyncio

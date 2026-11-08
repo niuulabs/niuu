@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from ravn.domain.a2a_status import a2a_status_text
+from niuu.domain.a2a_status import a2a_status_text
 
 
 @pytest.mark.parametrize(

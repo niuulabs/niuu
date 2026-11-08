@@ -10,14 +10,14 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 
+from niuu.adapters.outbound.http_json_client import AsyncJsonHttpClient, normalize_http_origin
+from niuu.cap_telemetry import record_cap_hit
+from niuu.domain.a2a_status import a2a_status_text
 from niuu.domain.agent_directory import AgentDirectoryEntry
 from niuu.domain.tool import ToolResult
 from niuu.observability import get_observability
+from niuu.ports.agent_directory import PeerAgentDirectoryPort
 from niuu.ports.tool import ToolPort
-from ravn.adapters.tool_build.http import AsyncJsonHttpClient, normalize_http_origin
-from ravn.cap_telemetry import record_cap_hit
-from ravn.domain.a2a_status import a2a_status_text
-from ravn.ports.agent_directory import PeerAgentDirectoryPort
 
 _A2A_HEADERS = {"A2A-Version": "1.0"}
 _JSONRPC_BINDING = "jsonrpc"

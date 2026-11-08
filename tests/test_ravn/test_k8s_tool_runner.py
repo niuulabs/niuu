@@ -10,9 +10,6 @@ from typing import Any
 
 import pytest
 
-from ravn.adapters.skill.file_registry import FileSkillRegistry
-from ravn.config import LearnedToolsConfig
-from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.k8s_tool_runner import (
     DEFAULT_TOOL_RUN_IMAGE,
     NETWORK_ALLOWED_LABEL,
@@ -203,7 +200,7 @@ async def test_runner_hands_requirements_to_the_image_gate(tmp_path) -> None:
 async def test_runner_reports_an_unsatisfied_requirement_as_infrastructure(tmp_path) -> None:
     gate = (
         "ravn-k8s-job: runner image does not satisfy: kubernetes (not installed) -- "
-        "bake it into the reviewed runner image (learned_tool_k8s.image)"
+        "bake it into the reviewed runner image (the k8s_job backend kwarg image)"
     )
     executor = _FakeExecutor(JobRunResult(stdout=gate, stderr=gate, exit_code=1))
     runner = KubernetesJobLearnedToolRunner(executor=executor)
@@ -1123,7 +1120,7 @@ def test_requirements_gate_runs_the_command_only_when_the_image_satisfies_it(
         return
     assert completed.returncode == 86
     assert completed.stdout.startswith(_REQUIREMENTS_MARKER)
-    assert "learned_tool_k8s.image" in completed.stdout
+    assert "the k8s_job backend kwarg image" in completed.stdout
 
 
 @pytest.mark.asyncio
@@ -1229,22 +1226,27 @@ def test_container_exit_code_reads_only_a_terminated_container() -> None:
 
 
 def test_k8s_backend_requires_explicit_verified_deployment_coordinates(tmp_path) -> None:
-    with pytest.raises(ValueError, match="requires learned_tool_k8s"):
-        LearnedToolsConfig(learned_tool_execution_backend="k8s_job")
+    with pytest.raises(LearnedToolError, match="explicit namespace"):
+        learned_tool_runner_for_backend(
+            "k8s_job",
+            workspace_root=tmp_path,
+            venvs_dir=tmp_path / "venvs",
+            backend_kwargs={
+                "namespace": "",
+                "deny_policy_name": "tool-deny",
+                "allow_policy_name": "tool-allow",
+            },
+        )
 
-    config = LearnedToolsConfig(
-        learned_tool_execution_backend="k8s_job",
-        learned_tool_k8s={
+    runner = learned_tool_runner_for_backend(
+        "k8s_job",
+        workspace_root=tmp_path,
+        venvs_dir=tmp_path / "venvs",
+        backend_kwargs={
             "namespace": "ravn",
             "deny_policy_name": "tool-deny",
             "allow_policy_name": "tool-allow",
         },
-    )
-    runner = learned_tool_runner_for_backend(
-        config.learned_tool_execution_backend,
-        workspace_root=tmp_path,
-        venvs_dir=tmp_path / "venvs",
-        backend_kwargs=config.learned_tool_k8s.model_dump(),
     )
 
     assert "k8s_job" in KNOWN_EXECUTION_BACKENDS
@@ -1879,18 +1881,6 @@ class _FakeE2EExecutor:
             exit_code=0,
             network_enforced=True,
         )
-
-
-def _skill_manager(tmp_path, name: str) -> SkillManagementRegistry:
-    skill_dir = tmp_path / name / "skills"
-    registry = FileSkillRegistry(
-        skill_dirs=[str(skill_dir)],
-        write_dir=skill_dir,
-        include_builtin=False,
-    )
-    return SkillManagementRegistry(
-        registry, metadata_path=tmp_path / name / "skill_management.json"
-    )
 
 
 @pytest.mark.asyncio

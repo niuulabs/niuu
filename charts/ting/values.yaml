@@ -228,9 +228,9 @@ a2a:
     idleTimeoutSeconds: 7200
 
 workflowExecution:
-  # Domain-neutral fan-out/join, durable waits, and the Ravn A2A gateway.
+  # Domain-neutral fan-out/join, durable waits, and the A2A gateway.
   enabled: false
-  gatewayAdapter: ravn.adapters.child_task_a2a.ConfiguredRavnChildTaskA2AGateway
+  gatewayAdapter: niuu.adapters.child_task_a2a.ConfiguredChildTaskA2AGateway
   gatewayKwargs: {}
   # Gateway admission roles on Ting-issued exact-scope workload credentials.
   admissionRoles:
@@ -259,7 +259,7 @@ workflowExecution:
   # wiring, layered over the generic execution ledger above. Requires enabled.
   delivery:
     # Code delivery on top of the generic blocks. Requires
-    # workflowExecution.enabled, workload identity, and configured Ravn A2A and
+    # workflowExecution.enabled, workload identity, and configured A2A and
     # Forge delivery/evidence adapters, including reviewAuthenticatorAdapter.
     enabled: false
     # forge.* wait condition observers, registered only when delivery is enabled.

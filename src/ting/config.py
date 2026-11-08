@@ -1099,7 +1099,7 @@ class WorkflowExecutionDeliveryConfig(BaseModel):
 
 
 class WorkflowExecutionConfig(BaseModel):
-    """Durable, domain-neutral workflow execution: fan-out/join, waits, and the Ravn A2A gateway.
+    """Durable, domain-neutral workflow execution: fan-out/join, waits, and the A2A gateway.
 
     Every field here serves any workflow that expands into a bounded child
     DAG and carries no code-delivery vocabulary. The code delivery
@@ -1111,15 +1111,15 @@ class WorkflowExecutionConfig(BaseModel):
         default=False,
         description=(
             "Enable durable workflow execution: fan-out/join, durable waits, and the "
-            "Ravn A2A gateway. Requires workload identity outside anonymous dev mode."
+            "A2A gateway. Requires workload identity outside anonymous dev mode."
         ),
     )
     delivery: WorkflowExecutionDeliveryConfig = Field(
         default_factory=WorkflowExecutionDeliveryConfig
     )
     gateway_adapter: str = Field(
-        default="ravn.adapters.child_task_a2a.ConfiguredRavnChildTaskA2AGateway",
-        description="Ravn-owned A2A child gateway adapter.",
+        default="niuu.adapters.child_task_a2a.ConfiguredChildTaskA2AGateway",
+        description="A2A child gateway adapter.",
     )
     gateway_kwargs: dict[str, Any] = Field(default_factory=dict)
     admission_roles: list[str] = Field(

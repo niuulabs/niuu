@@ -11,6 +11,10 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from niuu.adapters.outbound.http_json_client import (
+    AsyncJsonHttpClient,
+    client_from_workload_identity,
+)
 from ravn.adapters.tool_build._contract import (
     CANONICAL_ARTIFACT_FILENAME,
     build_prompts,
@@ -19,7 +23,6 @@ from ravn.adapters.tool_build._contract import (
     parse_tool_build_response,
     poll_until,
 )
-from ravn.adapters.tool_build.http import AsyncJsonHttpClient, client_from_workload_identity
 from ravn.ports.tool_build_backend import (
     ToolBuildBackend,
     ToolBuildError,

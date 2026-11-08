@@ -4,9 +4,9 @@ from typing import Any
 
 import pytest
 
+from niuu.adapters.outbound.guild_agent_directory import GuildAgentDirectoryAdapter
+from niuu.adapters.outbound.http_json_client import HttpResponse
 from niuu.domain.agent_directory import AgentDirectoryEntry, configured_agent_id
-from ravn.adapters.agent_directory import GuildAgentDirectoryAdapter
-from ravn.adapters.tool_build.http import HttpResponse
 
 
 class _Client:

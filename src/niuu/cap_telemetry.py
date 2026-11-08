@@ -14,8 +14,8 @@ on its health surface instead of only in logs. :func:`require_complete` is the
 check every model call makes on its response; a ``StopReason.MAX_TOKENS``
 answer is a cap hit wherever it happens.
 
-The limits themselves, their defaults, and what bounds them are listed in
-``docs/operator/ravn-limits.md``.
+A cap's knob is the config path an operator would change; the error names it
+and its remedy.
 """
 
 from __future__ import annotations
@@ -23,12 +23,38 @@ from __future__ import annotations
 import logging
 import threading
 from collections import Counter
+from typing import Any, Protocol
 
 from niuu.observability import get_observability
-from ravn.domain.exceptions import OutputTruncatedError
-from ravn.domain.models import LLMResponse, StopReason
 
 logger = logging.getLogger(__name__)
+
+#: ``stop_reason`` value of a model answer that stopped for want of output room.
+STOP_REASON_MAX_TOKENS = "max_tokens"
+
+
+class OutputTruncatedError(RuntimeError):
+    """A model answer stopped because it ran out of output room.
+
+    A truncated answer is not an answer: prose cut mid-sentence reads as a
+    conclusion, and a tool call cut mid-argument parses to an empty input.
+    ``knob`` is the setting that bounded the call, so the failure names its own
+    remedy.
+    """
+
+    def __init__(self, *, knob: str, message: str) -> None:
+        self.knob = knob
+        super().__init__(message)
+
+
+class ModelAnswer(Protocol):
+    """The parts of a model response :func:`require_complete` reads."""
+
+    stop_reason: Any
+    content: str
+    reasoning: str
+    tool_calls: Any
+
 
 CAP_HITS = "ravn.cap.hits"
 ATTR_KNOB = "ravn.cap.knob"
@@ -64,7 +90,7 @@ def record_cap_hit(knob: str, message: str) -> None:
     get_observability().count(
         CAP_HITS,
         attributes={ATTR_KNOB: knob},
-        description="Configured Ravn limits that were reached (see docs/operator/ravn-limits.md).",
+        description="Configured limits that were reached.",
     )
 
 
@@ -96,7 +122,7 @@ def record_degraded(path: str, message: str) -> None:
     get_observability().count(
         DEGRADED,
         attributes={ATTR_PATH: path},
-        description="Ravn paths that continued without completing their durable work.",
+        description="Paths that continued without completing their durable work.",
     )
 
 
@@ -116,7 +142,7 @@ def record_retry(path: str, message: str) -> None:
     get_observability().count(
         RETRIES,
         attributes={ATTR_RETRY_PATH: path},
-        description="Transient failures Ravn retried within their configured bound.",
+        description="Transient failures retried within their configured bound.",
     )
 
 
@@ -162,14 +188,14 @@ def reset_cap_hits() -> None:
         _retries.clear()
 
 
-def require_complete(
-    response: LLMResponse,
+def require_complete[T: ModelAnswer](
+    response: T,
     *,
     knob: str,
     budget: int | None,
     model: str,
     purpose: str,
-) -> LLMResponse:
+) -> T:
     """Return *response* if the model finished; raise if it ran out of room.
 
     *knob* is the setting that bounds the call's output and *budget* its value
@@ -179,17 +205,14 @@ def require_complete(
     Raises:
         OutputTruncatedError: ``response.stop_reason`` is ``MAX_TOKENS``.
     """
-    if response.stop_reason != StopReason.MAX_TOKENS:
+    if response.stop_reason != STOP_REASON_MAX_TOKENS:
         return response
     if budget is None:
         cause = (
             f"reached the provider's output limit for {model!r} with no cap sent (the "
             "model's maximum output, or the rest of its context window)"
         )
-        remedy = (
-            "shorten what this call is given (context_management.max_prompt_tokens bounds "
-            "the prompt), or use a model with a larger window"
-        )
+        remedy = "shorten what this call is given, or use a model with a larger window"
     else:
         cause = f"used its whole {budget}-token budget"
         remedy = f"raise {knob}, or set it to null to let the provider use the remaining context"

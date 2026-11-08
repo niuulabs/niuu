@@ -1,4 +1,4 @@
-"""Authenticated Ravn adapter for Guild's aggregated Agent Directory."""
+"""Authenticated adapter for Guild's aggregated Agent Directory."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from niuu.adapters.outbound.http_json_client import AsyncJsonHttpClient
 from niuu.domain.agent_directory import (
     AgentDirectoryEntry,
     AgentDirectoryPage,
@@ -16,7 +17,6 @@ from niuu.domain.agent_directory import (
     AgentSkill,
     configured_agent_id,
 )
-from ravn.adapters.tool_build.http import AsyncJsonHttpClient
 
 
 class GuildAgentDirectoryAdapter:

@@ -1,4 +1,4 @@
-"""Ravn A2A gateway for Ting's durable developer child ledger."""
+"""A2A gateway for Ting's durable workflow child ledger."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from typing import Any
 
 from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 
-from ravn.adapters.agent_directory import GuildAgentDirectoryAdapter
-from ravn.adapters.tool_build.http import HttpxJsonClient, client_from_workload_identity
-from ravn.adapters.tools.a2a_task import A2ATaskTool
-from ravn.domain.delivery import (
+from niuu.adapters.a2a_task import A2ATaskTool
+from niuu.adapters.outbound.guild_agent_directory import GuildAgentDirectoryAdapter
+from niuu.adapters.outbound.http_json_client import HttpxJsonClient, client_from_workload_identity
+from niuu.domain.child_task import (
     ChildLaunchRequest,
     ChildPendingGate,
     ChildPendingQuestion,
@@ -32,7 +32,7 @@ _A2A_STATE_MAP = {
 }
 
 
-class RavnChildTaskA2AGateway:
+class ChildTaskA2AGateway:
     """Bridge persisted child intents to the existing authenticated A2A client."""
 
     def __init__(
@@ -216,7 +216,7 @@ class RavnChildTaskA2AGateway:
         )
 
 
-class ConfiguredRavnChildTaskA2AGateway(RavnChildTaskA2AGateway):
+class ConfiguredChildTaskA2AGateway(ChildTaskA2AGateway):
     """Production gateway composed from deployment config at Ting's boundary."""
 
     def __init__(

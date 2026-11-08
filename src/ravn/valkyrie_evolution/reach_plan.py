@@ -243,7 +243,7 @@ def _destination(
     raise LearnedToolError(
         f"k8s_job cannot derive a NetworkPolicy destination from reach {grant.kind!r} "
         f"target {target!r}; name it as namespace/service:port, a service DNS name, "
-        "a URL or host:port (or declare the word in learned_tool_k8s.named_targets)"
+        "a URL or host:port (or declare the word in the k8s_job backend kwarg named_targets)"
     )
 
 

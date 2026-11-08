@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from typing import Protocol
 
-from niuu.domain.agent_directory import AgentDirectoryFilters, AgentDirectoryPage
+from niuu.domain.agent_directory import (
+    AgentDirectoryEntry,
+    AgentDirectoryFilters,
+    AgentDirectoryPage,
+)
 from niuu.domain.models import RegisteredInstance
 
 
@@ -21,3 +26,13 @@ class AgentDirectoryClientPort(ABC):
         filters: AgentDirectoryFilters,
     ) -> AgentDirectoryPage:
         """Return one source's principal-filtered directory page."""
+
+
+class PeerAgentDirectoryPort(Protocol):
+    """Read the principal-scoped, aggregated peer directory."""
+
+    async def list_agents(self) -> AgentDirectoryPage:
+        """Return agents already filtered by Guild for the current principal."""
+
+    async def get_agent(self, agent_id: str) -> AgentDirectoryEntry | None:
+        """Resolve an aggregate agent id without accepting a caller-supplied URL."""

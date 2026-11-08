@@ -18,9 +18,10 @@ from typing import Any, Protocol
 
 from packaging.requirements import InvalidRequirement, Requirement
 
+from niuu.cap_telemetry import record_degraded
 from niuu.domain.tool import ToolResult
 from niuu.ports.tool import ToolPort
-from ravn.cap_telemetry import record_degraded
+from ravn.valkyrie_evolution.docker_shell import DockerPersistentShell, DockerShellConfig
 from ravn.valkyrie_evolution.models import (
     LearnedToolArtifact,
     LearnedToolManifest,
@@ -1168,7 +1169,7 @@ class ForgeSandboxLearnedToolRunner:
         *,
         workspace_root: str | Path,
         shell: Any | None = None,
-        docker_config: Any | None = None,
+        docker_config: DockerShellConfig | None = None,
         runs_dir: str | Path | None = None,
     ) -> None:
         self._workspace_root = Path(workspace_root).resolve()
@@ -1340,8 +1341,6 @@ class ForgeSandboxLearnedToolRunner:
         mode = NETWORK_ALLOWED_DOCKER_NETWORK if network_allowed else NETWORK_DENIED_DOCKER_NETWORK
         shell = self._shells.get(mode)
         if shell is None:
-            from ravn.adapters.tools.terminal_docker import DockerPersistentShell  # noqa: PLC0415
-
             shell = DockerPersistentShell(
                 config=self._network_scoped_config(mode),
                 workspace_root=self._workspace_root,
@@ -1354,15 +1353,9 @@ class ForgeSandboxLearnedToolRunner:
             network_allowed=network_allowed,
         )
 
-    def _network_scoped_config(self, network_mode: str) -> Any:
-        from ravn.config import DockerTerminalConfig  # noqa: PLC0415
-
-        base = self._docker_config or DockerTerminalConfig(image=DEFAULT_FORGE_SANDBOX_IMAGE)
-        if hasattr(base, "model_copy"):
-            return base.model_copy(update={"network": network_mode})
-        # A config object we cannot re-scope is used as-is; the resulting
-        # shell's actual network mode drives the enforcement marker honestly.
-        return base
+    def _network_scoped_config(self, network_mode: str) -> DockerShellConfig:
+        base = self._docker_config or DockerShellConfig(image=DEFAULT_FORGE_SANDBOX_IMAGE)
+        return replace(base, network=network_mode)
 
     async def _ensure_sandbox_venv(
         self,
@@ -2103,7 +2096,7 @@ class LearnedToolInventory:
     refused: list[RefusedLearnedTool]
 
 
-#: ``ravn.cap_telemetry`` path a refused learned tool is reported under, so it
+#: ``niuu.cap_telemetry`` path a refused learned tool is reported under, so it
 #: shows on the resident health snapshot as ``degraded.learned_tool.refused``.
 DEGRADED_PATH_LEARNED_TOOL_REFUSED = "learned_tool.refused"
 
