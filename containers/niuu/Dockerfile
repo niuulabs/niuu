@@ -97,6 +97,9 @@ FROM python-build AS builder
 WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
+# uv.lock locates the OpenShell SDK wheel in vendor/wheels/ (see [tool.uv.sources]);
+# keep it beside the lockfile so a sync never fetches it from GitHub.
+COPY vendor/wheels/ /app/vendor/wheels/
 # Dependencies resolve from the lockfile alone, so this layer survives source
 # edits; only the project itself is installed after src/ is copied.
 RUN uv sync --frozen --no-dev --no-editable --no-install-project --extra cli --extra k8s --extra nats \
