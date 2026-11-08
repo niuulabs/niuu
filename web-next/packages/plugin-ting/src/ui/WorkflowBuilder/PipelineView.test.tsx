@@ -70,6 +70,20 @@ describe('PipelineView', () => {
     expect(screen.getByTestId('pipeline-view')).toBeInTheDocument();
   });
 
+  it('shows no limit for a stage without maxConcurrent', () => {
+    render(<PipelineView nodes={[stageA]} edges={[]} />);
+
+    expect(screen.getByText(/join all · no limit/)).toBeInTheDocument();
+    expect(screen.queryByText(/max \d/)).not.toBeInTheDocument();
+  });
+
+  it('shows the chosen maxConcurrent of a stage', () => {
+    render(<PipelineView nodes={[{ ...stageA, maxConcurrent: 4 }]} edges={[]} />);
+
+    expect(screen.getByText(/join all · max 4/)).toBeInTheDocument();
+    expect(screen.queryByText(/no limit/)).not.toBeInTheDocument();
+  });
+
   it('renders empty state when nodes is empty', () => {
     render(<PipelineView nodes={[]} edges={[]} />);
     expect(screen.getByTestId('pipeline-view')).toBeInTheDocument();

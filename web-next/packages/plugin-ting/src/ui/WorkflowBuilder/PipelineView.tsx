@@ -55,7 +55,7 @@ function stageSummary(node: WorkflowStageNode) {
     members,
     mode: node.executionMode ?? 'parallel',
     joinMode: node.joinMode ?? 'all',
-    maxConcurrent: node.maxConcurrent ?? 3,
+    maxConcurrent: node.maxConcurrent,
   };
 }
 
@@ -148,7 +148,10 @@ export function PipelineView({
                             ravn{summary.members.length !== 1 ? 's' : ''} · {summary.mode}
                           </span>
                           <span className="niuu:text-[10px] niuu:font-mono niuu:text-text-faint">
-                            join {summary.joinMode} · max {summary.maxConcurrent}
+                            join {summary.joinMode} ·{' '}
+                            {summary.maxConcurrent === undefined
+                              ? 'no limit'
+                              : `max ${summary.maxConcurrent}`}
                           </span>
                           <span className="niuu:text-[10px] niuu:font-mono niuu:text-text-faint">
                             {[

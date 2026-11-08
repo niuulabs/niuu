@@ -176,7 +176,7 @@ describe('useWorkflowBuilder — initial state', () => {
         },
       ]);
       expect(node.executionMode).toBe('parallel');
-      expect(node.maxConcurrent).toBe(3);
+      expect(node.maxConcurrent).toBeUndefined();
       expect(node.joinMode).toBe('all');
     }
   });

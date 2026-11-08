@@ -943,11 +943,21 @@ function StageInspector({
               <input
                 type="number"
                 className={INPUT}
-                value={node.maxConcurrent ?? 3}
+                value={node.maxConcurrent ?? ''}
                 min={1}
-                onChange={(e) =>
-                  onUpdateNode(node.id, { maxConcurrent: Math.max(1, Number(e.target.value) || 1) })
-                }
+                step={1}
+                placeholder="No limit"
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (raw === '') {
+                    onUpdateNode(node.id, { maxConcurrent: undefined });
+                    return;
+                  }
+                  const limit = Number(raw);
+                  // Only a positive whole number is a limit; anything else is not stored.
+                  if (!Number.isInteger(limit) || limit < 1) return;
+                  onUpdateNode(node.id, { maxConcurrent: limit });
+                }}
               />
             </div>
             <div />
