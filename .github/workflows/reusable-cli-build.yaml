@@ -220,7 +220,12 @@ jobs:
         run: |
           ccache --show-stats | tee dist/ccache-stats.txt
           ccache --print-stats > dist/ccache-stats.tsv
-          cat dist/ccache-stats.txt >> "$GITHUB_STEP_SUMMARY"
+          {
+            python3 scripts/measure_compilation.py --summary dist/timings
+            echo '```text'
+            cat dist/ccache-stats.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save updated compiler caches
         if: always() && steps.compiler-cache.outcome == 'success'

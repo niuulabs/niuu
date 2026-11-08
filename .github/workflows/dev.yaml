@@ -897,7 +897,6 @@ jobs:
   # ---------------------------------------------------------------------------
   # Shared CLI assets — build once, reuse in packaging jobs
   # ---------------------------------------------------------------------------
-  # CLI binaries (Nuitka + embedded PostgreSQL) are NOT built on dev —
-  # they dominated dev wall-clock (~40 min of matrix builds) and nothing on the
-  # dev branch consumes the artifacts. Release builds them (release.yaml).
+  # CLI binaries compile independently in cli-binaries.yaml, with compiler
+  # caches and timing reports. They do not gate the dev container release.
   # ---------------------------------------------------------------------------
