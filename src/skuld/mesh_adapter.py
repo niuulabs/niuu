@@ -260,6 +260,16 @@ class SkuldMeshAdapter:
             timeout_s=self._config.rpc_timeout_s,
         )
 
+    async def send_rpc(self, target_peer_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Send one RPC to a mesh peer and return its answer.
+
+        Raises ``RuntimeError`` when the mesh is unavailable; the transport's own errors
+        (a timeout, an unknown peer) surface from the mesh.
+        """
+        if self._mesh is None:
+            raise RuntimeError("Mesh is unavailable")
+        return await self._mesh.send(target_peer_id, body, timeout_s=self._config.rpc_timeout_s)
+
     async def request_peer_state(self, target_peer_id: str) -> dict[str, Any]:
         """Ask a peer's Skuld what it is doing (``peer_state`` RPC); raises like ``send``."""
         if self._mesh is None:

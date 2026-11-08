@@ -33,6 +33,7 @@ from skuld.mesh_topics import (
     validate_subscribable_topic,
 )
 from skuld.peer_inbox import render_peer_turn
+from skuld.room_delivery import ROOM_MESSAGE_RPC_TYPE
 from sleipnir.adapters.in_process import InProcessBus
 from tests.test_skuld.test_peer_inbox import _inbox_broker, _sent_texts
 
@@ -52,9 +53,17 @@ class CertifiedMesh(SleipnirMeshAdapter):
         cert = self._certs.get(claimed)
         return None if cert is None else {"peer_id": cert[0], "session_id": cert[1]}
 
+    async def send(self, target_peer_id, message, **kwargs):
+        # The real mesh signs with the sender's key; the test names the signer instead.
+        return await super().send(
+            target_peer_id, {**message, "_test_signer": self._own_peer_id}, **kwargs
+        )
+
     def set_rpc_handler(self, handler) -> None:
         async def stamped(body):
-            claimed = ((body.get("envelope") or {}).get("sender") or {}).get("id")
+            body = dict(body)
+            signer = body.pop("_test_signer", None)
+            claimed = ((body.get("envelope") or {}).get("sender") or {}).get("id") or signer
             summary = self._summary(claimed)
             return await handler({**body, VERIFIED_SENDER_KEY: summary} if summary else body)
 
@@ -94,7 +103,9 @@ class Node:
         self.description = description
         self.broker = _inbox_broker(directory)
         self.broker.session_id = session_id or f"session-{name}"
-        self.broker._settings.mesh = MeshConfig(enabled=True, peer_id=name, rpc_timeout_s=5.0)
+        self.broker._settings.mesh = MeshConfig(
+            enabled=True, peer_id=name, rpc_timeout_s=5.0, attestation={"required": signed}
+        )
         self.broker._mesh_topics = MeshTopics(self.consumes, tuple(produces), persona_id=name)
         self.broker._mesh_identity = MeshIdentity(
             peer_id=name,
@@ -127,6 +138,7 @@ class Node:
             session_id=self.broker.session_id,
             peer_inbox=self.broker,
             consumes_event_types=self.consumes,
+            rpc_handlers={ROOM_MESSAGE_RPC_TYPE: self.broker.handle_room_message_rpc},
         )
         self.broker._mesh_adapter = self.adapter
         self.host = BrokerForgeMcpHost(self.broker, client=SimpleNamespace())
@@ -196,6 +208,7 @@ async def flock(tmp_path):
     async def add(name, **kwargs) -> Node:
         node = Node(tmp_path, bus, name, **kwargs)
         node.broker._mesh_discovery = SimpleNamespace(peers=lambda me=node: peers_seen_by(me))
+        node.adapter.peers = lambda me=node: peers_seen_by(me)  # type: ignore[method-assign]
         await node.start()
         nodes.append(node)
         return node

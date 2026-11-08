@@ -731,6 +731,13 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         if failures:
             raise RoomDeliveryError("; ".join(failures))
 
+    async def tell_member(self, peer_id: str, content: str, room_id: str) -> None:
+        """Tell one member of a room something, said in that room by this host."""
+        await self._deliver_to_peer(
+            peer_id,
+            {"type": "directed_message", "content": content, "metadata": {"room_id": room_id}},
+        )
+
     async def _deliver_to_peer(self, peer_id: str, payload: dict[str, Any]) -> bool:
         """Deliver over a peer's socket here, or to the session it joined from."""
         participant = self.participant(peer_id)

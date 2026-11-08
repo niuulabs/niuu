@@ -27,3 +27,7 @@ class RoomDelivery:
     content: str
     speech: RelayedSpeech
     request_id: str
+
+
+#: The mesh RPC a member session posts in a room with, to the session that hosts the room.
+ROOM_MESSAGE_RPC_TYPE = "room_message"
