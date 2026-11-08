@@ -41,6 +41,25 @@ def mesh_is_nng(mesh: Mapping[str, Any]) -> bool:
     return bool(enabled) and str(mesh.get("transport") or "nng") == "nng"
 
 
+def mesh_lists_pods_of(mesh: Mapping[str, Any], namespace: str) -> bool:
+    """Whether the sessions' mesh discovers its peers by listing the pods of *namespace*.
+
+    That is `k8s` discovery naming this namespace (the cluster default does). One that names
+    another namespace, or none (every namespace), needs access this module does not grant.
+    """
+    enabled = mesh.get("enabled")
+    if isinstance(enabled, str):
+        enabled = enabled.strip().lower() == "true"
+    if not enabled:
+        return False
+    return any(
+        isinstance(entry, Mapping)
+        and entry.get("adapter") == "k8s"
+        and entry.get("namespace") == namespace
+        for entry in mesh.get("discovery_adapters") or []
+    )
+
+
 def mesh_with_defaults(mesh: dict, defaults: Mapping[str, Any]) -> dict:
     """Fill in what the platform knows about this shape, for a mesh the operator enabled.
 

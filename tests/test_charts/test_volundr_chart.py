@@ -594,6 +594,29 @@ class TestRbacTemplate:
             ["get", "list", "watch", "create", "update", "patch", "delete"]
         ]
 
+    DIRECT = "volundr.adapters.outbound.direct_k8s_pod_manager.DirectK8sPodManager"
+
+    def test_namespaced_role_may_manage_roles_for_the_direct_pod_manager_only(self):
+        """The direct pod manager gives a session whose mesh lists pods a Role and binding."""
+        role = self._namespaced_role("--set", f"podManager.adapter={self.DIRECT}")
+        assert self._verbs_for(role, "roles") == [["get", "create", "patch", "delete"]]
+        assert self._verbs_for(role, "rolebindings") == [["get", "create", "patch", "delete"]]
+        # It may only grant what it holds: reading pods.
+        assert ["get", "list", "watch"] in self._verbs_for(role, "pods")
+
+        assert self._verbs_for(self._namespaced_role(), "roles") == []
+
+    def test_cluster_wide_release_gets_the_same_grant_only_for_the_direct_pod_manager(self):
+        documents = self._render_rbac("--set", f"podManager.adapter={self.DIRECT}")
+        cluster_role = next(doc for doc in documents if doc.get("kind") == "ClusterRole")
+        assert self._verbs_for(cluster_role, "rolebindings") == [
+            ["get", "create", "patch", "delete"]
+        ]
+
+        documents = self._render_rbac()
+        cluster_role = next(doc for doc in documents if doc.get("kind") == "ClusterRole")
+        assert self._verbs_for(cluster_role, "rolebindings") == []
+
     def test_namespaced_role_reads_only_without_agent_injection(self):
         role = self._namespaced_role()
 
