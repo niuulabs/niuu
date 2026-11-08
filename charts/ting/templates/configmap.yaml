@@ -184,6 +184,7 @@ data:
 
     workflow_steps:
       step_deadline_seconds: {{ .Values.workflowSteps.stepDeadlineSeconds }}
+      session_poll_seconds: {{ .Values.workflowSteps.sessionPollSeconds }}
       sessions:
         adapter: {{ .Values.workflowSteps.sessions.adapter | quote }}
         kwargs:

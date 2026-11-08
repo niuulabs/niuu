@@ -444,7 +444,9 @@ class RecordingVolundrPort(VolundrPort):
         self.delivered_steps.append((session_id, activation))
 
     async def get_session(self, session_id: str, *, auth_token=None, principal=None):
-        return None
+        # A step session is up by the time the engine asks, so the step is delivered at once.
+        session = next((item for item in self.sessions if item.id == session_id), None)
+        return None if session is None else replace(session, status="running")
 
     async def list_sessions(self, *, auth_token=None, principal=None):
         self.auth_calls.append(("list_sessions", auth_token, principal))
@@ -798,7 +800,7 @@ def _workflow_runs(
                 volundr_factory=factory, campaigns=campaigns, default_model="gpt-5.5"
             ),
             definitions=CampaignStepRunDefinitions(campaigns),
-            settings=EngineSettings(step_deadline_seconds=600.0),
+            settings=EngineSettings(step_deadline_seconds=600.0, session_poll_seconds=0.01),
         ),
         steps=steps,
         campaigns=campaigns,

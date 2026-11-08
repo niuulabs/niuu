@@ -654,7 +654,7 @@ def test_next_actions_does_nothing_for_a_finished_run() -> None:
         RunState(run_id, (), events),
         events[-1],
         now=now,
-        settings=EngineSettings(step_deadline_seconds=1.0),
+        settings=EngineSettings(step_deadline_seconds=1.0, session_poll_seconds=0.01),
     )
 
     assert actions == []
@@ -674,13 +674,18 @@ def test_an_event_from_a_node_the_graph_lacks_is_an_engine_error() -> None:
             RunState(run_id, (), (stray,)),
             stray,
             now=now,
-            settings=EngineSettings(step_deadline_seconds=1.0),
+            settings=EngineSettings(step_deadline_seconds=1.0, session_poll_seconds=0.01),
         )
 
 
 def test_engine_settings_need_a_positive_deadline() -> None:
     with pytest.raises(ValueError, match="positive"):
-        EngineSettings(step_deadline_seconds=0)
+        EngineSettings(step_deadline_seconds=0, session_poll_seconds=1.0)
+
+
+def test_engine_settings_need_a_positive_session_poll() -> None:
+    with pytest.raises(ValueError, match="session_poll_seconds must be positive"):
+        EngineSettings(step_deadline_seconds=1.0, session_poll_seconds=0)
 
 
 def test_activation_ids_are_deterministic_per_run_node_member_and_attempt() -> None:
@@ -943,7 +948,7 @@ def test_an_event_from_a_member_the_graph_does_not_expect_fills_no_join_slot() -
             RunState(run_id, (), events),
             stray,
             now=now,
-            settings=EngineSettings(step_deadline_seconds=1.0),
+            settings=EngineSettings(step_deadline_seconds=1.0, session_poll_seconds=0.01),
         )
 
 

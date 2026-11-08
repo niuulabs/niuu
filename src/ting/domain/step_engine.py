@@ -155,10 +155,14 @@ class EngineSettings:
     """Engine knobs, from Ting's configuration."""
 
     step_deadline_seconds: float
+    #: Seconds between asking a starting session whether it is up yet.
+    session_poll_seconds: float
 
     def __post_init__(self) -> None:
         if not self.step_deadline_seconds > 0:
             raise ValueError("step_deadline_seconds must be positive")
+        if not self.session_poll_seconds > 0:
+            raise ValueError("session_poll_seconds must be positive")
 
 
 @dataclass(frozen=True)

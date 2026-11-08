@@ -146,6 +146,10 @@ class ForgeStepSessions(StepSessionPort):
             await self._stop_replaced(forge, current.session, campaign)
             return await self._create(forge, campaign, member, persona_ref, epoch=current.epoch + 1)
 
+    async def session_liveness(self, run_id: UUID, session_id: str) -> SessionLiveness:
+        _, forge = await self._run(run_id)
+        return _liveness_of(await forge.get_session(session_id))
+
     async def observe(self, run_id: UUID, session_id: str, activation_id: UUID) -> StepObservation:
         _, forge = await self._run(run_id)
         liveness = _liveness_of(await forge.get_session(session_id))

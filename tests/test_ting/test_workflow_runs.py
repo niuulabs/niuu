@@ -181,7 +181,7 @@ class Harness:
                 campaigns=self.campaigns,  # type: ignore[arg-type]
             ),
             definitions=CampaignStepRunDefinitions(self.campaigns),  # type: ignore[arg-type]
-            settings=EngineSettings(step_deadline_seconds=600.0),
+            settings=EngineSettings(step_deadline_seconds=600.0, session_poll_seconds=0.01),
         )
         self.runs = WorkflowRuns(
             engine=engine,

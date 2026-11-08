@@ -139,6 +139,15 @@ class StepSessionPort(ABC):
         """
 
     @abstractmethod
+    async def session_liveness(self, run_id: UUID, session_id: str) -> SessionLiveness:
+        """Whether the session is up, still starting, or ended, as its Forge reports it.
+
+        Asks nothing of the session itself, so it works before the session's broker is
+        reachable. Raises when Forge cannot be asked: a question that cannot be answered
+        is never reported as an answer.
+        """
+
+    @abstractmethod
     async def replace_session(
         self,
         run_id: UUID,

@@ -226,7 +226,9 @@ class StuckHarness:
             repository=self.steps,
             sessions=self.sessions,
             definitions=CampaignStepRunDefinitions(self.campaigns),  # type: ignore[arg-type]
-            settings=EngineSettings(step_deadline_seconds=STEP_DEADLINE_SECONDS),
+            settings=EngineSettings(
+                step_deadline_seconds=STEP_DEADLINE_SECONDS, session_poll_seconds=0.01
+            ),
             clock=self.clock,
         )
         self.runs = WorkflowRuns(

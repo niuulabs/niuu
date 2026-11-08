@@ -1398,7 +1398,8 @@ def create_app(
                 sessions=step_sessions,
                 definitions=CampaignStepRunDefinitions(workflow_campaign_repo),
                 settings=EngineSettings(
-                    step_deadline_seconds=settings.workflow_steps.step_deadline_seconds
+                    step_deadline_seconds=settings.workflow_steps.step_deadline_seconds,
+                    session_poll_seconds=settings.workflow_steps.session_poll_seconds,
                 ),
             )
             workflow_runs = WorkflowRuns(
@@ -1614,6 +1615,7 @@ def create_app(
                 await platform_signer.stop()
             if stuck_sweeper is not None:
                 await stuck_sweeper.stop()
+            await step_engine.aclose()
             await subscriber.stop()
             if ting_sleipnir_bridge is not None:
                 await ting_sleipnir_bridge.stop()

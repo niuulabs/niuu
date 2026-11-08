@@ -146,7 +146,7 @@ def _step_engine(pool, campaign_repo, factory) -> WorkflowRuns:
                 volundr_factory=factory, campaigns=campaign_repo, default_model="gpt-5.5"
             ),
             definitions=CampaignStepRunDefinitions(campaign_repo),
-            settings=EngineSettings(step_deadline_seconds=600.0),
+            settings=EngineSettings(step_deadline_seconds=600.0, session_poll_seconds=0.01),
         ),
         steps=steps,
         campaigns=campaign_repo,

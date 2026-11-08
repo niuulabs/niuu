@@ -18,6 +18,7 @@ end.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
@@ -235,6 +236,19 @@ class WorkflowStepEngine:
         self._definitions = definitions
         self._settings = settings
         self._clock = clock
+        #: Deliveries waiting for their session to come up (see ``_defer_delivery``).
+        self._deferred: set[asyncio.Task[None]] = set()
+
+    async def aclose(self) -> None:
+        """Stop waiting for sessions to come up.
+
+        A step whose delivery was still waiting stays active and bound to its session;
+        the stuck sweep delivers it once the session answers.
+        """
+        tasks = tuple(self._deferred)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     # -- public API -------------------------------------------------------------
 
@@ -572,10 +586,7 @@ class WorkflowStepEngine:
         bound = await self._bind_session(step, session_id)
         if bound is None:
             return False
-        activation = self._activation(
-            bound, graph, await self._repository.load(run_id), definition.workflow_name
-        )
-        await self._sessions.deliver(activation)
+        await self._deliver_or_defer(bound, graph, definition)
         return True
 
     async def fail_step(self, run_id: UUID, activation_id: UUID, reason: str) -> bool:
@@ -792,18 +803,124 @@ class WorkflowStepEngine:
         bound = await self._bind_session(step, session_id)
         if bound is None:
             return
-        activation = self._activation(
-            bound,
-            graph,
-            await self._repository.load(step.run_id),
-            definition.workflow_name,
-        )
         try:
-            await self._sessions.deliver(activation)
+            await self._deliver_or_defer(bound, graph, definition)
         except Exception as exc:
             await self._fail_start(
                 bound, graph, definition, f"delivery to {step.member!r} failed: {exc}"
             )
+
+    async def _deliver_or_defer(
+        self, bound: WorkflowStep, graph: StepGraph, definition: StepRunDefinition
+    ) -> None:
+        """Hand the step to its session if the session is up; wait for it if it is coming up.
+
+        A session boots in minutes (a pod is scheduled, its volume attached, the harness
+        started) and cannot take a step before it is up, so a step for a session that is
+        still starting is not delivered and not failed: the engine waits for the session in
+        the background (``_deliver_when_up``) and the caller is not held for the boot.
+        Raises when the session cannot be asked, has ended, or refuses the step.
+        """
+        liveness = await self._sessions.session_liveness(bound.run_id, bound.session_id or "")
+        if liveness is SessionLiveness.STARTING:
+            self._defer_delivery(bound, graph, definition)
+            return
+        if liveness is not SessionLiveness.RUNNING:
+            raise StepEngineError(
+                f"session {bound.session_id} is {liveness.value}, so it cannot take the step"
+            )
+        await self._deliver(bound, graph, definition)
+
+    async def _deliver(
+        self, bound: WorkflowStep, graph: StepGraph, definition: StepRunDefinition
+    ) -> None:
+        activation = self._activation(
+            bound,
+            graph,
+            await self._repository.load(bound.run_id),
+            definition.workflow_name,
+        )
+        await self._sessions.deliver(activation)
+
+    def _defer_delivery(
+        self, bound: WorkflowStep, graph: StepGraph, definition: StepRunDefinition
+    ) -> None:
+        logger.info(
+            "Session %s of step %s (%s/%s) is still starting; delivering the step when it is up",
+            bound.session_id,
+            bound.id,
+            bound.node_id,
+            bound.member,
+        )
+        task = asyncio.create_task(
+            self._deliver_when_up(bound, graph, definition),
+            name=f"deliver-step-{bound.id}",
+        )
+        self._deferred.add(task)
+        task.add_done_callback(self._deferred.discard)
+
+    async def _deliver_when_up(
+        self, bound: WorkflowStep, graph: StepGraph, definition: StepRunDefinition
+    ) -> None:
+        """Poll the step's session until it is up, then deliver; fail the step if it never is.
+
+        The wait ends when the session is running, when it ends (stopped, failed or gone),
+        or at the step's deadline, which is the one real bound on a step: a session that
+        has not come up by then is not going to run the step. A session that cannot be
+        asked leaves the step active and logged: the stuck sweep delivers it once the
+        session answers, or flags it.
+        """
+        while True:
+            await asyncio.sleep(self._settings.session_poll_seconds)
+            current = (await self._repository.load(bound.run_id)).step(bound.id)
+            if current is None or current.state is not StepState.ACTIVE:
+                return
+            if current.session_id != bound.session_id:
+                return
+            try:
+                liveness = await self._sessions.session_liveness(
+                    bound.run_id, bound.session_id or ""
+                )
+            except Exception:
+                logger.error(
+                    "Could not ask session %s whether it is up for step %s (%s/%s); the "
+                    "step stays active and the stuck sweep delivers it once the session "
+                    "answers",
+                    bound.session_id,
+                    bound.id,
+                    bound.node_id,
+                    bound.member,
+                    exc_info=True,
+                )
+                get_observability().count(
+                    "ting_workflow_step_wait_failures_total",
+                    description="Waits for a starting step session that could not ask it.",
+                )
+                return
+            if liveness is SessionLiveness.STARTING:
+                if bound.deadline_at is not None and self._clock() > bound.deadline_at:
+                    await self._fail_start(
+                        bound,
+                        graph,
+                        definition,
+                        f"session {bound.session_id} did not come up before the step's "
+                        f"deadline of {bound.deadline_at.isoformat()}; raise "
+                        "workflow_steps.step_deadline_seconds if sessions boot that slowly",
+                    )
+                    return
+                continue
+            try:
+                if liveness is not SessionLiveness.RUNNING:
+                    raise StepEngineError(
+                        f"session {bound.session_id} is {liveness.value}, so it cannot take "
+                        "the step"
+                    )
+                await self._deliver(bound, graph, definition)
+            except Exception as exc:
+                await self._fail_start(
+                    bound, graph, definition, f"delivery to {bound.member!r} failed: {exc}"
+                )
+            return
 
     async def _bind_session(self, step: WorkflowStep, session_id: str) -> WorkflowStep | None:
         """Record the session that owns an activated step; ``None`` if the step moved on."""

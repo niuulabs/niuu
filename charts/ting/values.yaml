@@ -239,6 +239,11 @@ workflowSteps:
   # without a close; a node overrides it with deadlineSeconds. Only stored: stuck
   # detection flags an overdue step, nothing is cancelled or retried because of it.
   stepDeadlineSeconds: 14400
+  # -- Seconds between asking a starting step session whether it is up. A step is delivered
+  # only once Forge reports its session running (a session boots in minutes); this is only
+  # how often Ting asks. The wait ends when the session runs, ends, or the step's deadline
+  # passes (the step then fails naming stepDeadlineSeconds).
+  sessionPollSeconds: 5
   # The harness sessions that run a run's steps, one per stage member, created on the
   # run's Forge connection. A new adapter is a StepSessionPort class path plus plain kwargs.
   sessions:

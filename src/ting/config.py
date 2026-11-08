@@ -1259,6 +1259,17 @@ class WorkflowStepsConfig(BaseModel):
             "deadlineSeconds."
         ),
     )
+    session_poll_seconds: float = Field(
+        default=5.0,
+        gt=0.0,
+        description=(
+            "Seconds between asking a step's session whether it is up yet. A session boots "
+            "in minutes, and a step is delivered only once Forge reports it running; this is "
+            "only how often Ting asks, one Forge read per starting session per poll, and "
+            "bounds nothing. The wait ends when the session runs, when it ends, or at the "
+            "step's deadline (step_deadline_seconds), where the step fails naming that knob."
+        ),
+    )
 
 
 class Settings(BaseSettings):

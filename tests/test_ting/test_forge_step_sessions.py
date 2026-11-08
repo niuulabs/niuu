@@ -420,6 +420,36 @@ async def test_a_session_is_observed_by_the_status_forge_reports(
     assert observed.reported is None
 
 
+@pytest.mark.parametrize(
+    ("status", "liveness"),
+    [
+        ("created", SessionLiveness.STARTING),
+        ("starting", SessionLiveness.STARTING),
+        ("provisioning", SessionLiveness.STARTING),
+        ("running", SessionLiveness.RUNNING),
+        ("stopped", SessionLiveness.STOPPED),
+        ("failed", SessionLiveness.FAILED),
+    ],
+)
+async def test_liveness_is_the_status_forge_reports_and_asks_nothing_of_the_session(
+    status: str, liveness: SessionLiveness
+) -> None:
+    campaign = _campaign()
+    forge = FakeForge()
+    session_id = forge.add_session("wf-add-endpoint-abc123-coder", "workflow:x", status=status)
+    sessions, _ = _sessions(campaign, forge)
+
+    assert await sessions.session_liveness(campaign.id, session_id) is liveness
+    assert forge.deliveries == []
+
+
+async def test_liveness_of_a_session_forge_no_longer_has_is_gone() -> None:
+    campaign = _campaign()
+    sessions, _ = _sessions(campaign)
+
+    assert await sessions.session_liveness(campaign.id, "ses-404") is SessionLiveness.GONE
+
+
 async def test_a_session_forge_no_longer_has_is_gone() -> None:
     campaign = _campaign()
     sessions, _ = _sessions(campaign)

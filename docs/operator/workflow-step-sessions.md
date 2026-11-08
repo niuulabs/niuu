@@ -29,6 +29,18 @@ member's `model`, else the model the run was launched with, else `dispatch.defau
 (or the adapter's `default_model`); with none of them the step fails with the remedy in
 the message.
 
+## A session that is still starting
+
+A session takes minutes to boot, and Forge cannot reach its broker before it is running.
+When a step is activated for a session that is not up yet (a member's first step, or a
+stopped session being started again), Ting does not deliver it and does not fail it: the
+step stays active and bound to the session, and Ting delivers it once Forge reports the
+session running, polling every `workflow_steps.session_poll_seconds`. The caller (a launch,
+or the close of the step before it) is not held for the boot. The wait ends when the
+session is running, when it is stopped, failed or gone (the step fails and says so), or at
+the step's deadline (the step fails naming `workflow_steps.step_deadline_seconds`). If Ting
+restarts while it waits, the stuck sweep delivers the step once the session answers.
+
 ## What a session is told, and how it answers
 
 Ting delivers each activation to `POST /api/v1/forge/sessions/{id}/workflow/steps` with
@@ -59,7 +71,8 @@ the owner canceling a durable execution) cancels its open steps and stops its se
 
 | Key | Default | Purpose |
 |---|---|---|
-| `workflow_steps.step_deadline_seconds` | 14400 | Deadline stamped on every stage-member activation; stored, and read by stuck detection |
+| `workflow_steps.step_deadline_seconds` | 14400 | Deadline stamped on every stage-member activation; stored, read by stuck detection, and the bound on waiting for a starting session |
+| `workflow_steps.session_poll_seconds` | 5 | How often Ting asks a starting session whether it is up; bounds nothing |
 | `workflow_steps.sessions.adapter` | `ting.adapters.forge_step_sessions.ForgeStepSessions` | The `StepSessionPort` class |
 | `workflow_steps.sessions.kwargs` | `{}` | Plain kwargs for it (`name_prefix`, `default_model`) |
 

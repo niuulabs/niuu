@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from datetime import timedelta
 from uuid import uuid4
@@ -30,6 +31,7 @@ from ting.domain.workflow_steps import (
     WaitingOn,
     WaitingOnKind,
 )
+from ting.ports.workflow_steps import SessionLiveness
 
 REVIEWERS = (
     "developer-code-reviewer",
@@ -443,6 +445,120 @@ async def test_a_step_that_cannot_be_delivered_fails_loudly(
     assert coder.state is StepState.FAILED
     assert "developer-coder is unreachable" in coder.note
     assert run.finished_with() == "engine.run.failed"
+
+
+# --- a session that is still starting ---------------------------------------------
+
+CODER_SESSION = "session-developer-coder"
+
+
+async def wait_for(condition: object, *, what: str) -> None:
+    """Let the engine's background wait run until ``condition()`` holds."""
+    for _ in range(200):
+        if condition():  # type: ignore[operator]
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
+async def test_a_step_for_a_starting_session_is_delivered_when_the_session_is_up() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    run.sessions.liveness[CODER_SESSION] = SessionLiveness.STARTING
+
+    await run.launch()
+
+    coder = run.current("workstream-code")
+    assert coder.session_id == CODER_SESSION
+    assert run.sessions.delivered == []
+    assert run.finished_with() is None
+
+    run.sessions.liveness[CODER_SESSION] = SessionLiveness.RUNNING
+    await wait_for(lambda: run.sessions.delivered, what="the step to be delivered")
+
+    assert [d.activation_id for d in run.sessions.delivered] == [coder.id]
+    assert run.current("workstream-code").state is StepState.ACTIVE
+    await run.engine.aclose()
+
+
+async def test_a_session_that_ends_while_starting_fails_the_step_and_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = Recorder()
+    run = make_run(bundled("Developer Workstream"), monkeypatch=monkeypatch, recorder=recorder)
+    run.sessions.liveness[CODER_SESSION] = SessionLiveness.STARTING
+
+    await run.launch()
+    run.sessions.liveness[CODER_SESSION] = SessionLiveness.FAILED
+    await wait_for(lambda: run.finished_with(), what="the run to fail")
+
+    coder = run.steps("workstream-code")[0]
+    assert coder.state is StepState.FAILED
+    assert f"session {CODER_SESSION} is failed" in coder.note
+    assert run.sessions.delivered == []
+    assert recorder.total("ting_workflow_step_start_failures_total") == 1
+
+
+async def test_a_session_that_never_comes_up_fails_the_step_at_its_deadline() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    run.sessions.liveness[CODER_SESSION] = SessionLiveness.STARTING
+
+    await run.launch()
+    run.clock[0] += timedelta(seconds=STEP_DEADLINE_SECONDS + 1)
+    await wait_for(lambda: run.finished_with(), what="the run to fail")
+
+    coder = run.steps("workstream-code")[0]
+    assert coder.state is StepState.FAILED
+    assert "did not come up before the step's deadline" in coder.note
+    assert "workflow_steps.step_deadline_seconds" in coder.note
+    assert run.sessions.delivered == []
+
+
+async def test_a_session_that_cannot_be_asked_leaves_the_step_for_the_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = Recorder()
+    run = make_run(bundled("Developer Workstream"), monkeypatch=monkeypatch, recorder=recorder)
+    run.sessions.liveness[CODER_SESSION] = SessionLiveness.STARTING
+
+    await run.launch()
+    run.sessions.fail_observe.add(CODER_SESSION)
+    await wait_for(
+        lambda: recorder.total("ting_workflow_step_wait_failures_total"),
+        what="the failed ask to be counted",
+    )
+
+    assert run.current("workstream-code").state is StepState.ACTIVE
+    assert run.finished_with() is None
+    assert run.sessions.delivered == []
+
+
+async def test_restarting_a_step_whose_session_is_still_starting_waits_instead_of_raising() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    run.sessions.liveness[CODER_SESSION] = SessionLiveness.STARTING
+    await run.launch()
+    coder = run.current("workstream-code")
+
+    resumed = await run.engine.resume_start(run.run_id, coder.id, "stuck sweep")
+    run.sessions.liveness[CODER_SESSION] = SessionLiveness.RUNNING
+    await wait_for(lambda: run.sessions.delivered, what="the step to be delivered")
+
+    assert resumed is True
+    assert run.sessions.delivered[0].activation_id == coder.id
+    await run.engine.aclose()
+
+
+async def test_a_step_that_closed_while_its_delivery_waited_is_not_delivered() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    run.sessions.liveness[CODER_SESSION] = SessionLiveness.STARTING
+
+    await run.launch()
+    coder = run.current("workstream-code")
+    await run.engine.cancel(run.run_id, "operator aborted")
+    run.sessions.liveness[CODER_SESSION] = SessionLiveness.RUNNING
+    await wait_for(lambda: not run.engine._deferred, what="the waiting delivery to end")  # noqa: SLF001
+
+    assert run.sessions.delivered == []
+    assert run.steps("workstream-code")[0].id == coder.id
 
 
 # --- a workflow with gates --------------------------------------------------------

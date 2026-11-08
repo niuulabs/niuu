@@ -42,6 +42,7 @@ from ting.ports.workflow_steps import (
 from ting.system_workflows import load_system_workflows
 
 STEP_DEADLINE_SECONDS = 600.0
+SESSION_POLL_SECONDS = 0.01
 
 
 def bundled(name: str) -> WorkflowDefinition:
@@ -222,6 +223,11 @@ class FakeSessions(StepSessionPort):
     async def stop_run_sessions(self, run_id: UUID) -> None:
         self.stopped.append(run_id)
 
+    async def session_liveness(self, run_id: UUID, session_id: str) -> SessionLiveness:
+        if session_id in self.fail_observe:
+            raise ConnectionError(f"cannot ask {session_id}")
+        return self.liveness.get(session_id, SessionLiveness.RUNNING)
+
     async def observe(self, run_id: UUID, session_id: str, activation_id: UUID) -> StepObservation:
         if session_id in self.fail_observe:
             raise ConnectionError(f"cannot ask {session_id}")
@@ -382,7 +388,9 @@ def make_run(
         repository=repository,
         sessions=sessions,
         definitions=FixedDefinitions(definition),
-        settings=EngineSettings(step_deadline_seconds=STEP_DEADLINE_SECONDS),
+        settings=EngineSettings(
+            step_deadline_seconds=STEP_DEADLINE_SECONDS, session_poll_seconds=SESSION_POLL_SECONDS
+        ),
         clock=clock,
     )
     if monkeypatch is not None and recorder is not None:
@@ -421,7 +429,9 @@ def custom_run(
         repository=repository,
         sessions=sessions,
         definitions=FixedDefinitions(definition),
-        settings=EngineSettings(step_deadline_seconds=STEP_DEADLINE_SECONDS),
+        settings=EngineSettings(
+            step_deadline_seconds=STEP_DEADLINE_SECONDS, session_poll_seconds=SESSION_POLL_SECONDS
+        ),
         clock=clock,
     )
     return Run(engine, repository, sessions, uuid4(), definition, ticks)
