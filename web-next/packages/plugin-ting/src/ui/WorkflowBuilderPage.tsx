@@ -140,7 +140,7 @@ export function WorkflowBuilderPage() {
       request: { ...request, workflowVersion: displayed.version },
     });
     setShowLaunchModal(false);
-    window.location.assign(`/volundr/sessions/${encodeURIComponent(result.sessionId)}`);
+    window.location.assign(`/ting/review/run/${encodeURIComponent(result.campaignSlug)}`);
   }
 
   function handleExport(format: WorkflowExportFormat) {
