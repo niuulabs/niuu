@@ -664,6 +664,22 @@ class TestWhenTheHarnessDoesNotGetIt:
         assert broker._peer_messages_waiting() is True
         assert _peer_frames(broker)[-1]["injected"] is False
 
+    async def test_a_delivery_task_that_raises_is_reported_and_waits_again(self, tmp_path) -> None:
+        cap_telemetry.reset_cap_hits()
+        broker = _inbox_broker(tmp_path)
+        message = _message()
+        await _accept(broker, message)
+        assert broker._peer_messages_waiting() is False
+
+        async def delivery() -> None:
+            raise RuntimeError("transport vanished")
+
+        failed = asyncio.ensure_future(delivery())
+        await broker._watch_peer_delivery(failed, "turn-1", [message.message_id])
+
+        assert cap_telemetry.degraded_counts()["skuld.peer_inbox.delivery"] == 1
+        assert broker._peer_messages_waiting() is True
+
     async def test_a_background_task_that_fails_is_logged(self, tmp_path, caplog) -> None:
         broker = _inbox_broker(tmp_path)
 

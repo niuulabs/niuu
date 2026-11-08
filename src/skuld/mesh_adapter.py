@@ -64,7 +64,8 @@ class PeerMessageReceiver(Protocol):
         *,
         channel: str | None = None,
         verified: SenderIdentity | None = None,
-    ) -> PeerAcceptance: ...
+    ) -> PeerAcceptance:
+        """Hold ``envelope`` for the next turn boundary; raises when it is refused."""
 
 
 class SkuldMeshAdapter:
