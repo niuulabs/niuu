@@ -1116,6 +1116,7 @@ class WorkflowTaskHandler(RequestHandler):
                 by=GateActor(
                     kind=ActorKind.AGENT if self._principal.actor else ActorKind.PERSON,
                     id=self._principal.actor or self._principal.user_id,
+                    name="" if self._principal.actor else self._principal.email,
                 ),
                 note=notes,
             )

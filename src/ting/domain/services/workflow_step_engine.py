@@ -1195,7 +1195,7 @@ class WorkflowStepEngine:
 
 
 def _actor_json(by: GateActor) -> dict[str, str]:
-    return {"kind": by.kind.value, "id": by.id}
+    return by.to_json()
 
 
 def _system_actor() -> dict[str, str]:

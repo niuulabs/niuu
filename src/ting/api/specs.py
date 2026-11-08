@@ -354,7 +354,7 @@ def create_specs_router() -> APIRouter:
                 campaign,
                 _gate_node_id(gate),
                 decision,
-                by=GateActor(ActorKind.PERSON, principal.user_id),
+                by=GateActor(ActorKind.PERSON, principal.user_id, principal.email),
                 note=body.notes.strip(),
             )
         except (GateRefusedError, RunStateError) as exc:

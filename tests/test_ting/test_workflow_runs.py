@@ -878,3 +878,22 @@ async def test_a_gate_an_agent_answers_raises_no_notification() -> None:
     await reach_the_gate(harness)
 
     assert harness.forge.notifications == {}
+
+
+async def test_the_settled_notification_names_the_person_by_email_not_by_id(
+    harness: Harness,
+) -> None:
+    await reach_the_gate(harness)
+
+    await harness.runs.resolve_gate(
+        harness.current,
+        "approve",
+        GateDecision.APPROVE,
+        by=GateActor(ActorKind.PERSON, "76475334-b685", "jozef@niuu.world"),
+        note="ship it",
+    )
+
+    [(_, (_, note))] = harness.forge.notifications.items()
+    assert harness.forge.resolved == {note["id"]: "Approved by jozef@niuu.world."}
+    [answered] = await harness.runs.gates(harness.current)
+    assert answered["decided_by"] == "jozef@niuu.world"

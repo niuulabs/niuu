@@ -1389,7 +1389,7 @@ def create_sagas_router() -> APIRouter:
                 campaign,
                 node_id,
                 gate_decision,
-                by=GateActor(ActorKind.PERSON, principal.user_id),
+                by=GateActor(ActorKind.PERSON, principal.user_id, principal.email),
                 note=body.content.strip(),
             )
         except (GateRefusedError, RunStateError) as exc:

@@ -678,6 +678,21 @@ def test_approving_records_the_decision_on_the_run_that_owns_the_gate() -> None:
     assert kwargs == {"by": GateActor(ActorKind.PERSON, "owner-1"), "note": ""}
 
 
+def test_a_decision_names_the_person_by_the_email_they_signed_in_with() -> None:
+    saga = _planned_saga()
+    client = _run_client(_ticketless_run(saga), _adapter([_pending_gate()]))
+
+    response = client.post(
+        "/api/v1/ting/work/runs/a2a-run/gate-decision",
+        headers={**HEADERS, "x-auth-email": "jozef@niuu.world", "authorization": "Bearer token"},
+        json={"gateId": "gate-1", "activationId": "activation-1", "decision": "approve"},
+    )
+
+    assert response.status_code == 200
+    by = _engine(client).resolve_gate.await_args.kwargs["by"]
+    assert by == GateActor(ActorKind.PERSON, "owner-1", "jozef@niuu.world")
+
+
 def test_requesting_changes_needs_a_comment() -> None:
     saga = _saga(_snapshot())
     client = _waiting_client(saga)

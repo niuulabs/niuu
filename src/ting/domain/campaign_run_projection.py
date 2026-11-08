@@ -284,7 +284,7 @@ def _decided_by(state: RunState, step: WorkflowStep) -> str:
             continue
         by = event.payload.get("by")
         if isinstance(by, dict) and by.get("id"):
-            return str(by["id"])
+            return str(by.get("name") or by["id"])
     return ""
 
 

@@ -459,10 +459,22 @@ class Ending:
 
 @dataclass(frozen=True)
 class GateActor:
-    """Who resolved a gate."""
+    """Who resolved a gate.
+
+    ``name`` is how people read the actor (a person's email, as Forge's own gate copy
+    names deciders); empty when only the id is known.
+    """
 
     kind: ActorKind
     id: str
+    name: str = ""
+
+    def to_json(self) -> dict[str, str]:
+        return {
+            "kind": self.kind.value,
+            "id": self.id,
+            **({"name": self.name} if self.name else {}),
+        }
 
 
 def activation_id_for(run_id: UUID, node_id: str, member: str | None, attempt: int) -> UUID:

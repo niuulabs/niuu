@@ -521,7 +521,7 @@ async def _decide_shown_gate(
             campaign,
             str(shown["node_id"]),
             GateDecision(body.decision),
-            by=GateActor(ActorKind.PERSON, principal.user_id),
+            by=GateActor(ActorKind.PERSON, principal.user_id, principal.email),
             note=body.notes.strip(),
         )
     except (GateRefusedError, RunStateError) as exc:

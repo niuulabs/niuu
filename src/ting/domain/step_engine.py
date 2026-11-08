@@ -398,7 +398,7 @@ def plan_gate_resolution(
         note=note,
         closed_at=now,
     )
-    decided_by = {"kind": by.kind.value, "id": by.id}
+    decided_by = by.to_json()
     return ClosePlan(
         closed,
         EVENT_GATE_RESOLVED,
