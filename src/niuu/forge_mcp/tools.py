@@ -1703,6 +1703,42 @@ def _forge_error_text(tool: str, exc: ForgeApiError) -> str:
     return f"{tool} failed: Forge answered {exc.status}: {exc.detail}"
 
 
+#: HTTP statuses after which a send may nonetheless have been delivered: Forge could not be
+#: reached or timed out (no status, 408), or an upstream failed after the message was
+#: handed on (any 5xx, including the mesh's 504 for a recipient that did not answer).
+_UNCERTAIN_SEND_MIN_STATUS = 500
+_REQUEST_TIMEOUT_STATUS = 408
+
+
+def _unconfirmed_send(tool: str, request_id: str, exc: ForgeApiError) -> ToolResult | None:
+    """The tool result for a send that was not confirmed, or ``None`` when it plainly failed.
+
+    A 4xx answer (unknown session, no grant, refused) means the message was not delivered and
+    the plain error says so. Anything else may have reached the recipient before the failure,
+    so the caller is told that, and told to retry with the same ``request_id``: that id is the
+    message's identity, so the retry is delivered once. A new ``request_id`` is a new message.
+    """
+    uncertain = (
+        exc.status is None
+        or exc.status == _REQUEST_TIMEOUT_STATUS
+        or exc.status >= _UNCERTAIN_SEND_MIN_STATUS
+    )
+    if not uncertain:
+        return None
+    return ToolResult.error(
+        f"{tool}: delivery not confirmed, the message may have been delivered ({exc.detail}). "
+        f"To retry, call {tool} again with the same request_id {request_id!r}: the recipient "
+        "takes that one message once. A different request_id sends it a second time."
+    )
+
+
+def _pending_note(request_id: str) -> str:
+    return (
+        "Not confirmed delivered, and it may have been. To retry, send again with the same "
+        f"request_id {request_id!r}: the recipient takes that one message once."
+    )
+
+
 def _validation_text(tool: str, exc: ValidationError) -> str:
     problems = "; ".join(
         f"{'.'.join(str(loc) for loc in error['loc']) or 'arguments'}: {error['msg']}"
@@ -1996,14 +2032,20 @@ class ForgeMcpToolbox:
             if refused is not None:
                 return refused
             request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
-            sent = await self._host.send_mesh_message(
-                peer,
-                args.content,
-                expect_reply=True,
-                request_id=request_id,
-                in_reply_to="",
-                urgent=args.urgent,
-            )
+            try:
+                sent = await self._host.send_mesh_message(
+                    peer,
+                    args.content,
+                    expect_reply=True,
+                    request_id=request_id,
+                    in_reply_to="",
+                    urgent=args.urgent,
+                )
+            except ForgeApiError as exc:
+                unconfirmed = _unconfirmed_send("send_message", request_id, exc)
+                if unconfirmed is None:
+                    raise
+                return unconfirmed
             return self._ok(
                 {
                     "path": "mesh",
@@ -2021,22 +2063,29 @@ class ForgeMcpToolbox:
         if refused is not None:
             return refused
         request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
-        result = await self._client.send_message(
-            session_id,
-            content=args.content,
-            request_id=request_id,
-            instance_id=instance_id,
-            urgent=args.urgent,
-        )
-        return self._ok(
-            {
-                "path": "forge",
-                "session_id": session_id,
-                "request_id": request_id,
-                "status": result.get("status"),
-                "delivery": result.get("delivery"),
-            }
-        )
+        try:
+            result = await self._client.send_message(
+                session_id,
+                content=args.content,
+                request_id=request_id,
+                instance_id=instance_id,
+                urgent=args.urgent,
+            )
+        except ForgeApiError as exc:
+            unconfirmed = _unconfirmed_send("send_message", request_id, exc)
+            if unconfirmed is None:
+                raise
+            return unconfirmed
+        sent: dict[str, Any] = {
+            "path": "forge",
+            "session_id": session_id,
+            "request_id": request_id,
+            "status": result.get("status"),
+            "delivery": result.get("delivery"),
+        }
+        if result.get("status") == "pending":
+            sent["note"] = _pending_note(request_id)
+        return self._ok(sent)
 
     async def _mesh_peer(self, args: _SendMessageArgs) -> str | None:
         """The recipient's mesh peer id when it is in this session's peer table, else ``None``."""
@@ -2105,28 +2154,36 @@ class ForgeMcpToolbox:
                 if denied is not None:
                     return denied
                 peer = await self._host.mesh_peer_for(session_id=route.target, name=None)
-                if peer is not None:
-                    sent = await self._host.send_mesh_message(
-                        peer,
-                        args.content,
-                        expect_reply=True,
-                        request_id=request_id,
-                        in_reply_to=args.message_id,
-                    )
-                    answer = {"path": "mesh", "peer": peer, "status": sent["status"]}
-                else:
-                    result = await self._client.send_message(
-                        route.target,
-                        content=args.content,
-                        request_id=request_id,
-                        instance_id=None,
-                        in_reply_to=args.message_id,
-                    )
-                    answer = {
-                        "path": "forge",
-                        "status": result.get("status"),
-                        "delivery": result.get("delivery"),
-                    }
+                try:
+                    if peer is not None:
+                        sent = await self._host.send_mesh_message(
+                            peer,
+                            args.content,
+                            expect_reply=True,
+                            request_id=request_id,
+                            in_reply_to=args.message_id,
+                        )
+                        answer = {"path": "mesh", "peer": peer, "status": sent["status"]}
+                    else:
+                        result = await self._client.send_message(
+                            route.target,
+                            content=args.content,
+                            request_id=request_id,
+                            instance_id=None,
+                            in_reply_to=args.message_id,
+                        )
+                        answer = {
+                            "path": "forge",
+                            "status": result.get("status"),
+                            "delivery": result.get("delivery"),
+                        }
+                        if result.get("status") == "pending":
+                            answer["note"] = _pending_note(request_id)
+                except ForgeApiError as exc:
+                    unconfirmed = _unconfirmed_send("reply", request_id, exc)
+                    if unconfirmed is None:
+                        raise
+                    return unconfirmed
             case ReplyKind.ROOM:
                 denied = self._require_message_grant("reply")
                 if denied is not None:
@@ -2139,14 +2196,20 @@ class ForgeMcpToolbox:
                     route.target, room_id=original.room_id, content=args.content
                 )
             case ReplyKind.MESH:
-                answer = await self._host.send_mesh_message(
-                    route.target,
-                    args.content,
-                    expect_reply=False,
-                    request_id=request_id,
-                    in_reply_to=args.message_id,
-                    thread=original.thread,
-                )
+                try:
+                    answer = await self._host.send_mesh_message(
+                        route.target,
+                        args.content,
+                        expect_reply=False,
+                        request_id=request_id,
+                        in_reply_to=args.message_id,
+                        thread=original.thread,
+                    )
+                except ForgeApiError as exc:
+                    unconfirmed = _unconfirmed_send("reply", request_id, exc)
+                    if unconfirmed is None:
+                        raise
+                    return unconfirmed
         return self._ok(
             {
                 "message_id": args.message_id,
@@ -2170,13 +2233,19 @@ class ForgeMcpToolbox:
 
     async def _mesh_send(self, args: _MeshSendArgs) -> ToolResult:
         request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
-        answer = await self._host.send_mesh_message(
-            args.peer,
-            args.content,
-            expect_reply=args.expect_reply,
-            request_id=request_id,
-            in_reply_to="",
-        )
+        try:
+            answer = await self._host.send_mesh_message(
+                args.peer,
+                args.content,
+                expect_reply=args.expect_reply,
+                request_id=request_id,
+                in_reply_to="",
+            )
+        except ForgeApiError as exc:
+            unconfirmed = _unconfirmed_send("mesh_send", request_id, exc)
+            if unconfirmed is None:
+                raise
+            return unconfirmed
         return self._ok({"peer": args.peer, "request_id": request_id, **answer})
 
     async def _mesh_ask(self, args: _MeshAskArgs) -> ToolResult:
@@ -2260,13 +2329,19 @@ class ForgeMcpToolbox:
         if refused is not None:
             return refused
         request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
-        sent = await self._client.send_message(
-            session_id,
-            content=args.content,
-            request_id=request_id,
-            instance_id=instance_id,
-            urgent=args.urgent,
-        )
+        try:
+            sent = await self._client.send_message(
+                session_id,
+                content=args.content,
+                request_id=request_id,
+                instance_id=instance_id,
+                urgent=args.urgent,
+            )
+        except ForgeApiError as exc:
+            unconfirmed = _unconfirmed_send("ask", request_id, exc)
+            if unconfirmed is None:
+                raise
+            return unconfirmed
         message_id = derive_message_id(
             PeerAddress(kind=PeerKind.SESSION, id=str(self._host.session_id)),
             PeerAddress(kind=PeerKind.SESSION, id=session_id),
@@ -2313,7 +2388,10 @@ class ForgeMcpToolbox:
             confirmed = sent.get("status") == "accepted"
         except ForgeApiError as exc:
             if exc.status != _MESH_RPC_TIMEOUT_STATUS:
-                raise
+                unconfirmed = _unconfirmed_send("ask", request_id, exc)
+                if unconfirmed is None:
+                    raise
+                return unconfirmed
             # No answer from the recipient's Skuld: the message may have arrived. That is
             # delivery_unknown, and the wait goes on (an answer would settle it).
             confirmed = False

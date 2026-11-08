@@ -171,7 +171,9 @@ class TestSkuldMeshAdapterLifecycle:
         from niuu.mesh.participant import MeshParticipant
 
         discovery = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
-        participant = MeshParticipant(mesh=mock_mesh, discovery=discovery, peer_id="s1")
+        participant = MeshParticipant(
+            mesh=mock_mesh, discovery=discovery, peer_id=mesh_config.peer_id
+        )
         adapter = SkuldMeshAdapter(
             participant=participant,
             peer_inbox=inbox,
@@ -199,7 +201,9 @@ class TestSkuldMeshAdapterLifecycle:
         from niuu.mesh.participant import MeshParticipant
 
         discovery = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
-        participant = MeshParticipant(mesh=mock_mesh, discovery=discovery, peer_id="s1")
+        participant = MeshParticipant(
+            mesh=mock_mesh, discovery=discovery, peer_id=mesh_config.peer_id
+        )
         adapter = SkuldMeshAdapter(
             participant=participant,
             peer_inbox=inbox,
@@ -228,20 +232,19 @@ class TestSkuldMeshAdapterLifecycle:
         assert adapter.peer_id == "skuld-test-01"
 
     @pytest.mark.asyncio
-    async def test_peer_id_defaults_to_hostname(self, mock_mesh, inbox):
-        import socket
-
+    async def test_a_participant_without_an_id_is_fatal_not_the_hostname(self, mock_mesh, inbox):
         from niuu.mesh.participant import MeshParticipant
+        from skuld.mesh_adapter import MeshPeerIdError
 
-        cfg = MeshConfig(enabled=True, peer_id="")
         participant = MeshParticipant(mesh=mock_mesh, discovery=None, peer_id="")
-        adapter = SkuldMeshAdapter(
-            participant=participant,
-            peer_inbox=inbox,
-            config=cfg,
-            session_id="s1",
-        )
-        assert adapter.peer_id == socket.gethostname()
+
+        with pytest.raises(MeshPeerIdError, match="no peer id"):
+            SkuldMeshAdapter(
+                participant=participant,
+                peer_inbox=inbox,
+                config=MeshConfig(enabled=True, peer_id=""),
+                session_id="s1",
+            )
 
     @pytest.mark.asyncio
     async def test_publish_forwards_event_to_mesh(self, adapter, mock_mesh):

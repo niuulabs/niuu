@@ -17,7 +17,6 @@ NIU-634: wired to use niuu.mesh.MeshParticipant for lifecycle management.
 from __future__ import annotations
 
 import logging
-import socket
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -44,6 +43,7 @@ from skuld.peer_inbox import (
     PEER_STATE_RPC_TYPE,
     PeerAcceptance,
     PeerMessageRefusedError,
+    PeerMessageUnconfirmedError,
     SenderIdentity,
 )
 from sleipnir.ports.events import SleipnirSubscriber
@@ -66,6 +66,26 @@ class PeerMessageReceiver(Protocol):
         verified: SenderIdentity | None = None,
     ) -> PeerAcceptance:
         """Hold ``envelope`` for the next turn boundary; raises when it is refused."""
+
+
+class MeshPeerIdError(RuntimeError):
+    """The session's mesh peer id is missing, or two parts of the mesh disagree about it."""
+
+
+def resolve_mesh_peer_id(configured: str, session_id: str | None) -> str:
+    """The one mesh peer id of this session: ``mesh.peer_id``, else the session id.
+
+    A hostname is not an identity: two pods, VMs or slots can share one. A session without
+    either has no id to claim, so the mesh does not start.
+    """
+    if configured:
+        return configured
+    if session_id:
+        return str(session_id)
+    raise MeshPeerIdError(
+        "the mesh needs a peer id and this session has neither mesh.peer_id nor a session "
+        "id. Set mesh.peer_id, or run the broker as a Forge session"
+    )
 
 
 class SkuldMeshAdapter:
@@ -96,7 +116,21 @@ class SkuldMeshAdapter:
         self._consumes = tuple(
             config.consumes_event_types if consumes_event_types is None else consumes_event_types
         )
-        self._peer_id = participant.peer_id or config.peer_id or socket.gethostname()
+        # One peer id, set once by the composition root (`resolve_mesh_peer_id`) and used by
+        # the transport, the certificate, discovery and every reply route. A participant
+        # without one, or one that disagrees with the config, is a wiring error, never a
+        # second id made up here.
+        if not participant.peer_id:
+            raise MeshPeerIdError(
+                "the mesh participant has no peer id; the composition root must pass the "
+                "id from resolve_mesh_peer_id (mesh.peer_id, or the session id)"
+            )
+        if config.peer_id and config.peer_id != participant.peer_id:
+            raise MeshPeerIdError(
+                f"mesh.peer_id is {config.peer_id!r} but the mesh participant runs as "
+                f"{participant.peer_id!r}; one session has one mesh peer id"
+            )
+        self._peer_id = participant.peer_id
         self._running = False
         # Topics followed at runtime (``mesh_subscribe``), on top of the standing ones.
         self._followed: set[str] = set()
@@ -316,6 +350,8 @@ class SkuldMeshAdapter:
             acceptance = await self._peer_inbox.accept_peer_message(
                 envelope, channel=CHANNEL_MESH, **extra
             )
+        except PeerMessageUnconfirmedError as exc:
+            return {"status": "unconfirmed", "message_id": envelope.message_id, "error": str(exc)}
         except PeerMessageRefusedError as exc:
             return {"status": "refused", "message_id": envelope.message_id, "error": str(exc)}
         answer: dict[str, Any] = {"status": "accepted", "message_id": acceptance.message_id}

@@ -621,7 +621,8 @@ mesh:
   transport: nng
   # -- Container ports to expose for direct mesh peers (not a Skuld setting)
   peerPorts: []
-  # -- This peer's id on the mesh (mesh.peer_id). Empty uses the pod's host name.
+  # -- This peer's id on the mesh (mesh.peer_id). Empty uses the session id: one id for the
+  # transport, discovery, the signing certificate and reply routes.
   peerId: ""
   # -- Flock realm the peer announces in and discovers within (mesh.realm_id). Peers in
   # another realm are not seen.

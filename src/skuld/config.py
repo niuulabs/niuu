@@ -97,7 +97,14 @@ class MeshConfig(BaseModel):
     """
 
     enabled: bool = Field(default=False)
-    peer_id: str = Field(default="")
+    peer_id: str = Field(
+        default="",
+        description=(
+            "This session's one mesh peer id (transport, discovery, signing certificate and "
+            "reply routes). Empty uses the session id; a session with neither does not start "
+            "its mesh."
+        ),
+    )
     realm_id: str = Field(default="")
     capabilities: list[str] = Field(default_factory=lambda: list(_DEFAULT_MESH_CAPABILITIES))
     tools: list[str] = Field(default_factory=lambda: list(_DEFAULT_MESH_TOOLS))
