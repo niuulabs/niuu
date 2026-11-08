@@ -136,16 +136,14 @@ class ForgeMcpHost(ABC):
             status=501,
         )
 
-    def workflow_step_open(self) -> bool:
-        """Whether a workflow step is open here, so ``workflow_step_close`` applies."""
+    def workflow_step_host(self) -> bool:
+        """Whether this session hosts workflow steps, so ``workflow_step_close`` is listed."""
         return False
-
-    def workflow_step_unavailable_reason(self) -> str:
-        """Why ``workflow_step_close`` is not offered; shown when it is called anyway."""
-        return "this session is not hosting a workflow step."
 
     async def close_workflow_step(self, args: WorkflowStepCloseArgs) -> dict[str, Any]:
         """Check ``args`` against the open step, record the close and report it.
+
+        With no open step, or for another activation, it raises and records nothing.
 
         Raises :class:`niuu.domain.workflow_step.WorkflowStepCloseError` with the exact reason
         when the close is not allowed; nothing is recorded then. Only a session's own broker

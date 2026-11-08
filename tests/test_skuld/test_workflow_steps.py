@@ -270,7 +270,7 @@ class TestAcceptingAStep:
             await broker.accept_workflow_step(WorkflowStepRequest(**ACTIVATION))
         with pytest.raises(WorkflowStepNotHostedError):
             broker.get_workflow_step(ACTIVATION_ID)
-        assert broker.workflow_step_open() is False
+        assert (broker._open_workflow_step() is not None) is False
 
     async def test_a_broker_that_failed_to_start_cannot_take_a_step(self, tmp_path) -> None:
         broker = _step_broker(tmp_path)
@@ -514,7 +514,7 @@ class TestClosingAStep:
         }
         assert _step_frames(broker)[-1]["step"]["state"] == "closed"
         assert _step_frames(broker)[-1]["step"]["ending"]["verdict"] == "implemented"
-        assert broker.workflow_step_open() is False
+        assert (broker._open_workflow_step() is not None) is False
 
     async def test_the_report_has_the_contracts_shape(self, tmp_path) -> None:
         broker = _step_broker(tmp_path)
@@ -556,7 +556,7 @@ class TestClosingAStep:
         [
             (
                 {"activation_id": OTHER_ACTIVATION_ID},
-                f"The open step is {ACTIVATION_ID!r}",
+                f"is not the open step {ACTIVATION_ID}",
             ),
             ({"verdict": "shipped"}, "verdict 'shipped' is not valid for this step"),
             ({"verdict": None}, "ending 'verdict' needs `verdict`"),
@@ -583,7 +583,7 @@ class TestClosingAStep:
 
         assert len(_step_frames(broker)) == frames
         assert _step_reports(broker) == []
-        assert broker.workflow_step_open() is True
+        assert (broker._open_workflow_step() is not None) is True
 
     async def test_an_ending_the_step_does_not_allow_is_refused(self, tmp_path) -> None:
         broker = _step_broker(tmp_path)
@@ -643,7 +643,7 @@ class TestClosingAStep:
         )
 
         assert broker.get_workflow_step(ACTIVATION_ID).state == "waiting"
-        assert broker.workflow_step_open() is True
+        assert (broker._open_workflow_step() is not None) is True
         assert _step_reports(broker)[0]["ending"]["waiting_on"] == WAITING_ON
 
         await broker.close_workflow_step(WorkflowStepCloseArgs(**CLOSE))
@@ -657,7 +657,7 @@ class TestClosingAStep:
         await broker.close_workflow_step(WorkflowStepCloseArgs(**CLOSE))
         await _accept(broker, {**ACTIVATION, "activation_id": OTHER_ACTIVATION_ID})
 
-        with pytest.raises(WorkflowStepCloseError, match="The open step is"):
+        with pytest.raises(WorkflowStepCloseError, match="is not the open step"):
             await broker.close_workflow_step(WorkflowStepCloseArgs(**CLOSE))
 
     async def test_with_no_open_step_the_close_says_so(self, tmp_path) -> None:
@@ -832,7 +832,7 @@ class TestRestart:
         step = broker._open_workflow_step()
         assert step.activation_id == ACTIVATION_ID
         assert step.injected is True
-        assert broker.workflow_step_open() is True
+        assert (broker._open_workflow_step() is not None) is True
 
     async def test_a_closed_step_is_restored_closed_with_its_ending(self, tmp_path) -> None:
         broker = _step_broker(tmp_path)
@@ -898,42 +898,84 @@ class TestRestart:
             [SimpleNamespace(kind="room_member", payload={"type": "room_member"})]
         )
 
-        assert broker.workflow_step_open() is False
+        assert (broker._open_workflow_step() is not None) is False
 
     async def test_the_restore_runs_with_the_broker_runtime_state(self, tmp_path) -> None:
         broker = _step_broker(tmp_path)
 
         broker._restore_durable_runtime_state(self._frames(self._step()))
 
-        assert broker.workflow_step_open() is True
+        assert (broker._open_workflow_step() is not None) is True
 
 
 class TestForgeMcpHost:
-    async def test_the_host_exposes_the_open_step_and_closes_it(self, tmp_path) -> None:
+    async def test_the_host_closes_the_open_step_and_refuses_when_none_is_open(
+        self, tmp_path
+    ) -> None:
         broker = _step_broker(tmp_path)
         host = BrokerForgeMcpHost(broker, MagicMock())
-        assert host.workflow_step_open() is False
-        assert "no workflow step is open" in host.workflow_step_unavailable_reason()
+        assert host.workflow_step_host() is True
+        with pytest.raises(WorkflowStepCloseError, match="no workflow step is open"):
+            await host.close_workflow_step(WorkflowStepCloseArgs(**CLOSE))
         await _accept(broker)
-        assert host.workflow_step_open() is True
 
         answer = await host.close_workflow_step(WorkflowStepCloseArgs(**CLOSE))
 
         assert answer["state"] == "closed"
-        assert host.workflow_step_open() is False
+        assert broker._open_workflow_step() is None
 
-    async def test_the_tool_is_served_through_the_brokers_toolbox(self, tmp_path) -> None:
+    async def test_the_tool_is_listed_for_the_whole_session_of_a_step_host(self, tmp_path) -> None:
         broker = _step_broker(tmp_path)
         toolbox = broker._forge_mcp_toolbox()
-        assert "workflow_step_close" not in [t["name"] for t in toolbox.list_tools()]
+        assert "workflow_step_close" in [t["name"] for t in toolbox.list_tools()]
         await _accept(broker)
         assert "workflow_step_close" in [t["name"] for t in toolbox.list_tools()]
+
+        await broker.close_workflow_step(WorkflowStepCloseArgs(**CLOSE))
+
+        assert "workflow_step_close" in [t["name"] for t in toolbox.list_tools()]
+
+    async def test_a_call_with_no_open_step_is_refused_and_records_nothing(self, tmp_path) -> None:
+        broker = _step_broker(tmp_path)
+        toolbox = broker._forge_mcp_toolbox()
+
+        result = await toolbox.call("workflow_step_close", CLOSE)
+
+        assert result.is_error
+        assert "no workflow step is open on this session" in result.text
+        assert _step_frames(broker) == []
+        assert _step_reports(broker) == []
+
+    async def test_a_call_for_another_activation_is_refused_and_records_nothing(
+        self, tmp_path
+    ) -> None:
+        broker = _step_broker(tmp_path)
+        await _accept(broker)
+        frames = len(_step_frames(broker))
+        toolbox = broker._forge_mcp_toolbox()
+
+        result = await toolbox.call(
+            "workflow_step_close", {**CLOSE, "activation_id": OTHER_ACTIVATION_ID}
+        )
+
+        assert result.is_error
+        assert f"activation {OTHER_ACTIVATION_ID} is not the open step {ACTIVATION_ID}" in (
+            result.text
+        )
+        assert len(_step_frames(broker)) == frames
+        assert _step_reports(broker) == []
+        assert broker._open_workflow_step() is not None
+
+    async def test_a_bad_close_is_refused_and_a_good_one_goes_through(self, tmp_path) -> None:
+        broker = _step_broker(tmp_path)
+        toolbox = broker._forge_mcp_toolbox()
+        await _accept(broker)
 
         result = await toolbox.call("workflow_step_close", {**CLOSE, "verdict": "shipped"})
 
         assert result.is_error
         assert "verdict 'shipped' is not valid for this step" in result.text
-        assert broker.workflow_step_open() is True
+        assert broker._open_workflow_step() is not None
 
         result = await toolbox.call("workflow_step_close", CLOSE)
 

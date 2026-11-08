@@ -13,7 +13,6 @@ from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -25,9 +24,7 @@ from skuld.forge_mcp.stdio import (
     METHOD_NOT_FOUND,
     PARSE_ERROR,
     BrokerClient,
-    BrokerError,
     StdioServer,
-    build_parser,
     main,
     negotiate_protocol_version,
 )
@@ -397,104 +394,3 @@ class TestSubprocess:
             process.communicate(b"", timeout=30)
         assert SECRET.encode() not in cmdline
         assert str(token_file).encode() in cmdline
-
-
-class _ChangingToolsClient:
-    """A broker client whose tool list changes after its second look."""
-
-    def __init__(self) -> None:
-        self.looks = 0
-
-    def list_tools(self) -> list[dict[str, Any]]:
-        self.looks += 1
-        base = [{"name": "notify"}]
-        return base if self.looks <= 2 else [*base, {"name": "workflow_step_close"}]
-
-
-class _BlockingStdin(io.BytesIO):
-    """stdin that stays open until the test has seen what it waits for."""
-
-    def __init__(self, release: threading.Event) -> None:
-        super().__init__(b"")
-        self._release = release
-
-    def __iter__(self) -> Iterator[bytes]:
-        self._release.wait(timeout=5)
-        return iter(())
-
-
-class TestToolListChanges:
-    def test_a_polling_server_announces_that_it_can_tell_the_engine(self) -> None:
-        client = BrokerClient("http://127.0.0.1:1", "unused", timeout_s=1)
-        out = io.BytesIO()
-        server = StdioServer(
-            client,
-            stdin=io.BytesIO(json.dumps(INIT).encode() + b"\n"),
-            stdout=out,
-            max_concurrency=1,
-            tools_poll_interval_s=60,
-        )
-        server.serve()
-        [init] = [json.loads(line) for line in out.getvalue().splitlines()]
-        assert init["result"]["capabilities"] == {"tools": {"listChanged": True}}
-
-    def test_a_changed_tool_set_is_announced_once(self) -> None:
-        release = threading.Event()
-        out = io.BytesIO()
-        client = _ChangingToolsClient()
-        server = StdioServer(
-            client,  # type: ignore[arg-type]
-            stdin=_BlockingStdin(release),
-            stdout=out,
-            max_concurrency=1,
-            tools_poll_interval_s=0.01,
-        )
-        runner = threading.Thread(target=server.serve)
-        runner.start()
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and client.looks < 6:
-            time.sleep(0.01)
-        release.set()
-        runner.join(timeout=5)
-
-        frames = [json.loads(line) for line in out.getvalue().splitlines()]
-        assert frames == [{"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}]
-
-    def test_a_broker_that_cannot_list_is_reported_and_polling_continues(self, caplog) -> None:
-        release = threading.Event()
-        client = MagicMock()
-        client.list_tools.side_effect = BrokerError("broker unreachable")
-        server = StdioServer(
-            client,
-            stdin=_BlockingStdin(release),
-            stdout=io.BytesIO(),
-            max_concurrency=1,
-            tools_poll_interval_s=0.01,
-        )
-        runner = threading.Thread(target=server.serve)
-        runner.start()
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and client.list_tools.call_count < 3:
-            time.sleep(0.01)
-        release.set()
-        runner.join(timeout=5)
-
-        assert client.list_tools.call_count >= 3
-        assert "cannot poll the broker's tool list" in caplog.text
-
-    def test_the_cli_takes_the_poll_interval(self) -> None:
-        args = build_parser().parse_args(
-            [
-                "--broker-url",
-                "http://127.0.0.1:1",
-                "--token-file",
-                "t",
-                "--timeout",
-                "1",
-                "--max-concurrency",
-                "1",
-                "--tools-poll-interval",
-                "0.5",
-            ]
-        )
-        assert args.tools_poll_interval == 0.5

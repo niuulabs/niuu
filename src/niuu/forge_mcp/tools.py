@@ -1061,8 +1061,9 @@ FEED_NOTIFY_SPEC = ToolSpec(
 #: (transcript mode) can serve them.
 TRANSCRIPT_ONLY_TOOLS = frozenset({"report_artifact", "request_secret", WORKFLOW_STEP_CLOSE_TOOL})
 
-#: Tools offered only while the caller's host says they apply (``workflow_step_close`` while a
-#: workflow step is open on the session). Hidden from the list otherwise, refused if called.
+#: Tools listed only on a session whose host says it can use them (``workflow_step_close`` on a
+#: workflow step host). They are listed for the whole session, so every engine sees them whether
+#: or not it honours tool-list change notifications; the host refuses a call it cannot act on.
 HOST_GATED_TOOLS = frozenset({WORKFLOW_STEP_CLOSE_TOOL})
 
 
@@ -1230,12 +1231,13 @@ class ForgeMcpToolbox:
     def _offered(self, spec: ToolSpec) -> bool:
         if spec.name not in HOST_GATED_TOOLS:
             return True
-        return self._host.workflow_step_open()
+        return self._host.workflow_step_host()
 
     def list_tools(self) -> list[dict[str, Any]]:
         """Every tool, granted or not, so the model learns why a denied one fails.
 
-        A host-gated tool (``workflow_step_close``) is listed only while its host says it applies.
+        A host-gated tool (``workflow_step_close``) is listed on every session whose host says it
+        can use it, for the whole session.
         """
         return [spec.to_mcp() for spec in self._tool_specs if self._offered(spec)]
 
@@ -1245,7 +1247,7 @@ class ForgeMcpToolbox:
             raise UnknownToolError(name)
         if not self._offered(spec):
             return ToolResult.error(
-                f"{name} is not available now: {self._host.workflow_step_unavailable_reason()}"
+                f"{name} is not available: this session is not a workflow step host."
             )
         if spec.grant is not None and spec.grant not in self._grants:
             return ToolResult.error(

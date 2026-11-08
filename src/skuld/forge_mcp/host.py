@@ -221,11 +221,8 @@ class BrokerForgeMcpHost(ForgeMcpHost):
             "state": STATE_COMMITTED if stored else STATE_PENDING,
         }
 
-    def workflow_step_open(self) -> bool:
-        return self._broker.workflow_step_open()
-
-    def workflow_step_unavailable_reason(self) -> str:
-        return self._broker.workflow_step_unavailable_reason()
+    def workflow_step_host(self) -> bool:
+        return self._broker._settings.workflow_steps.enabled
 
     async def close_workflow_step(self, args: WorkflowStepCloseArgs) -> dict[str, Any]:
         """Close the session's open workflow step; a close the step does not allow raises."""

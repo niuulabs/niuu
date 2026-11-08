@@ -106,11 +106,6 @@ class ForgeSessionMixin:
                     str(cfg.broker_request_timeout_s),
                     "--max-concurrency",
                     str(cfg.stdio_max_concurrency),
-                    *(
-                        ["--tools-poll-interval", str(cfg.tool_list_poll_interval_s)]
-                        if self._settings.workflow_steps.enabled
-                        else []
-                    ),
                 ],
                 "startup_timeout_sec": cfg.startup_timeout_s,
                 "tool_timeout_sec": cfg.tool_timeout_s,

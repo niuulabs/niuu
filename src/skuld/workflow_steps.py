@@ -55,6 +55,12 @@ _BLOCKED_STATES = ("awaiting_input",)
 _TURN_END_STATES = ("idle", "stopped", "error")
 
 
+_NO_OPEN_STEP = (
+    "no workflow step is open on this session. A step is open from its activation until you "
+    "close it; you can only close the step you were given."
+)
+
+
 class WorkflowStepNotHostedError(Exception):
     """This session is not a workflow step host (``workflow_steps.enabled`` is off)."""
 
@@ -208,8 +214,8 @@ def ending_from_close(step: WorkflowStep, args: WorkflowStepCloseArgs) -> dict[s
     """
     if args.activation_id != step.activation_id:
         raise WorkflowStepCloseError(
-            f"activation_id {args.activation_id!r} is not the open step. The open step is "
-            f"{step.activation_id!r} ({step.node_label or step.node_id}); close that one."
+            f"activation {args.activation_id} is not the open step {step.activation_id} "
+            f"({step.node_label or step.node_id}); close that one."
         )
     if not step.is_open:
         closed_as = (step.ending or {}).get("kind", "closed")
@@ -325,10 +331,6 @@ class WorkflowStepMixin:
         self._workflow_step_tasks.discard(task)
         if not task.cancelled() and task.exception() is not None:
             logger.error("workflow step task %s failed", task.get_name(), exc_info=task.exception())
-
-    def workflow_step_open(self) -> bool:
-        """Whether a step is open here, so ``workflow_step_close`` is offered."""
-        return self._open_workflow_step() is not None
 
     def _open_workflow_step(self) -> WorkflowStep | None:
         if not self._settings.workflow_steps.enabled:
@@ -522,7 +524,7 @@ class WorkflowStepMixin:
         async with self._workflow_step_lock:
             step = self._open_workflow_step()
             if step is None:
-                raise WorkflowStepCloseError(self.workflow_step_unavailable_reason())
+                raise WorkflowStepCloseError(_NO_OPEN_STEP)
             ending = ending_from_close(step, args)
             previous = (step.state, step.ending, step.closed_at)
             try:
@@ -536,14 +538,6 @@ class WorkflowStepMixin:
             "ending": ending["kind"],
             "reported": True,
         }
-
-    def workflow_step_unavailable_reason(self) -> str:
-        if not self._settings.workflow_steps.enabled:
-            return "this session is not a workflow step host."
-        return (
-            "no workflow step is open on this session. A step is open from its activation until "
-            "you close it; you can only close the step you were given."
-        )
 
     # -- turn boundaries
 

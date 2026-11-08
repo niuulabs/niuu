@@ -145,17 +145,17 @@ class FakeClient(ForgeClient):
 class FakeHost(ForgeMcpHost):
     def __init__(self) -> None:
         self.drafts: list[NotificationDraft] = []
+        self.step_host = True
         self.step_open = False
         self.closes: list[WorkflowStepCloseArgs] = []
         self.close_error: WorkflowStepCloseError | None = None
 
-    def workflow_step_open(self) -> bool:
-        return self.step_open
-
-    def workflow_step_unavailable_reason(self) -> str:
-        return "no workflow step is open."
+    def workflow_step_host(self) -> bool:
+        return self.step_host
 
     async def close_workflow_step(self, args: WorkflowStepCloseArgs) -> dict[str, Any]:
+        if not self.step_open:
+            raise WorkflowStepCloseError("no workflow step is open on this session")
         if self.close_error is not None:
             raise self.close_error
         self.closes.append(args)
@@ -182,9 +182,7 @@ class TestToolList:
     def test_every_tool_is_listed_with_a_schema(self) -> None:
         toolbox, _, _ = _toolbox()
         tools = toolbox.list_tools()
-        assert [tool["name"] for tool in tools] == [
-            name for name in TOOL_NAMES if name != "workflow_step_close"
-        ]
+        assert [tool["name"] for tool in tools] == list(TOOL_NAMES)
         assert set(TOOL_NAMES) == {
             "environment",
             "notify",
@@ -709,19 +707,25 @@ CLOSE_ARGS = {
 
 
 class TestWorkflowStepClose:
-    def test_offered_only_while_the_host_has_an_open_step(self) -> None:
+    def test_listed_for_the_whole_session_of_a_step_host(self) -> None:
         toolbox, _, host = _toolbox()
-        assert "workflow_step_close" not in [tool["name"] for tool in toolbox.list_tools()]
+        host.step_open = False
+        assert "workflow_step_close" in [tool["name"] for tool in toolbox.list_tools()]
         host.step_open = True
         assert "workflow_step_close" in [tool["name"] for tool in toolbox.list_tools()]
 
-    async def test_environment_lists_the_tool_only_while_a_step_is_open(self) -> None:
+    def test_not_listed_on_a_session_that_is_not_a_step_host(self) -> None:
         toolbox, _, host = _toolbox()
-        closed = await toolbox.call("environment", {})
-        host.step_open = True
-        opened = await toolbox.call("environment", {})
-        assert "workflow_step_close" not in closed.structured["tools"]
-        assert "workflow_step_close" in opened.structured["tools"]
+        host.step_host = False
+        assert "workflow_step_close" not in [tool["name"] for tool in toolbox.list_tools()]
+
+    async def test_environment_lists_the_tool_on_a_step_host_only(self) -> None:
+        toolbox, _, host = _toolbox()
+        hosted = await toolbox.call("environment", {})
+        host.step_host = False
+        plain = await toolbox.call("environment", {})
+        assert "workflow_step_close" in hosted.structured["tools"]
+        assert "workflow_step_close" not in plain.structured["tools"]
 
     async def test_a_close_reaches_the_host_with_validated_arguments(self) -> None:
         toolbox, _, host = _toolbox()
@@ -731,11 +735,20 @@ class TestWorkflowStepClose:
         assert host.closes[0].verdict == "implemented"
         assert host.closes[0].evidence[0].ref == "abc123"
 
-    async def test_a_call_with_no_open_step_says_why(self) -> None:
+    async def test_a_call_with_no_open_step_is_a_tool_error_that_records_nothing(self) -> None:
         toolbox, _, host = _toolbox()
         result = await toolbox.call("workflow_step_close", CLOSE_ARGS)
         assert result.is_error
-        assert "no workflow step is open" in result.text
+        assert "no workflow step is open on this session" in result.text
+        assert not host.closes
+
+    async def test_a_call_on_a_session_that_is_not_a_step_host_is_refused(self) -> None:
+        toolbox, _, host = _toolbox()
+        host.step_host = False
+        host.step_open = True
+        result = await toolbox.call("workflow_step_close", CLOSE_ARGS)
+        assert result.is_error
+        assert "not a workflow step host" in result.text
         assert not host.closes
 
     async def test_the_hosts_rejection_reaches_the_agent_as_a_tool_error(self) -> None:

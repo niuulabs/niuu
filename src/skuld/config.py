@@ -703,16 +703,6 @@ class ForgeMcpConfig(BaseModel):
             "How long notify, and workflow_step_close, wait for Forge to acknowledge the log flush."
         ),
     )
-    tool_list_poll_interval_s: float = Field(
-        default=0.5,
-        gt=0,
-        description=(
-            "How often the forge MCP stdio server asks the broker for its tool list while "
-            "workflow_steps.enabled, to tell the engine (notifications/tools/list_changed) "
-            "when workflow_step_close appears or goes. Bounds how long after a step opens an "
-            "engine can still lack the tool; an ordinary session never polls."
-        ),
-    )
     forge_request_timeout_s: float = Field(
         default=20.0, gt=0, description="Timeout for one Forge REST call made by a tool."
     )
@@ -1002,7 +992,7 @@ class WorkflowStepsConfig(BaseModel):
     Forge sets ``enabled`` for a session a workflow run created as a step host. Skuld then
     serves ``POST /api/workflow/steps`` and ``GET /api/workflow/steps/{activation_id}``,
     holds the open step durably in the session's event log, injects its instructions at a
-    turn boundary and offers the ``workflow_step_close`` tool while a step is open. An
+    turn boundary and lists the ``workflow_step_close`` tool for the whole session. An
     ordinary session leaves it off and pays for none of it.
     """
 
