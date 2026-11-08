@@ -41,9 +41,27 @@ class ForgeClient(ABC):
 
     @abstractmethod
     async def send_message(
-        self, session_id: str, *, content: str, request_id: str, instance_id: str | None
+        self,
+        session_id: str,
+        *,
+        content: str,
+        request_id: str,
+        instance_id: str | None,
+        in_reply_to: str = "",
+        urgent: bool = False,
     ) -> dict[str, Any]:
-        """``POST /sessions/{id}/messages`` with a caller-stable ``request_id``."""
+        """``POST /sessions/{id}/messages`` with a caller-stable ``request_id``.
+
+        Forge stamps the sender from the caller's session credential. ``in_reply_to`` names
+        the message this one answers; ``urgent`` lets it interrupt a running turn."""
+
+    @abstractmethod
+    async def post_room_message(
+        self, host_session_id: str, *, room_id: str, content: str
+    ) -> dict[str, Any]:
+        """``POST /sessions/{host}/room/session-message``: speak in a room the host runs.
+
+        Forge stamps the calling session; the host accepts it only from a member of the room."""
 
     @abstractmethod
     async def get_message_delivery(
@@ -146,6 +164,21 @@ class ForgeMcpHost(ABC):
         raise ForgeApiError(
             "reply needs a Forge session's own MCP (only that session's broker holds the "
             "messages it received)",
+            status=501,
+        )
+
+    def mesh_host(self) -> bool:
+        """Whether this session has the mesh enabled, so ``mesh_send`` is listed."""
+        return False
+
+    async def send_mesh_message(
+        self, peer: str, content: str, *, expect_reply: bool, request_id: str, in_reply_to: str
+    ) -> dict[str, Any]:
+        """Send a peer message to a mesh peer, stamped with this session's identity.
+
+        Only a session's own broker has the mesh; other hosts refuse."""
+        raise ForgeApiError(
+            "mesh_send needs a Forge session's own MCP (the mesh belongs to that session's broker)",
             status=501,
         )
 

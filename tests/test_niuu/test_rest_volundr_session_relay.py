@@ -1,7 +1,7 @@
-"""LEX-1710: a session messages its parent or project on another Guild node.
+"""LEX-1710: a session messages any session its owner owns on another Guild node.
 
 The session's own node verifies its credential and relays the message without it,
-attesting the sender in the body; the owning node checks the relation and delivers.
+attesting the sender in the body; the owning node checks the owner and delivers an envelope.
 """
 
 from __future__ import annotations
@@ -91,9 +91,46 @@ class TestRelayToAnotherNode:
             "session_id": str(sender.id),
             "session_name": "voice",
             "instance_name": "Instance local",
-            "project_id": str(PROJECT),
-            "parent_session_id": None,
         }
+
+    @respx.mock
+    async def test_the_relay_carries_the_envelope_fields_and_never_a_forged_sender(self):
+        client, _, auth = await _guild()
+        respx.get(f"{REMOTE}/api/v1/forge/sessions/{TARGET}").mock(
+            return_value=Response(200, json={"id": TARGET})
+        )
+        relayed = respx.post(f"{REMOTE}/api/v1/forge/sessions/{TARGET}/messages/relayed").mock(
+            return_value=Response(200, json=DELIVERED)
+        )
+        peer = {
+            "speaker": {"kind": "person", "id": "p", "name": "P", "node": ""},
+            "room_id": "room-1",
+            "reply": None,
+        }
+
+        response = client.post(
+            f"/api/v1/forge/sessions/{TARGET}/messages",
+            json={
+                "content": "hi",
+                "request_id": "r1",
+                "in_reply_to": "m-9",
+                "urgent": True,
+                "peer": peer,
+            },
+            headers=auth,
+        )
+
+        assert response.status_code == 200
+        body = json.loads(relayed.calls.last.request.content)
+        assert (body["in_reply_to"], body["urgent"], body["peer"]) == ("m-9", True, peer)
+
+        forged = client.post(
+            f"/api/v1/forge/sessions/{TARGET}/messages",
+            json={"content": "hi", "sender": {"id": "x"}, "relayed_by": {"id": "y"}},
+            headers=auth,
+        )
+        assert forged.status_code == 400
+        assert "relayed_by, sender" in forged.json()["detail"]
 
     @respx.mock
     async def test_naming_the_owning_node_relays_there(self):

@@ -5138,14 +5138,10 @@ def create_volundr_router(
         )
         _ensure_remote_success(response)
         sender = response.json()
-        coordination = sender.get("coordination") or {}
-        parent = coordination.get("parent") or {}
         return {
             "session_id": principal.bound_session_id,
             "session_name": sender.get("name") or "",
             "instance_name": local.name,
-            "project_id": coordination.get("project_id"),
-            "parent_session_id": parent.get("session_id"),
         }
 
     def _relay_answer(response: httpx.Response, session_id: str) -> JSONResponse:
@@ -5169,15 +5165,28 @@ def create_volundr_router(
 
         This node verified the session credential; the message goes to the owning
         node's relay route without it, with the sender attested in the body. That node
-        allows it only for the sender's parent or project. A target no node of this
-        Guild knows goes to the Guild this host belongs to (``guild.url``).
+        builds the peer message envelope and allows it for any session the sender's
+        owner owns. A target no node of this Guild knows goes to the Guild this host
+        belongs to (``guild.url``).
         """
         relay_body = {
             "content": body.get("content", ""),
             "sender": await _sender_attestation(request, principal),
         }
-        if body.get("request_id"):
-            relay_body["request_id"] = body["request_id"]
+        # The envelope fields a caller may add. The sender is attested above, from this
+        # node's own session record, never taken from the body.
+        for key in ("request_id", "in_reply_to", "urgent", "peer"):
+            if key in body and body[key] not in (None, ""):
+                relay_body[key] = body[key]
+        forged = sorted(
+            {"sender", "recipient", "relayed_by", "sent_at", "message_id"} & body.keys()
+        )
+        if forged:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"{', '.join(forged)} is stamped from your session credential and cannot be "
+                "set in the request",
+            )
         path = f"/sessions/{session_id}/messages/relayed"
         # ``instance_id`` names the target's node here, not this one.
         local = await _local_session_instance(service, principal, request, honour_selection=False)
@@ -5260,7 +5269,7 @@ def create_volundr_router(
     ) -> Response:
         """A relayed session message from a member node: to the node owning the session.
 
-        The owning node checks the parent / project relation and delivers (LEX-1710).
+        The owning node checks the target belongs to the same owner and delivers (LEX-1710).
         """
         if _is_session_principal(principal):
             raise HTTPException(

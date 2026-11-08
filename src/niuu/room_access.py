@@ -25,6 +25,11 @@ import re
 # literal, so the four call sites can never drift from each other.
 ROOM_ROLE_HEADER = "x-niuu-room-role"
 
+# The verified Forge session that made a room call through Forge. Forge stamps it
+# from the caller's session credential after verifying it; the room host trusts it
+# only because every other source of the header is dropped before it gets there.
+ROOM_CALLER_SESSION_HEADER = "x-niuu-room-caller-session"
+
 ROOM_ROLE_RANK = {"viewer": 0, "approver": 1, "owner": 2}
 
 # Ordered allowlists: (HTTP method, path-regex matched against the request

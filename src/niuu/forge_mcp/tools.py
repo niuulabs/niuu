@@ -14,7 +14,14 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from niuu.domain.artifact_reports import ARTIFACT_REPORT_TYPES, ArtifactReport
 from niuu.domain.notifications import (
@@ -49,6 +56,7 @@ from niuu.domain.notifications import (
     QuestionAction,
     SpeakPriority,
 )
+from niuu.domain.peer_message import REPLY_TOOL, PeerMessageError, ReplyKind
 from niuu.domain.session_description import (
     DESCRIPTION_FIELDS,
     DESCRIPTION_MAX_CHARS,
@@ -181,8 +189,71 @@ class _TranscriptArgs(_SessionRef):
     turns: int | None = Field(default=None, ge=1)
 
 
-class _SendMessageArgs(_SessionRef):
+class _SendMessageArgs(_Args):
+    session_id: str | None = None
+    to: str | None = Field(default=None, min_length=1)
+    instance_id: str | None = Field(default=None, pattern=_INSTANCE_ID_PATTERN)
     content: str = Field(min_length=1)
+    request_id: str | None = Field(default=None, pattern=_REQUEST_ID_PATTERN)
+    urgent: bool = False
+
+    @field_validator("session_id")
+    @classmethod
+    def _session_uuid(cls, value: str | None) -> str | None:
+        return None if value is None else _uuid_text(value)
+
+    @field_validator("content")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("content must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def _one_address(self) -> _SendMessageArgs:
+        if (self.session_id is None) == (self.to is None):
+            raise ValueError(
+                "name the recipient with exactly one of `to` (its session name) or "
+                "`session_id` (its id)"
+            )
+        return self
+
+
+class _ReplyArgs(_Args):
+    message_id: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1)
+    request_id: str | None = Field(default=None, pattern=_REQUEST_ID_PATTERN)
+
+    @field_validator("content")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("content must not be blank")
+        return value
+
+
+class _RoomPostArgs(_Args):
+    room_id: str = Field(min_length=1, max_length=200)
+    host_session_id: str
+    content: str = Field(min_length=1)
+
+    @field_validator("host_session_id")
+    @classmethod
+    def _session_uuid(cls, value: str) -> str:
+        return _uuid_text(value)
+
+    @field_validator("content")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("content must not be blank")
+        return value
+
+
+class _MeshSendArgs(_Args):
+    peer: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1)
+    expect_reply: bool = False
     request_id: str | None = Field(default=None, pattern=_REQUEST_ID_PATTERN)
 
     @field_validator("content")
@@ -929,24 +1000,38 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="send_message",
         description=(
-            "Send a message into ANOTHER session as its next user input. It is delivered "
-            "as operator-authorized steering, not as a verified agent identity, so say who "
-            "you are and why in the content. Reuse the same request_id when retrying so it "
-            "is never delivered twice (one is generated and returned if you omit it); "
-            "check delivery with message_status. Who you can reach: any session of your "
-            "owner on your own Forge node; on another node of your Guild, only your parent "
-            "session and the sessions of your own project (your node relays it, and the "
-            "message starts with your session and node). Anything else is refused with the "
-            "reason; a cross-node delivery's status is in this call's answer."
+            "Send a message to ANOTHER session. The recipient reads it with a header the "
+            "platform wrote: your session name and id, your node, the time and how to answer, "
+            "so you cannot be mistaken for the user and nobody can forge who sent it. Name the "
+            "recipient with `to` (its session name, resolved among your owner's sessions on every "
+            "node of the Guild) or `session_id` (+ `instance_id`) from list_sessions. An unknown "
+            "name is an error that names it; a name two sessions carry is an error that lists "
+            "them (name, id, node): pick by id then. The message waits for the end of the "
+            "recipient's current turn unless you pass `urgent`. The recipient answers with its "
+            "`reply` tool, so ask a question when you want one and tell it what you need. Reuse "
+            "the same request_id when retrying so it is never delivered twice (one is generated "
+            "and returned if you omit it); check delivery with message_status. Who you can "
+            "reach: any session your owner owns, on any node of your Guild (a message to another "
+            "node is relayed by your node). Sessions of other owners are refused with the reason."
         ),
         input_schema=_object(
             {
+                "to": {
+                    "type": "string",
+                    "description": "The recipient's session name (the `name` from list_sessions).",
+                },
                 "session_id": _SESSION_ID_SCHEMA,
                 "instance_id": _INSTANCE_ID_SCHEMA,
                 "content": {"type": "string", "minLength": 1},
                 "request_id": _REQUEST_ID_SCHEMA,
+                "urgent": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Interrupt the recipient's running turn instead of waiting "
+                    "for its end. Use it only when waiting would do harm.",
+                },
             },
-            required=("session_id", "content"),
+            required=("content",),
         ),
         args_model=_SendMessageArgs,
         grant=ForgeMcpGrant.MESSAGE,
@@ -968,6 +1053,73 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         args_model=_MessageStatusArgs,
         grant=ForgeMcpGrant.MESSAGE,
+    ),
+    ToolSpec(
+        name=REPLY_TOOL,
+        description=(
+            "Answer a message another agent sent you. Give the `message_id` from the message's "
+            "header and your `content`. The answer goes to whoever sent that message, by the "
+            "route the sender gave: back to their session, to their mesh peer, or into the room "
+            "it was said in. Text you write in your own turn does not reach the sender. A "
+            "message sent as a notice takes no reply and this tool refuses it with the reason. "
+            "Retries with the same request_id are never delivered twice."
+        ),
+        input_schema=_object(
+            {
+                "message_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The message id in the header of the message you answer.",
+                },
+                "content": {"type": "string", "minLength": 1},
+                "request_id": _REQUEST_ID_SCHEMA,
+            },
+            required=("message_id", "content"),
+        ),
+        args_model=_ReplyArgs,
+    ),
+    ToolSpec(
+        name="room_post",
+        description=(
+            "Say something in a room you are a member of. The room belongs to a session, its "
+            "host: pass that session's id as `host_session_id` (the 'Relayed by' line of a message "
+            "from the room shows it) and the `room_id` (the 'Said in room' line). The host records "
+            "the message in the room as said by this session, with you named as the speaker, and "
+            "refuses it, with the reason, when you are not a member of that room."
+        ),
+        input_schema=_object(
+            {
+                "room_id": {"type": "string", "minLength": 1},
+                "host_session_id": {
+                    **_SESSION_ID_SCHEMA,
+                    "description": "The session that hosts the room.",
+                },
+                "content": {"type": "string", "minLength": 1},
+            },
+            required=("room_id", "host_session_id", "content"),
+        ),
+        args_model=_RoomPostArgs,
+        grant=ForgeMcpGrant.MESSAGE,
+    ),
+    ToolSpec(
+        name="mesh_send",
+        description=(
+            "Send a message to a peer on the mesh (a Valkyrie or another agent in your flock) "
+            "by its peer id. The platform stamps you as the sender: this session and your mesh "
+            "peer id. Set `expect_reply` when you want an answer: the peer is then told how to "
+            "reach you, and answers with its `reply` tool. Retries with the same request_id are "
+            "never delivered twice. Listed only on a session whose mesh is enabled."
+        ),
+        input_schema=_object(
+            {
+                "peer": {"type": "string", "minLength": 1, "description": "The mesh peer id."},
+                "content": {"type": "string", "minLength": 1},
+                "expect_reply": {"type": "boolean", "default": False},
+                "request_id": _REQUEST_ID_SCHEMA,
+            },
+            required=("peer", "content"),
+        ),
+        args_model=_MeshSendArgs,
     ),
     ToolSpec(
         name="create_session",
@@ -1057,14 +1209,34 @@ FEED_NOTIFY_SPEC = ToolSpec(
 
 
 #: Tools that write the caller's own durable transcript (or, for ``request_secret``, put a
-#: card in it and a file in the session's runtime), so only a session's own broker
-#: (transcript mode) can serve them.
-TRANSCRIPT_ONLY_TOOLS = frozenset({"report_artifact", "request_secret", WORKFLOW_STEP_CLOSE_TOOL})
+#: card in it and a file in the session's runtime), or that act through the caller's own broker
+#: (``reply`` reads its inbox, ``room_post`` speaks as the session, ``mesh_send`` uses its mesh),
+#: so only a session's own broker (transcript mode) can serve them.
+TRANSCRIPT_ONLY_TOOLS = frozenset(
+    {
+        "report_artifact",
+        "request_secret",
+        WORKFLOW_STEP_CLOSE_TOOL,
+        REPLY_TOOL,
+        "room_post",
+        "mesh_send",
+    }
+)
 
-#: Tools listed only on a session whose host says it can use them (``workflow_step_close`` on a
-#: workflow step host). They are listed for the whole session, so every engine sees them whether
+#: Tools listed only on a session whose host says it can use them, with the reason a call is
+#: refused otherwise. They are listed for the whole session, so every engine sees them whether
 #: or not it honours tool-list change notifications; the host refuses a call it cannot act on.
-HOST_GATED_TOOLS = frozenset({WORKFLOW_STEP_CLOSE_TOOL})
+_HOST_GATES: dict[str, tuple[Callable[[ForgeMcpHost], bool], str]] = {
+    WORKFLOW_STEP_CLOSE_TOOL: (
+        lambda host: host.workflow_step_host(),
+        "this session is not a workflow step host",
+    ),
+    "mesh_send": (
+        lambda host: host.mesh_host(),
+        "this session has no mesh (mesh.enabled is false)",
+    ),
+}
+HOST_GATED_TOOLS = frozenset(_HOST_GATES)
 
 
 def _specs_for(mode: ForgeMcpNotifyMode) -> tuple[ToolSpec, ...]:
@@ -1219,6 +1391,9 @@ class ForgeMcpToolbox:
             "session_transcript": self._session_transcript,
             "send_message": self._send_message,
             "message_status": self._message_status,
+            REPLY_TOOL: self._reply,
+            "room_post": self._room_post,
+            "mesh_send": self._mesh_send,
             "create_session": self._create_session,
             "start_session": self._start_session,
             "stop_session": self._stop_session,
@@ -1229,15 +1404,14 @@ class ForgeMcpToolbox:
         return self._grants
 
     def _offered(self, spec: ToolSpec) -> bool:
-        if spec.name not in HOST_GATED_TOOLS:
-            return True
-        return self._host.workflow_step_host()
+        gate = _HOST_GATES.get(spec.name)
+        return gate is None or gate[0](self._host)
 
     def list_tools(self) -> list[dict[str, Any]]:
         """Every tool, granted or not, so the model learns why a denied one fails.
 
-        A host-gated tool (``workflow_step_close``) is listed on every session whose host says it
-        can use it, for the whole session.
+        A host-gated tool (``workflow_step_close``, ``mesh_send``) is listed on every session whose
+        host says it can use it, for the whole session.
         """
         return [spec.to_mcp() for spec in self._tool_specs if self._offered(spec)]
 
@@ -1246,9 +1420,7 @@ class ForgeMcpToolbox:
         if spec is None:
             raise UnknownToolError(name)
         if not self._offered(spec):
-            return ToolResult.error(
-                f"{name} is not available: this session is not a workflow step host."
-            )
+            return ToolResult.error(f"{name} is not available: {_HOST_GATES[name][1]}.")
         if spec.grant is not None and spec.grant not in self._grants:
             return ToolResult.error(
                 f"The {name} tool needs the '{spec.grant.value}' grant, which this session "
@@ -1268,6 +1440,8 @@ class ForgeMcpToolbox:
             return ToolResult.error(f"{name} failed: {exc}")
         except WorkflowStepCloseError as exc:
             return ToolResult.error(f"{name} rejected: {exc}")
+        except PeerMessageError as exc:
+            return ToolResult.error(f"{name} failed: {exc}")
 
     def _ok(self, payload: dict[str, Any]) -> ToolResult:
         return ToolResult.of(payload, max_chars=self._limits.output_max_chars)
@@ -1455,24 +1629,150 @@ class ForgeMcpToolbox:
     # -- granted: message
 
     async def _send_message(self, args: _SendMessageArgs) -> ToolResult:
-        refused = self._refuse_self(args.session_id, "send_message")
+        target = await self._resolve_recipient(args)
+        if isinstance(target, ToolResult):
+            return target
+        session_id, instance_id = target
+        refused = self._refuse_self(session_id, "send_message")
         if refused is not None:
             return refused
         request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
         result = await self._client.send_message(
-            args.session_id,
+            session_id,
             content=args.content,
             request_id=request_id,
-            instance_id=args.instance_id,
+            instance_id=instance_id,
+            urgent=args.urgent,
         )
         return self._ok(
             {
-                "session_id": args.session_id,
+                "session_id": session_id,
                 "request_id": request_id,
                 "status": result.get("status"),
                 "delivery": result.get("delivery"),
             }
         )
+
+    async def _resolve_recipient(
+        self, args: _SendMessageArgs
+    ) -> tuple[str, str | None] | ToolResult:
+        """The session id (and node) a message is for: by id as given, or by name.
+
+        A name is looked up among the sessions the caller can see (its owner's, on every node
+        of the Guild). An unknown name and an ambiguous one are errors; nothing is guessed.
+        """
+        if args.session_id is not None:
+            return args.session_id, args.instance_id
+        sessions = await self._client.list_sessions({"scope": "guild"})
+        matches = [
+            session
+            for session in sessions
+            if isinstance(session, dict)
+            and session.get("name") == args.to
+            and (args.instance_id is None or session.get("instance_id") == args.instance_id)
+        ]
+        if not matches:
+            return ToolResult.error(
+                f"send_message: no session named {args.to!r} among your owner's sessions on "
+                "any node of your Guild. list_sessions shows the names; an archived session "
+                "is not listed."
+            )
+        if len(matches) > 1:
+            candidates = "; ".join(
+                f"{match.get('name')} (id {match.get('id')}, node "
+                f"{match.get('instance_name') or match.get('instance_id') or 'unknown'}, "
+                f"{match.get('status') or 'unknown status'})"
+                for match in matches
+            )
+            return ToolResult.error(
+                f"send_message: {len(matches)} sessions are named {args.to!r}: {candidates}. "
+                "Send again with the `session_id` (and `instance_id`) of the one you mean."
+            )
+        match = matches[0]
+        return str(match["id"]), match.get("instance_id") or None
+
+    def _require_message_grant(self, action: str) -> ToolResult | None:
+        if ForgeMcpGrant.MESSAGE in self._grants:
+            return None
+        return ToolResult.error(
+            f"{action} needs the '{ForgeMcpGrant.MESSAGE.value}' grant, which this session does "
+            "not have. An operator can add it to the session's launch spec or session create "
+            "request (forge_mcp.grants). Do not try to work around it; tell the user what you "
+            "wanted to do instead."
+        )
+
+    async def _reply(self, args: _ReplyArgs) -> ToolResult:
+        original = await self._host.received_peer_message(args.message_id)
+        route = original.reply
+        if route is None:
+            return ToolResult.error(
+                f"reply: message {args.message_id} from {original.sender.label()} takes no "
+                "reply: its sender sent it as a notice and gave no route to answer by."
+            )
+        request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
+        match route.kind:
+            case ReplyKind.SESSION:
+                denied = self._require_message_grant("reply")
+                if denied is not None:
+                    return denied
+                result = await self._client.send_message(
+                    route.target,
+                    content=args.content,
+                    request_id=request_id,
+                    instance_id=None,
+                    in_reply_to=args.message_id,
+                )
+                answer = {"status": result.get("status"), "delivery": result.get("delivery")}
+            case ReplyKind.ROOM:
+                denied = self._require_message_grant("reply")
+                if denied is not None:
+                    return denied
+                if not original.room_id:
+                    return ToolResult.error(
+                        f"reply: message {args.message_id} names a room route but no room"
+                    )
+                answer = await self._client.post_room_message(
+                    route.target, room_id=original.room_id, content=args.content
+                )
+            case ReplyKind.MESH:
+                answer = await self._host.send_mesh_message(
+                    route.target,
+                    args.content,
+                    expect_reply=False,
+                    request_id=request_id,
+                    in_reply_to=args.message_id,
+                )
+        return self._ok(
+            {
+                "message_id": args.message_id,
+                "replied_to": original.sender.label(),
+                "via": route.kind.value,
+                "request_id": request_id,
+                **answer,
+            }
+        )
+
+    async def _room_post(self, args: _RoomPostArgs) -> ToolResult:
+        refused = self._refuse_self(args.host_session_id, "room_post")
+        if refused is not None:
+            return refused
+        answer = await self._client.post_room_message(
+            args.host_session_id, room_id=args.room_id, content=args.content
+        )
+        return self._ok(
+            {"room_id": args.room_id, "host_session_id": args.host_session_id, **answer}
+        )
+
+    async def _mesh_send(self, args: _MeshSendArgs) -> ToolResult:
+        request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
+        answer = await self._host.send_mesh_message(
+            args.peer,
+            args.content,
+            expect_reply=args.expect_reply,
+            request_id=request_id,
+            in_reply_to="",
+        )
+        return self._ok({"peer": args.peer, "request_id": request_id, **answer})
 
     async def _message_status(self, args: _MessageStatusArgs) -> ToolResult:
         status = await self._client.get_message_delivery(
