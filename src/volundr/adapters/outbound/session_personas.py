@@ -22,10 +22,17 @@ class RegistrySessionPersonaProvider(SessionPersonaProvider):
             instruction = generate_outcome_instruction(OutcomeSchema(config.produces.schema))
             if instruction not in system_prompt:
                 system_prompt = f"{system_prompt}\n\n{instruction}".strip()
+        # The pinned source content a session plays. A persona saved before the neutral tool
+        # vocabulary existed is refused here (PersonaDocumentError names the tool and the
+        # valid set), at launch, instead of reaching a harness that would drop its limits.
+        document = await self._registry.get_current_portable_persona(owner_id, name)
+        if document is None:
+            raise ValueError(f"Persona {name!r} has no portable document to pin for a session")
         return SessionPersona(
             name=config.name,
             system_prompt=system_prompt,
             consumes_event_types=tuple(config.consumes.event_types),
             produces_event_type=config.produces.event_type,
             produces_schema=dict(config.produces.schema),
+            document=document.to_dict(),
         )

@@ -45,6 +45,69 @@ def test_evidence_gate_adapters_reach_runtime_configuration(chart):
     assert settings.workflow.evidence_artifacts.model_dump(exclude_defaults=True) == artifacts
 
 
+PERSONA_DOCUMENT = {
+    "schema_version": 1,
+    "id": "reviewer",
+    "revision": "content-0123456789abcdef",
+    "definition": {
+        "name": "reviewer",
+        "system_prompt_template": 'Review "carefully".\n\nNever <edit> & never push.',
+        "allowed_tools": ["file_read", "git_read"],
+        "permission_mode": "read_only",
+    },
+}
+
+
+def _rendered_skuld_config(chart: str, *extra: str) -> dict:
+    command = ["helm", "template", "persona-test", str(CHART_DIR.parent / chart), *extra]
+    return next(
+        yaml.safe_load(doc["data"]["config.yaml"])
+        for doc in yaml.safe_load_all(subprocess.check_output(command))
+        if doc and doc.get("kind") == "ConfigMap" and "config.yaml" in doc.get("data", {})
+    )
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+@pytest.mark.parametrize("chart", ["skuld", "skuld-planner"])
+def test_pinned_persona_reaches_runtime_configuration_beside_the_request_prompt(chart):
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        chart,
+        "--set-json",
+        "session.persona=" + json.dumps(PERSONA_DOCUMENT),
+        "--set",
+        "session.systemPrompt=Focus on the migrations.",
+    )
+
+    assert config["session"]["persona"] == PERSONA_DOCUMENT
+    assert config["session"]["system_prompt"] == "Focus on the migrations."
+    settings = SkuldSettings(**config)
+    assert settings.session.persona == PERSONA_DOCUMENT
+    assert settings.session.system_prompt == "Focus on the migrations."
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+@pytest.mark.parametrize("chart", ["skuld", "skuld-planner"])
+def test_no_persona_key_is_rendered_without_a_persona(chart):
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(chart)
+
+    assert "persona" not in config["session"]
+    assert SkuldSettings(**config).session.persona is None
+
+
+def test_persona_document_survives_the_environment_a_local_broker_is_started_with(monkeypatch):
+    from skuld.config import SkuldSettings
+
+    monkeypatch.setenv(
+        "SKULD__SESSION__PERSONA", json.dumps(PERSONA_DOCUMENT, separators=(",", ":"))
+    )
+
+    assert SkuldSettings().session.persona == PERSONA_DOCUMENT
+
+
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 @pytest.mark.parametrize("chart", ["skuld", "skuld-planner"])
 @pytest.mark.parametrize("configured", [False, True])

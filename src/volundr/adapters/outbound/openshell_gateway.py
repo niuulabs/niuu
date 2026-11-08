@@ -1992,6 +1992,10 @@ class OpenShellGatewayPodManager(
                 )
                 if session_values.get(key)
             ]
+            if persona := session_values.get("persona"):
+                prompts.append(
+                    "SKULD__SESSION__PERSONA=" + json.dumps(persona, separators=(",", ":"))
+                )
             command = (
                 ["env", *prompts, *self._sandbox_command] if prompts else self._sandbox_command
             )

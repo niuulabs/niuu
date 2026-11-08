@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -363,6 +364,8 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
             initial_prompt = session_vals.get("initialPrompt", "")
             if system_prompt:
                 env["SKULD__SESSION__SYSTEM_PROMPT"] = system_prompt
+            if persona := session_vals.get("persona"):
+                env["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
             if initial_prompt:
                 env["SKULD__SESSION__INITIAL_PROMPT"] = initial_prompt
         del workspace
