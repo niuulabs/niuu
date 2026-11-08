@@ -9,6 +9,10 @@ the harness at a turn boundary, and answers the ``reply`` tool's lookup of it.
 * **Delivery** is at the turn boundary, the same gate a workflow step's instructions wait for.
   Messages that wait go in as one turn, oldest first. A pending workflow step goes in before
   them. ``urgent`` skips the wait and takes the path a person's message takes.
+* **An ask consumes its answer.** While the ``ask`` tool waits for the reply to a message it
+  sent, that reply is held back from the turn boundary; the tool takes it (durably, so a restart
+  does not hand it over either) and returns it as its result. A reply nobody took, because the
+  call ended first, is delivered at the next boundary as usual.
 * **A restart** rebuilds the inbox from the log. A message already handed to the harness is
   never handed over again (``injected``), and a message delivered twice is handled once.
 
@@ -23,8 +27,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Coroutine
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Coroutine
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -83,6 +88,14 @@ class PeerInboxEntry:
     accepted_at: str
     #: The message has been handed to the harness (so a restart must not hand it over again).
     injected: bool = False
+    #: The ``ask`` call that took this message as its answer (``ask:<message id>``); empty when
+    #: nothing did. A consumed message is never handed to the harness.
+    consumed_by: str = ""
+
+    @property
+    def pending(self) -> bool:
+        """Still to be handed to the harness: neither delivered nor taken by an ask."""
+        return not self.injected and not self.consumed_by
 
     def frame(self) -> dict[str, Any]:
         """The durable broker frame for the entry's current state."""
@@ -91,6 +104,7 @@ class PeerInboxEntry:
             "envelope": self.envelope.to_wire(),
             "accepted_at": self.accepted_at,
             "injected": self.injected,
+            "consumed_by": self.consumed_by,
         }
 
     @classmethod
@@ -101,10 +115,14 @@ class PeerInboxEntry:
             raise PeerMessageError(
                 "a durable peer message frame needs 'accepted_at' (text) and 'injected' (bool)"
             )
+        consumed_by = payload.get("consumed_by", "")  # absent in frames written before asks
+        if not isinstance(consumed_by, str):
+            raise PeerMessageError("a durable peer message frame's 'consumed_by' must be text")
         return cls(
             envelope=PeerMessage.from_wire(payload.get("envelope")),
             accepted_at=accepted_at,
             injected=injected,
+            consumed_by=consumed_by,
         )
 
 
@@ -132,6 +150,27 @@ def render_peer_turn(entries: list[PeerInboxEntry]) -> str:
     return f"{header}\n\n{body}"
 
 
+@dataclass
+class AnswerWait:
+    """An ``ask`` call waiting for ``from_id``'s reply to one message it sent."""
+
+    message_id: str
+    from_id: str
+    arrived: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def matches(self, envelope: PeerMessage) -> bool:
+        return envelope.in_reply_to == self.message_id and envelope.sender.id == self.from_id
+
+
+@dataclass(frozen=True)
+class TakenAnswer:
+    """What an ask took from the inbox. ``already_delivered`` means the harness had been handed
+    the answer as a message before the ask could take it (a late answer, then a repeated ask)."""
+
+    envelope: PeerMessage
+    already_delivered: bool
+
+
 class PeerInboxMixin:
     """Broker behavior for receiving messages from other agents."""
 
@@ -140,8 +179,10 @@ class PeerInboxMixin:
     _boundary_injection_lock: asyncio.Lock
     _peer_inbox_tasks: set[asyncio.Task[None]]
     _peer_pair_counts: dict[tuple[str, str], dict[str, int]]
+    _peer_answer_waits: dict[str, AnswerWait]
 
     def _init_peer_inbox(self) -> None:
+        self._peer_answer_waits = {}
         self._peer_inbox = {}
         self._peer_inbox_lock = asyncio.Lock()
         self._boundary_injection_lock = asyncio.Lock()
@@ -191,6 +232,9 @@ class PeerInboxMixin:
                 self._count_peer_message(envelope, via, OUTCOME_REFUSED)
                 raise
             self._peer_inbox[envelope.message_id] = entry
+            for wait in self._peer_answer_waits.values():
+                if wait.matches(envelope):
+                    wait.arrived.set()
         self._count_peer_message(envelope, via, OUTCOME_ACCEPTED)
         self._spawn_boundary_injection(f"peer-inbox-accept-{envelope.message_id}")
         return PeerAcceptance(envelope.message_id, duplicate=False)
@@ -289,8 +333,14 @@ class PeerInboxMixin:
         if not task.cancelled() and task.exception() is not None:
             logger.error("peer inbox task %s failed", task.get_name(), exc_info=task.exception())
 
+    def _held_for_ask(self, entry: PeerInboxEntry) -> bool:
+        """An ask is waiting for this very message, so the harness must not be handed it."""
+        return any(wait.matches(entry.envelope) for wait in self._peer_answer_waits.values())
+
     def _peer_messages_waiting(self) -> bool:
-        return any(not entry.injected for entry in self._peer_inbox.values())
+        return any(
+            entry.pending and not self._held_for_ask(entry) for entry in self._peer_inbox.values()
+        )
 
     async def _inject_at_turn_boundary(self) -> None:
         """Hand the harness what is waiting, if it is between turns.
@@ -312,7 +362,11 @@ class PeerInboxMixin:
     async def _maybe_inject_peer_messages(self) -> bool:
         """Hand every waiting message to the harness as one turn. True when it did."""
         async with self._peer_inbox_lock:
-            waiting = [entry for entry in self._peer_inbox.values() if not entry.injected]
+            waiting = [
+                entry
+                for entry in self._peer_inbox.values()
+                if entry.pending and not self._held_for_ask(entry)
+            ]
             if not waiting:
                 return False
             if self._transport is None or self._activity_state in ("stopped", "error"):
@@ -425,6 +479,59 @@ class PeerInboxMixin:
             )
         return entry.envelope
 
+    # -- answers an ask waits for
+
+    @asynccontextmanager
+    async def awaiting_peer_answer(
+        self, message_id: str, from_id: str
+    ) -> AsyncIterator[AnswerWait]:
+        """Hold ``from_id``'s reply to ``message_id`` back from the harness while the caller
+        waits for it. Whatever the caller did not take is handed to the harness at the next
+        boundary once the wait ends, whether it ended by answer, deadline, error or cancel."""
+        wait = AnswerWait(message_id=message_id, from_id=from_id)
+        self._peer_answer_waits[message_id] = wait
+        try:
+            yield wait
+        finally:
+            self._peer_answer_waits.pop(message_id, None)
+            self._spawn_boundary_injection(f"peer-inbox-ask-ended-{message_id}")
+
+    async def take_peer_answer(self, wait: AnswerWait) -> TakenAnswer | None:
+        """The reply the wait is for, if it is in the inbox, taken durably; ``None`` if not yet.
+
+        Taking records the message as consumed in the session log before returning it, so a
+        restart cannot hand it to the harness. A log that does not store it raises
+        (:class:`PeerMessageRefusedError`) and leaves the message in the inbox for normal
+        delivery. A reply the same ask took earlier (its result was lost) is returned again.
+        """
+        consumer = f"ask:{wait.message_id}"
+        async with self._peer_inbox_lock:
+            entry = next(
+                (
+                    candidate
+                    for candidate in self._peer_inbox.values()
+                    if wait.matches(candidate.envelope) and candidate.consumed_by in ("", consumer)
+                ),
+                None,
+            )
+            if entry is None:
+                return None
+            if entry.injected:
+                return TakenAnswer(entry.envelope, already_delivered=True)
+            if entry.consumed_by:
+                return TakenAnswer(entry.envelope, already_delivered=False)
+            entry.consumed_by = consumer
+            try:
+                await self._record_peer_entries([entry])
+            except PeerMessageError:
+                entry.consumed_by = ""
+                raise
+            return TakenAnswer(entry.envelope, already_delivered=False)
+
+    def pending_peer_message_ids(self) -> list[str]:
+        """Messages accepted and not yet handed to the harness (or taken by an ask)."""
+        return [entry.envelope.message_id for entry in self._peer_inbox.values() if entry.pending]
+
     # -- counting
 
     def _pair_counts(self, envelope: PeerMessage) -> dict[str, int]:
@@ -454,4 +561,4 @@ class PeerInboxMixin:
             {"sender": sender, "recipient": recipient, **counts}
             for (sender, recipient), counts in sorted(self._peer_pair_counts.items())
         ]
-        return {"pairs": pairs}
+        return {"pairs": pairs, "waiting": self.pending_peer_message_ids()}

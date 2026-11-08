@@ -1108,3 +1108,26 @@ def test_secret_request_knobs_reach_runtime_configuration():
     too_long = _skuld_config("--set", "secretRequests.waitMaxS=300")
     with pytest.raises(ValidationError, match="secret_requests.wait_max_s"):
         SkuldSettings(**too_long)
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_ask_knobs_reach_runtime_configuration():
+    from pydantic import ValidationError
+
+    from skuld.config import SkuldSettings
+
+    defaults = _skuld_config()
+    assert defaults["ask"] == {"poll_interval_s": 2, "wait_max_s": 50}
+    assert SkuldSettings(**defaults).ask.wait_max_s == 50
+
+    tuned = _skuld_config(
+        "--set",
+        "ask.waitMaxS=300,ask.pollIntervalS=5",
+        "--set",
+        "forgeMcp.brokerRequestTimeoutS=400,forgeMcp.toolTimeoutS=500",
+    )
+    settings = SkuldSettings(**tuned)
+    assert (settings.ask.poll_interval_s, settings.ask.wait_max_s) == (5, 300)
+
+    with pytest.raises(ValidationError, match="ask.wait_max_s"):
+        SkuldSettings(**_skuld_config("--set", "ask.waitMaxS=300"))

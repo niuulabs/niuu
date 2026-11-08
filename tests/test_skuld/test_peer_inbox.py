@@ -179,6 +179,7 @@ class TestAccepting:
             "envelope": envelope.to_wire(),
             "accepted_at": frames[0]["accepted_at"],
             "injected": False,
+            "consumed_by": "",
         }
         assert frames[-1]["injected"] is True
         assert _sent_texts(broker) == [render_for_harness(envelope)]

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from pydantic import (
@@ -23,6 +23,7 @@ from pydantic import (
     model_validator,
 )
 
+from niuu.cap_telemetry import record_cap_hit
 from niuu.domain.artifact_reports import ARTIFACT_REPORT_TYPES, ArtifactReport
 from niuu.domain.notifications import (
     AGENT_KINDS,
@@ -56,7 +57,14 @@ from niuu.domain.notifications import (
     QuestionAction,
     SpeakPriority,
 )
-from niuu.domain.peer_message import REPLY_TOOL, PeerMessageError, ReplyKind
+from niuu.domain.peer_envelope import derive_message_id
+from niuu.domain.peer_message import (
+    REPLY_TOOL,
+    PeerAddress,
+    PeerKind,
+    PeerMessageError,
+    ReplyKind,
+)
 from niuu.domain.session_description import (
     DESCRIPTION_FIELDS,
     DESCRIPTION_MAX_CHARS,
@@ -79,6 +87,7 @@ from niuu.forge_mcp.guidance import (
 from niuu.forge_mcp.models import (
     SECRET_NAME_MAX_CHARS,
     SECRET_NAME_PATTERN,
+    AskOutcome,
     ForgeApiError,
     ForgeMcpGrant,
     ForgeMcpLimits,
@@ -217,6 +226,10 @@ class _SendMessageArgs(_Args):
                 "`session_id` (its id)"
             )
         return self
+
+
+class _AskArgs(_SendMessageArgs):
+    deadline_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
 class _ReplyArgs(_Args):
@@ -1037,6 +1050,56 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         grant=ForgeMcpGrant.MESSAGE,
     ),
     ToolSpec(
+        name="ask",
+        description=(
+            "Send a message to ANOTHER session and wait for its answer, instead of polling or "
+            "saying you will wait. Addressing, the sender header and who you can reach are those "
+            "of send_message. The recipient answers with its `reply` tool; the answer is the "
+            "result of this call and is consumed by it, so it is not also delivered to you as "
+            "a message later. Every other way the call can end is named in `outcome`, with "
+            "isError set, and never an empty answer: `blocked` (the recipient waits on an "
+            "approval or a question to a person), `gone` (it stopped, failed or was deleted), "
+            "`not_started` (delivered, but it took no turn that read the message), "
+            "`delivery_unknown` (Forge did not confirm the send; it may or may not have "
+            "arrived) and `deadline` (it had not answered in time). The message stays sent in "
+            "every case, and an answer that comes later is delivered to you at your next turn "
+            "boundary as usual. To keep waiting, call ask again with the SAME request_id (it "
+            "is returned in every result): the message is not sent twice. `deadline_s` is how "
+            "long to wait; it defaults to, and may not exceed, ask.wait_max_s (the longest an "
+            "MCP tool call may run here), and a larger one is refused with that named."
+        ),
+        input_schema=_object(
+            {
+                "to": {
+                    "type": "string",
+                    "description": "The recipient's session name (the `name` from list_sessions).",
+                },
+                "session_id": _SESSION_ID_SCHEMA,
+                "instance_id": _INSTANCE_ID_SCHEMA,
+                "content": {"type": "string", "minLength": 1},
+                "request_id": {
+                    **_REQUEST_ID_SCHEMA,
+                    "description": "Reuse it to keep waiting for the same question.",
+                },
+                "urgent": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Interrupt the recipient's running turn instead of waiting "
+                    "for its end. Use it only when waiting would do harm.",
+                },
+                "deadline_s": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Seconds to wait for the answer (default and ceiling: "
+                    "ask.wait_max_s).",
+                },
+            },
+            required=("content",),
+        ),
+        args_model=_AskArgs,
+        grant=ForgeMcpGrant.MESSAGE,
+    ),
+    ToolSpec(
         name="message_status",
         description=(
             "Delivery status of a message sent with send_message (accepted, pending, "
@@ -1216,6 +1279,7 @@ TRANSCRIPT_ONLY_TOOLS = frozenset(
     {
         "report_artifact",
         "request_secret",
+        "ask",
         WORKFLOW_STEP_CLOSE_TOOL,
         REPLY_TOOL,
         "room_post",
@@ -1390,6 +1454,7 @@ class ForgeMcpToolbox:
             "get_session": self._get_session,
             "session_transcript": self._session_transcript,
             "send_message": self._send_message,
+            "ask": self._ask,
             "message_status": self._message_status,
             REPLY_TOOL: self._reply,
             "room_post": self._room_post,
@@ -1773,6 +1838,55 @@ class ForgeMcpToolbox:
             in_reply_to="",
         )
         return self._ok({"peer": args.peer, "request_id": request_id, **answer})
+
+    async def _ask(self, args: _AskArgs) -> ToolResult:
+        ceiling_s = self._host.ask_wait_max_s()
+        deadline_s = ceiling_s if args.deadline_s is None else args.deadline_s
+        if deadline_s > ceiling_s:
+            message = (
+                f"ask: deadline_s={deadline_s:g} is above ask.wait_max_s={ceiling_s:g}, "
+                "the longest one MCP tool call may run here (it must stay shorter than the "
+                "engine's tool timeout, or the engine would end the call before it could answer). "
+                "Nothing was "
+                f"sent. Pass deadline_s of at most {ceiling_s:g}; to keep waiting for a slow "
+                "recipient, call ask again with the same request_id."
+            )
+            record_cap_hit("ask.wait_max_s", message)
+            return ToolResult.error(message)
+        target = await self._resolve_recipient(args)
+        if isinstance(target, ToolResult):
+            return target
+        session_id, instance_id = target
+        refused = self._refuse_self(session_id, "ask")
+        if refused is not None:
+            return refused
+        request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
+        sent = await self._client.send_message(
+            session_id,
+            content=args.content,
+            request_id=request_id,
+            instance_id=instance_id,
+            urgent=args.urgent,
+        )
+        message_id = derive_message_id(
+            PeerAddress(kind=PeerKind.SESSION, id=str(self._host.session_id)),
+            PeerAddress(kind=PeerKind.SESSION, id=session_id),
+            request_id,
+        )
+        ended = await self._host.ask_for_answer(
+            recipient_id=session_id,
+            instance_id=instance_id,
+            message_id=message_id,
+            request_id=request_id,
+            delivery_confirmed=sent.get("status") == "delivered",
+            deadline_s=deadline_s,
+        )
+        result = self._ok(
+            {"session_id": session_id, "request_id": request_id, "message_id": message_id, **ended}
+        )
+        if ended.get("outcome") == AskOutcome.ANSWERED:
+            return result
+        return replace(result, is_error=True)
 
     async def _message_status(self, args: _MessageStatusArgs) -> ToolResult:
         status = await self._client.get_message_delivery(

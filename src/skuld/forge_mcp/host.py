@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import socket
 import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from niuu.build_identity import build_identity
+from niuu.cap_telemetry import record_cap_hit
 from niuu.domain.artifact_reports import ArtifactReport, build_report_turn
 from niuu.domain.notifications import NotificationDraft, build_notification_turn
 from niuu.domain.peer_envelope import derive_message_id
@@ -29,12 +31,15 @@ from niuu.forge_mcp.credentials import is_forge_session_claims, token_scopes, un
 from niuu.forge_mcp.models import (
     SECRET_NAME_MAX_CHARS,
     SECRET_NAME_PATTERN,
+    AskOutcome,
     ForgeApiError,
     SecretRequestError,
 )
 from niuu.forge_mcp.ports import ForgeClient, ForgeMcpHost
+from niuu.observability import get_observability
 from niuu.ports.mesh import PeerNotFoundError
 from skuld.conversation_models import ConversationTurn
+from skuld.peer_inbox import AnswerWait, TakenAnswer
 from skuld.session_runtime import RuntimeDirError
 
 if TYPE_CHECKING:
@@ -52,6 +57,12 @@ SECRET_FULFILLED = "fulfilled"
 SECRET_DELIVERED = "delivered"
 SECRET_DECLINED = "declined"
 SECRET_CANCELLED = "cancelled"
+#: The OTel counter every ``ask`` increments once, by the outcome it ended with.
+ASK_OUTCOMES_COUNTER = "skuld.ask.outcomes"
+#: Lifecycle statuses after which a session will never answer.
+_GONE_STATUSES = frozenset({"stopped", "failed", "archived"})
+_ACTIVITY_AWAITING_INPUT = "awaiting_input"
+_ACTIVITY_STOPPED = "stopped"
 STATE_COMMITTED = "committed"
 STATE_PENDING = "pending"
 
@@ -98,6 +109,23 @@ def engine_for_adapter(adapter_path: str) -> str:
 
 def new_notification_turn_id() -> str:
     return f"{NOTIFICATION_TURN_PREFIX}{uuid.uuid4().hex}"
+
+
+@dataclass(frozen=True)
+class _Ended:
+    """A wait that Forge's view of the recipient settles: the outcome and why."""
+
+    outcome: AskOutcome
+    detail: str
+
+
+@dataclass(frozen=True)
+class _RecipientState:
+    """Forge's view of an ask's recipient: ``ended`` when it can never answer for now, else the
+    messages its Skuld reports as accepted and not yet read."""
+
+    ended: _Ended | None
+    unread: frozenset[str] = frozenset()
 
 
 class BrokerForgeMcpHost(ForgeMcpHost):
@@ -233,6 +261,165 @@ class BrokerForgeMcpHost(ForgeMcpHost):
     async def received_peer_message(self, message_id: str) -> PeerMessage:
         """A message this session's inbox holds, by id; an unknown id raises PeerMessageError."""
         return self._broker.received_peer_message(message_id)
+
+    def ask_wait_max_s(self) -> float:
+        return self._broker._settings.ask.wait_max_s
+
+    async def ask_for_answer(
+        self,
+        *,
+        recipient_id: str,
+        instance_id: str | None,
+        message_id: str,
+        request_id: str,
+        delivery_confirmed: bool,
+        deadline_s: float,
+    ) -> dict[str, Any]:
+        """Wait for the recipient's reply to ``message_id`` and say how the wait ended.
+
+        The reply arrives in this session's own inbox and wakes the wait at once; Forge is
+        asked only for what only it knows: whether the recipient is blocked on a person, gone,
+        or has not yet read the message. Exactly one :class:`AskOutcome` comes back, counted
+        on ``skuld.ask.outcomes``. A reply taken here is not handed to the harness again.
+        """
+        broker = self._broker
+        poll_s = broker._settings.ask.poll_interval_s
+        deadline = time.monotonic() + deadline_s
+        async with broker.awaiting_peer_answer(message_id, recipient_id) as wait:
+            next_check = time.monotonic()
+            while True:
+                wait.arrived.clear()
+                taken = await broker.take_peer_answer(wait)
+                if taken is not None:
+                    return self._ask_answered(recipient_id, taken)
+                now = time.monotonic()
+                if now >= next_check:
+                    state = await self._recipient_state(recipient_id, instance_id)
+                    if state.ended is not None:
+                        return self._ask_ended(recipient_id, state.ended)
+                    next_check = time.monotonic() + poll_s
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return await self._ask_deadline(
+                        wait, recipient_id, instance_id, message_id, request_id,
+                        delivery_confirmed, deadline_s,
+                    )  # fmt: skip
+                pause = min(remaining, max(next_check - time.monotonic(), 0.0))
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(wait.arrived.wait(), timeout=pause)
+
+    async def _ask_deadline(
+        self,
+        wait: AnswerWait,
+        recipient_id: str,
+        instance_id: str | None,
+        message_id: str,
+        request_id: str,
+        delivery_confirmed: bool,
+        deadline_s: float,
+    ) -> dict[str, Any]:
+        """The deadline passed: one last look at the inbox and at Forge, then say which kind."""
+        taken = await self._broker.take_peer_answer(wait)
+        if taken is not None:
+            return self._ask_answered(recipient_id, taken)
+        state = await self._recipient_state(recipient_id, instance_id)
+        if state.ended is not None:
+            return self._ask_ended(recipient_id, state.ended)
+        again = (
+            f"Call ask again with request_id {request_id!r} to keep waiting (the message is not "
+            "sent twice); an answer that arrives after this call is delivered to you at your "
+            "next turn boundary."
+        )
+        if message_id in state.unread:
+            outcome, detail = AskOutcome.NOT_STARTED, (
+                "the message reached the recipient's inbox, but it has taken no turn that read "
+                f"it within {deadline_s:g}s (it is busy, or between turns with its harness not "
+                f"yet picking the message up). {again}"
+            )  # fmt: skip
+        elif not delivery_confirmed:
+            outcome, detail = AskOutcome.DELIVERY_UNKNOWN, (
+                "Forge did not confirm the message as delivered (the send is still pending or "
+                f"unconfirmed), and no answer came within {deadline_s:g}s. Whether the "
+                f"recipient has it is unknown, not failed. {again}"
+            )  # fmt: skip
+        else:
+            outcome, detail = AskOutcome.DEADLINE, (
+                f"the recipient had not answered within deadline_s={deadline_s:g} "
+                f"(ceiling ask.wait_max_s={self._broker._settings.ask.wait_max_s:g}, the longest "
+                f"one MCP tool call may run). {again}"
+            )  # fmt: skip
+        record_cap_hit("ask.wait_max_s", f"ask {request_id} ended {outcome.value}: {detail}")
+        return self._ask_ended(recipient_id, _Ended(outcome, detail))
+
+    async def _recipient_state(self, recipient_id: str, instance_id: str | None) -> _RecipientState:
+        """Ask Forge about the recipient: gone, blocked on a person, and what it has not read."""
+        try:
+            session = await self._client.get_session(recipient_id, instance_id=instance_id)
+        except ForgeApiError as exc:
+            if exc.status != 404:
+                raise
+            return _RecipientState(
+                _Ended(
+                    AskOutcome.GONE,
+                    f"session {recipient_id} no longer exists (it was deleted), so it can "
+                    "never answer.",
+                )
+            )
+        status = str(session.get("status") or "")
+        activity = str(session.get("activity_state") or "")
+        if status in _GONE_STATUSES or activity == _ACTIVITY_STOPPED:
+            return _RecipientState(
+                _Ended(
+                    AskOutcome.GONE,
+                    f"session {recipient_id} is {status or activity} and will not answer. Start "
+                    "it again, or ask another session.",
+                )
+            )
+        metadata = session.get("activity_metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        if activity == _ACTIVITY_AWAITING_INPUT:
+            controls = metadata.get("kind")
+            return _RecipientState(
+                _Ended(
+                    AskOutcome.BLOCKED,
+                    f"session {recipient_id} is waiting on a person"
+                    + (f" ({controls})" if isinstance(controls, str) and controls else "")
+                    + " (an approval or a question) and cannot read or answer until they respond. "
+                    "Tell the user, or call ask again with the same request_id later.",
+                )
+            )
+        peers = metadata.get("peer_messages")
+        waiting = peers.get("waiting") if isinstance(peers, dict) else None
+        unread = frozenset(waiting) if isinstance(waiting, list) else frozenset()
+        return _RecipientState(None, unread)
+
+    def _ask_answered(self, recipient_id: str, taken: TakenAnswer) -> dict[str, Any]:
+        envelope = taken.envelope
+        result: dict[str, Any] = {
+            "outcome": AskOutcome.ANSWERED.value,
+            "answer": envelope.content,
+            "from": envelope.sender.label(),
+            "answer_message_id": envelope.message_id,
+            "answered_at": envelope.sent_at.isoformat(),
+        }
+        if taken.already_delivered:
+            result["note"] = (
+                "this answer had already been delivered to you as a message at an earlier turn "
+                "boundary, so it is in your context twice"
+            )
+        self._count_ask(AskOutcome.ANSWERED, recipient_id)
+        return result
+
+    def _ask_ended(self, recipient_id: str, ended: _Ended) -> dict[str, Any]:
+        self._count_ask(ended.outcome, recipient_id)
+        return {"outcome": ended.outcome.value, "detail": ended.detail}
+
+    def _count_ask(self, outcome: AskOutcome, recipient_id: str) -> None:
+        get_observability().count(
+            ASK_OUTCOMES_COUNTER,
+            attributes={"outcome": outcome.value, "recipient": recipient_id},
+            description="How this session's ask calls ended, by outcome and recipient.",
+        )
 
     def workflow_step_host(self) -> bool:
         return self._broker._settings.workflow_steps.enabled

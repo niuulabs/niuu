@@ -167,6 +167,33 @@ class ForgeMcpHost(ABC):
             status=501,
         )
 
+    def ask_wait_max_s(self) -> float:
+        """The longest one ``ask`` may wait (``ask.wait_max_s``); a larger deadline is refused."""
+        raise ForgeApiError(
+            "ask needs a Forge session's own MCP (the answer arrives in that session's inbox)",
+            status=501,
+        )
+
+    async def ask_for_answer(
+        self,
+        *,
+        recipient_id: str,
+        instance_id: str | None,
+        message_id: str,
+        request_id: str,
+        delivery_confirmed: bool,
+        deadline_s: float,
+    ) -> dict[str, Any]:
+        """Wait for ``recipient_id``'s reply to ``message_id``; return ``{outcome, ...}``.
+
+        ``delivery_confirmed`` is whether Forge confirmed the send as delivered (a pending or
+        unconfirmed send is not). Only a session's own broker holds the inbox the answer
+        arrives in; other hosts refuse."""
+        raise ForgeApiError(
+            "ask needs a Forge session's own MCP (the answer arrives in that session's inbox)",
+            status=501,
+        )
+
     def mesh_host(self) -> bool:
         """Whether this session has the mesh enabled, so ``mesh_send`` is listed."""
         return False
