@@ -9,20 +9,31 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from niuu.adapters.discovery.event_bus import EventBusDiscoveryAdapter
+from niuu.adapters.mesh.attested import AttestedMesh
 from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
 from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
+from niuu.domain.services.mesh_certificate import MeshCertificateIssuer
+from niuu.mesh.attestation import KIND_RESIDENT, MeshAttestationVerifier, MeshSigner
+from niuu.mesh.config import MeshAttestationConfig
 from niuu.mesh.events import MeshEvent, MeshEventType
 from niuu.mesh.identity import MeshIdentity
-from volundr.domain.models import ResidentObservedState
+from volundr.domain.mesh_peer_claims import MeshPeerClaims, resident_holder
+from volundr.domain.models import ResidentObservedState, ResidentRuntime
 from volundr.domain.ports import (
     ResidentChatConnection,
     ResidentRuntimeRepository,
     ResidentSessionController,
     SessionPersona,
     SessionPersonaProvider,
+)
+from volundr.domain.services.mesh_identity import (
+    FLOCK_PREFIX,
+    REALM_PREFIX,
+    TENANT_PREFIX,
+    ForgeMeshCertificateSource,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,11 +54,32 @@ class _ResidentReaction:
     runner: asyncio.Task[None] | None = None
 
 
+@dataclass(frozen=True)
+class ResidentMeshCertificates:
+    """What Forge needs to certify its resident peers in process: the issuer and the claims."""
+
+    issuer: MeshCertificateIssuer
+    claims: MeshPeerClaims
+
+
 @dataclass
 class _ResidentPeer:
-    mesh: SleipnirMeshAdapter
+    mesh: SleipnirMeshAdapter | AttestedMesh
     discovery: EventBusDiscoveryAdapter
     persona: SessionPersona | None
+    #: Set when the peer signs its mesh messages (``mesh_certificates`` configured).
+    signer: MeshSigner | None = None
+    #: One id per activation of the peer; the claim on its peer id carries it.
+    launch_id: str = ""
+
+
+def resident_memberships(runtime: ResidentRuntime) -> tuple[str, ...]:
+    """What Forge certifies a resident peer belongs to: its flock, realm and tenant."""
+    memberships = [f"{FLOCK_PREFIX}{runtime.flock_id}"]
+    if runtime.realm_id is not None:
+        memberships.append(f"{REALM_PREFIX}{runtime.realm_id}")
+    memberships.append(f"{TENANT_PREFIX}{runtime.tenant_id}")
+    return tuple(memberships)
 
 
 class ResidentFlockAdapter:
@@ -60,11 +92,15 @@ class ResidentFlockAdapter:
         bus: Any,
         *,
         persona_provider: SessionPersonaProvider | None = None,
+        mesh_certificates: ResidentMeshCertificates | None = None,
+        attestation: MeshAttestationConfig | None = None,
     ) -> None:
         self._repository = repository
         self._controllers = {controller.engine: controller for controller in session_controllers}
         self._bus = bus
         self._persona_provider = persona_provider
+        self._mesh_certificates = mesh_certificates
+        self._attestation = attestation or MeshAttestationConfig()
         self._peers: dict[UUID, _ResidentPeer] = {}
         self._reactions: dict[str, _ResidentReaction] = {}
 
@@ -80,9 +116,7 @@ class ResidentFlockAdapter:
             and runtime.engine in self._controllers
         }
         for runtime_id in set(self._peers) - set(desired):
-            peer = self._peers.pop(runtime_id)
-            await peer.mesh.stop()
-            await peer.discovery.stop()
+            await self._stop_peer(runtime_id, self._peers.pop(runtime_id))
         for runtime_id, runtime in desired.items():
             persona = await self._resolve_persona(runtime.owner_id, runtime.persona_name)
             current = self._peers.get(runtime_id)
@@ -90,15 +124,15 @@ class ResidentFlockAdapter:
                 continue
             if current is not None:
                 self._peers.pop(runtime_id, None)
-                await current.mesh.stop()
-                await current.discovery.stop()
-            peer = SleipnirMeshAdapter(
+                await self._stop_peer(runtime_id, current)
+            inner = SleipnirMeshAdapter(
                 publisher=self._bus,
                 subscriber=self._bus,
                 own_peer_id=runtime.flock_peer_id,
                 environment_id=str(runtime.flock_id),
                 manage_transport_lifecycle=False,
             )
+            peer, signer, launch_id = await self._attest(runtime, inner)
             discovery = EventBusDiscoveryAdapter(
                 MeshIdentity(
                     peer_id=runtime.flock_peer_id,
@@ -120,7 +154,13 @@ class ResidentFlockAdapter:
                 self._bus,
                 manage_transport_lifecycle=False,
             )
-            resident_peer = _ResidentPeer(mesh=peer, discovery=discovery, persona=persona)
+            resident_peer = _ResidentPeer(
+                mesh=peer,
+                discovery=discovery,
+                persona=persona,
+                signer=signer,
+                launch_id=launch_id,
+            )
             self._peers[runtime_id] = resident_peer
             try:
                 await discovery.start()
@@ -135,7 +175,9 @@ class ResidentFlockAdapter:
                         )
             except Exception:
                 self._peers.pop(runtime_id, None)
-                await asyncio.gather(peer.stop(), discovery.stop(), return_exceptions=True)
+                await asyncio.gather(
+                    self._stop_peer(runtime_id, resident_peer), return_exceptions=True
+                )
                 raise
             logger.info(
                 "Resident flock peer started runtime=%s peer=%s flock=%s",
@@ -143,6 +185,63 @@ class ResidentFlockAdapter:
                 runtime.flock_peer_id,
                 runtime.flock_id,
             )
+
+    async def _attest(
+        self, runtime: ResidentRuntime, inner: SleipnirMeshAdapter
+    ) -> tuple[SleipnirMeshAdapter | AttestedMesh, MeshSigner | None, str]:
+        """Wrap the peer's mesh so it signs what it sends and verifies what it receives.
+
+        Without ``mesh_certificates`` (Forge runs no mesh identity) the mesh is unwrapped.
+        With them the resident is certified in process (kind ``resident``: its flock,
+        realm and tenant), its peer id is claimed like any session's, and a certificate
+        Forge cannot issue (for instance a session holding the peer id) fails the sync.
+        """
+        if self._mesh_certificates is None:
+            return inner, None, ""
+        launch_id = uuid4().hex
+        source = ForgeMeshCertificateSource(
+            self._mesh_certificates.issuer,
+            self._mesh_certificates.claims,
+            holder=resident_holder(runtime.id),
+            kind=KIND_RESIDENT,
+            launch_id=launch_id,
+            memberships=resident_memberships(runtime),
+            tenant_id=runtime.tenant_id,
+            mesh_realm=str(runtime.flock_id),
+        )
+        signer = MeshSigner(
+            source,
+            runtime.flock_peer_id,
+            renew_fraction=self._attestation.renew_fraction,
+            retry_fraction=self._attestation.retry_fraction,
+        )
+        await signer.start()
+        verifier = MeshAttestationVerifier(
+            lambda: signer.jwks,
+            issuer=signer.issuer,
+            own_memberships=signer.memberships,
+            clock_skew_s=self._attestation.clock_skew_s,
+            event_max_age_s=self._attestation.event_max_age_s,
+        )
+        mesh = AttestedMesh(
+            inner,
+            signer,
+            verifier,
+            own_peer_id=runtime.flock_peer_id,
+            event_max_age_s=self._attestation.event_max_age_s,
+        )
+        return mesh, signer, launch_id
+
+    async def _stop_peer(self, runtime_id: UUID, peer: _ResidentPeer) -> None:
+        """Stop the peer's mesh, discovery and signer, and free its peer id."""
+        await peer.mesh.stop()
+        await peer.discovery.stop()
+        if peer.signer is None:
+            return
+        await peer.signer.stop()
+        await self._mesh_certificates.claims.release(
+            holder=resident_holder(runtime_id), launch_id=peer.launch_id
+        )
 
     async def _resolve_persona(self, owner_id: str, name: str) -> SessionPersona | None:
         if self._persona_provider is None or not name.strip():
@@ -197,9 +296,8 @@ class ResidentFlockAdapter:
 
     async def stop(self) -> None:
         """Stop event subscribers and active resident reactions."""
-        for peer in list(self._peers.values()):
-            await peer.mesh.stop()
-            await peer.discovery.stop()
+        for runtime_id, peer in list(self._peers.items()):
+            await self._stop_peer(runtime_id, peer)
         self._peers.clear()
         for reaction in self._reactions.values():
             if reaction.runner and not reaction.runner.done():

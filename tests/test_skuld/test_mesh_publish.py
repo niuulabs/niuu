@@ -542,6 +542,7 @@ class TestBrokerWiring:
         broker = _broker(tmp_path)
         broker._settings.mesh = MeshConfig(
             enabled=True,
+            attestation={"required": False},
             peer_id="wired",
             transport="in_process",
             rpc_timeout_s=5.0,

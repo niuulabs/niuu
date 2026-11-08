@@ -468,6 +468,9 @@ forge_mcp:
     issuer: niuu-forge-session       # for tokens signed with the key file
     key_id: niuu-forge-session
     audiences: [volundr-api]
+  mesh_identity:
+    enabled: true                    # false: no mesh certificates, no revocations
+    ttl_seconds: 900                 # how long a leaked or stale certificate is believed
   http:
     enabled: true
     allowed_origins: []              # browser origins allowed to call /api/v1/forge/mcp
@@ -487,6 +490,40 @@ Skuld (normally set by Forge, not by hand):
 |---|---|
 | `SKULD__FORGE_MCP__TOKEN` | The session credential. It is only the bearer for MCP-proxied Forge calls. |
 | `SKULD__FORGE_MCP__GRANTS` | Optional narrowing of the token's grants (`message,lifecycle` or a JSON list). Unset keeps the token's grants. |
+
+## Mesh identity (sender proof)
+
+A session's Skuld proves to other mesh peers who sent a message with a short-lived
+certificate (`token_use: mesh_peer`, audience `niuu-mesh`) that Forge signs with the same
+key as the session credentials. The session's own credential (scope `forge:mesh:identity`,
+on every session) obtains it:
+
+```
+POST /api/v1/forge/sessions/{session_id}/mesh-identity
+{"public_key": "<raw 32-byte Ed25519 key, base64url>", "peer_id": "<id>", "mesh_realm": "<realm or empty>"}
+-> {"certificate": "<jwt>", "jwks": {...}, "issuer": "...", "ttl_seconds": 900,
+    "expires_at": 1790000000, "memberships": ["tenant:<tenant id>"]}
+```
+
+Forge decides everything the certificate says; the peer supplies only its key, the peer id it
+wants and its realm. Errors: `401` the credential is revoked (session gone, restarted,
+stopped or archived), `403` not the session's own credential, `409` the peer id is held by
+another live session or resident, `422` the key is not a raw Ed25519 key or the body is
+malformed, `503` this Forge runs without a mesh identity.
+
+- **Memberships.** `tenant:<tenant id>` from the session row. A Forge session has no link to
+  a resident runtime's flock or realm, so no `flock:` or `realm:` membership is issued to
+  one. Forge-hosted resident peers are certified in process as `resident` with
+  `flock:<flock id>`, `realm:<realm id>` (when set) and `tenant:<tenant id>`.
+- **Peer ids** are exclusive (`mesh_peer_claims`): a free, expired or same-holder peer id is
+  claimed in one atomic write. A claim lasts one certificate lifetime past its last renewal.
+- **Revocation.** When a session stops, restarts, is archived or deleted, Forge frees its
+  peer ids and, when it has a Sleipnir bus (`sleipnir.enabled`), publishes a signed notice on
+  `mesh.revocation` in the realm the session joined. Without a bus, or if publishing fails
+  (logged at error and counted as `degraded.mesh.revocation.publish`), `ttl_seconds` is the
+  only bound.
+- **No Forge route admits the certificate**, so a peer that receives one cannot replay it
+  against Forge. Without `forge_mcp.session_tokens` there is no mesh identity.
 
 ## Threat model
 

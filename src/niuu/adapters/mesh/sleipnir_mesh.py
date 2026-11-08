@@ -112,6 +112,7 @@ def _ravn_to_sleipnir(
             "ravn_task_id": event.task_id,
             "ravn_root_correlation_id": event.root_correlation_id,
             "ravn_trace_context": event.trace_context,
+            "ravn_attestation": event.attestation,
             "ravn_environment_id": environment_id,
             "collaboration_events": project_mesh_event(event),
         },
@@ -123,7 +124,7 @@ def _ravn_to_sleipnir(
     )
 
 
-def _sleipnir_to_ravn(sleipnir_event: Any) -> MeshEvent:
+def sleipnir_to_mesh_event(sleipnir_event: Any) -> MeshEvent:
     """Convert SleipnirEvent back to MeshEvent."""
     payload = sleipnir_event.payload
     ravn_type_str = payload.get("ravn_type", "response")
@@ -146,7 +147,11 @@ def _sleipnir_to_ravn(sleipnir_event: Any) -> MeshEvent:
         root_correlation_id=payload.get("ravn_root_correlation_id", ""),
         trace_context=dict(payload.get("ravn_trace_context") or {}),
         event_id=payload.get("ravn_event_id") or uuid.uuid4().hex,
+        attestation=dict(payload.get("ravn_attestation") or {}),
     )
+
+
+_sleipnir_to_ravn = sleipnir_to_mesh_event
 
 
 class SleipnirMeshAdapter:

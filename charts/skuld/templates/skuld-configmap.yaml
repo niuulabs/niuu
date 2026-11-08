@@ -242,3 +242,28 @@ data:
       {{- if not (kindIs "invalid" .Values.mesh.diffTimeoutS) }}
       diff_timeout_s: {{ .Values.mesh.diffTimeoutS | toJson }}
       {{- end }}
+      {{- $attestation := dict }}
+      {{- range $key, $value := (.Values.mesh.attestation | default dict) }}
+      {{- if not (kindIs "invalid" $value) }}
+      {{- $_ := set $attestation $key $value }}
+      {{- end }}
+      {{- end }}
+      {{- if $attestation }}
+      # Proof of who sent each mesh message: needs no setting; only what is set is rendered.
+      attestation:
+        {{- if not (kindIs "invalid" $attestation.required) }}
+        required: {{ $attestation.required | toJson }}
+        {{- end }}
+        {{- if not (kindIs "invalid" $attestation.renewFraction) }}
+        renew_fraction: {{ $attestation.renewFraction | toJson }}
+        {{- end }}
+        {{- if not (kindIs "invalid" $attestation.retryFraction) }}
+        retry_fraction: {{ $attestation.retryFraction | toJson }}
+        {{- end }}
+        {{- if not (kindIs "invalid" $attestation.clockSkewS) }}
+        clock_skew_s: {{ $attestation.clockSkewS | toJson }}
+        {{- end }}
+        {{- if not (kindIs "invalid" $attestation.eventMaxAgeS) }}
+        event_max_age_s: {{ $attestation.eventMaxAgeS | toJson }}
+        {{- end }}
+      {{- end }}

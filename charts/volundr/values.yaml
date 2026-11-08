@@ -785,7 +785,15 @@ push:
 #     default_grants: []
 #     role_grants: {coordinator: [lifecycle, message], worker: [message]}   # the default; {} for none
 #     session_tokens: {ttl_seconds: 604800}
+#     mesh_identity: {enabled: true, ttl_seconds: 900}   # the default; see below
 #     http: {allowed_origins: ["https://forge.example.com"]}
+# `mesh_identity` is the certificate Forge issues to a session's mesh peer
+# (POST /api/v1/forge/sessions/{id}/mesh-identity) so other peers can verify who sent a
+# message. It is signed with the session-credential key, so it is on exactly where
+# session_tokens are; `ttl_seconds` (default 900) bounds how long a leaked or stale
+# certificate is believed (peers renew at half of it). Forge also publishes a signed
+# "session stopped" revocation on its Sleipnir bus when `sleipnir` is enabled; without
+# a bus the ttl is the only bound. `enabled: false` runs the mesh without sender proof.
 forgeMcp: {}
 
 # Chronicle configuration

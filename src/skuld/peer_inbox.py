@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from niuu.adapters.mesh.attested import refusal_counts
 from niuu.cap_telemetry import record_degraded
 from niuu.domain.peer_message import (
     PEER_MESSAGE_FRAME,
@@ -41,6 +42,7 @@ from niuu.domain.peer_message import (
     PeerMessageError,
     render_for_harness,
 )
+from niuu.mesh.attestation import AttestationRefusedError
 from niuu.observability import get_observability
 
 logger = logging.getLogger("skuld.broker")
@@ -578,10 +580,46 @@ class PeerInboxMixin:
             description="Peer messages this session received, by sender, recipient and outcome.",
         )
 
+    def record_unverified_mesh_sender(
+        self, error: AttestationRefusedError, direction: str, what: str
+    ) -> None:
+        """A mesh message whose sender could not be verified was refused before the inbox.
+
+        Counted with the same pair counts and counter as any refused peer message, with the
+        reason, so a spoofing attempt shows next to the traffic it imitated.
+        """
+        sender = error.claimed or "unknown"
+        key = (sender, str(self.session_id))
+        counts = self._peer_pair_counts.setdefault(key, dict.fromkeys(_OUTCOMES, 0))
+        counts[OUTCOME_REFUSED] += 1
+        get_observability().count(
+            PEER_MESSAGES_COUNTER,
+            attributes={
+                "sender": sender,
+                "recipient": str(self.session_id),
+                "channel": CHANNEL_MESH,
+                "outcome": OUTCOME_REFUSED,
+                "reason": error.reason.value,
+                "direction": direction,
+            },
+            description="Peer messages this session received, by sender, recipient and outcome.",
+        )
+        logger.error(
+            "peer message refused: unverified mesh sender %r (%s, %s): %s",
+            sender,
+            direction,
+            what,
+            error,
+        )
+
     def peer_message_status(self) -> dict[str, Any]:
         """Per sender/recipient pair counts, for the session status. No cap, only visibility."""
         pairs = [
             {"sender": sender, "recipient": recipient, **counts}
             for (sender, recipient), counts in sorted(self._peer_pair_counts.items())
         ]
-        return {"pairs": pairs, "waiting": self.pending_peer_message_ids()}
+        status: dict[str, Any] = {"pairs": pairs, "waiting": self.pending_peer_message_ids()}
+        refusals = refusal_counts()
+        if refusals:
+            status["unverified"] = refusals
+        return status

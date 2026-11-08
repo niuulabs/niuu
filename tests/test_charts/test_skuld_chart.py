@@ -1154,6 +1154,13 @@ MESH_VALUES = {
     "rpcReplyCacheSize": 64,
     "diffMaxBytes": 4096,
     "diffTimeoutS": 7,
+    "attestation": {
+        "required": False,
+        "renewFraction": 0.4,
+        "retryFraction": 0.2,
+        "clockSkewS": 60,
+        "eventMaxAgeS": 120,
+    },
 }
 
 #: Each chart value and the key of Skuld's `mesh` settings it renders to.
@@ -1178,6 +1185,7 @@ MESH_KEYS = {
     "rpcReplyCacheSize": "rpc_reply_cache_size",
     "diffMaxBytes": "diff_max_bytes",
     "diffTimeoutS": "diff_timeout_s",
+    "attestation": "attestation",
 }
 
 
@@ -1207,6 +1215,14 @@ class TestMeshValues:
             expected = {
                 "pub_sub_address": "tcp://0.0.0.0:7001",
                 "req_rep_address": "tcp://0.0.0.0:7002",
+            }
+        if value_key == "attestation":
+            expected = {
+                "required": False,
+                "renew_fraction": 0.4,
+                "retry_fraction": 0.2,
+                "clock_skew_s": 60,
+                "event_max_age_s": 120,
             }
         assert mesh[config_key] == expected
 
@@ -1249,3 +1265,25 @@ class TestMeshValues:
         mesh = _mesh_config(peerPorts=[{"name": "mesh", "containerPort": 7001}], enabled=True)
 
         assert mesh == {"enabled": True, "transport": "nng"}
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_mesh_attestation_renders_nothing_by_default_and_only_what_is_set():
+    from skuld.config import SkuldSettings
+
+    default = _rendered_skuld_config("skuld")
+    assert "attestation" not in default["mesh"]
+
+    config = _rendered_skuld_config(
+        "skuld",
+        "--set",
+        "mesh.attestation.required=false",
+        "--set",
+        "mesh.attestation.clockSkewS=60",
+    )
+
+    assert config["mesh"]["attestation"] == {"required": False, "clock_skew_s": 60}
+    settings = SkuldSettings(**config)
+    assert settings.mesh.attestation.required is False
+    assert settings.mesh.attestation.clock_skew_s == 60
+    assert settings.mesh.attestation.event_max_age_s == 3600

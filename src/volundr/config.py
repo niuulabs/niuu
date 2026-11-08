@@ -1802,6 +1802,34 @@ class ForgeMcpSessionTokenConfig(BaseModel):
     )
 
 
+class ForgeMcpMeshIdentityConfig(BaseModel):
+    """The mesh certificate Forge issues to a session's peer (``POST .../mesh-identity``).
+
+    A certificate proves to other mesh peers who sent a message (``niuu.mesh.attestation``).
+    It is signed with the same key as the ``forge_session`` credentials, so it exists only
+    where ``forge_mcp.session_tokens`` is enabled; with that enabled, the mesh identity
+    must come up too, and Forge refuses to start when it cannot. ``enabled: false`` is the
+    operator's decision to run without it: the route answers 503 and no revocation is
+    published.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Issue mesh certificates to sessions and to Forge-hosted resident peers. "
+        "Only meaningful with forge_mcp.session_tokens.enabled: without session tokens "
+        "there is no mesh identity.",
+    )
+    ttl_seconds: int = Field(
+        default=900,
+        ge=2,
+        description="Lifetime of a mesh certificate. It bounds how long a leaked or stale "
+        "certificate is believed by other peers (a stopped session is also revoked at once "
+        "when Forge has an event bus; without one this is the only bound). Peers renew "
+        "in the background at half of it, so a shorter value means more renewal calls to "
+        "Forge and a longer one a longer exposure.",
+    )
+
+
 class ForgeMcpHttpConfig(BaseModel):
     """The Forge-hosted MCP endpoint (``POST /api/v1/forge/mcp``) for external agents."""
 
@@ -1890,6 +1918,9 @@ class ForgeMcpConfig(BaseModel):
             enabled: true
             ttl_seconds: 2592000
             signing_key_file: ~/.niuu/forge-session-signing-key.pem
+          mesh_identity:
+            enabled: true
+            ttl_seconds: 900
           http:
             enabled: true
             allowed_origins: []
@@ -1911,6 +1942,7 @@ class ForgeMcpConfig(BaseModel):
         "stop sessions. A role not listed gets none; set {} to grant nothing by role.",
     )
     session_tokens: ForgeMcpSessionTokenConfig = Field(default_factory=ForgeMcpSessionTokenConfig)
+    mesh_identity: ForgeMcpMeshIdentityConfig = Field(default_factory=ForgeMcpMeshIdentityConfig)
     http: ForgeMcpHttpConfig = Field(default_factory=ForgeMcpHttpConfig)
 
 

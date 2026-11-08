@@ -206,6 +206,9 @@ def _without_surface_marker(event: MeshEvent) -> MeshEvent:
 
 def project_mesh_event(event: MeshEvent, *, persona: str = "") -> list[dict[str, Any]]:
     """Return collaboration events whose meaning is decided inside Ravn."""
+    if event.type == MeshEventType.REVOCATION:
+        # A control notice between peers, not something an agent said.
+        return []
     event = _without_surface_marker(event)
     if event.type in (MeshEventType.RESPONSE, MeshEventType.ERROR):
         projected = _base(event, "message")

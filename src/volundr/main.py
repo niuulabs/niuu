@@ -70,6 +70,7 @@ from volundr.adapters.inbound.rest_git import create_git_router
 from volundr.adapters.inbound.rest_guild import create_guild_router
 from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router
 from volundr.adapters.inbound.rest_issues import create_canonical_issues_router
+from volundr.adapters.inbound.rest_mesh_identity import create_mesh_identity_router
 from volundr.adapters.inbound.rest_message_delivery import create_message_delivery_router
 from volundr.adapters.inbound.rest_notifications import create_notifications_router
 from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
@@ -125,6 +126,7 @@ from volundr.adapters.outbound.postgres_credential_enrollments import (
 from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationRepository
 from volundr.adapters.outbound.postgres_launch_specs import PostgresLaunchSpecRepository
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
+from volundr.adapters.outbound.postgres_mesh_peer_claims import PostgresMeshPeerClaims
 from volundr.adapters.outbound.postgres_notifications import (
     PostgresNotificationDeliveryRepository,
     PostgresNotificationImageRepository,
@@ -146,7 +148,10 @@ from volundr.adapters.outbound.postgres_timeline import PostgresTimelineReposito
 from volundr.adapters.outbound.postgres_tokens import PostgresTokenTracker
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
-from volundr.adapters.outbound.resident_flock import ResidentFlockAdapter
+from volundr.adapters.outbound.resident_flock import (
+    ResidentFlockAdapter,
+    ResidentMeshCertificates,
+)
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.app_shell import build_app_shell
 from volundr.artifact_runtime import (
@@ -171,6 +176,8 @@ from volundr.composition_builders import (  # noqa: F401
     _create_host_join_endpoint,
     _create_host_pairing_signer,
     _create_http_auth_adapter,
+    _create_mesh_certificate_issuer,
+    _create_mesh_revocation_publisher,
     _create_pod_manager,
     _create_resident_controllers,
     _create_resident_session_controllers,
@@ -206,6 +213,7 @@ from volundr.domain.services.communication_ingress import CommunicationIngressSe
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.credential_enrollment import CredentialEnrollmentService
 from volundr.domain.services.event_ingestion import EventIngestionService
+from volundr.domain.services.mesh_identity import MeshIdentityService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 from volundr.domain.services.notification_images import NotificationImageWorker
 from volundr.domain.services.notifications import NotificationService, engine_resolver_for
@@ -975,6 +983,36 @@ def create_app(
                     logger.exception("Failed to initialise Sleipnir integration")
                     sleipnir_bus = None
 
+            # Mesh identity: certificates for session peers and Forge-hosted residents,
+            # signed with the session-credential key. Revocations ride the Sleipnir bus;
+            # without one the certificate lifetime is the only bound.
+            mesh_certificate_issuer = _create_mesh_certificate_issuer(
+                settings, forge_session_tokens
+            )
+            mesh_peer_claims = PostgresMeshPeerClaims(pool)
+            mesh_revocation_publisher = None
+            if mesh_certificate_issuer is not None and sleipnir_bus is not None:
+                mesh_revocation_publisher = await _create_mesh_revocation_publisher(
+                    settings, mesh_certificate_issuer, mesh_peer_claims, sleipnir_bus
+                )
+            elif mesh_certificate_issuer is not None:
+                logger.info(
+                    "Mesh revocations are not published: Forge has no Sleipnir bus "
+                    "(sleipnir.enabled); a stopped session's certificate lasts until it "
+                    "expires (forge_mcp.mesh_identity.ttl_seconds)"
+                )
+            mesh_identity_service = (
+                MeshIdentityService(
+                    mesh_certificate_issuer,
+                    mesh_peer_claims,
+                    repository,
+                    revocations=mesh_revocation_publisher,
+                )
+                if mesh_certificate_issuer is not None
+                else None
+            )
+            app.state.mesh_identity = mesh_identity_service
+
             broadcaster = InMemoryEventBroadcaster(
                 sleipnir_publisher=sleipnir_bus,
             )
@@ -1300,6 +1338,11 @@ def create_app(
                     resident_session_controllers,
                     sleipnir_bus,
                     persona_provider=session_persona_provider,
+                    mesh_certificates=(
+                        ResidentMeshCertificates(mesh_certificate_issuer, mesh_peer_claims)
+                        if mesh_certificate_issuer is not None
+                        else None
+                    ),
                 )
                 if sleipnir_bus is not None
                 else None
@@ -1525,6 +1568,7 @@ def create_app(
                 presented_file_store=presented_file_store,
                 forge_session_projection=_create_forge_session_projection(settings),
                 secret_cleanup=secret_request_service,
+                mesh_identity=mesh_identity_service,
             )
             if presented_file_store is not None:
                 require_presented_file_uploads(
@@ -2246,6 +2290,9 @@ def create_app(
                 )
             )
             app.include_router(
+                create_mesh_identity_router(mesh_identity_service, prefix="/api/v1/forge")
+            )
+            app.include_router(
                 create_message_delivery_router(PostgresMessageDelivery(pool), session_service)
             )
             if push_gateway is not None:
@@ -2451,6 +2498,8 @@ def create_app(
                     pass
                 if resident_flock_adapter is not None:
                     await resident_flock_adapter.stop()
+                if mesh_revocation_publisher is not None:
+                    await mesh_revocation_publisher.stop()
                 await resident_runtime_service.close()
                 await event_ingestion.close_all()
                 if settings.compute is None and hasattr(pod_manager, "close"):
