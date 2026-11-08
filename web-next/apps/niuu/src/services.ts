@@ -1382,6 +1382,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const forgeHttp = forgeBase
     ? buildVolundrHttpAdapter(createApiClient(forgeBase), undefined, {
         niuuBasePath: resolveNiuuRegistryBase(config),
+        forgeScope: config.services.forge?.scope,
       })
     : null;
   const forgeVolundr: IVolundrService =

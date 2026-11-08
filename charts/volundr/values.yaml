@@ -2241,7 +2241,11 @@ webNext:
     auth:
       issuer: ""
       clientId: ""
-    # -- Optional service URL overrides keyed by plugin-sdk service id
+    # -- Optional service URL overrides keyed by plugin-sdk service id.
+    # `forge.scope: node` scopes the UI to the one Forge node at `forge.baseUrl`
+    # (hosts, sessions, metrics and resources of that node only, which names its
+    # own Guild registry entry at GET /api/v1/forge/guild). The default, `guild`,
+    # expects the Guild's Forge facade and covers every registered Forge.
     services: {}
 
   resources:

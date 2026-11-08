@@ -20,6 +20,8 @@ parts/
 sdist/
 var/
 wheels/
+# Wheels committed on purpose and installed by uv (see [tool.uv.sources]).
+!/vendor/wheels/
 share/python-wheels/
 *.egg-info/
 .installed.cfg

@@ -1912,6 +1912,97 @@ describe('buildVolundrHttpAdapter', () => {
     );
   });
 
+  describe('node scope', () => {
+    const REGISTRY = [
+      {
+        id: 'inst-valhalla',
+        name: 'Valhalla',
+        slug: 'valhalla',
+        baseUrl: 'https://volundr.valhalla.asgard.niuu.world',
+        visibility: 'system',
+        enabled: true,
+        isDefault: true,
+        tags: ['valhalla', 'gpu'],
+      },
+      {
+        id: 'inst-noatun',
+        name: 'Noatun',
+        slug: 'noatun',
+        baseUrl: 'https://niuu.noatun.asgard.niuu.world',
+        visibility: 'system',
+        enabled: true,
+        isDefault: false,
+        tags: ['noatun', 'cpu'],
+      },
+    ];
+    const NOATUN_MEMBERSHIP = {
+      guild_url: 'https://yggdrasil.niuu.world',
+      instance_id: 'inst-noatun',
+      instance_name: 'Noatun',
+      instance_slug: 'noatun',
+    };
+
+    function nodeAdapter(membership: typeof NOATUN_MEMBERSHIP) {
+      const client = makeClientWithBase('https://niuu.noatun.asgard.niuu.world/api/v1/forge');
+      client.get.mockImplementation(async (endpoint: string) =>
+        endpoint === '/guild' ? membership : [],
+      );
+      const svc = buildVolundrHttpAdapter(client, undefined, {
+        niuuBasePath: 'https://yggdrasil.niuu.world/api/v1/niuu',
+        forgeScope: 'node',
+      });
+      const niuuClient = getDerivedClient('https://yggdrasil.niuu.world/api/v1/niuu')!;
+      niuuClient.get.mockResolvedValue(REGISTRY);
+      return { client, svc };
+    }
+
+    it('lists only the Forge node it is served from, as the registry describes it', async () => {
+      const { client, svc } = nodeAdapter(NOATUN_MEMBERSHIP);
+
+      const targets = await svc.getTargets();
+
+      expect(client.get).toHaveBeenCalledWith('/guild');
+      expect(targets).toEqual([
+        expect.objectContaining({
+          id: 'inst-noatun',
+          name: 'Noatun',
+          baseUrl: 'https://niuu.noatun.asgard.niuu.world',
+          tags: ['noatun', 'cpu'],
+        }),
+      ]);
+    });
+
+    it('fails when the Guild registry does not list the node as an enabled Forge', async () => {
+      const { svc } = nodeAdapter({ ...NOATUN_MEMBERSHIP, instance_id: 'inst-gone' });
+
+      await expect(svc.getTargets()).rejects.toThrow(
+        'This Forge node is Noatun (inst-gone) in the Guild at https://yggdrasil.niuu.world, ' +
+          'but that Guild lists no enabled Forge with this id.',
+      );
+    });
+
+    it('fails when the node cannot say which Forge it is', async () => {
+      const { client, svc } = nodeAdapter(NOATUN_MEMBERSHIP);
+      client.get.mockRejectedValue(new Error('This Forge node is not joined to a Guild'));
+
+      await expect(svc.getTargets()).rejects.toThrow('This Forge node is not joined to a Guild');
+    });
+
+    it('lists every registered Forge in guild scope without asking the node', async () => {
+      const client = makeClientWithBase('https://yggdrasil.niuu.world/api/v1/forge');
+      const svc = buildVolundrHttpAdapter(client, undefined, {
+        niuuBasePath: 'https://yggdrasil.niuu.world/api/v1/niuu',
+        forgeScope: 'guild',
+      });
+      getDerivedClient('https://yggdrasil.niuu.world/api/v1/niuu')!.get.mockResolvedValue(REGISTRY);
+
+      const targets = await svc.getTargets();
+
+      expect(client.get).not.toHaveBeenCalledWith('/guild');
+      expect(targets.map((target) => target.id)).toEqual(['inst-valhalla', 'inst-noatun']);
+    });
+  });
+
   it('startSession calls POST /sessions', async () => {
     const client = makeClient();
     const config = {
