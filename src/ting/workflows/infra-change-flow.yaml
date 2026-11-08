@@ -3,7 +3,7 @@ id: 0b51b458-0aeb-5a1b-8f79-d805834491e3
 name: Infra Change Flow
 description: Tracker-driven change to a GitOps repository. Implements and reviews the change, then
   waits for the commissioning resident to approve the merge, because merging deploys it.
-version: 1.0.3
+version: 1.0.4
 persona_dependencies:
   closer:
     id: closer
@@ -129,7 +129,6 @@ graph:
     target: infra-change-implement
     label: review.changes_requested -> review.changes_requested
     rework: true
-    maxIterations: 3
   - id: edge-infra-change-review-to-gate
     source: infra-change-review
     target: infra-change-merge-gate
@@ -139,7 +138,6 @@ graph:
     target: infra-change-implement
     label: review.changes_requested -> review.changes_requested
     rework: true
-    maxIterations: 5
   - id: edge-infra-change-gate-to-close
     source: infra-change-merge-gate
     target: infra-change-close

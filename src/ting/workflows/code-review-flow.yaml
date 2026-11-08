@@ -3,7 +3,7 @@ id: 03dba0d8-4f29-560a-a4e1-1fc7e5f9ee23
 name: Code & Review Flow
 description: Tracker-driven developer workflow that implements a ticket, iterates through code review,
   and merges the branch without publishing a delivery record.
-version: 1.0.4
+version: 1.0.5
 persona_dependencies:
   closer:
     id: closer
@@ -111,7 +111,6 @@ graph:
     target: code-review-implement
     label: review.changes_requested -> review.changes_requested
     rework: true
-    maxIterations: 3
   - id: edge-code-review-review-to-close
     source: code-review-review
     target: code-review-close

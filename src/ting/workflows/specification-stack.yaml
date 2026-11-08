@@ -3,7 +3,7 @@ id: 96ecf5df-18a0-542b-9df6-aef6aef6a5db
 name: Specification Stack
 description: End-to-end specification workflow that produces a PRD, SRD, SDD, and delivery breakdown with
   explicit review and approval gates between each artifact.
-version: 1.1.1
+version: 1.1.2
 persona_dependencies:
   specification-breakdown-critic:
     id: specification-breakdown-critic
@@ -311,7 +311,6 @@ graph:
     target: spec-prd
     label: spec.prd.changes_requested -> spec.prd.changes_requested
     rework: true
-    maxIterations: 3
   - id: edge-prd-review-to-gate
     source: spec-prd-review
     target: spec-prd-gate
@@ -321,7 +320,6 @@ graph:
     target: spec-prd
     label: spec.prd.changes_requested -> spec.prd.changes_requested
     rework: true
-    maxIterations: 5
   - id: edge-prd-gate-to-srd
     source: spec-prd-gate
     target: spec-srd
@@ -335,7 +333,6 @@ graph:
     target: spec-srd
     label: spec.srd.changes_requested -> spec.srd.changes_requested
     rework: true
-    maxIterations: 3
   - id: edge-srd-review-to-gate
     source: spec-srd-review
     target: spec-srd-gate
@@ -345,7 +342,6 @@ graph:
     target: spec-srd
     label: spec.srd.changes_requested -> spec.srd.changes_requested
     rework: true
-    maxIterations: 5
   - id: edge-srd-gate-to-sdd
     source: spec-srd-gate
     target: spec-sdd
@@ -359,7 +355,6 @@ graph:
     target: spec-sdd
     label: spec.sdd.changes_requested -> spec.sdd.changes_requested
     rework: true
-    maxIterations: 3
   - id: edge-sdd-review-to-gate
     source: spec-sdd-review
     target: spec-sdd-gate
@@ -369,7 +364,6 @@ graph:
     target: spec-sdd
     label: spec.sdd.changes_requested -> spec.sdd.changes_requested
     rework: true
-    maxIterations: 5
   - id: edge-sdd-gate-to-breakdown
     source: spec-sdd-gate
     target: spec-breakdown
@@ -383,7 +377,6 @@ graph:
     target: spec-breakdown
     label: spec.breakdown.changes_requested -> spec.breakdown.changes_requested
     rework: true
-    maxIterations: 3
   - id: edge-breakdown-review-to-gate
     source: spec-breakdown-review
     target: spec-breakdown-gate
@@ -393,7 +386,6 @@ graph:
     target: spec-breakdown
     label: spec.breakdown.changes_requested -> spec.breakdown.changes_requested
     rework: true
-    maxIterations: 5
   - id: edge-breakdown-gate-to-publish
     source: spec-breakdown-gate
     target: spec-publish

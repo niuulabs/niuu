@@ -190,11 +190,30 @@ async def test_a_verdict_the_persona_cannot_give_is_refused_and_the_step_stays_o
     assert "engine.close.rejected" in workstream.event_types()
 
 
-async def test_the_rework_bound_fails_the_run_naming_the_edge(
+async def test_a_rework_edge_without_a_limit_goes_round_as_often_as_the_work_needs() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    await run.launch()
+
+    for attempt in range(1, 6):
+        await drive_to_reviews(run, attempt)
+        for member in REVIEWERS:
+            await review(run, member, "pass", attempt)
+        await run.close(run.current("workstream-acceptance"), "repair")
+
+    assert run.finished_with() is None
+    assert run.event_types().count("engine.rework.taken") == 5
+
+
+async def test_an_author_set_rework_limit_fails_the_run_naming_the_edge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorder = Recorder()
-    run = make_run(bundled("Developer Workstream"), monkeypatch=monkeypatch, recorder=recorder)
+    workflow = bundled("Developer Workstream")
+    graph = copy.deepcopy(dict(workflow.graph))
+    next(e for e in graph["edges"] if e["id"] == "workstream-acceptance-repair")[
+        "maxIterations"
+    ] = 3
+    run = make_run(workflow, graph=graph, monkeypatch=monkeypatch, recorder=recorder)
     await run.launch()
 
     for attempt in range(1, 4):
@@ -202,7 +221,7 @@ async def test_the_rework_bound_fails_the_run_naming_the_edge(
         for member in REVIEWERS:
             await review(run, member, "pass", attempt)
         await run.close(run.current("workstream-acceptance"), "repair")
-    # Three reworks were allowed (maxIterations: 3); the fourth fails the run.
+    # The author allowed three reworks (maxIterations: 3); the fourth fails the run.
     assert run.finished_with() is None
     await drive_to_reviews(run, 4)
     for member in REVIEWERS:

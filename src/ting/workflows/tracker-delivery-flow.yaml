@@ -3,7 +3,7 @@ id: 3f444455-6b63-53c2-b057-3205345a56da
 name: Tracker Delivery Flow
 description: Tracker-driven developer workflow that implements a ticket, iterates through code review,
   updates the tracker, merges the branch, and publishes a durable delivery record.
-version: 1.0.3
+version: 1.0.4
 persona_dependencies:
   closer:
     id: closer
@@ -146,13 +146,11 @@ graph:
     target: delivery-implement
     label: review.changes_requested -> review.changes_requested
     rework: true
-    maxIterations: 5
   - id: edge-delivery-review-to-implement
     source: delivery-review
     target: delivery-implement
     label: review.changes_requested -> review.changes_requested
     rework: true
-    maxIterations: 3
   - id: edge-delivery-review-to-close
     source: delivery-review
     target: delivery-close

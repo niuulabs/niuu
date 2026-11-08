@@ -291,10 +291,13 @@ export const workflowEdgeSchema = z.object({
   /**
    * The edge goes back to an earlier step to redo its work. Taking it starts a new
    * rework generation: steps still open in the old one go stale and the downstream
-   * reviewers run again. Every cycle in a graph needs one, with `maxIterations`.
+   * reviewers run again. Every cycle in a graph needs one.
    */
   rework: z.boolean().optional(),
-  /** How many times a run may take this rework edge; the run fails naming the edge past it. */
+  /**
+   * An optional limit, set by the workflow's author, on how many times a run may take
+   * this rework edge; the run fails naming the edge past it. Left out, there is no limit.
+   */
   maxIterations: z.number().int().positive().optional(),
   /** First bezier control point (relative to source). */
   cp1: positionSchema,

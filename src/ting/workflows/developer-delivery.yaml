@@ -2,7 +2,7 @@ schema_version: 2
 id: ca01b422-7ab7-4614-901b-8784ef65c76e
 name: Developer Delivery
 description: Plan, delegate, verify, integrate, publish, and merge one repository change using durable child workflows and typed evidence.
-version: 1.1.1
+version: 1.1.2
 persona_dependencies:
   developer-coordinator:
     id: developer-coordinator
@@ -37,13 +37,13 @@ persona_dependencies:
 workflow_dependencies:
   workstream:
     id: 98133eab-cd89-44d1-b32d-26c82f99dddc
-    revision: sha256:2eac13faaf629c1b0bc26f9b4293d102892e02778528827e9c26840c35612e5d
-    digest: sha256:2eac13faaf629c1b0bc26f9b4293d102892e02778528827e9c26840c35612e5d
+    revision: sha256:1f3b9eef01a45cfb8f8952fbb6de6ea526b8829c1c6dce6fc4984a08c6b5018c
+    digest: sha256:1f3b9eef01a45cfb8f8952fbb6de6ea526b8829c1c6dce6fc4984a08c6b5018c
     path: workflows/developer-workstream.yaml
   planning:
     id: 195d5026-7adb-4ce7-97ee-fb1e18ea4c3a
-    revision: sha256:5e4e7ac7b58b5527965685426d273a576f9b3bfd570b91da607791a4e7208423
-    digest: sha256:5e4e7ac7b58b5527965685426d273a576f9b3bfd570b91da607791a4e7208423
+    revision: sha256:88ec46c964bf3beb1faf778a2956f7d7ebdc6fe0c0e5237e1927f2609b5b75c2
+    digest: sha256:88ec46c964bf3beb1faf778a2956f7d7ebdc6fe0c0e5237e1927f2609b5b75c2
     path: workflows/developer-planning.yaml
   integration:
     id: f776d181-ed63-4e3a-b5c4-7b128e4d2094
@@ -239,8 +239,8 @@ graph:
     - {id: delivery-tests-repair, source: delivery-integration-tests, target: delivery-repair, label: developer.workstream.repair_requested -> developer.workstream.repair_requested}
     - {id: delivery-integration-publish, source: delivery-integration-review, target: delivery-publish, label: developer.integration.approved -> developer.integration.approved}
     - {id: delivery-publish-wait, source: delivery-publish, target: delivery-publication-wait, label: developer.delivery.waiting -> developer.delivery.waiting}
-    - {id: delivery-wait-publish, source: delivery-publication-wait, target: delivery-publish, label: developer.delivery.observed -> developer.delivery.observed, rework: true, maxIterations: 8}
+    - {id: delivery-wait-publish, source: delivery-publication-wait, target: delivery-publish, label: developer.delivery.observed -> developer.delivery.observed, rework: true}
     - {id: delivery-integration-repair, source: delivery-integration-review, target: delivery-repair, label: delivery.repair.required -> delivery.repair.required}
     - {id: delivery-publish-repair, source: delivery-publish, target: delivery-repair, label: developer.workstream.repair_requested -> developer.workstream.repair_requested}
-    - {id: delivery-repair-workstreams, source: delivery-repair, target: delivery-workstreams, label: developer.children.waiting -> developer.children.waiting, rework: true, maxIterations: 3}
+    - {id: delivery-repair-workstreams, source: delivery-repair, target: delivery-workstreams, label: developer.children.waiting -> developer.children.waiting, rework: true}
     - {id: delivery-publish-complete, source: delivery-publish, target: delivery-complete, label: developer.delivery.completed -> developer.delivery.completed}

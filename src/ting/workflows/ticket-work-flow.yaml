@@ -3,7 +3,7 @@ id: 9a41d7c6-3e52-5b08-a7f4-6c1e0d2b8f37
 name: Ticket Work Flow
 description: Does the work one tracker ticket asks for, with or without a repository, then waits for
   a person to approve the result. For tickets that are not about code.
-version: 1.0.2
+version: 1.0.3
 persona_dependencies:
   ticket-worker:
     id: ticket-worker
@@ -106,13 +106,11 @@ graph:
     target: ticket-work
     label: ticket.work.changes_requested -> ticket.work.changes_requested
     rework: true
-    maxIterations: 5
   - id: edge-gate-to-work
     source: result-review-gate
     target: ticket-work
     label: ticket.work.changes_requested -> ticket.work.changes_requested
     rework: true
-    maxIterations: 5
   - id: edge-gate-to-complete
     source: result-review-gate
     target: work-complete

@@ -1411,9 +1411,12 @@ def validate_workflow_graph(
       labels, and event names in the engine's reserved ``engine.`` namespace;
     * a node a trigger cannot reach, no trigger, no reachable ``end``, a node from
       which no ``end`` can be reached, and a node with nothing leaving it;
-    * a cycle unless every cycle holds an edge marked ``rework: true`` with a
-      positive ``maxIterations`` (and a ``rework`` edge that closes no cycle, or a
-      ``maxIterations`` on an edge that is not a rework edge);
+    * a cycle unless every cycle holds an edge marked ``rework: true`` (and a
+      ``rework`` edge that closes no cycle, a ``maxIterations`` that is not a
+      positive whole number, or a ``maxIterations`` on an edge that is not a rework
+      edge). A rework edge has no round limit unless its author sets
+      ``maxIterations``: a loop ends when its steps decide it is done, or when an
+      operator aborts the run;
     * a gate that does not declare its approve and request-changes events, or whose
       events no outgoing edge carries;
     * a trigger edge that does not leave with the trigger's ``dispatchEvent``;
@@ -1600,10 +1603,10 @@ def _validate_rework_fields(edge_id: str, edge: dict[str, Any]) -> None:
     if rework is not None and not isinstance(rework, bool):
         raise WorkflowDocumentError(f"Workflow edge {edge_id!r} rework must be true or false")
     if rework is True:
-        if type(max_iterations) is not int or max_iterations < 1:
+        if max_iterations is not None and (type(max_iterations) is not int or max_iterations < 1):
             raise WorkflowDocumentError(
-                f"Workflow edge {edge_id!r} is a rework edge and needs maxIterations: "
-                "a positive integer bounding how often the run may go back along it"
+                f"Workflow edge {edge_id!r} maxIterations must be a positive whole number "
+                "of rounds, or left out for no limit"
             )
         return
     if max_iterations is not None:
@@ -1723,8 +1726,7 @@ def _validate_cycles(graph: StepGraph) -> None:
         raise WorkflowDocumentError(
             "Workflow graph has a cycle with no rework edge: "
             + " -> ".join(cycle)
-            + ". Mark the edge that goes back to an earlier step rework: true and bound it "
-            "with maxIterations"
+            + ". Mark the edge that goes back to an earlier step rework: true"
         )
     for edge in graph.edges:
         if edge.rework and edge.source not in _closure([edge.target], everything):

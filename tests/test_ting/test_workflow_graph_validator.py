@@ -140,15 +140,18 @@ def test_the_engine_prefix_is_reserved_for_the_engines_own_events() -> None:
 # --- rework edges -----------------------------------------------------------------------
 
 
-def test_a_rework_edge_needs_a_positive_whole_number_bound() -> None:
-    for bound in (None, 0, -1, 1.5, True, "3"):
+def test_a_rework_edge_needs_no_round_limit() -> None:
+    graph = base_graph()
+    del edge_of(graph, "e-back")["maxIterations"]
+
+    validate_workflow_graph(graph)
+
+
+def test_an_author_set_round_limit_must_be_a_positive_whole_number() -> None:
+    for bound in (0, -1, 1.5, True, "3"):
         graph = base_graph()
-        back = edge_of(graph, "e-back")
-        if bound is None:
-            del back["maxIterations"]
-        else:
-            back["maxIterations"] = bound
-        refuses(graph, "edge 'e-back' is a rework edge and needs maxIterations")
+        edge_of(graph, "e-back")["maxIterations"] = bound
+        refuses(graph, "edge 'e-back' maxIterations must be a positive whole number")
 
 
 def test_rework_must_be_a_boolean() -> None:
@@ -482,17 +485,13 @@ def test_a_persona_verdict_no_edge_carries_is_not_a_graph_defect() -> None:
 # --- the shipped workflows ------------------------------------------------------------------
 
 
-def test_every_shipped_workflow_declares_its_rework_bounds_and_gate_events() -> None:
+def test_no_shipped_workflow_sets_a_rework_limit_and_every_gate_declares_its_events() -> None:
     workflows = load_system_workflows()
     assert workflows
     for workflow in workflows:
         graph = copy.deepcopy(workflow.graph)
         for item in graph["edges"]:
-            if item.get("rework"):
-                assert type(item.get("maxIterations")) is int and item["maxIterations"] > 0, (
-                    workflow.name,
-                    item["id"],
-                )
+            assert "maxIterations" not in item, (workflow.name, item["id"])
         for item in graph["nodes"]:
             if item["kind"] == "gate":
                 assert item["approvalEvent"] and item["changesRequestedEvent"], (

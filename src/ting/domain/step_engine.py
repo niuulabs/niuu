@@ -59,12 +59,14 @@ frees. Waiting steps do not hold a slot: they are parked, not working.
 
 Rework and generations
 ----------------------
-An edge back to an earlier node is marked ``rework: true`` and bounded by
-``maxIterations``. When a join fires over a rework edge the edge is *taken*: the run
-enters a new generation, every step still open in older generations becomes ``stale``
-(its late close is rejected), and the member activates in the new generation, so
-downstream reviewers run again against the new revision. Taking an edge more than
-``maxIterations`` times fails the run, naming the edge and the knob.
+An edge back to an earlier node is marked ``rework: true``. When a join fires over a
+rework edge the edge is *taken*: the run enters a new generation, every step still open
+in older generations becomes ``stale`` (its late close is rejected), and the member
+activates in the new generation, so downstream reviewers run again against the new
+revision. Every round is recorded with its iteration number. There is no round limit:
+a loop ends when its steps decide the work is done, or an operator aborts the run. A
+workflow's author may set ``maxIterations`` on the edge; taking it more often than that
+fails the run, naming the edge and the knob.
 
 Failure and siblings
 --------------------
@@ -949,7 +951,7 @@ class _Planner:
         for edge in edges:
             limit = edge.max_iterations
             taken = self._reworks_taken.get(edge.id, 0)
-            if limit is None or taken >= limit:
+            if limit is not None and taken >= limit:
                 self._fail_for_rework(edge, taken)
                 return False
         for edge in edges:
@@ -988,17 +990,11 @@ class _Planner:
         return True
 
     def _fail_for_rework(self, edge: EdgeSpec, taken: int) -> None:
-        if edge.max_iterations is None:
-            reason = (
-                f"rework edge {edge.id!r} ({edge.source} -> {edge.target}) has no maxIterations; "
-                "set it on the edge"
-            )
-        else:
-            reason = (
-                f"rework edge {edge.id!r} ({edge.source} -> {edge.target}) hit "
-                f"maxIterations={edge.max_iterations} after {taken} rework(s); raise it on the "
-                "edge or fix the step that keeps sending the work back"
-            )
+        reason = (
+            f"rework edge {edge.id!r} ({edge.source} -> {edge.target}) hit "
+            f"maxIterations={edge.max_iterations} after {taken} rework(s); raise it on the "
+            "edge, remove it, or fix the step that keeps sending the work back"
+        )
         self._fail(reason, cap=f"edge:{edge.id}.maxIterations")
 
     # -- steps ------------------------------------------------------------------
