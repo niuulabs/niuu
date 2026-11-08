@@ -455,13 +455,40 @@ def test_local_runtime_helpers_cover_container_states() -> None:
     assert local_runtime._published_port(SimpleNamespace(attrs={}), 9200) == 0
 
 
-def test_unreachable_docker_engine_fails_with_a_remedy(tmp_path, monkeypatch) -> None:
+def test_a_stopped_docker_engine_does_not_stop_the_controller_from_being_built(
+    tmp_path, monkeypatch
+) -> None:
+    def unreachable():
+        raise AssertionError("the controller must not contact the Docker Engine on construction")
+
+    monkeypatch.setattr(local_runtime.docker, "from_env", unreachable)
+
+    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+
+    assert controller.backend is ResidentBackend.LOCAL
+
+
+async def test_closing_a_controller_that_never_used_docker_does_not_open_it(
+    tmp_path, monkeypatch
+) -> None:
+    def unreachable():
+        raise AssertionError("close must not open the Docker Engine client")
+
+    monkeypatch.setattr(local_runtime.docker, "from_env", unreachable)
+
+    await LocalContainerResidentRuntimeController(residents_dir=str(tmp_path)).close()
+
+
+def test_an_operation_that_needs_a_stopped_docker_engine_fails_with_a_remedy(
+    tmp_path, monkeypatch
+) -> None:
     def unreachable():
         raise local_runtime.DockerException("Error while fetching server API version")
 
     monkeypatch.setattr(local_runtime.docker, "from_env", unreachable)
+    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
 
     with pytest.raises(RuntimeError, match="Start Docker") as raised:
-        LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+        controller._get_container(SimpleNamespace(id="r1"))
 
     assert "Docker Engine" in str(raised.value)

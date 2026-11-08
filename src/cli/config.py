@@ -541,8 +541,10 @@ class ResidentsConfig(BaseModel):
         default="docker",
         description=(
             "How residents run on this machine. 'docker' runs resident images through the "
-            "local Docker Engine, which must be running, and offers the NemoClaw and "
-            "NemoHermes profiles. The host-process runtime ('process') was removed with the "
+            "local Docker Engine and offers the NemoClaw and NemoHermes profiles. The engine "
+            "is contacted when a resident is created or inspected, not when the platform "
+            "starts: with Docker stopped the platform runs and creating a resident fails "
+            "naming Docker. The host-process runtime ('process') was removed with the "
             "Ravn resident engine it hosted; remove residents.runtime: process."
         ),
     )

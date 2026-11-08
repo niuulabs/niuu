@@ -101,10 +101,20 @@ class LocalContainerResidentRuntimeController(
         self._stop_timeout = int(stop_timeout)
         self._retain_data_on_delete = bool(retain_data_on_delete)
         self._credential_store: CredentialStorePort | None = None
+        self._docker_base_url = docker_base_url
+        # Opened on the first resident operation, not here: a platform that hosts residents
+        # starts on a machine whose Docker Engine is down, and only an operation that needs
+        # the engine fails (loudly, below) instead of the whole platform refusing to start.
+        self._docker_client: docker.DockerClient | None = None
+
+    @property
+    def _client(self) -> docker.DockerClient:
+        if self._docker_client is not None:
+            return self._docker_client
         try:
-            self._client = (
-                docker.DockerClient(base_url=docker_base_url)
-                if docker_base_url
+            self._docker_client = (
+                docker.DockerClient(base_url=self._docker_base_url)
+                if self._docker_base_url
                 else docker.from_env()
             )
         except DockerException as exc:
@@ -112,6 +122,7 @@ class LocalContainerResidentRuntimeController(
                 f"Local container residents cannot reach the Docker Engine ({exc}). Start "
                 "Docker, or configure a resident runtime that does not need it."
             ) from exc
+        return self._docker_client
 
     @property
     def backend(self) -> ResidentBackend:
@@ -343,7 +354,9 @@ class LocalContainerResidentRuntimeController(
             raise RuntimeError(f"OpenClaw device pairing failed: {output}")
 
     async def close(self) -> None:
-        await asyncio.to_thread(self._client.close)
+        if self._docker_client is None:
+            return
+        await asyncio.to_thread(self._docker_client.close)
 
     async def _materialize(
         self,
