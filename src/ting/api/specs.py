@@ -741,6 +741,8 @@ def _derive_spec_stage_state(
             current_status = "blocked"
         elif status == WorkflowCampaignStatus.FAILED:
             current_status = "failed"
+        elif status == WorkflowCampaignStatus.CANCELED:
+            current_status = "canceled"
         derived[first_incomplete] = CampaignStageState(
             stage_id=current.stage_id,
             label=current.label,

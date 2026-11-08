@@ -50,7 +50,7 @@ import {
 } from './WorkBoard';
 import './WorkPage.css';
 
-type WorkFilter = 'overview' | 'attention' | 'active' | 'completed' | 'failed';
+type WorkFilter = 'overview' | 'attention' | 'active' | 'completed' | 'failed' | 'canceled';
 
 /** The Work sidebar's width bounds; the person drags its edge between them. */
 const WORK_SIDEBAR: SidebarBounds = { default: 240, min: 200, max: 480, keyboardStep: 20 };
@@ -61,6 +61,7 @@ const FILTER_LABEL: Record<WorkFilter, string> = {
   active: 'Active',
   completed: 'Completed',
   failed: 'Failed',
+  canceled: 'Canceled',
 };
 
 export function workRouteId(item: Pick<WorkSummary, 'id'>): string {
@@ -89,6 +90,7 @@ function workMatchesFilter(item: WorkSummary, filter: WorkFilter): boolean {
   // Needs attention is what asks you for something; a failed run is listed under Failed.
   if (filter === 'attention') return item.condition === 'needsAttention';
   if (filter === 'failed') return item.condition === 'failed';
+  if (filter === 'canceled') return item.condition === 'canceled';
   if (filter === 'active') {
     return ['active', 'waiting', 'unknown'].includes(item.condition);
   }
@@ -630,6 +632,7 @@ function WorkOverview({
   );
   const completed = visible.filter((item) => item.condition === 'completed');
   const failed = visible.filter((item) => item.condition === 'failed');
+  const canceled = visible.filter((item) => item.condition === 'canceled');
 
   return (
     <main className="ting-work-overview" data-testid="work-overview">
@@ -694,6 +697,7 @@ function WorkOverview({
           <WorkSection title="Active" items={active} onSelect={onSelect} />
           <WorkSection title="Completed" items={completed} onSelect={onSelect} />
           <WorkSection title="Failed" items={failed} onSelect={onSelect} />
+          <WorkSection title="Canceled" items={canceled} onSelect={onSelect} />
         </>
       ) : (
         <WorkSection title={FILTER_LABEL[filter]} items={visible} onSelect={onSelect} />
@@ -724,9 +728,9 @@ export function WorkPage() {
     q?: string;
     view?: string;
   };
-  const filter = (['overview', 'attention', 'active', 'completed', 'failed'] as const).includes(
-    searchParams.filter as WorkFilter,
-  )
+  const filter = (
+    ['overview', 'attention', 'active', 'completed', 'failed', 'canceled'] as const
+  ).includes(searchParams.filter as WorkFilter)
     ? (searchParams.filter as WorkFilter)
     : 'overview';
   const search = typeof searchParams.q === 'string' ? searchParams.q : '';

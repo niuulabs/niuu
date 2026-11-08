@@ -44,6 +44,7 @@ from ting.domain.campaign_stages import (
     workflow_stages,
 )
 from ting.domain.models import (
+    TERMINAL_CAMPAIGN_STATUSES,
     CampaignStageState,
     WorkflowCampaign,
     WorkflowCampaignStatus,
@@ -952,9 +953,7 @@ async def _refresh_campaign_runtime(
     return saved
 
 
-_TERMINAL_CAMPAIGN_STATUSES = frozenset(
-    {WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED}
-)
+_TERMINAL_CAMPAIGN_STATUSES = TERMINAL_CAMPAIGN_STATUSES
 
 
 async def _resolve_campaign_volundr_adapter(

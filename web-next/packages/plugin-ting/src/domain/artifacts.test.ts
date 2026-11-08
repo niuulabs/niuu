@@ -168,6 +168,12 @@ describe('artifacts from publications', () => {
 });
 
 describe('artifact status', () => {
+  it('says a run an operator aborted was canceled, not failed', () => {
+    expect(artifactStatus({ ...RUN, status: 'canceled', condition: 'canceled' }, NONE)).toBe(
+      'canceled',
+    );
+  });
+
   it('waits on a person only while the run is held at a gate', () => {
     expect(
       artifactStatus(

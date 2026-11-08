@@ -13,7 +13,7 @@ import type { CampaignStageState } from './research';
 
 /** The subset of a campaign these helpers read. */
 export interface CampaignProgressInput {
-  status: 'pending' | 'running' | 'blocked' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'blocked' | 'completed' | 'failed' | 'canceled';
   activeStageId?: string | null;
   stageState: CampaignStageState[];
   metadata: Record<string, unknown>;

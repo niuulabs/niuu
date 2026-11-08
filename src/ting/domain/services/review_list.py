@@ -32,6 +32,7 @@ class ReviewState(StrEnum):
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
+    CANCELED = "canceled"
 
 
 class ReviewKind(StrEnum):
@@ -133,6 +134,8 @@ def _state(campaign: WorkflowCampaign, gate_label: str | None) -> ReviewState:
         return ReviewState.DONE
     if campaign.status == WorkflowCampaignStatus.FAILED:
         return ReviewState.FAILED
+    if campaign.status == WorkflowCampaignStatus.CANCELED:
+        return ReviewState.CANCELED
     # A gate is only waiting while it holds the run. Recording one blocks the campaign,
     # so a running campaign that still names a gate has already been answered.
     if campaign.status == WorkflowCampaignStatus.BLOCKED and gate_label is not None:

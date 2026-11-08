@@ -50,6 +50,8 @@ PENDING_GATES_KEY = "pending_workflow_gates"
 STUCK_STEPS_KEY = "stuck_workflow_steps"
 #: Campaign metadata key that records a run canceled through the engine.
 CANCELED_KEY = "run_canceled"
+#: Why an operator aborted the run (a canceled run has no failure_error).
+CANCEL_REASON_KEY = "cancel_reason"
 
 _GATE_STATUS_BY_DECISION = {
     GateDecision.APPROVE.value: GATE_STATUS_APPROVED,
@@ -122,6 +124,8 @@ def project_run(campaign: WorkflowCampaign, state: RunState, *, now: datetime) -
             metadata[FAILURE_STAGE_KEY] = failed_stage
     if any(event.event_type == EVENT_RUN_CANCELED for event in state.events):
         metadata[CANCELED_KEY] = True
+    if status is WorkflowCampaignStatus.CANCELED:
+        metadata[CANCEL_REASON_KEY] = _cancel_reason(state)
 
     stages = workflow_stages(campaign.workflow_snapshot)
     completed = (
@@ -177,8 +181,10 @@ def _status(state: RunState) -> WorkflowCampaignStatus:
     for event in reversed(state.events):
         if event.event_type == EVENT_RUN_COMPLETED:
             return WorkflowCampaignStatus.COMPLETED
-        if event.event_type in {EVENT_RUN_FAILED, EVENT_RUN_CANCELED}:
+        if event.event_type == EVENT_RUN_FAILED:
             return WorkflowCampaignStatus.FAILED
+        if event.event_type == EVENT_RUN_CANCELED:
+            return WorkflowCampaignStatus.CANCELED
     if any(
         step.state is StepState.WAITING
         and step.waiting_on is not None
@@ -193,6 +199,11 @@ def _failure(state: RunState) -> str:
     for event in reversed(state.events):
         if event.event_type == EVENT_RUN_FAILED:
             return str(event.payload.get("reason") or "the run failed")
+    return ""
+
+
+def _cancel_reason(state: RunState) -> str:
+    for event in reversed(state.events):
         if event.event_type == EVENT_RUN_CANCELED:
             return str(event.payload.get("reason") or "the run was canceled")
     return ""

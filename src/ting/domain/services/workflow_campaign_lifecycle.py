@@ -6,14 +6,14 @@ import logging
 from dataclasses import replace
 
 from niuu.domain.models import Principal
-from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.models import TERMINAL_CAMPAIGN_STATUSES, WorkflowCampaign
 from ting.ports.volundr import VolundrPort
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 
 logger = logging.getLogger(__name__)
 
 TERMINAL_SESSION_STOPPED_KEY = "terminal_session_stopped"
-_TERMINAL_STATUSES = frozenset({WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED})
+_TERMINAL_STATUSES = TERMINAL_CAMPAIGN_STATUSES
 
 
 def terminal_session_cleanup_needed(campaign: WorkflowCampaign) -> bool:

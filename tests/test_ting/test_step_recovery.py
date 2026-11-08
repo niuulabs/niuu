@@ -456,7 +456,7 @@ async def test_abort_cancels_the_run_with_who_when_and_why(run: StuckHarness) ->
     await run.runs.cancel(run.campaign, "wrong ticket", by=PERSON)
 
     assert run.state.finished
-    assert run.current.status is WorkflowCampaignStatus.FAILED
+    assert run.current.status is WorkflowCampaignStatus.CANCELED
     assert run.current.metadata["run_canceled"] is True
     assert [run.step(m).state for m in ("alpha", "bravo")] == [StepState.CANCELED] * 2
     [recovery] = recoveries(run)

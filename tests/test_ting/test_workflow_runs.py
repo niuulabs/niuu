@@ -497,7 +497,7 @@ async def test_a_session_that_ends_its_turn_without_closing_leaves_the_step_open
     assert len(harness.forge.deliveries) == 1
 
 
-async def test_cancelling_the_run_stops_its_sessions_and_fails_the_campaign(
+async def test_cancelling_the_run_stops_its_sessions_and_cancels_the_campaign(
     harness: Harness,
 ) -> None:
     await harness.launch()
@@ -506,8 +506,9 @@ async def test_cancelling_the_run_stops_its_sessions_and_fails_the_campaign(
 
     await harness.runs.cancel(harness.current, "the owner changed their mind")
 
-    assert harness.current.status is WorkflowCampaignStatus.FAILED
-    assert harness.current.metadata["failure_error"] == "the owner changed their mind"
+    assert harness.current.status is WorkflowCampaignStatus.CANCELED
+    assert harness.current.metadata["cancel_reason"] == "the owner changed their mind"
+    assert "failure_error" not in harness.current.metadata
     assert harness.current.metadata["run_canceled"] is True
     assert reviewer in harness.forge.stopped and len(harness.forge.stopped) == 2
 

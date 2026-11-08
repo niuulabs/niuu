@@ -19,6 +19,7 @@ import {
   type Publication,
   type RunRef,
   type SessionRef,
+  RUN_ENDED,
 } from '../../domain/artifacts';
 import { CoordinatorChat } from '../CoordinatorChat';
 import { useRunGateDecision, useRunReviews, useWorkDetail } from '../useWork';
@@ -49,7 +50,7 @@ function pendingGate(reviews: readonly RunReview[]) {
 }
 
 function runEnded(run: RunRef): boolean {
-  return run.condition === 'completed' || run.condition === 'failed';
+  return RUN_ENDED.has(run.condition);
 }
 
 function noteForRun(artifact: Artifact, notes: string): string {

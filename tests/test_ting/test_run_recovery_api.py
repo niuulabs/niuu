@@ -175,7 +175,7 @@ async def test_abort_cancels_the_run(api: Harness, stuck: StuckHarness) -> None:
     response = api.abort(reason="wrong ticket")
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"status": "aborted", "run_status": "failed"}
+    assert response.json() == {"status": "aborted", "run_status": "canceled"}
     assert stuck.state.finished
     [canceled] = stuck.events(EVENT_RUN_CANCELED)
     assert canceled.payload["reason"] == "wrong ticket"

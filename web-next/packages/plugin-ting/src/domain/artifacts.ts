@@ -36,7 +36,10 @@ export interface ArtifactVersion {
   url: string | null;
 }
 
-export type ArtifactStatus = 'waiting' | 'inProgress' | 'done' | 'failed';
+/** The run conditions that end a run: nothing more will happen in it. */
+export const RUN_ENDED: ReadonlySet<string> = new Set(['completed', 'failed', 'canceled']);
+
+export type ArtifactStatus = 'waiting' | 'inProgress' | 'done' | 'failed' | 'canceled';
 
 export interface RunRef {
   slug: string;
@@ -81,6 +84,7 @@ export const ARTIFACT_STATUS_LABEL: Record<ArtifactStatus, string> = {
   inProgress: 'In progress',
   done: 'Done',
   failed: 'Run failed',
+  canceled: 'Run canceled',
 };
 
 function humanize(value: string): string {
@@ -104,6 +108,7 @@ export function runWaits(run: RunRef, waitingSlugs: ReadonlySet<string>): boolea
 export function artifactStatus(run: RunRef, waitingSlugs: ReadonlySet<string>): ArtifactStatus {
   if (runWaits(run, waitingSlugs)) return 'waiting';
   if (run.condition === 'failed') return 'failed';
+  if (run.condition === 'canceled') return 'canceled';
   if (run.condition === 'completed') return 'done';
   return 'inProgress';
 }
@@ -137,7 +142,7 @@ function runSession(run: RunRef): SessionRef {
     sessionId: run.sessionId,
     instanceId: run.instanceId,
     title: run.title,
-    running: run.condition !== 'completed' && run.condition !== 'failed',
+    running: !RUN_ENDED.has(run.condition),
   };
 }
 

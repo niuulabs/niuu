@@ -69,7 +69,7 @@ export interface RunReviews {
   unreadableRuns: string[];
 }
 
-export type ReviewState = 'waiting' | 'running' | 'done' | 'failed';
+export type ReviewState = 'waiting' | 'running' | 'done' | 'failed' | 'canceled';
 
 /** One run a person reviews, as the Reviews list shows it across projects. */
 export interface ReviewItem {

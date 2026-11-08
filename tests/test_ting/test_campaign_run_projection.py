@@ -214,14 +214,18 @@ def test_a_failed_run_carries_the_reason_and_names_the_stage_that_failed() -> No
     assert {s.stage_id: s.status for s in projection.stage_state}["review"] == "failed"
 
 
-def test_a_canceled_run_is_failed_with_the_reason_and_marked_canceled() -> None:
+def test_a_canceled_run_ends_canceled_with_the_reason_and_no_failure() -> None:
     state = _state([], [LAUNCHED, _event(2, EVENT_RUN_CANCELED, reason="owner stopped it")])
 
     projection = project_run(_campaign(), state, now=NOW)
 
-    assert projection.status is WorkflowCampaignStatus.FAILED
-    assert projection.metadata["failure_error"] == "owner stopped it"
+    assert projection.status is WorkflowCampaignStatus.CANCELED
+    assert projection.failure == ""
+    assert "failure_error" not in projection.metadata
+    assert projection.metadata["cancel_reason"] == "owner stopped it"
     assert projection.metadata[CANCELED_KEY] is True
+    current = [s for s in projection.stage_state if s.status not in {"complete", "pending"}]
+    assert [s.status for s in current] == ["canceled"]
 
 
 def test_a_failed_run_without_a_stated_reason_still_says_so() -> None:

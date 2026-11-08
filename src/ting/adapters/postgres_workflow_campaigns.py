@@ -10,15 +10,18 @@ from uuid import UUID
 import asyncpg
 
 from identity.ports import AuthorizationDeniedError
-from ting.domain.models import CampaignStageState, WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.models import (
+    TERMINAL_CAMPAIGN_STATUSES,
+    CampaignStageState,
+    WorkflowCampaign,
+    WorkflowCampaignStatus,
+)
 from ting.ports.workflow_campaign_repository import (
     CampaignAlreadyTerminalError,
     WorkflowCampaignRepository,
 )
 
-_TERMINAL_STATUS_VALUES = frozenset(
-    {WorkflowCampaignStatus.COMPLETED.value, WorkflowCampaignStatus.FAILED.value}
-)
+_TERMINAL_STATUS_VALUES = frozenset(status.value for status in TERMINAL_CAMPAIGN_STATUSES)
 
 
 class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
@@ -256,8 +259,8 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
                 WHERE workflow_campaigns.tenant_id = EXCLUDED.tenant_id
                   AND workflow_campaigns.owner_id IS NOT DISTINCT FROM EXCLUDED.owner_id
                   AND NOT (
-                      workflow_campaigns.status IN ('completed', 'failed')
-                      AND EXCLUDED.status NOT IN ('completed', 'failed')
+                      workflow_campaigns.status IN ('completed', 'failed', 'canceled')
+                      AND EXCLUDED.status NOT IN ('completed', 'failed', 'canceled')
                   )
             """,
             campaign.id,

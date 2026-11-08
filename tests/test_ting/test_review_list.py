@@ -103,6 +103,14 @@ def test_finished_and_failed_runs_say_so() -> None:
     assert failed.state == ReviewState.FAILED
 
 
+def test_an_aborted_run_says_canceled_not_failed() -> None:
+    [canceled] = review_list(
+        [_campaign(_ticket(), status=WorkflowCampaignStatus.CANCELED)], [_saga()]
+    )
+
+    assert canceled.state == ReviewState.CANCELED
+
+
 def test_a_project_plan_is_listed_and_names_its_project_once_committed() -> None:
     planned, committed = review_list(
         [

@@ -1219,7 +1219,7 @@ class TestSendMessage:
         assert port.stopped == ["session-1"]
         persisted = next(iter(campaigns._campaigns.values()))
         assert persisted.metadata["a2a_canceled"] is True
-        assert persisted.status is WorkflowCampaignStatus.FAILED
+        assert persisted.status is WorkflowCampaignStatus.CANCELED
 
     def test_jsonrpc_span_uses_traceparent_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
         class Span:
@@ -3038,3 +3038,32 @@ class TestTaskArtifacts:
         result = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]
 
         assert result.get("artifacts", []) == []
+
+
+def test_a_canceled_campaign_is_a_canceled_task_with_no_failure_message() -> None:
+    from ting.api.a2a import TaskState, campaign_to_task
+
+    now = datetime.now(UTC)
+    campaign = WorkflowCampaign(
+        id=uuid4(),
+        slug="aborted",
+        name="aborted",
+        owner_id="owner",
+        workflow_id=uuid4(),
+        workflow_version="1.0.0",
+        workflow_name="W",
+        workflow_snapshot={},
+        session_id="",
+        session_name="",
+        status=WorkflowCampaignStatus.CANCELED,
+        active_stage_id=None,
+        stage_state=[],
+        metadata={"cancel_reason": "wrong ticket", "run_canceled": True},
+        created_at=now,
+        updated_at=now,
+    )
+
+    task = campaign_to_task(campaign)
+
+    assert task.status.state == TaskState.TASK_STATE_CANCELED
+    assert not task.status.message.message_id

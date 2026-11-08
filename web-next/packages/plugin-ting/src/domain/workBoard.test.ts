@@ -23,6 +23,7 @@ describe('groupWorkByCondition', () => {
       work('d', 'unknown'),
       work('e', 'waiting'),
       work('f', 'completed'),
+      work('g', 'canceled'),
     ]);
 
     expect(columns.map((column) => [column.id, column.items.map((item) => item.title)])).toEqual([
@@ -31,6 +32,8 @@ describe('groupWorkByCondition', () => {
       ['waiting', ['e']],
       ['completed', ['f']],
       ['failed', ['b']],
+      // An aborted run is its own ending, not a failure.
+      ['canceled', ['g']],
     ]);
   });
 });
