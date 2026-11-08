@@ -2,12 +2,12 @@ schema_version: 2
 id: 4e7ebec4-0cfa-4567-98dd-2ee4ce0bc308
 name: Research Thread
 description: Run one exploration thread on an assigned angle and produce a structured finding for the parent research campaign.
-version: 1.0.3
+version: 1.0.4
 persona_dependencies:
   research-explorer:
     id: research-explorer
-    revision: content-26ca3994887f5652
-    digest: sha256:26ca3994887f565241bc9a48e372818a0ff60244e09a47b730c8dc92785e7c65
+    revision: content-b9209d92f64af0ad
+    digest: sha256:b9209d92f64af0ad8176ed39c44b20e44b365ed49c9e527db374722e1477bd69
     path: personas/research-explorer.yaml
 workflow_dependencies: {}
 graph:

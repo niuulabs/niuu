@@ -2,17 +2,17 @@ schema_version: 2
 id: f776d181-ed63-4e3a-b5c4-7b128e4d2094
 name: Developer Integration
 description: Verify and review the complete integration candidate against the approved delivery plan.
-version: 1.0.2
+version: 1.0.3
 persona_dependencies:
   developer-coordinator:
     id: developer-coordinator
-    revision: content-3a9923c7efddc30f
-    digest: sha256:3a9923c7efddc30f37c3f244ba8b19e611c5a54eb015179b8c0ca71773a1db18
+    revision: content-e6faaaa4df0ac645
+    digest: sha256:e6faaaa4df0ac645976592ca088c754488aea9ab175b7d5931e3c2d6e4a43d92
     path: personas/developer-coordinator.yaml
   developer-integration-verifier:
     id: developer-integration-verifier
-    revision: content-936789faffd17273
-    digest: sha256:936789faffd17273ceb1db2239b7915d17eff0bc4d859d9904011c62b3263ee6
+    revision: content-bcce21d6f11178b4
+    digest: sha256:bcce21d6f11178b48f8da77e80dbf113f4fd0628536cf70d5538156b55ef8fae
     path: personas/developer-integration-verifier.yaml
 workflow_dependencies: {}
 graph:

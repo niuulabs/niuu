@@ -3,63 +3,63 @@ id: 1bfc01b1-4d01-5d20-86e1-2956dff11464
 name: Research Campaign
 description: Flexible deep-research workflow that frames a question, explores the evidence deeply through parallel
   threads, challenges the thesis, and distills durable memory into Mimir.
-version: 2.1.1
+version: 2.1.2
 persona_dependencies:
   research-analyst:
     id: research-analyst
-    revision: content-07866d703b0c33dd
-    digest: sha256:07866d703b0c33dd44fa747a4ea37fdbb0d397b7925e0ddc1bed5e5e0d5cdfd1
+    revision: content-0c49e4a21930ddbe
+    digest: sha256:0c49e4a21930ddbe9a9d50fb9a39a2774e54912e2b8b894b84af143ce98ba9a5
     path: personas/research-analyst.yaml
   research-coordinator:
     id: research-coordinator
-    revision: content-60e096e477bcbb5f
-    digest: sha256:60e096e477bcbb5f40fce5cbd1e71bfdd1ee89e3248974c5adda423be2566740
+    revision: content-b5b30896a9f6eac1
+    digest: sha256:b5b30896a9f6eac1d18551507a19489a3103afa0c981b4b1bec5fa1f14408627
     path: personas/research-coordinator.yaml
   research-curator:
     id: research-curator
-    revision: content-9a7a537709977ccf
-    digest: sha256:9a7a537709977ccf13ac027a04fcf9f523f60b37aef7530eb11febc15a5eea05
+    revision: content-c4599be0ce3bb097
+    digest: sha256:c4599be0ce3bb097c59d042b74929f4e47d0de2bb11447a15df27891229232a0
     path: personas/research-curator.yaml
   research-framer:
     id: research-framer
-    revision: content-4e2246a4c92aaad8
-    digest: sha256:4e2246a4c92aaad8894a5a9f387eb6a3500900b1c919a218a8fe9d2528ab89d9
+    revision: content-7ffd6dd247ab190e
+    digest: sha256:7ffd6dd247ab190ed0458ce14a2190688217b3a2f5ca127fba28426fb38d6486
     path: personas/research-framer.yaml
   research-publisher:
     id: research-publisher
-    revision: content-c2f6205579e3fe95
-    digest: sha256:c2f6205579e3fe957c9ff8ec91494df1e3ab229b8e7e948dc471f78f13961fd8
+    revision: content-01f7f066bbcedd5f
+    digest: sha256:01f7f066bbcedd5f3edec38bb15a49a500bf9055699dee64b8bd05fccf46ce21
     path: personas/research-publisher.yaml
   research-skeptic:
     id: research-skeptic
-    revision: content-5da531454f62a470
-    digest: sha256:5da531454f62a4703868a7dceecfcda5076be812fb3957ce7d1690a94cbe0984
+    revision: content-df420d8a1ce68fcf
+    digest: sha256:df420d8a1ce68fcfce6f5c38b2b1638604b937f49fc584ca21285df7aa6525f8
     path: personas/research-skeptic.yaml
   research-synthesist:
     id: research-synthesist
-    revision: content-4e40a47094c469af
-    digest: sha256:4e40a47094c469afe365b0b32168524f0de68b6bf0708c2ce6c72835d9c68b23
+    revision: content-3bf87a1700d35576
+    digest: sha256:3bf87a1700d35576be3d84bc393c60c93840de44b34606a690facc71942a083e
     path: personas/research-synthesist.yaml
 workflow_dependencies:
   general:
     id: 4e7ebec4-0cfa-4567-98dd-2ee4ce0bc308
-    revision: sha256:d01285e9bc84f6e28a5aceb3328374b1e51b1053582ed9c976c1958b53aa526a
-    digest: sha256:d01285e9bc84f6e28a5aceb3328374b1e51b1053582ed9c976c1958b53aa526a
+    revision: sha256:ad3d2526d414ce0b83942e573d81ff5bae92e34f41a31d5138c9f66caaaad08e
+    digest: sha256:ad3d2526d414ce0b83942e573d81ff5bae92e34f41a31d5138c9f66caaaad08e
     path: workflows/research-thread.yaml
   breadth:
     id: 42951d75-dd82-4596-92ea-1c0a6ef4b965
-    revision: sha256:c62f2b8d7e740013f48e869c25841009b08b6db8dbb4e61310e525573ffcb28f
-    digest: sha256:c62f2b8d7e740013f48e869c25841009b08b6db8dbb4e61310e525573ffcb28f
+    revision: sha256:65966a021f93e7be0ba5b6d25a527de3aa92b1c88a5f32d4ae7f39f5364738c4
+    digest: sha256:65966a021f93e7be0ba5b6d25a527de3aa92b1c88a5f32d4ae7f39f5364738c4
     path: workflows/research-thread-breadth.yaml
   depth:
     id: bf5f97dd-d89b-4f3e-a8fc-ea61a42685a5
-    revision: sha256:892e4be05422c18c3773ddb7424453ef2e3503cce17ec2e3f5d1dd29ab6d261e
-    digest: sha256:892e4be05422c18c3773ddb7424453ef2e3503cce17ec2e3f5d1dd29ab6d261e
+    revision: sha256:c99b61dff15f8a123ee73d07d9c011159e041f5deec359e5c692f0225b2045ff
+    digest: sha256:c99b61dff15f8a123ee73d07d9c011159e041f5deec359e5c692f0225b2045ff
     path: workflows/research-thread-depth.yaml
   contrarian:
     id: 5777251e-7ff1-47f7-b182-d040ed9a7a2f
-    revision: sha256:ae74292349a0b026d4dac2ff09be2e3dabe3aff94b200a4bff66024262e1fae2
-    digest: sha256:ae74292349a0b026d4dac2ff09be2e3dabe3aff94b200a4bff66024262e1fae2
+    revision: sha256:89baabf0c7dff185fdd942f05d7ffe737d81116f94b28cf2f26d2a13d500ba9c
+    digest: sha256:89baabf0c7dff185fdd942f05d7ffe737d81116f94b28cf2f26d2a13d500ba9c
     path: workflows/research-thread-contrarian.yaml
 graph:
   tags:

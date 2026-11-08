@@ -3,27 +3,27 @@ id: a4c7067a-ac22-5b64-bde1-ec8ad1507e73
 name: Saga Planning
 description: Focused planning workflow that clarifies a brief, drafts a saga breakdown, and pauses for
   review before publishing the plan.
-version: 1.0.4
+version: 1.0.5
 persona_dependencies:
   saga-brief-framer:
     id: saga-brief-framer
-    revision: content-8cd3186f5fa72e3d
-    digest: sha256:8cd3186f5fa72e3dd72e38182c6a03956190da75ff79cfe4d486717f9d468fa3
+    revision: content-0ab23ec496e2f81f
+    digest: sha256:0ab23ec496e2f81f093ae6c9616f80f58c9185f200df691acfa71a77d6e2e603
     path: personas/saga-brief-framer.yaml
   saga-plan-publisher:
     id: saga-plan-publisher
-    revision: content-4dba3f138beb6875
-    digest: sha256:4dba3f138beb6875a5cdf0abadfc695b89b5698a714d0ba2d3571bca0e48c562
+    revision: content-2fc24585a899e893
+    digest: sha256:2fc24585a899e893023fe9aaf85e18b1d49d9cb9c8a65ddb79f6f83f4a11cae3
     path: personas/saga-plan-publisher.yaml
   saga-plan-reviewer:
     id: saga-plan-reviewer
-    revision: content-12c83ca60bfd463b
-    digest: sha256:12c83ca60bfd463b89e28211e9f25ca455b66fbf9f5480d7a407ce5646a37983
+    revision: content-60c85b4b19846c96
+    digest: sha256:60c85b4b19846c964213dac0919c79b459c13e88a9eb340d5e93d0e15c22cf87
     path: personas/saga-plan-reviewer.yaml
   saga-planner:
     id: saga-planner
-    revision: content-ec4473c0b21f624e
-    digest: sha256:ec4473c0b21f624e316cf94e1b0f0e50c6e9f47e83d95ee1808afe384667e732
+    revision: content-3df02662e1825a4c
+    digest: sha256:3df02662e1825a4c19820639e88dea900a304406576eec385f5731a23ceeabd5
     path: personas/saga-planner.yaml
 graph:
   tags:

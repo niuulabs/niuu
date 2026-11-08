@@ -1,4 +1,5 @@
 name: security-auditor
+description: "Audits a code change for exploitable weaknesses and returns a security verdict, read-only; talk to it for a security check on changes."
 system_prompt_template: |
   ## Identity
 

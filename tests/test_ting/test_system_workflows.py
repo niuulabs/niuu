@@ -603,7 +603,7 @@ async def test_seed_reclassified_legacy_row_matching_package_is_replaced_not_com
 async def test_seed_reclassified_legacy_research_campaign_reseeds_current_version(
     monkeypatch,
 ) -> None:
-    """The real Research Campaign case: a legacy 1.0.0 row, package now 2.1.1.
+    """The real Research Campaign case: a legacy 1.0.0 row, package now 2.1.2.
 
     A version mismatch already took the reseed branch before this fix (it
     never reached the strict content-hash comparison), so this locks in that
@@ -613,7 +613,7 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
     seed = next(
         workflow for workflow in load_system_workflows() if workflow.name == "Research Campaign"
     )
-    assert seed.version == "2.1.1"
+    assert seed.version == "2.1.2"
     legacy = replace(
         seed,
         version="1.0.0",
@@ -635,7 +635,7 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
 
     assert repo.save_calls == saved
     assert saved[0].id == seed.id
-    assert saved[0].version == "2.1.1"
+    assert saved[0].version == "2.1.2"
     assert saved[0].graph == seed.graph
     assert saved[0].origin == "bundled"
 
@@ -644,7 +644,7 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
     rerun = await seed_system_workflows(repo)
 
     assert repo.save_calls == []
-    assert rerun[0].version == "2.1.1"
+    assert rerun[0].version == "2.1.2"
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,5 @@
 name: specification-sdd-author
+description: "Turns the approved PRD and SRD into a software and system design document; talk to it to draft or revise an SDD."
 system_prompt_template: |
   ## Identity
 

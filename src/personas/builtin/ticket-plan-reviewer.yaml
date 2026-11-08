@@ -1,4 +1,5 @@
 name: ticket-plan-reviewer
+description: "Checks that a tracker ticket's plan is bounded, specific and actionable before a person sees it; talk to it to review a ticket plan."
 system_prompt_template: |
   ## Identity
 

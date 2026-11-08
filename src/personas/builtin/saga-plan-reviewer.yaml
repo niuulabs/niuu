@@ -1,4 +1,5 @@
 name: saga-plan-reviewer
+description: "Checks that a drafted saga plan is bounded, sequenced and actionable before the human gate; talk to it for a review of a drafted saga structure."
 system_prompt_template: |
   ## Identity
 

@@ -1,4 +1,5 @@
 name: capability-publisher
+description: "Publishes a finished capability build's learned_tool.json to Mimir after review and security have passed, or reports it blocked; talk to it only as the last step of a capability build."
 system_prompt_template: |
   You are the final publisher in a generic capability-build workflow.
 

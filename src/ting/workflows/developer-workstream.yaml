@@ -2,32 +2,32 @@ schema_version: 2
 id: 98133eab-cd89-44d1-b32d-26c82f99dddc
 name: Developer Workstream
 description: Implement one isolated work order, run trusted verification, and independently review its immutable candidate.
-version: 1.0.3
+version: 1.0.4
 persona_dependencies:
   developer-coordinator:
     id: developer-coordinator
-    revision: content-3a9923c7efddc30f
-    digest: sha256:3a9923c7efddc30f37c3f244ba8b19e611c5a54eb015179b8c0ca71773a1db18
+    revision: content-e6faaaa4df0ac645
+    digest: sha256:e6faaaa4df0ac645976592ca088c754488aea9ab175b7d5931e3c2d6e4a43d92
     path: personas/developer-coordinator.yaml
   developer-coder:
     id: developer-coder
-    revision: content-7565f71a53d540ec
-    digest: sha256:7565f71a53d540ec1ac6056e7ab7b12abc3cad499986445130eceb4919a91231
+    revision: content-f8e1c97f569a8b7a
+    digest: sha256:f8e1c97f569a8b7a60a22afa051be9e372dbc057ee6ede1bb79e312c8d56c6e3
     path: personas/developer-coder.yaml
   developer-code-reviewer:
     id: developer-code-reviewer
-    revision: content-251bc469ad743233
-    digest: sha256:251bc469ad743233b6d77c6d209954c8a763082da20e9fa6a0cf499de7cc8237
+    revision: content-6525672a4d75c73d
+    digest: sha256:6525672a4d75c73d1572729c8ad6ff47430a927c744837e626f2becc75113e58
     path: personas/developer-code-reviewer.yaml
   developer-security-reviewer:
     id: developer-security-reviewer
-    revision: content-09308873ff738a21
-    digest: sha256:09308873ff738a21cde03a2658032441434dddef0f07aca8e8238251f320c77c
+    revision: content-7370f763a417201d
+    digest: sha256:7370f763a417201da02cec847aec46a855b239dd9a3cf98ec51240073cc61071
     path: personas/developer-security-reviewer.yaml
   developer-adversarial-reviewer:
     id: developer-adversarial-reviewer
-    revision: content-eee59515cd3d040a
-    digest: sha256:eee59515cd3d040a033a0fb11531d9a1f069accc3f1e089edb12f66eae5a2ffa
+    revision: content-dea473451b4e6053
+    digest: sha256:dea473451b4e6053771d73915ff92b9239986670947849d6533a6b3d59e532ab
     path: personas/developer-adversarial-reviewer.yaml
 workflow_dependencies: {}
 graph:

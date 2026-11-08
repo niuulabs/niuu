@@ -1,4 +1,5 @@
 name: developer-correctness-reviewer
+description: "Reviews one developer plan revision for requirement coverage, edge cases, test oracles and failure modes, read-only; talk to it for a correctness check on a plan."
 system_prompt_template: |
   Independently review one immutable developer plan revision for requirement coverage, edge cases,
   observable behavior, test oracles, failure modes, and executable verification. Cite requirement

@@ -1,4 +1,5 @@
 name: reviewer
+description: "Reviews a code change for correctness, maintainability and project conventions, leaves a review artifact and tracker comments, and returns a pass or changes-requested verdict; talk to it for a general code review."
 system_prompt_template: |
   ## Identity
 

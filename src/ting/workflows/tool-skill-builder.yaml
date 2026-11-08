@@ -3,32 +3,32 @@ id: 3c217e0a-1ff0-56d6-ba27-54cd43bff8e6
 name: Tool & Skill Builder
 description: Resident capability workflow that designs, implements, reviews, canaries, and publishes a
   missing Valkyrie/Ravn tool or skill.
-version: 1.0.9
+version: 1.0.10
 persona_dependencies:
   capability-publisher:
     id: capability-publisher
-    revision: content-4375bd525964e63c
-    digest: sha256:4375bd525964e63c9f7834d9d2872d8808c1ad19133a290598e415b76fc2dded
+    revision: content-f4fb6728373e2e01
+    digest: sha256:f4fb6728373e2e017d4158acb46b9b3145cba9473097a08d259d86b12eb09fdc
     path: personas/capability-publisher.yaml
   coder:
     id: coder
-    revision: content-6137847046c82615
-    digest: sha256:6137847046c82615d9bdac877ae09158b99c8f8fa911eb5b186e4e5d27086231
+    revision: content-6c648f6dd3dafec8
+    digest: sha256:6c648f6dd3dafec85cc2090c32b1400feee7acab2a2fd4fe17a3b0ce90521c69
     path: personas/coder.yaml
   reviewer:
     id: reviewer
-    revision: content-4a234835de48b091
-    digest: sha256:4a234835de48b091473706c0200ee61c57ebc972329af80a1736b543b7bdb7dd
+    revision: content-8b9a792f57d3aeea
+    digest: sha256:8b9a792f57d3aeea4003c7207bc6451344c9cb0aa927efc55bfd681799d37c05
     path: personas/reviewer.yaml
   security-auditor:
     id: security-auditor
-    revision: content-ffa64a8273719b89
-    digest: sha256:ffa64a8273719b89d20ae3e8ee12afd9e682308251c06ecb02a292d8b01a7b19
+    revision: content-372ca2715f0fb1c9
+    digest: sha256:372ca2715f0fb1c9318735489792df2af63bd7138cd72358ccf07f96e5a8b76a
     path: personas/security-auditor.yaml
   specification-framer:
     id: specification-framer
-    revision: content-9536c710d0ee55ba
-    digest: sha256:9536c710d0ee55ba04f603543b0feb10aa2f726f95bd9d59d183356dfebf0019
+    revision: content-44af1901d85eb1be
+    digest: sha256:44af1901d85eb1befe7da012d57d87d23d6451624227b7bc475dea4e8ce26f80
     path: personas/specification-framer.yaml
 graph:
   tags:

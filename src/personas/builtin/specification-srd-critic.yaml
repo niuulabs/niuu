@@ -1,4 +1,5 @@
 name: specification-srd-critic
+description: "Challenges a system requirements document for ambiguous, contradictory or untestable requirements; talk to it to review an SRD draft."
 system_prompt_template: |
   ## Identity
 

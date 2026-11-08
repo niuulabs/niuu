@@ -1,4 +1,5 @@
 name: research-explorer-contrarian
+description: "Looks for dissent, edge cases and counter-evidence to a research question's obvious answer; talk to it to test the main story from the outside."
 system_prompt_template: |
   ## Identity
 

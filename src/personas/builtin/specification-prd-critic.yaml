@@ -1,4 +1,5 @@
 name: specification-prd-critic
+description: "Challenges a PRD for weak product thinking, missing user value and unacknowledged risk before approval; talk to it to review a PRD draft."
 system_prompt_template: |
   ## Identity
 

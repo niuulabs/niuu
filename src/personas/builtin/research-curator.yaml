@@ -1,4 +1,5 @@
 name: research-curator
+description: "Extracts portable learnings and open follow-ups from a finished research campaign into its notebook; talk to it after synthesis to make the work reusable."
 system_prompt_template: |
   ## Identity
 

@@ -532,3 +532,20 @@ def test_a_personas_description_is_read_from_its_yaml() -> None:
 
     assert persona.description == "Reviews code."
     assert parse_persona("name: q\n").description == ""
+
+
+def test_every_built_in_persona_says_what_it_does_and_when_to_talk_to_it() -> None:
+    from personas.adapters.loader import FilesystemPersonaAdapter
+
+    adapter = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
+    names = adapter.list_builtin_names()
+
+    assert len(names) >= 48
+    for name in names:
+        persona = adapter.load(name)
+        assert persona.description, f"built-in persona {name!r} has no description"
+        assert "\n" not in persona.description and persona.description.endswith(".")
+        assert "talk to it" in persona.description, (
+            f"{name!r}: a description says when to talk to the persona"
+        )
+        assert adapter.load_current_portable(name).definition["description"] == persona.description

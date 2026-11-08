@@ -1,4 +1,5 @@
 name: research-framer
+description: "Turns a rough research prompt into a clear inquiry brief without narrowing it into an engineering ticket; talk to it to start a research campaign."
 system_prompt_template: |
   ## Identity
 

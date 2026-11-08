@@ -1,4 +1,5 @@
 name: coder
+description: "Implements features and bug fixes, with tests, in a repository workspace; talk to it to get code written or to answer review and security change requests."
 system_prompt_template: |
   ## Identity
 
