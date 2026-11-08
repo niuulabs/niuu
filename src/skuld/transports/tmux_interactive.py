@@ -43,6 +43,7 @@ from skuld.control_errors import ControlRecoveryError
 from skuld.delivery_errors import DeliveryNotAcceptedError
 from skuld.session_runtime import write_private_file
 from skuld.transports.claude_env import claude_spawn_env
+from skuld.transports.claude_policy import ClaudeToolPolicy
 from skuld.transports.claude_text_order import preceding_tool_text
 from skuld.transports.mcp_config import build_claude_mcp_config, build_claude_mcp_payload
 from skuld.transports.session_tools import PRESENT_FILE_INSTRUCTION, SessionTools
@@ -309,6 +310,7 @@ class TmuxInteractiveTransport(CLITransport):
         workspace_trust_stable_s: float = 0.5,
         workspace_trust_settle_s: float = 1.0,
         workspace_trust_max_attempts: int = 3,
+        claude_tool_policy: ClaudeToolPolicy | None = None,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
@@ -324,9 +326,13 @@ class TmuxInteractiveTransport(CLITransport):
         )
         self._effort_control_timeout = effort_control_timeout_s
         self._forge_session_id = session_id or "skuld-interactive"
-        self._skip_permissions = skip_permissions
+        self._tool_policy = claude_tool_policy
+        # A policy that decides the permission mode is a boundary the node's own mode and
+        # agent teams must not widen.
+        bounded = claude_tool_policy is not None and claude_tool_policy.sets_permission_mode
+        self._skip_permissions = skip_permissions and not bounded
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
-        self._agent_teams = agent_teams
+        self._agent_teams = agent_teams and not bounded
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
         self._raw_mcp_servers = list(mcp_servers or [])
@@ -3767,6 +3773,8 @@ class TmuxInteractiveTransport(CLITransport):
             cmd.extend(["--resume", self._resume_session_id])
         if self._skip_permissions:
             cmd.extend(["--permission-mode", self._claude_permission_mode])
+        if self._tool_policy is not None:
+            cmd.extend(self._tool_policy.cli_args())
         if self._remote_control:
             rc_name = self._remote_control_name()
             cmd.extend(["--remote-control", rc_name])

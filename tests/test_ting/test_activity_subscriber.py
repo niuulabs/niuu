@@ -22,8 +22,6 @@ from ting.domain.models import (
     Run,
     RunStatus,
     SessionMessage,
-    WorkflowCampaign,
-    WorkflowCampaignStatus,
 )
 from ting.domain.services.activity_subscriber import (
     CompletionEvaluation,
@@ -31,7 +29,7 @@ from ting.domain.services.activity_subscriber import (
     SessionActivitySubscriber,
     _ClusterBackoffState,
 )
-from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
+from ting.domain.workflow_steps import StepFencingError
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.volundr import (
     ActivityEvent,
@@ -40,7 +38,8 @@ from ting.ports.volundr import (
     VolundrPort,
     VolundrSession,
 )
-from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
+
+from . import workflow_step_contract as contract
 
 # ---------------------------------------------------------------------------
 # Stubs
@@ -49,6 +48,7 @@ from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 NOW = datetime.now(UTC)
 
 SESSION_ID = "session-1"
+
 OWNER_ID = "user-1"
 SAGA_ID = UUID("00000000-0000-0000-0000-000000000002")
 TRACKER_ISSUE_ID = "issue-1"
@@ -230,50 +230,6 @@ class ActiveOwnersDispatcherRepo(StubDispatcherRepo):
         return list(self._owner_ids)
 
 
-class StubWorkflowCampaignRepo(WorkflowCampaignRepository):
-    def __init__(self, campaigns: list[WorkflowCampaign] | None = None) -> None:
-        self.campaigns = {campaign.id: campaign for campaign in campaigns or []}
-
-    async def list_campaigns(self, *, owner_id: str) -> list[WorkflowCampaign]:
-        return [campaign for campaign in self.campaigns.values() if campaign.owner_id == owner_id]
-
-    async def list_active_campaigns(self) -> list[WorkflowCampaign]:
-        return [
-            campaign
-            for campaign in self.campaigns.values()
-            if campaign.status
-            in {
-                WorkflowCampaignStatus.PENDING,
-                WorkflowCampaignStatus.RUNNING,
-                WorkflowCampaignStatus.BLOCKED,
-            }
-        ]
-
-    async def get_campaign(self, campaign_id: UUID) -> WorkflowCampaign | None:
-        return self.campaigns.get(campaign_id)
-
-    async def get_campaign_by_slug(
-        self,
-        slug: str,
-        *,
-        owner_id: str | None = None,
-    ) -> WorkflowCampaign | None:
-        for campaign in self.campaigns.values():
-            if campaign.slug != slug:
-                continue
-            if owner_id is not None and campaign.owner_id != owner_id:
-                continue
-            return campaign
-        return None
-
-    async def save_campaign(self, campaign: WorkflowCampaign) -> WorkflowCampaign:
-        self.campaigns[campaign.id] = campaign
-        return campaign
-
-    async def delete_campaign(self, campaign_id: UUID) -> bool:
-        return self.campaigns.pop(campaign_id, None) is not None
-
-
 class StubVolundrFactory:
     """Stub factory that always returns the same adapter for any owner."""
 
@@ -438,27 +394,6 @@ def _make_volundr_session(
     )
 
 
-def _make_workflow_campaign(session_id: str = SESSION_ID) -> WorkflowCampaign:
-    return WorkflowCampaign(
-        id=uuid4(),
-        slug="plan-test",
-        name="Plan test",
-        owner_id=OWNER_ID,
-        workflow_id=uuid4(),
-        workflow_version="1.0.0",
-        workflow_name="Saga Planning",
-        workflow_snapshot={},
-        session_id=session_id,
-        session_name="Plan test",
-        status=WorkflowCampaignStatus.RUNNING,
-        active_stage_id="plan-clarify",
-        stage_state=[],
-        metadata={},
-        created_at=NOW,
-        updated_at=NOW,
-    )
-
-
 def _make_subscriber(
     volundr: StubVolundr | None = None,
     dispatcher_repo: StubDispatcherRepo | None = None,
@@ -467,7 +402,7 @@ def _make_subscriber(
     tracker: MockTracker | None = None,
     run: Run | None = None,
     review_engine: object | None = None,
-    workflow_campaign_repo: WorkflowCampaignRepository | None = None,
+    workflow_runs: object | None = None,
 ) -> tuple[SessionActivitySubscriber, StubVolundr, MockTracker, InMemoryEventBus]:
     v = volundr or StubVolundr()
     if SESSION_ID not in v.sessions:
@@ -481,15 +416,6 @@ def _make_subscriber(
     e = event_bus or InMemoryEventBus()
     c = config or _default_config()
     factory = StubVolundrFactory(v)
-    campaign_projector = (
-        WorkflowCampaignProjector(
-            repo=workflow_campaign_repo,
-            volundr_factory=factory,  # type: ignore[arg-type]
-            event_bus=e,
-        )
-        if workflow_campaign_repo is not None
-        else None
-    )
     sub = SessionActivitySubscriber(
         volundr_factory=factory,
         tracker_factory=tf,
@@ -497,7 +423,7 @@ def _make_subscriber(
         event_bus=e,
         config=c,
         review_engine=review_engine,  # type: ignore[arg-type]
-        workflow_campaign_projector=campaign_projector,
+        workflow_runs=workflow_runs,  # type: ignore[arg-type]
     )
     return sub, v, t, e
 
@@ -720,60 +646,6 @@ class TestActivityEventHandling:
         assert bus_event.event == "run.feedback_requested"
         assert bus_event.data["tracker_id"] == TRACKER_ISSUE_ID
         assert bus_event.data["summary"] == "Need operator approval before publication"
-
-    @pytest.mark.asyncio
-    async def test_help_needed_with_full_payload_session_updates_workflow_campaign(self) -> None:
-        full_session_id = "a23145f7-afcb-4184-b683-a6b0a1d2efc5"
-        campaign_repo = StubWorkflowCampaignRepo([_make_workflow_campaign(full_session_id)])
-        tracker = MockTracker(runs_by_session={})
-        sub, _volundr, _tracker, event_bus = _make_subscriber(
-            tracker=tracker,
-            workflow_campaign_repo=campaign_repo,
-        )
-
-        event = ActivityEvent(
-            session_id="a23145f7",
-            state="idle",
-            metadata={
-                "help_needed": {
-                    "session_id": full_session_id,
-                    "summary": "Plan is ready for human review.",
-                    "reason": "needs_human_approval",
-                    "recommendation": "Approve or request focused changes.",
-                    "persona": "workflow-gate",
-                    "context": {
-                        "gate_id": "plan-review-gate:event_plan_breakdown_a23145f7:1",
-                        "gate_node_id": "plan-review-gate",
-                        "gate_status": "pending",
-                        "instructions": "Approve the draft if it is bounded.",
-                    },
-                },
-            },
-            owner_id=OWNER_ID,
-        )
-
-        q = event_bus.subscribe()
-        await sub._on_activity_event(event, _volundr, OWNER_ID)
-
-        campaign = next(iter(campaign_repo.campaigns.values()))
-        assert campaign.status == WorkflowCampaignStatus.BLOCKED
-        assert campaign.active_stage_id == "plan-review-gate"
-        assert campaign.metadata["pending_workflow_gates"] == [
-            {
-                "id": "plan-review-gate:event_plan_breakdown_a23145f7:1",
-                "node_id": "plan-review-gate",
-                "status": "pending",
-                "summary": "Plan is ready for human review.",
-                "instructions": "Approve the draft if it is bounded.",
-                "reason": "needs_human_approval",
-                "label": "plan-review-gate",
-            }
-        ]
-        bus_event = await asyncio.wait_for(q.get(), timeout=1.0)
-        if bus_event.event == "workflow.campaign.updated":
-            bus_event = await asyncio.wait_for(q.get(), timeout=1.0)
-        assert bus_event.event == "workflow.campaign.feedback_requested"
-        assert bus_event.data["session_id"] == full_session_id
 
     @pytest.mark.asyncio
     async def test_idle_with_no_turns_does_not_complete(self) -> None:
@@ -2070,3 +1942,130 @@ class TestWatcherConfigNewFields:
         assert cfg.reconnect_backoff_multiplier == 3.0
         assert cfg.reconnect_jitter == 0.1
         assert cfg.reconnect_stable_after_seconds == 15.0
+
+
+class _RecordingRuns:
+    """What the subscriber hands the run service for the workflow_step reports it reads."""
+
+    def __init__(self, *, reject: Exception | None = None) -> None:
+        self.closed: list[dict] = []
+        self.unclosed: list[dict] = []
+        self.reconciled: list[str] = []
+        self._reject = reject
+
+    async def record_step_closed(self, **kwargs) -> None:
+        if self._reject is not None:
+            raise self._reject
+        self.closed.append(kwargs)
+
+    async def record_step_unclosed(self, **kwargs) -> None:
+        if self._reject is not None:
+            raise self._reject
+        self.unclosed.append(kwargs)
+
+    async def reconcile_owner(self, owner_id: str) -> None:
+        self.reconciled.append(owner_id)
+
+
+class TestWorkflowStepReports:
+    """The subscriber maps the ``workflow_step`` activity metadata of the phase 2 contract."""
+
+    @staticmethod
+    def _event(metadata: dict, session_id: str = "ses-from-envelope") -> ActivityEvent:
+        return ActivityEvent(
+            session_id=session_id, state="idle", metadata=metadata, owner_id=OWNER_ID
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_closed_report_is_applied_with_the_session_of_the_envelope(self) -> None:
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+
+        await sub._on_activity_event(self._event(contract.CLOSED_METADATA), volundr, OWNER_ID)
+
+        [call] = runs.closed
+        assert call["session_id"] == "ses-from-envelope"
+        assert str(call["run_id"]) == contract.RUN_ID
+        assert str(call["activation_id"]) == contract.ACTIVATION_ID
+        assert call["attempt"] == 1
+        assert call["report"] == contract.CLOSED_METADATA["workflow_step"]["ending"]
+        assert runs.unclosed == []
+
+    @pytest.mark.asyncio
+    async def test_the_session_in_the_payload_is_never_trusted(self) -> None:
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+        forged = {"workflow_step": {**contract.CLOSED_METADATA["workflow_step"], "session_id": "x"}}
+
+        await sub._on_activity_event(self._event(forged), volundr, OWNER_ID)
+
+        assert runs.closed[0]["session_id"] == "ses-from-envelope"
+
+    @pytest.mark.asyncio
+    async def test_an_unclosed_report_is_recorded_not_closed(self) -> None:
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+
+        await sub._on_activity_event(self._event(contract.UNCLOSED_METADATA), volundr, OWNER_ID)
+
+        [call] = runs.unclosed
+        assert call["session_id"] == "ses-from-envelope"
+        assert str(call["activation_id"]) == contract.ACTIVATION_ID
+        assert runs.closed == []
+
+    @pytest.mark.asyncio
+    async def test_a_fenced_close_is_logged_at_error_and_the_stream_moves_on(self, caplog) -> None:
+        runs = _RecordingRuns(reject=StepFencingError(UUID(contract.ACTIVATION_ID), "stale"))
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+
+        with caplog.at_level("ERROR", logger="ting.domain.services.activity_subscriber"):
+            await sub._on_activity_event(self._event(contract.CLOSED_METADATA), volundr, OWNER_ID)
+
+        assert any("was rejected" in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_report_is_logged_and_counted(self, caplog) -> None:
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+        broken = {"workflow_step": {"event": "closed", "run_id": "not-a-uuid"}}
+
+        with caplog.at_level("ERROR", logger="ting.domain.services.activity_subscriber"):
+            await sub._on_activity_event(self._event(broken), volundr, OWNER_ID)
+
+        assert any("Malformed workflow_step" in record.getMessage() for record in caplog.records)
+        assert runs.closed == [] and runs.unclosed == []
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_report_event_is_an_error(self, caplog) -> None:
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+        odd = {"workflow_step": {**contract.UNCLOSED_METADATA["workflow_step"], "event": "paused"}}
+
+        with caplog.at_level("ERROR", logger="ting.domain.services.activity_subscriber"):
+            await sub._on_activity_event(self._event(odd), volundr, OWNER_ID)
+
+        assert any(
+            "unknown workflow_step event" in record.getMessage() for record in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_reconnecting_reads_back_the_closes_missed_while_the_stream_was_down(
+        self,
+    ) -> None:
+        runs = _RecordingRuns()
+        cluster = NamedVolundr(name="ymir", target_id="ymir-1")
+        sub = SessionActivitySubscriber(
+            volundr_factory=MultiVolundrFactory([cluster]),
+            tracker_factory=MockTrackerFactory(trackers=[MockTracker(runs_by_session={})]),
+            dispatcher_repo=ActiveOwnersDispatcherRepo([OWNER_ID]),
+            event_bus=InMemoryEventBus(),
+            config=_default_config(),
+            workflow_runs=runs,  # type: ignore[arg-type]
+        )
+        sub._running = True
+        task = asyncio.create_task(sub._adapter_subscription_loop(OWNER_ID, cluster))
+        sub._owner_tasks[OWNER_ID] = {"ymir-1": task}
+
+        await task
+
+        assert runs.reconciled == [OWNER_ID]

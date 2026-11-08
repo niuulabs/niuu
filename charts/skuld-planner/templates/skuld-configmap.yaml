@@ -15,6 +15,9 @@ data:
       {{- if .Values.session.systemPrompt }}
       system_prompt: {{ .Values.session.systemPrompt | quote }}
       {{- end }}
+      {{- if .Values.session.persona }}
+      persona: {{ .Values.session.persona | toJson }}
+      {{- end }}
       {{- if .Values.session.initialPrompt }}
       initial_prompt: {{ .Values.session.initialPrompt | quote }}
       {{- end }}
@@ -26,9 +29,6 @@ data:
     cli_type: {{ .Values.broker.cliType | default "claude" | quote }}
     host: "0.0.0.0"
     port: 8081
-    workflow:
-      evidence_verifier: {{ .Values.workflow.evidenceVerifier | toJson }}
-      evidence_artifacts: {{ .Values.workflow.evidenceArtifacts | toJson }}
     persistence_mount_path: {{ .Values.persistence.mountPath | default "/volundr/sessions" | quote }}
 
     {{- if .Values.volundr.apiUrl }}

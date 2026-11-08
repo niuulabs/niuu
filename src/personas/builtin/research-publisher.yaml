@@ -57,9 +57,9 @@ system_prompt_template: |
   manifest_path: research/campaigns/{slug}/manifest.md
   ---end---
 
-allowed_tools: [glob_search, mimir_publish_files, mimir_read, read_file, mimir_search, present_file]
-forbidden_tools: [git, terminal, cascade, volundr, web_search, web_fetch, mimir_ingest]
-permission_mode: workspace-write
+allowed_tools: [file_read, "mimir:publish_files", "mimir:read", "mimir:search", present_file]
+forbidden_tools: [git, git_read, shell, web_search, web_fetch, "mimir:ingest"]
+permission_mode: workspace_write
 
 llm:
   thinking_enabled: true

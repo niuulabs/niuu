@@ -15,8 +15,8 @@ system_prompt_template: |
   a receipt ID, child attempt, or inferred value. findings is always an array of objects, never
   strings; each finding object states whether it is blocking and includes concrete evidence. Use an
   empty array when there are no findings.
-allowed_tools: [delivery_workspace]
-forbidden_tools: [write_file, edit_file, terminal, bash, git_add, git_commit, delivery_forge, delivery_evidence]
+allowed_tools: [plan]
+forbidden_tools: [file_write, shell, git]
 # Read-only prepublication reviewer: inspect only. Declared here (not derived
 # from name or executionContract) so a workflow that maps a dependency to
 # this persona under a different alias cannot silently widen it.

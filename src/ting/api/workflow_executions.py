@@ -29,15 +29,15 @@ from ting.api.workflow_execution_launch import (
     launch_reserved_parent,
     new_parent_execution,
     parent_launch_body,
-    parent_session_key,
     template_descriptions,
 )
-from ting.api.workflows import resolve_workflow_repo
+from ting.api.workflows import resolve_workflow_launch_campaign_repo, resolve_workflow_repo
 from ting.domain.services.workflow_execution import WorkflowExecutionService
 from ting.domain.services.workflow_wait import WorkflowWaitService
 from ting.domain.workflow_continuation_events import wait_node_conditions
 from ting.domain.workflow_execution import (
     ExecutionConflictError,
+    ExecutionState,
     ExpansionPolicy,
     WorkflowChildExecution,
     WorkflowChildProposal,
@@ -52,6 +52,7 @@ from ting.domain.workflow_execution_trace import (
     workflow_event_sources,
 )
 from ting.ports.volundr import PublicSessionLogPage, VolundrFactory
+from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_execution import WorkflowExecutionRepository
 from ting.ports.workflow_repository import WorkflowRepository
 
@@ -155,6 +156,7 @@ def create_workflow_executions_router() -> APIRouter:
         workflow_repo: WorkflowRepository = Depends(resolve_workflow_repo),
         execution_repo: WorkflowExecutionRepository = Depends(resolve_workflow_execution_repo),
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_launch_campaign_repo),
     ) -> dict[str, Any]:
         launch_key = request.headers.get("idempotency-key", "").strip()
         if not launch_key or len(launch_key) > 255:
@@ -194,26 +196,9 @@ def create_workflow_executions_router() -> APIRouter:
             reserved, created = await execution_repo.reserve_parent_launch(execution)
         except ExecutionConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        if reserved.parent_session_id:
+        if reserved.state is not ExecutionState.PENDING:
+            # The parent's run already started: a replay answers with it.
             return await _detail(execution_repo, reserved)
-
-        session_key = parent_session_key(reserved.id)
-        target_adapter = await _target_adapter(volundr_factory, principal, body.connection_id)
-        sessions = await target_adapter.list_sessions(
-            auth_token=bearer_token,
-            principal=principal,
-        )
-        recovered = next(
-            (session for session in sessions if session.tracker_issue_id == session_key),
-            None,
-        )
-        if recovered is not None:
-            attached = await execution_repo.attach_parent_session(
-                reserved.id,
-                session_id=recovered.id,
-                connection_id=getattr(target_adapter, "target_id", "") or "",
-            )
-            return await _detail(execution_repo, attached)
         if not created and datetime.now(UTC) - reserved.updated_at < timedelta(
             seconds=settings.lease_seconds
         ):
@@ -233,6 +218,7 @@ def create_workflow_executions_router() -> APIRouter:
             reserved=reserved,
             launch=launch,
             execution_repo=execution_repo,
+            campaign_repo=campaign_repo,
             volundr_factory=volundr_factory,
             principal=principal,
             bearer_token=bearer_token,
@@ -583,16 +569,6 @@ def create_workflow_executions_router() -> APIRouter:
         return await _detail(repository, execution)
 
     return router
-
-
-async def _target_adapter(factory: VolundrFactory, principal: Principal, connection_id: str | None):
-    if connection_id:
-        adapter = await factory.for_connection(principal.user_id, connection_id)
-    else:
-        adapter = await factory.primary_for_owner(principal.user_id)
-    if adapter is None:
-        raise HTTPException(status_code=503, detail="No Volundr connection is available")
-    return adapter
 
 
 async def _trace_adapter(

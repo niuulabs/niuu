@@ -38,7 +38,7 @@ from ting.api.workflow_executions import (
     resolve_workflow_execution_repo,
     resolve_workflow_execution_service,
 )
-from ting.api.workflows import resolve_workflow_repo
+from ting.api.workflows import resolve_workflow_launch_campaign_repo, resolve_workflow_repo
 from ting.delivery import api as delivery_api
 from ting.delivery.api import (
     create_delivery_executions_router,
@@ -52,7 +52,10 @@ from ting.domain.workflow_execution import (
     ExecutionState,
     WorkflowExecutionError,
 )
+from ting.domain.workflow_steps import EVENT_RUN_LAUNCHED, RunEvent
 from ting.system_workflows import load_system_workflows
+
+from .fake_workflow_runs import FakeWorkflowRuns
 
 
 def _context():
@@ -184,7 +187,24 @@ def _developer_workflow():
     return next(item for item in load_system_workflows() if item.name == "Developer Delivery")
 
 
-def test_launch_reserves_frozen_snapshot_before_parent_session(monkeypatch) -> None:
+def _running_launch(repository, captured):
+    """Stands in for ``launch_reserved_parent``: marks the execution running, as it does."""
+
+    async def launch(**kwargs):
+        captured.update(kwargs)
+        reserved = kwargs["reserved"]
+        await repository.update_execution_state(
+            reserved.id,
+            state=ExecutionState.RUNNING.value,
+            suspension_reason="",
+            expected_revision=reserved.revision,
+        )
+        return SimpleNamespace(id=reserved.id), repository.execution
+
+    return launch
+
+
+def test_launch_reserves_frozen_snapshot_before_the_parent_run_starts(monkeypatch) -> None:
     workflow = _developer_workflow()
     repository = MemoryRepository(_execution())
     captured = {}
@@ -214,23 +234,22 @@ def test_launch_reserves_frozen_snapshot_before_parent_session(monkeypatch) -> N
             return Adapter()
 
     async def launch(**kwargs):
-        captured.update(kwargs)
         assert repository.execution.workflow_snapshot
-        assert kwargs["pinned_workflow_snapshot"] == repository.execution.workflow_snapshot
+        assert kwargs["reserved"].workflow_snapshot == repository.execution.workflow_snapshot
         developer = kwargs["launch"].provenance["workflow_execution"]
         assert developer["execution_id"] == str(repository.execution.id)
-        return SimpleNamespace(
-            session=SimpleNamespace(id="parent-session-1"),
-            connection_id="forge-1",
-        )
+        assert "parent_session_key" not in developer
+        return await _running_launch(repository, captured)(**kwargs)
 
-    monkeypatch.setattr(delivery_api, "launch_workflow_execution", launch)
+    monkeypatch.setattr(delivery_api, "launch_reserved_parent", launch)
     app = FastAPI()
     app.state.settings = _settings(anonymous=True)
     app.include_router(create_delivery_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+    app.state.workflow_runs = FakeWorkflowRuns()
 
     response = TestClient(app).post(
         "/api/v1/ting/delivery-executions",
@@ -245,7 +264,8 @@ def test_launch_reserves_frozen_snapshot_before_parent_session(monkeypatch) -> N
     )
 
     assert response.status_code == 201, response.text
-    assert repository.execution.parent_session_id == "parent-session-1"
+    assert not repository.execution.parent_session_id
+    assert repository.execution.state is ExecutionState.RUNNING
     assert repository.execution.launch_key == "ticket-123"
     assert repository.execution.workflow_snapshot["workflow_definitions"]
     assert captured["workflow"].id == workflow.id
@@ -266,6 +286,8 @@ def test_launch_rejects_an_unknown_parent_node_id() -> None:
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+    app.state.workflow_runs = FakeWorkflowRuns()
 
     response = TestClient(app).post(
         "/api/v1/ting/delivery-executions",
@@ -298,6 +320,8 @@ def test_launch_rejects_a_parent_node_id_that_is_not_a_subworkflow() -> None:
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+    app.state.workflow_runs = FakeWorkflowRuns()
 
     response = TestClient(app).post(
         "/api/v1/ting/delivery-executions",
@@ -315,7 +339,7 @@ def test_launch_rejects_a_parent_node_id_that_is_not_a_subworkflow() -> None:
     assert "delivery-request" in response.text
 
 
-def test_launch_recovers_reserved_parent_session_without_duplicate_spawn(monkeypatch) -> None:
+def test_launch_finds_the_parent_run_a_replay_already_started(monkeypatch) -> None:
     workflow = _developer_workflow()
 
     class Repository(MemoryRepository):
@@ -341,28 +365,36 @@ def test_launch_recovers_reserved_parent_session_without_duplicate_spawn(monkeyp
                 observed_at=datetime.now(UTC),
             )
 
-        async def list_sessions(self, **kwargs):
-            return [
-                SimpleNamespace(
-                    id="recovered-session",
-                    tracker_issue_id=f"workflow:execution-{repository.execution.id.hex}",
-                )
-            ]
-
     class Factory:
         async def primary_for_owner(self, owner_id):
             return Adapter()
 
     async def duplicate_launch(**kwargs):
-        raise AssertionError("recovered reservations must not spawn a second parent")
+        raise AssertionError("a run that already started must not be started again")
 
-    monkeypatch.setattr(delivery_api, "launch_workflow_execution", duplicate_launch)
+    monkeypatch.setattr(delivery_api, "launch_reserved_parent", duplicate_launch)
     app = FastAPI()
     app.state.settings = _settings(anonymous=True)
     app.include_router(create_delivery_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+
+    class StartedRuns(FakeWorkflowRuns):
+        async def state(self, run_id):
+            self.events_by_run[run_id] = [
+                RunEvent(
+                    run_id=run_id,
+                    seq=1,
+                    event_type=EVENT_RUN_LAUNCHED,
+                    generation=0,
+                    created_at=datetime.now(UTC),
+                )
+            ]
+            return await super().state(run_id)
+
+    app.state.workflow_runs = StartedRuns()
 
     response = TestClient(app).post(
         "/api/v1/ting/delivery-executions",
@@ -377,7 +409,7 @@ def test_launch_recovers_reserved_parent_session_without_duplicate_spawn(monkeyp
     )
 
     assert response.status_code == 201, response.text
-    assert repository.execution.parent_session_id == "recovered-session"
+    assert response.json()["executionId"] == str(repository.execution.id)
 
 
 def test_replayed_launch_context_uses_reserved_identity_and_excludes_token(monkeypatch) -> None:
@@ -424,7 +456,6 @@ def test_replayed_launch_context_uses_reserved_identity_and_excludes_token(monke
             return Adapter()
 
     async def launch(**kwargs):
-        captured.update(kwargs)
         context = kwargs["launch"].context
         developer = context["workflow_execution"]
         assert developer == {
@@ -463,18 +494,17 @@ def test_replayed_launch_context_uses_reserved_identity_and_excludes_token(monke
         assert "auth_token" not in kwargs["launch"].provenance["workflow_execution"]
         assert "auth_token" not in json.dumps(kwargs["launch"].context)
         assert "auth_token" not in json.dumps(context)
-        return SimpleNamespace(
-            session=SimpleNamespace(id="parent-session-replay"),
-            connection_id="forge-1",
-        )
+        return await _running_launch(repository, captured)(**kwargs)
 
-    monkeypatch.setattr(delivery_api, "launch_workflow_execution", launch)
+    monkeypatch.setattr(delivery_api, "launch_reserved_parent", launch)
     app = FastAPI()
     app.state.settings = _settings(anonymous=True)
     app.include_router(create_delivery_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+    app.state.workflow_runs = FakeWorkflowRuns()
 
     response = TestClient(app).post(
         "/api/v1/ting/delivery-executions",
@@ -492,7 +522,8 @@ def test_replayed_launch_context_uses_reserved_identity_and_excludes_token(monke
     assert candidate_id is not None
     assert candidate_id != reserved_id
     assert captured["launch"].context["workflow_execution"]["execution_id"] == str(reserved_id)
-    assert repository.execution.parent_session_id == "parent-session-replay"
+    assert captured["reserved"].id == reserved_id
+    assert repository.execution.state is ExecutionState.RUNNING
 
 
 def test_real_service_routes_expand_reconcile_retry_cancel_and_evidence() -> None:
@@ -883,6 +914,8 @@ def test_delivery_launch_requires_git_fields() -> None:
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+    app.state.workflow_runs = FakeWorkflowRuns()
 
     missing_both = TestClient(app).post(
         "/api/v1/ting/delivery-executions",
@@ -1000,6 +1033,8 @@ def test_launch_requires_idempotency_key_header() -> None:
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+    app.state.workflow_runs = FakeWorkflowRuns()
 
     response = TestClient(app).post(
         "/api/v1/ting/delivery-executions",
@@ -1031,6 +1066,8 @@ def test_launch_returns_404_when_workflow_not_found() -> None:
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+    app.state.workflow_runs = FakeWorkflowRuns()
 
     response = TestClient(app).post(
         "/api/v1/ting/delivery-executions",
@@ -1062,6 +1099,8 @@ def test_launch_rejects_schema_version_below_2() -> None:
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+    app.state.workflow_runs = FakeWorkflowRuns()
 
     response = TestClient(app).post(
         "/api/v1/ting/delivery-executions",
@@ -1103,6 +1142,8 @@ def test_launch_rejects_connection_that_cannot_resolve_delivery_ref() -> None:
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+    app.state.workflow_runs = FakeWorkflowRuns()
 
     response = TestClient(app).post(
         "/api/v1/ting/delivery-executions",
@@ -1150,6 +1191,8 @@ def test_launch_rejects_deadline_without_timezone() -> None:
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+    app.state.workflow_runs = FakeWorkflowRuns()
 
     response = TestClient(app).post(
         "/api/v1/ting/delivery-executions",
@@ -1198,6 +1241,8 @@ def test_launch_rejects_deadline_in_the_past() -> None:
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+    app.state.workflow_runs = FakeWorkflowRuns()
 
     response = TestClient(app).post(
         "/api/v1/ting/delivery-executions",
@@ -1251,6 +1296,8 @@ def test_launch_reports_conflict_when_launch_key_digest_differs() -> None:
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+    app.state.workflow_runs = FakeWorkflowRuns()
 
     response = TestClient(app).post(
         "/api/v1/ting/delivery-executions",
@@ -1309,11 +1356,13 @@ def test_launch_returns_existing_detail_when_parent_session_already_attached() -
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+    app.state.workflow_runs = FakeWorkflowRuns()
 
     from ting.delivery import api as delivery_api_module
 
-    original_launch = delivery_api_module.launch_workflow_execution
-    delivery_api_module.launch_workflow_execution = duplicate_launch
+    original_launch = delivery_api_module.launch_reserved_parent
+    delivery_api_module.launch_reserved_parent = duplicate_launch
     try:
         response = TestClient(app).post(
             "/api/v1/ting/delivery-executions",
@@ -1327,7 +1376,7 @@ def test_launch_returns_existing_detail_when_parent_session_already_attached() -
             },
         )
     finally:
-        delivery_api_module.launch_workflow_execution = original_launch
+        delivery_api_module.launch_reserved_parent = original_launch
 
     assert response.status_code == 201, response.text
     assert response.json()["executionId"] == str(already_launched.id)
@@ -1378,11 +1427,13 @@ def test_launch_returns_existing_detail_when_within_lease_and_unrecovered() -> N
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: None
+    app.state.workflow_runs = FakeWorkflowRuns()
 
     from ting.delivery import api as delivery_api_module
 
-    original_launch = delivery_api_module.launch_workflow_execution
-    delivery_api_module.launch_workflow_execution = duplicate_launch
+    original_launch = delivery_api_module.launch_reserved_parent
+    delivery_api_module.launch_reserved_parent = duplicate_launch
     try:
         response = TestClient(app).post(
             "/api/v1/ting/delivery-executions",
@@ -1396,7 +1447,7 @@ def test_launch_returns_existing_detail_when_within_lease_and_unrecovered() -> N
             },
         )
     finally:
-        delivery_api_module.launch_workflow_execution = original_launch
+        delivery_api_module.launch_reserved_parent = original_launch
 
     assert response.status_code == 201, response.text
     assert response.json()["executionId"] == str(repository.execution.id)

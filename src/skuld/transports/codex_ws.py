@@ -53,12 +53,13 @@ from skuld.transports.codex import (
     resolve_codex_cli,
 )
 from skuld.transports.mcp_config import (
+    CODEX_WEB_SEARCH_DISABLED,
     build_codex_mcp_isolation_overrides,
     build_codex_mcp_overrides,
 )
 from skuld.transports.owned_codex_process import OwnedCodexProcess, OwnedProcessError
 from skuld.transports.session_env import session_process_env
-from skuld.transports.session_tools import SessionTools
+from skuld.transports.session_tools import SessionTools, compose_prompt
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
@@ -126,7 +127,7 @@ def codex_gateway_overrides(gateway_url: str) -> list[tuple[str, str]]:
         # translation, which carries function tools only and refuses the rest.
         # Codex otherwise asks for hosted web search (on by default) and the
         # multi-agent tool namespace (verified against Codex 0.157.1).
-        ("web_search", json.dumps("disabled")),
+        CODEX_WEB_SEARCH_DISABLED,
         ("features.multi_agent", "false"),
     ]
 
@@ -361,6 +362,10 @@ class CodexWebSocketTransport(CLITransport):
     managed access-only ChatGPT tokens supplied by Völundr.
     """
 
+    #: ``read_only_mcp_only`` isolates the MCP servers to the given list (no connectors,
+    #: plugins or suggestions) and verifies each connected: a persona's MCP boundary.
+    supports_read_only_mcp_boundary = True
+
     def __init__(
         self,
         workspace_dir: str,
@@ -370,6 +375,7 @@ class CodexWebSocketTransport(CLITransport):
         approval_policy: str = "",
         sandbox: str = "",
         shell_tool_enabled: bool | None = None,
+        web_search_enabled: bool | None = None,
         multi_agent_enabled: bool | None = None,
         read_only_mcp_only: bool = False,
         system_prompt: str = "",
@@ -417,6 +423,7 @@ class CodexWebSocketTransport(CLITransport):
         self._approval_policy = approval_policy.strip()
         self._sandbox = sandbox.strip()
         self._shell_tool_enabled = shell_tool_enabled
+        self._web_search_enabled = web_search_enabled
         self._multi_agent_enabled = multi_agent_enabled
         self._read_only_mcp_only = read_only_mcp_only
         self._system_prompt = system_prompt
@@ -524,6 +531,11 @@ class CodexWebSocketTransport(CLITransport):
             if self._current_turn_request_id:
                 data.setdefault("request_id", self._current_turn_request_id)
         await super()._emit(data)
+
+    def _developer_instructions(self) -> str:
+        """Session capability text, then the persona and request instructions."""
+        capabilities = self._session_tools.instructions if self._session_tools else ""
+        return compose_prompt(capabilities, self._system_prompt)
 
     def _permission_thread_params(self) -> dict[str, str]:
         """Return Codex thread permission params for start/resume."""
@@ -735,6 +747,8 @@ class CodexWebSocketTransport(CLITransport):
         cmd.extend(["-c", "=".join(CODEX_PLAN_TOOL_OVERRIDE)])
         if self._shell_tool_enabled is not None:
             cmd.extend(["-c", f"features.shell_tool={str(self._shell_tool_enabled).lower()}"])
+        if self._web_search_enabled is False:
+            cmd.extend(["-c", "=".join(CODEX_WEB_SEARCH_DISABLED)])
         if self._multi_agent_enabled is not None:
             cmd.extend(["-c", f"features.multi_agent={str(self._multi_agent_enabled).lower()}"])
         if self._read_only_mcp_only:
@@ -920,6 +934,9 @@ class CodexWebSocketTransport(CLITransport):
             resume_params.update(self._permission_thread_params())
             if self._service_tier is not None:
                 resume_params["serviceTier"] = self._service_tier
+            if instructions := self._developer_instructions():
+                # Instructions do not persist on the thread: send them again on every resume.
+                resume_params["developerInstructions"] = instructions
 
             result = await self._send_rpc("thread/resume", resume_params)
             self._thread_id = self._thread_response_id(result, expected=self._resume_session_id)
@@ -948,17 +965,11 @@ class CodexWebSocketTransport(CLITransport):
             thread_params.update(self._permission_thread_params())
             if self._service_tier is not None:
                 thread_params["serviceTier"] = self._service_tier
-            if self._system_prompt:
-                # baseInstructions = role/persona ("you are a service developer…")
-                # developerInstructions = per-session task instructions
-                # Skuld provides a single system_prompt that combines both,
-                # so we set it as baseInstructions (persistent identity).
-                thread_params["baseInstructions"] = self._system_prompt
-            if self._session_tools is not None and self._session_tools.instructions:
-                # Session capabilities (present-file, Forge notify) are ADDITIVE:
-                # baseInstructions replaces Codex's built-in model prompt, so
-                # capability text rides as developer instructions instead.
-                thread_params["developerInstructions"] = self._session_tools.instructions
+            if instructions := self._developer_instructions():
+                # Session capabilities (present-file, Forge notify) and the persona or
+                # request instructions are ADDITIVE: baseInstructions would replace Codex's
+                # built-in model prompt, so all of it rides as developer instructions.
+                thread_params["developerInstructions"] = instructions
 
             result = await self._send_rpc("thread/start", thread_params)
             self._thread_id = self._thread_response_id(result)

@@ -11,8 +11,10 @@ here, for every route that launches such a parent:
 2. :func:`parent_launch_body` turns the reserved row into the trusted
    ``context.workflow_execution`` + ``provenance.workflow_execution`` launch
    body Forge projects into the parent's Ravn config and credential.
-3. :func:`launch_reserved_parent` spawns the parent with that trusted
-   provenance and attaches the session to the reserved row.
+3. :func:`launch_reserved_parent` starts the parent's run on the step engine with
+   that trusted provenance. The run is the parent: its campaign carries the
+   execution's id, and the row is marked running with no parent session, because
+   the run has none.
 
 ``POST /workflow-executions`` and ``POST /research/campaigns`` both go through
 these, so the two cannot drift on what a coordinator is handed.
@@ -32,19 +34,23 @@ from ting.api.a2a_identity import local_agent_card_url
 from ting.api.workflow_execution_auth import resolve_launch_expansion_policy
 from ting.api.workflows import (
     WorkflowLaunchBody,
-    WorkflowLaunchExecution,
-    launch_workflow_execution,
+    prepare_workflow_launch,
+    start_workflow_run,
+    workflow_launch_payload,
+    workflow_run_metadata,
 )
-from ting.domain.models import WorkflowDefinition
+from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus, WorkflowDefinition
 from ting.domain.workflow_document import workflow_document_revision
 from ting.domain.workflow_execution import (
     ExecutionBudget,
+    ExecutionState,
     WorkflowExecution,
     WorkflowExecutionError,
     digest_json,
 )
 from ting.domain.workflow_snapshot import build_workflow_snapshot
 from ting.ports.volundr import VolundrFactory
+from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_execution import WorkflowExecutionRepository
 
 #: Tool-name prefix of a persona's tools that need an owner-bound
@@ -215,7 +221,7 @@ def parent_launch_body(
     ``context.workflow_execution`` tells the coordinator what it coordinates;
     ``provenance.workflow_execution`` is what Forge turns into the parent's
     Ravn ``workflow_execution`` config and owner-bound credential. It carries
-    no credential itself — :func:`launch_workflow_execution` rejects one.
+    no credential itself — :func:`prepare_workflow_launch` rejects one.
     """
     settings = request.app.state.settings
     api_base_url = settings.a2a.public_base_url.rstrip("/") or str(request.base_url).rstrip("/")
@@ -272,6 +278,9 @@ def parent_launch_body(
     )
 
 
+_PARENT_SURFACE = "workflow_execution"
+
+
 async def launch_reserved_parent(
     *,
     request: Request,
@@ -279,12 +288,21 @@ async def launch_reserved_parent(
     reserved: WorkflowExecution,
     launch: WorkflowLaunchBody,
     execution_repo: WorkflowExecutionRepository,
+    campaign_repo: WorkflowCampaignRepository,
     volundr_factory: VolundrFactory,
     principal: Principal,
     bearer_token: str | None,
-) -> tuple[WorkflowLaunchExecution, WorkflowExecution]:
-    """Spawn the trusted parent session for ``reserved`` and attach it."""
-    launched = await launch_workflow_execution(
+) -> tuple[WorkflowCampaign, WorkflowExecution]:
+    """Start the run that is the parent of ``reserved`` and mark the execution running.
+
+    The parent run's campaign has the execution's id, so a replay finds the run it
+    already started instead of starting another. The run has one session per stage
+    member and none that is "the parent session", so ``parent_session_id`` stays empty.
+    """
+    runs = getattr(request.app.state, "workflow_runs", None)
+    if runs is None:
+        raise HTTPException(status_code=503, detail="The workflow step engine is not configured")
+    prepared = await prepare_workflow_launch(
         request=request,
         workflow=workflow,
         pinned_workflow_snapshot=reserved.workflow_snapshot,
@@ -294,12 +312,49 @@ async def launch_reserved_parent(
         bearer_token=bearer_token,
         trusted_workflow_execution=True,
     )
-    attached = await execution_repo.attach_parent_session(
-        reserved.id,
-        session_id=launched.session.id,
-        connection_id=launched.connection_id or "",
+    now = datetime.now(UTC)
+    campaign = WorkflowCampaign(
+        id=reserved.id,
+        tenant_id=principal.tenant_id,
+        slug=f"{prepared.slug}-{reserved.id.hex[:12]}",
+        name=reserved.name,
+        owner_id=principal.user_id,
+        workflow_id=prepared.workflow.id,
+        workflow_version=prepared.workflow.version,
+        workflow_name=prepared.workflow.name,
+        workflow_snapshot=prepared.workflow_snapshot,
+        session_id="",
+        session_name="",
+        status=WorkflowCampaignStatus.PENDING,
+        active_stage_id=None,
+        stage_state=[],
+        metadata={
+            "surface": _PARENT_SURFACE,
+            "workflow_execution_id": str(reserved.id),
+            **workflow_run_metadata(launch, prepared),
+            **({"actor_id": principal.actor} if principal.actor else {}),
+        },
+        created_at=now,
+        updated_at=now,
+        last_activity_at=now,
+        connection_id=prepared.connection_id,
     )
-    return launched, attached
+    if not (await runs.state(reserved.id)).launched:
+        campaign = await start_workflow_run(
+            request, campaign_repo, campaign, workflow_launch_payload(launch, prepared)
+        )
+    await execution_repo.update_execution_state(
+        reserved.id,
+        state=ExecutionState.RUNNING.value,
+        suspension_reason="",
+        expected_revision=reserved.revision,
+    )
+    saved = await execution_repo.get_internal(reserved.id)
+    if saved is None:
+        raise HTTPException(
+            status_code=500, detail="Workflow execution disappeared while launching"
+        )
+    return campaign, saved
 
 
 def launch_template_context(

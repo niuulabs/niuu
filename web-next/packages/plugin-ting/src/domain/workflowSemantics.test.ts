@@ -65,6 +65,10 @@ describe('workflowSemantics', () => {
     );
     expect(isReentryEdge(makeEdge('normal', 'code.changed -> review.requested'))).toBe(false);
     expect(isReentryEdge(makeEdge('missing'))).toBe(false);
+    // An edge marked rework is a re-entry edge whatever its events are called.
+    expect(
+      isReentryEdge({ ...makeEdge('marked', 'plan.drafted -> plan.reviewed'), rework: true }),
+    ).toBe(true);
   });
 
   it('prefers stage members over personaIds and deduplicates both', () => {
@@ -188,7 +192,8 @@ describe('workflowSemantics', () => {
       },
     ]);
     expect(normalized.executionMode).toBe('parallel');
-    expect(normalized.maxConcurrent).toBe(3);
+    expect(normalized.maxConcurrent).toBeUndefined();
+    expect('maxConcurrent' in normalized).toBe(false);
     expect(normalized.joinMode).toBe('all');
 
     const alreadyNormalized = makeStage({
@@ -203,10 +208,27 @@ describe('workflowSemantics', () => {
         },
       ],
       executionMode: 'parallel',
-      maxConcurrent: 3,
       joinMode: 'all',
     });
     expect(normalizeStageNode(alreadyNormalized)).toBe(alreadyNormalized);
+  });
+
+  it('keeps an author-chosen maxConcurrent and never fills one', () => {
+    const limited = makeStage({ executionMode: 'parallel', joinMode: 'all', maxConcurrent: 5 });
+    expect(normalizeStageNode(limited)).toBe(limited);
+
+    const unlimited = normalizeStageNode(
+      makeStage({
+        stageMembers: [
+          { personaId: 'a' },
+          { personaId: 'b' },
+          { personaId: 'c' },
+          { personaId: 'd' },
+        ],
+      }),
+    );
+    expect(unlimited.stageMembers).toHaveLength(4);
+    expect(unlimited.maxConcurrent).toBeUndefined();
   });
 
   it('normalizes workflow graphs only when a stage node changes', () => {

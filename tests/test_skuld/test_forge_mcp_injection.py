@@ -107,6 +107,18 @@ class TestBrokerComposition:
         assert "Forge sends nothing when a turn ends" in tools.instructions
         assert "reply ready" not in tools.instructions
 
+    def test_a_step_host_runs_the_same_forge_server(self, tmp_path) -> None:
+        plain = _forge_server(_broker(tmp_path)._build_transport_kwargs()["mcp_servers"])
+        hosted = _forge_server(
+            _broker(
+                tmp_path,
+                volundr_api_url="http://forge.test",
+                workflow_steps={"enabled": True},
+            )._build_transport_kwargs()["mcp_servers"]
+        )
+
+        assert hosted["args"] == plain["args"]
+
     def test_skill_is_materialized_outside_the_workspace(self, tmp_path) -> None:
         tools = _broker(tmp_path)._session_tools()
         [plugin] = tools.claude_plugin_dirs
@@ -232,8 +244,11 @@ class TestClaude:
         assert options.plugins == [
             {"type": "local", "path": str(broker._session_tools().claude_plugin_dirs[0])}
         ]
-        assert options.system_prompt.endswith("Role.")
-        assert "`notify` tool" in options.system_prompt
+        # Appended to Claude Code's own prompt, never replacing it.
+        assert options.system_prompt["type"] == "preset"
+        assert options.system_prompt["preset"] == "claude_code"
+        assert options.system_prompt["append"].endswith("Role.")
+        assert "`notify` tool" in options.system_prompt["append"]
         assert options.env[BROKER_TOKEN_FILE_ENV].endswith("forge-mcp.token")
 
     @pytest.mark.parametrize("adapter", ["persistent", "subprocess", "sdk_websocket"])

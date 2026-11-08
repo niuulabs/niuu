@@ -23,8 +23,10 @@ session:
   name: ""
   # -- AI model to use for the session
   model: "claude-sonnet-4-6"
-  # -- System prompt injected into the LLM context
+  # -- Ad-hoc instructions from the launch request; appended after the persona's own.
   systemPrompt: ""
+  # -- The pinned portable persona document this session plays (see the skuld chart).
+  persona: {}
   # -- Initial user message sent when the CLI starts
   initialPrompt: ""
 
@@ -124,11 +126,6 @@ git:
     pullPolicy: IfNotPresent
 
 # Broker configuration (Skuld application settings)
-workflow:
-  # -- Deployment-owned verifier adapter and kwargs for deterministic evidence gates.
-  evidenceVerifier: null
-  evidenceArtifacts: null
-
 broker:
   cliType: claude
   transport: sdk

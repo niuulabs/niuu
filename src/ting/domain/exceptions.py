@@ -32,22 +32,3 @@ class RunNotFoundError(Exception):
     def __init__(self, run_id: UUID | str) -> None:
         self.run_id = run_id
         super().__init__(f"Run not found: {run_id}")
-
-
-WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE = (
-    "workflow steps have no runner: steps will run on harness sessions (NIU-1198)"
-)
-
-
-class WorkflowStepsHaveNoRunnerError(RuntimeError):
-    """A workflow was launched, or one of its steps dispatched, with no runner to execute it.
-
-    Ting used to run workflow steps on the Ravn resident runtime (the
-    ``ravn_flock`` session workload), which has been removed. Steps will run on
-    harness sessions (Claude Code, Codex, OpenCode) driven by Skuld; until then
-    every path that would start a workflow step raises this instead of starting
-    a session that cannot do the work. The HTTP layer maps it to 501.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE)

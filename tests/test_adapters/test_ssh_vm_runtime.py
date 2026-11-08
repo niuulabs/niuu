@@ -124,6 +124,33 @@ def setup(tmp_path):
     return runtime, session, spec, bootstrap, lease
 
 
+def test_bootstrap_hands_skuld_the_pinned_persona(setup):
+    runtime, session, spec, _bootstrap, _lease = setup
+    persona = {"schema_version": 1, "id": "reviewer", "revision": "r1", "definition": {}}
+    spec.values["session"]["persona"] = persona
+
+    files = {f.path: f.content for f in runtime.bootstrap(session, spec, MachineBootstrap()).files}
+
+    environment = json.loads(files[module._LAUNCH])["environment"]
+    assert json.loads(environment["SKULD__SESSION__PERSONA"]) == persona
+
+
+def test_bootstrap_enables_workflow_steps_only_for_a_step_host(setup):
+    runtime, session, spec, _bootstrap, _lease = setup
+
+    def environment() -> dict:
+        files = {
+            f.path: f.content for f in runtime.bootstrap(session, spec, MachineBootstrap()).files
+        }
+        return json.loads(files[module._LAUNCH])["environment"]
+
+    assert "SKULD__WORKFLOW_STEPS__ENABLED" not in environment()
+
+    spec.values["workflowSteps"] = {"enabled": True}
+
+    assert environment()["SKULD__WORKFLOW_STEPS__ENABLED"] == "true"
+
+
 def test_bootstrap_unique_host_identity_and_no_host_environment(setup, monkeypatch):
     runtime, session, spec, bootstrap, lease = setup
     monkeypatch.setenv("PROVIDER_ADMIN_TOKEN", "never-copy")

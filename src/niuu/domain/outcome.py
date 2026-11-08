@@ -409,6 +409,55 @@ def _validate_against_schema(
     return errors
 
 
+_OUTCOME_FIELD_TYPES = frozenset({"string", "number", "boolean", "enum", "array", "object"})
+
+
+def outcome_schema_from_mapping(raw: Any) -> OutcomeSchema:
+    """Read a persona's ``produces.schema`` field map strictly.
+
+    Each field is ``{type, description?, values?|enum_values?, required?}``. A malformed
+    field, an unknown type or an enum without values raises ``ValueError`` naming it,
+    instead of being read as something looser.
+    """
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("outcome schema must be a non-empty mapping of field name to field")
+    fields: dict[str, OutcomeField] = {}
+    for name, spec in raw.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("outcome schema field names must be non-empty strings")
+        if not isinstance(spec, dict):
+            raise ValueError(f"outcome schema field {name!r} must be a mapping")
+        field_type = spec.get("type", "string")
+        if field_type not in _OUTCOME_FIELD_TYPES:
+            raise ValueError(
+                f"outcome schema field {name!r} has unknown type {field_type!r}; "
+                f"use one of {', '.join(sorted(_OUTCOME_FIELD_TYPES))}"
+            )
+        enum_values: list[str] | None = None
+        if field_type == "enum":
+            values = spec.get("values", spec.get("enum_values"))
+            if not isinstance(values, list) or not values:
+                raise ValueError(
+                    f"outcome schema enum field {name!r} needs a non-empty values list"
+                )
+            enum_values = [str(value) for value in values]
+        required = spec.get("required", True)
+        if not isinstance(required, bool):
+            raise ValueError(f"outcome schema field {name!r} has a non-boolean required flag")
+        fields[name] = OutcomeField(
+            type=field_type,
+            description=str(spec.get("description", name)),
+            enum_values=enum_values,
+            required=required,
+        )
+    return OutcomeSchema(fields=fields)
+
+
+def outcome_errors(values: dict[str, Any], schema: OutcomeSchema) -> list[str]:
+    """Return why *values* does not satisfy *schema*; empty when it does."""
+    return _validate_against_schema(values, schema)
+
+
 class _OutcomeLoader(yaml.SafeLoader):
     """YAML for outcome blocks: dates and timestamps stay the text the model wrote.
 

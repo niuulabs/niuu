@@ -15,8 +15,11 @@ import httpx
 from fastapi import APIRouter, Request, Response, status
 
 from ting.config import TelegramConfig
-from ting.domain.exceptions import WorkflowStepsHaveNoRunnerError
-from ting.domain.services.dispatch_service import DispatchItem, DispatchService
+from ting.domain.services.dispatch_service import (
+    DispatchItem,
+    DispatchService,
+    WorkflowRunsNotConfiguredError,
+)
 from ting.domain.services.run_review import (
     InvalidRunStateError,
     RunReviewService,
@@ -341,7 +344,7 @@ async def _handle_dispatch(
             model=model_arg,
             session_definition=runtime_arg or None,
         )
-    except WorkflowStepsHaveNoRunnerError as exc:
+    except WorkflowRunsNotConfiguredError as exc:
         return f"✗ Dispatch refused for `{tracker_id}` — {exc}"
     if not results:
         return f"Dispatch returned no result for `{tracker_id}`."
@@ -350,7 +353,8 @@ async def _handle_dispatch(
     if res.status != "spawned":
         return f"✗ Dispatch failed for {id_label} — status: _{res.status}_"
 
-    parts = [f"➜ Dispatched {id_label} — session `{res.session_id}`"]
+    started = f"run `{res.campaign_slug}`" if res.campaign_slug else f"session `{res.session_id}`"
+    parts = [f"➜ Dispatched {id_label} — {started}"]
     if model_arg:
         parts.append(f"model=`{model_arg}`")
     if runtime_arg:

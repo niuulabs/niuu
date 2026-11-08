@@ -57,28 +57,18 @@ not arbitrary future edits.
 
 ## Deployment adapters
 
-Skuld requires two deployment-owned dynamic adapter settings for these nodes:
+Skuld no longer evaluates evidence gates. A workflow's steps run on ordinary harness
+sessions and Ting owns the run; Skuld holds a step and reports how it ended, and has
+no gate runtime. The `workflow.evidence_verifier` and `workflow.evidence_artifacts`
+settings, and the matching `workflow.evidenceVerifier` / `workflow.evidenceArtifacts`
+chart values of the Skuld and Skuld Planner charts, were removed with it. Ting's step
+engine does not evaluate `mode: evidence` gates yet, so a workflow that declares one
+is not evaluated until that is built there.
 
-- `workflow.evidence_verifier`: an `EvidenceGateVerifier` adapter. The provided
-  `niuu.adapters.evidence_gate.ConfiguredEvidenceGateVerifier` accepts
-  `authenticator_adapter`, `authenticator_kwargs` and `trusted_producers`.
-  It reuses `RsaEvidenceAuthenticator`; a verifier needs only trusted public keys
-  and producer/key bindings, not a private signing key.
-- `workflow.evidence_artifacts`: an `ArtifactDigestResolver` adapter. The provided
-  `niuu.adapters.artifact_digest.FilesystemArtifactDigestResolver` accepts a
-  deployment-controlled `root` and optional `chunk_size_bytes`. Artifact IDs are
-  confined relative file paths. It rejects traversal, symlink escapes, non-files
-  and mutation during hashing. Other artifact stores can implement the same port.
-
-In the Skuld and Skuld Planner Helm charts these are configured through
-`workflow.evidenceVerifier` and `workflow.evidenceArtifacts`, rendered into the
-runtime YAML. Imported graph content never supplies these adapter settings or keys.
-An evidence graph without both adapters fails startup with a configuration error.
-
-The runtime reserves the gate's output events: agent outcomes and external event
-injection cannot claim them. The human approval endpoint cannot resolve an
-evidence gate. A rejected bundle follows the declared rejection edge; it does not
-silently become accepted or downgrade to a human gate.
+The verifier and resolver adapters stay in `niuu`
+(`niuu.adapters.evidence_gate.ConfiguredEvidenceGateVerifier`, which reuses
+`RsaEvidenceAuthenticator`, and `niuu.adapters.artifact_digest.FilesystemArtifactDigestResolver`)
+for the services that do evaluate evidence: Ting's delivery and research paths.
 
 ## Existing developer receipts
 

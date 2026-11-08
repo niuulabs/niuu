@@ -54,25 +54,8 @@ system_prompt_template: |
     [Why this decision follows from the current state]
   ---end---
 
-allowed_tools:
-  - workflow_execution_expand
-  - workflow_execution_reconcile
-  - workflow_execution_retry
-  - workflow_execution_cancel
-  - workflow_execution_message
-  - workflow_execution_wait
-forbidden_tools:
-  - file
-  - file_write
-  - file_edit
-  - terminal
-  - bash
-  - git
-  - a2a_task
-  - mimir_write
-  - mimir_ingest
-  - web_search
-  - web_fetch
+allowed_tools: [plan]
+forbidden_tools: [file_read, file_write, shell, git, git_read, "mimir:write", "mimir:ingest", web_search, web_fetch]
 permission_mode: read_only
 llm:
   thinking_enabled: true

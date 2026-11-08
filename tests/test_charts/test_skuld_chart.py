@@ -12,37 +12,92 @@ import yaml
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "skuld"
 
 
-@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
-@pytest.mark.parametrize("chart", ["skuld", "skuld-planner"])
-def test_evidence_gate_adapters_reach_runtime_configuration(chart):
-    from skuld.config import SkuldSettings
+PERSONA_DOCUMENT = {
+    "schema_version": 1,
+    "id": "reviewer",
+    "revision": "content-0123456789abcdef",
+    "definition": {
+        "name": "reviewer",
+        "system_prompt_template": 'Review "carefully".\n\nNever <edit> & never push.',
+        "allowed_tools": ["file_read", "git_read"],
+        "permission_mode": "read_only",
+    },
+}
 
-    verifier = {
-        "adapter": "niuu.adapters.evidence_gate.ConfiguredEvidenceGateVerifier",
-        "kwargs": {"trusted_producers": ["document-checker"]},
-    }
-    artifacts = {
-        "adapter": "niuu.adapters.artifact_digest.FilesystemArtifactDigestResolver",
-        "kwargs": {"root": "/workspace"},
-    }
-    command = [
-        "helm",
-        "template",
-        "evidence-test",
-        str(CHART_DIR.parent / chart),
-        "--set-json",
-        "workflow.evidenceVerifier=" + json.dumps(verifier),
-        "--set-json",
-        "workflow.evidenceArtifacts=" + json.dumps(artifacts),
-    ]
-    config = next(
+
+def _rendered_skuld_config(chart: str, *extra: str) -> dict:
+    command = ["helm", "template", "persona-test", str(CHART_DIR.parent / chart), *extra]
+    return next(
         yaml.safe_load(doc["data"]["config.yaml"])
         for doc in yaml.safe_load_all(subprocess.check_output(command))
         if doc and doc.get("kind") == "ConfigMap" and "config.yaml" in doc.get("data", {})
     )
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+@pytest.mark.parametrize("chart", ["skuld", "skuld-planner"])
+def test_pinned_persona_reaches_runtime_configuration_beside_the_request_prompt(chart):
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        chart,
+        "--set-json",
+        "session.persona=" + json.dumps(PERSONA_DOCUMENT),
+        "--set",
+        "session.systemPrompt=Focus on the migrations.",
+    )
+
+    assert config["session"]["persona"] == PERSONA_DOCUMENT
+    assert config["session"]["system_prompt"] == "Focus on the migrations."
     settings = SkuldSettings(**config)
-    assert settings.workflow.evidence_verifier.model_dump(exclude_defaults=True) == verifier
-    assert settings.workflow.evidence_artifacts.model_dump(exclude_defaults=True) == artifacts
+    assert settings.session.persona == PERSONA_DOCUMENT
+    assert settings.session.system_prompt == "Focus on the migrations."
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+@pytest.mark.parametrize("chart", ["skuld", "skuld-planner"])
+def test_no_persona_key_is_rendered_without_a_persona(chart):
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(chart)
+
+    assert "persona" not in config["session"]
+    assert SkuldSettings(**config).session.persona is None
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_workflow_steps_are_off_unless_forge_marks_the_session_a_step_host():
+    assert _rendered_skuld_config("skuld")["workflow_steps"] == {"enabled": False}
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_step_host_session_reaches_runtime_configuration():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld", "--set-json", "workflowSteps=" + json.dumps({"enabled": True})
+    )
+
+    assert config["workflow_steps"] == {"enabled": True}
+    assert SkuldSettings(**config).workflow_steps.enabled is True
+
+
+def test_step_host_flag_survives_the_environment_a_local_broker_is_started_with(monkeypatch):
+    from skuld.config import SkuldSettings
+
+    monkeypatch.setenv("SKULD__WORKFLOW_STEPS__ENABLED", "true")
+
+    assert SkuldSettings().workflow_steps.enabled is True
+
+
+def test_persona_document_survives_the_environment_a_local_broker_is_started_with(monkeypatch):
+    from skuld.config import SkuldSettings
+
+    monkeypatch.setenv(
+        "SKULD__SESSION__PERSONA", json.dumps(PERSONA_DOCUMENT, separators=(",", ":"))
+    )
+
+    assert SkuldSettings().session.persona == PERSONA_DOCUMENT
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")

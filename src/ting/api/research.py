@@ -23,16 +23,17 @@ from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflow_execution_launch import (
     durable_parent_node_id,
-    launch_reserved_parent,
     new_parent_execution,
     parent_launch_body,
 )
 from ting.api.workflow_executions import resolve_optional_workflow_execution_repo
 from ting.api.workflows import (
     WorkflowLaunchBody,
-    WorkflowLaunchExecution,
-    launch_workflow_execution,
+    prepare_workflow_launch,
     resolve_workflow_repo,
+    start_workflow_run,
+    workflow_launch_payload,
+    workflow_run_metadata,
 )
 from ting.domain.campaign_stages import (
     FAILURE_ERROR_KEY,
@@ -296,7 +297,6 @@ def create_research_router() -> APIRouter:
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        workflow_execution_id: str | None = None
         durable = await _durable_research_launch(
             request=request,
             body=body,
@@ -307,12 +307,11 @@ def create_research_router() -> APIRouter:
             session_name=session_name,
             prompt=initiative_prompt,
             principal=principal,
-            bearer_token=bearer_token,
             execution_repo=execution_repo,
-            volundr_factory=volundr_factory,
         )
+        workflow_execution_id: str | None = None
         if durable is not None:
-            execution, workflow_execution_id = durable
+            launch, workflow_execution_id = durable
         else:
             launch = WorkflowLaunchBody(
                 prompt=initiative_prompt,
@@ -325,15 +324,16 @@ def create_research_router() -> APIRouter:
                 workflowVersion=workflow.version,
                 gateAutoForwardAfter=body.gate_auto_forward_after,
             )
-            execution = await launch_workflow_execution(
-                request=request,
-                workflow=workflow,
-                launch=launch,
-                volundr_factory=volundr_factory,
-                principal=principal,
-                bearer_token=bearer_token,
-                pinned_workflow_snapshot=workflow_snapshot,
-            )
+        execution = await prepare_workflow_launch(
+            request=request,
+            workflow=workflow,
+            launch=launch,
+            volundr_factory=volundr_factory,
+            principal=principal,
+            bearer_token=bearer_token,
+            pinned_workflow_snapshot=workflow_snapshot,
+            trusted_workflow_execution=durable is not None,
+        )
 
         slug = await _reserve_slug(campaign_repo, execution.slug)
         now = datetime.now(UTC)
@@ -348,9 +348,9 @@ def create_research_router() -> APIRouter:
             workflow_version=workflow.version,
             workflow_name=workflow.name,
             workflow_snapshot=execution.workflow_snapshot,
-            session_id=execution.session.id,
-            session_name=execution.session.name,
-            status=_campaign_status_from_session(execution.session.status),
+            session_id="",
+            session_name="",
+            status=WorkflowCampaignStatus.PENDING,
             active_stage_id=stage_state[0].stage_id if stage_state else None,
             stage_state=stage_state,
             metadata={
@@ -362,10 +362,8 @@ def create_research_router() -> APIRouter:
                 "success": body.success,
                 "constraints": body.constraints,
                 "monitoring_cadence": body.monitoring_cadence,
-                "repo": body.repo,
-                "branch": body.branch,
                 "connection_id": body.connection_id,
-                "cluster_name": execution.session.cluster_name,
+                **workflow_run_metadata(launch, execution),
                 **(
                     {_WORKFLOW_EXECUTION_ID_KEY: workflow_execution_id}
                     if workflow_execution_id
@@ -375,12 +373,15 @@ def create_research_router() -> APIRouter:
             created_at=now,
             updated_at=now,
             last_activity_at=now,
-            completed_at=now if execution.session.status == "stopped" else None,
             connection_id=execution.connection_id,
         )
-        saved = await campaign_repo.save_campaign(campaign)
+        saved = await start_workflow_run(
+            request, campaign_repo, campaign, workflow_launch_payload(launch, execution)
+        )
+        if workflow_execution_id is not None and execution_repo is not None:
+            await _mark_parent_running(execution_repo, UUID(workflow_execution_id))
         await _emit_campaign_event(request, "workflow.campaign.created", saved)
-        return _to_campaign_response(saved, chat_endpoint=execution.session.chat_endpoint)
+        return _to_campaign_response(saved)
 
     @router.get("/campaigns/{slug}", response_model=ResearchCampaignDetailResponse)
     async def get_campaign(
@@ -609,22 +610,18 @@ async def _durable_research_launch(
     session_name: str,
     prompt: str,
     principal: Principal,
-    bearer_token: str | None,
     execution_repo: WorkflowExecutionRepository | None,
-    volundr_factory: VolundrFactory,
-) -> tuple[WorkflowLaunchExecution, str] | None:
-    """Launch a research workflow that fans out as a durable parent execution.
+) -> tuple[WorkflowLaunchBody, str] | None:
+    """Reserve the durable parent execution of a research workflow that fans out.
 
-    Returns ``None`` when the workflow needs no durable execution, so the
-    caller keeps the plain launch. Otherwise reserves a ``WorkflowExecution``
-    and spawns the parent through the same trusted path
-    ``POST /workflow-executions`` uses — without it the coordinator persona's
-    ``workflow_execution_*`` tools have no owner-bound runtime context and its
-    Ravn crashes the moment the frame stage hands over.
+    Returns ``None`` when the workflow needs no durable execution, so the caller keeps
+    the plain launch. Otherwise reserves a ``WorkflowExecution`` and returns the trusted
+    launch body that binds the run to it, with the execution id. The run itself starts
+    through the same path as any other launch; the campaign records the execution id.
 
-    The parent keeps the campaign's own session name, so the launch slug —
-    and with it the ``research/campaigns/<slug>/`` Mímir prefix the workflow
-    writes to and the campaign slug callers address — is unchanged.
+    The launch keeps the campaign's own session name, so the launch slug, and with it
+    the ``research/campaigns/<slug>/`` Mímir prefix the workflow writes to and the
+    campaign slug callers address, is unchanged.
     """
     parent_node_id = durable_parent_node_id(workflow, workflow_snapshot)
     if parent_node_id is None:
@@ -641,7 +638,9 @@ async def _durable_research_launch(
         request=request,
         principal=principal,
         workflow=workflow,
-        execution_id=uuid4(),
+        # The execution takes the campaign's id: the run is the parent, and a replay
+        # of the launch finds the run it already started.
+        execution_id=campaign_id,
         workflow_snapshot=workflow_snapshot,
         parent_node_id=parent_node_id,
         prompt=prompt,
@@ -668,17 +667,24 @@ async def _durable_research_launch(
         workflow_version=workflow.version,
         gate_auto_forward_after=body.gate_auto_forward_after,
     )
-    launched, _ = await launch_reserved_parent(
-        request=request,
-        workflow=workflow,
-        reserved=reserved,
-        launch=launch,
-        execution_repo=execution_repo,
-        volundr_factory=volundr_factory,
-        principal=principal,
-        bearer_token=bearer_token,
+    return launch, str(reserved.id)
+
+
+async def _mark_parent_running(
+    execution_repo: WorkflowExecutionRepository, execution_id: UUID
+) -> None:
+    """The parent run has started: the execution stops waiting for its launch."""
+    reserved = await execution_repo.get_internal(execution_id)
+    if reserved is None:
+        raise HTTPException(
+            status_code=500, detail="Workflow execution disappeared while launching"
+        )
+    await execution_repo.update_execution_state(
+        execution_id,
+        state=ExecutionState.RUNNING.value,
+        suspension_reason="",
+        expected_revision=reserved.revision,
     )
-    return launched, str(reserved.id)
 
 
 async def _campaign_execution(

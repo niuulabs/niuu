@@ -36,7 +36,8 @@ is listed in `a2a.push_callback_allowed_origins`; otherwise poll `GetTask`.
 
 There is no A2A-specific state: the **task id is the workflow campaign slug**,
 and task views are synthesized from the campaign record, which the campaign
-projector keeps in sync with live session state.
+projector keeps in sync with the run's step ledger (the step engine's record of
+what each step did).
 
 ### Launch
 
@@ -67,31 +68,21 @@ is the reason); `metadata.error` carries the same text.
 
 #### Tasks that stop progressing
 
-Events drive every transition, and nothing emits one for a task nobody answers,
-a session that stops doing anything, or a launch that ended before it recorded
-a session. A sweep (`a2a.stale_campaigns`) closes those, stops their session,
-and pushes the failure to the caller:
+Events drive every transition, and nothing emits one for a task nobody answers
+or a launch that ended before the run started. A sweep (`a2a.stale_campaigns`)
+closes those and pushes the failure to the caller:
 
 | Expiry reason | When | Bound |
 |---|---|---|
-| `input_wait` | `INPUT_REQUIRED` with no answer | `input_wait_timeout_seconds` (6 h) |
-| `idle` | session idle (no agent working) | `idle_timeout_seconds` (2 h) |
-| `no_progress` | session reports busy but recorded nothing: no state change, no usage report, only heartbeats | `idle_timeout_seconds` |
-| `session_gone` | the session no longer exists | `idle_timeout_seconds` |
-| `launch_abandoned` | the task has no session and its launch lease has passed, for example because Ting died mid-launch. A session Forge holds for the task is stopped; the owner's next stream reconnect closes these too | `a2a.launch_lease_seconds` (60 s) |
+| `input_wait` | `INPUT_REQUIRED` with no answer; the run is canceled and its sessions stopped | `input_wait_timeout_seconds` (6 h) |
+| `launch_abandoned` | the campaign is still `pending`, its ledger shows no launch and its launch lease has passed, for example because Ting died mid-launch | `a2a.launch_lease_seconds` (60 s) |
 
-A flock workflow session reports `idle` as soon as no peer has a task in
-flight, and names the last peer outcome; the failure reason repeats it (for
-example "The last workflow outcome was code.completed (verdict help_needed)
-from coder"). Each expiry logs at error with the knob that fired and counts on
-`ting_a2a_campaigns_expired_total{reason}`. Workflow graphs declare no run
-timeout, so the idle bound is configuration: the time an owner gets to notice
-and nudge a stalled session before its pod is reclaimed. Keep it above the
-longest single agent turn.
-
-A workflow agent that returns `verdict: help_needed` asks its question through
-the session even when the peer runs a resident runtime, so the task goes to
-`INPUT_REQUIRED` with the question rather than sitting in `WORKING`.
+Each expiry logs at error with the knob that fired and counts on
+`ting_a2a_campaigns_expired_total{reason}`. A step that stays open without a
+close is not expired here: its deadline is stored with the step
+(`workflow_steps.step_deadline_seconds`) and an `unclosed` turn is recorded in
+the run's event log and counted on `ting_workflow_step_unclosed_total`; stuck
+detection acts on those.
 
 ### Gate replies
 
@@ -118,21 +109,20 @@ canonical artifact envelopes (default `learned_tool.json`) are probed via
 For code workflows the durable artifact is the **git branch the session
 pushes**, not a Mimir page. When a launch carries `repo`/`branch` metadata,
 both are echoed on the task's metadata so consumers know where the code
-landed (`task.metadata.repo` / `task.metadata.branch`); `sessionId` is
-always present for follow-up via the Forge session APIs (files, diff,
-transcript). Surfacing curated session deliverables (present-file cards)
+landed (`task.metadata.repo` / `task.metadata.branch`). A run has one Forge
+session per stage member and no single session id. Surfacing curated session deliverables (present-file cards)
 as first-class A2A artifacts needs a presented-files list API first —
 tracked as follow-up work, not silently absent.
 
 ### Cancel
 
-`CancelTask {"id": <taskId>}` stops the underlying session and reports the
-task `CANCELED`. Terminal tasks are not cancelable.
+`CancelTask {"id": <taskId>}` cancels the run (its open steps are canceled and
+its sessions stopped) and reports the task `CANCELED`. Terminal tasks are not cancelable.
 
 ## Bubbling gates to humans
 
-The A2A layer does not swallow gates — the gate lives in the workflow
-session exactly as before, so every existing surface still fires: the
+The A2A layer does not swallow gates — the gate lives in the run's step
+ledger, so every existing surface still fires: the
 campaign projector emits `workflow.campaign.updated` when the run blocks,
 the review inbox and operator console show the pending gate, and a human
 can approve there. `INPUT_REQUIRED` on the task is an **additional**

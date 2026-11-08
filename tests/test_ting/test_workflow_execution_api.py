@@ -24,7 +24,7 @@ from ting.api.workflow_executions import (
     resolve_workflow_execution_repo,
     resolve_workflow_execution_service,
 )
-from ting.api.workflows import resolve_workflow_repo
+from ting.api.workflows import resolve_workflow_launch_campaign_repo, resolve_workflow_repo
 from ting.domain.models import WorkflowDefinition, WorkflowDependency, WorkflowScope
 from ting.domain.workflow_execution import (
     ChildExecutionState,
@@ -34,6 +34,57 @@ from ting.domain.workflow_execution import (
     make_children,
 )
 from ting.ports.volundr import PublicSessionLogEntry, PublicSessionLogPage
+
+
+class _RecordingCampaigns:
+    """The campaign repository a launch records its run on."""
+
+    def __init__(self) -> None:
+        self.saved: list[object] = []
+
+    async def save_campaign(self, campaign):
+        self.saved.append(campaign)
+        return campaign
+
+    async def get_campaign(self, campaign_id):
+        return next((item for item in self.saved if item.id == campaign_id), None)
+
+
+_CAMPAIGNS = _RecordingCampaigns()
+
+
+class _Runs:
+    """The step engine's run service, as far as a launch touches it."""
+
+    def __init__(self, *, launched: bool = False) -> None:
+        self.launched = launched
+
+    async def state(self, run_id):
+        return SimpleNamespace(launched=self.launched)
+
+
+def _launch_stubs(monkeypatch, workflow, *, started: list | None = None) -> None:
+    """Stand in for the checks and the engine call a launch goes through."""
+
+    async def prepare(**kwargs):
+        return SimpleNamespace(
+            workflow=workflow,
+            workflow_snapshot={},
+            slug="workflow-execution",
+            connection_id="conn-1",
+            branch="",
+            base_branch="",
+            model="",
+            initiative_context="",
+        )
+
+    async def start(request, campaign_repo, campaign, payload, **kwargs):
+        if started is not None:
+            started.append((campaign, payload))
+        return await campaign_repo.save_campaign(campaign)
+
+    monkeypatch.setattr(execution_launch, "prepare_workflow_launch", prepare)
+    monkeypatch.setattr(execution_launch, "start_workflow_run", start)
 
 
 def test_child_api_preserves_pending_input_identities() -> None:
@@ -686,6 +737,7 @@ def test_generic_launch_rejects_delivery_fields() -> None:
     app.state.settings = _settings(anonymous=True)
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: _CAMPAIGNS
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
 
@@ -713,31 +765,21 @@ def test_generic_launch_creates_execution_with_no_delivery_row(monkeypatch) -> N
         async def get_workflow(self, workflow_id):
             return workflow if workflow_id == workflow.id else None
 
-    class Adapter:
-        target_id = "conn-1"
-
-        async def list_sessions(self, **kwargs):
-            return []
-
     class Factory:
-        async def primary_for_owner(self, owner_id):
-            return Adapter()
+        pass
 
-    async def launch(**kwargs):
-        return SimpleNamespace(
-            session=SimpleNamespace(id="parent-session-1"),
-            connection_id="conn-1",
-        )
-
-    monkeypatch.setattr(execution_launch, "launch_workflow_execution", launch)
+    started: list = []
+    _launch_stubs(monkeypatch, workflow, started=started)
     monkeypatch.setattr(
         execution_launch, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
     )
 
     app = FastAPI()
     app.state.settings = _settings(anonymous=True)
+    app.state.workflow_runs = _Runs()
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: _CAMPAIGNS
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
 
@@ -757,7 +799,15 @@ def test_generic_launch_creates_execution_with_no_delivery_row(monkeypatch) -> N
     assert body["input"] == {"locale": "fr"}
     assert "repo" not in body
     assert "baseBranch" not in body
-    assert repository.execution.parent_session_id == "parent-session-1"
+    # The parent is the run: it started, and there is no parent session to attach.
+    assert repository.execution.parent_session_id == ""
+    assert repository.execution.state is ExecutionState.RUNNING
+    assert repository.execution.suspension_reason == ""
+    [(campaign, payload)] = started
+    assert campaign.id == repository.execution.id
+    assert campaign.session_id == ""
+    assert campaign.metadata["workflow_execution_id"] == str(repository.execution.id)
+    assert payload["prompt"] == "Translate the handbook"
 
     fetched = TestClient(app).get(
         f"/api/v1/ting/workflow-executions/{body['executionId']}",
@@ -906,6 +956,7 @@ def test_launch_requires_an_idempotency_key() -> None:
     app.state.settings = _settings(anonymous=True)
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: _CAMPAIGNS
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
 
@@ -934,6 +985,7 @@ def test_launch_reports_missing_workflow() -> None:
     app.state.settings = _settings(anonymous=True)
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: _CAMPAIGNS
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
 
@@ -963,6 +1015,7 @@ def test_launch_rejects_a_schema_v1_workflow() -> None:
     app.state.settings = _settings(anonymous=True)
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: _CAMPAIGNS
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
 
@@ -992,6 +1045,7 @@ def test_launch_reports_an_invalid_parent_node() -> None:
     app.state.settings = _settings(anonymous=True)
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: _CAMPAIGNS
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
 
@@ -1021,6 +1075,7 @@ def test_launch_rejects_a_naive_deadline() -> None:
     app.state.settings = _settings(anonymous=True)
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: _CAMPAIGNS
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
 
@@ -1051,6 +1106,7 @@ def test_launch_rejects_a_deadline_in_the_past() -> None:
     app.state.settings = _settings(anonymous=True)
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: _CAMPAIGNS
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
     past_deadline = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
@@ -1090,6 +1146,7 @@ def test_launch_reports_a_conflicting_reservation(monkeypatch) -> None:
     app.state.settings = _settings(anonymous=True)
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: _CAMPAIGNS
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
 
@@ -1107,12 +1164,12 @@ def test_launch_reports_a_conflicting_reservation(monkeypatch) -> None:
     assert response.json()["detail"] == "launch key already claimed differently"
 
 
-def test_launch_is_idempotent_once_a_parent_session_is_already_attached(monkeypatch) -> None:
+def test_launch_is_idempotent_once_the_parent_run_has_started(monkeypatch) -> None:
     workflow = _generic_workflow_definition()
     monkeypatch.setattr(
         execution_launch, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
     )
-    already_launched = _execution(parent_session_id="already-there")
+    already_launched = _execution(parent_session_id="", state=ExecutionState.RUNNING)
 
     class AlreadyAttachedRepo(InMemoryWorkflowRepository):
         async def reserve_parent_launch(self, execution):
@@ -1127,18 +1184,19 @@ def test_launch_is_idempotent_once_a_parent_session_is_already_attached(monkeypa
 
     class Factory:
         async def primary_for_owner(self, owner_id):
-            raise AssertionError("must not reach out to Volundr when already attached")
+            raise AssertionError("must not reach out to Volundr when already started")
 
     app = FastAPI()
     app.state.settings = _settings(anonymous=True)
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: _CAMPAIGNS
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
 
     response = TestClient(app).post(
         "/api/v1/ting/workflow-executions",
-        headers={**_headers(), "idempotency-key": "already-attached"},
+        headers={**_headers(), "idempotency-key": "already-started"},
         json={
             "workflowId": str(workflow.id),
             "parentNodeId": "commission-translations",
@@ -1150,41 +1208,34 @@ def test_launch_is_idempotent_once_a_parent_session_is_already_attached(monkeypa
     assert response.json()["executionId"] == str(already_launched.id)
 
 
-def test_launch_recovers_an_existing_tracked_session(monkeypatch) -> None:
+def test_a_replayed_launch_whose_run_already_started_starts_no_second_run(monkeypatch) -> None:
+    """A crash after the run started, before the execution was marked running."""
     workflow = _generic_workflow_definition()
     fixed_id = uuid4()
     monkeypatch.setattr(execution_api, "uuid4", lambda: fixed_id)
     monkeypatch.setattr(
         execution_launch, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
     )
-    session_key = f"workflow:execution-{fixed_id.hex}"
-
+    started: list = []
+    _launch_stubs(monkeypatch, workflow, started=started)
     repository = InMemoryWorkflowRepository(_execution())
 
     class WorkflowRepo:
         async def get_workflow(self, workflow_id):
             return workflow
 
-    class Adapter:
-        target_id = "conn-recovered"
-
-        async def list_sessions(self, **kwargs):
-            return [SimpleNamespace(id="recovered-session-1", tracker_issue_id=session_key)]
-
-    class Factory:
-        async def primary_for_owner(self, owner_id):
-            return Adapter()
-
     app = FastAPI()
     app.state.settings = _settings(anonymous=True)
+    app.state.workflow_runs = _Runs(launched=True)
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: _CAMPAIGNS
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
-    app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
 
     response = TestClient(app).post(
         "/api/v1/ting/workflow-executions",
-        headers={**_headers(), "idempotency-key": "recovered"},
+        headers={**_headers(), "idempotency-key": "replayed"},
         json={
             "workflowId": str(workflow.id),
             "parentNodeId": "commission-translations",
@@ -1194,8 +1245,9 @@ def test_launch_recovers_an_existing_tracked_session(monkeypatch) -> None:
 
     assert response.status_code == 201, response.text
     assert response.json()["executionId"] == str(fixed_id)
-    assert repository.execution.parent_session_id == "recovered-session-1"
-    assert repository.execution.connection_id == "conn-recovered"
+    assert started == []
+    assert repository.execution.state is ExecutionState.RUNNING
+    assert repository.execution.parent_session_id == ""
 
 
 def test_launch_holds_its_lease_when_not_yet_created_and_not_expired(monkeypatch) -> None:
@@ -1232,6 +1284,7 @@ def test_launch_holds_its_lease_when_not_yet_created_and_not_expired(monkeypatch
     app.state.settings = _settings(anonymous=True)
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: _CAMPAIGNS
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
 

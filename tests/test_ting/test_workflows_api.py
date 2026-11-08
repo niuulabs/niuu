@@ -17,21 +17,16 @@ from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from niuu.domain.models import Principal
 from personas.adapters.loader import FilesystemPersonaAdapter
 from ting.api.dispatch import resolve_volundr_factory
-from ting.api.workflow_runner_refusal import register_workflow_runner_refusal
 from ting.api.workflows import (
     WorkflowLaunchBody,
     _resolve_target_adapter,
     create_workflows_router,
-    launch_workflow_execution,
+    prepare_workflow_launch,
     resolve_workflow_launch_campaign_repo,
     resolve_workflow_repo,
 )
 from ting.config import AuthConfig, Settings
-from ting.domain.exceptions import (
-    WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE,
-    WorkflowConflictError,
-    WorkflowStepsHaveNoRunnerError,
-)
+from ting.domain.exceptions import WorkflowConflictError
 from ting.domain.models import (
     WorkflowCampaign,
     WorkflowDefinition,
@@ -53,6 +48,8 @@ from ting.ports.volundr import (
 )
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
+
+from .fake_workflow_runs import FakeWorkflowRuns
 
 
 class InMemoryWorkflowRepository(WorkflowRepository):
@@ -297,6 +294,30 @@ class RecordingVolundrFactory:
         return list(self._adapters)
 
 
+def _runnable_graph(entry_id: str) -> dict:
+    """The smallest graph the step engine accepts: a trigger that leads straight to an end."""
+    return {
+        "nodes": [
+            {"id": entry_id, "kind": "trigger", "dispatchEvent": "work.requested"},
+            {"id": f"{entry_id}-end", "kind": "end", "completionEvent": "work.completed"},
+        ],
+        "edges": [
+            {
+                "id": f"{entry_id}-to-end",
+                "source": entry_id,
+                "target": f"{entry_id}-end",
+                "label": "work.requested -> work.requested",
+            }
+        ],
+    }
+
+
+def _runnable_payload() -> dict:
+    """The nodes and edges of a smallest saveable workflow, as a create/update request has them."""
+    graph = _runnable_graph("entry")
+    return {"nodes": graph["nodes"], "edges": graph["edges"]}
+
+
 def _make_workflow(
     *,
     workflow_id: UUID | None = None,
@@ -312,7 +333,7 @@ def _make_workflow(
         version="1.0.0",
         scope=scope,
         owner_id=owner_id,
-        graph={"nodes": [{"id": "n1", "kind": "stage"}], "edges": []},
+        graph=_runnable_graph("n1"),
         created_at=now,
         updated_at=now,
     )
@@ -413,12 +434,13 @@ def _make_client(
     volundr_factory: RecordingVolundrFactory | None = None,
     settings: Settings | None = None,
     campaign_repo: WorkflowCampaignRepository | None = None,
+    workflow_runs: FakeWorkflowRuns | None = None,
 ) -> TestClient:
     app = FastAPI()
+    app.state.workflow_runs = workflow_runs if workflow_runs is not None else FakeWorkflowRuns()
     app.state.authorization = AllowAllAuthorizationAdapter()
     app.state.persona_source = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
     app.include_router(create_workflows_router())
-    register_workflow_runner_refusal(app)
     app.state.settings = settings or Settings(
         auth=AuthConfig(allow_anonymous_dev=False, platform_tenant_id="")
     )
@@ -478,7 +500,13 @@ class TestWorkflowCatalogAPI:
                 "version": "1.0.0",
                 "scope": "user",
                 "nodes": [
-                    {"id": "trigger-1", "kind": "trigger", "label": "Start", "source": "manual"},
+                    {
+                        "id": "trigger-1",
+                        "kind": "trigger",
+                        "label": "Start",
+                        "source": "manual",
+                        "dispatchEvent": "code.requested",
+                    },
                     {
                         "id": "stage-1",
                         "kind": "stage",
@@ -491,8 +519,18 @@ class TestWorkflowCatalogAPI:
                     {"id": "end-1", "kind": "end", "label": "Done"},
                 ],
                 "edges": [
-                    {"id": "e1", "source": "trigger-1", "target": "stage-1"},
-                    {"id": "e2", "source": "stage-1", "target": "end-1"},
+                    {
+                        "id": "e1",
+                        "source": "trigger-1",
+                        "target": "stage-1",
+                        "label": "code.requested -> code.changed",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "stage-1",
+                        "target": "end-1",
+                        "label": "review.passed -> review.passed",
+                    },
                 ],
             },
         )
@@ -504,6 +542,140 @@ class TestWorkflowCatalogAPI:
         node_ids = {node["id"] for node in body["nodes"]}
         assert node_ids == {"trigger-1", "stage-1", "end-1"}
 
+    def test_a_workflow_the_step_engine_could_not_run_is_refused_at_save(self) -> None:
+        repo = InMemoryWorkflowRepository()
+        client = _make_client(repo)
+        graph = _runnable_payload()
+        graph["nodes"].append({"id": "branch", "kind": "cond", "label": "If", "predicate": "a > b"})
+
+        response = client.post(
+            "/api/v1/ting/workflows",
+            headers=_headers(),
+            json={"name": "Branching", "scope": "user", **graph},
+        )
+
+        assert response.status_code == 422
+        assert "cond nodes are not supported" in response.json()["detail"]
+        assert repo._workflows == {}
+
+    def test_an_unbounded_loop_is_refused_at_save_naming_the_cycle(self) -> None:
+        repo = InMemoryWorkflowRepository()
+        client = _make_client(repo)
+
+        response = client.post(
+            "/api/v1/ting/workflows",
+            headers=_headers(),
+            json={
+                "name": "Loop",
+                "scope": "user",
+                "nodes": [
+                    {"id": "start", "kind": "trigger", "dispatchEvent": "code.requested"},
+                    {
+                        "id": "code",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "coder"}],
+                    },
+                    {
+                        "id": "review",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "reviewer"}],
+                    },
+                    {"id": "finish", "kind": "end"},
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "start",
+                        "target": "code",
+                        "label": "code.requested -> review.changes_requested",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "code",
+                        "target": "review",
+                        "label": "code.changed -> code.changed",
+                    },
+                    {
+                        "id": "e3",
+                        "source": "review",
+                        "target": "code",
+                        "label": "review.changes_requested -> review.changes_requested",
+                    },
+                    {
+                        "id": "e4",
+                        "source": "review",
+                        "target": "finish",
+                        "label": "review.passed -> review.passed",
+                    },
+                ],
+            },
+        )
+
+        assert response.status_code == 422
+        assert "cycle with no rework edge" in response.json()["detail"]
+
+    def test_rework_edges_survive_a_save_and_a_read(self) -> None:
+        repo = InMemoryWorkflowRepository()
+        client = _make_client(repo)
+
+        response = client.post(
+            "/api/v1/ting/workflows",
+            headers=_headers(),
+            json={
+                "name": "Bounded loop",
+                "scope": "user",
+                "nodes": [
+                    {"id": "start", "kind": "trigger", "dispatchEvent": "code.requested"},
+                    {
+                        "id": "code",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "coder"}],
+                    },
+                    {
+                        "id": "review",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "reviewer"}],
+                    },
+                    {"id": "finish", "kind": "end"},
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "start",
+                        "target": "code",
+                        "label": "code.requested -> review.changes_requested",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "code",
+                        "target": "review",
+                        "label": "code.changed -> code.changed",
+                    },
+                    {
+                        "id": "e3",
+                        "source": "review",
+                        "target": "code",
+                        "label": "review.changes_requested -> review.changes_requested",
+                        "rework": True,
+                        "maxIterations": 3,
+                    },
+                    {
+                        "id": "e4",
+                        "source": "review",
+                        "target": "finish",
+                        "label": "review.passed -> review.passed",
+                    },
+                ],
+            },
+        )
+
+        assert response.status_code == 201, response.text
+        saved = next(iter(repo._workflows.values()))
+        rework = next(edge for edge in saved.graph["edges"] if edge["id"] == "e3")
+        assert (rework["rework"], rework["maxIterations"]) == (True, 3)
+        fetched = client.get(f"/api/v1/ting/workflows/{saved.id}", headers=_headers())
+        assert next(e for e in fetched.json()["edges"] if e["id"] == "e3")["maxIterations"] == 3
+
     def test_non_admin_cannot_create_system_workflow(self) -> None:
         repo = InMemoryWorkflowRepository()
         client = _make_client(repo)
@@ -514,8 +686,7 @@ class TestWorkflowCatalogAPI:
             json={
                 "name": "Shared Flow",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -534,7 +705,7 @@ class TestWorkflowCatalogAPI:
         response = client.post(
             "/api/v1/ting/workflows",
             headers={**_headers(roles=roles), "x-auth-tenant": tenant},
-            json={"name": "Shared Flow", "scope": "system", "nodes": [], "edges": []},
+            json={"name": "Shared Flow", "scope": "system", **_runnable_payload()},
         )
 
         assert response.status_code == 403
@@ -549,8 +720,7 @@ class TestWorkflowCatalogAPI:
             json={
                 "name": "Shared Flow",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -569,8 +739,7 @@ class TestWorkflowCatalogAPI:
             json={
                 "name": "Shared Flow",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -621,6 +790,7 @@ class TestWorkflowCatalogAPI:
                         "maxConcurrent": 3,
                         "joinMode": "all",
                     },
+                    {"id": "end-1", "kind": "end", "label": "Done"},
                     {
                         "id": "mimir-1",
                         "kind": "resource",
@@ -632,7 +802,18 @@ class TestWorkflowCatalogAPI:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "trigger-1", "target": "stage-1"},
+                    {
+                        "id": "e1",
+                        "source": "trigger-1",
+                        "target": "stage-1",
+                        "label": "code.requested -> code.changed",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "stage-1",
+                        "target": "end-1",
+                        "label": "review.passed -> review.passed",
+                    },
                 ],
                 "resourceBindings": [
                     {
@@ -677,8 +858,18 @@ class TestWorkflowCatalogAPI:
                 "description": "Updated",
                 "version": "2.0.0",
                 "scope": "user",
-                "nodes": [{"id": "stage-2", "kind": "stage"}],
-                "edges": [{"id": "edge-1", "source": "a", "target": "b"}],
+                "nodes": [
+                    {"id": "stage-2", "kind": "trigger", "dispatchEvent": "work.requested"},
+                    {"id": "stage-2-end", "kind": "end"},
+                ],
+                "edges": [
+                    {
+                        "id": "edge-1",
+                        "source": "stage-2",
+                        "target": "stage-2-end",
+                        "label": "work.requested -> work.requested",
+                    }
+                ],
             },
         )
 
@@ -706,8 +897,7 @@ class TestWorkflowCatalogAPI:
                 "scope": "user",
                 "expected_revision": "head:1",
                 "base_revision": original_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
         assert response.status_code == 201, response.text
@@ -760,7 +950,7 @@ class TestWorkflowCatalogAPI:
         no_base = client.post(
             f"/api/v1/ting/workflows/{workflow.id}/versions",
             headers=_headers(),
-            json={"name": "No base", "scope": "user", "nodes": [], "edges": []},
+            json={"name": "No base", "scope": "user", **_runnable_payload()},
         )
         assert no_base.status_code == 422
         unknown_base = client.post(
@@ -771,15 +961,14 @@ class TestWorkflowCatalogAPI:
                 "scope": "user",
                 "expected_revision": "head:1",
                 "base_revision": "sha256:" + "f" * 64,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
         assert unknown_base.status_code == 404
         unknown_update = client.put(
             f"/api/v1/ting/workflows/{missing_id}",
             headers=_headers(),
-            json={"name": "Missing", "scope": "user", "nodes": [], "edges": []},
+            json={"name": "Missing", "scope": "user", **_runnable_payload()},
         )
         assert unknown_update.status_code == 404
         changed_scope = client.put(
@@ -789,8 +978,7 @@ class TestWorkflowCatalogAPI:
                 "name": "Changed scope",
                 "scope": "system",
                 "expected_revision": "head:1",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
         assert changed_scope.status_code == 422
@@ -813,8 +1001,7 @@ class TestWorkflowCatalogAPI:
                 "scope": "user",
                 "expected_revision": "head:1",
                 "base_revision": revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -833,7 +1020,7 @@ class TestWorkflowCatalogAPI:
             child_base,
             version="1.1.0",
             name="Child v2",
-            graph={"nodes": [{"id": "new-child", "kind": "stage"}], "edges": []},
+            graph=_runnable_graph("new-child"),
             revision="child-head:2",
             document_revision=None,
         )
@@ -883,8 +1070,18 @@ class TestWorkflowCatalogAPI:
                 "schema_version": 2,
                 "expected_revision": "parent-head:2",
                 "base_revision": parent_base_revision,
-                "nodes": [{"id": "branched-parent", "kind": "stage"}],
-                "edges": [],
+                "nodes": [
+                    {"id": "branched-parent", "kind": "trigger", "dispatchEvent": "work.requested"},
+                    {"id": "branched-parent-end", "kind": "end"},
+                ],
+                "edges": [
+                    {
+                        "id": "branched-parent-to-end",
+                        "source": "branched-parent",
+                        "target": "branched-parent-end",
+                        "label": "work.requested -> work.requested",
+                    }
+                ],
             },
         )
 
@@ -929,8 +1126,7 @@ class TestWorkflowCatalogAPI:
                 "schema_version": 2,
                 "expected_revision": "parent-head:1",
                 "base_revision": parent_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -947,7 +1143,7 @@ class TestWorkflowCatalogAPI:
             child_v1,
             name="Child v2",
             version="2.0.0",
-            graph={"nodes": [{"id": "child-v2", "kind": "stage"}], "edges": []},
+            graph=_runnable_graph("child-v2"),
             document_revision=None,
         )
         child_v2_revision = workflow_document_revision(child_v2)
@@ -994,8 +1190,7 @@ class TestWorkflowCatalogAPI:
                         "digest": child_v1_revision,
                     }
                 },
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1052,8 +1247,7 @@ class TestWorkflowCatalogAPI:
                         "digest": private_revision,
                     }
                 },
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1112,8 +1306,7 @@ class TestWorkflowCatalogAPI:
                         "digest": selected_revision,
                     }
                 },
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1155,8 +1348,7 @@ class TestWorkflowCatalogAPI:
                 "schema_version": 2,
                 "expected_revision": "parent-head:1",
                 "base_revision": parent_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1213,8 +1405,9 @@ class TestWorkflowCatalogAPI:
                         "path": "/legacy",
                         "authRef": "legacy-secret",
                     },
+                    *_runnable_payload()["nodes"],
                 ],
-                "edges": [],
+                "edges": _runnable_payload()["edges"],
             },
         )
 
@@ -1290,8 +1483,7 @@ class TestWorkflowCatalogAPI:
                 "scope": "system",
                 "expected_revision": base_revision,
                 "base_revision": base_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
         assert response.status_code == 201, response.text
@@ -1334,8 +1526,7 @@ class TestWorkflowCatalogAPI:
                 "scope": "system",
                 "expected_revision": base_revision,
                 "base_revision": base_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1355,8 +1546,7 @@ class TestWorkflowCatalogAPI:
             "scope": "user",
             "expected_revision": "head:1",
             "base_revision": base_revision,
-            "nodes": [],
-            "edges": [],
+            **_runnable_payload(),
         }
 
         first = client.post(
@@ -1402,8 +1592,7 @@ class TestWorkflowCatalogAPI:
                 "description": "Updated",
                 "version": "2.0.0",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1426,8 +1615,7 @@ class TestWorkflowCatalogAPI:
                 "description": "Updated",
                 "version": "2.0.0",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1437,15 +1625,17 @@ class TestWorkflowCatalogAPI:
         assert body["scope"] == "system"
         assert body["owner_id"] is None
 
-    def test_launch_workflow_is_refused_because_steps_have_no_runner(self) -> None:
+    def test_launch_workflow_starts_a_run_and_answers_with_its_campaign(self) -> None:
         workflow = _make_research_workflow()
         repo = InMemoryWorkflowRepository([workflow])
-        adapter = RecordingVolundrPort()
+        adapter = RecordingVolundrPort(name="cpu", target_id="cpu-1")
         campaign_repo = RecordingCampaignRepository()
+        runs = FakeWorkflowRuns()
         client = _make_client(
             repo,
             volundr_factory=RecordingVolundrFactory([adapter]),
             campaign_repo=campaign_repo,
+            workflow_runs=runs,
         )
 
         response = client.post(
@@ -1459,10 +1649,46 @@ class TestWorkflowCatalogAPI:
             },
         )
 
-        assert response.status_code == 501
-        assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+        assert response.status_code == 201
+        body = response.json()
+        assert "sessionId" not in body
+        assert body["workflowId"] == str(workflow.id)
+        assert body["status"] == "pending"
+        # A run starts no session of its own: the engine creates one per stage member.
         assert adapter.requests == []
-        assert campaign_repo.items == {}
+        [campaign] = campaign_repo.items.values()
+        assert body["campaignId"] == str(campaign.id)
+        assert body["campaignSlug"] == campaign.slug
+        assert campaign.session_id == ""
+        assert campaign.connection_id == "cpu-1"
+        assert campaign.metadata["repo"] == "https://github.com/niuulabs/volundr.git"
+        assert campaign.metadata["branch"] == "feat/research"
+        [(launched, payload)] = runs.launched
+        assert launched.id == campaign.id
+        assert payload["prompt"].startswith("Research whether AI grief companions")
+        assert "Workflow Launch" in payload["initiative_context"]
+
+    def test_a_run_that_cannot_start_fails_its_campaign_and_the_launch(self) -> None:
+        workflow = _make_research_workflow()
+        campaign_repo = RecordingCampaignRepository()
+        runs = FakeWorkflowRuns(launch_error=RuntimeError("no Forge capacity"))
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([RecordingVolundrPort()]),
+            campaign_repo=campaign_repo,
+            workflow_runs=runs,
+        )
+
+        with pytest.raises(RuntimeError, match="no Forge capacity"):
+            client.post(
+                f"/api/v1/ting/workflows/{workflow.id}/launch",
+                headers=_headers(roles="ting:admin"),
+                json={"prompt": "Doomed."},
+            )
+
+        [campaign] = campaign_repo.items.values()
+        assert campaign.status.value == "failed"
+        assert campaign.metadata["failure_error"] == "no Forge capacity"
 
     def test_launch_workflow_still_refuses_a_workflow_the_caller_cannot_see(self) -> None:
         workflow = _make_workflow(owner_id="someone-else")
@@ -1555,8 +1781,7 @@ class TestWorkflowCatalogAPI:
             json={"prompt": "Launch with the matching build scope."},
         )
 
-        assert response.status_code == 501
-        assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+        assert response.status_code == 201
         assert adapter.requests == []
 
     def test_launch_workflow_normal_token_unaffected(self) -> None:
@@ -1573,8 +1798,7 @@ class TestWorkflowCatalogAPI:
             json={"prompt": "A human PAT launches normally."},
         )
 
-        assert response.status_code == 501
-        assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+        assert response.status_code == 201
         assert adapter.requests == []
 
 
@@ -1747,8 +1971,8 @@ class TestTargetResolution:
         assert "spark-01" in caught.value.detail
 
 
-class TestLaunchWorkflowExecution:
-    """The seam every workflow launch goes through: checks first, then the refusal."""
+class TestPrepareWorkflowLaunch:
+    """The seam every workflow launch goes through: checks first, then the run's inputs."""
 
     @staticmethod
     def _request(*, allowed: bool = True, persona_source=None) -> Request:
@@ -1761,55 +1985,73 @@ class TestLaunchWorkflowExecution:
         app.state.persona_source = persona_source or FilesystemPersonaAdapter(
             persona_dirs=[], include_builtin=True
         )
+        app.state.settings = Settings(
+            auth=AuthConfig(allow_anonymous_dev=False, platform_tenant_id="")
+        )
         return Request({"type": "http", "app": app, "headers": []})
 
     @staticmethod
     def _principal() -> Principal:
         return Principal(user_id="user-1", email="", roles=["ting:admin"], tenant_id="")
 
-    async def _launch(self, request: Request, workflow: WorkflowDefinition, **kwargs):
-        adapter = RecordingVolundrPort()
-        with pytest.raises((WorkflowStepsHaveNoRunnerError, HTTPException)) as caught:
-            await launch_workflow_execution(
-                request=request,
-                workflow=workflow,
-                launch=WorkflowLaunchBody(prompt="run it"),
-                volundr_factory=RecordingVolundrFactory([adapter]),
-                principal=self._principal(),
-                **kwargs,
-            )
-        assert adapter.requests == []
-        return caught.value
-
-    async def test_a_permitted_launch_raises_the_refusal(self) -> None:
-        error = await self._launch(self._request(), _make_research_workflow())
-
-        assert isinstance(error, WorkflowStepsHaveNoRunnerError)
-        assert str(error) == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
-
-    async def test_a_pinned_snapshot_launch_raises_the_refusal(self) -> None:
-        workflow = _make_research_workflow()
-
-        error = await self._launch(
-            self._request(), workflow, pinned_workflow_snapshot={"name": workflow.name}
+    async def _prepare(self, request: Request, workflow: WorkflowDefinition, **kwargs):
+        adapter = RecordingVolundrPort(name="cpu", target_id="cpu-1")
+        launch = kwargs.pop("launch", WorkflowLaunchBody(prompt="run it"))
+        execution = await prepare_workflow_launch(
+            request=request,
+            workflow=workflow,
+            launch=launch,
+            volundr_factory=RecordingVolundrFactory([adapter]),
+            principal=self._principal(),
+            **kwargs,
         )
+        # Preparing a launch starts nothing on Forge.
+        assert adapter.requests == []
+        return execution
 
-        assert isinstance(error, WorkflowStepsHaveNoRunnerError)
+    async def test_a_permitted_launch_resolves_the_runs_inputs(self) -> None:
+        execution = await self._prepare(self._request(), _make_research_workflow())
 
-    async def test_a_denied_launch_is_still_a_403(self) -> None:
-        error = await self._launch(self._request(allowed=False), _make_research_workflow())
+        assert execution.slug == "run-it"
+        assert execution.connection_id == "cpu-1"
+        assert execution.workflow_snapshot["name"] == "Research Campaign"
+        assert "run it" in execution.initiative_context
 
-        assert isinstance(error, HTTPException)
-        assert error.status_code == 403
+    async def test_a_pinned_snapshot_is_what_the_run_executes(self) -> None:
+        workflow = _make_research_workflow()
+        pinned = {"name": workflow.name, "graph": {"nodes": [], "edges": []}}
 
-    async def test_an_invalid_snapshot_is_still_a_422(self, monkeypatch) -> None:
+        execution = await self._prepare(self._request(), workflow, pinned_workflow_snapshot=pinned)
+
+        assert execution.workflow_snapshot == pinned
+
+    async def test_a_denied_launch_is_a_403(self) -> None:
+        with pytest.raises(HTTPException) as caught:
+            await self._prepare(self._request(allowed=False), _make_research_workflow())
+
+        assert caught.value.status_code == 403
+
+    async def test_an_invalid_snapshot_is_a_422(self, monkeypatch) -> None:
         def broken(*args, **kwargs):
             raise ValueError("persona 'ghost' is not known")
 
         monkeypatch.setattr("ting.api.workflows.build_workflow_snapshot", broken)
 
-        error = await self._launch(self._request(), _make_research_workflow())
+        with pytest.raises(HTTPException) as caught:
+            await self._prepare(self._request(), _make_research_workflow())
 
-        assert isinstance(error, HTTPException)
-        assert error.status_code == 422
-        assert "ghost" in error.detail
+        assert caught.value.status_code == 422
+        assert "ghost" in caught.value.detail
+
+    async def test_no_connection_is_a_503(self) -> None:
+        request = self._request()
+        with pytest.raises(HTTPException) as caught:
+            await prepare_workflow_launch(
+                request=request,
+                workflow=_make_research_workflow(),
+                launch=WorkflowLaunchBody(prompt="run it"),
+                volundr_factory=RecordingVolundrFactory([]),
+                principal=self._principal(),
+            )
+
+        assert caught.value.status_code == 503

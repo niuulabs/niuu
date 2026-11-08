@@ -11,12 +11,17 @@ from pathlib import Path
 
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class, resolve_secret_kwargs
+from personas.domain.persona_document import PersonaDocumentError, PortablePersonaDefinition
 from skuld.broker_api import _rebuild_presented_registry, _resume_presented_uploads
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.codex_auth import CodexAuthProviderPort
 from skuld.conversation_models import ConversationTurn
+from skuld.personas.projection import PersonaProjectionError, ProjectionContext
+from skuld.personas.registry import projector_for
 from skuld.service_manager import ServiceManager
 from skuld.session_artifacts import _capture_git_workspace_checkpoint
+from skuld.session_runtime import write_private_file
+from skuld.transports.mcp_config import mcp_server_names
 
 logger = logging.getLogger("skuld.broker")
 
@@ -33,6 +38,7 @@ class TransportLifecycleMixin:
             "ready": ready,
             "startup_state": self._startup_state,
             **({"error": self._startup_failure} if self._startup_failure else {}),
+            **({"persona": self._persona_status} if self._persona_status else {}),
         }
 
     def _fail_startup(self, exc: BaseException) -> None:
@@ -42,40 +48,6 @@ class TransportLifecycleMixin:
         self._startup_state = "failed"
         self._startup_failure = f"{type(exc).__name__}: {message}"[:2000]
         self._set_activity_state("error")
-
-    async def _run_supervised_workflow_trigger(self) -> None:
-        """Dispatch kickoff after ASGI startup and retain its readiness result."""
-        try:
-            await self._run_workflow_trigger_task()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self._fail_startup(exc)
-            logger.critical(
-                "Workflow kickoff failed; broker remains unready: %s",
-                self._startup_failure,
-                exc_info=True,
-            )
-            await self._report_activity_state(
-                "error",
-                extra_metadata={
-                    "startup_state": self._startup_state,
-                    "startup_error": self._startup_failure,
-                },
-            )
-            return
-
-        self._startup_ready = True
-        self._startup_state = "ready"
-        self._startup_failure = ""
-        logger.info("Workflow kickoff acknowledged; broker is ready")
-        # The flock accepted the work and is executing it now. A room-routed
-        # session has no CLI transport, so no ``system/init`` frame will ever
-        # move it out of ``provisioning`` — the kickoff ack is its turn start.
-        # Only from provisioning: a peer that already asked for help (or a
-        # flock that already finished) owns the state by now.
-        if self._activity_state == "provisioning":
-            await self._report_activity_state("active")
 
     def _build_transport_kwargs(self) -> dict:
         """Return superset of kwargs that any transport constructor might need."""
@@ -96,9 +68,7 @@ class TransportLifecycleMixin:
             "claude_permission_mode": self._settings.claude_permission_mode,
             "agent_teams": self._settings.agent_teams,
             "system_prompt": self._settings.session.system_prompt,
-            "initial_prompt": (
-                "" if self._has_workflow_trigger() else self._settings.session.initial_prompt
-            ),
+            "initial_prompt": self._settings.session.initial_prompt,
             # Configured servers plus the built-in forge MCP (merged by name).
             "mcp_servers": self._effective_mcp_servers(),
             "session_tools": self._session_tools(),
@@ -168,11 +138,79 @@ class TransportLifecycleMixin:
         kwargs = self._build_transport_kwargs()
         if "codex_auth_provider" in sig.parameters:
             kwargs["codex_auth_provider"] = self._create_codex_auth_provider()
+        self._project_persona(cls, adapter_path, kwargs)
         filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
         logger.info("Using %s (adapter: %s)", cls.__name__, adapter_path)
         if "claude_permission_mode" in sig.parameters:
             self._log_claude_permission_mode()
         return cls(**filtered)
+
+    def _project_persona(self, cls: type, adapter_path: str, kwargs: dict) -> None:
+        """Play the session's persona on this transport, or refuse to start.
+
+        The projection is a pure function of the pinned persona, the request's ad-hoc prompt
+        and this node's configuration, so every start of the session, resume included, builds
+        the transport the same way. Raises :class:`PersonaProjectionError` when the harness
+        cannot enforce something the persona states, or when a projected argument is not one
+        the transport accepts (a projection that would be dropped silently).
+        """
+        raw = self._settings.session.persona
+        if raw is None:
+            return
+        persona = PortablePersonaDefinition.from_dict(raw)
+        context = ProjectionContext(
+            transport=adapter_path,
+            runtime_dir=self._session_runtime.root,
+            request_prompt=self._settings.session.system_prompt,
+            mcp_servers=tuple(kwargs.get("mcp_servers") or ()),
+            platform_mcp_servers=tuple(mcp_server_names(self._builtin_mcp_servers())),
+            node_skip_permissions=self._settings.skip_permissions,
+            node_claude_permission_mode=self._settings.claude_permission_mode,
+            node_approval_policy=self._settings.approval_policy,
+            node_sandbox=self._settings.sandbox,
+            supports_read_only_mcp_boundary=bool(
+                getattr(cls, "supports_read_only_mcp_boundary", False)
+            ),
+        )
+        projection = projector_for(adapter_path).project(persona, context)
+        projection.require_playable(persona.id, adapter_path)
+        accepted = {
+            name
+            for name, parameter in inspect.signature(cls).parameters.items()
+            if parameter.kind not in (parameter.VAR_KEYWORD, parameter.VAR_POSITIONAL)
+        }
+        unaccepted = sorted(set(projection.kwargs) - accepted)
+        if unaccepted:
+            raise PersonaProjectionError(
+                f"Persona {persona.id!r} projects {', '.join(unaccepted)} onto {adapter_path}, "
+                "whose constructor does not accept it, so the persona's limits would be "
+                "dropped. Add the argument to the transport or use a transport that has it."
+            )
+        kwargs.update(projection.kwargs)
+        for projected in projection.files:
+            write_private_file(self._session_runtime.root / projected.name, projected.content)
+        for note in projection.notes:
+            logger.warning(
+                "Persona %s on %s: %s (%s)",
+                persona.id,
+                projection.engine,
+                note.message,
+                note.subject,
+            )
+        self._persona_status = {
+            "id": persona.id,
+            "revision": persona.revision,
+            "engine": projection.engine,
+            "projected": sorted(projection.kwargs),
+            "notes": [gap.describe() for gap in projection.notes],
+        }
+        logger.info(
+            "Persona %s@%s projected onto %s (%s)",
+            persona.id,
+            persona.revision,
+            projection.engine,
+            ", ".join(sorted(projection.kwargs)),
+        )
 
     def _log_claude_permission_mode(self) -> None:
         """Say which permission mode Claude gets and whether the node chose it."""
@@ -284,7 +322,18 @@ class TransportLifecycleMixin:
             self._room_bridge.start_presence_sweep()
 
         # Initialize transport
-        self._transport = self._create_transport()
+        try:
+            self._transport = self._create_transport()
+        except (PersonaProjectionError, PersonaDocumentError) as exc:
+            # The harness cannot play the session's persona. Keep the HTTP diagnostics alive
+            # so /ready reports exactly why, and start nothing that would run unrestricted.
+            self._fail_startup(exc)
+            logger.critical(
+                "Persona cannot be played on this transport; broker remains unready: %s",
+                self._startup_failure,
+                exc_info=True,
+            )
+            return
         self._transport.on_event(self._handle_cli_event)
 
         # Initialize service manager
@@ -321,29 +370,17 @@ class TransportLifecycleMixin:
         # lifespan returns promptly and uvicorn binds — otherwise the
         # transport's first turn (which can take seconds to minutes)
         # blocks the HTTP listener and the chat UI gets 502s.
-        if self._has_workflow_trigger() and self._restored_workflow_terminal_completion is None:
-            await self._ensure_workflow_prompt_turn()
-        elif self._restored_workflow_terminal_completion is not None:
-            logger.info(
-                "Recovered durable workflow terminal outcome; skipping workflow trigger replay"
-            )
-
         if self._is_room_routed_session():
-            # Room-routed sessions (flock workflows and residents) have no CLI
-            # transport of their own — chat flows to mesh peers / the resident.
+            # Room-routed sessions (residents) have no CLI
+            # transport of their own — chat flows to the resident.
             # Warming a transport here would spawn an orphan Claude subprocess
             # alongside the resident, burning tokens and emitting competing
             # frames. A restarted resident always has prior history, so this
             # guard must precede the resume branch below.
             logger.info("Room-routed session — skipping transport auto-start")
         elif self._settings.session.initial_prompt:
-            if self._has_workflow_trigger() and self._restored_workflow_terminal_completion is None:
-                logger.info(
-                    "Workflow trigger configured — holding initial prompt for mesh dispatch"
-                )
-            else:
-                logger.info("Initial prompt configured — auto-starting transport in background")
-                asyncio.create_task(self._auto_start_transport())
+            logger.info("Initial prompt configured — auto-starting transport in background")
+            asyncio.create_task(self._auto_start_transport())
         elif self._conversation_turns:
             # Resumed/restarted session (no new initial prompt, but prior history
             # was loaded). Warm the transport eagerly so it is already alive when
@@ -378,34 +415,11 @@ class TransportLifecycleMixin:
                 # and tear down the runtime.  Nothing below this point should
                 # start for a broker whose configured mesh never came up.
                 return
-            if self._has_workflow_trigger() and self._restored_workflow_terminal_completion is None:
-                if self._mesh_adapter is None:
-                    self._fail_startup(RuntimeError("configured mesh adapter did not start"))
-                else:
-                    # The acknowledgement arrives through Skuld's Ravn
-                    # WebSocket. Retain the task and return from lifespan so
-                    # that listener can serve the peer handshake.
-                    self._startup_state = "workflow_kickoff_pending"
-                    self._workflow_trigger_task = asyncio.create_task(
-                        self._run_supervised_workflow_trigger(),
-                        name=f"skuld-workflow-kickoff-{self.session_id}",
-                    )
-        elif self._has_workflow_trigger() and self._restored_workflow_terminal_completion is None:
-            error = RuntimeError("workflow trigger is configured but mesh is disabled")
-            self._fail_startup(error)
-            logger.error("%s", error)
-
-        if (
-            self._room_bridge is not None
-            and self._settings.mesh.enabled
-            and self._settings.peer_watchdog.enabled
-        ):
-            self._peer_watchdog_task = asyncio.create_task(self._peer_watchdog_loop())
 
         if self._settings.activity_heartbeat.enabled and self.volundr_api_url:
             self._activity_heartbeat_task = asyncio.create_task(self._activity_heartbeat_loop())
 
-        if self._workflow_trigger_task is None and not self._startup_failure:
+        if not self._startup_failure:
             self._startup_ready = True
             self._startup_state = "ready"
             if self._activity_state == "provisioning" and (
@@ -417,6 +431,12 @@ class TransportLifecycleMixin:
                 # first message. Startup is complete; the session takes that
                 # message now, so it is idle, not starting.
                 asyncio.create_task(self._report_activity_state("idle"))
+            if self._settings.workflow_steps.enabled:
+                # A step restored from the durable log whose instructions never reached the
+                # harness is handed over now; one already handed over is left to its turn.
+                asyncio.create_task(
+                    self._maybe_inject_workflow_step(), name="workflow-step-restore-inject"
+                )
 
     async def shutdown(self) -> None:
         """Clean up on shutdown.
@@ -448,16 +468,6 @@ class TransportLifecycleMixin:
             await asyncio.gather(self._activity_heartbeat_task, return_exceptions=True)
             self._activity_heartbeat_task = None
 
-        if self._peer_watchdog_task is not None:
-            self._peer_watchdog_task.cancel()
-            await asyncio.gather(self._peer_watchdog_task, return_exceptions=True)
-            self._peer_watchdog_task = None
-
-        if self._workflow_trigger_task is not None:
-            self._workflow_trigger_task.cancel()
-            await asyncio.gather(self._workflow_trigger_task, return_exceptions=True)
-            self._workflow_trigger_task = None
-
         if self._permission_auto_approval_tasks:
             for task in list(self._permission_auto_approval_tasks.values()):
                 task.cancel()
@@ -476,13 +486,6 @@ class TransportLifecycleMixin:
             attributes={"reason": "shutdown"},
         )
         self._trace_assistant_span_id = None
-        for gate_span_id in list(self._trace_workflow_gate_spans.values()):
-            await self._finish_trace_span(
-                gate_span_id,
-                status="cancelled",
-                attributes={"reason": "shutdown"},
-            )
-        self._trace_workflow_gate_spans.clear()
         for peer_id, tool_span_ids in list(self._trace_peer_tool_spans.items()):
             for tool_span_id in tool_span_ids:
                 await self._finish_trace_span(
@@ -498,16 +501,6 @@ class TransportLifecycleMixin:
                 attributes={"reason": "shutdown", "peer_id": peer_id},
             )
         self._trace_peer_turn_spans.clear()
-        await self._finish_trace_span(
-            self._trace_workflow_span_id,
-            status="completed",
-            attributes={
-                "duration_seconds": self._artifacts.duration_seconds,
-                "turn_count": self._artifacts.turn_count,
-            },
-        )
-        self._trace_workflow_span_id = None
-
         # Report chronicle BEFORE stopping the transport (CLI must be alive)
         await self._report_chronicle()
         await self._write_workspace_archive()

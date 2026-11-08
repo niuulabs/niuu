@@ -34,7 +34,12 @@ from ting.api.workflow_execution_auth import (
     require_coordinate_scope,
     resolve_launch_expansion_policy,
 )
-from ting.api.workflows import WorkflowLaunchBody, launch_workflow_execution, resolve_workflow_repo
+from ting.api.workflow_execution_launch import launch_reserved_parent
+from ting.api.workflows import (
+    WorkflowLaunchBody,
+    resolve_workflow_launch_campaign_repo,
+    resolve_workflow_repo,
+)
 from ting.delivery.auth import DELIVERY_OPERATION_STATES, assert_delivery_claims
 from ting.delivery.completion import DeliveryCompletionService
 from ting.delivery.domain import ChildExecution, DeliveryExecution
@@ -50,6 +55,7 @@ from ting.domain.workflow_execution import (
 )
 from ting.domain.workflow_snapshot import build_workflow_snapshot
 from ting.ports.volundr import VolundrFactory
+from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
 
 
@@ -135,6 +141,7 @@ def create_delivery_executions_router() -> APIRouter:
         bearer_token: str | None = Depends(extract_bearer_token),
         workflow_repo: WorkflowRepository = Depends(resolve_workflow_repo),
         execution_repo: DeliveryExecutionRepository = Depends(resolve_delivery_execution_repo),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_launch_campaign_repo),
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
     ) -> dict[str, Any]:
         launch_key = request.headers.get("idempotency-key", "").strip()
@@ -228,22 +235,10 @@ def create_delivery_executions_router() -> APIRouter:
         if reserved.parent_session_id:
             return await _detail(execution_repo, reserved)
 
-        session_key = f"workflow:execution-{reserved.id.hex}"
-        sessions = await target_adapter.list_sessions(
-            auth_token=bearer_token,
-            principal=principal,
-        )
-        recovered = next(
-            (session for session in sessions if session.tracker_issue_id == session_key),
-            None,
-        )
-        if recovered is not None:
-            attached = await execution_repo.attach_parent_session(
-                reserved.id,
-                session_id=recovered.id,
-                connection_id=getattr(target_adapter, "target_id", "") or "",
-            )
-            return await _detail(execution_repo, attached)
+        runs = request.app.state.workflow_runs
+        if (await runs.state(reserved.id)).launched:
+            # The run for this reservation already started: the replay finds it.
+            return await _detail(execution_repo, reserved)
         if not created and datetime.now(UTC) - reserved.updated_at < timedelta(
             seconds=settings.lease_seconds
         ):
@@ -307,25 +302,20 @@ def create_delivery_executions_router() -> APIRouter:
                     "base_url": api_base_url,
                     "execution_id": str(reserved.id),
                     "parent_node_id": reserved.parent_node_id,
-                    "parent_session_key": session_key,
                     "coordinator_id": reserved.policy.coordinator_id,
                 },
             },
         )
-        launched = await launch_workflow_execution(
+        _, saved = await launch_reserved_parent(
             request=request,
             workflow=workflow,
-            pinned_workflow_snapshot=reserved.workflow_snapshot,
+            reserved=reserved,
             launch=launch,
+            execution_repo=execution_repo,
+            campaign_repo=campaign_repo,
             volundr_factory=volundr_factory,
             principal=principal,
             bearer_token=bearer_token,
-            trusted_workflow_execution=True,
-        )
-        saved = await execution_repo.attach_parent_session(
-            reserved.id,
-            session_id=launched.session.id,
-            connection_id=launched.connection_id or "",
         )
         return await _detail(execution_repo, saved)
 

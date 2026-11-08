@@ -3,27 +3,27 @@ id: a4c7067a-ac22-5b64-bde1-ec8ad1507e73
 name: Saga Planning
 description: Focused planning workflow that clarifies a brief, drafts a saga breakdown, and pauses for
   review before publishing the plan.
-version: 1.0.2
+version: 1.0.4
 persona_dependencies:
   saga-brief-framer:
     id: saga-brief-framer
-    revision: content-f6733bfd612fa859
-    digest: sha256:f6733bfd612fa859d9041702fb8a658dc81dfd546b307e85c14a74b970d1f545
+    revision: content-8cd3186f5fa72e3d
+    digest: sha256:8cd3186f5fa72e3dd72e38182c6a03956190da75ff79cfe4d486717f9d468fa3
     path: personas/saga-brief-framer.yaml
   saga-plan-publisher:
     id: saga-plan-publisher
-    revision: content-aeeeb2ab29244750
-    digest: sha256:aeeeb2ab29244750bc3f3142a6b83bd058a09cd574b000515ec98b98159f39a7
+    revision: content-4dba3f138beb6875
+    digest: sha256:4dba3f138beb6875a5cdf0abadfc695b89b5698a714d0ba2d3571bca0e48c562
     path: personas/saga-plan-publisher.yaml
   saga-plan-reviewer:
     id: saga-plan-reviewer
-    revision: content-0e443423cd5ae3ad
-    digest: sha256:0e443423cd5ae3ad52b21d1f3a63c94745699749228051f751fecf1b4a89bb1d
+    revision: content-12c83ca60bfd463b
+    digest: sha256:12c83ca60bfd463b89e28211e9f25ca455b66fbf9f5480d7a407ce5646a37983
     path: personas/saga-plan-reviewer.yaml
   saga-planner:
     id: saga-planner
-    revision: content-e7d2adc68a0d774e
-    digest: sha256:e7d2adc68a0d774ea2526dedd1c73cb25aa991faa62660b9e067ca9a7ee5cdbc
+    revision: content-ec4473c0b21f624e
+    digest: sha256:ec4473c0b21f624e316cf94e1b0f0e50c6e9f47e83d95ee1808afe384667e732
     path: personas/saga-planner.yaml
 graph:
   tags:
@@ -164,6 +164,7 @@ graph:
     source: plan-brief-gate
     target: plan-clarify
     label: plan.brief.changes_requested -> plan.brief.changes_requested
+    rework: true
   - id: edge-plan-breakdown-to-review
     source: plan-breakdown
     target: plan-review
@@ -172,6 +173,7 @@ graph:
     source: plan-review
     target: plan-breakdown
     label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+    rework: true
   - id: edge-plan-review-to-review-gate
     source: plan-review
     target: plan-review-gate
@@ -180,6 +182,7 @@ graph:
     source: plan-review-gate
     target: plan-breakdown
     label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+    rework: true
   - id: edge-plan-review-gate-to-publish
     source: plan-review-gate
     target: plan-publish

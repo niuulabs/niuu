@@ -51,7 +51,6 @@ continue to read them.
 | A2A outbound message (`message_max_chars` of the A2A gateway kwargs) | 12000 | The peer's request limit | Kept | The call is refused with an error naming the limit |
 | Bifröst inbound defaults (chat completions 1024, Responses 4096, Ollama 1024) | none | Model max output / remaining window | **Removed**: an uncapped request stays uncapped. Bifröst's Anthropic upstream derives the cap from the Models API; a `max_tokens` routing rule treats uncapped as unbounded | `ProviderError` if the limit cannot be read |
 | Skuld Telegram `TELEGRAM_MAX_MESSAGE_LENGTH` | 4096 | Telegram: 4096 UTF-16 units after entity parsing | Measured in UTF-16 units; HTML chunks never split inside a tag or entity, and open tags are closed and reopened across a split | A failed chunk logs at error, and the event is not marked delivered, so a redelivery resends it |
-| Skuld `workflow.gate_consumer_wait_s` (a gate decision waiting for the flock to reconnect after a restart) | 20 s | How long a caller holds the request open | Kept: the mesh keeps nothing for late subscribers, so publishing early would lose the decision | The decision fails with a 503 naming the knob and the gate stays pending; counted on `skuld.workflow.gate_consumer_wait.hits` |
 | Learned-tool Kubernetes Job (`job_pod_start_timeout_seconds` of the `k8s_job` backend) | 120 s | How long a node takes to start a pod | Kept: a wall-clock deadline on one run | The run fails as an infrastructure error (`LearnedToolInfrastructureError`) rather than as a failing tool |
 
 ## Remaining fallbacks

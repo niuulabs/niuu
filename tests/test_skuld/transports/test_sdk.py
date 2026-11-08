@@ -205,7 +205,11 @@ async def test_start_and_stop_manage_sdk_context(monkeypatch, tmp_path) -> None:
     assert transport.is_alive is True
     assert factory.options.model == "claude-opus-4-20250514"
     assert factory.options.permission_mode == "bypassPermissions"
-    assert factory.options.system_prompt == "System prompt"
+    assert factory.options.system_prompt == {
+        "type": "preset",
+        "preset": "claude_code",
+        "append": "System prompt",
+    }
     assert factory.options.cwd == str(tmp_path)
     assert factory.options.mcp_servers == {
         "linear": {"command": "uvx", "args": ["linear-mcp"]},

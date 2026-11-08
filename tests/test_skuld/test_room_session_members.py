@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from skuld.broker import ROOM_MEMBER_FRAME
 from skuld.collaboration_adapter import SkuldCollaborationAdapter
 from skuld.config import RoomConfig
-from skuld.workflow_runtime import ROOM_MEMBER_FRAME, WorkflowGateNode
 from tests.test_skuld.test_broker_review_regressions import _broker
 
 
@@ -102,65 +102,16 @@ async def test_a_joined_agent_cannot_approve_a_gate():
         bridge.require_participant_capability("coordinator:abc", "approve")
 
 
-def _gate_node() -> WorkflowGateNode:
-    return WorkflowGateNode(
-        node_id="review",
-        label="Code review",
-        condition="",
-        event_types=["review.done"],
-        approval_event_type="review.approved",
-        changes_requested_event_type="review.changes",
-    )
-
-
 def _room_broker(tmp_path):
     broker = _broker(tmp_path, api_url="")
     broker._room_bridge = _bridge(AsyncMock(return_value=True))
     broker._emit_pipeline_event = AsyncMock()
     broker._start_trace_span = AsyncMock(return_value=None)
     broker._finish_trace_span = AsyncMock()
-    broker._emit_workflow_gate_help_needed_sleipnir_event = AsyncMock()
     broker._report_activity_state = AsyncMock()
     broker.handle_human_room_message = AsyncMock()
     broker._mesh_adapter = SimpleNamespace(publish=AsyncMock())
     return broker
-
-
-async def test_a_gate_opening_reaches_a_member_and_names_its_ticket_and_run(tmp_path):
-    broker = _room_broker(tmp_path)
-    deliver = broker._room_bridge._deliver_to_session
-    await _seat(broker._room_bridge, notice_context="Ticket NIU-1, Delivery, run a2a-1")
-
-    await broker._activate_workflow_gate(
-        _gate_node(), "activation", "review.done", summary="Ready for you."
-    )
-
-    session, message = deliver.await_args.args
-    assert session == "coordinator-session"
-    assert message.startswith("[Ticket NIU-1, Delivery, run a2a-1] ")
-    assert "Code review" in message
-    assert "waiting for a person's decision" in message
-    assert "Ready for you." in message
-
-
-async def test_a_decided_gate_sends_nothing_that_could_queue_up_stale(tmp_path):
-    broker = _room_broker(tmp_path)
-    deliver = broker._room_bridge._deliver_to_session
-    await _seat(broker._room_bridge)
-    state = await broker._activate_workflow_gate(_gate_node(), "activation", "review.done")
-    deliver.reset_mock()
-
-    await broker.resolve_workflow_gate(state.id, "APPROVE")
-
-    deliver.assert_not_awaited()
-
-
-async def test_a_session_without_joined_members_sends_nothing(tmp_path):
-    broker = _room_broker(tmp_path)
-
-    await broker._activate_workflow_gate(_gate_node(), "activation", "review.done")
-
-    broker._room_bridge._deliver_to_session.assert_not_awaited()
 
 
 async def test_delivery_goes_through_forge_to_the_members_session(tmp_path):

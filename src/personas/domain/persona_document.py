@@ -18,6 +18,9 @@ from typing import Any, Protocol
 import yaml
 from yaml.constructor import ConstructorError
 
+from personas.domain.permission_mode import parse_permission_mode
+from personas.domain.tool_vocabulary import PersonaToolError, validate_tool_names
+
 PERSONA_DOCUMENT_SCHEMA_VERSION = 1
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$")
@@ -389,7 +392,9 @@ def _validate_definition(persona_id: str, definition: Mapping[str, Any]) -> None
     _validate_optional_string(definition, "system_prompt_template")
     _validate_string_list(definition, "allowed_tools")
     _validate_string_list(definition, "forbidden_tools")
+    _validate_tools(persona_id, definition)
     _validate_optional_string(definition, "permission_mode")
+    _validate_permission_mode(persona_id, definition)
     _validate_non_negative_int(definition, "iteration_budget")
     _validate_optional_bool(definition, "stop_on_outcome")
     _validate_string_list(definition, "delivery_workspace_actions")
@@ -402,6 +407,32 @@ def _validate_definition(persona_id: str, definition: Mapping[str, Any]) -> None
         json.dumps(definition, allow_nan=False, ensure_ascii=False, sort_keys=True)
     except (TypeError, ValueError, RecursionError) as exc:
         raise PersonaDocumentError("Portable persona definition must be JSON-serializable") from exc
+
+
+def _validate_tools(persona_id: str, definition: Mapping[str, Any]) -> None:
+    """Refuse a tool outside the neutral vocabulary; the message lists the valid set."""
+    for key in ("allowed_tools", "forbidden_tools"):
+        if key not in definition:
+            continue
+        try:
+            validate_tool_names(key, definition[key])
+        except PersonaToolError as exc:
+            raise PersonaDocumentError(f"Portable persona '{persona_id}': {exc}") from exc
+
+
+def _validate_permission_mode(persona_id: str, definition: Mapping[str, Any]) -> None:
+    """Refuse a permission mode no enforcer knows; either spelling of a known one is valid.
+
+    The digest is over the spelling the document was authored with, so existing pins stay
+    valid; enforcement parses the mode (``parse_permission_mode``) and never compares text.
+    """
+    mode = definition.get("permission_mode")
+    if not mode:
+        return
+    try:
+        parse_permission_mode(mode)
+    except ValueError as exc:
+        raise PersonaDocumentError(f"Portable persona '{persona_id}': {exc}") from exc
 
 
 def _validate_voice(raw: Any) -> None:

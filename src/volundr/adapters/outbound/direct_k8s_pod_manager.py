@@ -23,6 +23,7 @@ from typing import Any
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
 from volundr.domain.models import Session, SessionSpec, SessionStatus
 from volundr.domain.ports import CredentialStorePort, PodManager, PodStartResult
+from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -351,6 +352,15 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
             env.append(
                 {"name": "SKULD__SESSION__SYSTEM_PROMPT", "value": session_config["systemPrompt"]}
             )
+        if session_config.get("persona"):
+            env.append(
+                {
+                    "name": "SKULD__SESSION__PERSONA",
+                    "value": json.dumps(session_config["persona"], separators=(",", ":")),
+                }
+            )
+        if workflow_steps_enabled(spec.values):
+            env.append({"name": WORKFLOW_STEPS_ENABLED_ENV, "value": "true"})
         if session_config.get("reasoningEffort"):
             env.append(
                 {

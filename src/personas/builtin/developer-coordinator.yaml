@@ -92,29 +92,8 @@ system_prompt_template: |
   deterministic tool results; never reconstruct a signed receipt from prose. These handoff fields
   let the next graph stage inspect the same immutable candidate and are not a substitute for the
   empty parent result object.
-allowed_tools:
-  - delivery_expand_workstreams
-  - workflow_execution_reconcile
-  - workflow_execution_retry
-  - workflow_execution_message
-  - workflow_execution_cancel
-  - delivery_complete
-  - delivery_record_integration
-  - workflow_execution_wait
-  - delivery_workspace
-  - delivery_forge
-  - delivery_evidence
-forbidden_tools:
-  - file
-  - file_write
-  - file_edit
-  - terminal
-  - bash
-  - git
-  - git_add
-  - git_commit
-  - git_checkout
-  - a2a_task
+allowed_tools: [plan]
+forbidden_tools: [file_read, file_write, shell, git, git_read]
 # Coordinator allocates and integrates on behalf of children and inspects
 # integration candidates before requesting review. Declared here (not derived
 # from name or executionContract) so this survives workflow aliasing.

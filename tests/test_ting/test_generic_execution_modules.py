@@ -17,7 +17,7 @@ TING = Path(__file__).resolve().parents[2] / "src" / "ting"
 
 _GENERIC_MODULE = re.compile(
     r"(workflow_execution|workflow_wait|wait_condition|workflow_continuation"
-    r"|execution_snapshot|child_evidence|child_reviews|parent_workflow_continuation)"
+    r"|execution_snapshot|child_evidence|child_reviews|parent_continuation)"
 )
 
 _DELIVERY_CONCEPT = re.compile(

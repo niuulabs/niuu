@@ -1519,6 +1519,86 @@ def test_resolve_workflow_gate_proxies_to_owner_with_encoded_gate_id_and_intent(
     }
 
 
+STEP_ACTIVATION = {
+    "activation_id": "3f2b8c1e-5a47-4d0e-9b61-7c1e2a9d4f10",
+    "run_id": "0b7e6d5c-4a39-4281-9f10-e1d2c3b4a596",
+    "attempt": 1,
+    "generation": 0,
+    "node_id": "implement",
+    "node_label": "Implement",
+    "member": "coder",
+    "valid_endings": ["verdict", "waiting", "done", "failed"],
+    "valid_verdicts": ["implemented", "blocked"],
+    "outcome_schema": None,
+    "deadline_at": None,
+    "instructions": "Do the step.",
+}
+
+
+@pytest.mark.parametrize(
+    "answer_status, answer",
+    [
+        (202, {"state": "active"}),
+        (200, {"state": "active"}),
+        (409, {"detail": "this session already has an open step"}),
+    ],
+)
+@respx.mock
+def test_workflow_step_delivery_passes_the_sessions_own_answer_through(
+    answer_status, answer
+) -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2", "name": "Session 2"})
+    )
+    route = respx.post("http://beta/api/v1/forge/sessions/s2/workflow/steps").mock(
+        return_value=Response(answer_status, json=answer)
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions/s2/workflow/steps", headers=_headers(), json=STEP_ACTIVATION
+    )
+
+    assert response.status_code == answer_status
+    assert response.json() == answer
+    import json as _json
+
+    assert _json.loads(route.calls.last.request.content) == STEP_ACTIVATION
+
+
+@respx.mock
+def test_workflow_step_state_is_read_from_the_session_owner() -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2", "name": "Session 2"})
+    )
+    route = respx.get("http://beta/api/v1/forge/sessions/s2/workflow/steps/act%201").mock(
+        return_value=Response(200, json={"state": "closed", "ending": {"kind": "done"}})
+    )
+
+    response = client.get("/api/v1/forge/sessions/s2/workflow/steps/act%201", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"state": "closed", "ending": {"kind": "done"}}
+    assert route.called
+
+
+@respx.mock
+def test_unknown_workflow_step_is_a_404_not_an_error_page() -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2", "name": "Session 2"})
+    )
+    respx.get("http://beta/api/v1/forge/sessions/s2/workflow/steps/nope").mock(
+        return_value=Response(404, json={"detail": "this session holds no workflow step nope"})
+    )
+
+    response = client.get("/api/v1/forge/sessions/s2/workflow/steps/nope", headers=_headers())
+
+    assert response.status_code == 404
+    assert "holds no workflow step" in response.json()["detail"]
+
+
 @respx.mock
 def test_update_session_proxies_put_rename_to_owner_with_body() -> None:
     # PUT /sessions/{id} (rename/update, contract §2.1) — the aggregate only

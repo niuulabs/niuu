@@ -4730,6 +4730,60 @@ def create_volundr_router(
         payload = response.json()
         return payload if isinstance(payload, dict) else {}
 
+    @router.post("/sessions/{session_id}/workflow/steps")
+    async def activate_workflow_step(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> JSONResponse:
+        """Deliver a workflow step activation; the session's own answer is passed through.
+
+        202 (taken), 200 (already held) and 409 (a different step is open) are all answers the
+        caller acts on, so none is turned into an error here.
+        """
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/workflow/steps",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        return JSONResponse(_remote_json(response), status_code=response.status_code)
+
+    @router.get("/sessions/{session_id}/workflow/steps/{activation_id}")
+    async def get_workflow_step(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        activation_id: str = Path(description="Workflow step activation identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> JSONResponse:
+        """A step's durable state on its session."""
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/workflow/steps/{quote(activation_id, safe='')}",
+            params=_query_params(request),
+            embedded_app=embedded_forge_app,
+        )
+        return JSONResponse(_remote_json(response), status_code=response.status_code)
+
     @router.post("/sessions/{session_id}/room/{operation}")
     async def post_session_room(
         request: Request,
@@ -5312,10 +5366,27 @@ def create_volundr_router(
         _ensure_remote_success(response)
         return JSONResponse(content=response.json(), status_code=response.status_code)
 
-    @router.api_route("/sessions/{session_id}/secret-requests", methods=["GET", "POST"])
-    @router.api_route("/sessions/{session_id}/secret-requests/{request_id}", methods=["GET"])
+    # One handler serves every secret-request route; each route and method gets its own
+    # operation id so the OpenAPI document stays valid.
     @router.api_route(
-        "/sessions/{session_id}/secret-requests/{request_id}/{operation}", methods=["POST"]
+        "/sessions/{session_id}/secret-requests",
+        methods=["GET"],
+        operation_id="list_session_secret_requests",
+    )
+    @router.api_route(
+        "/sessions/{session_id}/secret-requests",
+        methods=["POST"],
+        operation_id="create_session_secret_request",
+    )
+    @router.api_route(
+        "/sessions/{session_id}/secret-requests/{request_id}",
+        methods=["GET"],
+        operation_id="get_session_secret_request",
+    )
+    @router.api_route(
+        "/sessions/{session_id}/secret-requests/{request_id}/{operation}",
+        methods=["POST"],
+        operation_id="operate_session_secret_request",
     )
     async def secret_request(
         request: Request,

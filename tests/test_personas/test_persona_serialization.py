@@ -282,15 +282,15 @@ def test_to_yaml_includes_all_non_zero_fields() -> None:
     p = PersonaConfig(
         name="full",
         system_prompt_template="Do something.",
-        allowed_tools=["file"],
-        forbidden_tools=["terminal"],
+        allowed_tools=["file_read"],
+        forbidden_tools=["shell"],
         permission_mode="read-only",
         llm=PersonaLLMConfig(primary_alias="balanced", thinking_enabled=True, max_tokens=1000),
         iteration_budget=25,
     )
     d = p.to_dict()
-    assert d["allowed_tools"] == ["file"]
-    assert d["forbidden_tools"] == ["terminal"]
+    assert d["allowed_tools"] == ["file_read"]
+    assert d["forbidden_tools"] == ["shell"]
     assert d["permission_mode"] == "read-only"
     assert d["llm"]["primary_alias"] == "balanced"
     assert d["llm"]["thinking_enabled"] is True

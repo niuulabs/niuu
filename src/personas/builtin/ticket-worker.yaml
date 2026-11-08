@@ -37,9 +37,9 @@ system_prompt_template: |
     [The result as Markdown]
   ---end---
 
-allowed_tools: [file_read, glob, grep, edit_file, write_file, mimir_query, mimir_search, web_search, web_fetch]
-forbidden_tools: [git, terminal, cascade, volundr, mimir_ingest]
-permission_mode: workspace-write
+allowed_tools: [file_read, file_write, "mimir:search", web_search, web_fetch]
+forbidden_tools: [git, git_read, shell, "mimir:ingest"]
+permission_mode: workspace_write
 
 llm:
   thinking_enabled: true

@@ -2041,13 +2041,19 @@ class SessionContext:
 
 @dataclass(frozen=True)
 class SessionPersona:
-    """Runtime persona fields Forge can apply without owning Ravn storage."""
+    """Runtime persona fields Forge can apply without owning Ravn storage.
+
+    ``document`` is the pinned portable persona (``schema_version``, ``id``, ``revision``,
+    ``definition``): the source content the session plays, which Skuld projects onto its
+    harness. It is empty only for a caller that never launches a session with it.
+    """
 
     name: str
     system_prompt: str
     consumes_event_types: tuple[str, ...] = ()
     produces_event_type: str = ""
     produces_schema: dict[str, OutcomeField] = field(default_factory=dict)
+    document: dict[str, Any] = field(default_factory=dict)
 
 
 class SessionPersonaProvider(ABC):

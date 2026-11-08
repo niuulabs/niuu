@@ -413,11 +413,8 @@ describe('WorkflowBuilderPage', () => {
       launchWorkflow: vi.fn().mockResolvedValue({
         workflowId: wf1.id,
         workflowName: wf1.name,
-        slug: 'test-workflow',
-        sessionId: 'sess-123',
-        sessionName: 'test-workflow',
-        status: 'starting',
-        clusterName: 'valhalla',
+        campaignId: 'campaign-123',
+        campaignSlug: 'test-workflow-run',
       }),
     };
 
@@ -435,6 +432,6 @@ describe('WorkflowBuilderPage', () => {
         expect.objectContaining({ prompt: 'Run this workflow on a fresh prompt.' }),
       ),
     );
-    await waitFor(() => expect(assign).toHaveBeenCalledWith('/volundr/sessions/sess-123'));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('/ting/review/run/test-workflow-run'));
   });
 });

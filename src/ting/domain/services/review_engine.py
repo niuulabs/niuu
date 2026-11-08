@@ -20,19 +20,19 @@ from contextlib import suppress
 from dataclasses import dataclass
 
 from ting.config import ReviewConfig
-from ting.domain.exceptions import WorkflowStepsHaveNoRunnerError
 from ting.domain.models import (
     Phase,
     PhaseStatus,
-    RavnOutcome,
     Run,
     RunStatus,
     Saga,
     SagaStatus,
     validate_transition,
 )
-from ting.domain.services.dispatch_service import DispatchService
-from ting.domain.services.session_target import find_session_target
+from ting.domain.services.dispatch_service import (
+    DispatchService,
+    WorkflowRunsNotConfiguredError,
+)
 from ting.domain.services.session_transcript import attach_session_transcript
 from ting.domain.tracker_routing import select_tracker_for_run
 from ting.ports.event_bus import EventBusPort, TingEvent
@@ -61,36 +61,6 @@ class ReviewDecision:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _is_authoritative_workflow_approval(outcome: RavnOutcome) -> bool:
-    """Return True when a deterministic workflow stop-node approved the work.
-
-    This lets the mesh/runtime stay generic: worker nodes emit canonical
-    outcomes, the deterministic stop node decides the join rule, and Ting can
-    trust that final approval directly.
-    """
-    if not outcome.authoritative or outcome.verdict != "approve":
-        return False
-    if not outcome.checks:
-        return False
-
-    successful_verdicts = {
-        "pass",
-        "approve",
-        "approved",
-        "ok",
-        "success",
-        "complete",
-        "completed",
-        "done",
-    }
-
-    for check in outcome.checks:
-        verdict = str(check.get("verdict") or "").strip().lower()
-        if verdict not in successful_verdicts:
-            return False
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -241,185 +211,7 @@ class ReviewEngine:
             reason="no authoritative workflow outcome — escalating to human review",
         )
 
-    async def handle_ravn_outcome(
-        self,
-        tracker_id: str,
-        owner_id: str,
-        outcome: RavnOutcome,
-    ) -> ReviewDecision:
-        """Process a structured outcome from a ``ravn.task.completed`` event.
-
-        Routes on the explicit verdict: an authoritative workflow approval
-        merges; a plain "approve" without workflow authority escalates to a
-        human; "retry" re-dispatches while retries remain.
-
-        Accepts runs in RUNNING or REVIEW state:
-
-        - RUNNING → transitions to REVIEW first (ravn outcome is authoritative).
-        - REVIEW → processes directly (ActivitySubscriber may have beaten us).
-        - Any other status → skipped (already handled or terminal).
-        """
-        trackers = await self._tracker_factory.for_owner(owner_id)
-        if not trackers:
-            raise ValueError(f"No tracker adapter found for owner {owner_id}")
-        tracker = await select_tracker_for_run(trackers, tracker_id, owner_id=owner_id)
-
-        run = await tracker.get_run(tracker_id)
-
-        if run.status not in (RunStatus.RUNNING, RunStatus.REVIEW):
-            logger.info(
-                "handle_ravn_outcome: run %s is %s — already handled, skipping",
-                tracker_id,
-                run.status,
-            )
-            return ReviewDecision(
-                run=run,
-                action="skipped",
-                reason=f"Run already in {run.status} state",
-            )
-
-        if run.status == RunStatus.RUNNING:
-            validate_transition(run.status, RunStatus.REVIEW)
-            run = await tracker.update_run_progress(tracker_id, status=RunStatus.REVIEW)
-
-        match outcome.verdict:
-            case "retry":
-                if run.retry_count < self._cfg.max_retries:
-                    attempt = f"attempt {run.retry_count + 1}/{self._cfg.max_retries}"
-                    return await self._auto_retry(
-                        tracker,
-                        tracker_id,
-                        owner_id,
-                        run,
-                        reason=f"ravn coordinator requested retry ({attempt})",
-                    )
-
-                # Retries exhausted → FAILED
-                validate_transition(run.status, RunStatus.FAILED)
-                updated = await tracker.update_run_progress(
-                    tracker_id,
-                    status=RunStatus.FAILED,
-                    reason="ravn coordinator requested retry but retries exhausted",
-                )
-                if run.session_id:
-                    await self._attach_working_transcript(tracker, tracker_id, owner_id, run)
-                    await self._stop_session(owner_id, run.session_id, "working session")
-                await self._emit_state_changed(updated, owner_id=owner_id, action="failed")
-                return ReviewDecision(
-                    run=updated,
-                    action="failed",
-                    reason=(
-                        f"ravn coordinator requested retry after"
-                        f" {self._cfg.max_retries} retries exhausted"
-                    ),
-                )
-            case "approve":
-                if _is_authoritative_workflow_approval(outcome):
-                    logger.info(
-                        "handle_ravn_outcome: authoritative workflow approval for run %s",
-                        tracker_id,
-                    )
-                    return await self._handle_auto_approve(tracker, tracker_id, owner_id, run)
-                return await self._handle_escalation(
-                    tracker,
-                    tracker_id,
-                    owner_id,
-                    run,
-                    reason=(
-                        "approve verdict without authoritative workflow checks"
-                        " — escalating to human review"
-                    ),
-                )
-            case "escalate":
-                return await self._handle_escalation(
-                    tracker,
-                    tracker_id,
-                    owner_id,
-                    run,
-                    reason="ravn coordinator requested escalation",
-                )
-            case _:
-                logger.warning(
-                    "handle_ravn_outcome: unknown verdict %r for run %s — escalating",
-                    outcome.verdict,
-                    tracker_id,
-                )
-                return await self._handle_escalation(
-                    tracker,
-                    tracker_id,
-                    owner_id,
-                    run,
-                    reason=f"unknown ravn verdict {outcome.verdict!r}",
-                )
-        raise AssertionError("Unreachable handle_ravn_outcome fallthrough")
-
     # -- Decision handlers --
-
-    async def _handle_auto_approve(
-        self,
-        tracker: TrackerPort,
-        tracker_id: str,
-        owner_id: str,
-        run: Run,
-    ) -> ReviewDecision:
-        """Authoritative approval: transition REVIEW → MERGED.
-
-        The workflow merges the PR itself. Ting attaches the working
-        transcript to the tracker issue, stops the session, and walks the
-        phase gate.
-        """
-        validate_transition(run.status, RunStatus.MERGED)
-        updated = await tracker.update_run_progress(tracker_id, status=RunStatus.MERGED)
-
-        # Close the tracker issue (sets it to Done in Linear/Jira)
-        try:
-            await tracker.close_run(tracker_id)
-            logger.info("Closed tracker issue %s (Done)", tracker_id)
-        except Exception:
-            logger.error("FAILED to close tracker issue %s after merge", tracker_id, exc_info=True)
-
-        # Attach transcript and stop the working session
-        if run.session_id:
-            await self._attach_working_transcript(tracker, tracker_id, owner_id, run)
-            await self._stop_session(owner_id, run.session_id, "working session")
-
-        # Look up saga once — used by both phase gate and event emission
-        saga = await tracker.get_saga_for_run(tracker_id)
-
-        # Phase gate check
-        phase_gate_unlocked = await self._check_phase_gate(tracker, tracker_id, owner_id, saga=saga)
-
-        saga_tid = saga.tracker_id if saga else None
-        await self._emit_state_changed(
-            updated, owner_id=owner_id, action="auto_approved", saga_tracker_id=saga_tid
-        )
-
-        # Trigger auto-continue after merge (and after phase unlock)
-        if saga_tid:
-            await self._try_auto_continue(
-                owner_id,
-                saga_tid,
-                saga.tracker_connection_id if saga else "",
-            )
-
-        return ReviewDecision(
-            run=updated,
-            action="auto_approved",
-            reason="authoritative workflow approval",
-            phase_gate_unlocked=phase_gate_unlocked,
-        )
-
-    async def _stop_session(self, owner_id: str, session_id: str, label: str = "session") -> None:
-        """Stop a Volundr session after terminal state."""
-        try:
-            adapters = await self._volundr_factory.for_owner(owner_id)
-            if not adapters:
-                return
-            target = await find_session_target(adapters, session_id)
-            await target.stop_session(session_id)
-            logger.info("Stopped %s %s", label, session_id)
-        except Exception:
-            logger.warning("Failed to stop %s %s", label, session_id, exc_info=True)
 
     async def _attach_working_transcript(
         self,
@@ -459,53 +251,7 @@ class ReviewEngine:
         await self._emit_state_changed(updated, owner_id=owner_id, action="escalated")
         return ReviewDecision(run=updated, action="escalated", reason=reason)
 
-    async def _auto_retry(
-        self,
-        tracker: TrackerPort,
-        tracker_id: str,
-        owner_id: str,
-        run: Run,
-        *,
-        reason: str,
-    ) -> ReviewDecision:
-        """Transition run back to PENDING for re-dispatch."""
-        # Send failure context to the running session before resetting
-        await self._send_retry_feedback(run, owner_id, reason)
-
-        validate_transition(run.status, RunStatus.PENDING)
-        updated = await tracker.update_run_progress(
-            tracker_id, status=RunStatus.PENDING, retry_count=run.retry_count + 1
-        )
-
-        await self._emit_state_changed(updated, owner_id=owner_id, action="retried")
-        return ReviewDecision(run=updated, action="retried", reason=reason)
-
     # -- Session feedback --
-
-    async def _send_retry_feedback(self, run: Run, owner_id: str, reason: str) -> None:
-        """Send failure context to the session before retrying."""
-        if not run.session_id:
-            return
-        adapters = await self._volundr_factory.for_owner(owner_id)
-        if not adapters:
-            logger.warning(
-                "No authenticated Volundr adapter for owner %s — cannot send feedback",
-                owner_id[:8],
-            )
-            return
-        try:
-            target = await find_session_target(adapters, run.session_id)
-            await target.send_message(
-                run.session_id,
-                f"Review failed: {reason}. Please fix and push again.",
-            )
-            logger.info("Sent retry feedback to session %s", run.session_id)
-        except Exception:
-            logger.warning(
-                "Failed to send retry feedback to session %s for run %s",
-                run.session_id,
-                run.id,
-            )
 
     # -- Phase gate --
 
@@ -745,12 +491,13 @@ class ReviewEngine:
                 )
             else:
                 await self._dispatch_service.try_auto_continue(owner_id, saga_tracker_id)
-        except WorkflowStepsHaveNoRunnerError:
+        except WorkflowRunsNotConfiguredError:
             logger.error(
-                "Auto-continue refused for owner %s (saga=%s): the saga runs a workflow and "
-                "workflow steps have no runner (NIU-1198); nothing was dispatched",
+                "Auto-continue could not start owner %s's saga %s: the saga runs a workflow "
+                "and the dispatcher has no workflow run launcher; nothing was dispatched",
                 owner_id[:8],
                 saga_tracker_id,
+                exc_info=True,
             )
         except Exception:
             logger.warning(

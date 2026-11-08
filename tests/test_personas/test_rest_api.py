@@ -66,7 +66,7 @@ def client_no_builtin(loader_no_builtin: FilesystemPersonaAdapter) -> TestClient
 _CUSTOM_PERSONA = {
     "name": "test-agent",
     "system_prompt_template": "You are a test agent.",
-    "allowed_tools": ["file"],
+    "allowed_tools": ["file_read"],
     "permission_mode": "read-only",
     "iteration_budget": 5,
 }
@@ -74,7 +74,7 @@ _CUSTOM_PERSONA = {
 _CREATE_PAYLOAD = {
     "name": "test-agent",
     "system_prompt_template": "You are a test agent.",
-    "allowed_tools": ["file"],
+    "allowed_tools": ["file_read"],
     "permission_mode": "read-only",
     "iteration_budget": 5,
 }

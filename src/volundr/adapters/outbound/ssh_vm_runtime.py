@@ -63,6 +63,7 @@ from volundr.domain.models import Session, SessionSpec
 from volundr.domain.services.host_access_key import HostAccessKey
 from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.domain.vm_runtime import SlotLimits, StartupStepReport, VmRuntime
+from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
 
 # cloud-init's SSH module deletes/recreates keys at /etc/ssh/ssh_host_*.
 _HOST_KEY = HOST_KEY_PATH
@@ -674,6 +675,10 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             value = spec.values.get("session", {}).get(source)
             if value:
                 env[f"SKULD__SESSION__{target}"] = str(value)
+        if persona := spec.values.get("session", {}).get("persona"):
+            env["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
+        if workflow_steps_enabled(spec.values):
+            env[WORKFLOW_STEPS_ENABLED_ENV] = "true"
         if any("\x00" in v for v in env.values()):
             raise ValueError("SSH VM environment cannot contain NUL values")
         if any(not k or "=" in k or any(c.isspace() for c in k) or "\x00" in k for k in env):

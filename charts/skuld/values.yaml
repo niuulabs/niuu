@@ -30,8 +30,13 @@ session:
   model: "claude-sonnet-4-6"
   # -- Reasoning effort passed to transports that support it
   reasoningEffort: ""
-  # -- System prompt injected into the LLM context
+  # -- Ad-hoc instructions from the launch request. With a persona they are appended after
+  # the persona's own instructions, never in place of them.
   systemPrompt: ""
+  # -- The pinned portable persona document this session plays (schema_version, id, revision,
+  # definition), as Forge resolved it at launch. Skuld projects it onto the harness on every
+  # start and refuses to start when the harness cannot enforce its limits. Empty: no persona.
+  persona: {}
   # -- Initial user message sent when the CLI starts
   initialPrompt: ""
 
@@ -233,12 +238,11 @@ git:
     pullPolicy: IfNotPresent
 
 # Broker configuration (Skuld application settings)
-workflow:
-  # -- Deployment-owned verifier adapter and kwargs for deterministic evidence gates.
-  # Imported workflows specify policies, never signing keys or trust configuration.
-  evidenceVerifier: null
-  # -- Artifact digest resolver adapter and kwargs (such as a mounted workspace root).
-  evidenceArtifacts: null
+# -- Workflow step hosting. Forge sets enabled for a session a workflow run launched as a step
+# host (the create request's workflow_step_host). Skuld then serves the workflow step API and
+# offers the workflow_step_close tool; an ordinary session leaves both off.
+workflowSteps:
+  enabled: false
 
 broker:
   conversationRecentMaxTurns: 15

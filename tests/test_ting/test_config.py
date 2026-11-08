@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from ting.config import (
+    RAVN_FLOCK_REMOVED_MESSAGE,
     DatabaseConfig,
     DispatchConfig,
     DispatchMimirConfig,
@@ -13,8 +14,65 @@ from ting.config import (
     Settings,
     TicketCoordinatorConfig,
     WorkflowExecutionConfig,
+    WorkflowStepsConfig,
 )
-from ting.domain.exceptions import WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
+
+
+class TestWorkflowStepsConfig:
+    def test_step_deadline_defaults_to_four_hours(self) -> None:
+        assert WorkflowStepsConfig().step_deadline_seconds == 4 * 3600.0
+        assert Settings().workflow_steps.step_deadline_seconds == 4 * 3600.0
+
+    def test_step_deadline_is_set_from_config(self) -> None:
+        config = Settings(workflow_steps={"step_deadline_seconds": 90})
+
+        assert config.workflow_steps.step_deadline_seconds == 90.0
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_step_deadline_must_be_positive(self, value: float) -> None:
+        with pytest.raises(ValueError, match="greater than 0"):
+            WorkflowStepsConfig(step_deadline_seconds=value)
+
+    def test_the_description_says_what_bounds_it_and_what_a_hit_does(self) -> None:
+        description = WorkflowStepsConfig.model_fields["step_deadline_seconds"].description or ""
+
+        assert "bound" in description
+        assert "never acts on it" in description
+        assert "NIU-1181" in description
+
+
+class TestStuckDetectionConfig:
+    def test_it_is_on_by_default_with_bounded_intervals(self) -> None:
+        stuck = Settings().workflow_steps.stuck
+
+        assert stuck.enabled is True
+        assert stuck.sweep_interval_seconds == 120.0
+        assert stuck.start_grace_seconds == 600.0
+
+    def test_it_is_set_from_config(self) -> None:
+        config = Settings(
+            workflow_steps={
+                "stuck": {"enabled": False, "sweep_interval_seconds": 30, "start_grace_seconds": 45}
+            }
+        )
+
+        assert config.workflow_steps.stuck.enabled is False
+        assert config.workflow_steps.stuck.sweep_interval_seconds == 30.0
+        assert config.workflow_steps.stuck.start_grace_seconds == 45.0
+
+    @pytest.mark.parametrize("field", ["sweep_interval_seconds", "start_grace_seconds"])
+    @pytest.mark.parametrize("value", [0, -5])
+    def test_the_intervals_must_be_positive(self, field: str, value: float) -> None:
+        with pytest.raises(ValueError, match="greater than 0"):
+            Settings(workflow_steps={"stuck": {field: value}})
+
+    @pytest.mark.parametrize("field", ["sweep_interval_seconds", "start_grace_seconds"])
+    def test_each_interval_says_what_bounds_it(self, field: str) -> None:
+        from ting.config import StuckDetectionConfig
+
+        description = StuckDetectionConfig.model_fields[field].description or ""
+
+        assert "Bounds" in description or "bound" in description
 
 
 class TestDatabaseConfig:
@@ -112,7 +170,7 @@ class TestRemovedWorkflowRunnerSettings:
         with pytest.raises(ValueError) as raised:
             Settings(dispatch={"flock": {"enabled": True}})
 
-        assert WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE in str(raised.value)
+        assert RAVN_FLOCK_REMOVED_MESSAGE in str(raised.value)
         assert "remove dispatch.flock.enabled" in str(raised.value)
 
     def test_enabling_flock_through_the_environment_is_fatal(
@@ -153,6 +211,13 @@ class TestRemovedWorkflowRunnerSettings:
     def test_removed_decomposer_keys_are_fatal(self, key: str) -> None:
         with pytest.raises(ValueError, match=rf"llm\.{key} was removed"):
             LLMConfig(**{key: True})
+
+    def test_ravn_outcome_section_is_fatal(self) -> None:
+        with pytest.raises(ValueError) as raised:
+            Settings(ravn_outcome={"enabled": True})
+
+        assert RAVN_FLOCK_REMOVED_MESSAGE in str(raised.value)
+        assert "Remove ravn_outcome" in str(raised.value)
 
     def test_flock_flows_section_is_fatal(self) -> None:
         with pytest.raises(ValueError, match="settings.flock_flows was removed"):

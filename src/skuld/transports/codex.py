@@ -18,9 +18,13 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport
-from skuld.transports.mcp_config import build_codex_mcp_overrides, toml_value
+from skuld.transports.mcp_config import (
+    CODEX_WEB_SEARCH_DISABLED,
+    build_codex_mcp_overrides,
+    toml_value,
+)
 from skuld.transports.session_env import session_process_env
-from skuld.transports.session_tools import SessionTools
+from skuld.transports.session_tools import SessionTools, compose_prompt
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
@@ -145,10 +149,16 @@ class CodexSubprocessTransport(CLITransport):
         approval_policy: str = "",
         sandbox: str = "",
         session_tools: SessionTools | None = None,
+        system_prompt: str = "",
+        shell_tool_enabled: bool | None = None,
+        web_search_enabled: bool | None = None,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
         self._session_tools = session_tools
+        self._system_prompt = system_prompt
+        self._shell_tool_enabled = shell_tool_enabled
+        self._web_search_enabled = web_search_enabled
         self._model = model
         self._mcp_overrides = build_codex_mcp_overrides(mcp_servers or [])
         self._mcp_servers = list(mcp_servers or [])
@@ -213,10 +223,15 @@ class CodexSubprocessTransport(CLITransport):
                 cmd.extend(["--sandbox", self._sandbox])
         for key, value in self._mcp_overrides:
             cmd.extend(["-c", f"{key}={value}"])
-        if self._session_tools is not None and self._session_tools.instructions:
-            # Additive capability text (base_instructions would replace Codex's prompt).
-            instructions = toml_value(self._session_tools.instructions)
-            cmd.extend(["-c", f"developer_instructions={instructions}"])
+        if self._shell_tool_enabled is not None:
+            cmd.extend(["-c", f"features.shell_tool={str(self._shell_tool_enabled).lower()}"])
+        if self._web_search_enabled is False:
+            cmd.extend(["-c", "=".join(CODEX_WEB_SEARCH_DISABLED)])
+        capabilities = self._session_tools.instructions if self._session_tools else ""
+        if instructions := compose_prompt(capabilities, self._system_prompt):
+            # Additive capability and persona text (base_instructions would replace Codex's
+            # prompt). Sent with every invocation: each turn is its own ``codex exec``.
+            cmd.extend(["-c", f"developer_instructions={toml_value(instructions)}"])
         cmd.append(content)
 
         logger.info("Running Codex CLI (model: %s)", self._model)

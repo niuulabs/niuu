@@ -21,7 +21,6 @@ UNIT_PATHS = [
     "tests/test_adapters",
     "tests/test_domain",
     "tests/test_volundr",
-    "tests/test_flock",
     "tests/test_rest.py",
     "tests/test_session_archive.py",
     "tests/test_log_aggregate.py",

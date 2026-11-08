@@ -64,8 +64,8 @@ system_prompt_template: |
   closure_path: deliveries/{slug}/30-closure.md
   ---end---
 
-allowed_tools: [mimir_read, mimir_write, file, git, terminal, ravn, tracker_issue]
-forbidden_tools: [cascade, volundr]
+allowed_tools: ["mimir:read", "mimir:write", file_read, file_write, git, shell, tracker]
+forbidden_tools: []
 permission_mode: workspace_write
 
 llm:

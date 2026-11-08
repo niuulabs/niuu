@@ -1014,10 +1014,16 @@ async def test_start_uses_gateway_client_without_host_cli(
     monkeypatch.setenv("OPENAI_API_KEY", "sk-real-from-volundr-env")
     session = _session()
     client = _FakeOpenShellGatewayClient(adapter)
+    persona = {"schema_version": 1, "id": "reviewer", "revision": "r1", "definition": {}}
     spec = SessionSpec(
         values={
             "broker": {"cliType": "codex", "approvalPolicy": "on-request"},
-            "session": {"initialPrompt": initial_prompt, "systemPrompt": initial_prompt},
+            "session": {
+                "initialPrompt": initial_prompt,
+                "systemPrompt": initial_prompt,
+                **({"persona": persona} if initial_prompt else {}),
+            },
+            **({"workflowSteps": {"enabled": True}} if initial_prompt else {}),
             "env": {"CUSTOM_ENV": "yes"},
             "resources": {
                 "requests": {"cpu": "500m", "memory": "1Gi"},
@@ -1089,6 +1095,8 @@ async def test_start_uses_gateway_client_without_host_cli(
                     "env",
                     f"SKULD__SESSION__INITIAL_PROMPT={initial_prompt}",
                     f"SKULD__SESSION__SYSTEM_PROMPT={initial_prompt}",
+                    "SKULD__SESSION__PERSONA=" + json.dumps(persona, separators=(",", ":")),
+                    "SKULD__WORKFLOW_STEPS__ENABLED=true",
                     "skuld",
                     "serve",
                 ]

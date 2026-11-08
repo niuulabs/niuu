@@ -14,7 +14,6 @@ Environment variable override format:
 
 import json
 import os
-from contextlib import suppress
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -119,91 +118,6 @@ class MeshConfig(BaseModel):
     )
 
 
-class WorkflowTriggerConfig(BaseModel):
-    """Startup workflow trigger published by Skuld onto the mesh."""
-
-    enabled: bool = Field(default=False)
-    node_id: str = Field(default="")
-    label: str = Field(default="")
-    source: str = Field(default="manual dispatch")
-    event_type: str = Field(default="")
-    startup_delay_s: float = Field(default=3.0)
-    ack_timeout_s: float = Field(
-        default=20.0,
-        description=(
-            "Seconds to wait for a workflow.kickoff.acknowledged mesh event "
-            "from the flock before republishing the kickoff."
-        ),
-    )
-    ack_max_redeliveries: int = Field(
-        default=5,
-        description=(
-            "How many times an unacknowledged kickoff is republished before "
-            "the session fails loudly. Total attempts = 1 + this value."
-        ),
-    )
-
-
-class WorkflowRuntimeConfig(BaseModel):
-    """Workflow graph metadata injected into Skuld-backed flock sessions."""
-
-    gate_consumer_wait_s: float = Field(
-        default=20.0,
-        description=(
-            "How long a gate decision waits for the flock to reconnect after a restart. "
-            "Bounded by how long a caller will hold the request; on a hit the decision "
-            "fails with a 503 and the gate stays pending."
-        ),
-    )
-    workflow_id: str = Field(default="")
-    name: str = Field(default="")
-    version: str = Field(default="")
-    scope: str = Field(default="")
-    initial_context: str = Field(default="")
-    graph: dict[str, Any] = Field(default_factory=dict)
-    trace_context: dict[str, str] = Field(default_factory=dict)
-    evidence_verifier: DynamicAdapterConfig | None = Field(
-        default=None,
-        description=(
-            "Deployment-owned evidence verifier adapter and trust configuration. Required "
-            "for evidence gate nodes; never populated from imported workflow graph content."
-        ),
-    )
-    evidence_artifacts: DynamicAdapterConfig | None = Field(
-        default=None,
-        description="Deployment-owned resolver for the current digest of evidence gate artifacts.",
-    )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _coerce_graph_json(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-        graph = value.get("graph")
-        if isinstance(graph, str) and graph.strip():
-            with suppress(Exception):
-                value = dict(value)
-                value["graph"] = json.loads(graph)
-        trace_context = value.get("trace_context")
-        if isinstance(trace_context, str) and trace_context.strip():
-            with suppress(Exception):
-                value = dict(value)
-                value["trace_context"] = json.loads(trace_context)
-        # The initial context is JSON-encoded on the wire because the sandbox
-        # provisioner refuses env values containing newlines, and a workflow
-        # brief is prose. Only accept a decode that yields a string: a context
-        # whose text happens to be valid JSON ("{...}", a bare number) must
-        # stay the literal prose the author wrote, not become an object.
-        initial_context = value.get("initial_context")
-        if isinstance(initial_context, str) and initial_context.strip():
-            with suppress(Exception):
-                decoded = json.loads(initial_context)
-                if isinstance(decoded, str):
-                    value = dict(value)
-                    value["initial_context"] = decoded
-        return value
-
-
 class RoomConfig(BaseModel):
     """Multi-agent room chat configuration.
 
@@ -288,24 +202,6 @@ class TelegramConfig(BaseModel):
     message_thread_id: int | None = Field(default=None)
 
 
-class PeerWatchdogConfig(BaseModel):
-    """Silence watchdog settings for workflow flock peers."""
-
-    enabled: bool = Field(default=True)
-    poll_seconds: float = Field(
-        default=5.0,
-        description="Seconds between silence watchdog checks.",
-    )
-    silence_seconds: float = Field(
-        default=300.0,
-        description="Seconds of no visible peer progress before warning in normal execution.",
-    )
-    tool_silence_seconds: float = Field(
-        default=300.0,
-        description="Seconds of no visible peer progress before warning while a tool is running.",
-    )
-
-
 class SkuldSessionConfig(BaseModel):
     """Per-session configuration (set by Volundr at pod creation)."""
 
@@ -336,7 +232,24 @@ class SkuldSessionConfig(BaseModel):
         ),
     )
     workspace_dir: str | None = Field(default=None)
-    system_prompt: str = Field(default="")
+    system_prompt: str = Field(
+        default="",
+        description=(
+            "Ad-hoc instructions from the launch request. With a ``persona`` they are appended "
+            "after the persona's own instructions, never in place of them."
+        ),
+    )
+    persona: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The pinned portable persona document (``schema_version``, ``id``, ``revision``, "
+            "``definition``) this session plays, as Forge resolved it at launch. Skuld projects "
+            "it onto the harness on every start, resume included (``skuld.personas``): its "
+            "instructions are appended to the harness's own prompt and its tool and permission "
+            "limits are enforced by the harness, or the session refuses to start. Null means the "
+            "session plays no persona and nothing is projected."
+        ),
+    )
     initial_prompt: str = Field(default="")
     saga_id: str | None = Field(default=None)
     run_id: str | None = Field(default=None)
@@ -786,7 +699,9 @@ class ForgeMcpConfig(BaseModel):
     notify_confirm_timeout_s: float = Field(
         default=5.0,
         ge=0,
-        description="How long notify waits for Forge to acknowledge the log flush.",
+        description=(
+            "How long notify, and workflow_step_close, wait for Forge to acknowledge the log flush."
+        ),
     )
     forge_request_timeout_s: float = Field(
         default=20.0, gt=0, description="Timeout for one Forge REST call made by a tool."
@@ -1071,6 +986,27 @@ class TraceContextConfig(BaseSettings):
     )
 
 
+class WorkflowStepsConfig(BaseModel):
+    """Hosting workflow steps: this session runs the steps of a workflow run.
+
+    Forge sets ``enabled`` for a session a workflow run created as a step host. Skuld then
+    serves ``POST /api/workflow/steps`` and ``GET /api/workflow/steps/{activation_id}``,
+    holds the open step durably in the session's event log, injects its instructions at a
+    turn boundary and lists the ``workflow_step_close`` tool for the whole session. An
+    ordinary session leaves it off and pays for none of it.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Serve the workflow step API and the workflow_step_close tool. Requires the "
+            "durable event log and history hydration (event_log_enabled and "
+            "history_hydration_enabled, with volundr_api_url): a step is restored from the log "
+            "after a restart, so enabling without them is fatal at startup."
+        ),
+    )
+
+
 class SkuldSettings(BaseSettings):
     """Skuld broker settings.
 
@@ -1334,11 +1270,9 @@ class SkuldSettings(BaseSettings):
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
     observability: SkuldObservabilityConfig = Field(default_factory=SkuldObservabilityConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
-    peer_watchdog: PeerWatchdogConfig = Field(default_factory=PeerWatchdogConfig)
     room: RoomConfig = Field(default_factory=RoomConfig)
     mesh: MeshConfig = Field(default_factory=MeshConfig)
-    workflow_trigger: WorkflowTriggerConfig = Field(default_factory=WorkflowTriggerConfig)
-    workflow: WorkflowRuntimeConfig = Field(default_factory=WorkflowRuntimeConfig)
+    workflow_steps: WorkflowStepsConfig = Field(default_factory=WorkflowStepsConfig)
 
     @model_validator(mode="after")
     def _resolve_transport_adapter(self) -> "SkuldSettings":
