@@ -125,13 +125,22 @@ class EventBusDiscoveryAdapter:
                 "sleipnir_routing_key",
                 "consumes_event_types",
                 "emits_event_types",
+                "role",
+                "description",
+                "activity_state",
             )
         }
+        busy = bool(getattr(self._identity, "busy", False))
         await self._publisher.publish(
             SleipnirEvent(
                 event_type=self._announce_event_type,
                 source=f"ravn:{self._identity.peer_id}",
-                payload={"identity": identity, "action": action, "status": "idle", "task_count": 0},
+                payload={
+                    "identity": identity,
+                    "action": action,
+                    "status": "busy" if busy else "idle",
+                    "task_count": 0,
+                },
                 summary=f"Flock peer {action}: {self._identity.peer_id}",
                 domain="code",
                 urgency=0.3,
@@ -167,6 +176,9 @@ class EventBusDiscoveryAdapter:
             peer.version = str(identity.get("version") or "")
             peer.consumes_event_types = list(identity.get("consumes_event_types") or [])
             peer.emits_event_types = list(identity.get("emits_event_types") or [])
+            peer.role = str(identity.get("role") or "")
+            peer.description = str(identity.get("description") or "")
+            peer.activity_state = str(identity.get("activity_state") or "")
             peer.last_seen = now
             peer.last_heartbeat = now
             peer.status = str(payload.get("status") or "idle")  # type: ignore[assignment]
@@ -189,6 +201,9 @@ class EventBusDiscoveryAdapter:
             sleipnir_routing_key=identity.get("sleipnir_routing_key"),
             consumes_event_types=list(identity.get("consumes_event_types") or []),
             emits_event_types=list(identity.get("emits_event_types") or []),
+            role=str(identity.get("role") or ""),
+            description=str(identity.get("description") or ""),
+            activity_state=str(identity.get("activity_state") or ""),
             trust_level="verified",
             first_seen=now,
             last_seen=now,

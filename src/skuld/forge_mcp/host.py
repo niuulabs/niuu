@@ -39,7 +39,7 @@ from niuu.forge_mcp.ports import ForgeClient, ForgeMcpHost
 from niuu.observability import get_observability
 from niuu.ports.mesh import PeerNotFoundError
 from skuld.conversation_models import ConversationTurn
-from skuld.mesh_topics import UndeclaredTopicError, build_publication
+from skuld.mesh_topics import UndeclaredTopicError, build_publication, peer_table
 from skuld.peer_inbox import (
     CHANNEL_MESH,
     OUTCOME_FAILED,
@@ -598,6 +598,33 @@ class BrokerForgeMcpHost(ForgeMcpHost):
             "path": "mesh",
             "peer": peer,
         }
+
+    async def mesh_peers(
+        self, *, role: str, capability: str, consumes: str, produces: str
+    ) -> dict[str, Any]:
+        """The peers this session's discovery knows, as they announced themselves.
+
+        Facts only: the filters are exact matches on announced fields and nothing is ranked.
+        A session with no discovery configured cannot see any peer, which is an error and not
+        an empty table: an empty table would read as "nobody is there".
+        """
+        broker = self._broker
+        discovery = broker._mesh_discovery
+        if broker._mesh_adapter is None or discovery is None:
+            raise ForgeApiError(
+                "this session has no peer discovery (mesh.enabled is set but mesh.adapters or "
+                "mesh.discovery_adapters is empty, or the mesh did not start), so it cannot list "
+                "peers. Configure a discovery adapter, or use mesh_send with a peer id you know",
+                status=503,
+            )
+        table = peer_table(
+            discovery.peers().values(),
+            role=role,
+            capability=capability,
+            consumes=consumes,
+            produces=produces,
+        )
+        return {"peers": table, "count": len(table), "as_of": datetime.now(UTC).isoformat()}
 
     async def publish_mesh_event(
         self,

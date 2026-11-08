@@ -39,6 +39,9 @@ class ActivityReportingMixin:
     _BLOCKED_RAW_STATES = ("awaiting_input",)
     _TURN_END_RAW_STATES = ("idle", "stopped", "error")
 
+    #: This session's announced mesh identity, once the mesh has started (set by the broker).
+    _mesh_identity: Any = None
+
     async def _report_session_start(self) -> None:
         """Report the session start timeline event (once)."""
         if self._session_start_reported:
@@ -86,6 +89,11 @@ class ActivityReportingMixin:
         self._activity_state = state
         if new_bucket != old_bucket:
             self._activity_state_since = time.time()
+        mesh_identity = self._mesh_identity
+        if mesh_identity is not None:
+            # The next mesh heartbeat announces it, so a peer choosing whom to ask can see it.
+            mesh_identity.activity_state = state
+            mesh_identity.busy = new_bucket == "running"
 
     @staticmethod
     def _state_since_iso(epoch_seconds: float) -> str:

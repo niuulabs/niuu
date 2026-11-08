@@ -36,6 +36,15 @@ class MeshIdentity:
     display_name: str = ""
     participant_type: str = "ravn"
     sleipnir_routing_key: str | None = None
+    #: What the participant is for, so a peer can choose whom to talk to. Both are facts the
+    #: platform takes from the participant's persona and config, never from the agent.
+    role: str = ""
+    description: str = ""
+    #: The participant's own activity state ("idle", "active", "awaiting_input", ...), kept
+    #: current by the participant and carried on every heartbeat. Empty when unknown.
+    activity_state: str = ""
+    #: Whether the participant is working right now; announced as the peer's ``status``.
+    busy: bool = False
 
 
 @dataclass
