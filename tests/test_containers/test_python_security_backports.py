@@ -247,3 +247,63 @@ def test_adapted_patch_must_match_upstream_outside_declared_files(tamper):
         adaptation = {**adaptation, "dropped_files": []}
     with pytest.raises(RuntimeError):
         builder.check_adaptation(upstream, adapted, adaptation)
+
+
+@pytest.fixture
+def bundle_vex_inputs(vex_inputs, tmp_path):
+    image, evidence, scan, manifest = vex_inputs
+    root = tmp_path / "bundle"
+    for key, relative in (
+        ("executable", "python/bin/python3.14"),
+        ("library", "python/lib/libpython3.14.dylib"),
+    ):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"runtime")
+        evidence[key] = str(path)
+    scan["source"] = {"type": "directory", "target": str(root)}
+    for match in scan["matches"]:
+        match["artifact"]["locations"] = [
+            {"path": "/python/bin/python3.14", "annotations": {"evidence": "primary"}},
+            {
+                "path": "/python/lib/libpython3.14.dylib",
+                "annotations": {"evidence": "supporting"},
+            },
+        ]
+    return image, evidence, scan, manifest, str(root)
+
+
+def test_bundle_vex_matches_relocated_runtime_paths(bundle_vex_inputs):
+    image, _, _, manifest, _ = bundle_vex_inputs
+    result = load("vex").document(*bundle_vex_inputs)
+    statements = result["statements"]
+
+    assert {s["vulnerability"]["name"] for s in statements} == set(_claimed(manifest))
+    assert image.split("@", 1)[1] in result["@id"]
+    assert all(
+        s["products"] == [{"@id": f"pkg:generic/python@{manifest['python_version']}"}]
+        for s in statements
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid", ["scan", "type", "executable", "library", "identity", "runtime"]
+)
+def test_bundle_vex_rejects_evidence_outside_the_scanned_artifact(
+    bundle_vex_inputs, tmp_path, invalid
+):
+    _, evidence, scan, _, _ = bundle_vex_inputs
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"different runtime")
+    if invalid == "scan":
+        scan["source"]["target"] = str(tmp_path)
+    elif invalid == "type":
+        scan["source"]["type"] = "file"
+    elif invalid in {"executable", "library"}:
+        evidence[invalid] = str(outside)
+    elif invalid == "identity":
+        evidence["image"] = "ghcr.io/niuulabs/skuld-darwin@sha256:" + "b" * 64
+    elif invalid == "runtime":
+        scan["matches"][0]["artifact"]["locations"][0]["path"] = "/other/python3.14"
+    with pytest.raises(ValueError):
+        load("vex").document(*bundle_vex_inputs)

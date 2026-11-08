@@ -110,13 +110,13 @@ _TRUST_DELIVERY = {
 }
 
 
-def _replace_file(path: Path, content: str, *, mode: int) -> None:
+def _replace_file(path: Path, content: str) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.unlink(missing_ok=True)
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as stream:
         stream.write(content)
-    os.chmod(temporary, mode)
+    os.chmod(temporary, 0o600)
     os.replace(temporary, path)
 
 
@@ -179,8 +179,8 @@ class SshGuestAccess(GuestAccess):
         directory.mkdir(mode=0o700, exist_ok=True)
         directory.chmod(0o700)
         path = directory / HOST_ACCESS_KEY_NAME
-        _replace_file(path, host_key.private_key, mode=0o600)
-        _replace_file(path.with_name(f"{path.name}.pub"), f"{host_key.public_key}\n", mode=0o644)
+        _replace_file(path, host_key.private_key)
+        _replace_file(path.with_name(f"{path.name}.pub"), f"{host_key.public_key}\n")
         return path
 
     @property
