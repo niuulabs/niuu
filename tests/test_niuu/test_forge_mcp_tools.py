@@ -173,6 +173,16 @@ class FakeHost(ForgeMcpHost):
         self.mesh = True
         self.mesh_sends: list[dict[str, Any]] = []
         self.inbox: dict[str, PeerMessage] = {}
+        self.ask_max_s = 50.0
+        self.asks: list[dict[str, Any]] = []
+        self.ask_result: dict[str, Any] = {"outcome": "answered", "answer": "yes", "from": "bob"}
+
+    def ask_wait_max_s(self) -> float:
+        return self.ask_max_s
+
+    async def ask_for_answer(self, **kwargs):
+        self.asks.append(kwargs)
+        return self.ask_result
 
     def workflow_step_host(self) -> bool:
         return self.step_host
@@ -239,6 +249,7 @@ class TestToolList:
             "get_session",
             "session_transcript",
             "send_message",
+            "ask",
             "message_status",
             "reply",
             "room_post",
@@ -916,6 +927,133 @@ class TestAddressByName:
         from niuu.forge_mcp.tools import _session_summary
 
         assert _session_summary(_named("alpha", PEER))["name"] == "alpha"
+
+
+class TestAsk:
+    async def test_it_sends_then_returns_the_answer_the_host_waited_for(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call(
+            "ask", {"session_id": PEER, "content": "ship it?", "request_id": "q-1"}
+        )
+
+        assert not result.is_error
+        assert result.structured["outcome"] == "answered" and result.structured["answer"] == "yes"
+        assert result.structured["request_id"] == "q-1"
+        name, (session_id, content, request_id, _) = client.calls[0]
+        assert (name, session_id, content, request_id) == ("send_message", PEER, "ship it?", "q-1")
+        wait = host.asks[0]
+        assert wait["recipient_id"] == PEER and wait["deadline_s"] == 50.0
+        assert wait["delivery_confirmed"] is True
+        from niuu.domain.peer_envelope import derive_message_id
+        from niuu.domain.peer_message import PeerAddress, PeerKind
+
+        expected = derive_message_id(
+            PeerAddress(PeerKind.SESSION, SELF), PeerAddress(PeerKind.SESSION, PEER), "q-1"
+        )
+        assert wait["message_id"] == expected == result.structured["message_id"]
+
+    @pytest.mark.parametrize(
+        "outcome",
+        ["blocked", "gone", "not_started", "delivery_unknown", "deadline"],
+    )
+    async def test_every_other_ending_is_its_own_named_error_never_an_answer(self, outcome) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.ask_result = {"outcome": outcome, "detail": "why"}
+
+        result = await toolbox.call("ask", {"session_id": PEER, "content": "q"})
+
+        assert result.is_error is True
+        assert result.structured["outcome"] == outcome and "answer" not in result.structured
+        assert result.structured["request_id"].startswith("fmcp-")
+
+    async def test_a_pending_send_is_passed_on_as_unconfirmed(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        async def pending(*_args, **_kwargs):
+            return {"status": "pending", "delivery": "pending"}
+
+        client.send_message = pending  # type: ignore[method-assign]
+        await toolbox.call("ask", {"session_id": PEER, "content": "q"})
+
+        assert host.asks[0]["delivery_confirmed"] is False
+
+    async def test_a_deadline_above_the_maximum_is_refused_naming_the_knob_and_sends_nothing(
+        self,
+    ) -> None:
+        from niuu import cap_telemetry
+
+        cap_telemetry.reset_cap_hits()
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.ask_max_s = 50.0
+
+        result = await toolbox.call("ask", {"session_id": PEER, "content": "q", "deadline_s": 51})
+
+        assert result.is_error and "ask.wait_max_s=50" in result.text
+        assert client.calls == [] and host.asks == []
+        assert cap_telemetry.cap_hit_counts()["ask.wait_max_s"] == 1
+
+    async def test_a_deadline_at_the_maximum_is_accepted(self) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        await toolbox.call("ask", {"session_id": PEER, "content": "q", "deadline_s": 50})
+
+        assert host.asks[0]["deadline_s"] == 50.0
+
+    async def test_it_needs_the_message_grant_and_never_asks_itself(self) -> None:
+        toolbox, client, _ = _toolbox()
+        denied = await toolbox.call("ask", {"session_id": PEER, "content": "q"})
+        assert denied.is_error and "'message' grant" in denied.text
+
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        own = await toolbox.call("ask", {"session_id": SELF, "content": "q"})
+        assert own.is_error and "your own session" in own.text
+        assert client.calls == [] and host.asks == []
+
+    async def test_it_resolves_a_name_like_send_message(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.sessions = [_named("alpha", PEER)]
+
+        await toolbox.call("ask", {"to": "alpha", "content": "q"})
+
+        assert host.asks[0]["recipient_id"] == PEER
+
+    async def test_an_unknown_name_is_an_error_and_nothing_is_awaited(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.sessions = []
+
+        result = await toolbox.call("ask", {"to": "nobody", "content": "q"})
+
+        assert result.is_error and "no session named 'nobody'" in result.text
+        assert host.asks == []
+
+    def test_only_a_sessions_own_broker_serves_it(self) -> None:
+        assert "ask" in TRANSCRIPT_ONLY_TOOLS
+
+    async def test_a_host_that_holds_no_inbox_refuses(self) -> None:
+        client = FakeClient()
+        toolbox = ForgeMcpToolbox(
+            client=client,
+            host=_NoInboxHost(),
+            grants=(ForgeMcpGrant.MESSAGE,),
+            limits=LIMITS,
+        )
+
+        result = await toolbox.call("ask", {"session_id": PEER, "content": "q"})
+
+        assert result.is_error and "own MCP" in result.text and client.calls == []
+
+
+class _NoInboxHost(ForgeMcpHost):
+    @property
+    def session_id(self) -> str | None:
+        return SELF
+
+    async def environment(self) -> dict[str, Any]:
+        return {}
+
+    async def notify(self, draft: NotificationDraft) -> dict[str, Any]:
+        return {}
 
 
 class TestReply:

@@ -332,6 +332,17 @@ secretRequests:
   # passes, the call fails and the request stays open in the chat; the agent calls it again.
   waitMaxS: 50
 
+# ask: the agent sends a message to another session and waits for its answer.
+ask:
+  # -- Seconds between checks of whether the recipient is blocked on a person or gone (ask.poll_interval_s).
+  # The answer itself is not polled; it wakes the wait when it reaches the session's inbox.
+  pollIntervalS: 2
+  # -- Longest one ask call waits, and the ceiling for the deadline_s a caller passes (ask.wait_max_s).
+  # Bounded by the engine's MCP call timeouts like secretRequests.waitMaxS: it must stay below
+  # forgeMcp.brokerRequestTimeoutS (default 60) and forgeMcp.toolTimeoutS (default 120), or the
+  # broker refuses to start. When it passes, the call returns deadline and the agent calls it again.
+  waitMaxS: 50
+
 # Volundr API (for token usage reporting back to the control plane)
 volundr:
   # -- URL of the Volundr API service (set by session definition).

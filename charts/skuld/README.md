@@ -254,6 +254,8 @@ An agent asks the user for a secret with `request-secret` or the Forge MCP `requ
 |-----|------|---------|-------------|
 | `secretRequests.pollIntervalS` | int | `2` | Seconds between checks of whether the user answered the card (`secret_requests.poll_interval_s`) |
 | `secretRequests.waitMaxS` | int | `50` | Longest one `request_secret` call waits for the user, in seconds (`secret_requests.wait_max_s`) |
+| `ask.pollIntervalS` | int | `2` | Seconds between checks of whether an `ask` recipient is blocked on a person or gone (`ask.poll_interval_s`) |
+| `ask.waitMaxS` | int | `50` | Longest one `ask` call waits, and the ceiling for a caller's `deadline_s`, in seconds (`ask.wait_max_s`); must stay below `forgeMcp.brokerRequestTimeoutS` and `forgeMcp.toolTimeoutS` |
 | `forgeMcp.brokerRequestTimeoutS` | number | `null` | Seconds the engine allows one stdio-server to broker tool call (`forge_mcp.broker_request_timeout_s`); null keeps the broker default of 60 |
 | `forgeMcp.toolTimeoutS` | number | `null` | Seconds the engine allows one MCP tool call (`forge_mcp.tool_timeout_s`); null keeps the broker default of 120 |
 

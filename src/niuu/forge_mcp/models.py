@@ -33,6 +33,23 @@ class ForgeMcpNotifyMode(StrEnum):
     FEED = "feed"
 
 
+class AskOutcome(StrEnum):
+    """Every way an ``ask`` call can end. Each is its own result, never an empty answer."""
+
+    #: The recipient replied; the answer is the result and was consumed by the call.
+    ANSWERED = "answered"
+    #: The recipient's harness waits on an approval or a question to a person.
+    BLOCKED = "blocked"
+    #: The recipient session stopped, failed or was deleted.
+    GONE = "gone"
+    #: The message was delivered but the recipient took no turn that read it in time.
+    NOT_STARTED = "not_started"
+    #: The send was neither confirmed delivered nor failed; whether it arrived is unknown.
+    DELIVERY_UNKNOWN = "delivery_unknown"
+    #: The recipient read it (or may have) and had not answered when the deadline passed.
+    DEADLINE = "deadline"
+
+
 @dataclass(frozen=True)
 class ForgeMcpLimits:
     """Output bounds. They come from configuration so a deployment can tune them."""

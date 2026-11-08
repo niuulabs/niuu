@@ -103,7 +103,7 @@ cannot be created there); set `forgeMcp.session_tokens.enabled` to override.
 | Grant | Adds scope | Tools |
 |---|---|---|
 | none | `forge:notify`, `forge:session:read`, `forge:session:secret` | `environment`, `notify`, `describe_session`, `list_notifications`, `list_sessions`, `get_session`, `session_transcript` |
-| `message` | `forge:session:message` | `send_message`, `message_status`, `room_post`, and `reply` when the answer goes to a session or a room (see [agent messaging](agent-messaging.md)) |
+| `message` | `forge:session:message` | `send_message`, `ask`, `message_status`, `room_post`, and `reply` when the answer goes to a session or a room (see [agent messaging](agent-messaging.md)) |
 | `lifecycle` | `forge:session:lifecycle` | `create_session`, `start_session`, `stop_session` (never delete or archive) |
 
 A session's grants are the union of four sources:

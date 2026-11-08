@@ -797,6 +797,38 @@ class SecretRequestsConfig(BaseModel):
     )
 
 
+class AskConfig(BaseModel):
+    """How the ``ask`` tool waits for another session's answer."""
+
+    poll_interval_s: float = Field(
+        default=2.0,
+        gt=0,
+        description=(
+            "How often ask checks Forge for the recipient's state (blocked on a person, stopped, "
+            "failed or deleted). The answer itself is not polled: it wakes the wait the moment it "
+            "reaches this session's inbox. The state has no event to wait on, so this trades "
+            "how fast a blocked or gone recipient is noticed against Forge load."
+        ),
+    )
+    wait_max_s: float = Field(
+        default=50.0,
+        gt=0,
+        description=(
+            "Longest one ask call waits, and the ceiling for the `deadline_s` a caller passes "
+            "(a larger one is refused with this knob named). Bounded by the engine's MCP call "
+            "timeouts: it must be shorter than forge_mcp.broker_request_timeout_s (the stdio "
+            "server's wait on this broker, default 60) and forge_mcp.tool_timeout_s (the "
+            "tool_timeout_sec Skuld sets for the engine, default 120), or the engine ends the "
+            "call before it can answer (startup fails otherwise). Codex's own default for "
+            "tool_timeout_sec is 60; Claude Code's MCP_TOOL_TIMEOUT defaults to about 28 hours "
+            "(30 minutes without progress for a stdio server). When the wait passes without an "
+            "answer the call returns `deadline` (or `not_started` / `delivery_unknown`), the "
+            "message stays sent, and a later answer is delivered at the turn boundary as usual; "
+            "ask again with the same request_id to keep waiting."
+        ),
+    )
+
+
 class CodexAuthConfig(BaseModel):
     """Dynamic Codex authentication adapter configuration."""
 
@@ -1288,6 +1320,7 @@ class SkuldSettings(BaseSettings):
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
     preview: PreviewConfig = Field(default_factory=PreviewConfig)
     secret_requests: SecretRequestsConfig = Field(default_factory=SecretRequestsConfig)
+    ask: AskConfig = Field(default_factory=AskConfig)
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
     observability: SkuldObservabilityConfig = Field(default_factory=SkuldObservabilityConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
@@ -1337,21 +1370,24 @@ class SkuldSettings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _secret_wait_fits_engine_call(self) -> "SkuldSettings":
+    def _waits_fit_engine_call(self) -> "SkuldSettings":
         """A wait the engine cuts off mid-call would read as a failure, not as "still open"."""
         if not self.forge_mcp.enabled:
             return self
-        wait = self.secret_requests.wait_max_s
-        for knob, bound in (
-            ("forge_mcp.broker_request_timeout_s", self.forge_mcp.broker_request_timeout_s),
-            ("forge_mcp.tool_timeout_s", self.forge_mcp.tool_timeout_s),
+        for name, wait in (
+            ("secret_requests.wait_max_s", self.secret_requests.wait_max_s),
+            ("ask.wait_max_s", self.ask.wait_max_s),
         ):
-            if wait >= bound:
-                raise ValueError(
-                    f"secret_requests.wait_max_s ({wait}) must be shorter than {knob} ({bound}), "
-                    "or the engine ends every long request_secret call before it can answer. "
-                    f"Lower secret_requests.wait_max_s or raise {knob}"
-                )
+            for knob, bound in (
+                ("forge_mcp.broker_request_timeout_s", self.forge_mcp.broker_request_timeout_s),
+                ("forge_mcp.tool_timeout_s", self.forge_mcp.tool_timeout_s),
+            ):
+                if wait >= bound:
+                    raise ValueError(
+                        f"{name} ({wait}) must be shorter than {knob} ({bound}), "
+                        f"or the engine ends every long call before it can answer. "
+                        f"Lower {name} or raise {knob}"
+                    )
         return self
 
     @property
