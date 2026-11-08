@@ -54,8 +54,9 @@ same reusable build workflow.
 The web build runs once and feeds all four jobs. pgvector uses portable compiler
 flags so it does not require the build runner's particular CPU instruction set. Each job measures packaging,
 first CLI launch with an empty installation cache, and three warm launches of
-`niuu --version`. It also checks `niuu platform --help` and
-`niuu platform up --help`, then runs the existing isolated quick-start check:
+`niuu --version`. It also times three warm launches each of `niuu platform --help`,
+`niuu platform up --help`, `niuu platform status` and `niuu sessions --help`,
+then runs the existing isolated quick-start check:
 real PostgreSQL, HTTP APIs, served web assets, session launch/stop and shutdown.
 The platform-to-health measurement uses the warmed launcher installation and
 a new database, including initialization and migrations.
@@ -120,3 +121,35 @@ Startup values are from the second run; installation caches were initially empty
 Platform health includes a new database. Compare within a target: runner hardware differs.
 First invocation still pays the one-time extraction cost. The executable includes
 the Claude Agent SDK's bundled CLI. Live provider inference was not tested.
+
+## Warm CLI startup optimization
+
+CLI configuration and command registration now defer server, workflow compiler
+and terminal UI imports until those features are used. Public package exports
+and command behavior remain unchanged; ordinary commands still load the full
+configuration and register the plugins.
+
+A controlled local Apple Silicon comparison using the same Python environment
+and five samples per command reduced startup from 0.60–0.64 seconds to
+0.22–0.23 seconds for version, platform help/status and sessions help. The rebuilt
+PyApp executable also measured 0.22–0.23 seconds for these warm commands, with
+system Python excluded from PATH. First-install extraction remains separate.
+
+[The optimized CI run](https://github.com/niuulabs/niuu/actions/runs/42498727258)
+built all four targets and passed their real quick-start checks. Warm values
+below are medians of three launches per command, in seconds; the earlier version
+column comes from the cached build run above. Hosted runner load varies, so the
+local same-machine comparison is the controlled measurement.
+
+| Target | Earlier version | Optimized version | Platform status | Sessions help |
+| --- | ---: | ---: | ---: | ---: |
+| linux-amd64 | 1.370 | 0.419 | 0.420 | 0.443 |
+| linux-arm64 | 1.386 | 0.480 | 0.481 | 0.485 |
+| darwin-arm64 | 1.014 | 0.438 | 0.352 | 0.337 |
+| darwin-amd64 | 3.034 | 1.443 | 1.340 | 1.578 |
+
+All targets restored both PostgreSQL and Rust caches. This run's packaging took
+41.74 seconds on Linux x86, 39.49 seconds on Linux ARM, 65.63 seconds on Apple
+Silicon and 104.64 seconds on Intel Mac. These startup changes do not reduce
+first-install archive extraction or replace the platform's actual initialization.
+Intel Mac remains above one second warm. Provider inference was not tested.
