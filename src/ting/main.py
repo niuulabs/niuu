@@ -76,6 +76,7 @@ from ting.api.events import create_events_router, resolve_event_bus
 from ting.api.health import create_health_router
 from ting.api.phases import create_saga_phases_router
 from ting.api.research import create_research_router, resolve_workflow_campaign_repo
+from ting.api.run_recovery import create_run_recovery_router
 from ting.api.runs import create_runs_router, resolve_git, resolve_run_repo
 from ting.api.runs import resolve_tracker as resolve_runs_tracker
 from ting.api.runs import resolve_volundr as resolve_runs_volundr
@@ -666,6 +667,7 @@ def create_app(
     app.include_router(create_settings_router())
     app.include_router(create_workflows_router())
     app.include_router(create_work_router())
+    app.include_router(create_run_recovery_router())
     app.include_router(create_agent_card_router(settings.a2a))
     app.include_router(create_a2a_router())
     app.include_router(create_research_router())
