@@ -7,6 +7,7 @@ Endpoints handle auth extraction, request validation, and response formatting.
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,7 +15,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from niuu.domain.models import Principal
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.tracker import resolve_trackers
-from ting.domain.exceptions import WorkflowStepsHaveNoRunnerError
 from ting.domain.services.dispatch_service import (
     DispatchItem as ServiceDispatchItem,
 )
@@ -23,6 +23,7 @@ from ting.domain.services.dispatch_service import (
 )
 from ting.domain.services.dispatch_service import (
     DispatchService,
+    WorkflowRunsNotConfiguredError,
 )
 from ting.domain.services.dispatch_service import (
     QueueItem as ServiceQueueItem,
@@ -101,11 +102,12 @@ class DispatchRequest(BaseModel):
         default=None,
         description="Optional Volundr session definition key (e.g. 'skuldCodex')",
     )
-    workload_type: str = Field(
+    workload_type: Literal["solo"] = Field(
         default="solo",
         description=(
-            "'solo' dispatches one plain Forge session per issue. 'ravn_flock' is "
-            "refused with HTTP 501: workflow steps have no runner (NIU-1198)."
+            "'solo' is the only workload: one plain Forge session per issue, or a workflow "
+            "run for an issue whose saga names a workflow. The retired 'ravn_flock' "
+            "workload is refused with HTTP 422."
         ),
     )
 
@@ -146,6 +148,8 @@ class DispatchResultResponse(BaseModel):
     session_name: str
     status: str
     cluster_name: str = ""
+    campaign_id: str = ""
+    campaign_slug: str = ""
 
 
 class DispatchBatchRequest(BaseModel):
@@ -215,6 +219,8 @@ def _result_to_response(result: ServiceDispatchResult) -> DispatchResultResponse
         session_name=result.session_name,
         status=result.status,
         cluster_name=result.cluster_name,
+        campaign_id=result.campaign_id,
+        campaign_slug=result.campaign_slug,
     )
 
 
@@ -303,6 +309,16 @@ async def _resolve_dispatch_item_for_run(
     return None, "run not found"
 
 
+async def _dispatch_issues(service: DispatchService, **kwargs) -> list[ServiceDispatchResult]:
+    """Dispatch, reporting a dispatcher that cannot start workflow runs as a 503."""
+    try:
+        return await service.dispatch_issues(**kwargs)
+    except WorkflowRunsNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
@@ -350,14 +366,11 @@ def create_dispatch_router() -> APIRouter:
         service: DispatchService = Depends(resolve_dispatch_service),
         dispatcher_repo: DispatcherRepository = Depends(resolve_dispatcher_repo),
     ) -> list[DispatchResultResponse]:
-        """Approve and dispatch selected issues — spawns Volundr sessions.
+        """Approve and dispatch selected issues.
 
-        An issue whose saga runs a workflow, or a ``ravn_flock`` workload, is refused
-        with 501 before any session is spawned.
+        An issue spawns a Volundr session, or starts a workflow run when its saga (or the
+        item) names a workflow.
         """
-        if body.workload_type == "ravn_flock":
-            raise WorkflowStepsHaveNoRunnerError()
-
         # Ensure dispatcher state exists so the activity subscriber picks up this owner
         await dispatcher_repo.get_or_create(principal.user_id)
 
@@ -379,7 +392,8 @@ def create_dispatch_router() -> APIRouter:
             for item in body.items
         ]
 
-        results = await service.dispatch_issues(
+        results = await _dispatch_issues(
+            service,
             owner_id=principal.user_id,
             items=service_items,
             principal=principal,
@@ -454,7 +468,8 @@ def create_dispatch_router() -> APIRouter:
 
         auth_token = extract_bearer_token(request)
         settings = request.app.state.settings
-        results = await service.dispatch_issues(
+        results = await _dispatch_issues(
+            service,
             owner_id=principal.user_id,
             items=dispatch_items,
             auth_token=auth_token,
@@ -490,7 +505,8 @@ def create_dispatch_router() -> APIRouter:
 
         auth_token = extract_bearer_token(request)
         settings = request.app.state.settings
-        await service.dispatch_issues(
+        await _dispatch_issues(
+            service,
             owner_id=principal.user_id,
             items=[item],
             auth_token=auth_token,

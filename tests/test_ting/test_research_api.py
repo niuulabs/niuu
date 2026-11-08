@@ -18,13 +18,8 @@ from ting.adapters.memory_event_bus import InMemoryEventBus
 from ting.api import research as research_api
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import create_research_router, resolve_workflow_campaign_repo
-from ting.api.workflow_runner_refusal import register_workflow_runner_refusal
 from ting.api.workflows import resolve_workflow_repo
 from ting.config import AuthConfig, Settings
-from ting.domain.exceptions import (
-    WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE,
-    WorkflowStepsHaveNoRunnerError,
-)
 from ting.domain.models import (
     CampaignStageState,
     WorkflowCampaign,
@@ -36,6 +31,8 @@ from ting.domain.workflow_snapshot import build_workflow_snapshot
 from ting.ports.volundr import ActivityEvent, SpawnRequest, VolundrPort, VolundrSession
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
+
+from .fake_workflow_runs import FakeWorkflowRuns
 
 
 class InMemoryWorkflowRepository(WorkflowRepository):
@@ -396,11 +393,12 @@ def _make_client(
     workflow_repo: WorkflowRepository,
     campaign_repo: WorkflowCampaignRepository,
     volundr_factory: RecordingVolundrFactory,
+    runs: FakeWorkflowRuns | None = None,
 ) -> TestClient:
     app = FastAPI()
     app.state.authorization = AllowAllAuthorizationAdapter()
     app.include_router(create_research_router())
-    register_workflow_runner_refusal(app)
+    app.state.workflow_runs = runs if runs is not None else FakeWorkflowRuns()
     app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
     app.state.event_bus = InMemoryEventBus()
     app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
@@ -418,35 +416,50 @@ _CAMPAIGN_BODY = {
 }
 
 
-def test_create_campaign_is_refused_because_workflow_steps_have_no_runner(tmp_path: Path) -> None:
+def test_create_campaign_starts_a_run_without_spawning_a_session(tmp_path: Path) -> None:
     workflow = _research_workflow(tmp_path)
     campaign_repo = InMemoryWorkflowCampaignRepository()
     volundr_port = RecordingVolundrPort()
+    runs = FakeWorkflowRuns()
     client = _make_client(
         InMemoryWorkflowRepository([workflow]),
         campaign_repo,
         RecordingVolundrFactory(volundr_port),
+        runs,
     )
 
     response = client.post(
         "/api/v1/ting/research/campaigns", headers=_headers(), json=_CAMPAIGN_BODY
     )
 
-    assert response.status_code == 501
-    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+    assert response.status_code == 201
+    body = response.json()
+    assert body["sessionId"] == ""
+    assert body["workflowName"] == "Research Campaign"
     assert volundr_port.requests == []
-    assert client.get("/api/v1/ting/research/campaigns", headers=_headers()).json() == []
+    [(campaign, payload)] = runs.launched
+    assert str(campaign.id) == body["id"]
+    assert campaign.connection_id == "local"
+    assert campaign.metadata["surface"] == "ting.research"
+    assert campaign.metadata["question"] == _CAMPAIGN_BODY["question"]
+    assert campaign.metadata["repo"] == "niuulabs/volundr"
+    assert campaign.metadata["branch"] == "dev"
+    assert _CAMPAIGN_BODY["question"] in payload["prompt"]
+    listed = client.get("/api/v1/ting/research/campaigns", headers=_headers()).json()
+    assert [item["id"] for item in listed] == [body["id"]]
 
 
-def test_create_campaign_on_a_selected_target_spawns_nothing_on_any_target(
+def test_create_campaign_on_a_selected_target_records_that_connection(
     tmp_path: Path,
 ) -> None:
     noatun = RecordingVolundrPort(name="noatun", target_id="volundr-noatun")
     valhalla = RecordingVolundrPort(name="valhalla", target_id="volundr-valhalla")
+    runs = FakeWorkflowRuns()
     client = _make_client(
         InMemoryWorkflowRepository([_research_workflow(tmp_path)]),
         InMemoryWorkflowCampaignRepository(),
         RecordingVolundrFactory(noatun, valhalla),
+        runs,
     )
 
     response = client.post(
@@ -455,10 +468,29 @@ def test_create_campaign_on_a_selected_target_spawns_nothing_on_any_target(
         json={**_CAMPAIGN_BODY, "connectionId": "volundr-valhalla"},
     )
 
-    assert response.status_code == 501
-    assert response.json()["detail"] == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
+    assert response.status_code == 201
+    [(campaign, _)] = runs.launched
+    assert campaign.connection_id == "volundr-valhalla"
     assert noatun.requests == []
     assert valhalla.requests == []
+
+
+def test_create_campaign_that_cannot_start_fails_its_campaign(tmp_path: Path) -> None:
+    campaign_repo = InMemoryWorkflowCampaignRepository()
+    runs = FakeWorkflowRuns(launch_error=RuntimeError("no capacity"))
+    client = _make_client(
+        InMemoryWorkflowRepository([_research_workflow(tmp_path)]),
+        campaign_repo,
+        RecordingVolundrFactory(RecordingVolundrPort()),
+        runs,
+    )
+
+    with pytest.raises(RuntimeError, match="no capacity"):
+        client.post("/api/v1/ting/research/campaigns", headers=_headers(), json=_CAMPAIGN_BODY)
+
+    [failed] = campaign_repo._campaigns.values()
+    assert failed.status == WorkflowCampaignStatus.FAILED
+    assert failed.metadata["failure_error"] == "no capacity"
 
 
 def test_list_campaigns_includes_research_launched_over_a2a(tmp_path: Path) -> None:
@@ -642,21 +674,16 @@ def test_list_campaigns_asks_forge_nothing_for_a_run_with_no_session(tmp_path: P
 
 
 def test_create_campaign_prefers_research_tagged_workflow_by_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     delivery_workflow = _non_research_workflow(tmp_path)
     research_workflow = _research_workflow(tmp_path)
-    launched: list[WorkflowDefinition] = []
-
-    async def refuse(*, workflow: WorkflowDefinition, **_: object) -> None:
-        launched.append(workflow)
-        raise WorkflowStepsHaveNoRunnerError()
-
-    monkeypatch.setattr(research_api, "launch_workflow_execution", refuse)
+    runs = FakeWorkflowRuns()
     client = _make_client(
         InMemoryWorkflowRepository([delivery_workflow, research_workflow]),
         InMemoryWorkflowCampaignRepository(),
         RecordingVolundrFactory(RecordingVolundrPort()),
+        runs,
     )
 
     response = client.post(
@@ -670,8 +697,8 @@ def test_create_campaign_prefers_research_tagged_workflow_by_default(
         },
     )
 
-    assert response.status_code == 501
-    assert [workflow.id for workflow in launched] == [research_workflow.id]
+    assert response.status_code == 201
+    assert [campaign.workflow_id for campaign, _ in runs.launched] == [research_workflow.id]
 
 
 def test_patch_campaign_updates_title_and_slug(tmp_path: Path) -> None:
@@ -1150,7 +1177,6 @@ async def test_artifact_summaries_read_each_mount_once(tmp_path: Path, monkeypat
     other and eighteen campaigns took about as long as doing it serially.
     """
     from mimir.adapters.markdown import MarkdownMimirAdapter
-    from ting.api import research as research_api
 
     adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
     for slug in ("first", "second"):
@@ -1203,7 +1229,6 @@ async def test_artifact_summaries_do_not_leak_between_campaigns(
 ) -> None:
     """Slugs share a prefix root, so each campaign must claim only its own."""
     from mimir.adapters.markdown import MarkdownMimirAdapter
-    from ting.api import research as research_api
 
     adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
     for rel in (
@@ -1228,7 +1253,6 @@ async def test_artifact_summaries_do_not_leak_between_campaigns(
 @pytest.mark.asyncio
 async def test_artifact_summaries_report_unknown_without_a_mount(monkeypatch) -> None:
     """An unreadable mount is not a campaign with no artifacts."""
-    from ting.api import research as research_api
 
     monkeypatch.setattr(
         research_api, "_campaign_knowledge", lambda campaign, settings, **kwargs: None
@@ -1244,8 +1268,6 @@ async def test_artifact_summaries_report_unknown_without_a_mount(monkeypatch) ->
 
 @pytest.mark.asyncio
 async def test_artifact_summaries_report_unknown_when_mimir_raises(monkeypatch) -> None:
-    from ting.api import research as research_api
-
     class _Broken:
         async def list_pages(self, **_kwargs: object) -> list[object]:
             raise RuntimeError("503 Service Unavailable")
@@ -1266,6 +1288,4 @@ async def test_artifact_summaries_report_unknown_when_mimir_raises(monkeypatch) 
 
 @pytest.mark.asyncio
 async def test_artifact_summaries_of_an_empty_list() -> None:
-    from ting.api import research as research_api
-
     assert await research_api._campaign_artifact_summaries([], settings=object()) == []

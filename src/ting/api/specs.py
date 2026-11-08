@@ -24,12 +24,10 @@ from ting.api.research import (
     ResearchCampaignResponse,
     _active_stage_id,
     _campaign_knowledge,
-    _campaign_status_from_session,
     _emit_campaign_event,
     _initial_stage_state,
     _normalize_campaign_slug,
     _refresh_campaign_runtime,
-    _resolve_campaign_volundr_adapter,
     _title_from_path,
     _to_campaign_detail_response,
     _to_campaign_response,
@@ -39,8 +37,11 @@ from ting.api.research import (
 )
 from ting.api.workflows import (
     WorkflowLaunchBody,
-    launch_workflow_execution,
+    prepare_workflow_launch,
     resolve_workflow_repo,
+    start_workflow_run,
+    workflow_launch_payload,
+    workflow_run_metadata,
 )
 from ting.domain.models import (
     CampaignStageState,
@@ -49,6 +50,13 @@ from ting.domain.models import (
     WorkflowDefinition,
 )
 from ting.domain.utils import _session_name, _slugify
+from ting.domain.workflow_steps import (
+    ActorKind,
+    GateActor,
+    GateDecision,
+    GateRefusedError,
+    RunStateError,
+)
 from ting.ports.volundr import VolundrFactory
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
@@ -98,7 +106,6 @@ def create_specs_router() -> APIRouter:
     async def list_campaigns(
         request: Request,
         principal: Principal = Depends(extract_principal),
-        bearer_token: str | None = Depends(extract_bearer_token),
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
     ) -> list[ResearchCampaignResponse]:
@@ -115,13 +122,6 @@ def create_specs_router() -> APIRouter:
                 repo=repo,
                 volundr_factory=volundr_factory,
                 principal=principal,
-            )
-            campaign = await _sync_pending_spec_gates(
-                campaign=campaign,
-                repo=repo,
-                volundr_factory=volundr_factory,
-                principal=principal,
-                bearer_token=bearer_token,
             )
             refreshed.append(campaign)
         return [_to_campaign_response(campaign) for campaign in refreshed]
@@ -162,7 +162,7 @@ def create_specs_router() -> APIRouter:
                 "branch": body.branch,
             },
         )
-        execution = await launch_workflow_execution(
+        execution = await prepare_workflow_launch(
             request=request,
             workflow=workflow,
             launch=launch,
@@ -183,29 +183,28 @@ def create_specs_router() -> APIRouter:
             workflow_version=workflow.version,
             workflow_name=workflow.name,
             workflow_snapshot=execution.workflow_snapshot,
-            session_id=execution.session.id,
-            session_name=execution.session.name,
-            status=_campaign_status_from_session(execution.session.status),
+            session_id="",
+            session_name="",
+            status=WorkflowCampaignStatus.PENDING,
             active_stage_id=stage_state[0].stage_id if stage_state else None,
             stage_state=stage_state,
             metadata={
                 "surface": _SPEC_SURFACE,
-                "prompt": body.prompt,
                 "context": body.context,
-                "repo": repos[0] if repos else "",
                 "repos": repos,
-                "branch": body.branch,
                 "connection_id": body.connection_id,
-                "cluster_name": execution.session.cluster_name,
                 "artifact_prefix": f"specifications/{slug}/",
+                **workflow_run_metadata(launch, execution),
+                "prompt": body.prompt,
             },
             created_at=now,
             updated_at=now,
             last_activity_at=now,
-            completed_at=now if execution.session.status == "stopped" else None,
             connection_id=execution.connection_id,
         )
-        saved = await campaign_repo.save_campaign(campaign)
+        saved = await start_workflow_run(
+            request, campaign_repo, campaign, workflow_launch_payload(launch, execution)
+        )
         await _emit_campaign_event(request, "workflow.campaign.created", saved)
         return _to_campaign_response(saved)
 
@@ -214,7 +213,6 @@ def create_specs_router() -> APIRouter:
         slug: str,
         request: Request,
         principal: Principal = Depends(extract_principal),
-        bearer_token: str | None = Depends(extract_bearer_token),
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
     ) -> ResearchCampaignDetailResponse:
@@ -225,13 +223,6 @@ def create_specs_router() -> APIRouter:
             repo=repo,
             volundr_factory=volundr_factory,
             principal=principal,
-        )
-        refreshed = await _sync_pending_spec_gates(
-            campaign=refreshed,
-            repo=repo,
-            volundr_factory=volundr_factory,
-            principal=principal,
-            bearer_token=bearer_token,
         )
         artifacts, canonical = await _load_spec_artifacts(
             refreshed,
@@ -334,9 +325,7 @@ def create_specs_router() -> APIRouter:
         body: SpecReviewBody,
         request: Request,
         principal: Principal = Depends(extract_principal),
-        bearer_token: str | None = Depends(extract_bearer_token),
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
-        volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
     ) -> ResearchCampaignResponse:
         campaign = await _get_spec_campaign(repo, slug, principal)
         normalized_decision = body.decision.strip().lower()
@@ -348,20 +337,8 @@ def create_specs_router() -> APIRouter:
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="notes are required when requesting changes",
             )
-        adapter = await _resolve_campaign_volundr_adapter(
-            volundr_factory=volundr_factory,
-            principal=principal,
-            campaign=campaign,
-        )
-        if adapter is None:
-            raise HTTPException(status_code=503, detail="No Volundr connection is available")
-
-        gates = await _load_spec_gates(
-            campaign=campaign,
-            adapter=adapter,
-            principal=principal,
-            bearer_token=bearer_token,
-        )
+        runs = _workflow_runs(request)
+        gates = _spec_gates(await runs.pending_gates(campaign))
         gate = _select_review_gate(gates, gate_id=body.gate_id, node_id=body.node_id)
         if gate is None:
             raise HTTPException(status_code=404, detail="No pending specification gate found")
@@ -369,40 +346,31 @@ def create_specs_router() -> APIRouter:
         gate_id = _gate_id(gate)
         if not gate_id:
             raise HTTPException(status_code=404, detail="No pending specification gate found")
-        decision = "APPROVE"
+        decision = GateDecision.APPROVE
         if normalized_decision in {"changes_requested", "change_requested"}:
-            decision = "CHANGES_REQUESTED"
+            decision = GateDecision.REQUEST_CHANGES
         try:
-            await adapter.resolve_workflow_gate(
-                campaign.session_id,
-                gate_id,
+            await runs.resolve_gate(
+                campaign,
+                _gate_node_id(gate),
                 decision,
-                notes=body.notes.strip(),
-                source=_SPEC_SURFACE,
-                auth_token=bearer_token,
-                principal=principal,
+                by=GateActor(ActorKind.PERSON, principal.user_id),
+                note=body.notes.strip(),
             )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to resolve specification review gate: {exc}",
-            ) from exc
+        except (GateRefusedError, RunStateError) as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
-        next_gates = [
-            existing
-            for existing in _stored_spec_gates(campaign)
-            if _gate_id(existing) != gate_id and _gate_node_id(existing) != _gate_node_id(gate)
-        ]
+        # The ledger's projection has already cleared the answered gate from the campaign.
+        campaign = await repo.get_campaign(campaign.id) or campaign
         now = datetime.now(UTC)
         updated = WorkflowCampaign(
             **{
                 **campaign.__dict__,
                 "metadata": {
                     **campaign.metadata,
-                    _PENDING_GATES_METADATA_KEY: next_gates,
                     "latest_spec_review": {
                         "decision": "changes_requested"
-                        if decision == "CHANGES_REQUESTED"
+                        if decision is GateDecision.REQUEST_CHANGES
                         else "approve",
                         "notes": body.notes.strip(),
                         "gate_id": gate_id,
@@ -535,66 +503,24 @@ async def _reserve_spec_slug(repo: WorkflowCampaignRepository, base_slug: str) -
     return slug
 
 
-async def _sync_pending_spec_gates(
-    *,
-    campaign: WorkflowCampaign,
-    repo: WorkflowCampaignRepository,
-    volundr_factory: VolundrFactory,
-    principal: Principal,
-    bearer_token: str | None,
-) -> WorkflowCampaign:
-    adapter = await _resolve_campaign_volundr_adapter(
-        volundr_factory=volundr_factory,
-        principal=principal,
-        campaign=campaign,
-    )
-    if adapter is None:
-        return campaign
-    try:
-        gates = await _load_spec_gates(
-            campaign=campaign,
-            adapter=adapter,
-            principal=principal,
-            bearer_token=bearer_token,
+def _workflow_runs(request: Request):
+    """The run service of the step engine, or a 503 when this Ting has none."""
+    runs = getattr(request.app.state, "workflow_runs", None)
+    if runs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The workflow step engine is not configured",
         )
-    except Exception:
-        logger.debug("Failed to load spec gates for campaign %s", campaign.slug, exc_info=True)
-        return campaign
-    stored = _stored_spec_gates(campaign)
-    if gates == stored:
-        return campaign
-    return await repo.save_campaign(
-        WorkflowCampaign(
-            **{
-                **campaign.__dict__,
-                "metadata": {**campaign.metadata, _PENDING_GATES_METADATA_KEY: gates},
-                "updated_at": datetime.now(UTC),
-            }
-        )
-    )
+    return runs
 
 
-async def _load_spec_gates(
-    *,
-    campaign: WorkflowCampaign,
-    adapter: Any,
-    principal: Principal,
-    bearer_token: str | None,
-) -> list[dict[str, Any]]:
-    try:
-        live_gates = await adapter.get_workflow_gates(
-            campaign.session_id,
-            auth_token=bearer_token,
-            principal=principal,
-        )
-    except Exception:
-        return _stored_spec_gates(campaign)
-    pending = [
+def _spec_gates(gates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The pending gates that belong to the specification stack."""
+    return [
         gate
-        for gate in live_gates
+        for gate in gates
         if _gate_node_id(gate) in _SPEC_GATE_NODE_IDS and _is_pending_gate(gate)
     ]
-    return pending
 
 
 def _stored_spec_gates(campaign: WorkflowCampaign) -> list[dict[str, Any]]:

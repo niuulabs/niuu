@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import json
 import logging
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -16,7 +15,6 @@ from pydantic import BaseModel, Field, field_validator
 
 from niuu.domain.models import Principal
 from niuu.domain.services.token_scope import require_scope
-from niuu.domain.session_endpoint import public_session_endpoint
 from ting.adapters.inbound.auth import (
     extract_bearer_token,
     extract_principal,
@@ -28,8 +26,8 @@ from ting.api.workflow_bindings import binding_errors
 from ting.api.workflow_personas import authoring_persona_source
 from ting.domain.exceptions import (
     WorkflowConflictError,
+    WorkflowDocumentError,
     WorkflowReadOnlyError,
-    WorkflowStepsHaveNoRunnerError,
 )
 from ting.domain.models import (
     PersonaDependency,
@@ -45,6 +43,7 @@ from ting.domain.services.dispatch_service import (
     TargetSelectionError,
     select_adapter_by_tags,
 )
+from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_document import (
     WorkflowPlacement,
     document_from_workflow,
@@ -65,13 +64,13 @@ from ting.domain.workflow_snapshot import (
     build_workflow_snapshot,
     pin_workflow_personas,
     workflow_personas_from_snapshot,
+    workflow_placement_from_snapshot,
+    workflow_uses_isolated_branch,
 )
 from ting.domain.workflow_versioning import WorkflowVersionBump
 from ting.ports.volundr import (
-    SessionMembership,
     VolundrFactory,
     VolundrPort,
-    VolundrSession,
 )
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
@@ -189,14 +188,14 @@ class WorkflowLaunchBody(BaseModel):
 
 
 class WorkflowLaunchResponse(BaseModel):
+    """A started run. A run has no single session: its steps run on one per stage member."""
+
     workflow_id: str = Field(serialization_alias="workflowId")
     workflow_name: str = Field(serialization_alias="workflowName")
     slug: str
-    session_id: str = Field(serialization_alias="sessionId")
-    session_name: str = Field(serialization_alias="sessionName")
+    campaign_id: str = Field(serialization_alias="campaignId")
+    campaign_slug: str = Field(serialization_alias="campaignSlug")
     status: str
-    cluster_name: str = Field(default="", serialization_alias="clusterName")
-    chat_endpoint: str | None = Field(default=None, serialization_alias="chatEndpoint")
     workflow_version: str = Field(serialization_alias="workflowVersion")
     document_revision: str = Field(serialization_alias="documentRevision")
 
@@ -214,14 +213,24 @@ class WorkflowVersionSummaryResponse(BaseModel):
 
 @dataclass(frozen=True)
 class WorkflowLaunchExecution:
+    """A launch that passed its checks and is ready to become a run.
+
+    The run is not started yet: the caller builds the campaign that records it (the
+    campaign id is the run's id) and hands it to :func:`start_workflow_run`.
+    """
+
     workflow: WorkflowDefinition
     workflow_snapshot: dict[str, Any]
     slug: str
-    session: VolundrSession
     adapter: VolundrPort
-    # Canonical id of the Volundr connection the session was created on;
+    # Canonical id of the Volundr connection the run's sessions are created on;
     # campaigns persist this so later reads target the same instance.
-    connection_id: str | None = None
+    connection_id: str | None
+    # The working branch and base branch the run's sessions clone.
+    branch: str
+    base_branch: str
+    model: str
+    initiative_context: str
 
 
 async def resolve_workflow_repo() -> WorkflowRepository:
@@ -510,7 +519,7 @@ def create_workflows_router() -> APIRouter:
         if workflow is None or not _can_view_workflow(workflow, principal):
             raise HTTPException(status_code=404, detail="Workflow not found")
 
-        execution = await launch_workflow_execution(
+        execution = await prepare_workflow_launch(
             request=request,
             workflow=workflow,
             launch=body,
@@ -524,24 +533,20 @@ def create_workflows_router() -> APIRouter:
             id=campaign_id,
             tenant_id=principal.tenant_id,
             slug=f"{execution.slug}-{campaign_id.hex[:12]}",
-            name=execution.session.name or execution.workflow.name,
+            name=_session_name(f"{execution.workflow.name}-{execution.slug}"),
             owner_id=principal.user_id,
             workflow_id=execution.workflow.id,
             workflow_version=execution.workflow.version,
             workflow_name=execution.workflow.name,
             workflow_snapshot=execution.workflow_snapshot,
-            session_id=execution.session.id,
-            session_name=execution.session.name,
-            status=_campaign_status_from_launch(execution.session.status),
+            session_id="",
+            session_name="",
+            status=WorkflowCampaignStatus.PENDING,
             active_stage_id=None,
             stage_state=[],
             metadata={
                 "surface": _DIRECT_LAUNCH_SURFACE,
-                "launch_slug": execution.slug,
-                # What the person asked for, so the run's review page can say what it is about.
-                "prompt": body.prompt,
-                **({"repo": body.repo} if body.repo else {}),
-                **({"branch": body.branch} if body.branch else {}),
+                **workflow_run_metadata(body, execution),
                 "document_revision": (
                     execution.workflow.document_revision
                     or workflow_document_revision(execution.workflow)
@@ -552,69 +557,14 @@ def create_workflows_router() -> APIRouter:
             created_at=now,
             updated_at=now,
             last_activity_at=now,
-            completed_at=(
-                now
-                if _campaign_status_from_launch(execution.session.status)
-                in {WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED}
-                else None
-            ),
             connection_id=execution.connection_id,
         )
-        try:
-            await campaign_repo.save_campaign(campaign)
-        except Exception as exc:
-            stopped = False
-            try:
-                await execution.adapter.stop_session(
-                    execution.session.id,
-                    auth_token=bearer_token,
-                    principal=principal,
-                )
-                stopped = True
-            except Exception:
-                logger.exception(
-                    "Workflow launch history failed and session compensation failed for %s",
-                    execution.session.id,
-                )
-            logger.exception(
-                "Workflow session %s launched but its durable Work record failed",
-                execution.session.id,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "code": "launchRecordFailed",
-                    "message": (
-                        "The workflow session launched but its Work record could not be saved."
-                    ),
-                    "sessionId": execution.session.id,
-                    "sessionName": execution.session.name,
-                    "clusterName": execution.session.cluster_name,
-                    "sessionStopped": stopped,
-                    "reconciliationRequired": not stopped,
-                },
-            ) from exc
-        return _launch_response(
-            execution.workflow,
-            execution.slug,
-            execution.session,
-            public_host=request.url.hostname,
+        started = await start_workflow_run(
+            request, campaign_repo, campaign, workflow_launch_payload(body, execution)
         )
+        return _launch_response(execution.workflow, execution.slug, started)
 
     return router
-
-
-def _campaign_status_from_launch(status_value: str) -> WorkflowCampaignStatus:
-    normalized = status_value.strip().lower()
-    if normalized in {"completed", "complete", "succeeded"}:
-        return WorkflowCampaignStatus.COMPLETED
-    if normalized in {"failed", "cancelled", "canceled"}:
-        return WorkflowCampaignStatus.FAILED
-    if normalized in {"pending", "queued", "created"}:
-        return WorkflowCampaignStatus.PENDING
-    if normalized == "stopped":
-        return WorkflowCampaignStatus.BLOCKED
-    return WorkflowCampaignStatus.RUNNING
 
 
 def _coerce_scope_filter(scope: Literal["all", "system", "user"]) -> WorkflowScope | None:
@@ -698,25 +648,93 @@ def _to_version_summary(item: WorkflowVersionSummary) -> WorkflowVersionSummaryR
 def _launch_response(
     workflow: WorkflowDefinition,
     slug: str,
-    session: VolundrSession,
-    *,
-    public_host: str | None = None,
+    campaign: WorkflowCampaign,
 ) -> WorkflowLaunchResponse:
     return WorkflowLaunchResponse(
         workflow_id=str(workflow.id),
         workflow_name=workflow.name,
         slug=slug,
-        session_id=session.id,
-        session_name=session.name,
-        status=session.status,
-        cluster_name=session.cluster_name,
-        chat_endpoint=public_session_endpoint(session.chat_endpoint, public_host=public_host),
+        campaign_id=str(campaign.id),
+        campaign_slug=campaign.slug,
+        status=campaign.status.value,
         workflow_version=workflow.version,
         document_revision=workflow.document_revision or workflow_document_revision(workflow),
     )
 
 
-async def launch_workflow_execution(
+#: Prefix of the branch an isolated-branch workflow's sessions work on.
+_ISOLATED_BRANCH_PREFIX = "workflow"
+
+
+def launch_slug_for_session_name(session_name: str) -> str:
+    """The slug a launch with this session name runs under."""
+    return _slugify(session_name)[:96] or "workflow"
+
+
+def _resolve_launch_slug(body: WorkflowLaunchBody, workflow: WorkflowDefinition) -> str:
+    if body.session_name:
+        return launch_slug_for_session_name(body.session_name)
+    return _slugify(body.prompt)[:96] or _slugify(workflow.name)[:96] or "workflow"
+
+
+def _launch_branches(
+    launch: WorkflowLaunchBody,
+    *,
+    workflow: WorkflowDefinition,
+    slug: str,
+    isolated: bool,
+) -> tuple[str, str]:
+    """The (working branch, base branch) a run's sessions clone.
+
+    An isolated workflow merges into its target only through its own merge step, so
+    its sessions work on a branch of their own cut from the target and can never push
+    to the target directly; for a GitOps repository, a push to the target is a deploy.
+    """
+    if not isolated:
+        return launch.branch or launch.base_branch, launch.base_branch
+    target = (launch.base_branch or launch.branch).strip()
+    if not target:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{workflow.name} works on its own branch and merges into a target branch "
+                "only after its merge gate: name the target branch (base_branch)"
+            ),
+        )
+    return f"{_ISOLATED_BRANCH_PREFIX}/{slug}", target
+
+
+def _build_initiative_context(
+    *,
+    workflow: WorkflowDefinition,
+    launch: WorkflowLaunchBody,
+    slug: str,
+    isolated_branch: tuple[str, str] | None,
+) -> str:
+    """What the run is about, as its first step reads it."""
+    lines = ["# Workflow Launch", "", f"Workflow: {workflow.name}", f"Slug: {slug}"]
+    if isolated_branch is not None:
+        working, target = isolated_branch
+        lines.extend(
+            [
+                "",
+                "## Branch",
+                (
+                    f"Work and commit only on `{working}`, cut from `{target}`. Never commit "
+                    f"to or push `{target}`: only the merge step merges `{working}` into "
+                    f"`{target}`, after the merge gate approves it."
+                ),
+            ]
+        )
+    lines.extend(["", "## Prompt", launch.prompt.strip()])
+    if launch.context:
+        lines.extend(
+            ["", "## Launch Context", json.dumps(launch.context, indent=2, sort_keys=True)]
+        )
+    return "\n".join(lines)
+
+
+async def prepare_workflow_launch(
     *,
     request: Request,
     workflow: WorkflowDefinition,
@@ -727,16 +745,12 @@ async def launch_workflow_execution(
     pinned_workflow_snapshot: dict[str, Any] | None = None,
     trusted_workflow_execution: bool = False,
     launch_slug: str | None = None,
-    session_membership: Callable[[VolundrPort], Awaitable[SessionMembership | None]] | None = None,
 ) -> WorkflowLaunchExecution:
-    """Check a workflow launch and start it.
+    """Check a workflow launch and resolve everything its run needs.
 
-    Authorization and the workflow's own validity are checked first, so a caller
-    who may not launch, or whose workflow is malformed, still gets that answer.
-
-    :raises WorkflowStepsHaveNoRunnerError: For every launch that passes those
-        checks. Workflow steps have no runner until they run on harness sessions
-        (NIU-1198); the HTTP layer maps this to 501.
+    Authorization and the workflow's own validity are checked first, so a caller who
+    may not launch, or whose workflow is malformed, still gets that answer. Nothing is
+    started: the caller builds the campaign and hands it to :func:`start_workflow_run`.
     """
     raw_execution_context = launch.provenance.get("workflow_execution")
     if raw_execution_context and not trusted_workflow_execution:
@@ -774,14 +788,144 @@ async def launch_workflow_execution(
         )
     if not allowed:
         raise HTTPException(status_code=403, detail="Workflow launch denied")
-    if pinned_workflow_snapshot is None:
-        try:
-            build_workflow_snapshot(
+    try:
+        workflow_snapshot = (
+            copy.deepcopy(pinned_workflow_snapshot)
+            if pinned_workflow_snapshot is not None
+            else build_workflow_snapshot(
                 workflow, persona_source=getattr(request.app.state, "persona_source", None)
             )
-        except ValueError as exc:
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if launch_slug is None:
+        launch_slug = _resolve_launch_slug(launch, workflow)
+    try:
+        isolated_branch = workflow_uses_isolated_branch(workflow_snapshot)
+        placement = workflow_placement_from_snapshot(workflow_snapshot)
+    except WorkflowDocumentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    session_branch, base_branch = _launch_branches(
+        launch, workflow=workflow, slug=launch_slug, isolated=isolated_branch
+    )
+    target_adapter = await _resolve_target_adapter(
+        volundr_factory=volundr_factory,
+        principal=principal,
+        connection_id=launch.connection_id,
+        placement=placement,
+        auth_token=bearer_token,
+    )
+    if target_adapter is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No Volundr connection is available for this user",
+        )
+    settings = request.app.state.settings
+    return WorkflowLaunchExecution(
+        workflow=workflow,
+        workflow_snapshot=workflow_snapshot,
+        slug=launch_slug,
+        adapter=target_adapter,
+        connection_id=getattr(target_adapter, "target_id", None) or None,
+        branch=session_branch,
+        base_branch=base_branch,
+        model=launch.model or settings.dispatch.default_model,
+        initiative_context=_build_initiative_context(
+            workflow=workflow,
+            launch=launch,
+            slug=launch_slug,
+            isolated_branch=(session_branch, base_branch) if isolated_branch else None,
+        ),
+    )
+
+
+def workflow_run_metadata(
+    launch: WorkflowLaunchBody, execution: WorkflowLaunchExecution
+) -> dict[str, Any]:
+    """The campaign metadata a run's sessions are created from (repo, branches, model)."""
+    return {
+        "launch_slug": execution.slug,
+        # What the person asked for, so the run's review page can say what it is about.
+        "prompt": launch.prompt,
+        **({"repo": launch.repo} if launch.repo else {}),
+        **({"branch": execution.branch} if execution.branch else {}),
+        **({"base_branch": execution.base_branch} if execution.base_branch else {}),
+        **({"model": execution.model} if execution.model else {}),
+    }
+
+
+def workflow_launch_payload(
+    launch: WorkflowLaunchBody, execution: WorkflowLaunchExecution
+) -> dict[str, Any]:
+    """What the run's trigger carries: the first steps read this as their input."""
+    return {
+        "prompt": launch.prompt,
+        "initiative_context": execution.initiative_context,
+        **({"repo": launch.repo} if launch.repo else {}),
+        **({"branch": execution.branch} if execution.branch else {}),
+        **({"base_branch": execution.base_branch} if execution.base_branch else {}),
+        **({"context": launch.context} if launch.context else {}),
+        **(
+            {"result_schema": launch.inherited_result_schema}
+            if launch.inherited_result_schema
+            else {}
+        ),
+    }
+
+
+async def start_workflow_run(
+    request: Request,
+    campaign_repo: WorkflowCampaignRepository,
+    campaign: WorkflowCampaign,
+    payload: dict[str, Any],
+    *,
+    trigger_node_id: str | None = None,
+) -> WorkflowCampaign:
+    """Record the campaign and start its run on the step engine.
+
+    The run's id is the campaign's id, so the campaign is saved first. A run that
+    cannot start fails its campaign with the reason, then raises: it is never left
+    ``pending`` for a sweep to find later.
+    """
+    runs = getattr(request.app.state, "workflow_runs", None)
+    if runs is None:
+        raise HTTPException(status_code=503, detail="The workflow step engine is not configured")
+    saved = await campaign_repo.save_campaign(campaign)
+    try:
+        await runs.launch(saved, payload, trigger_node_id=trigger_node_id)
+    except Exception as exc:
+        logger.error("Workflow run %s could not start: %s", saved.slug, exc, exc_info=True)
+        await fail_unstarted_campaign(campaign_repo, saved, str(exc))
+        if isinstance(exc, WorkflowDocumentError):
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-    raise WorkflowStepsHaveNoRunnerError()
+        raise
+    started = await campaign_repo.get_campaign(saved.id)
+    if started is None:
+        raise LookupError(f"campaign {saved.slug} vanished while its run started")
+    return started
+
+
+async def fail_unstarted_campaign(
+    campaign_repo: WorkflowCampaignRepository, campaign: WorkflowCampaign, reason: str
+) -> None:
+    """Fail a campaign whose run never started, naming why."""
+    now = datetime.now(UTC)
+    try:
+        await campaign_repo.save_campaign(
+            replace(
+                campaign,
+                status=WorkflowCampaignStatus.FAILED,
+                metadata={**campaign.metadata, "failure_error": reason},
+                updated_at=now,
+                completed_at=campaign.completed_at,
+            )
+        )
+    except Exception:
+        logger.error(
+            "Workflow run %s did not start and its campaign could not be failed",
+            campaign.slug,
+            exc_info=True,
+        )
 
 
 async def _resolve_target_adapter(

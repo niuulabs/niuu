@@ -17,7 +17,6 @@ from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
-import httpx
 import jwt
 import pytest
 from fastapi import FastAPI
@@ -28,7 +27,10 @@ from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from niuu.domain.models import Principal
 from personas.adapters.loader import FilesystemPersonaAdapter
-from ting.api import a2a as a2a_api
+from personas.domain.persona import PersonaConfig, PersonaConsumes, PersonaProduces
+from personas.domain.persona_document import portable_persona_from_config
+from ting.adapters.campaign_step_definitions import CampaignStepRunDefinitions
+from ting.adapters.forge_step_sessions import ForgeStepSessions, step_session_name
 from ting.api.a2a import (
     _launch_digest,
     campaign_to_task,
@@ -37,29 +39,34 @@ from ting.api.a2a import (
 )
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import create_research_router, resolve_workflow_campaign_repo
-from ting.api.workflows import WorkflowLaunchExecution, resolve_workflow_repo
+from ting.api.workflows import resolve_workflow_repo
 from ting.config import A2AConfig, AuthConfig, Settings
 from ting.domain.a2a_launch import A2ALaunchReservation
-from ting.domain.exceptions import WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
 from ting.domain.models import (
     WorkflowCampaign,
     WorkflowCampaignStatus,
     WorkflowDefinition,
     WorkflowScope,
 )
+from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
+from ting.domain.services.workflow_runs import WorkflowRuns
+from ting.domain.services.workflow_step_engine import WorkflowStepEngine
+from ting.domain.step_engine import EngineSettings
 from ting.domain.workflow_execution import ExecutionConflictError
-from ting.domain.workflow_snapshot import build_workflow_snapshot
+from ting.domain.workflow_snapshot import build_workflow_snapshot, pin_workflow_personas
 from ting.ports.volundr import (
     ForgeProjectRef,
     PublicSessionLogEntry,
-    PublicSessionLogPage,
     SpawnRequest,
+    StepSessionRequest,
     VolundrPort,
     VolundrSession,
 )
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
 from ting.system_workflows import load_system_workflows
+
+from .step_support import InMemoryStepRepository
 
 A2A_PATH = "/api/v1/ting/a2a"
 _SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
@@ -263,6 +270,18 @@ class RecordingExecutionRepository:
     def __init__(self) -> None:
         self.reserved = []
         self.execution = None
+        self.states: list[tuple[str, str]] = []
+
+    async def get_internal(self, execution_id):
+        assert self.execution is not None and self.execution.id == execution_id
+        return self.execution
+
+    async def update_execution_state(
+        self, execution_id, *, state, suspension_reason, expected_revision
+    ):
+        assert self.execution is not None and self.execution.id == execution_id
+        assert expected_revision == self.execution.revision
+        self.states.append((state, suspension_reason))
 
     async def reserve_parent_launch(self, execution):
         self.reserved.append(execution)
@@ -303,6 +322,8 @@ class RecordingVolundrPort(VolundrPort):
         self.sessions: list[VolundrSession] = list(sessions or [])
         self._spawn_failure = spawn_failure
         self.spawned: list[SpawnRequest] = []
+        self.step_session_requests: list[StepSessionRequest] = []
+        self.delivered_steps: list[tuple[str, dict]] = []
         self.stopped: list[str] = []
         self.stop_attempts: list[str] = []
         self.stop_failures = stop_failures
@@ -390,6 +411,37 @@ class RecordingVolundrPort(VolundrPort):
             base_branch=request.base_branch,
             workload_type=request.workload_type,
         )
+
+    async def create_step_session(
+        self,
+        request: StepSessionRequest,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> VolundrSession:
+        self.auth_calls.append(("create_step_session", auth_token, principal))
+        if self._spawn_failure:
+            raise RuntimeError("spawn failed")
+        self.step_session_requests.append(request)
+        session = VolundrSession(
+            id=f"session-{len(self.step_session_requests)}",
+            name=request.name,
+            status=self._session_status,
+            tracker_issue_id=request.tracker_issue_id,
+            cluster_name=self._name,
+        )
+        self.sessions.append(session)
+        return session
+
+    async def deliver_workflow_step(
+        self,
+        session_id: str,
+        activation: dict,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        self.delivered_steps.append((session_id, activation))
 
     async def get_session(self, session_id: str, *, auth_token=None, principal=None):
         return None
@@ -563,9 +615,31 @@ class RecordingPushDispatcher:
         return 1
 
 
+class _PinnedPersonas:
+    """The authoritative persona source of the test workflow: one persona, one verdict."""
+
+    def __init__(self) -> None:
+        self.config = PersonaConfig(
+            name="tool-smith",
+            system_prompt_template="Build the tool.",
+            produces=PersonaProduces(event_type_map={"built": "tool.built"}),
+            consumes=PersonaConsumes(event_types=["task.requested", "task.changes_requested"]),
+        )
+
+    def load_portable(self, persona_id: str, revision: str):  # noqa: ANN201
+        current = self.load_current_portable(persona_id)
+        return current if current is not None and current.revision == revision else None
+
+    def load_current_portable(self, persona_id: str):  # noqa: ANN201
+        if persona_id != self.config.name:
+            return None
+        return portable_persona_from_config(self.config)
+
+
 def _make_workflow(*, name: str = "tool-builder") -> WorkflowDefinition:
+    """trigger -> build (tool-smith) -> review gate -> end, with a rework edge."""
     now = datetime.now(UTC)
-    return WorkflowDefinition(
+    workflow = WorkflowDefinition(
         id=uuid4(),
         name=name,
         description="Builds a learned tool.",
@@ -576,18 +650,63 @@ def _make_workflow(*, name: str = "tool-builder") -> WorkflowDefinition:
             "tags": ["tool-builder"],
             "artifactPaths": ["capabilities/{slug}/learned_tool.json"],
             "nodes": [
+                {"id": "start", "kind": "trigger", "dispatchEvent": "task.requested"},
                 {
                     "id": "stage-1",
                     "kind": "stage",
                     "label": "Build",
-                    "stageMembers": [{"personaId": "tool-smith", "model": "gpt-5.5"}],
-                }
+                    "stageMembers": [
+                        {
+                            "personaId": "tool-smith",
+                            "model": "gpt-5.5",
+                            "consumesEventTypes": ["task.requested", "task.changes_requested"],
+                        }
+                    ],
+                },
+                {
+                    "id": "review-gate",
+                    "kind": "gate",
+                    "label": "Review gate",
+                    "condition": "Is the tool right?",
+                    "mode": "human_approval",
+                    "approvalEvent": "task.approved",
+                    "changesRequestedEvent": "task.changes_requested",
+                },
+                {"id": "done", "kind": "end", "completionEvent": "task.completed"},
             ],
-            "edges": [],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": "start",
+                    "target": "stage-1",
+                    "label": "task.requested -> task.requested",
+                },
+                {
+                    "id": "e2",
+                    "source": "stage-1",
+                    "target": "review-gate",
+                    "label": "tool.built -> tool.built",
+                },
+                {
+                    "id": "e3",
+                    "source": "review-gate",
+                    "target": "done",
+                    "label": "task.approved -> task.approved",
+                },
+                {
+                    "id": "e4",
+                    "source": "review-gate",
+                    "target": "stage-1",
+                    "label": "task.changes_requested -> task.changes_requested",
+                    "rework": True,
+                    "maxIterations": 3,
+                },
+            ],
         },
         created_at=now,
         updated_at=now,
     )
+    return pin_workflow_personas(workflow, _PinnedPersonas())
 
 
 def _make_workflow_with_placement(
@@ -620,8 +739,8 @@ def _make_campaign(
         workflow_version="1.0.0",
         workflow_name="tool-builder",
         workflow_snapshot=workflow_snapshot or {"graph": {"nodes": [], "edges": []}},
-        session_id="session-123",
-        session_name=slug,
+        session_id="",
+        session_name="",
         status=status,
         active_stage_id=None,
         stage_state=[],
@@ -657,6 +776,43 @@ def _build_token(scopes: list[str], **claims: Any) -> str:
     )
 
 
+class _NullEventBus:
+    async def emit(self, event: Any) -> None:
+        return None
+
+
+def _workflow_runs(
+    campaigns: WorkflowCampaignRepository, factory: RecordingVolundrFactory
+) -> WorkflowRuns:
+    """The real step engine over an in-memory ledger and the real Forge session adapter."""
+    steps = InMemoryStepRepository()
+    projector = WorkflowCampaignProjector(
+        repo=campaigns,
+        event_bus=_NullEventBus(),
+        run_launched=lambda run_id: _launched(steps, run_id),
+    )
+    runs = WorkflowRuns(
+        engine=WorkflowStepEngine(
+            repository=steps,
+            sessions=ForgeStepSessions(
+                volundr_factory=factory, campaigns=campaigns, default_model="gpt-5.5"
+            ),
+            definitions=CampaignStepRunDefinitions(campaigns),
+            settings=EngineSettings(step_deadline_seconds=600.0),
+        ),
+        steps=steps,
+        campaigns=campaigns,
+        sink=projector,
+        volundr_factory=factory,
+    )
+    projector.bind_runs(runs)
+    return runs
+
+
+async def _launched(steps: InMemoryStepRepository, run_id: UUID) -> bool:
+    return (await steps.load(run_id)).launched
+
+
 def _make_client(
     *,
     workflow_repo: WorkflowRepository | None = None,
@@ -676,83 +832,48 @@ def _make_client(
     app.include_router(create_research_router())
     app.state.settings = settings or Settings(auth=AuthConfig(allow_anonymous_dev=False))
     app.state.a2a_push_dispatcher = push_dispatcher
+    app.state.persona_source = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
     app.state.saga_repo = SimpleNamespace(get_saga=AsyncMock(return_value=None))
     app.state.ticket_coordinator_repo = SimpleNamespace(get=AsyncMock(return_value=None))
     launch_repo = launch_repo or InMemoryA2ALaunchRepository()
+    factory = volundr_factory or RecordingVolundrFactory([port])
+    app.state.workflow_runs = _workflow_runs(campaigns, factory)
     app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
     app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaigns
     app.dependency_overrides[resolve_a2a_launch_repo] = lambda: launch_repo
-    app.dependency_overrides[resolve_volundr_factory] = lambda: (
-        volundr_factory or RecordingVolundrFactory([port])
-    )
+    app.dependency_overrides[resolve_volundr_factory] = lambda: factory
     return TestClient(app), campaigns, port
 
 
-async def _launch_that_reaches_a_runner(
-    *,
-    workflow: WorkflowDefinition,
-    launch: Any,
-    volundr_factory: Any,
-    principal: Principal,
-    bearer_token: str | None = None,
-    pinned_workflow_snapshot: dict[str, Any] | None = None,
-    launch_slug: str | None = None,
-    session_membership: Any = None,
-    **_unused: Any,
-) -> WorkflowLaunchExecution:
-    """Stands in for ``launch_workflow_execution``, which is refused until steps have a runner.
+def _run_async(awaitable: Any) -> Any:
+    import asyncio
 
-    Most of what these tests pin comes after the launch: how the task, its campaign, its
-    placement, its retry and its failure are recorded. This starts one plain session on the
-    connection the launch names, as a working runner would.
-    """
-    adapter = (
-        await volundr_factory.for_connection(principal.user_id, launch.connection_id)
-        if launch.connection_id
-        else await volundr_factory.primary_for_owner(principal.user_id)
-    )
-    membership = await session_membership(adapter) if session_membership else None
-    session = await adapter.spawn_session(
-        SpawnRequest(
-            name=launch.session_name,
-            repo=launch.repo,
-            branch=launch.branch,
-            base_branch=launch.base_branch,
-            model=launch.model,
-            membership=membership,
-            tracker_issue_id=f"workflow:{launch_slug}",
-            tracker_issue_url="",
-            system_prompt="",
-            initial_prompt=launch.prompt,
-            workload_config={
-                "workflow": pinned_workflow_snapshot,
-                "provenance": dict(launch.provenance),
-                **(
-                    {"workflow_result_schema": dict(launch.inherited_result_schema)}
-                    if launch.inherited_result_schema
-                    else {}
-                ),
-            },
-            integration_ids=await adapter.list_integration_ids(
-                auth_token=bearer_token, principal=principal
-            ),
-        ),
-        auth_token=bearer_token,
-        principal=principal,
-    )
-    return WorkflowLaunchExecution(
-        workflow=workflow,
-        workflow_snapshot=pinned_workflow_snapshot or {},
-        slug=launch_slug or "",
-        session=session,
-        adapter=adapter,
-        connection_id=getattr(adapter, "target_id", None) or None,
-    )
+    return asyncio.run(awaitable)
 
 
-@pytest.fixture(autouse=True)
-def runner_stand_in(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(a2a_api, "launch_workflow_execution", _launch_that_reaches_a_runner)
+def _launch(client: TestClient, workflow: WorkflowDefinition, **headers: Any) -> WorkflowCampaign:
+    """Start a run through SendMessage and return its campaign."""
+    sent = _rpc(client, "SendMessage", _send_params(str(workflow.id)), **headers)
+    task_id = sent.json()["result"]["task"]["id"]
+    return _run_async(client.app.state.workflow_runs._campaigns.get_campaign_by_slug(task_id))
+
+
+def _close_stage(client: TestClient, campaign: WorkflowCampaign, verdict: str = "built") -> None:
+    """Close the run's open stage step the way its harness session would."""
+    runs = client.app.state.workflow_runs
+
+    async def close() -> None:
+        state = await runs.state(campaign.id)
+        step = next(step for step in state.steps if step.is_open and step.member)
+        await runs.record_step_closed(
+            run_id=campaign.id,
+            activation_id=step.id,
+            session_id=step.session_id or "",
+            attempt=step.attempt,
+            report={"kind": "verdict", "verdict": verdict, "outcome": {}, "note": "built it"},
+        )
+
+    _run_async(close())
 
 
 def _rpc(
@@ -901,50 +1022,53 @@ def _log_records(requests: list[Any]) -> list[Any]:
 
 
 class TestSendMessage:
-    def test_launches_workflow_and_returns_submitted_task(self) -> None:
+    def test_launches_workflow_and_returns_a_working_task(self) -> None:
         workflow = _make_workflow()
         client, campaigns, port = _make_client(
             workflow_repo=InMemoryWorkflowRepository([workflow]),
         )
         params = _send_params(str(workflow.id))
-        params["message"]["metadata"]["traceContext"] = {
-            "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
-            "tracestate": "niuu=resident",
-            "ignored": "not-w3c",
-        }
 
         response = _rpc(client, "SendMessage", params)
 
         assert response.status_code == 200
         result = response.json()["result"]["task"]
-        assert result["status"]["state"] == "TASK_STATE_SUBMITTED"
+        # The run started: its first step is active, so the task is working.
+        assert result["status"]["state"] == "TASK_STATE_WORKING"
         assert result["metadata"]["skillId"] == str(workflow.id)
-        assert result["metadata"]["sessionId"] == "session-123"
-
-        assert len(port.spawned) == 1
-        assert port.spawned[0].integration_ids == ["integration-github", "integration-memory"]
-        assert port.spawned[0].workload_config["provenance"]["trace_context"] == {
-            "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
-            "tracestate": "niuu=resident",
-        }
+        # A run has no single session.
+        assert "sessionId" not in result["metadata"]
 
         import asyncio
 
         campaign = asyncio.run(campaigns.get_campaign_by_slug(result["id"]))
         assert campaign is not None
+        assert campaign.session_id == ""
         assert campaign.owner_id == "user-1"
         assert campaign.metadata["surface"] == "a2a"
         assert campaign.metadata["a2a_message_id"] == "msg-1"
-        # NIU-1149: the recorded slug is the one the session runs under (its
-        # launch name), not the caller's requested sessionName — `{slug}` in
-        # the workflow's artifact paths must resolve to where it wrote them.
+        # `{slug}` in the workflow's artifact paths resolves to the launch slug.
         assert campaign.metadata["a2a_workflow_slug"] == result["id"]
-        # The task id stays the stable recovery key; the session itself gets a
-        # name a human can read (workflow + prompt), never ``a2a-<hex>``.
-        assert port.spawned[0].tracker_issue_id == f"workflow:{result['id']}"
-        assert port.spawned[0].name == "tool-builder-build-the-widget-tool"
+        assert campaign.metadata["model"] == "gpt-5.5"
+        assert campaign.active_stage_id == "stage-1"
 
-    def test_caller_session_name_names_the_session(self) -> None:
+        # The member's session was created and handed its step.
+        assert len(port.step_session_requests) == 1
+        request = port.step_session_requests[0]
+        assert request.tracker_issue_id == f"workflow:{result['id']}"
+        assert request.member == "tool-smith"
+        assert request.run_id == str(campaign.id)
+        assert request.persona_definition["id"] == "tool-smith"
+        assert request.model == "gpt-5.5"
+        assert len(port.delivered_steps) == 1
+        session_id, activation = port.delivered_steps[0]
+        assert session_id == "session-1"
+        assert activation["node_id"] == "stage-1"
+        assert activation["member"] == "tool-smith"
+        assert activation["valid_verdicts"] == ["built"]
+        assert "Build the widget tool" in activation["instructions"]
+
+    def test_caller_session_name_does_not_name_the_run_sessions(self) -> None:
         workflow = _make_workflow()
         client, _campaigns, port = _make_client(
             workflow_repo=InMemoryWorkflowRepository([workflow]),
@@ -956,8 +1080,8 @@ class TestSendMessage:
 
         assert response.status_code == 200
         task_id = response.json()["result"]["task"]["id"]
-        assert port.spawned[0].name == "niu-1114-gitops-reconciliation"
-        assert port.spawned[0].tracker_issue_id == f"workflow:{task_id}"
+        # Step sessions are named for the run and the member, so they can be found again.
+        assert port.step_session_requests[0].name == f"wf-{task_id}-tool-smith"[:63]
 
     def test_fan_out_skill_binds_durable_execution_context(self) -> None:
         workflow = next(
@@ -991,26 +1115,19 @@ class TestSendMessage:
 
         assert response.status_code == 200, response.text
         task = response.json()["result"]["task"]
-        assert task["status"]["state"] == "TASK_STATE_SUBMITTED"
+        assert task["status"]["state"] == "TASK_STATE_WORKING"
         assert len(ledger.reserved) == 1
         assert ledger.execution.parent_node_id == "research-threads"
-        assert ledger.execution.parent_session_id == "session-123"
-        assert ledger.execution.connection_id == "local"
-
-        workload = port.spawned[0].workload_config
-        provenance = workload["provenance"]["workflow_execution"]
-        assert provenance["execution_id"] == str(ledger.execution.id)
-        assert provenance["parent_session_key"] == f"workflow:execution-{ledger.execution.id.hex}"
-        assert workload["provenance"]["trace_context"] == {
-            "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
-            "tracestate": "niuu=resident",
-        }
+        # The parent is the run: it has no session to attach, and is marked running.
+        assert ledger.execution.parent_session_id == ""
+        assert ledger.states == [("running", "")]
 
         campaign = next(iter(campaigns._campaigns.values()))
         assert campaign.metadata["workflow_execution_id"] == str(ledger.execution.id)
+        assert port.step_session_requests, "the run's first member got a session"
 
     def test_a_coordinators_launch_keeps_its_ticket(self) -> None:
-        """The link a coordinator's launch carries survives the session starting."""
+        """The link a coordinator's launch carries survives the run starting."""
         workflow = _make_workflow()
         client, campaigns, port = _make_client(
             workflow_repo=InMemoryWorkflowRepository([workflow]),
@@ -1035,25 +1152,9 @@ class TestSendMessage:
 
         assert response.status_code == 200, response.text
         campaign = next(iter(campaigns._campaigns.values()))
-        assert campaign.session_id
         assert campaign.metadata["ticket"] == ticket
-        assert port.ensured_projects == [(str(saga_id), "Platform")]
-        assert port.joined_projects == [("coordinator-session", str(saga_id), "coordinator")]
-        membership = port.spawned[0].membership
-        assert membership.project_id == str(saga_id)
-        assert membership.role == "worker"
-        assert membership.parent_session_id == "coordinator-session"
-        assert membership.parent_instance_id == "local-host"
-        assert membership.objective == workflow.name
-
-    def test_a_launch_with_no_ticket_or_parent_joins_no_project(self) -> None:
-        workflow = _make_workflow()
-        client, _, port = _make_client(workflow_repo=InMemoryWorkflowRepository([workflow]))
-
-        response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
-
-        assert response.status_code == 200, response.text
-        assert port.spawned[0].membership is None
+        assert campaign.status is WorkflowCampaignStatus.RUNNING
+        assert len(port.step_session_requests) == 1
 
     def test_campaign_names_the_workload_that_sent_the_task(self) -> None:
         """A resident's exchanged token (act.sub) is recorded on the campaign it launches."""
@@ -1112,9 +1213,11 @@ class TestSendMessage:
         assert fetched.json()["result"]["id"] == task_id
         assert canceled.status_code == 200
         assert canceled.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
-        assert port.stopped == ["session-123"]
+        # Canceling the run stops its sessions.
+        assert port.stopped == ["session-1"]
         persisted = next(iter(campaigns._campaigns.values()))
         assert persisted.metadata["a2a_canceled"] is True
+        assert persisted.status is WorkflowCampaignStatus.FAILED
 
     def test_jsonrpc_span_uses_traceparent_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
         class Span:
@@ -1285,7 +1388,8 @@ class TestSendMessage:
 
         assert retried["id"] == first["id"]
         assert retried["contextId"] == "resident-operation-1"
-        assert len(port.spawned) == 1
+        assert len(port.step_session_requests) == 1
+        assert len(port.delivered_steps) == 1
 
     def test_reused_message_id_rejects_changed_launch_content(self) -> None:
         workflow = _make_workflow()
@@ -1303,7 +1407,7 @@ class TestSendMessage:
         assert "result" in first.json()
         assert changed.json()["error"]["code"] == -32602
         assert "reused for different launch content" in changed.json()["error"]["message"]
-        assert len(port.spawned) == 1
+        assert len(port.step_session_requests) == 1
 
     def test_workflow_id_does_not_select_an_a2a_skill(self) -> None:
         client, _, _ = _make_client()
@@ -1375,16 +1479,11 @@ class TestSendMessage:
         )
 
         assert response.status_code == 200
-        assert response.json()["result"]["task"]["status"]["state"] == "TASK_STATE_SUBMITTED"
-        assert len(port.spawned) == 1
-        assert {name for name, _, _ in port.auth_calls} >= {
-            "list_sessions",
-            "list_integration_ids",
-            "spawn",
-        }
+        assert response.json()["result"]["task"]["status"]["state"] == "TASK_STATE_WORKING"
+        assert len(port.step_session_requests) == 1
+        assert {name for name, _, _ in port.auth_calls} >= {"list_sessions", "create_step_session"}
+        # The launch-scoped credential is never forwarded to Forge.
         assert all(token is None for _, token, _ in port.auth_calls)
-        principals = [principal for _, _, principal in port.auth_calls]
-        assert all(principal and principal.user_id == "user-1" for principal in principals)
 
     def test_production_identity_rejects_execution_gateway_launch_without_lineage(self) -> None:
         workflow = _make_workflow()
@@ -1482,16 +1581,13 @@ class TestSendMessage:
             }
         )
 
-        port.session_projects["parent-session"] = "project-1"
-
         response = _rpc(client, "SendMessage", params, headers=_headers(token=token))
 
         assert response.status_code == 200, response.text
-        membership = port.spawned[0].membership
-        assert membership.project_id == "project-1"
-        assert membership.parent_session_id == "parent-session"
-        assert membership.role == "worker"
-        assert port.spawned[0].workload_config["workflow_result_schema"] == result_schema
+        # The pinned result contract rides in the run's trigger, so the first step reads it.
+        [(_, activation)] = port.delivered_steps
+        assert '"additionalProperties": false' in activation["instructions"]
+        assert '"evidence"' in activation["instructions"]
 
     def test_human_token_is_unaffected_by_scope_check(self) -> None:
         workflow = _make_workflow()
@@ -1510,7 +1606,7 @@ class TestSendMessage:
         assert response.status_code == 200
         assert "result" in response.json()
 
-    def test_persistence_failure_stops_launched_session(self) -> None:
+    def test_persistence_failure_starts_no_session(self) -> None:
         workflow = _make_workflow()
         client, _, port = _make_client(
             workflow_repo=InMemoryWorkflowRepository([workflow]),
@@ -1520,7 +1616,7 @@ class TestSendMessage:
         response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
 
         assert "error" in response.json()
-        assert port.spawned == []
+        assert port.step_session_requests == []
         assert port.stopped == []
 
     def test_launch_resolves_pinned_placement_tags_over_multiple_targets(self) -> None:
@@ -1535,8 +1631,8 @@ class TestSendMessage:
         response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
 
         assert response.status_code == 200, response.text
-        assert cpu.spawned == []
-        assert len(spark.spawned) == 1
+        assert cpu.step_session_requests == []
+        assert len(spark.step_session_requests) == 1
         task = response.json()["result"]["task"]
         assert task["metadata"]["connectionId"] == "spark-01"
 
@@ -1558,7 +1654,7 @@ class TestSendMessage:
 
         assert response.status_code == 422
         assert "spark-01" in response.text
-        assert cpu_only.spawned == []
+        assert cpu_only.step_session_requests == []
 
         # The rejected launch must not leave a campaign stuck PENDING
         # forever — either no campaign was ever created (resolution now
@@ -1585,19 +1681,20 @@ class TestSendMessage:
 
         assert response.status_code == 422
         assert "cpu" in response.text
-        assert cpu.spawned == []
-        assert spark.spawned == []
+        assert cpu.step_session_requests == []
+        assert spark.step_session_requests == []
 
         import asyncio
 
         campaigns_list = asyncio.run(campaigns.list_campaigns(owner_id="user-1"))
         assert all(c.status != WorkflowCampaignStatus.PENDING for c in campaigns_list)
 
-    def test_retry_reuses_the_persisted_target_and_does_not_duplicate_spawn(self) -> None:
-        """A retry (e.g. after a crash between spawn and mark_launched) must
-        land on the exact target the first attempt resolved and already
-        spawned on — never re-resolve and possibly pick a different Guild
-        target, which would duplicate the session."""
+    def test_retry_reuses_the_persisted_target_and_does_not_duplicate_the_session(self) -> None:
+        """A retry (e.g. after a crash between creating the member's session and
+        starting the run) must land on the exact target the first attempt resolved
+        and already created a session on, and find that session again by its name
+        and tag, never re-resolve and possibly pick a different Guild target, which
+        would duplicate the session."""
         import asyncio
 
         workflow = _make_workflow_with_placement({"tags": ["dgx-spark"]})
@@ -1680,15 +1777,10 @@ class TestSendMessage:
         spark.sessions.append(
             VolundrSession(
                 id="recovered-session",
-                name="recovered",
+                name=step_session_name(task_id, "tool-smith", campaign_id),
                 status="running",
-                chat_endpoint="wss://sessions.example/s/recovered-session/session",
                 tracker_issue_id=f"workflow:{task_id}",
                 cluster_name="spark-01",
-                repo="",
-                branch="",
-                base_branch="",
-                workload_type="default",
             )
         )
 
@@ -1697,27 +1789,23 @@ class TestSendMessage:
         response = _rpc(client, "SendMessage", params)
 
         assert response.status_code == 200, response.text
-        assert cpu.spawned == []
-        assert spark.spawned == []  # recovered, not re-spawned
+        assert cpu.step_session_requests == []
+        assert spark.step_session_requests == []  # found again, not created again
+        # The recovered session is the one the member's step was handed to.
+        assert [session_id for session_id, _ in spark.delivered_steps] == ["recovered-session"]
         task = response.json()["result"]["task"]
         assert task["id"] == task_id
-        assert task["metadata"]["sessionId"] == "recovered-session"
         assert task["metadata"]["connectionId"] == "spark-01"
 
         campaign = asyncio.run(campaigns.get_campaign_by_slug(task_id))
         assert campaign is not None
         assert campaign.connection_id == "spark-01"
-        assert campaign.session_id == "recovered-session"
-        # The stale pre-launch slug is replaced by the recovered launch's own.
+        assert campaign.status is WorkflowCampaignStatus.RUNNING
         assert campaign.metadata["a2a_workflow_slug"] == task_id
 
-    def test_launch_failure_marks_the_campaign_failed_instead_of_leaving_it_pending(
-        self,
-    ) -> None:
-        """A failure inside the launch attempt itself (after the campaign
-        row is already saved) must resolve that row, not leave it PENDING —
-        the placement pre-check only prevents the case where resolution
-        itself fails before the campaign is ever created."""
+    def test_a_session_that_cannot_start_fails_the_run_with_the_reason(self) -> None:
+        """A member's session that cannot be created fails its step, and with no other
+        path to the end, the run: the task says so instead of staying pending."""
         import asyncio
 
         workflow = _make_workflow_with_placement({"tags": ["dgx-spark"]})
@@ -1731,12 +1819,13 @@ class TestSendMessage:
 
         response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
 
-        assert "error" in response.json()
+        assert response.json()["result"]["task"]["status"]["state"] == "TASK_STATE_FAILED"
         campaigns_list = asyncio.run(campaigns.list_campaigns(owner_id="user-1"))
         assert len(campaigns_list) == 1
         [campaign] = campaigns_list
         assert campaign.status == WorkflowCampaignStatus.FAILED
         assert "spawn failed" in campaign.metadata["failure_error"]
+        assert campaign.metadata["failure_stage_id"] == "stage-1"
 
     @pytest.mark.parametrize(
         ("ledger", "status_code", "reason"),
@@ -1768,15 +1857,14 @@ class TestSendMessage:
         response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
 
         assert response.status_code == status_code
-        assert port.spawned == []
+        assert port.step_session_requests == []
         [campaign] = asyncio.run(campaigns.list_campaigns(owner_id="user-1"))
         assert campaign.session_id == ""
         assert campaign.status == WorkflowCampaignStatus.FAILED
         assert reason in campaign.metadata["failure_error"]
 
     def test_a_failed_launch_is_read_without_stopping_a_session_it_never_had(self) -> None:
-        """GetTask holds a terminal task back until its session is stopped, and
-        this one has none: it must answer, with no stop sent for an empty id."""
+        """A failed run whose session never started answers GetTask, with no stop sent."""
         import asyncio
 
         workflow = _make_workflow_with_placement({"tags": ["dgx-spark"]})
@@ -1795,9 +1883,8 @@ class TestSendMessage:
         assert response.json()["result"]["status"]["state"] == "TASK_STATE_FAILED"
         assert spark.stop_attempts == []
 
-    def test_a_retry_of_a_failed_launch_returns_the_failure_without_spawning(self) -> None:
-        """A failed row is terminal, so a session spawned for it could never be
-        recorded: the launch would start one only to stop it again."""
+    def test_a_retry_of_a_failed_launch_returns_the_failure_without_a_new_run(self) -> None:
+        """A failed row is terminal: a retry answers with the failure and starts nothing."""
         import asyncio
 
         workflow = _make_workflow_with_placement({"tags": ["dgx-spark"]})
@@ -1809,13 +1896,12 @@ class TestSendMessage:
             volundr_factory=RecordingVolundrFactory([spark]),
         )
         _rpc(client, "SendMessage", _send_params(str(workflow.id)))
-        assert len(spark.spawned) == 1
         spark._spawn_failure = False
 
         response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
 
         assert response.json()["result"]["task"]["status"]["state"] == "TASK_STATE_FAILED"
-        assert len(spark.spawned) == 1
+        assert spark.step_session_requests == []
         assert spark.stop_attempts == []
         [campaign] = asyncio.run(campaigns.list_campaigns(owner_id="user-1"))
         assert campaign.session_id == ""
@@ -1892,31 +1978,25 @@ class TestSendMessage:
         assert saved[0].last_activity_at > long_ago + timedelta(minutes=59)
 
 
-class TestSendMessageWithoutARunner:
-    """The real launch: workflow steps have no runner (NIU-1198), so the task is refused."""
+class TestSendMessageWithAnUnrunnableWorkflow:
+    """A workflow the engine refuses to start fails its task loudly, with the reason."""
 
-    @pytest.fixture(autouse=True)
-    def runner_stand_in(self) -> None:
-        """Overrides the module's stand-in: these tests want the real launch."""
-
-    def test_the_task_is_refused_as_unsupported_and_its_campaign_marked_failed(self) -> None:
+    def test_an_unpinned_persona_fails_the_task_and_its_campaign(self) -> None:
         import asyncio
 
-        workflow = _make_workflow()
+        workflow = replace(_make_workflow(), persona_dependencies={}, persona_definitions={})
         client, campaigns, port = _make_client(
             workflow_repo=InMemoryWorkflowRepository([workflow]),
         )
 
         response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
 
-        assert response.status_code == 200
-        error = response.json()["error"]
-        assert error["code"] == -32004
-        assert error["message"] == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
-        assert port.spawned == []
+        assert response.status_code == 422
+        assert "tool-smith" in response.text
+        assert port.step_session_requests == []
         [campaign] = asyncio.run(campaigns.list_campaigns(owner_id="user-1"))
         assert campaign.status == WorkflowCampaignStatus.FAILED
-        assert campaign.metadata["failure_error"] == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
+        assert "tool-smith" in campaign.metadata["failure_error"]
 
 
 class TestGateContinuation:
@@ -1943,74 +2023,76 @@ class TestGateContinuation:
     def _blocked_client(
         self,
         *,
-        gates: list[dict] | None = None,
-        status: WorkflowCampaignStatus = WorkflowCampaignStatus.BLOCKED,
+        close_stage: bool = True,
+        token: str | None = None,
     ) -> tuple[TestClient, WorkflowCampaign, RecordingVolundrPort]:
-        campaign = _make_campaign(status=status)
-        port = RecordingVolundrPort()
-        port.gates = (
-            gates
-            if gates is not None
-            else [{"id": "gate-1", "nodeId": "review", "status": "pending"}]
+        """A run launched through SendMessage; with ``close_stage`` it waits at its gate."""
+        workflow = _make_workflow()
+        client, campaigns, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
         )
-        client, _, _ = _make_client(
-            campaign_repo=InMemoryCampaignRepository([campaign]),
-            volundr=port,
-        )
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        sent = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+        campaign = _run_async(campaigns.get_campaign_by_slug(sent.json()["result"]["task"]["id"]))
+        if close_stage:
+            _close_stage(client, campaign)
         return client, campaign, port
 
-    def test_approve_resolves_gate_and_resumes_task(self) -> None:
+    def test_approve_resolves_gate_and_completes_the_task(self) -> None:
         client, campaign, port = self._blocked_client()
 
         response = _rpc(client, "SendMessage", self._reply_params(campaign.slug))
 
         result = response.json()["result"]["task"]
-        assert result["status"]["state"] == "TASK_STATE_WORKING"
-        assert port.resolved_gates == [("session-123", "gate-1", "APPROVE", "LGTM", "a2a")]
+        # The gate was the last step before the end: the run completed.
+        assert result["status"]["state"] == "TASK_STATE_COMPLETED"
+        state = _run_async(client.app.state.workflow_runs.state(campaign.id))
+        resolved = [e for e in state.events if e.event_type == "engine.gate.resolved"]
+        assert resolved[0].payload["verdict"] == "approve"
+        assert resolved[0].payload["by"] == {"kind": "person", "id": "user-1"}
+        assert resolved[0].payload["note"] == "LGTM"
+        # The run ended, so its sessions were stopped.
+        assert port.stopped == ["session-1"]
 
-    def test_answering_a_gate_stops_the_task_recording_it_as_waiting(self) -> None:
-        campaign = _make_campaign(
-            status=WorkflowCampaignStatus.BLOCKED,
-            metadata={"pending_workflow_gates": [{"id": "gate-1"}], "repo": "niuu"},
-        )
-        repo = InMemoryCampaignRepository([campaign])
-        port = RecordingVolundrPort()
-        port.gates = [{"id": "gate-1", "nodeId": "review", "status": "pending"}]
-        client, _, _ = _make_client(campaign_repo=repo, volundr=port)
+    def test_an_answered_gate_clears_the_pending_gate_and_keeps_the_campaign_metadata(
+        self,
+    ) -> None:
+        client, campaign, _ = self._blocked_client()
+        waiting = _run_async(client.app.state.workflow_runs._campaigns.get_campaign(campaign.id))
+        assert [gate["node_id"] for gate in waiting.metadata["pending_workflow_gates"]] == [
+            "review-gate"
+        ]
+        assert waiting.status == WorkflowCampaignStatus.BLOCKED
 
         _rpc(client, "SendMessage", self._reply_params(campaign.slug))
 
-        saved = repo._campaigns[campaign.id]
-        assert saved.status == WorkflowCampaignStatus.RUNNING
+        saved = _run_async(client.app.state.workflow_runs._campaigns.get_campaign(campaign.id))
         assert "pending_workflow_gates" not in saved.metadata
-        assert saved.metadata["repo"] == "niuu"
+        assert saved.metadata["prompt"] == "Build the widget tool"
 
     def test_a_gate_that_waits_for_a_person_refuses_an_agent_with_a_way_forward(self) -> None:
         client, campaign, port = self._blocked_client()
-        refused = httpx.Response(403, request=httpx.Request("POST", "http://forge/gate"))
-        port.resolve_workflow_gate = AsyncMock(
-            side_effect=httpx.HTTPStatusError("no", request=refused.request, response=refused)
+        token = jwt.encode(
+            {"sub": "user-1", "act": {"sub": "system:serviceaccount:nats:regin"}},
+            "test-only-hmac-key-at-least-32-bytes-long",
+            algorithm="HS256",
         )
 
-        response = _rpc(client, "SendMessage", self._reply_params(campaign.slug))
+        response = _rpc(
+            client,
+            "SendMessage",
+            self._reply_params(campaign.slug),
+            headers=_headers(token=token),
+        )
 
         error = response.json()["error"]
         assert error["code"] == -32602
         assert "waits for a person" in error["message"]
         assert "tell the operator" in error["message"]
+        # Nothing was decided: the gate is still open.
+        assert _run_async(client.app.state.workflow_runs.pending_gates(campaign))
 
-    def test_any_other_refusal_of_a_gate_answer_stays_an_error(self) -> None:
-        client, campaign, port = self._blocked_client()
-        failed = httpx.Response(502, request=httpx.Request("POST", "http://forge/gate"))
-        port.resolve_workflow_gate = AsyncMock(
-            side_effect=httpx.HTTPStatusError("no", request=failed.request, response=failed)
-        )
-
-        response = _rpc(client, "SendMessage", self._reply_params(campaign.slug))
-
-        assert "waits for a person" not in str(response.json())
-
-    def test_request_changes_sends_notes(self) -> None:
+    def test_request_changes_sends_the_notes_back_to_the_member(self) -> None:
         client, campaign, port = self._blocked_client()
 
         response = _rpc(
@@ -2020,12 +2102,17 @@ class TestGateContinuation:
         )
 
         assert response.json()["result"]["task"]["status"]["state"] == "TASK_STATE_WORKING"
-        assert port.resolved_gates == [
-            ("session-123", "gate-1", "CHANGES_REQUESTED", "Fix the tests", "a2a")
-        ]
+        # Rework: the member's same session gets its step again, with the reviewer's notes.
+        assert len(port.step_session_requests) == 1
+        assert [session_id for session_id, _ in port.delivered_steps] == ["session-1", "session-1"]
+        rework = port.delivered_steps[-1][1]
+        assert rework["node_id"] == "stage-1"
+        assert rework["attempt"] == 2
+        assert rework["generation"] == 1
+        assert "Fix the tests" in rework["instructions"]
 
     def test_request_changes_without_notes_is_invalid(self) -> None:
-        client, campaign, port = self._blocked_client()
+        client, campaign, _ = self._blocked_client()
 
         response = _rpc(
             client,
@@ -2036,53 +2123,46 @@ class TestGateContinuation:
         error = response.json()["error"]
         assert error["code"] == -32602
         assert "review notes" in error["message"]
-        assert port.resolved_gates == []
+        assert _run_async(client.app.state.workflow_runs.pending_gates(campaign))
 
-    def test_decisionless_reply_without_pending_question_is_rejected(self) -> None:
-        # No gateDecision routes the reply to the question path; with only a
-        # gate pending (no peer question) the reply has nothing to answer.
+    def test_decisionless_reply_is_rejected(self) -> None:
         client, campaign, _ = self._blocked_client()
 
         response = _rpc(client, "SendMessage", self._reply_params(campaign.slug, decision=None))
 
         error = response.json()["error"]
         assert error["code"] == -32602
-        assert "no pending question" in error["message"]
+        assert "gateDecision" in error["message"]
 
     def test_reply_on_non_blocked_task_is_rejected(self) -> None:
-        client, campaign, port = self._blocked_client(status=WorkflowCampaignStatus.RUNNING)
+        client, campaign, _ = self._blocked_client(close_stage=False)
 
         response = _rpc(client, "SendMessage", self._reply_params(campaign.slug))
 
         error = response.json()["error"]
         assert "not awaiting input" in error["message"]
-        assert port.resolved_gates == []
 
-    def test_reply_without_pending_gate_is_rejected(self) -> None:
-        client, campaign, port = self._blocked_client(
-            gates=[{"id": "gate-1", "nodeId": "review", "status": "resolved"}],
-        )
+    def test_reply_without_a_matching_gate_is_rejected(self) -> None:
+        client, campaign, _ = self._blocked_client()
+        params = self._reply_params(campaign.slug)
+        params["message"]["metadata"]["gateId"] = "some-other-gate"
 
-        response = _rpc(client, "SendMessage", self._reply_params(campaign.slug))
+        response = _rpc(client, "SendMessage", params)
 
         error = response.json()["error"]
         assert "no pending gate" in error["message"]
-        assert port.resolved_gates == []
+        assert _run_async(client.app.state.workflow_runs.pending_gates(campaign))
 
-    def test_gate_id_metadata_disambiguates(self) -> None:
-        client, campaign, port = self._blocked_client(
-            gates=[
-                {"id": "gate-1", "nodeId": "lint", "status": "pending"},
-                {"id": "gate-2", "nodeId": "review", "status": "pending"},
-            ],
-        )
+    def test_gate_id_metadata_names_the_gate(self) -> None:
+        client, campaign, _ = self._blocked_client()
         params = self._reply_params(campaign.slug)
-        params["message"]["metadata"]["gateId"] = "gate-2"
+        params["message"]["metadata"]["gateId"] = "review-gate"
+        params["message"]["metadata"]["nodeId"] = "review-gate"
 
         response = _rpc(client, "SendMessage", params)
 
         assert response.status_code == 200
-        assert port.resolved_gates[0][1] == "gate-2"
+        assert response.json()["result"]["task"]["status"]["state"] == "TASK_STATE_COMPLETED"
 
 
 class TestGetTask:
@@ -2189,16 +2269,61 @@ class TestGetTask:
 
     def test_scoped_launcher_cancels_the_task_its_workload_launched(self) -> None:
         regin = "system:serviceaccount:nats:regin"
-        campaign = _make_campaign(slug="task-built-by-regin", metadata={"actor_id": regin})
-        client, _, port = _make_client(campaign_repo=InMemoryCampaignRepository([campaign]))
+        workflow = _make_workflow()
+        client, campaigns, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
         client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        launched = _launch(client, workflow)
+        campaigns._campaigns[launched.id] = replace(
+            launched, metadata={**launched.metadata, "actor_id": regin}
+        )
         token = _build_token(["ting:workflow:launch"], act={"sub": regin})
 
-        response = _rpc(client, "CancelTask", {"id": campaign.slug}, headers=_headers(token=token))
+        response = _rpc(client, "CancelTask", {"id": launched.slug}, headers=_headers(token=token))
 
         assert response.status_code == 200
         assert response.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
-        assert port.stopped == ["session-123"]
+        assert port.stopped == ["session-1"]
+
+    def test_a_credential_bound_to_one_forge_session_cannot_be_matched_to_a_task(self) -> None:
+        """A run's steps run on one session per member, so a session-bound credential is refused."""
+        execution_id = uuid4()
+        attempt_id = uuid4()
+        intent_id = uuid4()
+        campaign = _make_campaign(slug="task-authorized")
+        execution = SimpleNamespace(id=execution_id, owner_id="user-1", tenant_id="")
+        child = SimpleNamespace(
+            id=attempt_id,
+            execution_id=execution_id,
+            intent_id=intent_id,
+            task_id=campaign.slug,
+        )
+
+        class Ledger:
+            async def get_child(self, child_id: UUID):
+                return child if child_id == attempt_id else None
+
+            async def get(self, requested_id: UUID, *, owner_id: str, tenant_id: str):
+                return execution if requested_id == execution_id else None
+
+        client, _, _ = _make_client(campaign_repo=InMemoryCampaignRepository([campaign]))
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        client.app.state.workflow_execution_repo = Ledger()
+        token = _build_token(
+            ["ting:workflow:launch"],
+            workload_sub=f"workflow-child:{attempt_id}",
+            workload_workflow_execution_id=str(execution_id),
+            workload_child_attempt_id=str(attempt_id),
+            workload_child_intent_id=str(intent_id),
+            workload_child_task_id=campaign.slug,
+            workload_forge_session_id="session-1",
+        )
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug}, headers=_headers(token=token))
+
+        assert response.status_code == 403
+        assert "bound to a Forge session" in response.text
 
     def test_execution_gateway_token_is_bound_to_exact_ledger_task(self) -> None:
         execution_id = uuid4()
@@ -2254,9 +2379,7 @@ class TestGetTask:
         assert authorized.json()["result"]["id"] == campaign.slug
         assert denied.status_code == 403
         assert canceled.status_code == 200
-        assert port.auth_calls[-1][0] == "stop"
-        assert port.auth_calls[-1][1] is None
-        assert port.auth_calls[-1][2].user_id == "user-1"
+        assert canceled.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
 
     @pytest.mark.parametrize(
         ("campaign_status", "expected_state"),
@@ -2346,41 +2469,6 @@ class TestGetTask:
             "reviews": [{"eventId": "review-1", "valid": True}],
         }
 
-    def test_terminal_result_waits_for_cleanup_and_retries_transient_failure(self) -> None:
-        campaign = _make_campaign(
-            status=WorkflowCampaignStatus.COMPLETED,
-            metadata={
-                "delivery": {
-                    "schemaVersion": 1,
-                    "result": {"attemptId": "attempt-1"},
-                    "reviews": [{"eventId": "review-1", "valid": True}],
-                }
-            },
-        )
-        port = RecordingVolundrPort(stop_failures=1)
-        client, campaigns, _ = _make_client(
-            campaign_repo=InMemoryCampaignRepository([campaign]),
-            volundr=port,
-        )
-
-        pending = _rpc(client, "GetTask", {"id": campaign.slug})
-        assert pending.status_code == 503
-        assert port.stop_attempts == [campaign.session_id]
-
-        completed = _rpc(client, "GetTask", {"id": campaign.slug})
-        assert completed.status_code == 200
-        result = completed.json()["result"]
-        assert result["status"]["state"] == "TASK_STATE_COMPLETED"
-        assert result["metadata"]["deliveryResult"]["attemptId"] == "attempt-1"
-
-        repeated = _rpc(client, "GetTask", {"id": campaign.slug})
-        assert repeated.status_code == 200
-        assert port.stop_attempts == [campaign.session_id, campaign.session_id]
-        saved = next(iter(campaigns._campaigns.values()))
-        assert saved.status == WorkflowCampaignStatus.COMPLETED
-        assert saved.metadata["delivery"] == campaign.metadata["delivery"]
-        assert saved.metadata["terminal_session_stopped"] is True
-
     def test_unknown_task_is_not_found(self) -> None:
         client, _, _ = _make_client()
 
@@ -2398,25 +2486,12 @@ class TestGetTask:
         assert "error" in response.json()
 
     def test_input_required_task_carries_pending_gate_context(self) -> None:
-        campaign = _make_campaign(status=WorkflowCampaignStatus.BLOCKED)
-        port = RecordingVolundrPort()
-        port.gates = [
-            {
-                "id": "gate-1",
-                "node_id": "capability-spec-gate",
-                "status": "pending",
-                "mode": "human_approval",
-                "label": "Confirm capability specification",
-                "condition": "The framed spec must be confirmed.",
-                "instructions": "Approve when the spec captures the tool.",
-                "summary": "",
-            },
-            {"id": "gate-0", "node_id": "old-gate", "status": "resolved"},
-        ]
-        client, _, _ = _make_client(
-            campaign_repo=InMemoryCampaignRepository([campaign]),
-            volundr=port,
+        workflow = _make_workflow()
+        client, campaigns, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
         )
+        campaign = _launch(client, workflow)
+        _close_stage(client, campaign)
 
         response = _rpc(client, "GetTask", {"id": campaign.slug})
 
@@ -2424,97 +2499,59 @@ class TestGetTask:
         assert task["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
         assert task["metadata"]["pendingGates"] == [
             {
-                "gateId": "gate-1",
-                "nodeId": "capability-spec-gate",
-                "label": "Confirm capability specification",
+                "gateId": "review-gate",
+                "nodeId": "review-gate",
+                "label": "Review gate",
                 "mode": "human_approval",
-                "condition": "The framed spec must be confirmed.",
-                "instructions": "Approve when the spec captures the tool.",
-                "summary": "",
+                "condition": "Is the tool right?",
+                "instructions": "",
+                "summary": "built it",
             }
         ]
 
     def test_working_task_shows_a_gate_that_opened_before_its_status_caught_up(self) -> None:
-        campaign = _make_campaign(status=WorkflowCampaignStatus.RUNNING)
-        port = RecordingVolundrPort()
-        port.gates = [{"id": "gate-1", "node_id": "n", "status": "pending"}]
-        client, _, _ = _make_client(
-            campaign_repo=InMemoryCampaignRepository([campaign]),
-            volundr=port,
+        workflow = _make_workflow()
+        client, campaigns, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        campaign = _launch(client, workflow)
+        _close_stage(client, campaign)
+        # The campaign row still says the run is working: the ledger is the truth.
+        campaigns._campaigns[campaign.id] = replace(
+            campaigns._campaigns[campaign.id], status=WorkflowCampaignStatus.RUNNING
         )
 
-        response = _rpc(client, "GetTask", {"id": campaign.slug})
+        task = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]
 
-        task = response.json()["result"]
         assert task["status"]["state"] == "TASK_STATE_WORKING"
-        assert [gate["gateId"] for gate in task["metadata"]["pendingGates"]] == ["gate-1"]
+        assert [gate["gateId"] for gate in task["metadata"]["pendingGates"]] == ["review-gate"]
 
     def test_working_task_with_no_open_gate_carries_none(self) -> None:
-        campaign = _make_campaign(status=WorkflowCampaignStatus.RUNNING)
-        port = RecordingVolundrPort()
-        port.gates = [{"id": "gate-1", "node_id": "n", "status": "approved"}]
+        workflow = _make_workflow()
         client, _, _ = _make_client(
-            campaign_repo=InMemoryCampaignRepository([campaign]),
-            volundr=port,
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
         )
+        campaign = _launch(client, workflow)
 
         response = _rpc(client, "GetTask", {"id": campaign.slug})
 
         assert "pendingGates" not in response.json()["result"].get("metadata", {})
 
-    def test_gate_carries_the_document_it_asks_about(self) -> None:
-        workflow = next(
-            item for item in load_system_workflows() if item.name == "Ticket Planning Flow"
-        )
-        campaign = replace(
-            _make_campaign(status=WorkflowCampaignStatus.BLOCKED),
-            workflow_snapshot={"name": workflow.name, "graph": workflow.graph},
-        )
-        port = RecordingVolundrPort()
-        gate = {"id": "gate-1", "node_id": "plan-review-gate", "status": "pending"}
-        port.gates = [gate]
-        port.get_public_session_log_page = AsyncMock(
-            return_value=PublicSessionLogPage(
-                entries=(
-                    _log_entry(1, "room_outcome", {"fields": {"plan": "## Approach\nTrace ticks"}}),
-                    _log_entry(2, "workflow_gate", {"gate": gate}),
-                ),
-                scanned_through=2,
-                has_more=False,
-            )
-        )
+    def test_a_ledger_that_cannot_be_read_is_an_error_not_an_empty_gate_list(self) -> None:
+        workflow = _make_workflow()
         client, _, _ = _make_client(
-            campaign_repo=InMemoryCampaignRepository([campaign]),
-            volundr=port,
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
         )
+        campaign = _launch(client, workflow)
+
+        async def unreadable(_campaign: WorkflowCampaign) -> list[dict]:
+            raise RuntimeError("ledger down")
+
+        client.app.state.workflow_runs.pending_gates = unreadable
 
         response = _rpc(client, "GetTask", {"id": campaign.slug})
 
-        artifacts = response.json()["result"]["artifacts"]
-        assert [artifact["name"] for artifact in artifacts] == ["Plan"]
-        assert artifacts[0]["parts"][0]["text"] == "## Approach\nTrace ticks"
-
-    def test_unreadable_gate_document_is_said_and_the_gate_still_shows(self) -> None:
-        workflow = next(
-            item for item in load_system_workflows() if item.name == "Ticket Planning Flow"
-        )
-        campaign = replace(
-            _make_campaign(status=WorkflowCampaignStatus.BLOCKED),
-            workflow_snapshot={"name": workflow.name, "graph": workflow.graph},
-        )
-        port = RecordingVolundrPort()
-        port.gates = [{"id": "gate-1", "node_id": "plan-review-gate", "status": "pending"}]
-        port.get_public_session_log_page = AsyncMock(side_effect=httpx.ConnectError("down"))
-        client, _, _ = _make_client(
-            campaign_repo=InMemoryCampaignRepository([campaign]),
-            volundr=port,
-        )
-
-        response = _rpc(client, "GetTask", {"id": campaign.slug})
-
-        task = response.json()["result"]
-        assert task["metadata"]["pendingGates"]
-        assert "unreadable" in task["metadata"]["artifacts_error"]
+        assert "error" in response.json()
 
 
 def _log_entry(seq: int, kind: str, payload: dict[str, Any]) -> PublicSessionLogEntry:
@@ -2524,23 +2561,27 @@ def _log_entry(seq: int, kind: str, payload: dict[str, Any]) -> PublicSessionLog
 
 
 class TestCancelTask:
-    def test_cancel_stops_session_and_reports_canceled(self) -> None:
-        campaign = _make_campaign(status=WorkflowCampaignStatus.RUNNING)
-        client, campaigns, port = _make_client(
-            campaign_repo=InMemoryCampaignRepository([campaign]),
+    def test_cancel_stops_the_runs_sessions_and_reports_canceled(self) -> None:
+        workflow = _make_workflow()
+        client, _, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
         )
+        campaign = _launch(client, workflow)
 
         response = _rpc(client, "CancelTask", {"id": campaign.slug})
 
         result = response.json()["result"]
         assert result["status"]["state"] == "TASK_STATE_CANCELED"
-        assert port.stopped == ["session-123"]
+        assert port.stopped == ["session-1"]
+        state = _run_async(client.app.state.workflow_runs.state(campaign.id))
+        assert "engine.run.canceled" in [event.event_type for event in state.events]
+        assert [step.state.value for step in state.steps if step.member] == ["canceled"]
 
         followup = _rpc(client, "GetTask", {"id": campaign.slug})
         assert followup.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
 
-    def test_cancelling_a_launch_with_no_session_sends_no_stop(self) -> None:
-        campaign = replace(_make_campaign(status=WorkflowCampaignStatus.PENDING), session_id="")
+    def test_cancelling_a_launch_that_never_reached_the_engine_sends_no_stop(self) -> None:
+        campaign = _make_campaign(status=WorkflowCampaignStatus.PENDING)
         client, _, port = _make_client(
             campaign_repo=InMemoryCampaignRepository([campaign]),
         )
@@ -2550,18 +2591,20 @@ class TestCancelTask:
         assert response.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
         assert port.stop_attempts == []
 
-    def test_cancel_is_recorded_before_the_session_stops(self) -> None:
-        """Stopping the session emits events; a projector reading the campaign
-        while it was still active wrote it back over the cancellation."""
-        campaign = _make_campaign(status=WorkflowCampaignStatus.BLOCKED)
-        repo = InMemoryCampaignRepository([campaign])
-        client, _, port = _make_client(campaign_repo=repo)
-        states_at_stop: list[str] = []
+    def test_cancel_is_recorded_before_the_sessions_stop(self) -> None:
+        """Stopping the sessions emits events; the cancellation must already be on
+        the campaign when they do."""
+        workflow = _make_workflow()
+        client, campaigns, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        campaign = _launch(client, workflow)
+        canceled_at_stop: list[bool] = []
         original_stop = port.stop_session
 
         async def _stop(session_id, **kwargs):
-            stored = await repo.get_campaign_by_slug(campaign.slug)
-            states_at_stop.append(stored.status.value)
+            stored = await campaigns.get_campaign(campaign.id)
+            canceled_at_stop.append(bool(stored.metadata.get("a2a_canceled")))
             await original_stop(session_id, **kwargs)
 
         port.stop_session = _stop
@@ -2569,7 +2612,7 @@ class TestCancelTask:
         response = _rpc(client, "CancelTask", {"id": campaign.slug})
 
         assert response.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
-        assert states_at_stop == ["failed"]
+        assert canceled_at_stop == [True]
 
     def test_cancel_terminal_task_is_not_cancelable(self) -> None:
         campaign = _make_campaign(status=WorkflowCampaignStatus.COMPLETED)
@@ -2584,14 +2627,16 @@ class TestCancelTask:
         assert port.stopped == []
 
     def test_cancel_does_not_retarget_a_vanished_connection(self) -> None:
-        campaign = _make_campaign(connection_id="connection-gone")
-        client, _, primary = _make_client(
-            campaign_repo=InMemoryCampaignRepository([campaign]),
+        workflow = _make_workflow()
+        client, campaigns, primary = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
         )
+        campaign = _launch(client, workflow)
+        campaigns._campaigns[campaign.id] = replace(campaign, connection_id="connection-gone")
 
         response = _rpc(client, "CancelTask", {"id": campaign.slug})
 
-        assert response.status_code == 503
+        assert "error" in response.json()
         assert primary.stopped == []
 
 
@@ -2991,118 +3036,3 @@ class TestTaskArtifacts:
         result = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]
 
         assert result.get("artifacts", []) == []
-
-
-class TestQuestionReplies:
-    """Genuine peer questions (help_needed) answered over A2A — no gateDecision."""
-
-    _QUESTION = {
-        "id": "help-1",
-        "status": "pending",
-        "peer_id": "ravn-specification-framer",
-        "persona": "specification-framer",
-        "summary": "Which namespaces are in scope for the PVC summary?",
-        "reason": "needs_context",
-        "recommendation": "Assume all namespaces unless told otherwise.",
-        "attempted": ["re-read the build request"],
-        "context": {},
-    }
-
-    def _blocked_with_question(
-        self,
-    ) -> tuple[TestClient, WorkflowCampaign, RecordingVolundrPort]:
-        campaign = _make_campaign(status=WorkflowCampaignStatus.BLOCKED)
-        port = RecordingVolundrPort()
-        port.help_requests = [dict(self._QUESTION)]
-        client, _, _ = _make_client(
-            campaign_repo=InMemoryCampaignRepository([campaign]),
-            volundr=port,
-        )
-        return client, campaign, port
-
-    @staticmethod
-    def _answer_params(task_id: str, *, text: str, metadata: dict | None = None) -> dict:
-        return {
-            "message": {
-                "messageId": "msg-3",
-                "role": "ROLE_USER",
-                "taskId": task_id,
-                "parts": [{"text": text}] if text else [],
-                "metadata": metadata or {},
-            }
-        }
-
-    def test_plain_reply_answers_pending_question(self) -> None:
-        client, campaign, port = self._blocked_with_question()
-
-        response = _rpc(
-            client,
-            "SendMessage",
-            self._answer_params(campaign.slug, text="All namespaces, read-only access."),
-        )
-
-        result = response.json()["result"]["task"]
-        assert result["status"]["state"] == "TASK_STATE_WORKING"
-        assert port.answered_help == [
-            ("session-123", "help-1", "All namespaces, read-only access.", "a2a")
-        ]
-
-    def test_reply_without_text_is_invalid(self) -> None:
-        client, campaign, port = self._blocked_with_question()
-
-        response = _rpc(client, "SendMessage", self._answer_params(campaign.slug, text=""))
-
-        error = response.json()["error"]
-        assert error["code"] == -32602
-        assert "non-empty text part" in error["message"]
-        assert port.answered_help == []
-
-    def test_request_id_metadata_selects_question(self) -> None:
-        client, campaign, port = self._blocked_with_question()
-        port.help_requests.append({**self._QUESTION, "id": "help-2", "summary": "Second question"})
-
-        response = _rpc(
-            client,
-            "SendMessage",
-            self._answer_params(
-                campaign.slug,
-                text="Answer for the second question.",
-                metadata={"requestId": "help-2"},
-            ),
-        )
-
-        assert response.json()["result"]["task"]["status"]["state"] == "TASK_STATE_WORKING"
-        assert port.answered_help[0][1] == "help-2"
-
-    def test_answered_question_is_not_reanswerable(self) -> None:
-        client, campaign, port = self._blocked_with_question()
-        port.help_requests[0]["status"] = "answered"
-
-        response = _rpc(
-            client,
-            "SendMessage",
-            self._answer_params(campaign.slug, text="Too late."),
-        )
-
-        error = response.json()["error"]
-        assert "no pending question" in error["message"]
-        assert port.answered_help == []
-
-    def test_get_task_attaches_pending_questions(self) -> None:
-        client, campaign, _ = self._blocked_with_question()
-
-        response = _rpc(client, "GetTask", {"id": campaign.slug})
-
-        task = response.json()["result"]
-        assert task["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
-        questions = task["metadata"]["pendingQuestions"]
-        assert questions == [
-            {
-                "requestId": "help-1",
-                "persona": "specification-framer",
-                "question": "Which namespaces are in scope for the PVC summary?",
-                "reason": "needs_context",
-                "recommendation": "Assume all namespaces unless told otherwise.",
-                "attempted": ["re-read the build request"],
-            }
-        ]

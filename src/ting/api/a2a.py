@@ -2,9 +2,10 @@
 
 Design constraint: no A2A-specific persistence. The A2A ``taskId`` IS the
 workflow campaign slug; ``GetTask`` synthesizes the protocol Task from the
-campaign record on read, and the campaign projector keeps that record fresh
-from live session state. SendMessage creates the campaign row alongside the
-launch, which is also what makes the run visible to the projector.
+campaign record on read, and the step engine's ledger keeps that record fresh
+(the campaign projector writes the ledger's projection onto it). SendMessage
+creates the campaign row before it starts the run: the campaign id is the run's
+id, and the run's definition is read from the campaign's pinned snapshot.
 """
 
 from __future__ import annotations
@@ -13,7 +14,6 @@ import json
 import logging
 import mimetypes
 import posixpath
-from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -68,7 +68,6 @@ from ting.api.a2a_card import build_agent_card
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import (
     _campaign_knowledge,
-    _campaign_status_from_session,
     _emit_campaign_event,
     _initial_stage_state,
     resolve_workflow_campaign_repo,
@@ -80,28 +79,26 @@ from ting.api.workflow_execution_launch import (
 )
 from ting.api.workflows import (
     WorkflowLaunchBody,
-    WorkflowLaunchExecution,
     _can_view_workflow,
     _resolve_target_adapter,
-    launch_workflow_execution,
+    prepare_workflow_launch,
     resolve_workflow_repo,
+    start_workflow_run,
+    workflow_launch_payload,
+    workflow_run_metadata,
 )
 from ting.domain.a2a_launch import A2ALaunchReservation
-from ting.domain.exceptions import WorkflowDocumentError, WorkflowStepsHaveNoRunnerError
+from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.execution_snapshot import pinned_child_workflow
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus, WorkflowDefinition
-from ting.domain.services.ticket_coordinator import child_membership, ticket_membership
-from ting.domain.services.ticket_review import campaign_reviews, pending_documents
-from ting.domain.services.workflow_campaign_lifecycle import (
-    stop_terminal_campaign_session,
-    terminal_session_cleanup_needed,
-)
-from ting.domain.ticket_coordinator import PENDING_GATES_KEY, TICKET_METADATA_KEY, ticket_of
+from ting.domain.services.workflow_runs import WorkflowRuns
+from ting.domain.ticket_coordinator import TICKET_METADATA_KEY, ticket_of
 from ting.domain.utils import _session_name
-from ting.domain.workflow_board import board_from_snapshot, project_board
+from ting.domain.workflow_board import project_board
 from ting.domain.workflow_document import workflow_document_revision
 from ting.domain.workflow_execution import (
     ExecutionConflictError,
+    ExecutionState,
     WorkflowExecution,
     WorkflowExecutionError,
 )
@@ -110,9 +107,16 @@ from ting.domain.workflow_snapshot import (
     workflow_artifact_paths_from_snapshot,
     workflow_placement_from_snapshot,
 )
+from ting.domain.workflow_steps import (
+    ActorKind,
+    GateActor,
+    GateDecision,
+    GateRefusedError,
+    RunStateError,
+)
 from ting.ports.a2a_launch import A2ALaunchReservationRepository
 from ting.ports.a2a_push import A2APushDispatcherPort
-from ting.ports.volundr import SessionMembership, VolundrFactory, VolundrPort
+from ting.ports.volundr import VolundrFactory
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_execution import WorkflowExecutionRepository
 from ting.ports.workflow_repository import WorkflowRepository
@@ -136,10 +140,10 @@ _ARTIFACTS_ERROR_KEY = "artifacts_error"
 
 
 def _launch_slug(reservation: A2ALaunchReservation) -> str:
-    """Slug of an A2A launch; stable per reservation so a retry recovers its session.
+    """Slug of an A2A launch; stable per reservation so a retry is the same launch.
 
-    It keys the session's tracker id (``workflow:{slug}``), the ``{slug}`` in
-    declared artifact paths, and the parent-session key of fan-out children.
+    It is the ``{slug}`` in declared artifact paths and the key fan-out children
+    report their parent under.
     """
     return f"a2a-{reservation.id.hex}"
 
@@ -167,11 +171,10 @@ _STATES_THAT_MAY_HOLD_A_GATE = frozenset(
 
 # Reply convention for INPUT_REQUIRED tasks: metadata.gateDecision selects the
 # outcome, the message text becomes the reviewer comment.
-_GATE_DECISIONS: dict[str, str] = {
-    "approve": "APPROVE",
-    "request_changes": "CHANGES_REQUESTED",
+_GATE_DECISIONS: dict[str, GateDecision] = {
+    "approve": GateDecision.APPROVE,
+    "request_changes": GateDecision.REQUEST_CHANGES,
 }
-_PENDING_GATE_STATUSES = frozenset({"", "pending", "open", "waiting", "help_needed", "blocked"})
 
 
 def campaign_to_task(campaign: WorkflowCampaign) -> Task:
@@ -200,13 +203,13 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
         )
     task.metadata.update(
         {
-            "sessionId": campaign.session_id,
             "skillId": str(campaign.workflow_id),
             "workflowName": campaign.workflow_name,
             "campaignName": campaign.name,
             # Where the team runs: the Guild target the session was launched
             # on, whether picked by graph.placement or the default rule.
             **({"connectionId": campaign.connection_id} if campaign.connection_id else {}),
+            **({"sessionId": campaign.session_id} if campaign.session_id else {}),
             **({"repo": str(campaign.metadata["repo"])} if campaign.metadata.get("repo") else {}),
             **(
                 {"branch": str(campaign.metadata["branch"])}
@@ -343,7 +346,10 @@ class WorkflowTaskHandler(RequestHandler):
             raise InvalidParamsError(
                 f"messageId {message.message_id!r} was reused for different launch content"
             ) from exc
-        if existing is not None and (existing.session_id or existing.status in _TERMINAL_STATUSES):
+        if existing is not None and (
+            existing.status in _TERMINAL_STATUSES
+            or (await self._workflow_runs().state(existing.id)).launched
+        ):
             get_observability().event(
                 "ting.a2a.workflow.launch.reused",
                 attributes={
@@ -475,6 +481,7 @@ class WorkflowTaskHandler(RequestHandler):
             "a2a.skill.id": str(workflow.id),
             "ting.workflow.name": workflow.name,
         }
+        runs = self._workflow_runs()
         with telemetry.span(
             "ting.a2a.workflow.launch",
             attributes=attributes,
@@ -483,8 +490,6 @@ class WorkflowTaskHandler(RequestHandler):
             try:
                 execution_context = await self._workflow_execution_context(metadata, reservation)
                 inherited_result_schema = execution_context.pop("result_schema", {})
-                parent_session_id = str(execution_context.pop("parent_session_id", ""))
-                parent_connection_id = str(execution_context.pop("parent_connection_id", ""))
                 parent_execution = await self._reserve_durable_parent_execution(
                     workflow=workflow,
                     workflow_snapshot=pending.workflow_snapshot,
@@ -501,7 +506,7 @@ class WorkflowTaskHandler(RequestHandler):
                         repo=str(metadata.get("repo") or ""),
                         branch=str(metadata.get("branch") or ""),
                         model=str(metadata.get("model") or ""),
-                        connection_id=resolved_connection_id,
+                        connection_id=pending.connection_id,
                         workflow_version=workflow.version,
                     )
                     outbound_trace_context = telemetry.inject() or trace_context
@@ -518,9 +523,9 @@ class WorkflowTaskHandler(RequestHandler):
                         ),
                         model=str(metadata.get("model") or ""),
                         # The already-resolved (and, on a retry, already-persisted)
-                        # connection — never re-derived from raw request metadata —
-                        # so a retry lands on the exact target the first attempt did.
-                        connectionId=resolved_connection_id,
+                        # connection, never re-derived from raw request metadata, so a
+                        # retry lands on the exact target the first attempt did.
+                        connectionId=pending.connection_id,
                         inheritedResultSchema=(
                             dict(inherited_result_schema)
                             if isinstance(inherited_result_schema, dict)
@@ -541,61 +546,52 @@ class WorkflowTaskHandler(RequestHandler):
                             ),
                         },
                     )
-                # Recovery must look at the same connection the launch will
-                # use — a session a placed (or otherwise resolved) launch
-                # already spawned lives there, not on the metadata-supplied
-                # or primary connection a naive recheck would consult.
-                target_adapter = await self._volundr_factory.for_connection(
-                    self._principal.user_id, resolved_connection_id
+                prepared = await prepare_workflow_launch(
+                    request=self._request,
+                    workflow=workflow,
+                    launch=launch,
+                    volundr_factory=self._volundr_factory,
+                    principal=self._principal,
+                    bearer_token=self._downstream_auth_token(),
+                    pinned_workflow_snapshot=pending.workflow_snapshot,
+                    trusted_workflow_execution=bool(execution_context or parent_execution),
+                    launch_slug=_launch_slug(reservation),
                 )
-                recovered = None
-                if target_adapter is not None:
-                    sessions = await target_adapter.list_sessions(
-                        auth_token=self._downstream_auth_token(),
-                        principal=self._principal,
-                    )
-                    tracker_key = f"workflow:{_launch_slug(reservation)}"
-                    recovered = next(
-                        (
-                            session
-                            for session in sessions
-                            if session.tracker_issue_id == tracker_key
+                pending = replace(
+                    pending,
+                    metadata={
+                        **pending.metadata,
+                        **workflow_run_metadata(launch, prepared),
+                        # A retry of a launch that started under another slug adopts this one.
+                        _WORKFLOW_SLUG_KEY: _launch_slug(reservation),
+                        **(
+                            {"workflow_execution_id": str(parent_execution.id)}
+                            if parent_execution is not None
+                            else {}
                         ),
-                        None,
+                    },
+                    connection_id=prepared.connection_id,
+                )
+                current = await self._campaign_repo.get_campaign(pending.id)
+                if current is not None and current.status in _TERMINAL_STATUSES:
+                    # Canceled, or expired, while this attempt was preparing: no run starts.
+                    return campaign_to_task(current)
+                if not (await runs.state(pending.id)).launched:
+                    pending = await start_workflow_run(
+                        self._request,
+                        self._campaign_repo,
+                        pending,
+                        workflow_launch_payload(launch, prepared),
                     )
-                if recovered is not None and target_adapter is not None:
-                    execution = WorkflowLaunchExecution(
-                        workflow=workflow,
-                        workflow_snapshot=pending.workflow_snapshot,
-                        slug=_launch_slug(reservation),
-                        session=recovered,
-                        adapter=target_adapter,
-                        connection_id=getattr(target_adapter, "target_id", None),
-                    )
-                else:
-                    execution = await launch_workflow_execution(
-                        request=self._request,
-                        workflow=workflow,
-                        launch=launch,
-                        volundr_factory=self._volundr_factory,
-                        principal=self._principal,
-                        bearer_token=self._downstream_auth_token(),
-                        pinned_workflow_snapshot=pending.workflow_snapshot,
-                        trusted_workflow_execution=bool(execution_context or parent_execution),
-                        launch_slug=_launch_slug(reservation),
-                        session_membership=await self._session_membership(
-                            metadata,
-                            workflow,
-                            parent_session_id=parent_session_id,
-                            parent_connection_id=parent_connection_id,
-                        ),
-                    )
-                if parent_execution is not None:
-                    execution_repo = self._workflow_execution_repo()
-                    await execution_repo.attach_parent_session(
+                if (
+                    parent_execution is not None
+                    and parent_execution.state is ExecutionState.PENDING
+                ):
+                    await self._workflow_execution_repo().update_execution_state(
                         parent_execution.id,
-                        session_id=execution.session.id,
-                        connection_id=execution.connection_id or "",
+                        state=ExecutionState.RUNNING.value,
+                        suspension_reason="",
+                        expected_revision=parent_execution.revision,
                     )
             except Exception as exc:
                 telemetry.mark_error(span, type(exc).__name__, str(exc))
@@ -605,89 +601,25 @@ class WorkflowTaskHandler(RequestHandler):
                     content={"error": str(exc)},
                 )
                 # `pending` was already persisted (above, or by an earlier
-                # attempt) before this attempt started — a rejected or
-                # errored launch must not leave it stuck PENDING forever,
-                # since every retry would hit the identical failure. A process
-                # that dies here never reaches this line; the campaign
-                # projector closes that run once its launch lease has passed.
+                # attempt) before this attempt started, so a rejected or errored
+                # launch must not leave it stuck PENDING forever, since every
+                # retry would hit the identical failure. A process that dies here
+                # never reaches this line; the campaign projector closes that run
+                # once its launch lease has passed.
                 await self._mark_campaign_failed(pending, reason=str(exc))
-                if isinstance(exc, WorkflowStepsHaveNoRunnerError):
-                    # A valid task this server cannot run: say so, not "internal error".
-                    raise UnsupportedOperationError(str(exc)) from exc
                 raise
-            span.set_attribute("ting.session.id", str(execution.session.id))
             telemetry.event(
                 "ting.a2a.workflow.launched",
-                attributes={
-                    **attributes,
-                    "ting.session.id": str(execution.session.id),
-                },
+                attributes={**attributes, "ting.campaign.id": str(pending.id)},
             )
 
-        now = datetime.now(UTC)
-        campaign = WorkflowCampaign(
-            id=reservation.campaign_id,
-            slug=reservation.task_id,
-            name=pending.name,
-            owner_id=self._principal.user_id,
-            tenant_id=self._principal.tenant_id,
-            workflow_id=workflow.id,
-            workflow_version=workflow.version,
-            workflow_name=workflow.name,
-            workflow_snapshot=pending.workflow_snapshot,
-            session_id=execution.session.id,
-            session_name=execution.session.name,
-            status=_campaign_status_from_session(execution.session.status),
-            active_stage_id=stage_state[0].stage_id if stage_state else None,
-            stage_state=stage_state,
-            metadata={
-                "surface": A2A_SURFACE,
-                "prompt": prompt,
-                "cluster_name": execution.session.cluster_name,
-                _CONTEXT_ID_KEY: message.context_id or reservation.task_id,
-                _MESSAGE_ID_KEY: message.message_id,
-                _WORKFLOW_SLUG_KEY: execution.slug,
-                # Code-output pointers: for code workflows the durable
-                # artifact is the branch the session pushes, not a Mimir page.
-                **({"repo": launch.repo} if launch.repo else {}),
-                **({"branch": launch.branch} if launch.branch else {}),
-                **(
-                    {TICKET_METADATA_KEY: pending.metadata[TICKET_METADATA_KEY]}
-                    if TICKET_METADATA_KEY in pending.metadata
-                    else {}
-                ),
-                **(
-                    {"workflow_execution_id": str(parent_execution.id)}
-                    if parent_execution is not None
-                    else {}
-                ),
-                **({"actor_id": self._principal.actor} if self._principal.actor else {}),
-            },
-            created_at=now,
-            updated_at=now,
-            last_activity_at=now,
-            connection_id=execution.connection_id,
-        )
-        try:
-            saved = await self._campaign_repo.save_campaign(campaign)
-        except Exception:
-            try:
-                await execution.adapter.stop_session(
-                    execution.session.id,
-                    auth_token=self._downstream_auth_token(),
-                    principal=self._principal,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to stop orphaned session %s after campaign persistence failed",
-                    execution.session.id,
-                )
-            raise
         await self._launch_repo.mark_launched(
             reservation.id,
             lease_token=lease_token,
-            session_id=execution.session.id,
+            # A run has no single session; the campaign (the task) is its handle.
+            session_id="",
         )
+        saved = pending
         _record_a2a_state_transition(saved)
         await _emit_campaign_event(self._request, "workflow.campaign.created", saved)
         await self._queue_push(saved)
@@ -736,58 +668,6 @@ class WorkflowTaskHandler(RequestHandler):
                 f"{asked.name if asked else requested}. Start that workflow instead.",
             )
         return saga_id, ticket[1]
-
-    async def _session_membership(
-        self,
-        metadata: dict[str, Any],
-        workflow: WorkflowDefinition,
-        *,
-        parent_session_id: str,
-        parent_connection_id: str,
-    ) -> Callable[[VolundrPort], Awaitable[SessionMembership | None]] | None:
-        """Where the launched session joins Forge's project. Ting decides, never a model."""
-        auth_token = self._downstream_auth_token()
-        ticket = ticket_of(metadata)
-        if ticket is not None:
-            state = self._request.app.state
-            saga_id = UUID(ticket[0])
-            saga = await state.saga_repo.get_saga(saga_id, owner_id=self._principal.user_id)
-            if saga is None:
-                return None
-            coordinator = await state.ticket_coordinator_repo.get(saga_id, ticket[1])
-
-            async def under_coordinator(volundr: VolundrPort) -> SessionMembership:
-                return await ticket_membership(
-                    volundr,
-                    saga,
-                    coordinator,
-                    workflow.name,
-                    auth_token=auth_token,
-                    principal=self._principal,
-                )
-
-            return under_coordinator
-        if not parent_session_id:
-            return None
-
-        async def under_parent(volundr: VolundrPort) -> SessionMembership | None:
-            parent_forge = (
-                await self._volundr_factory.for_connection(
-                    self._principal.user_id, parent_connection_id
-                )
-                if parent_connection_id
-                else None
-            )
-            return await child_membership(
-                volundr,
-                parent_forge or volundr,
-                parent_session_id,
-                workflow.name,
-                auth_token=auth_token,
-                principal=self._principal,
-            )
-
-        return under_parent
 
     async def _outstanding_request(self, saga_id: UUID, issue_id: str) -> str | None:
         """The workflow Ting asked a ticket's coordinator to start, until a run answers it."""
@@ -875,18 +755,12 @@ class WorkflowTaskHandler(RequestHandler):
         await self._authorize_execution_task(params.id)
         campaign = await self._owned_campaign(params.id)
         task = campaign_to_task(campaign)
-        try:
-            if task.status.state == TaskState.TASK_STATE_COMPLETED:
-                await self._attach_readable_artifacts(task, campaign)
-            if task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
-                await self._attach_pending_questions(task, campaign)
-            # A gate opens before the campaign's status catches up, so a working run
-            # is asked too. Otherwise a reader told of a gate is told there is none.
-            if task.status.state in _STATES_THAT_MAY_HOLD_A_GATE:
-                await self._attach_pending_gates(task, campaign)
-        finally:
-            if campaign.status in _TERMINAL_STATUSES:
-                await self._ensure_terminal_session_stopped(campaign)
+        if task.status.state == TaskState.TASK_STATE_COMPLETED:
+            await self._attach_readable_artifacts(task, campaign)
+        # A gate opens before the campaign's status catches up, so a working run
+        # is asked too. Otherwise a reader told of a gate is told there is none.
+        if task.status.state in _STATES_THAT_MAY_HOLD_A_GATE:
+            await self._attach_pending_gates(task, campaign)
         return task
 
     async def _attach_readable_artifacts(self, task: Task, campaign: WorkflowCampaign) -> None:
@@ -913,33 +787,36 @@ class WorkflowTaskHandler(RequestHandler):
         if campaign.status in _TERMINAL_STATUSES or campaign.metadata.get(_CANCELED_KEY):
             raise TaskNotCancelableError(f"task {params.id} is already in a terminal state")
 
-        adapter = await self._campaign_adapter(campaign)
-        if adapter is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="No Volundr connection is available for this user",
-            )
-        # Record the cancellation before stopping the session: the stop emits
-        # events, and a projector that read the campaign while it was still
-        # active used to write it back over the cancellation.
+        # Record the cancellation before the run is stopped: stopping emits events, and
+        # a projector that read the campaign while it was still active would write it
+        # back over the cancellation.
         now = datetime.now(UTC)
-        updated = WorkflowCampaign(
-            **{
-                **campaign.__dict__,
-                "status": WorkflowCampaignStatus.FAILED,
-                "metadata": {**campaign.metadata, _CANCELED_KEY: True},
-                "updated_at": now,
-                "last_activity_at": now,
-                "completed_at": campaign.completed_at or now,
-            }
+        runs = self._workflow_runs()
+        state = await runs.state(campaign.id)
+        canceled = replace(
+            campaign,
+            metadata={**campaign.metadata, _CANCELED_KEY: True},
+            updated_at=now,
+            last_activity_at=now,
         )
-        saved = await self._campaign_repo.save_campaign(updated)
-        if campaign.session_id:
-            await adapter.stop_session(
-                campaign.session_id,
-                auth_token=self._downstream_auth_token(),
-                principal=self._principal,
+        if not state.launched:
+            # No run exists to stop: the launch has not reached the engine yet.
+            saved = await self._campaign_repo.save_campaign(
+                replace(
+                    canceled,
+                    status=WorkflowCampaignStatus.FAILED,
+                    completed_at=campaign.completed_at or now,
+                )
             )
+        else:
+            await self._campaign_repo.save_campaign(canceled)
+            try:
+                await runs.cancel(canceled, f"canceled through A2A task {campaign.slug}")
+            except RunStateError as exc:
+                raise TaskNotCancelableError(
+                    f"task {params.id} is already in a terminal state"
+                ) from exc
+            saved = await self._owned_campaign(params.id)
         await _emit_campaign_event(self._request, "workflow.campaign.updated", saved)
         await self._queue_push(saved)
         return campaign_to_task(saved)
@@ -990,15 +867,10 @@ class WorkflowTaskHandler(RequestHandler):
         campaigns_by_slug = {campaign.slug: campaign for campaign in campaigns}
         for task in selected:
             campaign = campaigns_by_slug[task.id]
-            try:
-                if params.include_artifacts and task.status.state == TaskState.TASK_STATE_COMPLETED:
-                    await self._attach_artifacts(task, campaign)
-                if task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
-                    await self._attach_pending_questions(task, campaign)
-                    await self._attach_pending_gates(task, campaign)
-            finally:
-                if campaign.status in _TERMINAL_STATUSES:
-                    await self._ensure_terminal_session_stopped(campaign)
+            if params.include_artifacts and task.status.state == TaskState.TASK_STATE_COMPLETED:
+                await self._attach_artifacts(task, campaign)
+            if task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
+                await self._attach_pending_gates(task, campaign)
 
         next_offset = offset + len(selected)
         return ListTasksResponse(
@@ -1140,6 +1012,15 @@ class WorkflowTaskHandler(RequestHandler):
 
     # -- Internals ------------------------------------------------------ #
 
+    def _workflow_runs(self) -> WorkflowRuns:
+        runs = getattr(self._request.app.state, "workflow_runs", None)
+        if runs is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The workflow step engine is not configured",
+            )
+        return runs
+
     async def _campaign_for_message(self, message_id: str) -> WorkflowCampaign | None:
         campaigns = await self._campaign_repo.list_campaigns(
             owner_id=self._principal.user_id,
@@ -1181,10 +1062,8 @@ class WorkflowTaskHandler(RequestHandler):
     async def _continue_task(self, message: Message) -> Task:
         """Handle a reply on an INPUT_REQUIRED task.
 
-        Two reply kinds, routed by ``metadata.gateDecision``:
-        - present: resolve a pending workflow gate (approve/request_changes)
-        - absent: the message text answers a pending peer question
-          (``help_needed``) and is delivered to the asking peer
+        A reply resolves a pending workflow gate: ``metadata.gateDecision`` is
+        ``approve`` or ``request_changes`` and the message text is the reviewer's note.
         """
         await self._authorize_execution_task(message.task_id)
         campaign = await self._owned_campaign(message.task_id)
@@ -1198,129 +1077,53 @@ class WorkflowTaskHandler(RequestHandler):
         metadata = MessageToDict(message.metadata)
         raw_decision = str(metadata.get("gateDecision") or "").strip().lower()
         if not raw_decision:
-            return await self._answer_question(message, campaign, metadata)
+            raise InvalidParamsError(
+                'a reply to an INPUT_REQUIRED task must set metadata.gateDecision to "approve" '
+                'or "request_changes"'
+            )
         decision = _GATE_DECISIONS.get(raw_decision)
         if decision is None:
             raise InvalidParamsError('metadata.gateDecision must be "approve" or "request_changes"')
         notes = _prompt_from_message(message)
-        if decision == "CHANGES_REQUESTED" and not notes:
+        if decision is GateDecision.REQUEST_CHANGES and not notes:
             raise InvalidParamsError(
                 "a text part with review notes is required when requesting changes"
             )
 
-        adapter = await self._campaign_adapter(campaign)
-        if adapter is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="No Volundr connection is available for this user",
-            )
-        gates = await adapter.get_workflow_gates(
-            campaign.session_id,
-            auth_token=self._downstream_auth_token(),
-            principal=self._principal,
-        )
-        gate_id = _select_pending_gate_id(
+        runs = self._workflow_runs()
+        gates = await runs.pending_gates(campaign)
+        gate = _select_pending_gate(
             gates,
             gate_id=str(metadata.get("gateId") or ""),
             node_id=str(metadata.get("nodeId") or ""),
         )
-        if gate_id is None:
+        if gate is None:
             raise InvalidParamsError(
                 f"task {message.task_id} has no pending gate matching the reply"
             )
+        node_id = str(gate["node_id"])
         try:
-            await adapter.resolve_workflow_gate(
-                campaign.session_id,
-                gate_id,
+            await runs.resolve_gate(
+                campaign,
+                node_id,
                 decision,
-                notes=notes,
-                source=A2A_SURFACE,
-                auth_token=self._downstream_auth_token(),
-                principal=self._principal,
+                by=GateActor(
+                    kind=ActorKind.AGENT if self._principal.actor else ActorKind.PERSON,
+                    id=self._principal.actor or self._principal.user_id,
+                ),
+                note=notes,
             )
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != status.HTTP_403_FORBIDDEN:
-                raise
+        except GateRefusedError as exc:
+            if self._principal.actor:
+                raise InvalidParamsError(
+                    f"gate {node_id} of task {message.task_id} was refused: {exc}. If it waits "
+                    "for a person to answer it, tell the operator it is waiting and leave the "
+                    "decision to them"
+                ) from exc
             raise InvalidParamsError(
-                f"gate {gate_id} of task {message.task_id} waits for a person to answer it; "
-                "tell the operator it is waiting and leave the decision to them"
+                f"gate {node_id} of task {message.task_id} was refused: {exc}"
             ) from exc
-
-        # Optimistically report the task back in WORKING; the campaign
-        # projector re-syncs the real session state on its next tick. Nothing
-        # else clears the gate: the projector skips a status it already holds.
-        now = datetime.now(UTC)
-        updated = WorkflowCampaign(
-            **{
-                **campaign.__dict__,
-                "status": WorkflowCampaignStatus.RUNNING,
-                "metadata": {
-                    key: value
-                    for key, value in campaign.metadata.items()
-                    if key != PENDING_GATES_KEY
-                },
-                "updated_at": now,
-                "last_activity_at": now,
-            }
-        )
-        saved = await self._campaign_repo.save_campaign(updated)
-        await _emit_campaign_event(self._request, "workflow.campaign.updated", saved)
-        await self._queue_push(saved)
-        return campaign_to_task(saved)
-
-    async def _answer_question(
-        self,
-        message: Message,
-        campaign: WorkflowCampaign,
-        metadata: dict[str, Any],
-    ) -> Task:
-        """Deliver a plain-text reply to the peer whose question blocked the task."""
-        answer = _prompt_from_message(message)
-        if not answer:
-            raise InvalidParamsError(
-                "a reply without gateDecision answers a pending question and "
-                "must include a non-empty text part"
-            )
-        adapter = await self._campaign_adapter(campaign)
-        if adapter is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="No Volundr connection is available for this user",
-            )
-        requests = await adapter.get_help_requests(
-            campaign.session_id,
-            auth_token=self._downstream_auth_token(),
-            principal=self._principal,
-        )
-        request_id = _select_pending_question_id(
-            requests,
-            request_id=str(metadata.get("requestId") or ""),
-        )
-        if request_id is None:
-            raise InvalidParamsError(
-                f"task {message.task_id} has no pending question matching the reply"
-            )
-        await adapter.answer_help_request(
-            campaign.session_id,
-            request_id,
-            answer,
-            source=A2A_SURFACE,
-            auth_token=self._downstream_auth_token(),
-            principal=self._principal,
-        )
-
-        # Optimistically report the task back in WORKING; the campaign
-        # projector re-syncs the real session state on its next tick.
-        now = datetime.now(UTC)
-        updated = WorkflowCampaign(
-            **{
-                **campaign.__dict__,
-                "status": WorkflowCampaignStatus.RUNNING,
-                "updated_at": now,
-                "last_activity_at": now,
-            }
-        )
-        saved = await self._campaign_repo.save_campaign(updated)
+        saved = await self._owned_campaign(message.task_id)
         await _emit_campaign_event(self._request, "workflow.campaign.updated", saved)
         await self._queue_push(saved)
         return campaign_to_task(saved)
@@ -1346,101 +1149,20 @@ class WorkflowTaskHandler(RequestHandler):
         except ValueError as exc:
             raise InvalidParamsError(str(exc)) from exc
 
-    async def _attach_pending_questions(self, task: Task, campaign: WorkflowCampaign) -> None:
-        """Attach pending peer questions to an INPUT_REQUIRED task.
-
-        A flock peer that emitted ``help_needed`` is genuinely blocked on
-        information only the commissioning agent has. Expose the question so
-        the remote agent can answer it with a plain reply message (no
-        gateDecision) — the answer routes back to the asking peer.
-        """
-        adapter = await self._campaign_adapter(campaign)
-        if adapter is None:
-            return
-        try:
-            requests = await adapter.get_help_requests(
-                campaign.session_id,
-                auth_token=self._downstream_auth_token(),
-                principal=self._principal,
-            )
-        except Exception as exc:
-            logger.warning(
-                "a2a: failed to fetch pending help requests for task %s: %s", task.id, exc
-            )
-            return
-        pending = [
-            _pending_question_view(request)
-            for request in requests
-            if isinstance(request, dict)
-            and str(request.get("status") or "").strip().lower() == "pending"
-        ]
-        if pending:
-            task.metadata.update({"pendingQuestions": pending})
-
     async def _attach_pending_gates(self, task: Task, campaign: WorkflowCampaign) -> None:
         """Attach the pending gate question(s) to an INPUT_REQUIRED task.
 
-        The gate reply channel (SendMessage + ``metadata.gateDecision``) is
-        useless to a remote agent that cannot see WHAT the workflow is asking,
-        so expose each pending gate's label/condition/instructions in task
-        metadata. Best-effort: the reply path re-fetches gates
-        authoritatively, so a transient fetch failure only degrades context,
-        never correctness.
+        The gate reply channel (SendMessage + ``metadata.gateDecision``) is useless to a
+        remote agent that cannot see WHAT the workflow is asking, so expose each pending
+        gate's label/condition/instructions in task metadata. The gates are the run's
+        ledger: a read that fails is an error, not an empty list.
         """
-        adapter = await self._campaign_adapter(campaign)
-        if adapter is None:
-            return
-        try:
-            gates = await adapter.get_workflow_gates(
-                campaign.session_id,
-                auth_token=self._downstream_auth_token(),
-                principal=self._principal,
-            )
-        except Exception as exc:
-            logger.warning("a2a: failed to fetch pending gates for task %s: %s", task.id, exc)
-            return
         pending = [
-            _pending_gate_view(gate)
-            for gate in gates
-            if isinstance(gate, dict)
-            and str(gate.get("status") or "").strip().lower() in _PENDING_GATE_STATUSES
+            _pending_gate_view(gate, mode=_gate_mode(campaign, str(gate.get("node_id") or "")))
+            for gate in await self._workflow_runs().pending_gates(campaign)
         ]
-        if not pending:
-            return
-        task.metadata.update({"pendingGates": pending})
-        await self._attach_gate_documents(task, campaign, adapter)
-
-    async def _attach_gate_documents(
-        self,
-        task: Task,
-        campaign: WorkflowCampaign,
-        adapter: VolundrPort,
-    ) -> None:
-        """Hand a gate's reader the document it asks them to decide on."""
-        # Only a board column names a document, so there is no log worth reading without one.
-        if board_from_snapshot(campaign.workflow_snapshot) is None:
-            return
-        try:
-            reviews = await campaign_reviews(
-                adapter,
-                campaign,
-                page_size=self._request.app.state.settings.workflow_execution.list_page_size,
-                auth_token=self._downstream_auth_token(),
-                principal=self._principal,
-            )
-        except httpx.HTTPError as exc:
-            logger.error("a2a: could not read the gate document of task %s: %s", task.id, exc)
-            task.metadata.update(
-                {_ARTIFACTS_ERROR_KEY: f"The gate's document is unreadable: {exc}"}
-            )
-            return
-        for title, text in pending_documents(reviews):
-            artifact = task.artifacts.add()
-            artifact.artifact_id = f"gate/{title}"
-            artifact.name = title
-            part = artifact.parts.add()
-            part.media_type = _artifact_media_type(".md")
-            part.text = text
+        if pending:
+            task.metadata.update({"pendingGates": pending})
 
     async def _attach_artifacts(self, task: Task, campaign: WorkflowCampaign) -> None:
         """Project configured durable Mimir outputs onto ``task.artifacts``.
@@ -1619,8 +1341,6 @@ class WorkflowTaskHandler(RequestHandler):
             "child_intent_id": str(child.intent_id),
             "child_task_id": reservation.task_id,
             "result_schema": execution.policy.result_schema,
-            "parent_session_id": execution.parent_session_id,
-            "parent_connection_id": execution.connection_id,
         }
 
     @staticmethod
@@ -1729,22 +1449,16 @@ class WorkflowTaskHandler(RequestHandler):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Developer child credential does not match the task ledger",
             )
-        forge_session_id = str(claims.get("workload_forge_session_id") or "")
-        if forge_session_id:
-            campaign = await self._campaign_repo.get_campaign_by_slug(
-                slug,
-                owner_id=execution.owner_id,
+        if str(claims.get("workload_forge_session_id") or ""):
+            # A run's steps run on one session per stage member, so a credential bound to
+            # one Forge session cannot be shown to belong to the task.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Developer child credential is bound to a Forge session, but a task runs "
+                    "on several; it cannot be matched to this task"
+                ),
             )
-            if (
-                campaign is None
-                or campaign.tenant_id != execution.tenant_id
-                or not campaign.session_id
-                or campaign.session_id != forge_session_id
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Developer child credential is not bound to the task Forge session",
-                )
 
     def _reject_execution_gateway_operation(self) -> None:
         if scoped_credential_claims(self._bearer_token or "") is not None:
@@ -1833,57 +1547,6 @@ class WorkflowTaskHandler(RequestHandler):
             raise TaskNotFoundError(f"no task with id {slug}")
         return campaign
 
-    async def _campaign_adapter(self, campaign: WorkflowCampaign):
-        """Resolve the Volundr adapter for the connection this campaign's
-        session was launched on.
-
-        The owner's primary connection is only a fallback for campaigns
-        persisted before connection affinity existed — a session launched on
-        a non-default cluster does not exist on the primary.
-        """
-        if campaign.connection_id:
-            adapter = await self._volundr_factory.for_connection(
-                campaign.owner_id, campaign.connection_id
-            )
-            if adapter is not None:
-                return adapter
-            logger.warning(
-                "Campaign %s connection %s no longer resolves; refusing to retarget",
-                campaign.slug,
-                campaign.connection_id,
-            )
-            return None
-        return await self._volundr_factory.primary_for_owner(campaign.owner_id)
-
-    async def _ensure_terminal_session_stopped(self, campaign: WorkflowCampaign) -> None:
-        """Gate terminal A2A observation on durable runtime cleanup."""
-        if not terminal_session_cleanup_needed(campaign):
-            return
-        try:
-            adapter = await self._campaign_adapter(campaign)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Terminal task cleanup is pending; retry GetTask",
-            ) from exc
-        if adapter is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Terminal task cleanup is pending; retry GetTask",
-            )
-        cleaned = await stop_terminal_campaign_session(
-            campaign,
-            adapter=adapter,
-            repo=self._campaign_repo,
-            auth_token=self._downstream_auth_token(),
-            principal=self._principal,
-        )
-        if cleaned is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Terminal task cleanup is pending; retry GetTask",
-            )
-
 
 def _merged_metadata(params: SendMessageRequest) -> dict[str, Any]:
     """Launch parameters: message metadata is canonical, request metadata fallback."""
@@ -1893,74 +1556,44 @@ def _merged_metadata(params: SendMessageRequest) -> dict[str, Any]:
     return merged
 
 
-def _select_pending_gate_id(
-    gates: list[dict],
+def _select_pending_gate(
+    gates: list[dict[str, Any]],
     *,
     gate_id: str,
     node_id: str,
-) -> str | None:
+) -> dict[str, Any] | None:
     wanted_gate = gate_id.strip()
     wanted_node = node_id.strip()
     for gate in gates:
-        if not isinstance(gate, dict):
+        if wanted_gate and str(gate.get("id") or "") != wanted_gate:
             continue
-        candidate = str(gate.get("id") or gate.get("gate_id") or gate.get("gateId") or "").strip()
-        candidate_node = str(gate.get("node_id") or gate.get("nodeId") or "").strip()
-        gate_status = str(gate.get("status") or "").strip().lower()
-        if gate_status not in _PENDING_GATE_STATUSES:
+        if wanted_node and str(gate.get("node_id") or "") != wanted_node:
             continue
-        if wanted_gate and candidate != wanted_gate:
-            continue
-        if wanted_node and candidate_node != wanted_node:
-            continue
-        if candidate:
-            return candidate
+        return gate
     return None
 
 
-def _pending_question_view(request: dict) -> dict[str, Any]:
-    """Project a skuld PendingHelpRequest dict to the A2A-facing question."""
-    attempted = request.get("attempted")
-    return {
-        "requestId": str(request.get("id") or ""),
-        "persona": str(request.get("persona") or ""),
-        "question": str(request.get("summary") or ""),
-        "reason": str(request.get("reason") or ""),
-        "recommendation": str(request.get("recommendation") or ""),
-        "attempted": [str(item) for item in attempted] if isinstance(attempted, list) else [],
-    }
-
-
-def _select_pending_question_id(
-    requests: list[dict],
-    *,
-    request_id: str,
-) -> str | None:
-    wanted = request_id.strip()
-    for request in requests:
-        if not isinstance(request, dict):
-            continue
-        candidate = str(request.get("id") or "").strip()
-        if str(request.get("status") or "").strip().lower() != "pending":
-            continue
-        if wanted and candidate != wanted:
-            continue
-        if candidate:
-            return candidate
-    return None
-
-
-def _pending_gate_view(gate: dict) -> dict[str, str]:
-    """Project a skuld WorkflowGateState dict to the A2A-facing gate context."""
+def _pending_gate_view(gate: dict[str, Any], *, mode: str) -> dict[str, str]:
+    """Project a run's open gate to the A2A-facing gate context."""
     return {
         "gateId": str(gate.get("id") or ""),
-        "nodeId": str(gate.get("node_id") or gate.get("nodeId") or ""),
+        "nodeId": str(gate.get("node_id") or ""),
         "label": str(gate.get("label") or ""),
-        "mode": str(gate.get("mode") or ""),
+        "mode": mode,
         "condition": str(gate.get("condition") or ""),
         "instructions": str(gate.get("instructions") or ""),
         "summary": str(gate.get("summary") or ""),
     }
+
+
+def _gate_mode(campaign: WorkflowCampaign, node_id: str) -> str:
+    """The mode the run's pinned graph gives a gate node (empty when it names none)."""
+    graph = campaign.workflow_snapshot.get("graph")
+    nodes = graph.get("nodes") if isinstance(graph, dict) else None
+    for node in nodes or []:
+        if isinstance(node, dict) and str(node.get("id") or "") == node_id:
+            return str(node.get("mode") or "")
+    return ""
 
 
 def _artifact_media_type(path: str) -> str:

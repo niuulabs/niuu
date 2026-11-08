@@ -34,7 +34,7 @@ from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 
 logger = logging.getLogger(__name__)
 
-CoordinatorServiceFactory = Callable[[VolundrPort, Principal], TicketCoordinatorService]
+CoordinatorServiceFactory = Callable[[Principal], TicketCoordinatorService]
 
 _ACTIVE_CAMPAIGN_STATUSES = frozenset(
     {CampaignStatus.PENDING, CampaignStatus.RUNNING, CampaignStatus.BLOCKED}
@@ -176,9 +176,12 @@ class TicketAdvancer:
             )
             return
         adapter = await self._adapter(coordinator)
-        service = self._coordinators(adapter, _owner_principal(coordinator))
+        service = self._coordinators(_owner_principal(coordinator))
         await service.start_workflow(
-            saga, issue, TicketWorkflow(id=following.id, name=following.name)
+            saga,
+            issue,
+            TicketWorkflow(id=following.id, name=following.name),
+            connection_id=adapter.target_id,
         )
 
     async def _adapter(self, coordinator: TicketCoordinator) -> VolundrPort:

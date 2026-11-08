@@ -158,7 +158,7 @@ def _advancer(
     return advancer, service
 
 
-async def test_a_finished_run_starts_the_next_workflow_through_the_same_coordinator() -> None:
+async def test_a_finished_run_starts_the_next_workflow_on_the_tickets_connection() -> None:
     saga = _saga(PLANNING, DELIVERY)
     finished = _campaign(saga)
     coordinators = _Coordinators(_coordinator(saga))
@@ -170,8 +170,8 @@ async def test_a_finished_run_starts_the_next_workflow_through_the_same_coordina
     service.start_workflow.assert_awaited_once()
     workflow = service.start_workflow.await_args.args[2]
     assert workflow.id == str(_workflow(DELIVERY).id)
-    adapter, principal = advancer._coordinators.call_args.args
-    assert adapter is forge
+    (principal,) = advancer._coordinators.call_args.args
+    assert service.start_workflow.await_args.kwargs == {"connection_id": forge.target_id}
     assert principal.user_id == "owner-1"
     assert principal.tenant_id == "tenant-1"
 
