@@ -23,6 +23,7 @@ from ting.config import WatcherConfig
 from ting.domain.campaign_run_projection import PENDING_GATES_KEY
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.activity_subscriber import SessionActivitySubscriber
+from ting.domain.services.gate_notifications import GateNotifier
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.services.workflow_runs import WorkflowRuns, ending_of
 from ting.domain.services.workflow_step_engine import WorkflowStepEngine
@@ -189,6 +190,10 @@ class Harness:
             campaigns=self.campaigns,  # type: ignore[arg-type]
             sink=self.projector,
             volundr_factory=factory,  # type: ignore[arg-type]
+            gate_notifier=GateNotifier(
+                volundr_factory=factory,  # type: ignore[arg-type]
+                public_origin="https://niuu.example/",
+            ),
         )
         self.subscriber = SessionActivitySubscriber(
             volundr_factory=factory,  # type: ignore[arg-type]
@@ -765,3 +770,91 @@ async def test_an_unclosed_report_for_an_unknown_activation_is_fenced(harness: H
             session_id="ses-1",
             attempt=1,
         )
+
+
+# --- gates in Forge's notification feed --------------------------------------------
+
+
+async def reach_the_gate(harness: Harness) -> str:
+    """Launch and pass the change through review; returns the reviewer's session."""
+    await harness.launch()
+    await harness.harness_says("implemented", outcome={"summary": "x"})
+    reviewer_session = harness.last_delivery()[0]
+    await harness.harness_says("pass", note="looks right")
+    return reviewer_session
+
+
+async def test_an_open_gate_raises_one_attention_notification_linking_the_review(
+    harness: Harness,
+) -> None:
+    reviewer_session = await reach_the_gate(harness)
+
+    [(key, (session_id, note))] = harness.forge.notifications.items()
+    [gate] = harness.current.metadata[PENDING_GATES_KEY]
+    assert key == f"workflow-gate:{harness.campaign.id}:{gate['activation_id']}"
+    assert session_id == reviewer_session  # the step whose outcome opened the gate
+    assert (note["kind"], note["severity"]) == ("attention", "warning")
+    assert note["title"] == "add-endpoint: Approve the change"
+    assert note["body"] == "looks right"
+    assert note["correlation_id"] == key
+    assert note["links"] == [
+        {
+            "label": "Open the review",
+            "url": "https://niuu.example/ting/review/run/add-endpoint-0123456789ab",
+            "kind": "url",
+        }
+    ]
+    calls = harness.forge.notification_calls
+    await harness.runs.refresh(harness.campaign.id)
+    assert harness.forge.notification_calls == calls  # raised once, not on every change
+    assert harness.forge.resolved == {}
+
+
+async def test_deciding_the_gate_settles_its_notification(harness: Harness) -> None:
+    await reach_the_gate(harness)
+
+    await harness.runs.resolve_gate(
+        harness.current,
+        "approve",
+        GateDecision.APPROVE,
+        by=GateActor(ActorKind.PERSON, "alice"),
+        note="ship it",
+    )
+
+    [(_, (_, note))] = harness.forge.notifications.items()
+    assert harness.forge.resolved == {note["id"]: "Approved by alice."}
+
+
+async def test_a_notification_forge_refused_is_counted_and_raised_on_the_next_change(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    counted: list[str] = []
+    monkeypatch.setattr(
+        "ting.domain.services.gate_notifications.get_observability",
+        lambda: SimpleNamespace(count=lambda name, **_: counted.append(name)),
+    )
+    harness.forge.fail_notify = RuntimeError("forge is down")
+
+    with caplog.at_level("ERROR", logger="ting.domain.services.gate_notifications"):
+        await reach_the_gate(harness)
+
+    assert harness.forge.notifications == {}
+    assert counted == ["ting_workflow_gate_notification_failures_total"]
+    assert any("Could not raise the notification" in r.getMessage() for r in caplog.records)
+    assert harness.current.status is WorkflowCampaignStatus.BLOCKED  # the gate still waits
+
+    harness.forge.fail_notify = None
+    await harness.runs.refresh(harness.campaign.id)
+    assert len(harness.forge.notifications) == 1
+
+
+async def test_a_gate_an_agent_answers_raises_no_notification() -> None:
+    snapshot = _snapshot()
+    for node in snapshot["graph"]["nodes"]:
+        if node["id"] == "approve":
+            node["mode"] = "automated_approval"
+    harness = Harness(snapshot)
+
+    await reach_the_gate(harness)
+
+    assert harness.forge.notifications == {}

@@ -412,6 +412,23 @@ class VolundrPort(ABC):
         """The session's durable state of one step (``active`` or ``closed``), if it has it."""
         raise NotImplementedError(f"{type(self).__name__} cannot read workflow steps")
 
+    async def submit_session_notification(
+        self,
+        session_id: str,
+        draft: dict,
+        *,
+        idempotency_key: str,
+    ) -> dict:
+        """Record a notification in Forge's feed for the session's owner; the stored row.
+
+        The same ``idempotency_key`` returns the notification already recorded.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot submit notifications")
+
+    async def resolve_notification(self, notification_id: str, *, resolution: str) -> dict:
+        """Mark a notification resolved (idempotent; the first resolution is kept)."""
+        raise NotImplementedError(f"{type(self).__name__} cannot resolve notifications")
+
     @abstractmethod
     async def get_session(
         self,

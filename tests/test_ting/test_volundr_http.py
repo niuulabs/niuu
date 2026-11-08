@@ -1615,6 +1615,56 @@ class TestStepSessions:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_a_session_notification_is_submitted_with_its_idempotency_key(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        route = respx.post(f"{SESSIONS_URL}/ses-1/notifications").mock(
+            return_value=httpx.Response(201, json={"id": "n-1"})
+        )
+
+        stored = await adapter.submit_session_notification(
+            "ses-1", {"kind": "attention", "title": "t"}, idempotency_key="workflow-gate:r:a"
+        )
+
+        assert stored == {"id": "n-1"}
+        assert json.loads(route.calls[0].request.content) == {
+            "kind": "attention",
+            "title": "t",
+            "idempotency_key": "workflow-gate:r:a",
+        }
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_notification_forge_refuses_stays_loud(self, adapter: VolundrHTTPAdapter):
+        respx.post(f"{SESSIONS_URL}/ses-1/notifications").mock(
+            return_value=httpx.Response(422, json={"detail": "title too long"})
+        )
+
+        with pytest.raises(httpx.HTTPStatusError, match="title too long"):
+            await adapter.submit_session_notification("ses-1", {}, idempotency_key="k")
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_resolving_a_notification_names_why(self, adapter: VolundrHTTPAdapter):
+        route = respx.put(SESSIONS_URL.replace("/sessions", "/notifications/n-1/resolve")).mock(
+            return_value=httpx.Response(200, json={"id": "n-1"})
+        )
+
+        assert await adapter.resolve_notification("n-1", resolution="Approved.") == {"id": "n-1"}
+        assert json.loads(route.calls[0].request.content) == {"resolution": "Approved."}
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_resolve_forge_refuses_stays_loud(self, adapter: VolundrHTTPAdapter):
+        respx.put(SESSIONS_URL.replace("/sessions", "/notifications/n-1/resolve")).mock(
+            return_value=httpx.Response(404, json={"detail": "not found"})
+        )
+
+        with pytest.raises(httpx.HTTPStatusError, match="not found"):
+            await adapter.resolve_notification("n-1", resolution="x")
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_get_workflow_step_reads_the_durable_state(self, adapter: VolundrHTTPAdapter):
         state = {
             "activation_id": contract.ACTIVATION_ID,

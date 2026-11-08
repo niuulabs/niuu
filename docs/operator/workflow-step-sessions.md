@@ -70,7 +70,23 @@ the step's durable state and records any close it missed.
 
 A gate is a step that waits for a person. The Work board and the run's review page
 decide it through Ting's own gate routes, which resolve it in the engine (recording who,
-when and why); nothing is forwarded to a session. Canceling a run (A2A `CancelTask`, or
+when and why); nothing is forwarded to a session.
+
+No session holds a gate, so Forge cannot project it into its notification feed the way
+it projects a session's `workflow_gate` frame. Ting raises it there itself: when a gate
+that waits for a person opens (not `automated_approval`, not `pendingBehavior: silent`),
+Ting submits an `attention` / `warning` notification through
+`POST /api/v1/forge/sessions/{id}/notifications` on the session of the step whose outcome
+opened the gate (else the run's newest session), titled `{run}: {gate label}`, with the
+gate's summary (or instructions) as the body and a link to `/ting/review/run/{slug}` on
+`notification.public_origin`. Its idempotency and correlation key is
+`workflow-gate:{run id}:{activation id}`. When the gate is decided, or the run ends with
+it open, Ting resolves that notification (`PUT /notifications/{id}/resolve`) with what
+happened. A call Forge refuses is logged at error, counted on
+`ting_workflow_gate_notification_failures_total` and tried again on the run's next change
+or sweep; the gate itself is unaffected. A gate opened before the run had any session
+has nowhere to be recorded and is reported as degraded
+(`ting.workflow_gate_notification`). The notification belongs to that session's owner. Canceling a run (A2A `CancelTask`, or
 the owner canceling a durable execution) cancels its open steps and stops its sessions.
 
 ## Configuration

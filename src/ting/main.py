@@ -132,6 +132,7 @@ from ting.domain.services.dispatch_service import (
 from ting.domain.services.dispatch_service import (
     DispatchService,
 )
+from ting.domain.services.gate_notifications import GateNotifier
 from ting.domain.services.notification import NotificationService
 from ting.domain.services.resource_authorization import (
     AuthorizedCampaignRepository,
@@ -1408,6 +1409,10 @@ def create_app(
                 campaigns=workflow_campaign_repo,
                 sink=workflow_campaign_projector,
                 volundr_factory=app.state.volundr_factory,
+                gate_notifier=GateNotifier(
+                    volundr_factory=app.state.volundr_factory,
+                    public_origin=settings.notification.public_origin,
+                ),
             )
             workflow_campaign_projector.bind_runs(workflow_runs)
             dispatch_svc.bind_workflow_runs(workflow_runs, workflow_campaign_repo)

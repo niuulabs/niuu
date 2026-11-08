@@ -51,7 +51,8 @@ logger = logging.getLogger(__name__)
 
 _CI_PASSED = {"passing": True, "failing": False}
 
-FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
+FORGE_API_PREFIX = "/api/v1/forge"
+FORGE_SESSIONS_PATH = f"{FORGE_API_PREFIX}/sessions"
 FORGE_PROJECTS_PATH = "/api/v1/forge/projects"
 FORGE_FEATURE_FLAGS_PATH = "/api/v1/forge/feature-flags"
 FORGE_HOST_TAG_SETS_PATH = "/api/v1/forge/compute/hosts/tag-sets"
@@ -290,6 +291,46 @@ class VolundrHTTPAdapter(VolundrPort):
                     request=resp.request,
                     response=resp,
                 )
+
+    async def submit_session_notification(
+        self,
+        session_id: str,
+        draft: dict,
+        *,
+        idempotency_key: str,
+    ) -> dict:
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.post(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/notifications",
+                headers=self._headers(),
+                json={**draft, "idempotency_key": idempotency_key},
+            )
+            if resp.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    f"Forge did not record the notification for session {session_id}: "
+                    f"{_error_detail(resp)}",
+                    request=resp.request,
+                    response=resp,
+                )
+            return resp.json()
+
+    async def resolve_notification(self, notification_id: str, *, resolution: str) -> dict:
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.put(
+                f"{self._base_url}{FORGE_API_PREFIX}/notifications/"
+                f"{quote(notification_id, safe='')}/resolve",
+                headers=self._headers(),
+                json={"resolution": resolution},
+            )
+            if resp.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    f"Forge did not resolve notification {notification_id}: {_error_detail(resp)}",
+                    request=resp.request,
+                    response=resp,
+                )
+            return resp.json()
 
     async def get_workflow_step(
         self,

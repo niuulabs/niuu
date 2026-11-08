@@ -82,6 +82,8 @@ class TestVolundrPort:
             "create_step_session",
             "deliver_workflow_step",
             "get_workflow_step",
+            "submit_session_notification",
+            "resolve_notification",
             "get_session",
             "list_sessions",
             "get_pr_status",

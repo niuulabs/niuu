@@ -22,6 +22,7 @@ from uuid import UUID
 from niuu.observability import get_observability
 from ting.domain.campaign_run_projection import RunProjection, open_gates, project_run, run_gates
 from ting.domain.models import WorkflowCampaign
+from ting.domain.services.gate_notifications import GateNotifier
 from ting.domain.services.workflow_step_engine import (
     Recovered,
     StepRunRequest,
@@ -127,12 +128,14 @@ class WorkflowRuns:
         campaigns: WorkflowCampaignRepository,
         sink: RunProjectionSink,
         volundr_factory: VolundrFactory,
+        gate_notifier: GateNotifier | None = None,
     ) -> None:
         self._engine = engine
         self._steps = steps
         self._campaigns = campaigns
         self._sink = sink
         self._factory = volundr_factory
+        self._gate_notifier = gate_notifier
 
     async def launch(
         self,
@@ -376,6 +379,9 @@ class WorkflowRuns:
         campaign = await self._campaigns.get_campaign(run_id)
         if campaign is None:
             raise LookupError(f"run {run_id} has no campaign to record its state on")
+        if self._gate_notifier is not None:
+            # Before the no-change check: a sweep's refresh retries what Forge refused.
+            await self._gate_notifier.sync(campaign, state)
         projection = project_run(campaign, state, now=datetime.now(UTC))
         if not projection.differs_from(campaign):
             return

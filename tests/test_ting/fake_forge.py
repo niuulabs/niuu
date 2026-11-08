@@ -31,6 +31,11 @@ class FakeForge(VolundrPort):
         self.fail_create: Exception | None = None
         self.fail_deliver: Exception | None = None
         self.fail_stop: set[str] = set()
+        #: idempotency key -> (session id, stored notification), as Forge's feed keeps them.
+        self.notifications: dict[str, tuple[str, dict[str, Any]]] = {}
+        self.resolved: dict[str, str] = {}
+        self.notification_calls = 0
+        self.fail_notify: Exception | None = None
 
     @property
     def name(self) -> str:
@@ -61,6 +66,22 @@ class FakeForge(VolundrPort):
         if self.fail_deliver is not None:
             raise self.fail_deliver
         self.deliveries.append((session_id, activation))
+
+    async def submit_session_notification(self, session_id, draft, *, idempotency_key):
+        self.notification_calls += 1
+        if self.fail_notify is not None:
+            raise self.fail_notify
+        if session_id not in self.sessions:
+            raise RuntimeError(f"Session not found: {session_id}")
+        if idempotency_key not in self.notifications:
+            stored = {**draft, "id": f"note-{len(self.notifications) + 1}"}
+            self.notifications[idempotency_key] = (session_id, stored)
+        return self.notifications[idempotency_key][1]
+
+    async def resolve_notification(self, notification_id, *, resolution):
+        self.notification_calls += 1
+        self.resolved.setdefault(notification_id, resolution)
+        return {"id": notification_id, "resolution": self.resolved[notification_id]}
 
     async def get_workflow_step(
         self, session_id, activation_id, *, auth_token=None, principal=None

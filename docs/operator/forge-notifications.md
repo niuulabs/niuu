@@ -20,6 +20,7 @@ This page covers how to operate the feature.
 | `operator` | any except reply_ready | `POST /api/v1/forge/sessions/{id}/notifications` | `submit:{session}:{principal}:{idempotency_key}` |
 | `agent` (direct) | milestone, decision, attention, error, info | The same direct submit made by the session itself with its own session credential, for example through the Forge-hosted MCP endpoint | `submit:{session}:agent:{owner}:{idempotency_key}` |
 | `system` | attention | A Work review gate is waiting for a person. Forge projects it from the gate's `workflow_gate` frame when the log batch is appended; see [Review gates](#review-gates). | `workflow-gate:{session}:{gate_id}` |
+| `operator` | attention | A gate of a Ting step-engine run is waiting for a person. Ting submits it on a session of the run and resolves it when the gate is decided; see [workflow step sessions](workflow-step-sessions.md#gates-and-cancel). | `submit:{session}:{principal}:workflow-gate:{run}:{activation}` |
 
 The notification id is a uuid5 of the dedupe key, so every retry maps to the same
 notification. A retried log append, activity report or submit never creates a second
