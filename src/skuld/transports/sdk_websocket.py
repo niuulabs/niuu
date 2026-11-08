@@ -22,7 +22,12 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.claude_permission import (
+    DEFAULT_CLAUDE_PERMISSION_MODE,
+    resolve_claude_permission_mode,
+)
 from skuld.transports.claude_env import claude_spawn_env
+from skuld.transports.claude_policy import ClaudeToolPolicy
 from skuld.transports.mcp_config import build_claude_mcp_config
 from skuld.transports.session_tools import SessionTools, claude_cli_args
 from skuld.transports.tool_shims import ensure_codex_tool_shims
@@ -51,6 +56,8 @@ class SdkWebSocketTransport(CLITransport):
         mcp_servers: list[dict] | None = None,
         resume_session_id: str | None = None,
         session_tools: SessionTools | None = None,
+        claude_permission_mode: str = DEFAULT_CLAUDE_PERMISSION_MODE,
+        claude_tool_policy: ClaudeToolPolicy | None = None,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
@@ -58,8 +65,11 @@ class SdkWebSocketTransport(CLITransport):
         self._sdk_port = sdk_port
         self._broker_session_id = session_id
         self._model = model
-        self._skip_permissions = skip_permissions
-        self._agent_teams = agent_teams
+        self._tool_policy = claude_tool_policy
+        bounded = claude_tool_policy is not None and claude_tool_policy.sets_permission_mode
+        self._skip_permissions = skip_permissions and not bounded
+        self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
+        self._agent_teams = agent_teams and not bounded
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
         self._resume_session_id = (resume_session_id or "").strip() or None
@@ -109,7 +119,10 @@ class SdkWebSocketTransport(CLITransport):
         if self._model:
             cmd.extend(["--model", self._model])
         if self._skip_permissions:
-            cmd.extend(["--permission-mode", "bypassPermissions"])
+            # The node's own choice (``claude_permission_mode``), not a fixed bypass.
+            cmd.extend(["--permission-mode", self._claude_permission_mode])
+        if self._tool_policy is not None:
+            cmd.extend(self._tool_policy.cli_args())
         cmd.extend(
             claude_cli_args(
                 self._session_tools,

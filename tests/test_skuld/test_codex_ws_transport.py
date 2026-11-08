@@ -420,7 +420,9 @@ class TestHandshake:
         await t._handshake()
 
         thread_params = params_captured[1][1]
-        assert thread_params["baseInstructions"] == "Be helpful"
+        # Additive: baseInstructions would replace Codex's own prompt.
+        assert thread_params["developerInstructions"] == "Be helpful"
+        assert "baseInstructions" not in thread_params
         assert thread_params["experimentalRawEvents"] is True
 
     @pytest.mark.asyncio

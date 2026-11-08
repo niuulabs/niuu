@@ -11,12 +11,17 @@ from pathlib import Path
 
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class, resolve_secret_kwargs
+from personas.domain.persona_document import PersonaDocumentError, PortablePersonaDefinition
 from skuld.broker_api import _rebuild_presented_registry, _resume_presented_uploads
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.codex_auth import CodexAuthProviderPort
 from skuld.conversation_models import ConversationTurn
+from skuld.personas.projection import PersonaProjectionError, ProjectionContext
+from skuld.personas.registry import projector_for
 from skuld.service_manager import ServiceManager
 from skuld.session_artifacts import _capture_git_workspace_checkpoint
+from skuld.session_runtime import write_private_file
+from skuld.transports.mcp_config import mcp_server_names
 
 logger = logging.getLogger("skuld.broker")
 
@@ -33,6 +38,7 @@ class TransportLifecycleMixin:
             "ready": ready,
             "startup_state": self._startup_state,
             **({"error": self._startup_failure} if self._startup_failure else {}),
+            **({"persona": self._persona_status} if self._persona_status else {}),
         }
 
     def _fail_startup(self, exc: BaseException) -> None:
@@ -168,11 +174,79 @@ class TransportLifecycleMixin:
         kwargs = self._build_transport_kwargs()
         if "codex_auth_provider" in sig.parameters:
             kwargs["codex_auth_provider"] = self._create_codex_auth_provider()
+        self._project_persona(cls, adapter_path, kwargs)
         filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
         logger.info("Using %s (adapter: %s)", cls.__name__, adapter_path)
         if "claude_permission_mode" in sig.parameters:
             self._log_claude_permission_mode()
         return cls(**filtered)
+
+    def _project_persona(self, cls: type, adapter_path: str, kwargs: dict) -> None:
+        """Play the session's persona on this transport, or refuse to start.
+
+        The projection is a pure function of the pinned persona, the request's ad-hoc prompt
+        and this node's configuration, so every start of the session, resume included, builds
+        the transport the same way. Raises :class:`PersonaProjectionError` when the harness
+        cannot enforce something the persona states, or when a projected argument is not one
+        the transport accepts (a projection that would be dropped silently).
+        """
+        raw = self._settings.session.persona
+        if raw is None:
+            return
+        persona = PortablePersonaDefinition.from_dict(raw)
+        context = ProjectionContext(
+            transport=adapter_path,
+            runtime_dir=self._session_runtime.root,
+            request_prompt=self._settings.session.system_prompt,
+            mcp_servers=tuple(kwargs.get("mcp_servers") or ()),
+            platform_mcp_servers=tuple(mcp_server_names(self._builtin_mcp_servers())),
+            node_skip_permissions=self._settings.skip_permissions,
+            node_claude_permission_mode=self._settings.claude_permission_mode,
+            node_approval_policy=self._settings.approval_policy,
+            node_sandbox=self._settings.sandbox,
+            supports_read_only_mcp_boundary=bool(
+                getattr(cls, "supports_read_only_mcp_boundary", False)
+            ),
+        )
+        projection = projector_for(adapter_path).project(persona, context)
+        projection.require_playable(persona.id, adapter_path)
+        accepted = {
+            name
+            for name, parameter in inspect.signature(cls).parameters.items()
+            if parameter.kind not in (parameter.VAR_KEYWORD, parameter.VAR_POSITIONAL)
+        }
+        unaccepted = sorted(set(projection.kwargs) - accepted)
+        if unaccepted:
+            raise PersonaProjectionError(
+                f"Persona {persona.id!r} projects {', '.join(unaccepted)} onto {adapter_path}, "
+                "whose constructor does not accept it, so the persona's limits would be "
+                "dropped. Add the argument to the transport or use a transport that has it."
+            )
+        kwargs.update(projection.kwargs)
+        for projected in projection.files:
+            write_private_file(self._session_runtime.root / projected.name, projected.content)
+        for note in projection.notes:
+            logger.warning(
+                "Persona %s on %s: %s (%s)",
+                persona.id,
+                projection.engine,
+                note.message,
+                note.subject,
+            )
+        self._persona_status = {
+            "id": persona.id,
+            "revision": persona.revision,
+            "engine": projection.engine,
+            "projected": sorted(projection.kwargs),
+            "notes": [gap.describe() for gap in projection.notes],
+        }
+        logger.info(
+            "Persona %s@%s projected onto %s (%s)",
+            persona.id,
+            persona.revision,
+            projection.engine,
+            ", ".join(sorted(projection.kwargs)),
+        )
 
     def _log_claude_permission_mode(self) -> None:
         """Say which permission mode Claude gets and whether the node chose it."""
@@ -284,7 +358,18 @@ class TransportLifecycleMixin:
             self._room_bridge.start_presence_sweep()
 
         # Initialize transport
-        self._transport = self._create_transport()
+        try:
+            self._transport = self._create_transport()
+        except (PersonaProjectionError, PersonaDocumentError) as exc:
+            # The harness cannot play the session's persona. Keep the HTTP diagnostics alive
+            # so /ready reports exactly why, and start nothing that would run unrestricted.
+            self._fail_startup(exc)
+            logger.critical(
+                "Persona cannot be played on this transport; broker remains unready: %s",
+                self._startup_failure,
+                exc_info=True,
+            )
+            return
         self._transport.on_event(self._handle_cli_event)
 
         # Initialize service manager

@@ -336,7 +336,24 @@ class SkuldSessionConfig(BaseModel):
         ),
     )
     workspace_dir: str | None = Field(default=None)
-    system_prompt: str = Field(default="")
+    system_prompt: str = Field(
+        default="",
+        description=(
+            "Ad-hoc instructions from the launch request. With a ``persona`` they are appended "
+            "after the persona's own instructions, never in place of them."
+        ),
+    )
+    persona: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The pinned portable persona document (``schema_version``, ``id``, ``revision``, "
+            "``definition``) this session plays, as Forge resolved it at launch. Skuld projects "
+            "it onto the harness on every start, resume included (``skuld.personas``): its "
+            "instructions are appended to the harness's own prompt and its tool and permission "
+            "limits are enforced by the harness, or the session refuses to start. Null means the "
+            "session plays no persona and nothing is projected."
+        ),
+    )
     initial_prompt: str = Field(default="")
     saga_id: str | None = Field(default=None)
     run_id: str | None = Field(default=None)
