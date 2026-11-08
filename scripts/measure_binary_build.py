@@ -54,6 +54,19 @@ def summary(directory: Path) -> str:
             f"| {record['exit_code']} | {bool(record['compiler_cache_match'])} |"
         )
     lines.extend(
+        [
+            "",
+            "### Warm command timings",
+            "",
+            "| Target | Command | Median (s) |",
+            "| --- | --- | ---: |",
+        ]
+    )
+    for path in sorted(directory.rglob("timing.json")):
+        record = json.loads(path.read_text())
+        for command, timing in record.get("warm_commands", {}).items():
+            lines.append(f"| {record['target']} | `niuu {command}` | {timing['median_seconds']} |")
+    lines.extend(
         ["", "See binary-build artifacts for raw measurements, toolchain and restored cache key."]
     )
     return "\n".join(lines) + "\n"
@@ -85,22 +98,39 @@ def measure_startup(binary: Path, output: Path) -> None:
             elapsed.append(round(time.perf_counter() - started, 3))
             if not result.stdout.startswith("niuu "):
                 raise RuntimeError(f"Unexpected binary identity: {result.stdout}")
-        for command in (["platform", "--help"], ["platform", "up", "--help"]):
-            result = subprocess.run(
-                [str(binary.resolve()), *command],
-                env=env,
-                cwd=directory,
-                text=True,
-                capture_output=True,
-                check=True,
-            )
-            if "Usage: niuu " not in result.stdout:
-                raise RuntimeError(f"Subcommand help lost the niuu entry point: {result.stdout}")
+        command_timings = {}
+        for command in (
+            ["platform", "--help"],
+            ["platform", "up", "--help"],
+            ["platform", "status"],
+            ["sessions", "--help"],
+        ):
+            samples = []
+            for _ in range(3):
+                started = time.perf_counter()
+                result = subprocess.run(
+                    [str(binary.resolve()), *command],
+                    env=env,
+                    cwd=directory,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                samples.append(round(time.perf_counter() - started, 3))
+                if "--help" in command and "Usage: niuu " not in result.stdout:
+                    raise RuntimeError(
+                        f"Subcommand help lost the niuu entry point: {result.stdout}"
+                    )
+            command_timings[" ".join(command)] = {
+                "seconds": samples,
+                "median_seconds": statistics.median(samples),
+            }
     record.update(
         first_start_seconds=elapsed[0],
         warm_start_seconds=elapsed[1:],
         warm_start_median_seconds=statistics.median(elapsed[1:]),
         binary_size_bytes=binary.stat().st_size,
+        warm_commands=command_timings,
     )
     output.write_text(json.dumps(record, indent=2) + "\n")
 

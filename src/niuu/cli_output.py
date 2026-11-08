@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import httpx
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+
+if TYPE_CHECKING:
+    import httpx
 
 console = Console(stderr=True)
 stdout_console = Console()

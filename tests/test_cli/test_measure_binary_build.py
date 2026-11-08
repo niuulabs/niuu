@@ -39,7 +39,9 @@ def test_startup_uses_one_fresh_cache_and_forwards_subcommands(tmp_path, monkeyp
     output.write_text("{}")
     cache = tmp_path / "runtime"
     monkeypatch.setenv("PYAPP_INSTALL_DIR_NIUU", str(cache))
-    timestamps = iter([0, 1, 1, 1.2, 2, 2.4, 3, 3.3])
+    timestamps = iter(
+        [0, 1, 1, 1.2, 2, 2.4, 3, 3.3] + [value for i in range(12) for value in (i, i + 0.25)]
+    )
     monkeypatch.setattr(measurement.time, "perf_counter", lambda: next(timestamps))
     commands = []
 
@@ -57,7 +59,18 @@ def test_startup_uses_one_fresh_cache_and_forwards_subcommands(tmp_path, monkeyp
     assert record["first_start_seconds"] == 1
     assert record["warm_start_seconds"] == [0.2, 0.4, 0.3]
     assert record["warm_start_median_seconds"] == 0.3
-    assert commands == [["--version"]] * 4 + [["platform", "--help"], ["platform", "up", "--help"]]
+    assert commands == [["--version"]] * 4 + [
+        command
+        for command in (
+            ["platform", "--help"],
+            ["platform", "up", "--help"],
+            ["platform", "status"],
+            ["sessions", "--help"],
+        )
+        for _ in range(3)
+    ]
+    assert record["warm_commands"]["platform status"]["median_seconds"] == 0.25
+    assert record["warm_commands"]["sessions --help"]["seconds"] == [0.25] * 3
 
 
 def test_startup_does_not_reuse_or_delete_an_existing_cache(tmp_path, monkeypatch):
