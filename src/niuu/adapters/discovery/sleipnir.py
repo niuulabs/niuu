@@ -6,7 +6,7 @@ SPIFFE JWT-SVID validation is used for trust — no separate handshake socket.
 **Announce event schema**::
 
     {
-      "event_type": "ravn.mesh.announce",
+      "event_type": "mesh.announce",
       "source": "ravn:{peer_id}",
       "payload": {
         "identity": { <MeshIdentity fields> },
@@ -52,8 +52,8 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
-_ANNOUNCE_ROUTING_KEY = "ravn.mesh.announce"
-_EXCHANGE_NAME = "ravn.mesh"
+_ANNOUNCE_ROUTING_KEY = "mesh.announce"
+_EXCHANGE_NAME = "mesh"
 
 
 class SleipnirDiscoveryAdapter:
@@ -248,7 +248,7 @@ class SleipnirDiscoveryAdapter:
         if self._attestor is not None:
             announcement = self._attestor.sign(announcement)
         payload = {
-            "event_type": "ravn.mesh.announce",
+            "event_type": "mesh.announce",
             "source": f"ravn:{self._identity.peer_id}",
             "payload": announcement,
         }
@@ -286,7 +286,7 @@ class SleipnirDiscoveryAdapter:
             await self._handle_announce(raw)
 
     async def _handle_announce(self, raw: dict) -> None:
-        if raw.get("event_type") != "ravn.mesh.announce":
+        if raw.get("event_type") != "mesh.announce":
             return
 
         payload = raw.get("payload", {})

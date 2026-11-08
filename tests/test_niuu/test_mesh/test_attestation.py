@@ -688,7 +688,7 @@ class TestRpc:
                 )
             )
 
-        await bus.subscribe(["ravn.mesh.rpc.b"], impostor)
+        await bus.subscribe(["mesh.rpc.b"], impostor)
         with pytest.raises(AttestationRefusedError) as raised:
             await a.mesh.send("b", {"type": "peer_state"})
         assert raised.value.reason is AttestationReason.BINDING_MISMATCH
@@ -1037,8 +1037,8 @@ class TestDecoratorSurface:
         async def handler(event: Any) -> None:
             seen.append(event)
 
-        subscriber = listener.mesh.verified_subscriber(bus, event_prefix="ravn.mesh")
-        await subscriber.subscribe(["ravn.mesh.*"], handler)
+        subscriber = listener.mesh.verified_subscriber(bus, event_prefix="mesh")
+        await subscriber.subscribe(["mesh.*"], handler)
 
         await sender.mesh.publish(_event("a"), "code.requested")
         await _settle()
@@ -1064,8 +1064,8 @@ class TestDecoratorSurface:
         async def handler(event: Any) -> None:
             seen.append(event)
 
-        await listener.mesh.verified_subscriber(bus, event_prefix="ravn.mesh").subscribe(
-            ["ravn.mesh.*"], handler
+        await listener.mesh.verified_subscriber(bus, event_prefix="mesh").subscribe(
+            ["mesh.*"], handler
         )
         event = _event("a", payload={"text": "hi"})
         event = replace(event, type=MeshEventType.RESPONSE)
@@ -1083,8 +1083,8 @@ class TestDecoratorSurface:
         async def handler(event: Any) -> None:
             seen.append(event)
 
-        await listener.mesh.verified_subscriber(bus, event_prefix="ravn.mesh").subscribe(
-            ["ravn.mesh.*"], handler
+        await listener.mesh.verified_subscriber(bus, event_prefix="mesh").subscribe(
+            ["mesh.*"], handler
         )
         peer = await make_peer(bus, authority, "a")
         await peer.mesh.send("b", {"type": "peer_state"})
@@ -1101,8 +1101,8 @@ class TestDecoratorSurface:
         async def handler(event: Any) -> None:
             seen.append(event)
 
-        await listener.mesh.verified_subscriber(bus, event_prefix="ravn.mesh").subscribe(
-            ["ravn.mesh.*"], handler
+        await listener.mesh.verified_subscriber(bus, event_prefix="mesh").subscribe(
+            ["mesh.*"], handler
         )
         from niuu.adapters.mesh.attested import event_subject
 

@@ -143,7 +143,7 @@ class MeshSleipnirConfig(BaseModel):
     """RabbitMQ-specific mesh settings for infra-mode mesh (NIU-517)."""
 
     exchange: str = Field(
-        default="ravn.mesh",
+        default="mesh",
         description="Topic exchange used for Ravn mesh pub/sub and RPC.",
     )
     rpc_timeout_s: float = Field(

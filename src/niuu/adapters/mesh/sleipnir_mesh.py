@@ -6,15 +6,15 @@ Uses Sleipnir's publisher/subscriber ports, so the underlying transport
 **Pub/sub** — uses SleipnirPublisher/SleipnirSubscriber directly.
 
 **RPC (send)** — implemented as a pattern on top of pub/sub:
-1. Publishes request to ``ravn.mesh.rpc.<target_peer_id>``
-2. Subscribes to ``ravn.mesh.rpc.reply.<own_peer_id>.<nonce>``
+1. Publishes request to ``mesh.rpc.<target_peer_id>``
+2. Subscribes to ``mesh.rpc.reply.<own_peer_id>.<nonce>``
 3. Awaits reply with matching correlation_id
 4. Unsubscribes from reply topic
 
 This works regardless of underlying transport.
 
 **RPC (handle)** — requests for this peer arrive on
-``ravn.mesh.rpc.<own_peer_id>``; the registered handler's reply is published
+``mesh.rpc.<own_peer_id>``; the registered handler's reply is published
 to the request's ``reply_topic``.  A request is handled only once its reply is
 out: a failed reply publish raises, so a JetStream transport naks the request
 and redelivers it.

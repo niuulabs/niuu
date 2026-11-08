@@ -544,9 +544,9 @@ events that Forge, Ting and Mímir publish on the bus (a plan was approved, a ga
 publishers are services, not mesh peers: they hold no mesh certificate, and Forge issues
 certificates only to sessions and residents. These events are therefore not signed, and
 anyone allowed to publish on the bus can forge one. The relay ignores everything under the mesh
-prefix (`ravn.mesh.`), so a mesh peer cannot pass itself off as a platform service through the
+prefix (`mesh.`), so a mesh peer cannot pass itself off as a platform service through the
 mesh. The control that closes the rest is on the bus itself: let sessions publish only under
-`ravn.mesh.*` (NATS subject permissions, a RabbitMQ user per session), which is an extra layer
+`mesh.*` (NATS subject permissions, a RabbitMQ user per session), which is an extra layer
 this platform does not set up for you.
 
 **Where the session credential reaches the session** (it is what the certificate request
@@ -668,7 +668,32 @@ counted on `skuld.collaboration.deliveries{outcome="failed"}` and logged at erro
 never logged and dropped. A member that sits in several rooms needs the message to name
 the room (`metadata.room_id`); a member in no room cannot be messaged.
 
-## Not yet done
+## Wire names and rolling out the rename
 
-- The `ravn.mesh` wire prefix keeps its name. New peer-message traffic uses the neutral
-  `peer_message` RPC type; renaming the prefix is a wider change.
+The mesh's wire prefix is `mesh`, the name of the mesh event type, instead of `ravn.mesh`. It
+names everything the mesh puts on a bus:
+
+| What | Before | Now |
+|---|---|---|
+| Event types of published events | `ravn.mesh.<topic>`, `ravn.mesh.realm_<realm>.<topic>` | `mesh.<topic>`, `mesh.realm_<realm>.<topic>` |
+| Announcements | `ravn.mesh.announce` | `mesh.announce` |
+| RPC legs | `ravn.mesh.rpc.<peer>`, `ravn.mesh.rpc.reply.<peer>.<nonce>` | `mesh.rpc.<peer>`, `mesh.rpc.reply.<peer>.<nonce>` |
+| AMQP exchange and routing key | `ravn.mesh`, `ravn.mesh.announce` | `mesh`, `mesh.announce` |
+| NATS subjects | `sleipnir.ravn.mesh.>` | `sleipnir.mesh.>` |
+| The relay's ignore rule | events under `ravn.mesh.` | events under `mesh.` |
+
+`mesh` is registered as a Sleipnir namespace. There is no compatibility alias: the old runtime
+is gone and the rebuilt one starts on the new name.
+
+**Rolling out the rename: old and new peers do not see each other.** A peer announces and
+listens on its own prefix only, so during a rollout a session on the old name and one on the new
+name do not discover each other, cannot message each other and receive nothing the other
+publishes, and nothing reports an error for that (the traffic is simply on other subjects).
+Roll a flock together: stop the sessions and residents on the old name and start them on the new
+one, or accept that the two halves are separate flocks until the roll finishes. Anything outside
+this repository that publishes or subscribes to `ravn.mesh.*` (a script, a NATS or RabbitMQ
+permission rule, a dashboard) must change with it. Two side effects: the browser bridge
+(`skuld.sleipnir_bridge`, which forwards `ravn.*`) no longer carries mesh traffic, which it did
+only as a side effect of the pattern, and a bus permission rule for sessions is now
+`mesh.*` instead of `ravn.mesh.*`.
+
