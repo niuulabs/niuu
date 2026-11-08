@@ -14,7 +14,7 @@ def _persona():
 
 
 def test_a_coordinator_has_no_tool_that_changes_a_ticket() -> None:
-    assert "tracker_issue" not in _persona().allowed_tools
+    assert "tracker" not in _persona().allowed_tools
 
 
 def test_a_coordinator_is_told_to_check_before_speaking_and_never_to_choose() -> None:

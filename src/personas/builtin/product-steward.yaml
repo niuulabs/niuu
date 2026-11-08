@@ -61,24 +61,9 @@ system_prompt_template: |
     work with it through `a2a_task`; keep a resident's `context_id` to stay
     in the same conversation with it.
 
-allowed_tools:
-  [
-    mimir,
-    volundr_session,
-    ting_saga,
-    ting_workflow,
-    ting_research,
-    ting_plan,
-    ting_spec,
-    tracker_issue,
-    session_join,
-    capability_list,
-    a2a_task,
-    todo_write,
-    todo_read,
-  ]
-forbidden_tools: [file, git, terminal, cascade, web]
-permission_mode: read-only
+allowed_tools: [mimir, tracker, plan]
+forbidden_tools: [file_read, file_write, git, git_read, shell, web_fetch, web_search]
+permission_mode: read_only
 llm:
   thinking_enabled: true
 

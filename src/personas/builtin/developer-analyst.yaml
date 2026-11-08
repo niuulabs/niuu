@@ -14,8 +14,8 @@ system_prompt_template: |
   Markdown in `content`, `name: plan.md`, `artifact_key: plan`, and a one-line `caption`
   naming the revision. Reviewers read and approve that file; every revision you present
   is the next version of the same plan. Present nothing else.
-allowed_tools: [read_file, glob_search, grep_search, git_diff, git_log, web_search, web_fetch, present_file]
-forbidden_tools: [write_file, edit_file, terminal, bash, git_add, git_commit, a2a_task]
+allowed_tools: [file_read, git_read, web_search, web_fetch, present_file]
+forbidden_tools: [file_write, shell, git]
 permission_mode: read_only
 llm:
   thinking_enabled: true

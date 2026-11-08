@@ -46,6 +46,7 @@ from skuld.claude_permission import (
 )
 from skuld.slash_commands import build_slash_command_catalog, compose_slash_command_text
 from skuld.transports.claude_env import claude_spawn_env
+from skuld.transports.claude_policy import ClaudeToolPolicy
 from skuld.transports.mcp_config import (
     build_claude_mcp_payload,
     build_sdk_mcp_servers,
@@ -324,6 +325,7 @@ class SDKTransport(CLITransport):
         allowed_mcp_tools: list[str] | None = None,
         mcp_startup_timeout_seconds: float = 30.0,
         mcp_status_poll_interval_seconds: float = 0.1,
+        claude_tool_policy: ClaudeToolPolicy | None = None,
     ) -> None:
         super().__init__()
         for value in (mcp_startup_timeout_seconds, mcp_status_poll_interval_seconds):
@@ -340,13 +342,19 @@ class SDKTransport(CLITransport):
         self._model_gateway_token = model_gateway_token
         self._read_only_mcp_only = read_only_mcp_only
         self._allowed_mcp_tools = list(allowed_mcp_tools or [])
-        self._skip_permissions = skip_permissions and not read_only_mcp_only
+        self._tool_policy = claude_tool_policy
+        # A policy that decides the permission mode is a boundary: nothing the node's own
+        # mode, agent teams or the permission callback would allow may widen it.
+        bounded = read_only_mcp_only or (
+            claude_tool_policy is not None and claude_tool_policy.sets_permission_mode
+        )
+        self._skip_permissions = skip_permissions and not bounded
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
-        self._agent_teams = agent_teams and not read_only_mcp_only
+        self._agent_teams = agent_teams and not bounded
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
         self._resume_session_id = (resume_session_id or "").strip() or None
-        self._ask_user_question_enabled = ask_user_question_enabled
+        self._ask_user_question_enabled = ask_user_question_enabled and not bounded
         self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_servers = build_sdk_mcp_servers(mcp_servers or [])
         self._turn_timeout_s = max(float(turn_timeout_s or 0.0), 0.0)
@@ -736,7 +744,13 @@ class SDKTransport(CLITransport):
         system_prompt = compose_prompt(tools.instructions if tools else "", self._system_prompt)
         option_kwargs = {
             "model": self._model or None,
-            "system_prompt": system_prompt or None,
+            # Appended to Claude Code's own prompt: a plain string would replace it, and with
+            # it the harness's own tool-use instructions.
+            "system_prompt": (
+                {"type": "preset", "preset": "claude_code", "append": system_prompt}
+                if system_prompt
+                else None
+            ),
             "cwd": self.workspace_dir,
             "mcp_servers": self._sdk_mcp_servers_option(),
             "include_partial_messages": True,
@@ -762,6 +776,8 @@ class SDKTransport(CLITransport):
                     "permission_mode": "dontAsk",
                 }
             )
+        if self._tool_policy is not None and not self._read_only_mcp_only:
+            option_kwargs.update(self._tool_policy.sdk_options())
         if self._ask_user_question_enabled and not self._read_only_mcp_only:
             # Route tool permissions through our handler so AskUserQuestion can
             # be answered by a human (blocks until a client responds); all other

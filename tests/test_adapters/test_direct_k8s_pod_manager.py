@@ -233,6 +233,19 @@ class TestEnvironment:
         env_dict = {e["name"]: e["value"] for e in env if "value" in e}
         assert env_dict["SKULD__SESSION__SYSTEM_PROMPT"] == "You are an agent."
 
+    def test_build_env_with_persona(
+        self,
+        pod_manager: DirectK8sPodManager,
+        sample_session: Session,
+    ) -> None:
+        persona = {"schema_version": 1, "id": "reviewer", "revision": "r1", "definition": {}}
+        spec = make_spec(session={"persona": persona, "systemPrompt": "Be brief."})
+        env = pod_manager._build_env(sample_session, spec)
+
+        env_dict = {e["name"]: e["value"] for e in env if "value" in e}
+        assert json.loads(env_dict["SKULD__SESSION__PERSONA"]) == persona
+        assert env_dict["SKULD__SESSION__SYSTEM_PROMPT"] == "Be brief."
+
     def test_build_env_with_initial_prompt(
         self,
         pod_manager: DirectK8sPodManager,

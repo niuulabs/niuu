@@ -28,6 +28,7 @@ from personas.domain.persona_document import (
     PortablePersonaDefinition,
     portable_persona_from_config,
 )
+from personas.domain.tool_vocabulary import validate_tool_names
 
 _ROLE_DEFAULT = "build"
 _COLOR_BY_ROLE = {
@@ -145,6 +146,10 @@ class PostgresPersonaRegistry:
 
     async def save_persona(self, owner_id: str, payload: dict[str, Any]) -> None:
         normalized = _normalize_payload(payload)
+        # A new save must speak the neutral vocabulary; a row saved before it existed still
+        # lists and edits, and is refused at launch by the portable document's validation.
+        validate_tool_names("allowed_tools", normalized["allowed_tools"])
+        validate_tool_names("forbidden_tools", normalized["forbidden_tools"])
         config = _payload_to_config(normalized)
         now = datetime.now(UTC)
         await self._pool.execute(

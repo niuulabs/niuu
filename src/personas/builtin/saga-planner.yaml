@@ -64,8 +64,8 @@ system_prompt_template: |
     {"name":"...","phases":[...]}
   ---end---
 
-allowed_tools: [file_read, glob, grep, mimir_query, mimir_search]
-forbidden_tools: [git, terminal, cascade, volundr, edit_file, write_file, web_search, web_fetch, mimir_ingest]
+allowed_tools: [file_read, "mimir:search"]
+forbidden_tools: [git, git_read, shell, file_write, web_search, web_fetch, "mimir:ingest"]
 permission_mode: read_only
 
 llm:

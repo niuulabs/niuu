@@ -81,24 +81,15 @@ def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_i
     assert "github" not in rendered
     assert "gitlab" not in rendered
 
-    coordinator = Path("src/personas/builtin/developer-coordinator.yaml").read_text(
-        encoding="utf-8"
+    # The coordinator's retired-runtime tools have no counterpart in a harness session, so it
+    # is closed to the plan tool and cannot touch files, a shell or a repository.
+    coordinator = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
+        "developer-coordinator"
     )
-    for tool in (
-        "delivery_expand_workstreams",
-        "workflow_execution_reconcile",
-        "workflow_execution_message",
-        "workflow_execution_cancel",
-        "delivery_complete",
-        "delivery_record_integration",
-        "workflow_execution_wait",
-        "delivery_workspace",
-        "delivery_forge",
-        "delivery_evidence",
-    ):
-        assert f"- {tool}" in coordinator
-    for forbidden in ("terminal", "bash", "file_write", "file_edit"):
-        assert f"- {forbidden}" in coordinator
+    assert coordinator is not None
+    assert coordinator.allowed_tools == ["plan"]
+    for forbidden in ("shell", "file_write", "file_read", "git"):
+        assert forbidden in coordinator.forbidden_tools
 
     coordinator_persona = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
         "developer-coordinator"
@@ -139,8 +130,7 @@ def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_i
     ).read_text(encoding="utf-8")
     assert "delivery_workspace.inspect" in integration_reviewer
     assert "bounded exact-candidate patch" in integration_reviewer
-    assert "allowed_tools: [delivery_workspace]" in integration_reviewer
-    assert "delivery_forge, delivery_evidence" in integration_reviewer
+    assert "allowed_tools: [plan]" in integration_reviewer
     assert "final delivery evidence policy" in integration_reviewer
     assert "Remote CI and full-policy" in integration_reviewer
 

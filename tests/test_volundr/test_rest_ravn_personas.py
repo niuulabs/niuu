@@ -157,7 +157,7 @@ def _make_payload(name: str) -> dict:
         "summary": "Custom coding persona",
         "description": "Custom coding persona for testing.",
         "system_prompt_template": "You are a custom coding persona.",
-        "allowed_tools": ["read", "write"],
+        "allowed_tools": ["file_read", "file_write"],
         "forbidden_tools": [],
         "permission_mode": "default",
         "iteration_budget": 12,
@@ -363,7 +363,7 @@ class TestRavnPersonaRoutes:
 def test_validate_rejects_overlapping_tool_lists() -> None:
     client, _ = _make_client()
     payload = _make_payload("validation-agent")
-    payload["forbidden_tools"] = ["read"]
+    payload["forbidden_tools"] = ["file_read"]
 
     resp = client.post(
         "/api/v1/ravn/personas/validate",
@@ -374,3 +374,38 @@ def test_validate_rejects_overlapping_tool_lists() -> None:
     assert resp.status_code == 200
     assert resp.json()["valid"] is False
     assert "allowed_tools and forbidden_tools overlap" in resp.json()["errors"][0]
+
+
+def test_validate_rejects_a_tool_outside_the_neutral_vocabulary() -> None:
+    client, _ = _make_client()
+    payload = _make_payload("validation-agent")
+    payload["allowed_tools"] = ["terminal"]
+
+    resp = client.post(
+        "/api/v1/ravn/personas/validate",
+        json=payload,
+        headers={"Authorization": "Bearer token"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["valid"] is False
+    assert "use shell" in resp.json()["errors"][0]
+    assert "file_read" in resp.json()["errors"][0]
+
+
+def test_create_and_replace_refuse_a_retired_tool_before_saving() -> None:
+    client, _ = _make_client()
+    payload = _make_payload("retired-tool-agent")
+    payload["forbidden_tools"] = ["cascade"]
+    headers = {"Authorization": "Bearer token"}
+
+    created = client.post("/api/v1/ravn/personas", json=payload, headers=headers)
+
+    assert created.status_code == 422
+    assert "retired Ravn runtime" in created.json()["detail"]
+
+    payload["forbidden_tools"] = []
+    assert client.post("/api/v1/ravn/personas", json=payload, headers=headers).status_code == 201
+    payload["allowed_tools"] = ["bash"]
+    replaced = client.put("/api/v1/ravn/personas/retired-tool-agent", json=payload, headers=headers)
+    assert replaced.status_code == 422

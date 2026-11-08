@@ -1171,6 +1171,62 @@ class TestProcessSpawning:
             tmp_workspaces / ".forge-presented" / str(git_session.id)
         )
 
+    async def test_spawn_skuld_hands_the_broker_the_pinned_persona(
+        self,
+        manager: LocalProcessPodManager,
+        git_session: Session,
+        tmp_workspaces: Path,
+    ) -> None:
+        """The persona document rides beside the request's prompt; Skuld composes them."""
+        persona = {
+            "schema_version": 1,
+            "id": "reviewer",
+            "revision": "content-0123456789abcdef",
+            "definition": {"name": "reviewer", "allowed_tools": ["file_read"]},
+        }
+        spec = SessionSpec(
+            values={"session": {"persona": persona, "systemPrompt": "Focus on migrations."}},
+            pod_spec=PodSpecAdditions(),
+        )
+        workspace = tmp_workspaces / str(git_session.id)
+        workspace.mkdir(parents=True)
+
+        with (
+            patch.object(manager, "_resolve_claude_binary", return_value="/usr/bin/fake-claude"),
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=MagicMock(pid=7),
+            ) as spawn,
+        ):
+            await manager._spawn_skuld(git_session, spec, workspace, 9100)
+
+        env = spawn.call_args.kwargs["env"]
+        assert json.loads(env["SKULD__SESSION__PERSONA"]) == persona
+        assert env["SKULD__SESSION__SYSTEM_PROMPT"] == "Focus on migrations."
+
+    async def test_spawn_skuld_has_no_persona_without_one(
+        self,
+        manager: LocalProcessPodManager,
+        git_session: Session,
+        default_spec: SessionSpec,
+        tmp_workspaces: Path,
+    ) -> None:
+        workspace = tmp_workspaces / str(git_session.id)
+        workspace.mkdir(parents=True)
+
+        with (
+            patch.object(manager, "_resolve_claude_binary", return_value="/usr/bin/fake-claude"),
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=MagicMock(pid=7),
+            ) as spawn,
+        ):
+            await manager._spawn_skuld(git_session, default_spec, workspace, 9100)
+
+        assert "SKULD__SESSION__PERSONA" not in spawn.call_args.kwargs["env"]
+
     async def test_spawn_sets_sdk_url_arg(
         self,
         manager: LocalProcessPodManager,

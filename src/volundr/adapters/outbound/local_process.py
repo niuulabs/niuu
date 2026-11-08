@@ -906,6 +906,9 @@ class LocalProcessPodManager(PodManager):
             env["SKULD__SESSION__REASONING_EFFORT"] = str(effort)
         if system_prompt:
             env["SKULD__SESSION__SYSTEM_PROMPT"] = system_prompt
+        # The pinned persona document: Skuld projects it onto the harness on every start.
+        if persona := session_vals.get("persona"):
+            env["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
         if initial_prompt:
             env["SKULD__SESSION__INITIAL_PROMPT"] = initial_prompt
 

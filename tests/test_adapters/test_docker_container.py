@@ -137,7 +137,11 @@ def session() -> Session:
 def spec() -> SessionSpec:
     return SessionSpec(
         values={
-            "session": {"systemPrompt": "be helpful", "initialPrompt": "start"},
+            "session": {
+                "systemPrompt": "be helpful",
+                "initialPrompt": "start",
+                "persona": {"schema_version": 1, "id": "reviewer", "revision": "r1"},
+            },
             "anthropic_api_key": "sk-ant-test",
             "env": {"EXTRA": "1"},
             "broker": {"cliType": "codex"},
@@ -217,6 +221,7 @@ class TestStart:
         assert env["SKULD__SESSION__MODEL"] == "claude-sonnet-5"
         assert env["SKULD__SESSION__OWNER_ID"] == "dev-user"
         assert env["SKULD__SESSION__SYSTEM_PROMPT"] == "be helpful"
+        assert json.loads(env["SKULD__SESSION__PERSONA"])["id"] == "reviewer"
         assert env["SKULD__SESSION__INITIAL_PROMPT"] == "start"
         assert env["HOME"] == "/home/skuld"
         assert env["SKULD__PERSISTENCE_MOUNT_PATH"] == "/home/skuld"

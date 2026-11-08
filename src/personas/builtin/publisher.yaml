@@ -41,8 +41,8 @@ system_prompt_template: |
   manifest_path: deliveries/{slug}/40-manifest.md
   ---end---
 
-allowed_tools: [mimir_read, mimir_write]
-forbidden_tools: [git, terminal, cascade, volundr, web_search, web_fetch, mimir_ingest]
+allowed_tools: ["mimir:read", "mimir:write"]
+forbidden_tools: [git, git_read, shell, web_search, web_fetch, "mimir:ingest"]
 permission_mode: workspace_write
 
 llm:

@@ -10,9 +10,9 @@ Persona YAML format::
     name: coding-agent
     system_prompt_template: |
       You are a focused coding agent. ...
-    allowed_tools: [file, git, terminal, web, todo, introspection]
-    forbidden_tools: [cascade, volundr]
-    permission_mode: workspace-write
+    allowed_tools: [file_read, file_write, shell, web_fetch, plan, "mimir:search"]
+    forbidden_tools: [web_search]
+    permission_mode: workspace_write
     llm:
       thinking_enabled: true
     iteration_budget: 40
@@ -43,6 +43,7 @@ import yaml
 from niuu.domain.outcome import OutcomeField, OutcomeSchema, generate_outcome_instruction
 from personas.domain.permission_mode import PermissionMode, parse_optional_permission_mode
 from personas.domain.persona_document import PersonaDocumentError
+from personas.domain.tool_vocabulary import validate_tool_names
 
 EXECUTOR_REMOVED_MESSAGE = (
     "Persona {name!r} declares an 'executor' block. A persona no longer names the "
@@ -405,7 +406,9 @@ def parse_persona(text: str) -> PersonaConfig | None:
     Returns ``None`` on empty input or YAML that is not a persona mapping with a
     name. Handles the ``produces``, ``consumes`` and ``fan_in`` sections.
 
-    Raises :class:`ValueError` when ``permission_mode`` is not a known mode, and
+    Raises :class:`ValueError` when ``permission_mode`` is not a known mode or a tool list
+    names a tool outside the neutral vocabulary (``personas.domain.tool_vocabulary``; the
+    message lists the valid set), and
     :class:`~personas.domain.persona_document.PersonaDocumentError` when the document
     still carries an ``executor`` block. A persona no longer names the
     harness that runs it, and a document that does must be corrected rather than read
@@ -441,6 +444,13 @@ def parse_persona(text: str) -> PersonaConfig | None:
 
     allowed = raw.get("allowed_tools", [])
     forbidden = raw.get("forbidden_tools", [])
+    for field_name, tools in (("allowed_tools", allowed), ("forbidden_tools", forbidden)):
+        if not isinstance(tools, list):
+            continue
+        try:
+            validate_tool_names(field_name, tools)
+        except ValueError as exc:
+            raise ValueError(f"Persona {name!r}: {exc}") from exc
     delivery_workspace_actions = raw.get("delivery_workspace_actions", [])
     raw_permission_mode = raw.get("permission_mode")
 

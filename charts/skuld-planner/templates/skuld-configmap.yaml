@@ -15,6 +15,9 @@ data:
       {{- if .Values.session.systemPrompt }}
       system_prompt: {{ .Values.session.systemPrompt | quote }}
       {{- end }}
+      {{- if .Values.session.persona }}
+      persona: {{ .Values.session.persona | toJson }}
+      {{- end }}
       {{- if .Values.session.initialPrompt }}
       initial_prompt: {{ .Values.session.initialPrompt | quote }}
       {{- end }}

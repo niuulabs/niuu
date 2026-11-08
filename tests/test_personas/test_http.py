@@ -22,7 +22,7 @@ from personas.domain.persona_document import portable_persona_from_config
 _DETAIL_CODER: dict = {
     "name": "coder",
     "permission_mode": "workspace-write",
-    "allowed_tools": ["file", "git"],
+    "allowed_tools": ["file_read", "git"],
     "forbidden_tools": [],
     "iteration_budget": 40,
     "is_builtin": True,
@@ -40,7 +40,7 @@ _DETAIL_CODER: dict = {
 _DETAIL_REVIEWER: dict = {
     "name": "reviewer",
     "permission_mode": "read-only",
-    "allowed_tools": ["file"],
+    "allowed_tools": ["file_read"],
     "forbidden_tools": [],
     "iteration_budget": 20,
     "is_builtin": False,
@@ -59,7 +59,7 @@ _SUMMARIES: list[dict] = [
     {
         "name": "coder",
         "permission_mode": "workspace-write",
-        "allowed_tools": ["file"],
+        "allowed_tools": ["file_read"],
         "iteration_budget": 40,
         "is_builtin": True,
         "has_override": False,
@@ -110,7 +110,7 @@ class TestLoad:
         assert isinstance(config, PersonaConfig)
         assert config.name == "coder"
         assert config.permission_mode == "workspace-write"
-        assert config.allowed_tools == ["file", "git"]
+        assert config.allowed_tools == ["file_read", "git"]
         assert config.iteration_budget == 40
 
     @respx.mock

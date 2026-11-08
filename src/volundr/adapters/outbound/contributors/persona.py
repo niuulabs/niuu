@@ -1,4 +1,12 @@
-"""Apply a selected Ravn persona to a Forge session."""
+"""Apply a selected persona to a Forge session.
+
+The session plays the pinned portable persona document, not a prompt string: Skuld projects
+the document onto the session's harness (its instructions appended to the harness's own
+prompt, its tool and permission limits enforced or refused). The contributor therefore emits
+``values.session.persona`` and leaves ``values.session.systemPrompt`` to the launch request
+and the launch spec. How they combine: the persona is the base and a request's ad-hoc prompt
+is appended after the persona's instructions, never in place of them.
+"""
 
 from volundr.domain.models import Session
 from volundr.domain.ports import (
@@ -39,6 +47,9 @@ class PersonaContributor(SessionContributor):
         if persona is None:
             raise ValueError(f"Persona not found: {name}")
 
-        if not persona.system_prompt:
-            return SessionContribution()
-        return SessionContribution(values={"session": {"systemPrompt": persona.system_prompt}})
+        if not persona.document:
+            raise ValueError(
+                f"Persona {name!r} carries no pinned document, so it cannot be played by a "
+                "session; the persona provider must return its portable document"
+            )
+        return SessionContribution(values={"session": {"persona": persona.document}})

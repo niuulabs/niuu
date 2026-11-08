@@ -232,8 +232,11 @@ class TestClaude:
         assert options.plugins == [
             {"type": "local", "path": str(broker._session_tools().claude_plugin_dirs[0])}
         ]
-        assert options.system_prompt.endswith("Role.")
-        assert "`notify` tool" in options.system_prompt
+        # Appended to Claude Code's own prompt, never replacing it.
+        assert options.system_prompt["type"] == "preset"
+        assert options.system_prompt["preset"] == "claude_code"
+        assert options.system_prompt["append"].endswith("Role.")
+        assert "`notify` tool" in options.system_prompt["append"]
         assert options.env[BROKER_TOKEN_FILE_ENV].endswith("forge-mcp.token")
 
     @pytest.mark.parametrize("adapter", ["persistent", "subprocess", "sdk_websocket"])

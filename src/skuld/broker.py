@@ -680,6 +680,9 @@ class Broker(
         self._session_runtime_cache = None
         self._session_tools_cache = None
         self._forge_mcp_toolbox_cache = None
+        # What the session's persona was projected into on this start (id, revision, engine,
+        # projected arguments and the gaps stated as notes); empty without a persona.
+        self._persona_status: dict[str, object] = {}
         self._activity_state: str = "idle"
         # Wall-clock epoch seconds (UTC) of when the session ENTERED its current
         # activity_state. Stamped only when the state actually CHANGES (see

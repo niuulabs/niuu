@@ -25,8 +25,8 @@ system_prompt_template: |
     [One-line review verdict]
   ---end---
 
-allowed_tools: [mimir_search]
-forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web_search, web_fetch, mimir_ingest]
+allowed_tools: ["mimir:search"]
+forbidden_tools: [git, git_read, shell, file_read, file_write, web_search, web_fetch, "mimir:ingest"]
 permission_mode: read_only
 
 llm:

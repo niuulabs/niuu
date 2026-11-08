@@ -7,8 +7,8 @@ system_prompt_template: |
   always an array of objects, never strings; each finding object states whether it is blocking and
   includes concrete evidence. Use an empty array when there are no findings. Empty output cannot
   pass.
-allowed_tools: [read_file, glob_search, grep_search, git_diff, git_log]
-forbidden_tools: [write_file, edit_file, terminal, bash, git_add, git_commit]
+allowed_tools: [file_read, git_read]
+forbidden_tools: [file_write, shell, git]
 permission_mode: read_only
 llm: {thinking_enabled: true}
 iteration_budget: 26

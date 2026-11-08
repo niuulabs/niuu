@@ -24,8 +24,8 @@ name: test-agent
 system_prompt_template: |
   You are a test agent.
   Do tests.
-allowed_tools: [file, git]
-forbidden_tools: [cascade]
+allowed_tools: [file_read, git]
+forbidden_tools: [web_search]
 permission_mode: workspace-write
 llm:
   primary_alias: balanced
@@ -39,7 +39,7 @@ name: minimal-agent
 
 _NO_NAME_YAML = """\
 system_prompt_template: missing a name
-allowed_tools: [file]
+allowed_tools: [file_read]
 """
 
 _INVALID_YAML = """\
@@ -124,8 +124,8 @@ class TestFilesystemPersonaAdapterParse:
         assert cfg is not None
         assert cfg.name == "test-agent"
         assert "test agent" in cfg.system_prompt_template
-        assert cfg.allowed_tools == ["file", "git"]
-        assert cfg.forbidden_tools == ["cascade"]
+        assert cfg.allowed_tools == ["file_read", "git"]
+        assert cfg.forbidden_tools == ["web_search"]
         assert cfg.permission_mode == "workspace-write"
         assert cfg.llm.primary_alias == "balanced"
         assert cfg.llm.thinking_enabled is True
@@ -375,7 +375,7 @@ class TestBuiltinPersonas:
         assert "workflow runtime owns durable artifact publication" in (
             cfg.system_prompt_template.lower()
         )
-        assert "mimir_publish_files" not in cfg.allowed_tools
+        assert "mimir:publish_files" not in cfg.allowed_tools
 
     def test_product_steward_uses_runtime_model(self) -> None:
         cfg = self._load("product-steward")
@@ -395,16 +395,16 @@ class TestBuiltinPersonas:
 
     def test_reviewer_allowed_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
-        assert "file" in cfg.allowed_tools
+        assert "file_read" in cfg.allowed_tools
+        assert "file_write" in cfg.allowed_tools
         assert "git" in cfg.allowed_tools
-        assert "terminal" in cfg.allowed_tools
-        assert "web" in cfg.allowed_tools
-        assert "ravn" in cfg.allowed_tools
-        assert "tracker_issue" in cfg.allowed_tools
+        assert "shell" in cfg.allowed_tools
+        assert "web_fetch" in cfg.allowed_tools
+        assert "tracker" in cfg.allowed_tools
 
-    def test_reviewer_forbidden_tools(self) -> None:
+    def test_reviewer_forbids_only_what_a_harness_session_has(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
-        assert "cascade" in cfg.forbidden_tools
+        assert cfg.forbidden_tools == []
 
     def test_reviewer_system_prompt_mentions_sql_safety(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
@@ -431,22 +431,18 @@ class TestBuiltinPersonas:
     def test_security_auditor_exists(self) -> None:
         cfg = _BUILTIN_PERSONAS["security-auditor"]
         assert cfg.name == "security-auditor"
-        assert cfg.permission_mode == "read-only"
+        assert cfg.permission_mode == "read_only"
         assert cfg.iteration_budget == 25
         assert cfg.llm.thinking_enabled is True
         assert cfg.llm.primary_alias == ""
 
     def test_security_auditor_allowed_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["security-auditor"]
-        assert "file" in cfg.allowed_tools
-        assert "git" in cfg.allowed_tools
-        assert "web" in cfg.allowed_tools
-        assert "ravn" in cfg.allowed_tools
+        assert cfg.allowed_tools == ["file_read", "git_read", "web_fetch", "web_search"]
 
     def test_security_auditor_forbidden_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["security-auditor"]
-        assert "terminal" in cfg.forbidden_tools
-        assert "cascade" in cfg.forbidden_tools
+        assert cfg.forbidden_tools == ["shell"]
 
     def test_security_auditor_system_prompt_mentions_owasp(self) -> None:
         cfg = _BUILTIN_PERSONAS["security-auditor"]

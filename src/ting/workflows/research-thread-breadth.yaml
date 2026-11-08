@@ -2,12 +2,12 @@ schema_version: 2
 id: 42951d75-dd82-4596-92ea-1c0a6ef4b965
 name: Research Thread — Breadth
 description: Run the breadth explorer over the framed research question and produce a structured finding for the parent research campaign.
-version: 1.0.2
+version: 1.0.3
 persona_dependencies:
   research-explorer-breadth:
     id: research-explorer-breadth
-    revision: content-10bc7e6c4b36993f
-    digest: sha256:10bc7e6c4b36993f91f8c9dc2d5777232389eda40fef43d6f47a5b7426171e0d
+    revision: content-db2c0fb332b10885
+    digest: sha256:db2c0fb332b1088538778f772d47b0e26f8fca6fdaf6cb80aa75415ea44fc193
     path: personas/research-explorer-breadth.yaml
 workflow_dependencies: {}
 graph:

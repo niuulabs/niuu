@@ -351,6 +351,13 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
             env.append(
                 {"name": "SKULD__SESSION__SYSTEM_PROMPT", "value": session_config["systemPrompt"]}
             )
+        if session_config.get("persona"):
+            env.append(
+                {
+                    "name": "SKULD__SESSION__PERSONA",
+                    "value": json.dumps(session_config["persona"], separators=(",", ":")),
+                }
+            )
         if session_config.get("reasoningEffort"):
             env.append(
                 {
