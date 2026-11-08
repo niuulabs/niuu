@@ -217,3 +217,32 @@ async def test_a_long_summary_is_cut_to_forges_limit_and_says_so(
     [(_, (_, note))] = forge.notifications.items()
     assert len(note["body"]) == 4000 and note["body"].endswith("…")
     assert cut == ["forge notification body limit (4000 characters)"]
+
+
+async def test_two_syncs_of_the_same_gate_at_once_raise_it_once() -> None:
+    """Each activity stream that carries the session delivers the close, and each copy
+    projects the run: the gate's notification is still raised once."""
+    import asyncio
+
+    forge = FakeForge()
+    session = forge.add_session("coder", "t")
+    campaign = _campaign()
+    state = RunState(
+        campaign.id,
+        steps=(
+            _member(campaign.id, "implement", "coder", session),
+            _gate(campaign.id, StepState.WAITING),
+        ),
+    )
+    notifier = _notifier(forge)
+    submit = forge.submit_session_notification
+
+    async def slow_submit(*args, **kwargs):
+        await asyncio.sleep(0)  # Forge is a network call: the other sync runs meanwhile
+        return await submit(*args, **kwargs)
+
+    forge.submit_session_notification = slow_submit  # type: ignore[method-assign]
+
+    await asyncio.gather(notifier.sync(campaign, state), notifier.sync(campaign, state))
+
+    assert forge.notification_calls == 1

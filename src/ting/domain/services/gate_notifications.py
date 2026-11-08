@@ -57,7 +57,10 @@ class GateNotifier:
     def __init__(self, *, volundr_factory: VolundrFactory, public_origin: str) -> None:
         self._factory = volundr_factory
         self._origin = public_origin.strip().rstrip("/")
-        #: (activation id, phase) already done in this process; Forge dedupes the rest.
+        #: (activation id, phase) done, or being done, in this process. The claim is
+        #: taken before Forge is called: a close reaches Ting once per activity stream
+        #: that carries its session, and each copy projects the run, so two syncs of
+        #: the same gate run side by side. Forge's idempotency key covers a restart.
         self._done: set[tuple[UUID, str]] = set()
 
     async def sync(self, campaign: WorkflowCampaign, state: RunState) -> None:
@@ -71,6 +74,7 @@ class GateNotifier:
                 continue
             if phase == "settled" and step.state not in _SETTLED_STATES:
                 continue
+            self._done.add((step.id, phase))
             try:
                 await self._sync_gate(campaign, state, step, gates.get(str(step.id)), phase)
             except Exception as exc:
@@ -91,8 +95,8 @@ class GateNotifier:
                         "the run's next change."
                     ),
                 )
+                self._done.discard((step.id, phase))
                 continue
-            self._done.add((step.id, phase))
 
     async def _sync_gate(
         self,
