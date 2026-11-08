@@ -487,7 +487,7 @@ class TestConfigWiring:
     def test_a_mimir_instance_can_name_the_gbrain_adapter(self, monkeypatch) -> None:
         from mimir.builders import build_mimir
         from mimir.client_config import MimirInstanceConfig
-        from ravn.config import Settings
+        from mimir.client_settings import MimirClientSettings as Settings
 
         monkeypatch.setenv("TEST_GBRAIN_TOKEN", "gbrain_from_env")
         settings = Settings()
@@ -510,7 +510,7 @@ class TestConfigWiring:
         """It used to warn and continue, leaving the mount silently absent."""
         from mimir.builders import build_mimir
         from mimir.client_config import MimirInstanceConfig
-        from ravn.config import Settings
+        from mimir.client_settings import MimirClientSettings as Settings
 
         settings = Settings()
         settings.mimir.enabled = True

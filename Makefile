@@ -114,10 +114,10 @@ test-e2e-ui:
 test-all: test test-integration test-e2e
 
 # --------------------------------------------------------------------------
-# Ravn-specific tests with coverage
+# Learned-tool runner tests with coverage
 # --------------------------------------------------------------------------
 test-ravn:
-	uv run --extra test pytest tests/ravn/ tests/test_ravn/ -v --tb=short \
+	uv run --extra test pytest tests/test_ravn/ -v --tb=short \
 		--cov=src/ravn --cov-report=term-missing --cov-fail-under=85
 
 # --------------------------------------------------------------------------

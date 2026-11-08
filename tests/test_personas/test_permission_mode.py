@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
 
 from personas.domain.permission_mode import (
     PermissionMode,
@@ -11,7 +10,6 @@ from personas.domain.permission_mode import (
     parse_permission_mode,
     valid_permission_mode_spellings,
 )
-from ravn.config import PermissionConfig
 
 
 class TestParsePermissionMode:
@@ -62,19 +60,3 @@ def test_valid_spellings_cover_both_forms() -> None:
     for mode in PermissionMode:
         assert mode.value in spellings
         assert mode.value.replace("_", "-") in spellings
-
-
-class TestPermissionConfigMode:
-    def test_hyphen_spelling_is_parsed(self) -> None:
-        assert PermissionConfig(mode="read-only").mode is PermissionMode.READ_ONLY
-
-    def test_unknown_mode_is_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="Unknown permission_mode 'superuser'"):
-            PermissionConfig(mode="superuser")
-
-    def test_assignment_is_validated(self) -> None:
-        config = PermissionConfig()
-        config.mode = "workspace-write"
-        assert config.mode is PermissionMode.WORKSPACE_WRITE
-        with pytest.raises(ValidationError, match="Unknown permission_mode"):
-            config.mode = "superuser"

@@ -1295,7 +1295,7 @@ class Broker(
     def _is_declared_room_routed(self) -> bool:
         """True when configuration declares this broker owns no CLI agent.
 
-        ``ravn room create`` sets this: the room exists to host ravns, so the
+        A room's configuration sets this: the room exists to host ravns, so the
         broker must never start a CLI agent of its own even while the room is
         still empty. Without it such a broker lazy-starts Claude on the first
         browser connect and silently answers chat meant for a ravn.

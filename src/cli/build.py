@@ -39,7 +39,6 @@ INCLUDE_PACKAGES = [
     "niuu",
     "observatory",
     "personas",
-    "ravn",
     "tracker",
     "volundr",
     "ting",

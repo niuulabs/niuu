@@ -115,14 +115,13 @@ Mimir knows (pointers only — use mimir_read for details):
 [[mimir]] (technology, high confidence, updated 2026-06-12) — mimir_read entities/mimir.md
 ```
 
-Hook points: the Ravn drive loop (persona turns) and the Skuld broker
-(messages forwarded to CLI agents). Per-session dedupe, ~1 ms per turn at
+Hook point: the Skuld broker (messages forwarded to CLI agents). Per-session dedupe, ~1 ms per turn at
 1k entities, fail-open (a dead Mímir never blocks a turn). Each injection
 logs `mimir.reflex.injected session=<id> slugs=[…]` for follow-up-rate
 measurement.
 
 **Base URL resolution**: explicit `reflex.base_url` → first HTTP mimir
-instance (Ravn) → derived from `volundr_api_url` as `{platform}/api/v1`
+instance → derived from `volundr_api_url` as `{platform}/api/v1`
 (Skuld brokers get this automatically). If nothing resolves, the reflex stays
 inert with a single warning. Disable with `reflex.enabled: false`
 (`SKULD__REFLEX__ENABLED=false` for brokers).
@@ -137,7 +136,7 @@ inert with a single warning. Disable with `reflex.enabled: false`
 |---|---|
 | **MCP** (`python -m mimir mcp --path ~/.ravn/mimir`) | `mimir_search`, `mimir_read`, `mimir_write`, `mimir_ingest`, `mimir_read_source`, `mimir_lint`, `mimir_stats`, `mimir_related` |
 | **Shell shims** (generated per Skuld session in `.skuld-tools/bin/`) | same eight commands, backed by `mimir.bridge`; work against a local path or an HTTP URL via `RAVN_MIMIR_PATH` |
-| **Ravn tools** | `MimirIngestTool`, `MimirReadTool`, `MimirWriteTool`, `MimirSearchTool`, `MimirLintTool` (permission-gated: `mimir:read` / `mimir:write`) |
+| **Tool classes** | `MimirIngestTool`, `MimirReadTool`, `MimirWriteTool`, `MimirSearchTool`, `MimirLintTool` (permission-gated: `mimir:read` / `mimir:write`) for a runtime that embeds Mímir as tools |
 
 `mimir_related --path entities/alice.md --depth 2 [--rel works_at]` traverses
 the wikilink graph in both directions — use it for relationship questions
@@ -247,16 +246,15 @@ Change a boost → run `uv run python scripts/mimir_ranking_ablation.py
 `min_token_overlap=2`, `weakening_after_days=60`, `stale_after_days=90`,
 `strengthening_min_proofs=3`, `consolidate_on_ingest=True`.
 
-### Reflex (Ravn `mimir.reflex` / Skuld `reflex`, env `SKULD__REFLEX__*`)
+### Reflex (`mimir.reflex` / Skuld `reflex`, env `SKULD__REFLEX__*`)
 
 `enabled=True`, `max_pointers=5`, `cache_ttl_seconds=300`,
 `timeout_seconds=5`, `base_url=""` (auto-derived; see §4).
 
-### Ravn-side `MimirConfig` (agent host)
+### Client-side `MimirConfig` (a host that mounts Mímir)
 
-`enabled`, `path`, `auto_distill` (session knowledge capture),
-`idle_lint_threshold_minutes`, `instances` (HTTP mounts),
-`write_routing` (prefix → mount rules), and `reflex`.
+`enabled`, `path`, `categories`, `search`, `instances` (HTTP mounts),
+`write_routing` (prefix → mount rules), `read_retry`, and `reflex`.
 
 ---
 
@@ -291,7 +289,7 @@ state; the markdown + `raw/` JSON are the only things that matter.
 | Changed ranking/search code | `python -m mimir eval --against tests/test_mimir/evals/baseline.json --fail-on-regression` (CI enforces this) |
 | Improved retrieval intentionally | refresh the baseline: `python -m mimir eval --json --out tests/test_mimir/evals/baseline.json` |
 | Index corruption suspected | delete `search.db`; it rebuilds on startup |
-| Want reflex off for a session | `SKULD__REFLEX__ENABLED=false` (broker) / `mimir.reflex.enabled: false` (ravn) |
+| Want reflex off for a session | `SKULD__REFLEX__ENABLED=false` (broker) / `mimir.reflex.enabled: false` (client config) |
 | Measuring reflex usefulness | grep logs for `mimir.reflex.injected`, correlate with subsequent `mimir_read` calls |
 
 ### Exploring the knowledge graph

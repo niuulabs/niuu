@@ -242,7 +242,7 @@ class RoomConfig(BaseModel):
             "Declare that this broker hosts a room and owns no CLI agent of "
             "its own. The broker then never starts its own CLI transport, and "
             "untargeted browser messages go to the room's sole ravn when "
-            "default_target_peer_id is unset. Set by 'ravn room create'. "
+            "default_target_peer_id is unset. Set by the room's own configuration. "
             "Without it a room broker lazy-starts a Claude/Codex process that "
             "competes with the room's ravns for the same chat frames."
         ),

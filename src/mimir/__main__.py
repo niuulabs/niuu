@@ -334,7 +334,9 @@ def ingest(
             "Defaults to all configured instances."
         ),
     ),
-    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+    config: str = typer.Option(
+        "", "--config", "-c", help="Path to the client config YAML (RAVN_CONFIG)."
+    ),
 ) -> None:
     """Ingest a file or stdin into the Mímir knowledge base.
 
@@ -452,7 +454,7 @@ async def _run_mimir_ingest(
     typer.echo(f"source_id: {source_id}")
     typer.echo(f"file:      {resolved_path}")
     typer.echo(f"target:    {target or 'all'}")
-    typer.echo("Synthesis will be triggered automatically by the daemon (or run ravn chat).")
+    typer.echo("The source is stored; write its wiki pages with mimir_write.")
 
 
 def main() -> None:

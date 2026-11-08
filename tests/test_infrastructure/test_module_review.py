@@ -3,15 +3,6 @@
 from __future__ import annotations
 
 from niuu.app import RootServer
-from ravn.cli.commands import (
-    _build_workflow_capability_sources as command_capability_sources,
-)
-from ravn.cli.runtime_builders import (
-    _build_workflow_capability_sources as runtime_capability_sources,
-)
-from ravn.cli.tool_builders import (
-    _build_workflow_capability_sources as tool_capability_sources,
-)
 from scripts.module_review import DEFAULT_TARGETS, analyze
 from skuld.broker import Broker
 from volundr.app_shell import build_app_shell
@@ -20,7 +11,6 @@ from volundr.app_shell import build_app_shell
 def test_module_review_tracks_all_hardening_hotspots() -> None:
     expected = {
         "src/skuld/broker.py",
-        "src/ravn/cli/commands.py",
         "src/volundr/main.py",
         "src/niuu/app.py",
         "src/niuu/session_proxy.py",
@@ -32,11 +22,6 @@ def test_module_review_tracks_all_hardening_hotspots() -> None:
     assert set(DEFAULT_TARGETS) == expected
     signals = [analyze(path) for path in DEFAULT_TARGETS]
     assert all(signal.lines > 0 for signal in signals)
-
-
-def test_cli_builder_compatibility_export_points_to_runtime_builder() -> None:
-    assert command_capability_sources is runtime_capability_sources
-    assert tool_capability_sources is runtime_capability_sources
 
 
 def test_composition_builders_remain_visible_through_public_roots() -> None:

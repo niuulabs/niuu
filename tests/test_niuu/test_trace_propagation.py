@@ -1,13 +1,12 @@
-"""End-to-end proof that one W3C trace id flows: Ravn LLM call -> Bifröst.
+"""End-to-end proof that one W3C trace id flows: a model caller -> Bifröst.
 
 Uses an in-memory span exporter instead of a real OTLP collector or a live
 Bifröst server. The goal (per the end-to-end-tracing task) is that a single
 trace follows a piece of work across the whole system; this test proves the
 propagation contract at the two seams that make that possible:
 
-1. A Ravn LLM adapter (``BifrostAdapter``, which calls through Bifröst)
-   injects the active span's W3C ``traceparent`` onto its outbound request
-   headers (``AnthropicAdapter._headers``, inherited by ``BifrostAdapter``).
+1. A model caller injects the active span's W3C ``traceparent`` onto its
+   outbound request headers (``Observability.inject``).
 2. Bifröst's router attaches GenAI attributes to whatever span is active when
    a completion is served — in production that's the FastAPI server span
    that ``niuu.observability.instrument_fastapi_app`` opens from the same
@@ -42,21 +41,17 @@ def telemetry(monkeypatch):
     return instance, exporter
 
 
-def test_ravn_llm_call_trace_id_reaches_the_bifrost_span(telemetry) -> None:
+def test_caller_trace_id_reaches_the_bifrost_span(telemetry) -> None:
     from bifrost.router import record_genai_span_attributes
     from bifrost.translation.models import UsageInfo
-    from ravn.adapters.llm.bifrost import BifrostAdapter
 
     instance, exporter = telemetry
-    adapter = BifrostAdapter(agent_id="valkyrie-1", session_id="session-1")
 
-    # 1. Ravn opens a span around its model call (what ravn's judgment loop /
-    #    tool-call path does today via `get_observability().span(...)`).
-    with instance.span("ravn.llm_request") as ravn_span:
-        ravn_trace_id = f"{ravn_span.get_span_context().trace_id:032x}"
-
-        # The adapter builds headers for the outbound HTTP call to Bifröst.
-        headers = adapter._headers()
+    # 1. The caller opens a span around its model call and builds the headers
+    #    for the outbound HTTP call to Bifröst from it.
+    with instance.span("caller.llm_request") as caller_span:
+        caller_trace_id = f"{caller_span.get_span_context().trace_id:032x}"
+        headers = instance.inject()
 
     assert "traceparent" in headers
     carrier = {"traceparent": headers["traceparent"]}
@@ -64,7 +59,7 @@ def test_ravn_llm_call_trace_id_reaches_the_bifrost_span(telemetry) -> None:
         carrier["tracestate"] = headers["tracestate"]
 
     # 2. Bifröst receives the request; its own server span (here, extracted
-    #    directly from the propagated carrier) becomes a child of Ravn's span.
+    #    directly from the propagated carrier) becomes a child of the caller's span.
     with instance.span("bifrost.messages", carrier=carrier) as bifrost_span:
         bifrost_trace_id = f"{bifrost_span.get_span_context().trace_id:032x}"
         record_genai_span_attributes(
@@ -76,10 +71,10 @@ def test_ravn_llm_call_trace_id_reaches_the_bifrost_span(telemetry) -> None:
         )
 
     # Same trace id on both ends: the GOAL this task exists to deliver.
-    assert bifrost_trace_id == ravn_trace_id
+    assert bifrost_trace_id == caller_trace_id
 
     finished = {span.name: span for span in exporter.get_finished_spans()}
-    assert set(finished) == {"ravn.llm_request", "bifrost.messages"}
+    assert set(finished) == {"caller.llm_request", "bifrost.messages"}
     bifrost_recorded = finished["bifrost.messages"]
     attrs = dict(bifrost_recorded.attributes or {})
     assert attrs["gen_ai.request.model"] == "claude-sonnet-4-6"
@@ -88,26 +83,23 @@ def test_ravn_llm_call_trace_id_reaches_the_bifrost_span(telemetry) -> None:
     assert attrs["bifrost.cache_hit"] is False
     assert attrs["gen_ai.usage.input_tokens"] == 120
     assert attrs["gen_ai.usage.output_tokens"] == 45
-    # And the child span really is parented under the Ravn span, not merely
+    # And the child span really is parented under the caller's span, not merely
     # sharing a trace id by coincidence.
     assert bifrost_recorded.parent is not None
-    assert f"{bifrost_recorded.parent.trace_id:032x}" == ravn_trace_id
+    assert f"{bifrost_recorded.parent.trace_id:032x}" == caller_trace_id
 
 
 def test_no_traceparent_header_when_observability_disabled() -> None:
-    from ravn.adapters.llm.bifrost import BifrostAdapter
+    from niuu.observability import get_observability
 
-    adapter = BifrostAdapter(agent_id="valkyrie-1", session_id="session-1")
-    headers = adapter._headers()
-
-    assert "traceparent" not in headers
+    assert "traceparent" not in get_observability().inject()
 
 
 def test_skuld_closes_the_chain_by_attaching_its_inherited_traceparent(telemetry) -> None:
     """Skuld's per-session broker process inherits TRACEPARENT/TRACESTATE in
     its own env (set by Volundr's CoreSessionContributor when it spawned the
     process) and attaches it as ambient context at startup — this is what
-    lets Ravn -> Bifrost -> Volundr -> Skuld -> Claude Code share one trace
+    lets a caller -> Bifrost -> Volundr -> Skuld -> Claude Code share one trace
     id instead of the chain breaking at Skuld.
     """
     instance, exporter = telemetry

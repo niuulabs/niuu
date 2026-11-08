@@ -1,1 +1,0 @@
-"""Memory and persistence adapters."""

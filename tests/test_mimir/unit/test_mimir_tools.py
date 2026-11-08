@@ -28,6 +28,7 @@ from mimir.adapters.markdown import (
     _extract_title,
 )
 from mimir.client_config import MimirConfig
+from mimir.client_settings import MimirClientSettings
 from mimir.tools import (
     MimirIngestTool,
     MimirLintTool,
@@ -47,8 +48,6 @@ from niuu.domain.mimir import (
     MimirSource,
     compute_source_id,
 )
-from ravn.config import Settings
-from ravn.domain.models import AgentTask, OutputMode
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -970,17 +969,13 @@ def test_mimir_config_defaults() -> None:
     cfg = MimirConfig()
     assert cfg.enabled is True
     assert cfg.path == "~/.ravn/mimir"
-    assert cfg.auto_distill is True
-    assert cfg.distill_min_session_minutes == 5
-    assert cfg.idle_lint_threshold_minutes == 60
-    assert cfg.continuation_threshold_minutes == 30
     assert "technical" in cfg.categories
     assert "self" in cfg.categories
     assert cfg.search.backend == "fts"
 
 
 def test_mimir_config_in_settings() -> None:
-    settings = Settings()
+    settings = MimirClientSettings()
     assert hasattr(settings, "mimir")
     assert isinstance(settings.mimir, MimirConfig)
 
@@ -1024,28 +1019,3 @@ async def test_integration_ingest_then_write_creates_page_with_log(tmp_path: Pat
     log = (tmp_path / "mimir" / "wiki" / "log.md").read_text()
     assert "ingest" in log
     assert "Kubernetes Pod Lifecycle" in log
-
-
-@pytest.mark.asyncio
-async def test_integration_distillation_trigger_creates_agent_task() -> None:
-    """Post-session distillation: verify AgentTask structure is correct."""
-    task = AgentTask(
-        task_id="task_abc_0001",
-        title="Mímir distillation — post-session",
-        initiative_context=(
-            "Review the conversation that just ended. Extract:\n"
-            "1. Any new factual knowledge worth preserving as Mímir wiki pages\n"
-            "2. Any findings that update or contradict existing pages\n"
-            "3. Decisions or patterns worth recording for future reference\n\n"
-            "Write or update wiki pages using mimir_write(). "
-            "Update index.md. Append to log.md. "
-            "Be concise — the wiki is for retrieval, not transcription."
-        ),
-        triggered_by="post_session:distillation",
-        output_mode=OutputMode.SILENT,
-        priority=15,
-    )
-    assert task.output_mode == OutputMode.SILENT
-    assert task.session_id == "daemon_task_abc_0001"
-    assert "mimir_write" in task.initiative_context
-    assert "log.md" in task.initiative_context

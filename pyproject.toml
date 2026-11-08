@@ -102,9 +102,6 @@ otel = [
 encryption = [
     "cryptography>=50.0.1",
 ]
-browser = [
-    "playwright>=1.62.0",
-]
 infra = [
     "redis>=8.1.0",
 ]
@@ -211,9 +208,7 @@ markers = [
     "tmux: tests that drive a real isolated tmux server with the fake Claude CLI",
     "live_cli: opt-in tests requiring installed provider CLIs (FORGE_LIVE_CLI=1)",
     "broker: tests that require real message broker services (NATS, RabbitMQ, Redis)",
-    "ravn: tests for the Ravn agent module",
     "e2e: end-to-end tests for full agent conversation flows",
-    "browser: tests that require a real browser (Playwright + Chromium)",
 ]
 
 [tool.ruff]
@@ -240,21 +235,17 @@ branch = true
 # ting/plugin.py (CLI plugin registration with TUI imports).
 # Sleipnir transport adapters require live broker services (NATS, NNG, RabbitMQ)
 # and cannot be tested in CI without those services running.
-# Ravn infrastructure adapters that require live Kubernetes, PostgreSQL, mDNS,
-# or HTTP services are also excluded from coverage measurement.
+# Infrastructure adapters that require live Kubernetes, mDNS, or HTTP services
+# are also excluded from coverage measurement.
 omit = [
-    "src/ravn/tui/*",
     "src/ting/tui/*",
     "src/ting/plugin.py",
     "src/sleipnir/adapters/nats_transport.py",
     "src/sleipnir/adapters/nng_transport.py",
     "src/sleipnir/adapters/rabbitmq.py",
-    "src/ravn/adapters/checkpoint/postgres.py",
-    "src/ravn/adapters/checkpoint/sleipnir_trigger.py",
     "src/niuu/adapters/discovery/mdns.py",
     "src/niuu/adapters/mesh/webhook.py",
     "src/niuu/adapters/mesh/composite.py",
-    "src/ravn/adapters/spawn/kubernetes_spawn.py",
 ]
 
 [tool.coverage.report]

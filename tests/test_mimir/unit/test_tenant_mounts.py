@@ -269,7 +269,7 @@ async def test_gbrain_mount_is_given_the_configured_think_model():
 
 def test_session_proxy_mount_keeps_workload_identity():
     from mimir.builders import build_mimir
-    from ravn.config import Settings
+    from mimir.client_settings import MimirClientSettings as Settings
 
     settings = Settings(
         mimir={

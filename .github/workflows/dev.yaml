@@ -151,7 +151,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Python — lint + unit tests. Delegated to reusable workflow.
-  # Includes volundr, ting, AND ravn — previously ravn was missing here.
+  # Includes volundr, ting and the learned-tool runner.
   # ---------------------------------------------------------------------------
   python:
     name: Python

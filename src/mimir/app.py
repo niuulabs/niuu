@@ -1,8 +1,8 @@
 """Standalone Mímir FastAPI application.
 
 Used when running Mímir as an independent service (``python -m mimir serve``).
-The same ``MimirRouter`` can also be mounted on the existing Ravn gateway
-(``ravn listen-mimir``) without any code changes.
+The same ``MimirRouter`` can also be mounted on another FastAPI app without any
+code changes.
 
 Usage (standalone)::
 

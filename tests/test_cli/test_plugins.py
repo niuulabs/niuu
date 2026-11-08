@@ -18,7 +18,6 @@ from mimir.plugin import MimirPlugin
 from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServiceLifecycle
 from observatory.plugin import ObservatoryPlugin
 from personas.plugin import PersonasPlugin
-from ravn.plugin import RavnPlugin
 from ting.plugin import TingPlugin
 from tracker.plugin import TrackerPlugin
 from volundr.plugin import VolundrPlugin
@@ -423,145 +422,6 @@ class TestMimirPlugin:
         assert client is not None
 
 
-class TestRavnPlugin:
-    def test_name(self) -> None:
-        plugin = RavnPlugin()
-        assert plugin.name == "ravn"
-
-    def test_description(self) -> None:
-        plugin = RavnPlugin()
-        desc = plugin.description.lower()
-        assert "agent" in desc or "session" in desc
-
-    def test_register_service_returns_definition(self) -> None:
-        plugin = RavnPlugin()
-        svc_def = plugin.register_service()
-        assert isinstance(svc_def, ServiceDefinition)
-        assert svc_def.name == "ravn"
-        assert svc_def.default_enabled is True
-
-    def test_service_is_host_mounted(self) -> None:
-        plugin = RavnPlugin()
-        definition = plugin.register_service()
-        assert definition.lifecycle is ServiceLifecycle.HOSTED
-        assert definition.factory is None
-        assert plugin.create_service() is None
-
-    def test_create_api_app_uses_ravn_app_factory(self, monkeypatch) -> None:
-        plugin = RavnPlugin()
-        sentinel = object()
-
-        def fake_create_app():
-            return sentinel
-
-        monkeypatch.setattr("ravn.api.create_app", fake_create_app)
-        assert plugin.create_api_app() is sentinel
-
-    def test_api_route_domains_declared(self) -> None:
-        plugin = RavnPlugin()
-        route_domains = plugin.api_route_domains()
-        assert route_domains
-        assert [route_domain.name for route_domain in route_domains] == [
-            "ravn-runtime-api",
-            "ravn-trigger-api",
-            "ravn-budget-api",
-            "ravn-session-api",
-            "ravn-api",
-        ]
-        assert route_domains[0].prefixes == (
-            "/api/v1/ravn/ravens",
-            "/api/v1/ravn/sessions",
-        )
-        assert route_domains[1].prefixes == ("/api/v1/ravn/triggers",)
-        assert route_domains[2].prefixes == ("/api/v1/ravn/budget",)
-        assert route_domains[3].prefixes == (
-            "/api/v1/ravn/status",
-            "/api/v1/ravn/sessions",
-        )
-        assert route_domains[4].prefixes == ("/api/v1/ravn",)
-
-    def test_api_client_returns_instance(self) -> None:
-        plugin = RavnPlugin()
-        client = plugin.create_api_client()
-        assert client is not None
-
-    def test_depends_on_returns_postgres(self) -> None:
-        plugin = RavnPlugin()
-        assert list(plugin.depends_on()) == ["postgres"]
-
-    def test_registers_ravn_group(self) -> None:
-        plugin = RavnPlugin()
-        app = typer.Typer()
-        plugin.register_commands(app)
-        group_names = [g.name for g in app.registered_groups]
-        assert "ravn" in group_names
-
-    @respx.mock
-    def test_ravn_list_command(self) -> None:
-        respx.get(f"{BASE}/api/v1/ravn/sessions").mock(return_value=httpx.Response(200, json=[]))
-        plugin = RavnPlugin()
-        app = typer.Typer(no_args_is_help=False)
-        plugin.register_commands(app)
-        result = runner.invoke(app, ["ravn", "list"])
-        assert result.exit_code == 0
-        assert "No active agent sessions." in result.stdout
-
-    @respx.mock
-    def test_ravn_list_command_json_output(self) -> None:
-        respx.get(f"{BASE}/api/v1/ravn/sessions").mock(
-            return_value=httpx.Response(
-                200,
-                json=[
-                    {
-                        "id": "ravn-1",
-                        "status": "running",
-                        "model": "gpt-5",
-                        "created_at": "2026-04-25T00:00:00Z",
-                    }
-                ],
-            )
-        )
-        plugin = RavnPlugin()
-        app = typer.Typer(no_args_is_help=False)
-        plugin.register_commands(app)
-        result = runner.invoke(app, ["ravn", "list", "--json"])
-        assert result.exit_code == 0
-        assert '"id": "ravn-1"' in result.stdout
-
-    @respx.mock
-    def test_ravn_stop_command_json_output(self) -> None:
-        respx.post(f"{BASE}/api/v1/ravn/sessions/ravn-1/stop").mock(
-            return_value=httpx.Response(200, json={"session_id": "ravn-1", "status": "stopped"})
-        )
-        plugin = RavnPlugin()
-        app = typer.Typer(no_args_is_help=False)
-        plugin.register_commands(app)
-        result = runner.invoke(app, ["ravn", "stop", "ravn-1", "--json"])
-        assert result.exit_code == 0
-        assert '"status": "stopped"' in result.stdout
-
-    @respx.mock
-    def test_ravn_status_command(self) -> None:
-        respx.get(f"{BASE}/api/v1/ravn/status").mock(
-            return_value=httpx.Response(
-                200,
-                json={"service": "ravn", "session_count": 2, "healthy": True},
-            )
-        )
-        plugin = RavnPlugin()
-        app = typer.Typer(no_args_is_help=False)
-        plugin.register_commands(app)
-        result = runner.invoke(app, ["ravn", "status"])
-        assert result.exit_code == 0
-        assert "2 active session(s)" in result.stdout
-
-    def test_tui_pages_registered(self) -> None:
-        plugin = RavnPlugin()
-        pages = plugin.tui_pages()
-        assert len(pages) == 1
-        assert pages[0].name == "Agents"
-
-
 class TestPersonasPlugin:
     def test_name(self) -> None:
         plugin = PersonasPlugin()
@@ -736,11 +596,6 @@ class TestPluginDiscovery:
         registry.register(TingPlugin())
         assert "volundr" in registry.plugins
         assert "ting" in registry.plugins
-
-    def test_ravn_plugin_registers(self) -> None:
-        registry = PluginRegistry()
-        registry.register(RavnPlugin())
-        assert "ravn" in registry.plugins
 
     def test_dependency_order(self) -> None:
         """Ting depends on volundr — verify start order."""
