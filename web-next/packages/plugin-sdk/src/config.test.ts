@@ -49,6 +49,21 @@ describe('niuuConfigSchema', () => {
     );
   });
 
+  it.each(['guild', 'node'] as const)('accepts %s as the Forge scope', (scope) => {
+    const parsed = niuuConfigSchema.parse({
+      services: { forge: { baseUrl: '/api/v1/forge', mode: 'http', scope } },
+    });
+    expect(parsed.services.forge?.scope).toBe(scope);
+  });
+
+  it('rejects an unknown Forge scope', () => {
+    expect(() =>
+      niuuConfigSchema.parse({
+        services: { forge: { baseUrl: '/api/v1/forge', mode: 'http', scope: 'fleet' } },
+      }),
+    ).toThrow();
+  });
+
   it('rejects an invalid theme', () => {
     expect(() => niuuConfigSchema.parse({ theme: 'ultraviolet' })).toThrow();
   });
