@@ -92,7 +92,7 @@ repository or explore workflows, knowledge, and residents according to your goal
 
 | I need… | Go to… |
 | --- | --- |
-| Commands and flags | [Niuu CLI](reference/cli-niuu.md) · [Ravn CLI](reference/cli-ravn.md) |
+| Commands and flags | [Niuu CLI](reference/cli-niuu.md) |
 | Configuration files and overrides | [Configuration](reference/configuration.md) |
 | HTTP routes and request schemas | [API reference](reference/api.md) |
 | Provider login and session credentials | [Credentials and secrets](reference/credentials-and-secrets.md) |

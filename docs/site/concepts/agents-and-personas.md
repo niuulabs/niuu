@@ -55,5 +55,3 @@ For a resident, identify its persona, deployment target, persistent state,
 knowledge mounts, triggers, and authority. When it pauses for input, inspect the
 specific case it is waiting on. A new unrelated message is not necessarily an
 answer to that suspended case.
-
-See [direct agents and residents](../get-started/direct-and-resident-assistants.md).

@@ -260,18 +260,6 @@ def build_config(
         },
         "a2a": {"public_base_url": f"http://niuu:{port}"},
         "auth": {"default_tenant_id": "default"},
-        "dispatch": {
-            "flock": {
-                "ravn_config": {
-                    "gateway": {
-                        "platform": {
-                            "anonymous_dev_mode": True,
-                            "base_url": f"http://niuu:{port}",
-                        }
-                    }
-                }
-            }
-        },
     }
 
 
