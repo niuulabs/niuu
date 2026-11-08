@@ -25,6 +25,13 @@ from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
 from niuu.domain.models import actor_name
 from niuu.domain.notifications import notification_visible_to
+from niuu.domain.peer_envelope import (
+    STAMPED_BODY_KEYS,
+    RelayedSpeech,
+    build_relayed_message,
+    build_session_message,
+)
+from niuu.domain.peer_message import PEER_MESSAGE_FRAME, PeerAddress, PeerKind, PeerMessageError
 from niuu.domain.presented_files import (
     PRESENTED_FILE_DURABLE_CACHE,
     PRESENTED_FILE_LIVE_CACHE,
@@ -46,7 +53,7 @@ from niuu.domain.session_description import (
 from niuu.domain.session_endpoint import public_session_endpoint
 from niuu.domain.text_projection import projection_revision
 from niuu.forge_mcp.models import ForgeMcpGrant
-from niuu.room_access import ROOM_ROLE_HEADER
+from niuu.room_access import ROOM_CALLER_SESSION_HEADER, ROOM_ROLE_HEADER
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turns, is_elided_input
 from skuld.conversation_snapshot import (
     ConversationSnapshotTooLargeError,
@@ -995,38 +1002,34 @@ class RelayedMessageSender(BaseModel):
     session_id: UUID
     session_name: str = Field(default="", max_length=200)
     instance_name: str = Field(min_length=1, max_length=200)
-    project_id: UUID | None = None
-    parent_session_id: UUID | None = None
 
 
 class RelayedSessionMessage(BaseModel):
-    """A session-to-session message relayed from another Guild node (LEX-1710)."""
+    """A session-to-session message relayed from another Guild node (LEX-1710).
+
+    ``peer`` is a room host's claim about who spoke (``PeerEnvelope`` body block); the
+    owning node stamps the host as ``relayed_by`` from ``sender``.
+    """
 
     content: str = Field(min_length=1)
     request_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._:-]{1,200}$")
+    in_reply_to: str = Field(default="", max_length=200)
+    urgent: bool = False
+    peer: dict[str, Any] | None = None
     sender: RelayedMessageSender
 
 
 def relay_refusal(sender: RelayedMessageSender, target: Session) -> str | None:
     """Why a relayed message may not reach ``target``, or ``None`` when it may.
 
-    A worker may message its parent and the sessions of its own project; nothing
-    wider crosses nodes (LEX-1710).
+    A session may message anything its owner owns, on any node of the Guild (decided
+    2026-11-08). The relay arrives with the owner's credential and the route checks the
+    target belongs to that owner, so the only refusal left here is a session messaging
+    itself.
     """
-    if sender.parent_session_id is not None and sender.parent_session_id == target.id:
-        return None
-    target_project = target.coordination.project_id if target.coordination else None
-    if sender.project_id is not None and sender.project_id == target_project:
-        return None
-    if sender.project_id is None:
-        return (
-            f"Session {sender.session_id} belongs to no project, so it may message only its "
-            "parent on another node; this session is not its parent"
-        )
-    return (
-        f"Session {target.id} is not in the sender's project ({sender.project_id}) and is not "
-        "its parent; across nodes a session may message only those"
-    )
+    if sender.session_id == target.id:
+        return f"Session {target.id} cannot message itself"
+    return None
 
 
 class SessionImportRequest(BaseModel):
@@ -4190,7 +4193,7 @@ def create_router(
     async def post_session_room(
         request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
-        operation: Literal["direct", "join", "leave", "workflow-events"] = Path(
+        operation: Literal["direct", "join", "leave", "workflow-events", "session-message"] = Path(
             description="Room operation on the session's broker"
         ),
     ) -> Response:
@@ -4213,8 +4216,13 @@ def create_router(
             )
         # Stamped only after the ownership check above, as the gate route stamps
         # approver: the broker reads its caller's room role from this header.
+        stamped = {ROOM_ROLE_HEADER: "owner"}
+        if principal.token_use == FORGE_SESSION_TOKEN_USE and principal.bound_session_id:
+            # The verified calling session, for the room's membership check. It is never
+            # taken from the request: the proxy forwards no caller header but these.
+            stamped[ROOM_CALLER_SESSION_HEADER] = principal.bound_session_id
         response = await _proxy_session_api(
-            request, session_id, "room", operation, extra_headers={ROOM_ROLE_HEADER: "owner"}
+            request, session_id, "room", operation, extra_headers=stamped
         )
         return Response(
             content=response.content,
@@ -4245,10 +4253,6 @@ def create_router(
         rejection raises 502; an unreachable pod raises 409. ``unconfirmed`` is never
         returned as success.
         """
-        import ssl
-
-        from websockets.asyncio.client import connect
-
         content = body.get("content", "")
         if not isinstance(content, str) or not content.strip():
             raise HTTPException(
@@ -4265,6 +4269,12 @@ def create_router(
 
         # Verify the caller owns this session
         principal = await extract_principal(request)
+        session = await _message_target(session_id, principal)
+        frame = await _message_frame(principal, session, content, req_id, body)
+        return await _deliver_session_frame(request, session_id, session, req_id, frame)
+
+    async def _message_target(session_id: UUID, principal: Principal) -> Session:
+        """The live session a message is for, once the caller is known to own it."""
         try:
             session, _ = await forge.get_session_proxy_target(session_id)
         except LookupError:
@@ -4280,8 +4290,102 @@ def create_router(
         if session.owner_id and session.owner_id != principal.user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to message this session",
+                detail="Not authorized to message this session: it belongs to another owner",
             )
+        return session
+
+    def _session_address(session: Session) -> PeerAddress:
+        return PeerAddress(
+            kind=PeerKind.SESSION,
+            id=str(session.id),
+            name=session.name,
+            node=session_status_host or "",
+        )
+
+    async def _message_frame(
+        principal: Principal,
+        session: Session,
+        content: str,
+        req_id: str,
+        body: dict,
+    ) -> dict[str, Any]:
+        """The WebSocket frame for a message: an envelope from a session, a user turn otherwise.
+
+        A session caller's envelope is stamped here from its verified credential and the
+        live session row; the sender is never read from the body. A person keeps the plain
+        user turn.
+        """
+        if principal.token_use != FORGE_SESSION_TOKEN_USE:
+            if "peer" in body:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="peer is for a session credential relaying a room message",
+                )
+            return {"type": "user", "content": content, "request_id": req_id}
+        forged = sorted(STAMPED_BODY_KEYS & body.keys())
+        if forged:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"{', '.join(forged)} is stamped by Forge from your session credential "
+                    "and cannot be set in the request"
+                ),
+            )
+        if not principal.bound_session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="A session credential names the session it is bound to",
+            )
+        caller = await forge.get_session(UUID(principal.bound_session_id))
+        if caller is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Calling session not found: {principal.bound_session_id}",
+            )
+        in_reply_to = body.get("in_reply_to") or ""
+        urgent = body.get("urgent", False)
+        if not isinstance(in_reply_to, str) or not isinstance(urgent, bool):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="in_reply_to must be a string and urgent true or false",
+            )
+        caller_address = _session_address(caller)
+        recipient = _session_address(session)
+        try:
+            if "peer" in body:
+                message = build_relayed_message(
+                    relayed_by=caller_address,
+                    recipient=recipient,
+                    speech=RelayedSpeech.from_body(body["peer"]),
+                    content=content,
+                    request_id=req_id,
+                    in_reply_to=in_reply_to,
+                    urgent=urgent,
+                )
+            else:
+                message = build_session_message(
+                    sender=caller_address,
+                    recipient=recipient,
+                    content=content,
+                    request_id=req_id,
+                    in_reply_to=in_reply_to,
+                    urgent=urgent,
+                )
+        except PeerMessageError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return {"type": PEER_MESSAGE_FRAME, "envelope": message.to_wire(), "request_id": req_id}
+
+    async def _deliver_session_frame(
+        request: Request,
+        session_id: UUID,
+        session: Session,
+        req_id: str,
+        frame: dict[str, Any],
+    ) -> Response:
+        """Send ``frame`` to the session's broker and answer from its delivery ACK."""
+        import ssl
+
+        from websockets.asyncio.client import connect
 
         ws_url = session.chat_endpoint
         # An instruction sender needs delivery ACKs, not the whole conversation.
@@ -4334,9 +4438,7 @@ def create_router(
                 # delay or drop the first user turn for transports that emit
                 # welcome or capability events while still coming online.
                 dispatch_attempted = True
-                await ws.send(
-                    json.dumps({"type": "user", "content": content, "request_id": req_id})
-                )
+                await ws.send(json.dumps(frame))
 
                 # Hold the socket open until the broker ACKs delivery for THIS request_id,
                 # or a bounded grace elapses. Draining other frames meanwhile lets a
@@ -4469,11 +4571,11 @@ def create_router(
         """Deliver a session-to-session message relayed from another Guild node.
 
         The sender's home node has verified the sender's session credential and
-        attests who it is; this node allows the message only when the target is the
-        sender's parent or in the sender's project (LEX-1710), then delivers it like
-        ``POST /sessions/{id}/messages``, with the same delivered / pending / failed
-        answer. A session credential cannot call this route: a session sends from its
-        own node, which relays.
+        attests who it is; this node allows the message when the target belongs to the
+        same owner (anything an owner owns is reachable, on any node), then delivers it
+        as a peer message envelope like ``POST /sessions/{id}/messages``, with the same
+        delivered / pending / failed answer. A session credential cannot call this route:
+        a session sends from its own node, which relays.
         """
         principal = await extract_principal(request)
         if principal.token_use == FORGE_SESSION_TOKEN_USE:
@@ -4481,37 +4583,52 @@ def create_router(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="A session sends through POST /sessions/{id}/messages on its own node",
             )
-        target = await forge.get_session(session_id)
-        if target is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session not found: {session_id}",
-            )
+        target = await _message_target(session_id, principal)
         refusal = relay_refusal(data.sender, target)
         if refusal is not None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=refusal)
         sender = data.sender
-        name = (
-            f"{sender.session_name} ({sender.session_id})"
-            if sender.session_name
-            else str(sender.session_id)
+        sender_address = PeerAddress(
+            kind=PeerKind.SESSION,
+            id=str(sender.session_id),
+            name=sender.session_name,
+            node=sender.instance_name,
         )
-        framed = (
-            f"[Message from session {name} on {sender.instance_name}, relayed through the "
-            f"Guild]\n\n{data.content}"
-        )
+        req_id = data.request_id or str(uuid4())
+        try:
+            if data.peer is not None:
+                message = build_relayed_message(
+                    relayed_by=sender_address,
+                    recipient=_session_address(target),
+                    speech=RelayedSpeech.from_body(data.peer),
+                    content=data.content,
+                    request_id=req_id,
+                    in_reply_to=data.in_reply_to,
+                    urgent=data.urgent,
+                )
+            else:
+                message = build_session_message(
+                    sender=sender_address,
+                    recipient=_session_address(target),
+                    content=data.content,
+                    request_id=req_id,
+                    in_reply_to=data.in_reply_to,
+                    urgent=data.urgent,
+                )
+        except PeerMessageError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         logger.info(
             "Relayed message from session %s on %s to %s",
             _sanitize_log(sender.session_id),
             _sanitize_log(sender.instance_name),
             _sanitize_log(session_id),
         )
-        return await send_session_message(
+        return await _deliver_session_frame(
             request,
             session_id,
-            {"content": framed, "request_id": data.request_id}
-            if data.request_id
-            else {"content": framed},
+            target,
+            req_id,
+            {"type": PEER_MESSAGE_FRAME, "envelope": message.to_wire(), "request_id": req_id},
         )
 
     @router.get(
