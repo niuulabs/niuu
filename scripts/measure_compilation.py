@@ -39,7 +39,7 @@ def summary(directory: Path) -> str:
         record = json.loads(path.read_text())
         lines.append(
             f"| {record['target']} | {record['seconds']:.3f} | {record['exit_code']} "
-            f"| {bool(record['compiler_cache_match'])} | {record['postgres_cache_hit']} |"
+            f"| {bool(record['compiler_cache_match'])} | {record['postgres_cache_hit'] == 'true'} |"
         )
     lines.extend(
         ["", "See compilation artifacts for toolchain, cache keys and ccache hit/miss counts."]

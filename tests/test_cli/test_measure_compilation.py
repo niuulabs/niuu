@@ -28,4 +28,4 @@ def test_measure_preserves_exit_status_and_reports_duration(tmp_path, exit_code)
     assert record["seconds"] > 0
     assert record["command"] == command
     report = measurement.summary(tmp_path)
-    assert f"| linux-amd64 | {record['seconds']:.3f} | {exit_code} | True | true |" in report
+    assert f"| linux-amd64 | {record['seconds']:.3f} | {exit_code} | True | True |" in report
