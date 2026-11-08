@@ -10,10 +10,9 @@ existing `cli.build` Nuitka onefile distribution on four native GitHub runners:
 | `niuu-darwin-amd64` | `macos-15-intel` |
 | `niuu-darwin-arm64` | `macos-15` |
 
-The workflow runs when build inputs change on `dev`, and can be dispatched
-manually from Actions. The implementation branch `codex/nuitka-binaries` also
-runs it so the pipeline can be verified before merging. Release builds call
-the same reusable workflow. These builds do not gate dev container releases.
+The workflow is opt-in: dispatch it manually from Actions when a binary or
+benchmark is needed. Release builds call the same reusable workflow. Routine
+`dev` pushes do not trigger native compilation.
 
 The web UI builds once and is downloaded by all four compilation jobs. Each
 binary bundles the existing package/resource selection, including migrations,

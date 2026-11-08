@@ -2,22 +2,6 @@ name: Niuu binary benchmarks
 
 on:
   workflow_dispatch:
-  push:
-    branches: [dev, codex/nuitka-binaries]
-    paths:
-      - src/**
-      - migrations/**
-      - vendor/**
-      - web-next/**
-      - pyproject.toml
-      - uv.lock
-      - Makefile
-      - scripts/build_postgres.sh
-      - scripts/postgres_nuitka_plugin.py
-      - scripts/measure_compilation.py
-      - scripts/check_quickstart.py
-      - .github/actions/setup-python-env/**
-      - .github/workflows/*cli*.yaml
 
 permissions:
   contents: read
