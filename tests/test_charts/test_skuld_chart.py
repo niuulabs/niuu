@@ -98,6 +98,31 @@ def test_no_persona_key_is_rendered_without_a_persona(chart):
     assert SkuldSettings(**config).session.persona is None
 
 
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_workflow_steps_are_off_unless_forge_marks_the_session_a_step_host():
+    assert _rendered_skuld_config("skuld")["workflow_steps"] == {"enabled": False}
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_step_host_session_reaches_runtime_configuration():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld", "--set-json", "workflowSteps=" + json.dumps({"enabled": True})
+    )
+
+    assert config["workflow_steps"] == {"enabled": True}
+    assert SkuldSettings(**config).workflow_steps.enabled is True
+
+
+def test_step_host_flag_survives_the_environment_a_local_broker_is_started_with(monkeypatch):
+    from skuld.config import SkuldSettings
+
+    monkeypatch.setenv("SKULD__WORKFLOW_STEPS__ENABLED", "true")
+
+    assert SkuldSettings().workflow_steps.enabled is True
+
+
 def test_persona_document_survives_the_environment_a_local_broker_is_started_with(monkeypatch):
     from skuld.config import SkuldSettings
 

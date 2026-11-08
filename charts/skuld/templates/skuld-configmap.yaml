@@ -116,6 +116,8 @@ data:
     workflow:
       evidence_verifier: {{ .Values.workflow.evidenceVerifier | toJson }}
       evidence_artifacts: {{ .Values.workflow.evidenceArtifacts | toJson }}
+    workflow_steps:
+      enabled: {{ .Values.workflowSteps.enabled | toJson }}
     persistence_mount_path: {{ .Values.persistence.mountPath | default "/volundr/sessions" | quote }}
     {{- if .Values.homeVolume.enabled }}
     persistent_home_path: {{ .Values.homeVolume.mountPath | quote }}

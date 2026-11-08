@@ -101,3 +101,42 @@ async def test_a_request_prompt_is_delivered_beside_the_persona_not_over_it() ->
 
     assert persona.values["session"] == {"persona": _document()}
     assert prompt.values["session"] == {"systemPrompt": "Focus on the migrations."}
+
+
+async def test_a_pinned_document_is_played_verbatim_without_the_catalog() -> None:
+    provider = AsyncMock(spec=SessionPersonaProvider)
+    contributor = PersonaContributor(persona_provider=provider)
+
+    result = await contributor.contribute(
+        _session(), SessionContext(workload_config={"persona_definition": _document("coder")})
+    )
+
+    assert result.values == {"session": {"persona": _document("coder")}}
+    provider.get.assert_not_awaited()
+
+
+async def test_a_pinned_document_needs_no_catalog_at_all() -> None:
+    result = await PersonaContributor().contribute(
+        _session(), SessionContext(workload_config={"persona_definition": _document("coder")})
+    )
+
+    assert result.values == {"session": {"persona": _document("coder")}}
+
+
+async def test_a_name_beside_a_pinned_document_is_refused() -> None:
+    contributor = PersonaContributor(persona_provider=AsyncMock(spec=SessionPersonaProvider))
+
+    with pytest.raises(ValueError, match="names a persona and also carries"):
+        await contributor.contribute(
+            _session(),
+            SessionContext(
+                workload_config={"persona": "coder", "persona_definition": _document("coder")}
+            ),
+        )
+
+
+async def test_a_name_without_a_catalog_is_refused_with_the_remedy() -> None:
+    with pytest.raises(ValueError, match="no persona catalog.*persona_definition"):
+        await PersonaContributor().contribute(
+            _session(), SessionContext(workload_config={"persona": "coder"})
+        )

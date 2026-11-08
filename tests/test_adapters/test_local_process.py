@@ -1205,6 +1205,37 @@ class TestProcessSpawning:
         assert json.loads(env["SKULD__SESSION__PERSONA"]) == persona
         assert env["SKULD__SESSION__SYSTEM_PROMPT"] == "Focus on migrations."
 
+    async def test_spawn_skuld_enables_workflow_steps_only_for_a_step_host(
+        self,
+        manager: LocalProcessPodManager,
+        git_session: Session,
+        default_spec: SessionSpec,
+        tmp_workspaces: Path,
+    ) -> None:
+        workspace = tmp_workspaces / str(git_session.id)
+        workspace.mkdir(parents=True)
+        step_host = SessionSpec(
+            values={"workflowSteps": {"enabled": True}}, pod_spec=PodSpecAdditions()
+        )
+        envs = []
+
+        for spec in (default_spec, step_host):
+            with (
+                patch.object(
+                    manager, "_resolve_claude_binary", return_value="/usr/bin/fake-claude"
+                ),
+                patch(
+                    "asyncio.create_subprocess_exec",
+                    new_callable=AsyncMock,
+                    return_value=MagicMock(pid=7),
+                ) as spawn,
+            ):
+                await manager._spawn_skuld(git_session, spec, workspace, 9100)
+            envs.append(spawn.call_args.kwargs["env"])
+
+        assert "SKULD__WORKFLOW_STEPS__ENABLED" not in envs[0]
+        assert envs[1]["SKULD__WORKFLOW_STEPS__ENABLED"] == "true"
+
     async def test_spawn_skuld_has_no_persona_without_one(
         self,
         manager: LocalProcessPodManager,
