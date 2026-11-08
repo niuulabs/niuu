@@ -77,33 +77,52 @@ When session credentials are enabled but no key is usable, Forge refuses to star
 the error names the remedy. Set `forge_mcp.session_tokens.enabled: false` to turn
 session credentials off on purpose: sessions then run on their broker credential and
 get no Forge MCP grants, while read tools and `notify` still work through the broker.
-The Volundr Helm chart leaves them off unless `workloadIdentity` is enabled with
-`signingKey.existingSecret` (the pod's root filesystem is read-only, so the key file
-cannot be created there); set `forgeMcp.session_tokens.enabled` to override.
+The Volundr Helm chart turns them on wherever Forge has a key it can keep:
+`workloadIdentity` enabled with `signingKey.existingSecret`, or
+`forgeMcp.session_tokens.signing_key_file` set to a path on a persistent volume you
+mount into the pod (the root filesystem is read-only, so the default key file under the
+home directory cannot be created, and a key kept only in the pod would be lost with it,
+invalidating every running session's credential and mesh certificate). Without a key
+they stay off, and `forgeMcp.session_tokens.enabled: true` without one fails the render
+with that remedy. `forgeMcp.session_tokens.enabled: false` turns them off wherever a
+key exists.
 `GET /api/v1/forge/feature-flags` reports `capabilities.forge_session_tokens` and
 `capabilities.forge_session_token_key` (`workload_identity` or `key_file`).
 
 ### Where the credential is delivered
 
 - **Local process mode (mini mode):** the broker's process environment.
+- **Docker container pod manager:** a private file. Forge writes the token (0600, in a
+  0700 directory beside the session's workspace) and bind-mounts it read-only at
+  `/run/secrets/niuu-forge-session/token`; only the file path and grants are in the
+  container's environment, which `docker inspect` prints. The container must run as
+  Forge's user (`run_as_host_user: true`, the default); with another user the launch is
+  refused. The file is rewritten on every start and removed when the session stops.
 - **Flux and Kubernetes pod managers:** a Secret per session, when
-  `forge_mcp.session_tokens.projection_adapter` is set (the Volundr chart's
-  `sessionCredentialProjection.enabled`). `KubernetesExecutionCredentialProjection`
+  `forge_mcp.session_tokens.projection_adapter` is set (the Volundr chart sets it, and
+  the Role for the Secrets, wherever session credentials are on; switch it off with
+  `sessionCredentialProjection.enabled: false`).
+  `KubernetesExecutionCredentialProjection`
   writes `forge-session-<session hex>` in the session namespace and mounts it
   read-only; the HelmRelease values carry only the file path (Skuld's
   `forge_mcp.token_file`), never the token, because values are readable by anyone who
   can read HelmReleases. The Secret is re-written on every start and deleted when the
-  session stops.
-- **OpenShell pod manager, or Flux/Kubernetes without a projection:** not delivered.
-  Forge does not mint for them; those sessions keep their broker credential and have
-  no grants.
+  session stops. The direct Kubernetes pod manager (`niuu platform` cluster mode) does
+  the same and mounts it into the broker container only; it also needs
+  `volundr_api_url`, the address session pods reach this Forge at (the CLI's cluster
+  defaults set it), and refuses a launch that has a credential and no URL.
+- **OpenShell pod manager:** a private file in the sandbox
+  (`~/.volundr/forge-session/token`, 0600) written before the broker starts.
+- **Flux/Kubernetes without a projection** (`sessionCredentialProjection.enabled:
+  false`): not delivered. Forge does not mint for them; those sessions keep their broker
+  credential and have no grants (and no mesh certificate).
 
 ## Grants
 
 | Grant | Adds scope | Tools |
 |---|---|---|
 | none | `forge:notify`, `forge:session:read`, `forge:session:secret` | `environment`, `notify`, `describe_session`, `list_notifications`, `list_sessions`, `get_session`, `session_transcript` |
-| `message` | `forge:session:message` | `send_message`, `message_status` |
+| `message` | `forge:session:message` | `send_message`, `ask`, `message_status`, `room_post`, and `reply` when the answer goes to a session or a room (see [agent messaging](agent-messaging.md)) |
 | `lifecycle` | `forge:session:lifecycle` | `create_session`, `start_session`, `stop_session` (never delete or archive) |
 
 A session's grants are the union of four sources:
@@ -119,8 +138,10 @@ A session's grants are the union of four sources:
 4. **The project role.** A session filed in a project carries the grants of its role
    (`coordination.role`) from `forge_mcp.role_grants`, applied at every mint. By
    default a `coordinator` gets `lifecycle` and `message`, so it can create, start,
-   stop and steer its workers. Workers, any role not listed and sessions in no project
-   get none. Set `role_grants: {}` to grant nothing by role.
+   stop and steer its workers, and a `worker` gets `message`, so it can hand work over,
+   ask and answer any session its owner owns (it still cannot create, start or stop
+   sessions). Any role not listed and sessions in no project get none. Set
+   `role_grants: {}` to grant nothing by role.
 
 Grants from the first two sources, and those an operator sets (below), are stored on
 the session row (`workload_config.forge_mcp.grants`), so they survive restarts and are
@@ -326,28 +347,28 @@ A session credential is local to the node that minted it. The Guild facade there
 To supervise sessions across nodes, use a PAT or your own identity against the Guild,
 or connect to that node's own endpoint.
 
-### Messages to the parent or project on another node (LEX-1710)
+### Messages to another node (LEX-1710, widened 2026-11-08)
 
-One exception, for `send_message` only: a session with the `message` grant can message
-**its parent session and the sessions of its own project** on another node of its Guild.
-Nothing wider crosses nodes.
+`send_message` reaches **any session its owner owns, on any node of its Guild**. The
+session's own node relays a message for a target it does not hold.
 
 1. The session sends `POST /sessions/{id}/messages` to its own node, as usual. That
    node has verified the credential. When the target is not local, it relays the
    message **without the credential** to
    `POST /api/v1/forge/sessions/{id}/messages/relayed` on the owning node. The body
-   carries the sender, as the home node attests it: session id and name, node name,
-   project, parent.
+   carries the sender, as the home node attests it: session id and name and node name.
+   It also carries the envelope fields the caller may set (`in_reply_to`, `urgent`, and
+   a room host's `peer` block, below).
    - The owning node is found among this host's registry, else through the Guild
      this host belongs to (`guild.url`).
    - A host with neither answers 404 and says to set `guild.url`.
-2. The owning node checks the relation against its own copy of the target session:
-   the target is the sender's `coordination.parent`, or it is in the sender's
-   `coordination.project_id`.
+2. The owning node checks the target belongs to the same owner (the relay arrives with
+   the owner's credential) and is not the sender itself.
    - Otherwise it refuses with 403 and the reason.
-   - If the relation holds, it delivers through the normal route, with the same
-     delivered / pending / failed answer. The message is prefixed with
-     `[Message from session <name> (<id>) on <node>, relayed through the Guild]`.
+   - If it does, it builds the **peer message envelope** from the attested sender and
+     delivers it through the normal route, with the same delivered / pending / failed
+     answer. The old `[Message from session … relayed through the Guild]` text prefix is
+     gone: the sender is the envelope's own field.
 3. A session credential cannot call the relay route itself (403); it is not on the
    session allow-list.
 
@@ -457,6 +478,7 @@ forge_mcp:
   default_grants: []                 # message, lifecycle: added to every session
   role_grants:                       # by project role (coordination.role), at every mint
     coordinator: [lifecycle, message]   # the default; {} grants nothing by role
+    worker: [message]                   # the default
   session_tokens:
     enabled: true                    # false: no session credentials, no grants
     ttl_seconds: 2592000             # backstop; revocation is tied to the launch
@@ -465,6 +487,8 @@ forge_mcp:
     issuer: niuu-forge-session       # for tokens signed with the key file
     key_id: niuu-forge-session
     audiences: [volundr-api]
+  mesh_identity:
+    ttl_seconds: 900                 # how long a leaked or stale certificate is believed
   http:
     enabled: true
     allowed_origins: []              # browser origins allowed to call /api/v1/forge/mcp
@@ -484,6 +508,42 @@ Skuld (normally set by Forge, not by hand):
 |---|---|
 | `SKULD__FORGE_MCP__TOKEN` | The session credential. It is only the bearer for MCP-proxied Forge calls. |
 | `SKULD__FORGE_MCP__GRANTS` | Optional narrowing of the token's grants (`message,lifecycle` or a JSON list). Unset keeps the token's grants. |
+
+## Mesh identity (sender proof)
+
+A session's Skuld proves to other mesh peers who sent a message with a short-lived
+certificate (`token_use: mesh_peer`, audience `niuu-mesh`) that Forge signs with the same
+key as the session credentials. The session's own credential (scope `forge:mesh:identity`,
+on every session) obtains it:
+
+```
+POST /api/v1/forge/sessions/{session_id}/mesh-identity
+{"public_key": "<raw 32-byte Ed25519 key, base64url>", "peer_id": "<id>", "mesh_realm": "<realm or empty>"}
+-> {"certificate": "<jwt>", "jwks": {...}, "issuer": "...", "ttl_seconds": 900,
+    "expires_at": 1790000000, "memberships": ["tenant:<tenant id>"]}
+```
+
+Forge decides everything the certificate says; the peer supplies only its key, the peer id it
+wants and its realm. Errors: `401` the credential is revoked (session gone, restarted,
+stopped or archived), `403` not the session's own credential, `409` the peer id is held by
+another live session or resident, `422` the key is not a raw Ed25519 key or the body is
+malformed, `503` this Forge runs without a mesh identity (session credentials are off, or
+`mesh.attestation.required` is false, the one switch for mesh signing: see
+`docs/operator/agent-messaging.md`).
+
+- **Memberships.** `tenant:<tenant id>` from the session row. A Forge session has no link to
+  a resident runtime's flock or realm, so no `flock:` or `realm:` membership is issued to
+  one. Forge-hosted resident peers are certified in process as `resident` with
+  `flock:<flock id>`, `realm:<realm id>` (when set) and `tenant:<tenant id>`.
+- **Peer ids** are exclusive (`mesh_peer_claims`): a free, expired or same-holder peer id is
+  claimed in one atomic write. A claim lasts one certificate lifetime past its last renewal.
+- **Revocation.** When a session stops, restarts, is archived or deleted, Forge frees its
+  peer ids and, when it has a Sleipnir bus (`sleipnir.enabled`), publishes a signed notice on
+  `mesh.revocation` in the realm the session joined. Without a bus, or if publishing fails
+  (logged at error and counted as `degraded.mesh.revocation.publish`), `ttl_seconds` is the
+  only bound.
+- **No Forge route admits the certificate**, so a peer that receives one cannot replay it
+  against Forge. Without `forge_mcp.session_tokens` there is no mesh identity.
 
 ## Threat model
 

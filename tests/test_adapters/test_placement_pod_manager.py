@@ -254,6 +254,14 @@ def test_a_session_credential_is_minted_only_when_both_deliver_it():
     assert not _placement(delivers=False)[0].delivers_forge_session_token
 
 
+def test_a_session_credential_follows_the_manager_that_runs_the_session():
+    """A pool that delivers nothing (no runtime configured) does not starve local sessions."""
+    placement, _, _ = _placement(delivers=False)
+
+    assert placement.delivers_forge_session_token_for(_session())
+    assert not placement.delivers_forge_session_token_for(_session(host_selector={"tags": []}))
+
+
 async def test_startup_stages_come_from_the_child_that_runs_the_session():
     placement, _, _ = _placement()
 

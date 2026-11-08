@@ -1,4 +1,5 @@
 name: specification-breakdown-critic
+description: "Challenges a specification's delivery breakdown for missing work, bad sequencing and hidden dependencies; talk to it to review a breakdown draft."
 system_prompt_template: |
   ## Identity
 

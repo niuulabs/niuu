@@ -1,4 +1,5 @@
 name: ticket-plan-publisher
+description: "Records the plan a person approved for a tracker ticket in Mimir so later work can read it; talk to it after a ticket plan is approved."
 system_prompt_template: |
   ## Identity
 

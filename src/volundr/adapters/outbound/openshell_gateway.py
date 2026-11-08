@@ -54,6 +54,7 @@ from volundr.adapters.outbound.local_process import (
     FORGE_MCP_TOKEN_FILE_ENV,
     LocalProcessPodManager,
 )
+from volundr.adapters.outbound.mesh_settings import mesh_environment, parse_mesh_settings
 from volundr.adapters.outbound.openshell_contract import (
     DEFAULT_SANDBOX_ATTACHABLE_LABELS,
     OPENSHELL_WORKSPACE,
@@ -1118,6 +1119,9 @@ class OpenShellGatewayPodManager(
         the sandbox before it starts (``FORGE_SESSION_TOKEN_FILE`` under its home)."""
         return True
 
+    #: Takes Skuld's ``mesh`` settings and hands them to every session (``mesh_settings``).
+    carries_mesh_setting = True
+
     def __init__(
         self,
         *,
@@ -1145,6 +1149,7 @@ class OpenShellGatewayPodManager(
         ),
         credential_token_endpoint: str = DEFAULT_CREDENTIAL_TOKEN_ENDPOINT,
         volundr_api_url: str = "",
+        mesh: dict | str | None = None,
         workload_audience: str = "volundr-api",
         workload_audiences: list[str] | None = None,
         workload_roles: list[str] | None = None,
@@ -1255,6 +1260,7 @@ class OpenShellGatewayPodManager(
         self._resident_delete_timeout = float(resident_sandbox_delete_timeout_seconds)
         self._credential_token_endpoint = credential_token_endpoint
         self._volundr_api_url = volundr_api_url.rstrip("/")
+        self._mesh = parse_mesh_settings(mesh)
         self._workload_audience = workload_audience
         self._workload_audiences = tuple(workload_audiences or [workload_audience])
         self._workload_roles = tuple(workload_roles or ["volundr:developer"])
@@ -4744,6 +4750,7 @@ class OpenShellGatewayPodManager(
         env["SKULD__VOLUNDR_API_URL"] = str(
             spec.values.get("volundr", {}).get("apiUrl") or self._volundr_api_url
         )
+        env.update(mesh_environment(self._mesh))
 
         sandbox_env = {key: value for key, value in env.items() if _safe_env_var(key, value)}
 

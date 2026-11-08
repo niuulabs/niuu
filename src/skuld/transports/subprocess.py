@@ -344,6 +344,7 @@ class SubprocessTransport(CLITransport):
             skills=True,
             # ``claude -p`` emits system/init only after reading its first message.
             announces_ready=False,
+            send_runs_turn=True,
         )
 
     @property

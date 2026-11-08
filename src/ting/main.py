@@ -8,6 +8,7 @@ import sys
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import Depends, FastAPI, Request, Response
 from starlette.responses import JSONResponse
@@ -19,6 +20,13 @@ from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
+from niuu.mesh.attestation import MeshSigner
+from niuu.mesh.platform_events import SigningBus
+from niuu.mesh.platform_identity import (
+    platform_event_verifier,
+    start_platform_signer,
+    verifier_for,
+)
 from niuu.observability import enable_trace_log_correlation
 from niuu.ports.delivery import EvidenceAuthenticator
 from niuu.ports.integrations import IntegrationRepository
@@ -583,6 +591,37 @@ async def _integration_repository(settings: Settings, pool):
     yield PostgresIntegrationRepository(pool)
 
 
+def mesh_signing_report(*, required: bool, has_bus: bool) -> dict[str, Any]:
+    """What Ting's ``/health`` says about platform-event signing.
+
+    ``no_bus`` means Ting has no Sleipnir bus, so it publishes and acts on no platform
+    events and there is nothing to sign, which is not the same as signing switched off.
+    """
+    if not required:
+        return {"required": False, "state": "unauthenticated"}
+    if not has_bus:
+        return {"required": True, "state": "no_bus"}
+    return {"required": True, "state": "signed"}
+
+
+async def start_ting_platform_signer(
+    settings: Settings, sleipnir_bus: object | None
+) -> MeshSigner | None:
+    """Ting's platform-event signer, or ``None`` when Ting has no bus.
+
+    Without a bus Ting publishes no platform events and its event triggers, which
+    subscribe to the bus, act on none, so there is nothing to sign or check and no
+    signing key is needed. With a bus, signing follows ``mesh.attestation`` as everywhere.
+    """
+    if sleipnir_bus is None:
+        return None
+    return await start_platform_signer(
+        "ting",
+        settings.mesh.attestation,
+        workload_identity=settings.workload_identity,
+    )
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -853,6 +892,25 @@ def create_app(
             if settings.sleipnir.enabled:
                 sl_cls = import_class(settings.sleipnir.adapter)
                 sleipnir_bus = sl_cls(**settings.sleipnir.kwargs)
+            # Platform events are signed as service:ting; the same signer's keys verify the
+            # events Ting acts on. With mesh.attestation.required false both are off (logged).
+            # Without a bus Ting publishes no platform events and its triggers (which need
+            # the bus) act on none, so there is nothing to sign or check and no key is needed.
+            platform_signer = await start_ting_platform_signer(settings, sleipnir_bus)
+            app.state.mesh_signing = mesh_signing_report(
+                required=settings.mesh.attestation.required,
+                has_bus=sleipnir_bus is not None,
+            )
+            platform_verifier = (
+                platform_event_verifier(
+                    verifier_for(platform_signer, settings.mesh.attestation),
+                    settings.mesh.attestation,
+                )
+                if platform_signer is not None
+                else None
+            )
+            if sleipnir_bus is not None and platform_signer is not None:
+                sleipnir_bus = SigningBus(sleipnir_bus, platform_signer)
 
             persona_source: PersonaPort | None = FilesystemPersonaAdapter()
             app.state.persona_source = persona_source
@@ -1537,6 +1595,7 @@ def create_app(
                         volundr_factory=app.state.volundr_factory,
                         event_bus=event_bus,
                         config=et_cfg,
+                        platform_verifier=platform_verifier,
                     )
                     await event_trigger_adapter.start()
                     app.state.event_trigger_adapter = event_trigger_adapter
@@ -1551,6 +1610,8 @@ def create_app(
             # Lifecycle cleanup
             if event_trigger_adapter is not None:
                 await event_trigger_adapter.stop()
+            if platform_signer is not None:
+                await platform_signer.stop()
             if stuck_sweeper is not None:
                 await stuck_sweeper.stop()
             await subscriber.stop()
@@ -1594,8 +1655,12 @@ def create_app(
 
     @app.get("/health")
     @app.get("/api/v1/ting/health", include_in_schema=False)
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health(request: Request) -> dict[str, Any]:
+        body: dict[str, Any] = {"status": "ok"}
+        signing = getattr(request.app.state, "mesh_signing", None)
+        if signing is not None:
+            body["mesh_attestation"] = signing
+        return body
 
     return app
 

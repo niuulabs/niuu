@@ -1,4 +1,5 @@
 name: saga-plan-publisher
+description: "Records an approved saga plan as a short note in Mimir; talk to it after a plan is approved."
 system_prompt_template: |
   ## Identity
 

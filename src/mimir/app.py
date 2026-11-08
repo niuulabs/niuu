@@ -28,12 +28,14 @@ from fastapi.responses import JSONResponse
 from identity.adapters.jwks import JwksBearerAuthenticationAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.config import MimirServiceConfig
+from mimir.facts import FactCallerResolver, FactService
 from mimir.live_activity import LiveActivityRecorder
 from mimir.mcp import MimirMcpServer
 from mimir.registry import MimirRegistryStore
 from mimir.router import MimirRouter
 from niuu.domain.services.token_scope import credential_allows_route
 from niuu.ports.identity import InvalidTokenError
+from niuu.ports.mimir_facts import MimirFactPort
 from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,
@@ -185,6 +187,23 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         auth_mode=auth_mode,
         live_activity=live_activity,
     )
+    fact_port = None
+    fact_service = None
+    fact_callers = None
+    if config.facts is not None:
+        fact_cls = import_class(config.facts.adapter)
+        if not (isinstance(fact_cls, type) and issubclass(fact_cls, MimirFactPort)):
+            raise ValueError(
+                f"facts.adapter {config.facts.adapter!r} is not a MimirFactPort; "
+                "name a class that implements niuu.ports.mimir_facts.MimirFactPort"
+            )
+        fact_port = fact_cls(**config.facts.kwargs)
+        fact_service = FactService(
+            fact_port, source=config.name, chars_per_token=config.facts.chars_per_token
+        )
+        fact_callers = FactCallerResolver(
+            config.facts.trust.role_levels, config.facts.trust.scope_levels
+        )
     mcp_server = MimirMcpServer(
         adapter=adapter,
         name=config.name,
@@ -192,6 +211,8 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         auth_mode=auth_mode,
         live_activity=live_activity,
         platform_tenant_id=config.platform_tenant_id,
+        facts=fact_service,
+        fact_callers=fact_callers,
     )
 
     @asynccontextmanager
@@ -210,6 +231,9 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         finally:
             if deployment is not None:
                 await deployment.close()
+            close_facts = getattr(fact_port, "close", None)
+            if close_facts is not None:
+                await close_facts()
 
     app = FastAPI(
         title=f"Mímir — {config.name}",

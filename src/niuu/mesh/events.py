@@ -21,6 +21,7 @@ class MeshEventType(StrEnum):
     OUTCOME = "outcome"  # emitted when persona produces outcome (mesh event routing)
     HELP_NEEDED = "help_needed"  # emitted when persona needs human input to proceed
     USAGE = "usage"  # emitted when a turn reports token usage for session accounting
+    REVOCATION = "revocation"  # Forge: a session stopped; peers drop it (never shown in rooms)
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,9 @@ class MeshEvent:
     root_correlation_id: str = ""  # Traces back to the original trigger across the event chain
     trace_context: dict[str, str] = field(default_factory=dict)
     event_id: str = field(default_factory=lambda: uuid4().hex)
+    #: Proof of who published it (``niuu.mesh.attestation``): set by the publisher's
+    #: signing mesh, checked by the receiver's. Empty on an event nobody signed.
+    attestation: dict = field(default_factory=dict)
 
     @classmethod
     def thought(

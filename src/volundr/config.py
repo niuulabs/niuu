@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -62,6 +62,7 @@ from niuu.domain.presented_files import (
 )
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.forge_mcp.models import ForgeMcpGrant
+from niuu.mesh.config import MeshSettings
 from personas.config import PersonaSourceConfig
 from skuld.tool_result_preview import PREVIEW_EDGE_LIMIT, PREVIEW_MAX_EDGE, PREVIEW_MIN_EDGE
 from volundr.compute.config import ComputeConfig
@@ -1802,6 +1803,31 @@ class ForgeMcpSessionTokenConfig(BaseModel):
     )
 
 
+class ForgeMcpMeshIdentityConfig(BaseModel):
+    """The mesh certificate Forge issues to a session's peer (``POST .../mesh-identity``).
+
+    A certificate proves to other mesh peers who sent a message (``niuu.mesh.attestation``).
+    It is signed with the same key as the ``forge_session`` credentials, so it exists only
+    where ``forge_mcp.session_tokens`` is enabled; with that enabled, the mesh identity
+    must come up too, and Forge refuses to start when it cannot. Whether the mesh proves
+    its senders at all is the one decision ``mesh.attestation.required``: with it false
+    Forge issues no certificates, signs nothing and publishes no revocations. There is no
+    separate switch here, so the two cannot disagree.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ttl_seconds: int = Field(
+        default=900,
+        ge=2,
+        description="Lifetime of a mesh certificate. It bounds how long a leaked or stale "
+        "certificate is believed by other peers (a stopped session is also revoked at once "
+        "when Forge has an event bus; without one this is the only bound). Peers renew "
+        "in the background at half of it, so a shorter value means more renewal calls to "
+        "Forge and a longer one a longer exposure.",
+    )
+
+
 class ForgeMcpHttpConfig(BaseModel):
     """The Forge-hosted MCP endpoint (``POST /api/v1/forge/mcp``) for external agents."""
 
@@ -1885,10 +1911,14 @@ class ForgeMcpConfig(BaseModel):
           default_grants: []          # message, lifecycle: added to every session
           role_grants:                # by project role (coordination.role)
             coordinator: [lifecycle, message]
+            worker: [message]
           session_tokens:
             enabled: true
             ttl_seconds: 2592000
             signing_key_file: ~/.niuu/forge-session-signing-key.pem
+          mesh_identity:
+            enabled: true
+            ttl_seconds: 900
           http:
             enabled: true
             allowed_origins: []
@@ -1902,12 +1932,15 @@ class ForgeMcpConfig(BaseModel):
     role_grants: dict[str, list[ForgeMcpGrant]] = Field(
         default_factory=lambda: {
             "coordinator": [ForgeMcpGrant.LIFECYCLE, ForgeMcpGrant.MESSAGE],
+            "worker": [ForgeMcpGrant.MESSAGE],
         },
         description="Grants a session's credential carries by its project role "
-        "(coordination.role), applied at every mint. A role not listed gets none; "
-        "set {} to grant nothing by role.",
+        "(coordination.role), applied at every mint. A worker may message any session "
+        "its owner owns (to hand work over, ask or answer); it cannot create, start or "
+        "stop sessions. A role not listed gets none; set {} to grant nothing by role.",
     )
     session_tokens: ForgeMcpSessionTokenConfig = Field(default_factory=ForgeMcpSessionTokenConfig)
+    mesh_identity: ForgeMcpMeshIdentityConfig = Field(default_factory=ForgeMcpMeshIdentityConfig)
     http: ForgeMcpHttpConfig = Field(default_factory=ForgeMcpHttpConfig)
 
 
@@ -3586,6 +3619,7 @@ class Settings(BaseSettings):
     artifacts: ArtifactsConfig = Field(default_factory=ArtifactsConfig)
     host_identity: HostIdentityConfig = Field(default_factory=HostIdentityConfig)
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
+    mesh: MeshSettings = Field(default_factory=MeshSettings)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
     auth_mode: str = Field(

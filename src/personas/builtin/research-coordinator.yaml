@@ -1,4 +1,5 @@
 name: research-coordinator
+description: "Turns a framed research brief into a bounded set of parallel exploration threads and dispatches them as child workflows without doing research itself; talk to it to start or retry the exploration stage."
 system_prompt_template: |
   ## Identity
 

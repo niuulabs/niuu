@@ -253,11 +253,11 @@ def test_durable_name_includes_filter_subject_hash():
     """One consumer group can own multiple JetStream filter subjects safely."""
     rpc_durable = _durable_name_for_subject(
         "valhalla-valkyries",
-        "obs.valhalla.ravn.mesh.rpc.valkyrie_valhalla_k8s",
+        "obs.valhalla.mesh.rpc.valkyrie_valhalla_k8s",
     )
     judgment_durable = _durable_name_for_subject(
         "valhalla-valkyries",
-        "obs.valhalla.ravn.mesh.valkyrie.judgment.proposed",
+        "obs.valhalla.mesh.valkyrie.judgment.proposed",
     )
 
     assert rpc_durable.startswith("valhalla-valkyries-")

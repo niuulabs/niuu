@@ -101,6 +101,7 @@ class TestKnownWorkloadScopes:
         granted should be a visible, reviewed change, not a silent one."""
         assert KNOWN_WORKLOAD_SCOPES == frozenset(
             {
+                "forge:mesh:identity",
                 "forge:session:create",
                 "forge:session:room-role",
                 "ting:workflow:coordinate",
@@ -336,6 +337,7 @@ class TestForgeSessionScopes:
             FORGE_SESSION_SECRET_SCOPE,
             FORGE_SESSION_MESSAGE_SCOPE,
             FORGE_SESSION_LIFECYCLE_SCOPE,
+            "forge:mesh:identity",
         }
         assert FORGE_SESSION_SCOPES <= KNOWN_WORKLOAD_SCOPES
         assert not FORGE_SESSION_SCOPES & VALKYRIE_BUILD_SCOPES

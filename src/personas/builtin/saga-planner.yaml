@@ -1,4 +1,5 @@
 name: saga-planner
+description: "Turns an approved planning brief into the bounded saga structure Ting accepts, naming real files in the repository; talk to it to draft or revise a saga plan."
 system_prompt_template: |
   ## Identity
 

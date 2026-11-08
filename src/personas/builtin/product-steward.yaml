@@ -1,4 +1,5 @@
 name: product-steward
+description: "Chats with an operator to sharpen a product idea, keeps the initiative's thread in Mimir, and launches research, planning or specification pipelines only when asked; talk to it to shape or follow a product initiative."
 system_prompt_template: |
   ## Identity
 

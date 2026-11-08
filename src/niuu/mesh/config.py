@@ -143,13 +143,89 @@ class MeshSleipnirConfig(BaseModel):
     """RabbitMQ-specific mesh settings for infra-mode mesh (NIU-517)."""
 
     exchange: str = Field(
-        default="ravn.mesh",
+        default="mesh",
         description="Topic exchange used for Ravn mesh pub/sub and RPC.",
     )
     rpc_timeout_s: float = Field(
         default=10.0,
         description="Default RPC reply timeout in seconds.",
     )
+
+
+class MeshAttestationConfig(BaseModel):
+    """Proof of who sent each mesh message (``niuu.mesh.attestation``).
+
+    On by default wherever the mesh is: a mesh peer signs what it sends with a key
+    that Forge certified, and verifies what it receives. Nothing here needs setting for
+    it to work; the knobs only tune it.
+    """
+
+    required: bool = Field(
+        default=True,
+        description=(
+            "Sign every mesh message and refuse every one that is not verifiably signed. "
+            "False is an operator decision to run an unauthenticated mesh (a peer then "
+            "accepts any claimed sender); with True, a peer that cannot get a certificate "
+            "from Forge does not start its mesh."
+        ),
+    )
+    renew_fraction: float = Field(
+        default=0.5,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Fraction of the certificate lifetime after which it is renewed in the "
+            "background. The lifetime itself is Forge's forge_mcp.mesh_identity.ttl_seconds."
+        ),
+    )
+    retry_fraction: float = Field(
+        default=0.1,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Fraction of the certificate lifetime between retries after a failed renewal. "
+            "Retries are counted; a certificate that expires before one succeeds makes "
+            "sending fail with the reason, and peers refuse what this peer signed."
+        ),
+    )
+    service_certificate_ttl_s: int = Field(
+        default=900,
+        ge=2,
+        description=(
+            "Lifetime of the certificate a platform service (Ting, Mímir, ...) issues itself "
+            "to sign the platform events it publishes. It bounds how long a leaked certificate "
+            "is believed; the service renews it at half of it."
+        ),
+    )
+    clock_skew_s: float = Field(
+        default=300.0,
+        gt=0.0,
+        description=(
+            "How far a request's signing time may differ from this peer's clock. Bounds "
+            "how long a captured request or reply could be replayed; a request outside it "
+            "is refused as stale."
+        ),
+    )
+    event_max_age_s: float = Field(
+        default=3600.0,
+        gt=0.0,
+        description=(
+            "Oldest a published event may be when it is received. Bounds replay of a "
+            "captured event. It must exceed the transport's redelivery window (JetStream "
+            "nak backoff) and any consumer-recovery replay window, or those redeliveries "
+            "are refused as stale and counted."
+        ),
+    )
+
+
+class MeshSettings(BaseModel):
+    """The one decision about proof of who sent a mesh message or published a platform event.
+
+    A top-level ``mesh`` section of Forge's, Ting's and every other platform service's
+    settings, with the same meaning in each. See :class:`MeshAttestationConfig`.
+    """
+
+    attestation: MeshAttestationConfig = Field(default_factory=MeshAttestationConfig)
 
 
 class DiscoveryMdnsConfig(BaseModel):

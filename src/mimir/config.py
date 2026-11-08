@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path as _Path
+from typing import Any
 
 from pydantic import AliasChoices, BaseModel, Field
 from pydantic_settings import (
@@ -178,6 +179,67 @@ class MimirObservabilityConfig(ObservabilityConfig):
     service_name: str = Field(default="mimir")
 
 
+class FactsTrustConfig(BaseModel):
+    """Who earns which trust level for the typed fact surface.
+
+    Trust comes from the authenticated identity, never from a request. The
+    levels are ``agent`` < ``tool`` < ``operator`` < ``person``.
+    """
+
+    role_levels: dict[str, str] = Field(
+        default={
+            "volundr:admin": "person",
+            "admin": "person",
+            "volundr:developer": "person",
+            "mimir:curator": "operator",
+        },
+        description=(
+            "Human role -> trust level. A person holding several roles gets the highest. "
+            "A human with none of these is refused, not given a default. Facts a person "
+            "writes are 'confirmed by a person'; a role mapped to 'operator' marks "
+            "curated knowledge."
+        ),
+    )
+    scope_levels: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Workload scope -> trust level, for a resident or session acting for a user. "
+            "Workloads are 'agent' unless a scope here maps to 'tool'; a level above "
+            "'tool' is rejected at startup, since a resident's own writing never "
+            "reaches the operator or person level."
+        ),
+    )
+
+
+class MimirFactsConfig(BaseModel):
+    """Typed facts (``mimir_fact_*`` tools). Omit the whole section to run without them."""
+
+    adapter: str = Field(
+        default="mimir.adapters.gbrain_facts.GBrainFactAdapter",
+        description=(
+            "Fully-qualified MimirFactPort class. gbrain is the default and the shipped "
+            "backend: embedded (PGlite) on a local install, PostgreSQL on a cluster, "
+            "both via the gbrain instance the knowledge deployment provisions."
+        ),
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Constructor kwargs for `adapter`: for gbrain, mcp_url, api_token_file and "
+            "signing_key_file (keep secrets in files)."
+        ),
+    )
+    trust: FactsTrustConfig = Field(default_factory=FactsTrustConfig)
+    chars_per_token: int = Field(
+        default=4,
+        ge=1,
+        description=(
+            "Characters per token that context_pack budgets with. gbrain budgets "
+            "the same way (a character-count estimate, not a tokenizer)."
+        ),
+    )
+
+
 class MimirServiceConfig(BaseSettings):
     """Configuration for a Mímir service instance (standalone or plugin).
 
@@ -326,6 +388,14 @@ class MimirServiceConfig(BaseSettings):
     )
     deployment: dict | None = Field(
         default=None, description="Dynamic knowledge deployment adapter and constructor kwargs."
+    )
+    facts: MimirFactsConfig | None = Field(
+        default=None,
+        description=(
+            "Typed facts with provenance and trust, served as the mimir_fact_* MCP tools. "
+            "None serves no fact tools: an operator's choice to run without them. When set "
+            "and the backend cannot be built, startup fails."
+        ),
     )
     ranking: RankingConfig = Field(
         default_factory=RankingConfig,

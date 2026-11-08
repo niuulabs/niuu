@@ -37,7 +37,7 @@ def _event(
     ravn_event: dict | None = None,
 ) -> SleipnirEvent:
     return SleipnirEvent(
-        event_type="ravn.mesh.activity.peer_1",
+        event_type="mesh.activity.peer_1",
         source=source,
         payload={
             "collaboration_events": events,

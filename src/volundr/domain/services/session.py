@@ -92,6 +92,7 @@ if TYPE_CHECKING:
     from sleipnir.ports.audit import AuditRepository
     from volundr.adapters.outbound.git_registry import GitProviderRegistry
     from volundr.domain.notification_ports import NotificationRecorder
+    from volundr.domain.services.mesh_identity import MeshIdentityRetirer
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +202,7 @@ class SessionService:
         presented_file_store: PresentedFileStore | None = None,
         forge_session_projection: ExecutionCredentialProjectionPort | None = None,
         secret_cleanup: SessionSecretCleanup | None = None,
+        mesh_identity: MeshIdentityRetirer | None = None,
     ):
         if forge_session_projection is not None and not forge_session_projection.supports(
             runtime_backend
@@ -212,6 +214,7 @@ class SessionService:
         self._repository = repository
         self._presented_file_store = presented_file_store
         self._secret_cleanup = secret_cleanup
+        self._mesh_identity = mesh_identity
         self._pod_manager = pod_manager
         self._git_registry = git_registry
         self._user_integration = user_integration
@@ -1060,6 +1063,8 @@ class SessionService:
             await self._secret_cleanup.purge_session(session_id)
 
         deleted = await self._repository.delete(session_id)
+        if deleted:
+            await self._retire_mesh_identity(session_id, launch_id_of(session.workload_config))
 
         # Run optional resource cleanup after session record is gone
         if deleted:
@@ -1105,6 +1110,17 @@ class SessionService:
         if self._secret_cleanup is None:
             return
         await self._secret_cleanup.cancel_for_session(session_id)
+
+    async def _retire_mesh_identity(self, session_id: UUID, launch_id: str | None) -> None:
+        """Free the launch's mesh peer ids and tell the mesh it ended.
+
+        Not guarded, like the secret requests: a claim that cannot be released is an
+        error for the caller. Publishing the revocation is the one part that never raises
+        (see ``MeshRevocationPublisher``); the certificate's lifetime bounds a lost notice.
+        """
+        if self._mesh_identity is None:
+            return
+        await self._mesh_identity.retire(session_id, launch_id)
 
     async def _cleanup_presented_files(self, session_id: UUID) -> None:
         """Drop the session's durable presented files (F2) with the session."""
@@ -1324,6 +1340,11 @@ class SessionService:
         project_context = session.workload_config.get("project_context", "")
         if project_context:
             workload_config = {**(workload_config or {}), "project_context": project_context}
+
+        # A restart ends the previous launch: its mesh peer ids are freed and its mesh
+        # certificates revoked, exactly like its session credential (a launch that was
+        # stopped first has nothing left to retire).
+        await self._retire_mesh_identity(session_id, launch_id_of(session.workload_config))
 
         # Forge MCP grants persist across restarts and every start is a new launch,
         # which revokes the previous launch's session credential.
@@ -1783,6 +1804,25 @@ class SessionService:
             return True
         return self._forge_session_projection is not None
 
+    def _delivers_forge_session_to(self, session: Session) -> bool:
+        """Whether the pod manager that runs *session* hands its broker the credential.
+
+        A placement manager runs a session on the local manager or on a compute pool, and
+        only the one that runs it matters: a pool with no runtime configured must not
+        stop a local session from getting its credential.
+        """
+        if self._forge_session_tokens is None:
+            return False
+        if self._pod_manager_delivers_to(session):
+            return True
+        return self._forge_session_projection is not None
+
+    def _pod_manager_delivers_to(self, session: Session) -> bool:
+        per_session = getattr(self._pod_manager, "delivers_forge_session_token_for", None)
+        if per_session is not None:
+            return bool(per_session(session))
+        return bool(getattr(self._pod_manager, "delivers_forge_session_token", False))
+
     async def issue_forge_session(self, session_id: UUID) -> IssuedForgeSessionToken | None:
         """Mint a credential for the session's current launch without starting a new one.
 
@@ -1811,7 +1851,7 @@ class SessionService:
         credential = self._mint_forge_session(session)
         if credential is None:
             return None
-        if getattr(self._pod_manager, "delivers_forge_session_token", False):
+        if self._pod_manager_delivers_to(session):
             return credential
         projected = await self._forge_session_projection.project(
             session_id=session.id,
@@ -1826,7 +1866,7 @@ class SessionService:
 
     def _mint_forge_session(self, session: Session) -> IssuedForgeSessionToken | None:
         """Mint this launch's scoped credential, when a broker can receive one."""
-        if not self.delivers_forge_session:
+        if not self._delivers_forge_session_to(session):
             return None
         launch_id = launch_id_of(session.workload_config)
         if launch_id is None:
@@ -2116,6 +2156,7 @@ class SessionService:
             )
             final = await self._repository.update(stopped)
             await self._cancel_secret_requests(session_id)
+            await self._retire_mesh_identity(session_id, launch_id_of(session.workload_config))
 
             if self._broadcaster is not None:
                 await self._broadcaster.publish_session_updated(final)
@@ -2169,6 +2210,7 @@ class SessionService:
             raise SessionStateError(session_id, "archive", session.status)
 
         await self._cancel_secret_requests(session_id)
+        await self._retire_mesh_identity(session_id, launch_id_of(session.workload_config))
 
         now = datetime.now(UTC)
         archived = session.model_copy(
@@ -2308,6 +2350,7 @@ class SessionService:
         final = await self._repository.update(updated)
         if final.status in _ENDED_STATUSES and session.status not in _ENDED_STATUSES:
             await self._cancel_secret_requests(final.id)
+            await self._retire_mesh_identity(final.id, launch_id_of(session.workload_config))
         if self._broadcaster is not None:
             await self._broadcaster.publish_session_updated(final)
         if session.status != SessionStatus.RUNNING and final.status == SessionStatus.RUNNING:

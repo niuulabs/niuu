@@ -1,4 +1,5 @@
 name: research-explorer-depth
+description: "Digs into the strongest threads of a research question for mechanisms and specifics, separating strong evidence from repetition; talk to it for a deep dive on one thread."
 system_prompt_template: |
   ## Identity
 

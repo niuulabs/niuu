@@ -6,15 +6,15 @@ Uses Sleipnir's publisher/subscriber ports, so the underlying transport
 **Pub/sub** — uses SleipnirPublisher/SleipnirSubscriber directly.
 
 **RPC (send)** — implemented as a pattern on top of pub/sub:
-1. Publishes request to ``ravn.mesh.rpc.<target_peer_id>``
-2. Subscribes to ``ravn.mesh.rpc.reply.<own_peer_id>.<nonce>``
+1. Publishes request to ``mesh.rpc.<target_peer_id>``
+2. Subscribes to ``mesh.rpc.reply.<own_peer_id>.<nonce>``
 3. Awaits reply with matching correlation_id
 4. Unsubscribes from reply topic
 
 This works regardless of underlying transport.
 
 **RPC (handle)** — requests for this peer arrive on
-``ravn.mesh.rpc.<own_peer_id>``; the registered handler's reply is published
+``mesh.rpc.<own_peer_id>``; the registered handler's reply is published
 to the request's ``reply_topic``.  A request is handled only once its reply is
 out: a failed reply publish raises, so a JetStream transport naks the request
 and redelivers it.
@@ -75,10 +75,15 @@ logger = logging.getLogger(__name__)
 def _sanitize_for_event_type(s: str) -> str:
     """Sanitize a string for use in Sleipnir event types.
 
-    Sleipnir event type segments require lowercase alphanumeric + underscores only.
-    Converts hyphens to underscores inside a segment.
+    Sleipnir event type segments require lowercase alphanumeric + underscores only, and
+    must start with a letter. Converts hyphens to underscores inside a segment, and puts
+    a ``p`` in front of one that starts with a digit (a session's UUID peer id does in 10
+    of 16 cases). Both ends of an address are built here, so they agree.
     """
-    return s.lower().replace("-", "_")
+    segment = s.lower().replace("-", "_")
+    if segment[:1].isdigit():
+        return f"p{segment}"
+    return segment
 
 
 def _sanitize_topic(topic: str) -> str:
@@ -112,6 +117,7 @@ def _ravn_to_sleipnir(
             "ravn_task_id": event.task_id,
             "ravn_root_correlation_id": event.root_correlation_id,
             "ravn_trace_context": event.trace_context,
+            "ravn_attestation": event.attestation,
             "ravn_environment_id": environment_id,
             "collaboration_events": project_mesh_event(event),
         },
@@ -123,7 +129,7 @@ def _ravn_to_sleipnir(
     )
 
 
-def _sleipnir_to_ravn(sleipnir_event: Any) -> MeshEvent:
+def sleipnir_to_mesh_event(sleipnir_event: Any) -> MeshEvent:
     """Convert SleipnirEvent back to MeshEvent."""
     payload = sleipnir_event.payload
     ravn_type_str = payload.get("ravn_type", "response")
@@ -146,7 +152,11 @@ def _sleipnir_to_ravn(sleipnir_event: Any) -> MeshEvent:
         root_correlation_id=payload.get("ravn_root_correlation_id", ""),
         trace_context=dict(payload.get("ravn_trace_context") or {}),
         event_id=payload.get("ravn_event_id") or uuid.uuid4().hex,
+        attestation=dict(payload.get("ravn_attestation") or {}),
     )
+
+
+_sleipnir_to_ravn = sleipnir_to_mesh_event
 
 
 class SleipnirMeshAdapter:

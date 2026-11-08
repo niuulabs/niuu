@@ -15,6 +15,7 @@ Organised by namespace:
 - ``VALKYRIE_*`` — Learned-tool lifecycle events a resident publishes
 - ``PARTICIPANT_*`` — Presence for agents, humans, tools, and surfaces
 - ``ROOM_*`` — Huddle/room lifecycle and transcript events
+- ``MESH_*`` — Mesh traffic between peers
 """
 
 from __future__ import annotations
@@ -429,6 +430,16 @@ ROOM_TRANSCRIPT_RECORDED: str = "room.transcript.recorded"
 
 #: A room was closed.
 ROOM_CLOSED: str = "room.closed"
+
+
+# ---------------------------------------------------------------------------
+# mesh — traffic between mesh peers
+# ---------------------------------------------------------------------------
+
+#: A mesh peer announced itself (join, heartbeat or leave). A mesh scoped to a realm
+#: announces on ``mesh.realm_<realm>.announce``. Published events ride ``mesh.<topic>`` and
+#: RPC legs ``mesh.rpc.<peer>``; both are dynamic and so are not listed here.
+MESH_ANNOUNCE: str = "mesh.announce"
 
 
 def known_event_types() -> frozenset[str]:

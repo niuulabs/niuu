@@ -431,12 +431,10 @@ class TransportLifecycleMixin:
                 # first message. Startup is complete; the session takes that
                 # message now, so it is idle, not starting.
                 asyncio.create_task(self._report_activity_state("idle"))
-            if self._settings.workflow_steps.enabled:
-                # A step restored from the durable log whose instructions never reached the
+            if self._settings.workflow_steps.enabled or self._peer_messages_waiting():
+                # A step or peer message restored from the durable log that never reached the
                 # harness is handed over now; one already handed over is left to its turn.
-                asyncio.create_task(
-                    self._maybe_inject_workflow_step(), name="workflow-step-restore-inject"
-                )
+                self._spawn_boundary_injection("restore-inject")
 
     async def shutdown(self) -> None:
         """Clean up on shutdown.

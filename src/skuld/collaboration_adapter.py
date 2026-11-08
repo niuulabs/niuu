@@ -15,7 +15,10 @@ from fastapi import WebSocket
 
 from niuu.collaboration import CollaborationEvent, CollaborationRoom, Participant
 from niuu.collaboration.room import matches_subscription
+from niuu.domain.peer_envelope import RelayedSpeech
+from niuu.domain.peer_message import PeerAddress, PeerKind, ReplyKind, ReplyRoute
 from niuu.observability import get_observability
+from skuld.room_delivery import RoomDelivery, RoomDeliveryError
 
 if TYPE_CHECKING:
     from skuld.channels import ChannelRegistry
@@ -29,7 +32,21 @@ PeerObserver = Callable[[str, str, dict[str, Any]], Awaitable[None]]
 PresencePublisher = Callable[[Any], Awaitable[None]]
 UsageReporter = Callable[[dict[str, Any]], Awaitable[None]]
 FrameEmitter = Callable[[dict[str, Any]], Awaitable[None]]
-SessionDeliverer = Callable[[str, str], Awaitable[bool]]
+
+
+#: Hands a delivery to the session a room member joined from, through Forge.
+SessionDeliverer = Callable[[str, RoomDelivery], Awaitable[bool]]
+#: The hosting session as a peer address (its id, name and node), for reply routes.
+HostIdentity = Callable[[], PeerAddress]
+
+
+def _participant_address(participant: Participant) -> PeerAddress:
+    """A room participant as the party that spoke."""
+    name = participant.display_name or participant.persona
+    if participant.session_id:
+        return PeerAddress(kind=PeerKind.SESSION, id=participant.session_id, name=name)
+    kind = PeerKind.PERSON if participant.participant_type == "human" else PeerKind.MESH_PEER
+    return PeerAddress(kind=kind, id=participant.peer_id, name=name)
 
 
 def _session_message(payload: dict[str, Any]) -> str:
@@ -265,9 +282,11 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         environment_id: str | None = None,
         clock: Callable[[], float] | None = None,
         deliver_to_session: SessionDeliverer | None = None,
+        host_identity: HostIdentity | None = None,
     ) -> None:
         self._config = config
         self._deliver_to_session = deliver_to_session
+        self._host_identity = host_identity
         self._channels = channels
         self._emit_frame = emit_frame
         self._append_turn = append_turn
@@ -594,12 +613,18 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         if not event_type:
             return
         payload = {**outcome, "type": "collaboration.outcome"}
+        failures: list[str] = []
         for participant in self.participants.values():
             if not matches_subscription(event_type, participant.subscribes_to):
                 continue
             if source_is_mesh and participant.participant_kind == "mesh":
                 continue
-            await self._deliver_to_peer(participant.peer_id, payload)
+            try:
+                await self._deliver_to_peer(participant.peer_id, payload)
+            except RoomDeliveryError as exc:
+                failures.append(str(exc))
+        if failures:
+            raise RoomDeliveryError("; ".join(failures))
 
     async def _handle_delegation(self, participant: Participant, event: dict[str, Any]) -> None:
         await self._channels.broadcast(
@@ -693,37 +718,102 @@ class SkuldCollaborationAdapter(CollaborationRoom):
 
     async def tell_joined_sessions(self, content: str) -> None:
         """Tell every agent that joined from another session what just happened here."""
+        failures: list[str] = []
         for participant in self.participants.values():
-            if participant.session_id:
+            if not participant.session_id:
+                continue
+            try:
                 await self._deliver_to_peer(
                     participant.peer_id, {"type": "directed_message", "content": content}
                 )
+            except RoomDeliveryError as exc:
+                failures.append(str(exc))
+        if failures:
+            raise RoomDeliveryError("; ".join(failures))
+
+    async def tell_member(self, peer_id: str, content: str, room_id: str) -> None:
+        """Tell one member of a room something, said in that room by this host."""
+        await self._deliver_to_peer(
+            peer_id,
+            {"type": "directed_message", "content": content, "metadata": {"room_id": room_id}},
+        )
 
     async def _deliver_to_peer(self, peer_id: str, payload: dict[str, Any]) -> bool:
         """Deliver over a peer's socket here, or to the session it joined from."""
         participant = self.participant(peer_id)
         if peer_id in self._websockets or participant is None or not participant.session_id:
             return await self._deliver_to_websocket(peer_id, payload)
-        if self._deliver_to_session is None:
-            raise RuntimeError(
+        if self._deliver_to_session is None or self._host_identity is None:
+            raise RoomDeliveryError(
                 f"Room member {peer_id} joined from session {participant.session_id}, "
                 "but this broker has no route to another session; set volundr_api_url"
             )
         message = _session_message(payload)
         if participant.notice_context:
             message = f"[{participant.notice_context}] {message}"
-        delivered = await self._deliver_to_session(participant.session_id, message)
+        delivery = RoomDelivery(
+            content=message,
+            speech=self._speech_for(participant, payload),
+            request_id=f"room-{uuid.uuid4().hex}",
+        )
+        try:
+            delivered = await self._deliver_to_session(participant.session_id, delivery)
+        except RoomDeliveryError:
+            get_observability().count(
+                "skuld.collaboration.deliveries", attributes={"outcome": "failed"}
+            )
+            raise
         get_observability().count(
             "skuld.collaboration.deliveries",
             attributes={"outcome": "delivered" if delivered else "failed"},
         )
         if not delivered:
-            logger.error(
-                "Could not deliver to room member %s in session %s",
-                peer_id,
-                participant.session_id,
+            raise RoomDeliveryError(
+                f"Could not deliver to room member {peer_id} in session {participant.session_id}"
             )
-        return delivered
+        return True
+
+    def _speech_for(self, recipient: Participant, payload: dict[str, Any]) -> RelayedSpeech:
+        """Who spoke, in which room, and where the recipient answers.
+
+        The speaker is the participant the payload names (a directed message's
+        ``participant_id``, an outcome's ``participantId``). A message nobody in the room
+        spoke, such as the host telling its members what happened, is the host's own.
+        """
+        assert self._host_identity is not None
+        host = self._host_identity()
+        metadata = payload.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        speaker_id = str(metadata.get("participant_id") or payload.get("participantId") or "")
+        speaker = self.participant(speaker_id) if speaker_id else None
+        return RelayedSpeech(
+            speaker=host if speaker is None else _participant_address(speaker),
+            room_id=self._room_for(recipient, speaker, metadata),
+            reply=ReplyRoute(kind=ReplyKind.ROOM, target=host.id, node=host.node),
+        )
+
+    def _room_for(
+        self, recipient: Participant, speaker: Participant | None, metadata: dict[str, Any]
+    ) -> str:
+        """The room a delivery was said in: named, shared with the speaker, or the only one."""
+        named = str(metadata.get("room_id") or "")
+        if named:
+            return named
+        rooms = recipient.room_ids
+        if speaker is not None:
+            shared = [room for room in rooms if room in speaker.room_ids]
+            rooms = tuple(shared) or rooms
+        if len(rooms) == 1:
+            return rooms[0]
+        if not rooms:
+            raise RoomDeliveryError(
+                f"Room member {recipient.peer_id} is in no room, so a message to it has no room "
+                "to be said in"
+            )
+        raise RoomDeliveryError(
+            f"Room member {recipient.peer_id} is in {len(rooms)} rooms ({', '.join(rooms)}) "
+            "and the message names none; pass room_id in the message metadata"
+        )
 
     async def _deliver_to_websocket(self, peer_id: str, payload: dict[str, Any]) -> bool:
         websocket = self._websockets.get(peer_id)

@@ -44,7 +44,7 @@ class MeshBuildError(RuntimeError):
 def mesh_event_prefix(environment_id: str = "") -> str:
     """Return the event namespace for one isolated mesh environment."""
     normalized = re.sub(r"[^a-z0-9_]", "_", environment_id.strip().lower()).strip("_")
-    return f"ravn.mesh.realm_{normalized}" if normalized else "ravn.mesh"
+    return f"mesh.realm_{normalized}" if normalized else "mesh"
 
 
 @runtime_checkable

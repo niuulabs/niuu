@@ -197,7 +197,9 @@ async def test_incomplete_hydration_preserves_existing_cache(tmp_path, failure, 
 
 
 async def test_unconfigured_resume_does_not_fetch_history(tmp_path):
-    broker = _broker(tmp_path)
+    # With the peer inbox on, every session restores its inbox from the log; without it, a
+    # fresh session that resumes nothing has nothing to fetch.
+    broker = _broker(tmp_path, peer_inbox={"enabled": False})
     broker._settings.session.resume_session_id = ""
     broker._get_http_client = AsyncMock()
     await broker._hydrate_conversation_history()

@@ -197,9 +197,89 @@ read-only; the HelmRelease values carry only the file path (Skuld's
 `forge_mcp.token_file`), never the token, and the Secret is deleted when the
 session stops. The broker uses it for Forge MCP calls and for durable
 presented-file uploads. The
-Volundr chart leaves `session_tokens` off unless workload identity signs with a
-configured key. When adding a NEW Forge route a session broker may call, add it
+Volundr chart turns `session_tokens` and this projection on wherever Forge has a signing key
+(workload identity with `signingKey.existingSecret`, or `forge_mcp.session_tokens.signing_key_file`);
+enabling them without one fails the render. When adding a NEW Forge route a session broker may call, add it
 to the allow-list and give it a `require_scope(...)` naming a `forge:*` scope.
+
+### Exception: mesh sender attestation (`mesh_peer` certificates)
+
+The mesh transports (Sleipnir over nng, NATS or RabbitMQ; the webhook adapter; in-process)
+authenticate a connection, never a sender: any member can put any session id, peer id or
+reply route in what it sends. A mesh peer therefore proves who it is with a Forge-signed
+certificate and an Ed25519 signature per message (`niuu.mesh.attestation`, applied by the
+`AttestedMesh` decorator in `niuu.adapters.mesh.attested`). The signature, not the
+transport, is what proves the sender on every transport; NATS credentials or subject
+permissions, where a deployment adds them, are an extra layer and never a substitute.
+
+The certificate is another scoped workload credential, sanctioned on the same grounds as
+`forge_session`: there is no OIDC principal for "this one mesh peer", and a peer that
+holds a bearer others could replay would be worse than one holding a private key that
+never leaves its process.
+
+- `token_use: "mesh_peer"`, `aud: ["niuu-mesh"]`, **no scopes, no roles, and a `sub` that
+  is not a person** (`mesh-peer:<peer id>`). Its scope family is empty and deny-by-default
+  (`MESH_PEER_SCOPES`), `credential_allows_route` admits it on **no route at all**, not
+  even `identity/me`, and no Forge or Envoy audience list contains `niuu-mesh`. A peer
+  that receives one cannot replay it against Forge. `tests/test_adapters/test_mesh_identity_rest.py` fails if any
+  Forge route admits a `mesh_peer` token.
+- Forge sets every claim: peer id, kind (`session`, `resident`, `authority`), the
+  session and launch, the memberships (`tenant:`, `flock:`, `realm:`), and the peer's
+  Ed25519 public key, which is all the peer supplies. The private key is generated in the
+  peer's process memory and never leaves it.
+- **One route issues and renews it:** `POST /api/v1/forge/sessions/{id}/mesh-identity`,
+  scope `forge:mesh:identity` (in `FORGE_SESSION_SCOPES`), `Binding.OWN`: a session asks for
+  its own, with its `forge_session` credential. Forge refuses a stopped session or a stale
+  launch, and refuses a peer id another live holder has claimed (`mesh_peer_claims`).
+  Its answer carries the JWKS, so a receiver verifies offline: no Forge call per message,
+  none for an unknown key (it is refused as `unknown_key` until the next renewal, so a
+  flood of unknown keys cannot become a flood of requests).
+- **The lifetime is bounded and short** (`forge_mcp.mesh_identity.ttl_seconds`, default 15
+  minutes) and renewed in the background at half of it. It bounds only how long a leaked or
+  stale certificate is believed, because stopping a session also announces it:
+- **Revocation is a signed event.** When a session stops or restarts, Forge publishes
+  "session stopped" (session id, launch id) on `mesh.revocation`, signed with Forge's own
+  `authority` certificate. Receivers drop that launch at once, and honour a revocation
+  only from an `authority` certificate. The TTL is the backstop for a receiver that was
+  offline for the event.
+- **Membership, not ownership.** A receiver refuses a sender that shares no tenant, flock
+  or realm with it. It does not compare owners, so flocks of residents and sessions with
+  different owners, and shared organization spaces, work.
+- **Replay.** A signature covers its purpose, recipient, signing time and the whole
+  message, so it cannot be moved to another recipient, topic or message; requests and
+  replies are fresh within `mesh.attestation.clock_skew_s`, events within
+  `mesh.attestation.event_max_age_s`. A replay inside the window repeats what the sender
+  really sent, and `message_id` and `event_id` dedup is the inbox's.
+- **An event's certificate is judged at signing time**, so a bus redelivery still verifies;
+  an event can therefore be accepted up to `mesh.attestation.event_max_age_s` after its
+  certificate expired. The bound for a stopped or compromised session is the certificate
+  lifetime plus that age, and the signed stop notice (which only reaches receivers on a
+  networked bus) ends it sooner.
+- **Discovery announcements are signed** by the discovery adapters that share the bus
+  (`event_bus`, `sleipnir`) through the same peer identity (`MeshAttestor`), bound to the peer
+  they describe and ordered per peer.
+- **Platform events are signed by platform services.** Forge (its `authority` certificate) and
+  every other service that publishes on the bus (Ting; Mímir and Bifröst when wired) sign them
+  through `niuu.mesh.platform_events.SigningBus`, and a subscriber that *acts* on one
+  (`ObservationRelay`, Ting's event triggers) checks it with `PlatformEventVerifier`. The
+  certificate kind is `service` (no scopes, no memberships, peer `service:<name>`) and a service
+  issues it to itself, in process, with the key it already has: the workload-identity signing key
+  where the deployment configures one, else the host key file Forge signs session credentials
+  with (`niuu.mesh.platform_identity`). There is no issuing route: the key is the proof that a
+  service is part of the platform, so a service without it (Ting in its own pod without
+  `workloadIdentity.signingKey`) cannot sign and, with signing required, fails startup naming the
+  fix. A `session` or `resident` certificate is refused as `not_platform_service`. The limits: a
+  platform service can publish any platform event, and the key is shared by every service that
+  holds it, so it is a platform-wide secret, not a per-service one.
+- **Fail closed, counted, never silent.** An unverifiable request gets a signed `refused`
+  reply naming the reason; an unverifiable event is not handled; an unverifiable reply
+  raises. Each counts on `niuu.mesh.attestation.refusals` by reason, direction and claimed
+  sender. A mesh whose peer cannot get a certificate does not start;
+  `mesh.attestation.required: false` is the operator's explicit choice to go without.
+- Consumers that read Sleipnir events directly (the room's collaboration bridge) get them
+  through `VerifiedSleipnirSubscriber`, which sets the sender and the projection from the
+  proof, not from the envelope. Do not add another direct consumer of mesh events
+  without it.
 
 ### Exception: Ed25519 node-request signing (`niuu join`)
 

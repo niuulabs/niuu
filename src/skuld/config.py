@@ -30,7 +30,7 @@ from identity.authz_config import AuthorizationAdapterConfig
 from niuu.config import DynamicAdapterConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.forge_mcp.models import ForgeMcpGrant
-from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshNatsConfig
+from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshAttestationConfig, MeshNatsConfig
 from skuld.claude_permission import DEFAULT_CLAUDE_PERMISSION_MODE
 
 
@@ -97,7 +97,14 @@ class MeshConfig(BaseModel):
     """
 
     enabled: bool = Field(default=False)
-    peer_id: str = Field(default="")
+    peer_id: str = Field(
+        default="",
+        description=(
+            "This session's one mesh peer id (transport, discovery, signing certificate and "
+            "reply routes). Empty uses the session id; a session with neither does not start "
+            "its mesh."
+        ),
+    )
     realm_id: str = Field(default="")
     capabilities: list[str] = Field(default_factory=lambda: list(_DEFAULT_MESH_CAPABILITIES))
     tools: list[str] = Field(default_factory=lambda: list(_DEFAULT_MESH_TOOLS))
@@ -107,14 +114,50 @@ class MeshConfig(BaseModel):
     adapters: list[dict[str, Any]] = Field(default_factory=list)
     discovery_adapters: list[dict[str, Any]] = Field(default_factory=list)
     nats: MeshNatsConfig = Field(default_factory=MeshNatsConfig)
+    attestation: MeshAttestationConfig = Field(default_factory=MeshAttestationConfig)
     rpc_timeout_s: float = Field(default=10.0)
     rpc_reply_cache_size: int = Field(default=DEFAULT_RPC_REPLY_CACHE_SIZE, ge=1)
-    default_work_timeout_s: float = Field(default=120.0)
-    default_response_urgency: float = Field(default=0.3)
     diff_max_bytes: int = Field(default=8192)
     diff_timeout_s: float = Field(default=10.0)
     consumes_event_types: list[str] = Field(
         default_factory=lambda: ["code.requested"],
+        description=(
+            "Topics this session subscribes to. A pinned persona's declared "
+            "``consumes.event_types`` are subscribed in addition (``skuld.mesh_topics``)."
+        ),
+    )
+    role: str = Field(
+        default="",
+        description=(
+            "What this session is for, announced to its peers so they can choose whom to talk "
+            "to (e.g. 'reviewer'). Empty announces the pinned persona's id as the role, or no "
+            "role when there is no persona."
+        ),
+    )
+    description: str = Field(
+        default="",
+        description=(
+            "One or two sentences on what this session does, announced to its peers. The "
+            "pinned persona's own ``description`` is announced when it has one; this is used "
+            "when it has none."
+        ),
+    )
+    publish_event_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Topics this session's ``mesh_publish`` tool may publish, in addition to the "
+            "ones its pinned persona declares in ``produces``. A topic in neither list is "
+            "refused loudly, so a mistyped topic is never published to nobody."
+        ),
+    )
+    published_event_urgency: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "The attention hint (0.0-1.0) stamped on events the ``mesh_publish`` tool publishes; "
+            "the same as the events the browser publishes. It orders attention, it limits nothing."
+        ),
     )
 
 
@@ -517,7 +560,10 @@ class DeliveryConfig(BaseModel):
         gt=0,
         description=(
             "Per-attempt timeout for a single transport send/redirect. A wedged "
-            "send-lock that never returns is bounded by this and retried."
+            "send-lock that never returns is bounded by this and retried. Does not apply to a "
+            "transport whose send returns only when the turn is over "
+            "(capabilities.send_runs_turn): the turn takes as long as it takes, and the "
+            "transport's own turn timeout bounds it."
         ),
     )
     initial_backoff_seconds: float = Field(
@@ -796,6 +842,38 @@ class SecretRequestsConfig(BaseModel):
     )
 
 
+class AskConfig(BaseModel):
+    """How the ``ask`` tool waits for another session's answer."""
+
+    poll_interval_s: float = Field(
+        default=2.0,
+        gt=0,
+        description=(
+            "How often ask checks Forge for the recipient's state (blocked on a person, stopped, "
+            "failed or deleted). The answer itself is not polled: it wakes the wait the moment it "
+            "reaches this session's inbox. The state has no event to wait on, so this trades "
+            "how fast a blocked or gone recipient is noticed against Forge load."
+        ),
+    )
+    wait_max_s: float = Field(
+        default=50.0,
+        gt=0,
+        description=(
+            "Longest one ask call waits, and the ceiling for the `deadline_s` a caller passes "
+            "(a larger one is refused with this knob named). Bounded by the engine's MCP call "
+            "timeouts: it must be shorter than forge_mcp.broker_request_timeout_s (the stdio "
+            "server's wait on this broker, default 60) and forge_mcp.tool_timeout_s (the "
+            "tool_timeout_sec Skuld sets for the engine, default 120), or the engine ends the "
+            "call before it can answer (startup fails otherwise). Codex's own default for "
+            "tool_timeout_sec is 60; Claude Code's MCP_TOOL_TIMEOUT defaults to about 28 hours "
+            "(30 minutes without progress for a stdio server). When the wait passes without an "
+            "answer the call returns `deadline` (or `not_started` / `delivery_unknown`), the "
+            "message stays sent, and a later answer is delivered at the turn boundary as usual; "
+            "ask again with the same request_id to keep waiting."
+        ),
+    )
+
+
 class CodexAuthConfig(BaseModel):
     """Dynamic Codex authentication adapter configuration."""
 
@@ -1003,6 +1081,26 @@ class WorkflowStepsConfig(BaseModel):
             "durable event log and history hydration (event_log_enabled and "
             "history_hydration_enabled, with volundr_api_url): a step is restored from the log "
             "after a restart, so enabling without them is fatal at startup."
+        ),
+    )
+
+
+class PeerInboxConfig(BaseModel):
+    """The inbox through which other agents' messages reach this session's harness.
+
+    Every message from another agent (a session, a room, a mesh peer) is held durably in the
+    session's event log and handed to the harness at a turn boundary. The inbox has no
+    capacity: loops between agents are made visible through the per-pair counts in the
+    session status and the ``skuld.peer.messages`` counter, never capped.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Accept peer messages. A session that turns this off refuses every one with that "
+            "reason. Accepting needs the durable event log (event_log_enabled and "
+            "volundr_api_url): without it a message is refused loudly, never held in memory "
+            "only."
         ),
     )
 
@@ -1267,12 +1365,14 @@ class SkuldSettings(BaseSettings):
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
     preview: PreviewConfig = Field(default_factory=PreviewConfig)
     secret_requests: SecretRequestsConfig = Field(default_factory=SecretRequestsConfig)
+    ask: AskConfig = Field(default_factory=AskConfig)
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
     observability: SkuldObservabilityConfig = Field(default_factory=SkuldObservabilityConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     room: RoomConfig = Field(default_factory=RoomConfig)
     mesh: MeshConfig = Field(default_factory=MeshConfig)
     workflow_steps: WorkflowStepsConfig = Field(default_factory=WorkflowStepsConfig)
+    peer_inbox: PeerInboxConfig = Field(default_factory=PeerInboxConfig)
 
     @model_validator(mode="after")
     def _resolve_transport_adapter(self) -> "SkuldSettings":
@@ -1315,21 +1415,24 @@ class SkuldSettings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _secret_wait_fits_engine_call(self) -> "SkuldSettings":
+    def _waits_fit_engine_call(self) -> "SkuldSettings":
         """A wait the engine cuts off mid-call would read as a failure, not as "still open"."""
         if not self.forge_mcp.enabled:
             return self
-        wait = self.secret_requests.wait_max_s
-        for knob, bound in (
-            ("forge_mcp.broker_request_timeout_s", self.forge_mcp.broker_request_timeout_s),
-            ("forge_mcp.tool_timeout_s", self.forge_mcp.tool_timeout_s),
+        for name, wait in (
+            ("secret_requests.wait_max_s", self.secret_requests.wait_max_s),
+            ("ask.wait_max_s", self.ask.wait_max_s),
         ):
-            if wait >= bound:
-                raise ValueError(
-                    f"secret_requests.wait_max_s ({wait}) must be shorter than {knob} ({bound}), "
-                    "or the engine ends every long request_secret call before it can answer. "
-                    f"Lower secret_requests.wait_max_s or raise {knob}"
-                )
+            for knob, bound in (
+                ("forge_mcp.broker_request_timeout_s", self.forge_mcp.broker_request_timeout_s),
+                ("forge_mcp.tool_timeout_s", self.forge_mcp.tool_timeout_s),
+            ):
+                if wait >= bound:
+                    raise ValueError(
+                        f"{name} ({wait}) must be shorter than {knob} ({bound}), "
+                        f"or the engine ends every long call before it can answer. "
+                        f"Lower {name} or raise {knob}"
+                    )
         return self
 
     @property

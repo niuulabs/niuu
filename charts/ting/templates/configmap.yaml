@@ -238,6 +238,19 @@ data:
       default_tenant_id: {{ .Values.auth.defaultTenantId | quote }}
       pat_ttl_days: {{ .Values.auth.patTtlDays | default 365 }}
 
+    {{- $attestation := dict }}
+    {{- range $key, $value := ((.Values.mesh | default dict).attestation | default dict) }}
+    {{- if not (kindIs "invalid" $value) }}
+    {{- $_ := set $attestation $key $value }}
+    {{- end }}
+    {{- end }}
+    {{- if $attestation }}
+
+    # One decision about proof of who published a platform event; needs no setting.
+    mesh:
+      attestation: {{ toJson $attestation }}
+    {{- end }}
+
     workload_identity:
       enabled: {{ .Values.workloadIdentity.enabled | default false }}
       issuer: {{ .Values.workloadIdentity.issuer | default "" | quote }}

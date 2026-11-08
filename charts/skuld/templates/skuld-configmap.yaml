@@ -171,3 +171,10 @@ data:
     secret_requests:
       poll_interval_s: {{ .Values.secretRequests.pollIntervalS | toJson }}
       wait_max_s: {{ .Values.secretRequests.waitMaxS | toJson }}
+
+    # How ask waits for another session's answer.
+    ask:
+      poll_interval_s: {{ .Values.ask.pollIntervalS | toJson }}
+      wait_max_s: {{ .Values.ask.waitMaxS | toJson }}
+
+    {{- include "skuld.meshConfig" . | nindent 4 }}

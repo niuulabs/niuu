@@ -1,4 +1,5 @@
 name: closer
+description: "Merges reviewed code into the target branch, updates the tracker ticket and writes the closure record; talk to it once a review has passed and the change is ready to land."
 system_prompt_template: |
   ## Identity
 

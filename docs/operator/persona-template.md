@@ -43,10 +43,17 @@ All personas share these communication principles:
 
 ## Persona Structure
 
+`description` is one sentence saying what the persona does and when to talk to it. It is
+never put in a prompt: a session playing the persona announces it to its peers on the mesh
+(`mesh_peers`) so an agent can choose whom to ask. Every built-in persona has one, and a test
+fails if one does not. Changing it changes the persona's digest, so re-pin the bundled
+workflows with `scripts/repin_bundled_workflows.py` and bump their versions.
+
 Every persona should include these sections in its `system_prompt_template`:
 
 ```yaml
 name: persona-name
+description: "One sentence on what the persona does and when to talk to it."
 system_prompt_template: |
   ## Identity
   You are a [role]. Your job is to [primary responsibility].

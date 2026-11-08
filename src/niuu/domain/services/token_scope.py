@@ -66,6 +66,10 @@ logger = logging.getLogger(__name__)
 VALKYRIE_BUILD_TOKEN_USE = "valkyrie_build"
 #: The claim value of the session-bound credential Forge mints at launch.
 FORGE_SESSION_TOKEN_USE = "forge_session"
+#: The claim value of the certificate a mesh peer shows to prove who sent a mesh message
+#: (``niuu.mesh.attestation``). It is addressed to the mesh, not to Forge, carries no scopes
+#: and no human subject, and no Forge route admits it: see ``MESH_PEER_SCOPES``.
+MESH_PEER_TOKEN_USE = "mesh_peer"
 OPENSHELL_SESSION_TOKEN_USE = "openshell_session"
 OPENSHELL_RESIDENT_TOKEN_USE = "openshell_resident"
 
@@ -91,6 +95,9 @@ FORGE_SESSION_READ_SCOPE = "forge:session:read"
 FORGE_SESSION_SECRET_SCOPE = "forge:session:secret"
 FORGE_SESSION_MESSAGE_SCOPE = "forge:session:message"
 FORGE_SESSION_LIFECYCLE_SCOPE = "forge:session:lifecycle"
+#: Obtain (and renew) the session's mesh certificate: the one Forge route a session
+#: credential has for it, ``POST /sessions/{id}/mesh-identity`` (own session only).
+FORGE_MESH_IDENTITY_SCOPE = "forge:mesh:identity"
 
 #: Ring the token's own owner's phone with a resident's ``call.request`` (a VoIP push
 #: from the Guild push gateway). It reaches no other owner, so any workload mapping may
@@ -148,8 +155,14 @@ FORGE_SESSION_SCOPES: frozenset[str] = frozenset(
         FORGE_SESSION_SECRET_SCOPE,
         FORGE_SESSION_MESSAGE_SCOPE,
         FORGE_SESSION_LIFECYCLE_SCOPE,
+        FORGE_MESH_IDENTITY_SCOPE,
     }
 )
+
+#: A ``mesh_peer`` certificate carries no scopes at all: it proves who a mesh sender is
+#: and is admitted on no Forge route, so a peer that receives one cannot replay it
+#: against Forge.
+MESH_PEER_SCOPES: frozenset[str] = frozenset()
 
 #: Scopes a ``notification_delivery`` credential may carry. Each widens its
 #: principal's authority, so the exchange grants one only to a mapping that lists
@@ -161,11 +174,12 @@ SCOPES_BY_TOKEN_USE: dict[str, frozenset[str]] = {
     VALKYRIE_BUILD_TOKEN_USE: VALKYRIE_BUILD_SCOPES,
     FORGE_SESSION_TOKEN_USE: FORGE_SESSION_SCOPES,
     NOTIFICATION_DELIVERY_TOKEN_USE: NOTIFICATION_DELIVERY_SCOPES,
+    MESH_PEER_TOKEN_USE: MESH_PEER_SCOPES,
 }
 
 #: Scoped token uses that are denied wherever no scope of their family applies.
 _DENY_BY_DEFAULT_TOKEN_USES: frozenset[str] = frozenset(
-    {FORGE_SESSION_TOKEN_USE, NOTIFICATION_DELIVERY_TOKEN_USE}
+    {FORGE_SESSION_TOKEN_USE, NOTIFICATION_DELIVERY_TOKEN_USE, MESH_PEER_TOKEN_USE}
 )
 
 #: The scopes a short-lived workload credential may ever be granted. A caller
@@ -372,6 +386,9 @@ def credential_allows_route(token: str, method: str, path: str) -> bool:
     claims = _decode_claims(token)
     if claims is None or not token_requires_scope_check(claims):
         return True
+    if claims.get("token_use") == MESH_PEER_TOKEN_USE:
+        # A mesh certificate is shown to peers, never to Forge: not even identity/me.
+        return False
     if claims.get("token_use") == FORGE_SESSION_TOKEN_USE:
         return _forge_session_allows_route(claims, method, path)
     if (method, path) == _IDENTITY_ME:
@@ -477,6 +494,7 @@ def require_scope(scope: str, *alternatives: str) -> Callable[..., Awaitable[Non
 
 __all__ = [
     "EXCHANGE_GRANTABLE_SCOPES",
+    "FORGE_MESH_IDENTITY_SCOPE",
     "FORGE_NOTIFY_SCOPE",
     "FORGE_PUSH_CALL_SCOPE",
     "FORGE_SESSION_LIFECYCLE_SCOPE",
@@ -488,6 +506,8 @@ __all__ = [
     "FORGE_SESSION_TOKEN_USE",
     "ISSUER_ONLY_SCOPES",
     "KNOWN_WORKLOAD_SCOPES",
+    "MESH_PEER_SCOPES",
+    "MESH_PEER_TOKEN_USE",
     "NODE_JOIN_SCOPE",
     "NOTIFICATION_DELIVERY_SCOPE",
     "NOTIFICATION_DELIVERY_SCOPES",

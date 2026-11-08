@@ -866,6 +866,24 @@ def test_websocket_auth_configuration_reaches_broker(enabled):
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_the_gateway_strips_the_headers_only_forge_may_stamp():
+    """A browser reaching the pod straight through the Gateway can't claim a room role or
+    pose as a room member session: both headers are removed before the broker sees them."""
+    command = ["helm", "template", "test", str(CHART_DIR), "--set", "gateway.enabled=true"]
+    docs = list(yaml.safe_load_all(subprocess.check_output(command)))
+    route = next(d for d in docs if d and d["kind"] == "HTTPRoute")
+    removed = {
+        header
+        for rule in route["spec"]["rules"]
+        for item in rule.get("filters", [])
+        if item["type"] == "RequestHeaderModifier"
+        for header in item["requestHeaderModifier"].get("remove", [])
+    }
+
+    assert {"x-niuu-room-role", "x-niuu-room-caller-session"} <= removed
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 def test_room_role_source_defaults_to_deployment_with_no_remote_adapter():
     """Existing clusters must render byte-identical wsAuth until they opt in."""
     from skuld.config import SkuldSettings
@@ -1090,3 +1108,227 @@ def test_secret_request_knobs_reach_runtime_configuration():
     too_long = _skuld_config("--set", "secretRequests.waitMaxS=300")
     with pytest.raises(ValidationError, match="secret_requests.wait_max_s"):
         SkuldSettings(**too_long)
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_ask_knobs_reach_runtime_configuration():
+    from pydantic import ValidationError
+
+    from skuld.config import SkuldSettings
+
+    defaults = _skuld_config()
+    assert defaults["ask"] == {"poll_interval_s": 2, "wait_max_s": 50}
+    assert SkuldSettings(**defaults).ask.wait_max_s == 50
+
+    tuned = _skuld_config(
+        "--set",
+        "ask.waitMaxS=300,ask.pollIntervalS=5",
+        "--set",
+        "forgeMcp.brokerRequestTimeoutS=400,forgeMcp.toolTimeoutS=500",
+    )
+    settings = SkuldSettings(**tuned)
+    assert (settings.ask.poll_interval_s, settings.ask.wait_max_s) == (5, 300)
+
+    with pytest.raises(ValidationError, match="ask.wait_max_s"):
+        SkuldSettings(**_skuld_config("--set", "ask.waitMaxS=300"))
+
+
+MESH_VALUES = {
+    "enabled": True,
+    "transport": "nats",
+    "peerId": "reviewer-1",
+    "realmId": "flock-a",
+    "persona": "reviewer",
+    "role": "reviewer",
+    "description": "Reviews pull requests.",
+    "capabilities": ["review", "git"],
+    "tools": ["codex"],
+    "consumesEventTypes": ["review.requested"],
+    "publishEventTypes": ["review.done"],
+    "publishedEventUrgency": 0.4,
+    "nng": {"pubSubAddress": "tcp://0.0.0.0:7001", "reqRepAddress": "tcp://0.0.0.0:7002"},
+    "adapters": [{"adapter": "nats"}],
+    "discoveryAdapters": [{"adapter": "event_bus", "heartbeat_interval_s": 5}],
+    "nats": {"servers": ["nats://nats:4222"], "stream_name": "flock"},
+    "rpcTimeoutS": 20,
+    "rpcReplyCacheSize": 64,
+    "diffMaxBytes": 4096,
+    "diffTimeoutS": 7,
+    "attestation": {
+        "required": False,
+        "renewFraction": 0.4,
+        "retryFraction": 0.2,
+        "clockSkewS": 60,
+        "eventMaxAgeS": 120,
+    },
+}
+
+#: Each chart value and the key of Skuld's `mesh` settings it renders to.
+MESH_KEYS = {
+    "enabled": "enabled",
+    "transport": "transport",
+    "peerId": "peer_id",
+    "realmId": "realm_id",
+    "persona": "persona",
+    "role": "role",
+    "description": "description",
+    "capabilities": "capabilities",
+    "tools": "tools",
+    "consumesEventTypes": "consumes_event_types",
+    "publishEventTypes": "publish_event_types",
+    "publishedEventUrgency": "published_event_urgency",
+    "nng": "nng",
+    "adapters": "adapters",
+    "discoveryAdapters": "discovery_adapters",
+    "nats": "nats",
+    "rpcTimeoutS": "rpc_timeout_s",
+    "rpcReplyCacheSize": "rpc_reply_cache_size",
+    "diffMaxBytes": "diff_max_bytes",
+    "diffTimeoutS": "diff_timeout_s",
+    "attestation": "attestation",
+}
+
+
+MESH_CHARTS = ["skuld", "skuld-planner"]
+
+
+def _mesh_config(chart: str, **values) -> dict:
+    args: list[str] = []
+    for key, value in values.items():
+        args += ["--set-json", f"mesh.{key}={json.dumps(value)}"]
+    return _rendered_skuld_config(chart, *args)["mesh"]
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+@pytest.mark.parametrize("mesh_chart", MESH_CHARTS)
+class TestMeshValues:
+    def test_a_chart_that_sets_nothing_renders_what_skuld_defaults_to(self, mesh_chart):
+        from skuld.config import MeshConfig, SkuldSettings
+
+        config = _rendered_skuld_config(mesh_chart)
+
+        assert config["mesh"] == {"enabled": False, "transport": "nng"}
+        assert SkuldSettings(**config).mesh == MeshConfig()
+
+    @pytest.mark.parametrize(("value_key", "config_key"), sorted(MESH_KEYS.items()))
+    def test_each_value_renders_into_the_config_key_it_names(
+        self, mesh_chart, value_key, config_key
+    ):
+        mesh = _mesh_config(mesh_chart, **{value_key: MESH_VALUES[value_key]})
+
+        expected = MESH_VALUES[value_key]
+        if value_key == "nng":
+            expected = {
+                "pub_sub_address": "tcp://0.0.0.0:7001",
+                "req_rep_address": "tcp://0.0.0.0:7002",
+            }
+        if value_key == "attestation":
+            expected = {
+                "required": False,
+                "renew_fraction": 0.4,
+                "retry_fraction": 0.2,
+                "clock_skew_s": 60,
+                "event_max_age_s": 120,
+            }
+        assert mesh[config_key] == expected
+
+    def test_every_value_together_is_accepted_by_skuld(self, mesh_chart):
+        from skuld.config import SkuldSettings
+
+        config = _rendered_skuld_config(
+            mesh_chart,
+            "--set-json",
+            "mesh=" + json.dumps(MESH_VALUES),
+        )
+
+        mesh = SkuldSettings(**config).mesh
+        assert mesh.enabled is True and mesh.transport == "nats"
+        assert (mesh.peer_id, mesh.realm_id, mesh.persona) == ("reviewer-1", "flock-a", "reviewer")
+        assert (mesh.role, mesh.description) == ("reviewer", "Reviews pull requests.")
+        assert mesh.capabilities == ["review", "git"] and mesh.tools == ["codex"]
+        assert mesh.consumes_event_types == ["review.requested"]
+        assert mesh.publish_event_types == ["review.done"]
+        assert mesh.published_event_urgency == 0.4
+        assert mesh.nng.pub_sub_address == "tcp://0.0.0.0:7001"
+        assert mesh.adapters == [{"adapter": "nats"}]
+        assert mesh.discovery_adapters[0]["adapter"] == "event_bus"
+        assert mesh.nats.servers == ["nats://nats:4222"] and mesh.nats.stream_name == "flock"
+        assert (mesh.rpc_timeout_s, mesh.rpc_reply_cache_size) == (20, 64)
+        assert (mesh.diff_max_bytes, mesh.diff_timeout_s) == (4096, 7)
+
+    def test_the_chart_covers_every_setting_skuld_has_so_a_new_one_cannot_be_forgotten(
+        self, mesh_chart
+    ):
+        from skuld.config import MeshConfig
+
+        assert set(MESH_KEYS.values()) == set(MeshConfig.model_fields)
+
+    def test_an_empty_string_or_null_keeps_skuld_s_default(self, mesh_chart):
+        mesh = _mesh_config(
+            mesh_chart, peerId="", realmId="", role="", capabilities=None, rpcTimeoutS=None
+        )
+
+        assert mesh == {"enabled": False, "transport": "nng"}
+
+    def test_a_values_file_that_never_set_mesh_values_still_renders(self, mesh_chart):
+        # Pre-existing releases only ever set `enabled`, `transport` and `peerPorts`.
+        mesh = _mesh_config(
+            mesh_chart, peerPorts=[{"name": "mesh", "containerPort": 7001}], enabled=True
+        )
+
+        assert mesh == {"enabled": True, "transport": "nng"}
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+@pytest.mark.parametrize("mesh_chart", MESH_CHARTS)
+def test_mesh_attestation_renders_nothing_by_default_and_only_what_is_set(mesh_chart):
+    from skuld.config import SkuldSettings
+
+    default = _rendered_skuld_config(mesh_chart)
+    assert "attestation" not in default["mesh"]
+
+    config = _rendered_skuld_config(
+        mesh_chart,
+        "--set",
+        "mesh.attestation.required=false",
+        "--set",
+        "mesh.attestation.clockSkewS=60",
+    )
+
+    assert config["mesh"]["attestation"] == {"required": False, "clock_skew_s": 60}
+    settings = SkuldSettings(**config)
+    assert settings.mesh.attestation.required is False
+    assert settings.mesh.attestation.clock_skew_s == 60
+    assert settings.mesh.attestation.event_max_age_s == 3600
+
+
+class TestThePlannerSharesTheSkuldMeshChart:
+    """The planner renders the mesh settings with the very same template, and has the same
+    values, so a setting added to one cannot be missing from the other."""
+
+    def test_the_planner_uses_the_skuld_charts_template_file(self):
+        skuld = CHART_DIR / "templates" / "_mesh-config.tpl"
+        planner = CHART_DIR.parent / "skuld-planner" / "templates" / "_mesh-config.tpl"
+
+        assert planner.is_symlink() and planner.resolve() == skuld.resolve()
+
+    def test_the_planner_has_exactly_the_skuld_charts_mesh_values(self):
+        skuld = yaml.safe_load((CHART_DIR / "values.yaml").read_text())["mesh"]
+        planner = yaml.safe_load((CHART_DIR.parent / "skuld-planner" / "values.yaml").read_text())[
+            "mesh"
+        ]
+
+        assert planner == skuld
+
+    @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+    def test_both_charts_render_the_same_mesh_section_for_the_same_values(self):
+        values = [
+            arg
+            for k, v in MESH_VALUES.items()
+            for arg in ("--set-json", f"mesh.{k}={json.dumps(v)}")
+        ]
+
+        skuld = _rendered_skuld_config("skuld", *values)["mesh"]
+        planner = _rendered_skuld_config("skuld-planner", *values)["mesh"]
+
+        assert planner == skuld and set(skuld) == set(MESH_KEYS.values())

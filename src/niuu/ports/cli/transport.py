@@ -39,6 +39,11 @@ class TransportCapabilities:
     #: (``claude -p --input-format stream-json``): the broker then reports the
     #: session idle as soon as it is ready to take that turn.
     announces_ready: bool = True
+    #: ``send_message`` returns when the turn is over, not when the input is accepted (the
+    #: SDK and ``claude -p`` transports run the whole turn under their send lock). The broker
+    #: then puts no delivery attempt timeout on the send: the turn takes as long as it takes,
+    #: and what bounds it is the transport's own turn timeout, which fails loudly.
+    send_runs_turn: bool = False
 
 
 class CLITransport(ABC):

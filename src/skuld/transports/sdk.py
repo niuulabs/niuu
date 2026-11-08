@@ -389,6 +389,7 @@ class SDKTransport(CLITransport):
             set_permission_mode=True,
             slash_commands=True,
             skills=True,
+            send_runs_turn=True,
         )
 
     @property

@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Protocol
 
 from niuu.collaboration.models import Participant
 from niuu.collaboration.room import matches_subscription
@@ -16,11 +16,20 @@ from sleipnir.ports.events import SleipnirSubscriber, Subscription
 logger = logging.getLogger(__name__)
 
 ParticipantLookup = Callable[[], Participant | None]
+
+
+class PlatformVerifier(Protocol):
+    """Checks that a platform event was published by a platform service."""
+
+    def accept(self, event: SleipnirEvent) -> SleipnirEvent | None:
+        """The event as published, or ``None`` (logged and counted) when it is not genuine."""
+
+
 DirectedSend = Callable[[str, str, dict[str, Any]], Awaitable[str]]
 NotificationSend = Callable[[dict[str, Any]], Awaitable[None]]
 
 _ORIGIN_TOKEN_SPLIT = re.compile(r"[\s:/,]+")
-_IGNORED_EVENT_PREFIXES = ("ravn.mesh.",)
+_IGNORED_EVENT_PREFIXES = ("mesh.",)
 
 
 def render_observation(event: SleipnirEvent, payload_preview_chars: int) -> str:
@@ -49,7 +58,9 @@ class ObservationRelay:
         send_directed: DirectedSend,
         broadcast_notification: NotificationSend,
         payload_preview_chars: int,
+        platform_verifier: PlatformVerifier | None = None,
     ) -> None:
+        self._platform_verifier = platform_verifier
         self._subscriber = subscriber
         self._participant = participant
         self._patterns = list(patterns)
@@ -83,6 +94,14 @@ class ObservationRelay:
         provenance = str((event.payload or {}).get("resident_peer_id") or "").strip()
         if provenance and provenance != participant.peer_id:
             return
+
+        if self._platform_verifier is not None:
+            # Only an event that would be acted on is checked: an unsigned event nobody
+            # subscribed to is not a refusal, it is not for this resident at all.
+            verified = self._platform_verifier.accept(event)
+            if verified is None:
+                return
+            event = verified
 
         await self._broadcast_notification(
             {

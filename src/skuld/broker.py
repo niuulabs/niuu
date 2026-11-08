@@ -16,6 +16,7 @@ import signal
 import socket
 import time
 import uuid
+from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -28,6 +29,13 @@ from fastapi import WebSocket, WebSocketDisconnect  # noqa: F401
 from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
 from niuu.domain.logging import LoggingConfig
 from niuu.domain.outcome import parse_outcome_block
+from niuu.domain.peer_message import (
+    PEER_MESSAGE_FRAME,
+    PeerAddress,
+    PeerKind,
+    PeerMessage,
+    PeerMessageError,
+)
 from niuu.domain.presented_files import PRESENT_FILE_RPC_TYPE
 from niuu.domain.text_projection import projection_revision
 from niuu.domain.transcript_reducer import (
@@ -45,6 +53,8 @@ from niuu.domain.transcript_reducer import (
     steering_state_from_frame,
     steering_target_id,
 )
+from niuu.mesh import mesh_event_prefix
+from niuu.mesh.attestation import VERIFIED_SENDER_KEY
 from niuu.mesh.cluster import read_cluster_pub_addresses
 from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
@@ -99,7 +109,11 @@ from skuld.file_routes import (  # noqa: F401
 )
 from skuld.forge_mcp.integration import ForgeSessionMixin
 from skuld.history_hydration import fetch_durable_history, merge_history_turns
+from skuld.mesh_follows import MeshFollowMixin
+from skuld.mesh_topics import MeshTopics, mesh_topics
+from skuld.peer_inbox import PEER_STATE_RPC_TYPE, PeerInboxMixin, PeerMessageUnconfirmedError
 from skuld.preview import PreviewForwarder, PreviewPortWatcher
+from skuld.room_delivery import ROOM_MESSAGE_RPC_TYPE, RoomDelivery, RoomDeliveryError
 from skuld.service_manager import (  # noqa: F401
     ServiceCreateRequest,
     ServiceManager,
@@ -402,6 +416,9 @@ _OWNER_ONLY_MESSAGE_TYPES = frozenset(
         "set_max_thinking_tokens",
         "resend_initial_prompt",
         "publish_event",
+        # Forge hands another agent's message to this session. It claims a sender, so only the
+        # session's owner connection (Forge acting for it) may send one.
+        PEER_MESSAGE_FRAME,
     }
 )
 _ROOM_ROLE_RANK = {"viewer": 0, "approver": 1, "owner": 2}
@@ -467,6 +484,8 @@ class Broker(
     ActivityReportingMixin,
     ChronicleMixin,
     WorkflowStepMixin,
+    PeerInboxMixin,
+    MeshFollowMixin,
 ):
     """WebSocket broker for Claude Code sessions.
 
@@ -481,6 +500,8 @@ class Broker(
     ):
         self._settings = settings or SkuldSettings()
         self._init_workflow_steps()
+        self._init_peer_inbox()
+        self._init_mesh_follows()
         self._ws_identity = None
         self._ws_authorization = None
         if self._settings.ws_auth.enforce_ownership:
@@ -660,6 +681,10 @@ class Broker(
 
         # Mesh adapter — only active when mesh.enabled is True
         self._mesh_adapter: Any = None
+        self._mesh_attested: Any = None
+        self._mesh_topics: MeshTopics | None = None
+        self._mesh_identity: Any = None
+        self._mesh_discovery: Any = None
 
         # Optional mesh-to-collaboration bridge.
         self._collaboration_mesh_bridge: Any = None
@@ -683,6 +708,7 @@ class Broker(
                 publish_presence_event=self._publish_room_presence_event,
                 report_usage=self._report_usage,
                 deliver_to_session=self._deliver_to_member_session,
+                host_identity=self._host_peer_address,
             )
         self._restored_room_members: dict[str, dict[str, Any]] = {}
 
@@ -847,7 +873,6 @@ class Broker(
         from niuu.mesh import (
             build_in_process_mesh,
             build_mesh_from_adapters_list,
-            resolve_peer_id,
         )
         from niuu.mesh.participant import MeshParticipant
         from niuu.mesh.transport_builder import (
@@ -855,10 +880,12 @@ class Broker(
             build_transport,
             resolve_transport_kwargs,
         )
-        from skuld.mesh_adapter import SkuldMeshAdapter
+        from skuld.mesh_adapter import MeshPeerIdError, SkuldMeshAdapter, resolve_mesh_peer_id
 
         mesh_cfg = self._settings.mesh
-        own_peer_id = resolve_peer_id(mesh_cfg.peer_id)
+        # The one id of this session on the mesh: the transport, the certificate Forge signs,
+        # discovery and every reply route use it.
+        own_peer_id = resolve_mesh_peer_id(mesh_cfg.peer_id, self.session_id)
 
         def _sleipnir_transport(entry: dict[str, Any]) -> Any:
             transport_name = str(entry.get("transport") or mesh_cfg.transport or "nng")
@@ -922,21 +949,45 @@ class Broker(
                 rpc_reply_cache_size=mesh_cfg.rpc_reply_cache_size,
             )
 
+        # Who listens and what is published is declared: the persona's `consumes` and
+        # `produces` on top of the mesh config. The same declaration is announced to peers.
+        self._mesh_topics = mesh_topics(self._settings)
+        topics = self._mesh_topics
+
+        # Prove who sends what: sign and verify every message on whatever transport this is.
+        if mesh_cfg.attestation.required:
+            mesh = await self._attest_mesh(mesh, own_peer_id)
+        else:
+            logger.warning(
+                "mesh.attestation.required is false: this session accepts any claimed sender "
+                "on the mesh and its messages carry no proof"
+            )
+
         # Build discovery adapter using shared niuu.mesh.discovery_builder
         own_identity = MeshIdentity(
-            peer_id=mesh_cfg.peer_id or self.session_id or "skuld",
+            peer_id=own_peer_id,
             realm_id=mesh_cfg.realm_id,
-            persona=mesh_cfg.persona,
-            display_name="Skuld",
+            persona=topics.persona_id or mesh_cfg.persona,
+            # The session's name, so a peer can address this session by it.
+            display_name=self._settings.session.name or "Skuld",
             participant_type="skuld",
             capabilities=list(mesh_cfg.capabilities),
             permission_mode="full_access",
             version="0.1.0",
+            consumes_event_types=list(topics.consumes),
+            emits_event_types=["code.changed", *topics.produces],
+            role=topics.role,
+            description=topics.description,
+            activity_state=self._activity_state,
+            busy=self._coarse_bucket(self._activity_state) == "running",
         )
+        # Kept current by `_set_activity_state`, so every heartbeat carries it.
+        self._mesh_identity = own_identity
         discovery = build_discovery_adapters(
             adapters_config=list(mesh_cfg.discovery_adapters or mesh_cfg.adapters),
             own_identity=own_identity,
             sleipnir_transport_builder=_sleipnir_transport,
+            attestor=self._mesh_attested.attestor if self._mesh_attested is not None else None,
         )
 
         if self._room_bridge is not None and discovery is not None:
@@ -976,15 +1027,27 @@ class Broker(
             peer_id=own_peer_id,
         )
 
+        self._mesh_discovery = discovery
         self._mesh_adapter = SkuldMeshAdapter(
             participant=participant,
-            transport=self._transport,
             config=mesh_cfg,
             session_id=self.session_id,
+            peer_inbox=self,
+            consumes_event_types=self._mesh_topics.consumes,
             # Flock members share the workspace, not this broker's loopback secret:
             # their present-file comes over the mesh they already speak.
-            rpc_handlers={PRESENT_FILE_RPC_TYPE: _present_peer_file},
+            rpc_handlers={
+                PRESENT_FILE_RPC_TYPE: _present_peer_file,
+                PEER_STATE_RPC_TYPE: self.peer_state_rpc,
+                ROOM_MESSAGE_RPC_TYPE: self.handle_room_message_rpc,
+            },
         )
+
+        if self._mesh_adapter.peer_id != own_identity.peer_id:
+            raise MeshPeerIdError(
+                f"the mesh runs as {self._mesh_adapter.peer_id!r} but discovery announces "
+                f"{own_identity.peer_id!r}; one session has one mesh peer id"
+            )
 
         try:
             await self._mesh_adapter.start()
@@ -992,6 +1055,8 @@ class Broker(
                 "Mesh adapter started (peer_id=%s)",
                 self._mesh_adapter.peer_id,
             )
+            # Listen again to what the session followed before a restart.
+            await self.apply_restored_follows()
 
             # Register Skuld + discovered mesh peers as room participants
             # so the browser UI shows them without a direct WebSocket.
@@ -1000,8 +1065,8 @@ class Broker(
                     peer_id=self._mesh_adapter.peer_id,
                     persona="Skuld",
                     display_name="Skuld",
-                    subscribes_to=list(mesh_cfg.consumes_event_types),
-                    emits=["code.changed"],
+                    subscribes_to=list(topics.consumes),
+                    emits=["code.changed", *topics.produces],
                     tools=list(mesh_cfg.tools),
                     participant_type="skuld",
                     participant_kind="mesh",
@@ -1018,11 +1083,22 @@ class Broker(
                 from sleipnir.ports.events import SleipnirSubscriber
 
                 sleipnir_subscriber = self._mesh_adapter.sleipnir_subscriber
+                # Platform events are not mesh events: the relay reads the bus itself and
+                # checks each one it acts on (below), so it never sees the mesh-only wrapper.
+                raw_subscriber = sleipnir_subscriber
+                if sleipnir_subscriber is not None and self._mesh_attested is not None:
+                    # The room trusts what it shows: only verified mesh events, with the
+                    # sender and the projection taken from the proof, not the envelope.
+                    sleipnir_subscriber = self._mesh_attested.verified_subscriber(
+                        sleipnir_subscriber,
+                        event_prefix=mesh_event_prefix(mesh_cfg.realm_id),
+                    )
                 if sleipnir_subscriber is None:
                     # Fallback: InProcessBus implements both Publisher and Subscriber.
                     # Only use it if it actually satisfies the Subscriber interface.
                     if isinstance(self._sleipnir_publisher, SleipnirSubscriber):
                         sleipnir_subscriber = self._sleipnir_publisher
+                        raw_subscriber = sleipnir_subscriber
                     else:
                         logger.warning(
                             "Sleipnir publisher does not implement SleipnirSubscriber"
@@ -1069,7 +1145,8 @@ class Broker(
                             )
 
                         self._observation_relay = ObservationRelay(
-                            sleipnir_subscriber,
+                            raw_subscriber,
+                            platform_verifier=self._platform_event_verifier(),
                             participant=lambda: self._room_bridge.participant(resident_peer),
                             patterns=self._settings.observation_relay.event_patterns,
                             send_directed=_relay_directed,
@@ -1083,7 +1160,50 @@ class Broker(
         except Exception as exc:
             logger.error("Mesh adapter start failed: %r", exc, exc_info=True)
             self._mesh_adapter = None
+            if self._mesh_attested is not None:
+                await self._mesh_attested.signer.stop()
+                self._mesh_attested = None
             raise
+
+    def _platform_event_verifier(self) -> Any | None:
+        """Checks the platform events this session acts on; ``None`` while signing is off."""
+        if self._mesh_attested is None:
+            return None
+        from niuu.mesh.platform_events import PlatformEventVerifier  # noqa: PLC0415
+
+        return PlatformEventVerifier(
+            self._mesh_attested.verifier,
+            event_max_age_s=self._settings.mesh.attestation.event_max_age_s,
+            on_refusal=self.record_unverified_mesh_sender,
+        )
+
+    async def _attest_mesh(self, mesh: Any, own_peer_id: str) -> Any:
+        """Wrap the mesh so it signs and verifies; fatal when this session cannot sign."""
+        from skuld.mesh_attestation import (  # noqa: PLC0415
+            MeshAttestationUnavailableError,
+            attest_mesh,
+        )
+
+        if not self.volundr_api_url:
+            raise MeshAttestationUnavailableError(
+                "the mesh needs Forge to certify this session's mesh identity, and "
+                "volundr_api_url is not set. Set it, or set mesh.attestation.required: false "
+                "to run the mesh unauthenticated"
+            )
+        mesh_cfg = self._settings.mesh
+        attested = await attest_mesh(
+            mesh,
+            config=mesh_cfg.attestation,
+            peer_id=own_peer_id,
+            session_id=str(self.session_id),
+            mesh_realm=mesh_cfg.realm_id,
+            forge_token=self._settings.forge_mcp.token,
+            http_client=self._get_http_client,
+            request_timeout_s=self._settings.forge_mcp.forge_request_timeout_s,
+            on_refusal=self.record_unverified_mesh_sender,
+        )
+        self._mesh_attested = attested
+        return attested
 
     def _room_default_target_peer_id(self) -> str:
         """Peer that untargeted browser messages route to (resident sessions)."""
@@ -1642,20 +1762,60 @@ class Broker(
         )
         return message_id
 
-    async def _deliver_to_member_session(self, session_id: str, content: str) -> bool:
-        """Hand a room delivery to the session a member joined from, through Forge."""
+    def _host_peer_address(self) -> PeerAddress:
+        """This session as a party to a message: its id, name and node."""
+        return PeerAddress(
+            kind=PeerKind.SESSION,
+            id=str(self.session_id),
+            name=self._settings.session.name,
+            node=socket.gethostname(),
+        )
+
+    async def _deliver_to_member_session(self, session_id: str, delivery: RoomDelivery) -> bool:
+        """Hand a room delivery to the session a member joined from, as a peer envelope.
+
+        This session calls Forge with its own session credential, so Forge stamps it
+        ``relayed_by``; the participant who spoke, the room and the reply route travel as
+        the ``peer`` block. A delivery that cannot be made raises: the room's caller learns
+        of it, and it is counted, never logged and dropped.
+        """
         if not self.volundr_api_url:
-            logger.error("Cannot reach session %s: volundr_api_url is not set", session_id)
-            return False
+            raise RoomDeliveryError(
+                f"Cannot reach session {session_id}: volundr_api_url is not set"
+            )
+        token = self._settings.forge_mcp.token
+        if not token:
+            raise RoomDeliveryError(
+                f"Cannot deliver to session {session_id}: this session holds no Forge session "
+                "credential (forge_mcp.token), which Forge needs to stamp it as the room's host. "
+                "Enable forge_mcp.session_tokens on the Forge that launched it"
+            )
         client = await self._get_http_client()
         try:
             response = await client.post(
-                f"{FORGE_SESSIONS_PATH}/{session_id}/messages", json={"content": content}
+                f"{FORGE_SESSIONS_PATH}/{session_id}/messages",
+                json={
+                    "content": delivery.content,
+                    "request_id": delivery.request_id,
+                    "peer": delivery.speech.to_body(),
+                },
+                headers={"Authorization": f"Bearer {token}"},
             )
-            response.raise_for_status()
         except httpx.HTTPError as exc:
-            logger.error("Could not reach session %s through Forge: %s", session_id, exc)
-            return False
+            raise RoomDeliveryError(
+                f"Could not reach session {session_id} through Forge: {exc}"
+            ) from exc
+        if response.status_code >= 400:
+            remedy = (
+                "; this session's credential needs the 'message' grant (forge_mcp.role_grants "
+                "or default_grants) to relay room messages"
+                if response.status_code == 403
+                else ""
+            )
+            raise RoomDeliveryError(
+                f"Forge refused the room message for session {session_id} "
+                f"({response.status_code}): {response.text[:500]}{remedy}"
+            )
         return True
 
     async def _report_peer_help_needed_activity(
@@ -2922,6 +3082,12 @@ class Broker(
                         },
                     )
 
+            # Another agent's message, from Forge (a session message, or a room's relay to a
+            # member session). Answered with user_delivered / user_delivery_failed for the
+            # request_id once the message is durably in the inbox.
+            case "peer_message":
+                await self._accept_peer_message_frame(data)
+
             # Room: forward a directed message to a specific Ravn participant
             case "directed_message":
                 if self._room_bridge is None:
@@ -3117,6 +3283,25 @@ class Broker(
                 await self._submit_user_turn(
                     content_str, msg_id=msg_id, request_id=request_id, source="browser"
                 )
+
+    async def _accept_peer_message_frame(self, data: dict) -> None:
+        """Take a ``peer_message`` frame into the inbox and acknowledge it by ``request_id``."""
+        request_id = data.get("request_id")
+        request_id = request_id if isinstance(request_id, str) and request_id else None
+        raw = data.get("envelope")
+        message_id = str(raw.get("message_id") or "") if isinstance(raw, dict) else ""
+        try:
+            envelope = PeerMessage.from_wire(raw)
+            acceptance = await self.accept_peer_message(envelope, request_id)
+        except PeerMessageUnconfirmedError as exc:
+            # Forge may have stored it: "pending", never "failed", so the sender is told to
+            # retry with the same request_id instead of sending it again as a new message.
+            await self._emit_delivery_ack(request_id, message_id, "pending", error=str(exc))
+            return
+        except PeerMessageError as exc:
+            await self._emit_delivery_ack(request_id, message_id, "failed", error=str(exc))
+            return
+        await self._emit_delivery_ack(request_id, acceptance.message_id, "delivered")
 
     async def _submit_user_turn(
         self,
@@ -3394,10 +3579,14 @@ class Broker(
         # transport that CAN correlate a consumption signal (Codex turn/started) flips
         # the bubble; transports that can't simply ignore the kwargs.
         outbound = await self._apply_retrieval_reflex(content)
-        accepted = await asyncio.wait_for(
-            self._transport.send_message(outbound, msg_id=msg_id, request_id=request_id),
-            timeout=timeout,
-        )
+        sending = self._transport.send_message(outbound, msg_id=msg_id, request_id=request_id)
+        if getattr(self._transport.capabilities, "send_runs_turn", False) is True:
+            # The send returns when the whole turn is over (SDK, ``claude -p``). Cutting it at
+            # the attempt timeout would cancel a healthy turn and run it again; the transport's
+            # own turn timeout is what bounds it, and that one is loud.
+            accepted = await sending
+        else:
+            accepted = await asyncio.wait_for(sending, timeout=timeout)
         if accepted is False:
             raise DeliveryNotAcceptedError("Transport rejected the message before accepting input")
 
@@ -3876,6 +4065,84 @@ class Broker(
             await self._send_explicit_human_message_to_transport(content)
         return msg_id
 
+    async def handle_room_message_rpc(self, message: dict) -> dict:
+        """A member session posts in a room over the mesh, instead of through Forge.
+
+        The caller is the session the mesh verified (its certificate names it), never one the
+        message claims. With mesh signing off nothing is verified, so this refuses and says
+        to post through Forge (which is what a session does when signing is off).
+        """
+        if not self._settings.mesh.attestation.required:
+            return {
+                "status": "refused",
+                "error": "this session's mesh does not verify senders "
+                "(mesh.attestation.required is off), so a room post over the mesh cannot be "
+                "attributed; post through Forge",
+            }
+        raw = message.get(VERIFIED_SENDER_KEY)
+        caller = raw.get("session_id") if isinstance(raw, dict) else ""
+        if not caller:
+            return {"status": "refused", "error": "the mesh named no verified session for you"}
+        room_id, content = message.get("room_id"), message.get("content")
+        if not isinstance(room_id, str) or not isinstance(content, str):
+            return {"status": "refused", "error": "a room post needs a room_id and content"}
+        try:
+            message_id = await self.handle_session_room_message(caller, room_id, content)
+        except PermissionError as exc:
+            return {"status": "refused", "error": str(exc)}
+        except (ValueError, RuntimeError) as exc:
+            return {"status": "error", "error": str(exc)}
+        return {"status": "accepted", "message_id": message_id}
+
+    def room_seats(self) -> dict[str, dict[str, str]]:
+        """The rooms this session has been told it is in, and who hosts each.
+
+        Learned from what was said in them: a message said in a room names the room and the
+        session that relayed it, its host. {room_id: {host_session_id: host_node}}. It
+        includes nothing this session has not been told, and the inbox is durable, so it
+        survives a restart.
+        """
+        seats: dict[str, dict[str, str]] = {}
+        for entry in self._peer_inbox.values():
+            envelope = entry.envelope
+            if envelope.room_id and envelope.relayed_by is not None:
+                seats.setdefault(envelope.room_id, {})[envelope.relayed_by.id] = (
+                    envelope.relayed_by.node
+                )
+        return seats
+
+    async def handle_session_room_message(
+        self, caller_session_id: str, room_id: str, content: str
+    ) -> str:
+        """Record a message a member session says in a room, as said by that session.
+
+        ``caller_session_id`` is the session Forge verified. It is accepted only when a
+        participant seated in ``room_id`` joined from that session; anyone else is refused
+        with the reason. Nothing about the speaker comes from ``content``.
+        """
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled")
+        member = next(
+            (
+                participant
+                for participant in self._room_bridge.participants.values()
+                if participant.session_id == caller_session_id and room_id in participant.room_ids
+            ),
+            None,
+        )
+        if member is None:
+            raise PermissionError(
+                f"Session {caller_session_id} is not a member of room {room_id} on this "
+                "session; ask the room's host to join it first"
+            )
+        return await self.handle_human_room_message(
+            content,
+            source="session",
+            participant_id=member.peer_id,
+            metadata={"speaker_session_id": caller_session_id, "room_id": room_id},
+            deliver_to_transport=True,
+        )
+
     async def handle_directed_room_message(
         self,
         target_peer_id: str,
@@ -4062,7 +4329,25 @@ class Broker(
                     },
                 }
             )
+        if session_id:
+            await self._tell_member_it_is_seated(participant_id, meta.room_ids)
         return asdict(meta)
+
+    async def _tell_member_it_is_seated(self, participant_id: str, room_ids: Iterable[str]) -> None:
+        """Tell a session that joined a room which room it is in and who hosts it.
+
+        The member's Skuld learns its rooms from what is said in them, so the first thing said
+        to a new member says where it now is and how to speak. A member that cannot be told
+        fails the join loudly: it is seated, but could not answer the room.
+        """
+        host = self._host_peer_address()
+        for room_id in room_ids:
+            await self._room_bridge.tell_member(
+                participant_id,
+                f"You were seated in room {room_id}, hosted by session {host.id}. Speak in it "
+                f'with room_post(room_id="{room_id}", content=...).',
+                room_id,
+            )
 
     async def heartbeat_environment(
         self,
@@ -4215,6 +4500,7 @@ class Broker(
                 not self._settings.session.resume_session_id
                 and not self._settings.room.enabled
                 and not self._settings.workflow_steps.enabled
+                and not self._settings.peer_inbox.enabled
             )
             or not self.volundr_api_url
             or not self._settings.event_log_enabled
@@ -4241,6 +4527,8 @@ class Broker(
                     "The durable history of this workflow step host could not be restored; "
                     "refusing to start without knowing which step is open"
                 ) from exc
+            if self._settings.peer_inbox.enabled:
+                self._refuse_peer_messages_after_failed_restore(exc)
             logger.warning(
                 "Durable history hydration skipped for session %s; preserving local cache: %s",
                 self.session_id,
@@ -4281,6 +4569,8 @@ class Broker(
         """Restore broker-owned state from the frozen durable-log horizon."""
         self._restore_durable_controls(frames)
         self._restore_durable_workflow_steps(frames)
+        self._restore_durable_peer_inbox(frames)
+        self._restore_durable_mesh_follows(frames)
         self._restore_durable_room_members(frames)
 
     def _restore_durable_room_members(self, frames: list) -> None:

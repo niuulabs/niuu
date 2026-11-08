@@ -1,4 +1,5 @@
 name: specification-breakdown-planner
+description: "Turns an approved design into an actionable delivery breakdown; talk to it to draft or revise the breakdown of a specification."
 system_prompt_template: |
   ## Identity
 

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
+import socket
 import typing
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -14,7 +17,12 @@ from niuu.adapters.workload_identity.key_file import (
 )
 from niuu.config_models import WorkloadIdentityConfig
 from niuu.domain.services.forge_session_token import ForgeSessionTokenService
+from niuu.domain.services.mesh_certificate import MeshCertificateIssuer
 from niuu.domain.services.workload_identity import WorkloadIdentityService
+from niuu.mesh.attestation import KIND_AUTHORITY, MeshSigner
+from niuu.mesh.config import MeshAttestationConfig
+from niuu.mesh.platform_events import SigningBus
+from niuu.mesh.platform_identity import start_platform_signer
 from niuu.ports.credentials import CredentialRefreshLockPort
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
@@ -26,7 +34,10 @@ from volundr.adapters.inbound.host_join_listener import (
 from volundr.adapters.outbound.contributors.workflow_execution_credentials import (
     WorkflowExecutionCredentialContributor,
 )
+from volundr.adapters.outbound.mesh_revocation import MeshRevocationPublisher
+from volundr.adapters.outbound.mesh_settings import parse_mesh_settings
 from volundr.config import ALLOW_ALL_IDENTITY_ADAPTERS, Settings
+from volundr.domain.mesh_peer_claims import MeshPeerClaims
 from volundr.domain.ports import (
     ArchiveStorePort,
     AuthorizationPort,
@@ -45,6 +56,7 @@ from volundr.domain.ports import (
 )
 from volundr.domain.presented_files import PresentedFileStore
 from volundr.domain.services.integration_registry import IntegrationRegistry
+from volundr.domain.services.mesh_identity import ForgeMeshCertificateSource
 from volundr.domain.services.oauth_clients import (
     SOURCE_CONFIGURED,
     OAuthClient,
@@ -64,6 +76,10 @@ KEY_SOURCE_KEY_FILE = "key_file"
 
 class ForgeSessionCredentialsUnavailableError(RuntimeError):
     """Forge session credentials are enabled but no signing key is usable."""
+
+
+class MeshIdentityUnavailableError(RuntimeError):
+    """Mesh identities are enabled but the session-credential signer cannot sign them."""
 
 
 class HostPairingSignerUnavailableError(RuntimeError):
@@ -122,6 +138,81 @@ def _create_forge_session_tokens(
         ttl_seconds=cfg.ttl_seconds,
         key_source=KEY_SOURCE_KEY_FILE,
     )
+
+
+def _create_mesh_certificate_issuer(
+    settings: Settings,
+    session_tokens: ForgeSessionTokenService | None,
+) -> MeshCertificateIssuer | None:
+    """The issuer of mesh certificates, or ``None`` when Forge runs without a mesh identity.
+
+    It signs with the issuer that signs the session credentials, so the same key serves
+    both (the workload-identity key, or Forge's own key file in local mini mode) and the
+    certificates verify against a JWKS the peers can fetch from Forge. No session
+    credentials means no mesh identity. With them enabled the signer must be able to sign
+    mesh certificates; one that cannot is fatal, never "no mesh identity".
+    """
+    cfg = settings.forge_mcp.mesh_identity
+    if not settings.mesh.attestation.required:
+        logger.info("Mesh identity: not issued (mesh.attestation.required is false)")
+        return None
+    if session_tokens is None:
+        logger.info(
+            "Mesh identity: off because Forge session credentials are disabled "
+            "(forge_mcp.session_tokens.enabled)"
+        )
+        return None
+    signing = session_tokens.signing_issuer
+    if not callable(getattr(signing, "sign_claims", None)) or not callable(
+        getattr(signing, "jwks", None)
+    ):
+        raise MeshIdentityUnavailableError(
+            "mesh.attestation.required is true but the session-credential signer "
+            f"({type(signing).__name__}) cannot sign mesh certificates; use a workload "
+            "identity issuer, or set mesh.attestation.required: false."
+        )
+    logger.info("Mesh identity: certificates valid for %ss", cfg.ttl_seconds)
+    return MeshCertificateIssuer(signing, ttl_seconds=cfg.ttl_seconds)
+
+
+def _forge_authority_peer_id(settings: Settings) -> str:
+    """The mesh peer id of this Forge: ``forge:<instance id>``, else its host name."""
+    return f"forge:{settings.projects.instance_id or socket.gethostname()}"
+
+
+async def _create_mesh_revocation_publisher(
+    settings: Settings,
+    issuer: MeshCertificateIssuer,
+    claims: MeshPeerClaims,
+    bus: typing.Any,
+    attestation: MeshAttestationConfig | None = None,
+) -> MeshRevocationPublisher:
+    """Forge's authority peer: a key generated now, certified by Forge itself.
+
+    Raises when the authority certificate cannot be had (for instance another Forge
+    already holds this peer id): a Forge that was asked to publish revocations and cannot
+    must not start as if it did.
+    """
+    attestation = attestation or MeshAttestationConfig()
+    peer_id = _forge_authority_peer_id(settings)
+    source = ForgeMeshCertificateSource(
+        issuer,
+        claims,
+        holder=f"authority:{peer_id}",
+        kind=KIND_AUTHORITY,
+        launch_id=uuid.uuid4().hex,
+        memberships=(),
+    )
+    signer = MeshSigner(
+        source,
+        peer_id,
+        renew_fraction=attestation.renew_fraction,
+        retry_fraction=attestation.retry_fraction,
+    )
+    publisher = MeshRevocationPublisher(bus, signer, attestation=attestation)
+    await publisher.start()
+    logger.info("Mesh revocations: published as %s on the Sleipnir bus", peer_id)
+    return publisher
 
 
 def _create_host_pairing_signer(
@@ -462,10 +553,69 @@ def _nested_pod_manager_parameters(cls: type, kwargs: dict[str, Any]) -> set[str
     }
 
 
+def _mesh_mapping(raw: Any, where: str) -> dict[str, Any]:
+    return parse_mesh_settings(raw, where)
+
+
+def _apply_mesh_decision(
+    cls: type, kwargs: dict[str, Any], settings: Settings, *, covered: bool
+) -> None:
+    """Carry ``mesh.attestation.required`` into the sessions this pod manager launches.
+
+    It is one decision for everything Forge runs, so every pod manager that starts Skuld
+    takes Skuld's ``mesh`` settings (the ``mesh`` kwarg; ``session_defaults.mesh`` for Flux)
+    and hands them to its sessions. Forge writes the decision there, and a different value
+    set there is refused at startup rather than letting a session disagree with Forge.
+    Signing is Skuld's default, so only the operator's ``false`` has to be written. A pod
+    manager that cannot carry it is refused while signing is off, never left to disagree.
+    ``covered`` is a pod manager that only wraps others (placement), each built on its own.
+    """
+    required = settings.mesh.attestation.required
+    if getattr(cls, "carries_mesh_setting", False):
+        mesh = _mesh_mapping(kwargs.get("mesh"), "pod_manager.kwargs.mesh")
+        holder, key, where = mesh, "mesh", "pod_manager.kwargs.mesh"
+        target = mesh
+    elif "session_defaults" in inspect.signature(cls.__init__).parameters:
+        defaults = _mesh_mapping(
+            kwargs.get("session_defaults"), "pod_manager.kwargs.session_defaults"
+        )
+        mesh = _mesh_mapping(defaults.get("mesh"), "pod_manager.kwargs.session_defaults.mesh")
+        defaults["mesh"] = mesh
+        holder, key, where = (
+            defaults,
+            "session_defaults",
+            "pod_manager.kwargs.session_defaults.mesh",
+        )
+        target = mesh
+    else:
+        if required or covered:
+            return
+        raise ValueError(
+            f"mesh.attestation.required is false, but {cls.__name__} has no setting for the "
+            "Skuld mesh configuration of its sessions, so they would keep signing on and "
+            "disagree. Give the pod manager a `mesh` setting (carries_mesh_setting), or "
+            "set mesh.attestation.required: true"
+        )
+    attestation = _mesh_mapping(target.get("attestation"), f"{where}.attestation")
+    explicit = attestation.get("required")
+    if explicit is not None and bool(explicit) != required:
+        raise ValueError(
+            f"{where}.attestation.required is {explicit} but mesh.attestation.required is "
+            f"{required}: mesh signing is one decision, set only mesh.attestation.required"
+        )
+    if required:
+        return
+    attestation["required"] = False
+    target["attestation"] = attestation
+    kwargs[key] = holder
+
+
 def _build_pod_manager(settings: Settings, adapter: str, kwargs: dict[str, Any]) -> PodManager:
     cls = import_class(adapter)
     kwargs = dict(kwargs)
-    for name in _nested_pod_manager_parameters(cls, kwargs):
+    # Found before the nested configs are replaced by the managers built from them.
+    nested_names = _nested_pod_manager_parameters(cls, kwargs)
+    for name in nested_names:
         nested = kwargs[name]
         unknown = set(nested) - {"adapter", "kwargs", "secret_kwargs_env"}
         if unknown:
@@ -480,6 +630,7 @@ def _build_pod_manager(settings: Settings, adapter: str, kwargs: dict[str, Any])
                 dict(nested.get("kwargs") or {}), dict(nested.get("secret_kwargs_env") or {})
             ),
         )
+    _apply_mesh_decision(cls, kwargs, settings, covered=bool(nested_names))
     kwargs.setdefault("server_public_host", settings.server_public_host)
     kwargs.setdefault("server_host", settings.server_host)
     kwargs.setdefault("server_port", settings.server_port)
@@ -836,3 +987,52 @@ def _create_contributors(
         logger.info("Session contributor: session_mcp (auto-wired)")
 
     return contributors
+
+
+async def _start_sleipnir_bus(settings: Settings) -> Any | None:
+    """Start the configured Sleipnir bus, or ``None`` when ``sleipnir.enabled`` is false.
+
+    Enabled but unable to start is fatal: Forge running on without its bus would silently
+    stop events, audit and mesh revocations.
+    """
+    if not settings.sleipnir.enabled:
+        return None
+    try:
+        bus_class = import_class(settings.sleipnir.adapter)
+        bus = bus_class(
+            **resolve_secret_kwargs(settings.sleipnir.kwargs, settings.sleipnir.secret_kwargs_env)
+        )
+        if hasattr(bus, "start"):
+            await bus.start()
+    except Exception as exc:
+        raise RuntimeError(
+            f"sleipnir.enabled is true but the bus {settings.sleipnir.adapter!r} could not "
+            f"start: {exc!r}. Fix sleipnir.adapter / sleipnir.kwargs, or set "
+            "sleipnir.enabled: false to run without a bus"
+        ) from exc
+    logger.info(
+        "Sleipnir integration enabled: adapter=%s", settings.sleipnir.adapter.rsplit(".", 1)[-1]
+    )
+    return bus
+
+
+async def _sign_forge_platform_events(
+    settings: Settings, bus: Any | None, revocations: Any | None
+) -> Any | None:
+    """Forge's bus with its platform events signed, or the bus untouched while signing is off.
+
+    Forge signs with its ``authority`` certificate (the revocation publisher's); without one,
+    as a platform service of its own. Mesh events keep the signatures their peers give them.
+    """
+    if bus is None or not settings.mesh.attestation.required:
+        return bus
+    signer = (
+        revocations.signer
+        if revocations is not None
+        else await start_platform_signer(
+            "forge", settings.mesh.attestation, workload_identity=settings.workload_identity
+        )
+    )
+    if signer is None:
+        return bus
+    return SigningBus(bus, signer)

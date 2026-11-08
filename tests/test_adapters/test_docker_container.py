@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from niuu.ports.session_proxy import SessionProxyTarget
+from tests.support.forge_session import token_service
 from volundr.adapters.outbound import docker_container as dc
 from volundr.adapters.outbound.docker_container import (
     MANAGED_BY,
@@ -1063,3 +1064,195 @@ async def test_forge_controls_reach_docker_container(manager, client, workspaces
     assert env["SKULD__CODEX_RECEIVE_MAX_BYTES"] == "123456"
     assert json.loads(env["SKULD__PI"])["binary"] == "/opt/pi"
     assert manager.runtime_backend == "docker"
+
+
+class TestForgeSessionCredential:
+    """The session's Forge credential reaches the container as a private file, not env."""
+
+    @staticmethod
+    def _credentialed(spec: SessionSpec, session: Session, **kwargs: Any) -> SessionSpec:
+        spec.forge_session = token_service().mint(
+            session_id=session.id,
+            session_name=session.name,
+            owner_id="dev-user",
+            tenant_id=None,
+            grants=kwargs.get("grants", ()),
+            launch_id=kwargs.get("launch_id", "launch-1"),
+        )
+        return spec
+
+    def test_declares_delivery(self, manager: DockerContainerPodManager) -> None:
+        assert manager.delivers_forge_session_token is True
+
+    async def test_token_is_a_read_only_private_file_and_env_names_it(
+        self,
+        manager: DockerContainerPodManager,
+        client: _Client,
+        workspaces: Path,
+        session: Session,
+        spec: SessionSpec,
+    ) -> None:
+        self._credentialed(spec, session, grants=["message", "lifecycle"])
+        ws = _workspace(workspaces, session)
+        with (
+            patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)),
+            patch.dict(
+                os.environ,
+                {dc.FORGE_MCP_TOKEN_ENV: "inherited", dc.FORGE_MCP_GRANTS_ENV: "lifecycle"},
+            ),
+        ):
+            await manager.start(session, spec)
+
+        token = spec.forge_session.token
+        kwargs = client.containers.run_kwargs[0]
+        env = kwargs["environment"]
+        assert env[dc.FORGE_MCP_TOKEN_FILE_ENV] == f"{dc.FORGE_SESSION_SANDBOX_DIR}/token"
+        assert env[dc.FORGE_MCP_GRANTS_ENV] == "lifecycle,message"
+        assert dc.FORGE_MCP_TOKEN_ENV not in env
+        # Neither the token nor anything derived from it is in the container's config.
+        assert token not in json.dumps(kwargs, default=str)
+
+        host_dir = workspaces / f"{session.id}.forge-session"
+        assert kwargs["volumes"][str(host_dir)] == {
+            "bind": dc.FORGE_SESSION_SANDBOX_DIR,
+            "mode": "ro",
+        }
+        token_file = host_dir / "token"
+        assert token_file.read_text() == token
+        assert token_file.stat().st_mode & 0o777 == 0o600
+        assert host_dir.stat().st_mode & 0o777 == 0o700
+        assert [entry.name for entry in host_dir.iterdir()] == ["token"]
+
+    async def test_launch_spec_env_cannot_supply_a_credential(
+        self,
+        manager: DockerContainerPodManager,
+        client: _Client,
+        workspaces: Path,
+        session: Session,
+        spec: SessionSpec,
+    ) -> None:
+        spec.values["env"] = {
+            dc.FORGE_MCP_TOKEN_ENV: "spec-token",
+            dc.FORGE_MCP_TOKEN_FILE_ENV: "/tmp/elsewhere",
+        }
+        ws = _workspace(workspaces, session)
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            await manager.start(session, spec)
+        env = client.containers.run_kwargs[0]["environment"]
+        assert not {
+            dc.FORGE_MCP_TOKEN_ENV,
+            dc.FORGE_MCP_GRANTS_ENV,
+            dc.FORGE_MCP_TOKEN_FILE_ENV,
+        } & set(env)
+        assert not (workspaces / f"{session.id}.forge-session").exists()
+        assert "SKULD__VOLUNDR_API_URL" in env
+
+    async def test_restart_replaces_the_previous_launch_token(
+        self,
+        manager: DockerContainerPodManager,
+        client: _Client,
+        workspaces: Path,
+        session: Session,
+        spec: SessionSpec,
+    ) -> None:
+        ws = _workspace(workspaces, session)
+        token_file = workspaces / f"{session.id}.forge-session" / "token"
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            await manager.start(session, self._credentialed(spec, session, launch_id="one"))
+            first = token_file.read_text()
+            await manager.start(session, self._credentialed(spec, session, launch_id="two"))
+        assert token_file.read_text() == spec.forge_session.token != first
+
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            spec.forge_session = None
+            await manager.start(session, spec)
+        assert not token_file.parent.exists()
+        env = client.containers.run_kwargs[-1]["environment"]
+        assert dc.FORGE_MCP_TOKEN_FILE_ENV not in env
+
+    async def test_credential_is_refused_when_the_container_user_cannot_read_it(
+        self,
+        client: _Client,
+        workspaces: Path,
+        tmp_path: Path,
+        session: Session,
+        spec: SessionSpec,
+    ) -> None:
+        manager = DockerContainerPodManager(
+            workspaces_dir=str(workspaces),
+            state_file=str(tmp_path / "state.json"),
+            run_as_host_user=False,
+        )
+        ws = _workspace(workspaces, session)
+        with (
+            patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)),
+            pytest.raises(ValueError, match="run_as_host_user"),
+        ):
+            await manager.start(session, self._credentialed(spec, session))
+        assert client.containers.run_kwargs == []
+        assert not (workspaces / f"{session.id}.forge-session").exists()
+
+    async def test_stop_removes_the_token_file(
+        self,
+        manager: DockerContainerPodManager,
+        workspaces: Path,
+        session: Session,
+        spec: SessionSpec,
+    ) -> None:
+        ws = _workspace(workspaces, session)
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            await manager.start(session, self._credentialed(spec, session))
+        directory = workspaces / f"{session.id}.forge-session"
+        assert directory.is_dir()
+        await manager.stop(session)
+        assert not directory.exists()
+
+    def test_removal_failure_is_not_swallowed(
+        self, manager: DockerContainerPodManager, workspaces: Path, session: Session
+    ) -> None:
+        (workspaces / f"{session.id}.forge-session").mkdir()
+        with (
+            patch.object(dc.shutil, "rmtree", side_effect=PermissionError("denied")),
+            pytest.raises(PermissionError),
+        ):
+            manager._remove_forge_session_dir(str(session.id))
+
+
+class TestMeshSetting:
+    async def test_the_mesh_setting_reaches_the_container(
+        self,
+        client: _Client,
+        workspaces: Path,
+        tmp_path: Path,
+        session: Session,
+        spec: SessionSpec,
+    ) -> None:
+        manager = DockerContainerPodManager(
+            skuld_image="ghcr.io/niuulabs/skuld:test",
+            platform_url="http://niuu:8080/",
+            workspaces_dir=str(workspaces),
+            state_file=str(tmp_path / "forge-state.json"),
+            mesh={"enabled": True, "attestation": {"required": False}},
+        )
+        ws = _workspace(workspaces, session)
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            await manager.start(session, spec)
+        env = client.containers.run_kwargs[0]["environment"]
+        assert env["SKULD__MESH__ENABLED"] == "true"
+        assert env["SKULD__MESH__ATTESTATION__REQUIRED"] == "false"
+        await manager.stop(session)
+
+    async def test_without_a_mesh_setting_the_container_gets_none(
+        self,
+        manager: DockerContainerPodManager,
+        client: _Client,
+        workspaces: Path,
+        session: Session,
+        spec: SessionSpec,
+    ) -> None:
+        ws = _workspace(workspaces, session)
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            await manager.start(session, spec)
+        env = client.containers.run_kwargs[0]["environment"]
+        assert not [key for key in env if key.startswith("SKULD__MESH__")]
+        await manager.stop(session)

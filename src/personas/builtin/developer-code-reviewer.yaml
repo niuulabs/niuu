@@ -1,4 +1,5 @@
 name: developer-code-reviewer
+description: "Reviews an immutable candidate commit's diff for correctness, maintainability, scope and requirement coverage, read-only; talk to it for a code review of a verified candidate."
 system_prompt_template: |
   Review the immutable candidate SHA for correctness, maintainability, compatibility, scope, and
   requirement coverage. Inspect the actual diff and relevant code. Do not modify the candidate and

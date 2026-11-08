@@ -37,6 +37,7 @@ from typing import Any
 import httpx
 
 from volundr.adapters.outbound.contributors.session_mcp import MIMIR_MOUNT_PATH
+from volundr.adapters.outbound.mesh_settings import mesh_environment, parse_mesh_settings
 from volundr.domain.models import (
     GitSource,
     LocalMountSource,
@@ -298,6 +299,9 @@ class LocalProcessPodManager(PodManager):
         """The broker receives its session credential in its own process env."""
         return True
 
+    #: Takes Skuld's ``mesh`` settings and hands them to every session (``mesh_settings``).
+    carries_mesh_setting = True
+
     def __init__(
         self,
         *,
@@ -312,6 +316,7 @@ class LocalProcessPodManager(PodManager):
         server_host: str = "127.0.0.1",
         server_port: int = 8080,
         preview_router_auth: dict | None = None,
+        mesh: dict | str | None = None,
         **_extra: object,
     ):
         """``preview_router_auth`` is the Skuld ``preview.router_auth`` adapter
@@ -321,6 +326,7 @@ class LocalProcessPodManager(PodManager):
         local sessions run without live preview."""
         self._workspaces_dir = Path(str(workspaces_dir)).expanduser()
         self._preview_router_auth = dict(preview_router_auth or {})
+        self._mesh = parse_mesh_settings(mesh)
         self._claude_binary = str(claude_binary)
         self._max_concurrent = int(max_concurrent)
         self._stop_timeout = int(stop_timeout)
@@ -878,6 +884,7 @@ class LocalProcessPodManager(PodManager):
         # .room_role_source, default "deployment" — every other backend).
         env["SKULD__WS_AUTH__ROOM_ROLE_SOURCE"] = "proxy"
         env.update(self._preview_env(session_id))
+        env.update(mesh_environment(self._mesh))
         model = str(session.model or spec.values.get("model", "") or "").strip()
         env["SKULD__SESSION__MODEL"] = model
         env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)

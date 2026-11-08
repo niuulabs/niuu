@@ -128,13 +128,34 @@ class RestForgeClient(ForgeClient):
         )
 
     async def send_message(
-        self, session_id: str, *, content: str, request_id: str, instance_id: str | None
+        self,
+        session_id: str,
+        *,
+        content: str,
+        request_id: str,
+        instance_id: str | None,
+        in_reply_to: str = "",
+        urgent: bool = False,
     ) -> dict[str, Any]:
+        body: dict[str, Any] = {"content": content, "request_id": request_id}
+        if in_reply_to:
+            body["in_reply_to"] = in_reply_to
+        if urgent:
+            body["urgent"] = True
         return await self._object(
             "POST",
             f"/sessions/{quote(session_id)}/messages",
             params=self._instance_params(instance_id),
-            json={"content": content, "request_id": request_id},
+            json=body,
+        )
+
+    async def post_room_message(
+        self, host_session_id: str, *, room_id: str, content: str
+    ) -> dict[str, Any]:
+        return await self._object(
+            "POST",
+            f"/sessions/{quote(host_session_id)}/room/session-message",
+            json={"room_id": room_id, "content": content},
         )
 
     async def get_message_delivery(

@@ -1,4 +1,5 @@
 name: specification-sdd-critic
+description: "Challenges a design document for architecture bloat, hidden coupling and weak rollout thinking; talk to it to review an SDD draft."
 system_prompt_template: |
   ## Identity
 

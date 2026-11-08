@@ -8,6 +8,7 @@ or spec decides that.
 Persona YAML format::
 
     name: coding-agent
+    description: Implements features and fixes bugs in a repository, with tests.
     system_prompt_template: |
       You are a focused coding agent. ...
     allowed_tools: [file_read, file_write, shell, web_fetch, plan, "mimir:search"]
@@ -141,6 +142,9 @@ class PersonaConfig:
     """
 
     name: str
+    #: One or two sentences on what the persona does, announced to a session's peers so they
+    #: can choose whom to talk to. Never injected into a prompt.
+    description: str = ""
     system_prompt_template: str = ""
     allowed_tools: list[str] = field(default_factory=list)
     forbidden_tools: list[str] = field(default_factory=list)
@@ -180,6 +184,8 @@ class PersonaConfig:
         """
         d: dict = {"name": self.name}
 
+        if self.description:
+            d["description"] = self.description
         if self.system_prompt_template:
             d["system_prompt_template"] = self.system_prompt_template
         if self.allowed_tools:
@@ -456,6 +462,7 @@ def parse_persona(text: str) -> PersonaConfig | None:
 
     return PersonaConfig(
         name=name,
+        description=str(raw.get("description") or "").strip(),
         system_prompt_template=str(raw.get("system_prompt_template", "")),
         allowed_tools=list(allowed) if isinstance(allowed, list) else [],
         forbidden_tools=list(forbidden) if isinstance(forbidden, list) else [],

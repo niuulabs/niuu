@@ -689,6 +689,10 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
             }
         ),
     }
+    session_mesh = settings.mesh.session_settings()
+    if session_mesh:
+        kwargs["mesh"] = session_mesh
+    env.update(settings.mesh.forge_env())
     if settings.hosts_active:
         # This machine keeps its own sessions; the placement pod manager adds the
         # registered-hosts pool next to them.
@@ -712,7 +716,9 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
         )
     else:
         for key, value in kwargs.items():
-            env[f"POD_MANAGER__KWARGS__{key.upper()}"] = str(value)
+            env[f"POD_MANAGER__KWARGS__{key.upper()}"] = (
+                json.dumps(value) if isinstance(value, dict) else str(value)
+            )
     seeds = model_server_seed_connections(settings)
     if seeds:
         env["INTEGRATIONS__SEED_CONNECTIONS"] = json.dumps(seeds)
@@ -1005,10 +1011,12 @@ def _build_init_config(mode: str) -> dict[str, Any]:
 
         return {"mode": "docker", "docker": DockerConfig().model_dump(exclude={"vllm"})}
     if mode == "cluster":
-        return {
-            "mode": "cluster",
-            "pod_manager": dict(CLUSTER_POD_MANAGER_DEFAULTS),
-        }
+        from cli.config import ServerConfig
+
+        pod_manager = dict(CLUSTER_POD_MANAGER_DEFAULTS)
+        # Session pods reach this Forge at the same host alias they reach its database at.
+        pod_manager["volundr_api_url"] = f"http://{pod_manager['db_host']}:{ServerConfig().port}"
+        return {"mode": "cluster", "pod_manager": pod_manager}
     if mode == "openshell":
         return {
             "mode": "openshell",

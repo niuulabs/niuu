@@ -492,3 +492,42 @@ class TestHttpForgeClientShapes:
             await forge_client.stop_session(PEER_ID, instance_id=None)
         assert excinfo.value.status == 500 and excinfo.value.detail == "boom"
         assert await forge_client.start_session(PEER_ID, instance_id=None) == {}
+
+
+class TestPeerMessageClientShapes:
+    async def test_send_message_and_room_post_bodies(self) -> None:
+        seen: list[tuple[str, str, dict]] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            seen.append((request.method, request.url.path, json.loads(request.content)))
+            return httpx.Response(200, json={"status": "delivered"})
+
+        client = httpx.AsyncClient(base_url=FORGE, transport=httpx.MockTransport(respond))
+
+        async def provider() -> httpx.AsyncClient:
+            return client
+
+        forge_client = HttpForgeClient(http_client=provider, token="t", timeout_s=1.0)
+        await forge_client.send_message(PEER_ID, content="a", request_id="r1", instance_id=None)
+        await forge_client.send_message(
+            PEER_ID, content="b", request_id="r2", instance_id=None, in_reply_to="m-1", urgent=True
+        )
+        await forge_client.post_room_message(PEER_ID, room_id="huddle-1", content="c")
+
+        assert seen == [
+            (
+                "POST",
+                f"/api/v1/forge/sessions/{PEER_ID}/messages",
+                {"content": "a", "request_id": "r1"},
+            ),
+            (
+                "POST",
+                f"/api/v1/forge/sessions/{PEER_ID}/messages",
+                {"content": "b", "request_id": "r2", "in_reply_to": "m-1", "urgent": True},
+            ),
+            (
+                "POST",
+                f"/api/v1/forge/sessions/{PEER_ID}/room/session-message",
+                {"room_id": "huddle-1", "content": "c"},
+            ),
+        ]

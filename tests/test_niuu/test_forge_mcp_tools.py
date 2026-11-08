@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from niuu.domain.notifications import NotificationDraft
+from niuu.domain.peer_message import (
+    PeerAddress,
+    PeerKind,
+    PeerMessage,
+    PeerMessageError,
+    ReplyKind,
+    ReplyRoute,
+)
 from niuu.domain.workflow_step import WorkflowStepCloseArgs, WorkflowStepCloseError
 from niuu.forge_mcp import (
     TOOL_NAMES,
@@ -22,6 +31,7 @@ from niuu.forge_mcp import (
     ToolResult,
     UnknownToolError,
 )
+from niuu.forge_mcp.tools import TRANSCRIPT_ONLY_TOOLS
 
 SELF = str(uuid.uuid4())
 PEER = str(uuid.uuid4())
@@ -53,7 +63,9 @@ def _session(session_id: str, **extra: Any) -> dict[str, Any]:
 class FakeClient(ForgeClient):
     def __init__(self) -> None:
         self.calls: list[tuple[str, Any]] = []
+        self.envelope_args: list[dict[str, Any]] = []
         self.fail: ForgeApiError | None = None
+        self.sessions: list[dict[str, Any]] | None = None
 
     def _record(self, name: str, payload: Any) -> None:
         self.calls.append((name, payload))
@@ -70,6 +82,8 @@ class FakeClient(ForgeClient):
 
     async def list_sessions(self, params):
         self._record("list_sessions", params)
+        if self.sessions is not None:
+            return self.sessions
         return [_session(str(uuid.uuid4())) for _ in range(5)]
 
     async def get_session(self, session_id, *, instance_id):
@@ -90,9 +104,16 @@ class FakeClient(ForgeClient):
         rows.append({"id": "in-progress", "role": "assistant", "in_progress": True})
         return {"turns": rows, "total_turns": 40}
 
-    async def send_message(self, session_id, *, content, request_id, instance_id):
+    async def send_message(
+        self, session_id, *, content, request_id, instance_id, in_reply_to="", urgent=False
+    ):
         self._record("send_message", (session_id, content, request_id, instance_id))
+        self.envelope_args.append({"in_reply_to": in_reply_to, "urgent": urgent})
         return {"status": "delivered", "delivery": "delivered", "request_id": request_id}
+
+    async def post_room_message(self, host_session_id, *, room_id, content):
+        self._record("post_room_message", (host_session_id, room_id, content))
+        return {"status": "sent", "message_id": "room-msg-1"}
 
     async def get_message_delivery(self, session_id, *, request_id, instance_id):
         self._record("get_message_delivery", (session_id, request_id, instance_id))
@@ -149,9 +170,110 @@ class FakeHost(ForgeMcpHost):
         self.step_open = False
         self.closes: list[WorkflowStepCloseArgs] = []
         self.close_error: WorkflowStepCloseError | None = None
+        self.mesh = True
+        self.mesh_sends: list[dict[str, Any]] = []
+        self.mesh_publishes: list[dict[str, Any]] = []
+        self.mesh_peer_queries: list[dict[str, str]] = []
+        self.follows: list[tuple[str, dict[str, str]]] = []
+        self.asks_made: list[dict[str, Any]] = []
+        self.room_posts: list[dict[str, Any]] = []
+        self.inbox: dict[str, PeerMessage] = {}
+        self.mesh_peer_ids: dict[str, str] = {}
+        self.mesh_down = False
+        self.mesh_send_error: ForgeApiError | None = None
+        self.ask_max_s = 50.0
+        self.asks: list[dict[str, Any]] = []
+        self.ask_result: dict[str, Any] = {"outcome": "answered", "answer": "yes", "from": "bob"}
+
+    def ask_wait_max_s(self) -> float:
+        return self.ask_max_s
+
+    async def ask_for_answer(self, **kwargs):
+        self.asks.append(kwargs)
+        return self.ask_result
 
     def workflow_step_host(self) -> bool:
         return self.step_host
+
+    def mesh_host(self) -> bool:
+        return self.mesh
+
+    async def mesh_peer_for(self, *, session_id, name):
+        if self.mesh_down:
+            raise ForgeApiError("this session's mesh is not running", status=503)
+        return self.mesh_peer_ids.get(session_id or name)
+
+    async def send_mesh_message(
+        self, peer, content, *, expect_reply, request_id, in_reply_to, urgent=False, thread=""
+    ):
+        self.mesh_sends.append(
+            {
+                "peer": peer,
+                "thread": thread,
+                "content": content,
+                "expect_reply": expect_reply,
+                "request_id": request_id,
+                "in_reply_to": in_reply_to,
+                "urgent": urgent,
+            }
+        )
+        if self.mesh_send_error is not None:
+            raise self.mesh_send_error
+        return {"message_id": "mesh-msg-1", "status": "accepted"}
+
+    async def post_room_message(self, room_id, content, *, host_session_id="", request_id=""):
+        self.room_posts.append(
+            {"room_id": room_id, "content": content, "host_session_id": host_session_id}
+        )
+        return {"room_id": room_id, "message_id": "room-msg-1", "path": "mesh"}
+
+    async def mesh_ask(self, content, *, producers_of, peers, request_id, wait_s):
+        self.asks_made.append(
+            {
+                "content": content,
+                "producers_of": producers_of,
+                "peers": peers,
+                "request_id": request_id,
+                "wait_s": wait_s,
+            }
+        )
+        return {"question_id": "q-1", "delivered": [{"peer": "p-1"}], "failed": []}
+
+    async def mesh_subscribe(self, *, topic, correlation_id):
+        self.follows.append(("subscribe", {"topic": topic, "correlation_id": correlation_id}))
+        return {"status": "followed", "topic": topic or "thread.t1"}
+
+    async def mesh_unsubscribe(self, *, topic, correlation_id):
+        self.follows.append(("unsubscribe", {"topic": topic, "correlation_id": correlation_id}))
+        return {"status": "unfollowed", "topic": topic or "thread.t1"}
+
+    async def mesh_peers(self, *, role, capability, consumes, produces):
+        self.mesh_peer_queries.append(
+            {"role": role, "capability": capability, "consumes": consumes, "produces": produces}
+        )
+        return {"peers": [{"peer_id": "p-1", "role": "reviewer"}], "count": 1, "as_of": "now"}
+
+    async def publish_mesh_event(self, topic, content, *, request_id, correlation_id, in_reply_to):
+        self.mesh_publishes.append(
+            {
+                "topic": topic,
+                "content": content,
+                "request_id": request_id,
+                "correlation_id": correlation_id,
+                "in_reply_to": in_reply_to,
+            }
+        )
+        return {
+            "event_id": "evt-1",
+            "topic": topic,
+            "correlation_id": correlation_id or "evt-1",
+            "status": "published",
+        }
+
+    async def received_peer_message(self, message_id: str) -> PeerMessage:
+        if message_id not in self.inbox:
+            raise PeerMessageError(f"this session received no message {message_id!r}")
+        return self.inbox[message_id]
 
     async def close_workflow_step(self, args: WorkflowStepCloseArgs) -> dict[str, Any]:
         if not self.step_open:
@@ -195,7 +317,16 @@ class TestToolList:
             "get_session",
             "session_transcript",
             "send_message",
+            "ask",
             "message_status",
+            "reply",
+            "room_post",
+            "mesh_send",
+            "mesh_publish",
+            "mesh_peers",
+            "mesh_subscribe",
+            "mesh_unsubscribe",
+            "mesh_ask",
             "create_session",
             "start_session",
             "stop_session",
@@ -560,9 +691,7 @@ class TestFeedNotify:
         assert {"session_id", "instance_id", "idempotency_key"} <= set(schema["properties"])
         assert "feed-only" in notify["description"]
         assert [tool["name"] for tool in toolbox.list_tools()] == [
-            name
-            for name in TOOL_NAMES
-            if name not in {"report_artifact", "request_secret", "workflow_step_close"}
+            name for name in TOOL_NAMES if name not in TRANSCRIPT_ONLY_TOOLS
         ]
 
     def test_transcript_mode_keeps_the_session_schema(self) -> None:
@@ -773,3 +902,1058 @@ class TestWorkflowStepClose:
         toolbox, _ = _feed_toolbox()
         with pytest.raises(UnknownToolError):
             await toolbox.call("workflow_step_close", CLOSE_ARGS)
+
+
+def _named(name: str, session_id: str, node: str = "node-a", **extra: Any) -> dict[str, Any]:
+    return _session(session_id, name=name, instance_id=node, instance_name=node.upper(), **extra)
+
+
+def _envelope(**fields: Any) -> PeerMessage:
+    base: dict[str, Any] = {
+        "message_id": "m-1",
+        "sender": PeerAddress(kind=PeerKind.SESSION, id=PEER, name="peer", node="thor"),
+        "recipient": PeerAddress(kind=PeerKind.SESSION, id=SELF, name="me"),
+        "sent_at": datetime(2026, 11, 8, tzinfo=UTC),
+        "content": "can you check the build?",
+        "reply": ReplyRoute(kind=ReplyKind.SESSION, target=PEER, node="thor"),
+    }
+    return PeerMessage(**{**base, **fields})
+
+
+class TestAddressByName:
+    async def test_a_unique_name_resolves_to_its_id_and_node(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.sessions = [_named("alpha", PEER, "node-b"), _named("beta", str(uuid.uuid4()))]
+
+        result = await toolbox.call("send_message", {"to": "alpha", "content": "hello"})
+
+        assert not result.is_error
+        assert client.calls[0] == ("list_sessions", {"scope": "guild"})
+        sent = next(args for name, args in client.calls if name == "send_message")
+        assert (sent[0], sent[3]) == (PEER, "node-b")
+        assert result.structured["session_id"] == PEER
+
+    async def test_an_unknown_name_is_an_error_naming_it(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.sessions = [_named("alpha", PEER)]
+
+        result = await toolbox.call("send_message", {"to": "ghost", "content": "hello"})
+
+        assert result.is_error and "'ghost'" in result.text
+        assert not any(name == "send_message" for name, _ in client.calls)
+
+    async def test_an_ambiguous_name_lists_the_candidates_and_picks_none(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        other = str(uuid.uuid4())
+        client.sessions = [
+            _named("alpha", PEER, "node-a", status="running"),
+            _named("alpha", other, "node-b", status="stopped"),
+        ]
+
+        result = await toolbox.call("send_message", {"to": "alpha", "content": "hello"})
+
+        assert result.is_error
+        assert "2 sessions are named 'alpha'" in result.text
+        assert f"id {PEER}" in result.text and f"id {other}" in result.text
+        assert "NODE-A" in result.text and "NODE-B" in result.text
+        assert not any(name == "send_message" for name, _ in client.calls)
+
+    async def test_instance_id_narrows_an_ambiguous_name(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        other = str(uuid.uuid4())
+        client.sessions = [_named("alpha", PEER, "node-a"), _named("alpha", other, "node-b")]
+
+        result = await toolbox.call(
+            "send_message", {"to": "alpha", "instance_id": "node-b", "content": "hello"}
+        )
+
+        assert not result.is_error and result.structured["session_id"] == other
+
+    async def test_a_name_that_is_the_callers_own_session_is_refused(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.sessions = [_named("me", SELF)]
+
+        result = await toolbox.call("send_message", {"to": "me", "content": "hello"})
+
+        assert result.is_error and "own session" in result.text
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [{"content": "x"}, {"to": "a", "session_id": PEER, "content": "x"}],
+    )
+    async def test_exactly_one_address_is_required(self, arguments) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call("send_message", arguments)
+
+        assert result.is_error and "exactly one of `to`" in result.text
+        assert client.calls == []
+
+    async def test_urgent_reaches_forge(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        await toolbox.call("send_message", {"session_id": PEER, "content": "now", "urgent": True})
+
+        assert client.envelope_args == [{"in_reply_to": "", "urgent": True}]
+
+    def test_names_show_in_get_and_list_summaries(self) -> None:
+        from niuu.forge_mcp.tools import _session_summary
+
+        assert _session_summary(_named("alpha", PEER))["name"] == "alpha"
+
+
+class TestAsk:
+    async def test_it_sends_then_returns_the_answer_the_host_waited_for(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call(
+            "ask", {"session_id": PEER, "content": "ship it?", "request_id": "q-1"}
+        )
+
+        assert not result.is_error
+        assert result.structured["outcome"] == "answered" and result.structured["answer"] == "yes"
+        assert result.structured["request_id"] == "q-1"
+        name, (session_id, content, request_id, _) = client.calls[0]
+        assert (name, session_id, content, request_id) == ("send_message", PEER, "ship it?", "q-1")
+        wait = host.asks[0]
+        assert wait["recipient_id"] == PEER and wait["deadline_s"] == 50.0
+        assert wait["delivery_confirmed"] is True
+        from niuu.domain.peer_envelope import derive_message_id
+        from niuu.domain.peer_message import PeerAddress, PeerKind
+
+        expected = derive_message_id(
+            PeerAddress(PeerKind.SESSION, SELF), PeerAddress(PeerKind.SESSION, PEER), "q-1"
+        )
+        assert wait["message_id"] == expected == result.structured["message_id"]
+
+    @pytest.mark.parametrize(
+        "outcome",
+        ["blocked", "gone", "not_started", "delivery_unknown", "deadline"],
+    )
+    async def test_every_other_ending_is_its_own_named_error_never_an_answer(self, outcome) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.ask_result = {"outcome": outcome, "detail": "why"}
+
+        result = await toolbox.call("ask", {"session_id": PEER, "content": "q"})
+
+        assert result.is_error is True
+        assert result.structured["outcome"] == outcome and "answer" not in result.structured
+        assert result.structured["request_id"].startswith("fmcp-")
+
+    async def test_a_pending_send_is_passed_on_as_unconfirmed(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        async def pending(*_args, **_kwargs):
+            return {"status": "pending", "delivery": "pending"}
+
+        client.send_message = pending  # type: ignore[method-assign]
+        await toolbox.call("ask", {"session_id": PEER, "content": "q"})
+
+        assert host.asks[0]["delivery_confirmed"] is False
+
+    async def test_a_deadline_above_the_maximum_is_refused_naming_the_knob_and_sends_nothing(
+        self,
+    ) -> None:
+        from niuu import cap_telemetry
+
+        cap_telemetry.reset_cap_hits()
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.ask_max_s = 50.0
+
+        result = await toolbox.call("ask", {"session_id": PEER, "content": "q", "deadline_s": 51})
+
+        assert result.is_error and "ask.wait_max_s=50" in result.text
+        assert client.calls == [] and host.asks == []
+        assert cap_telemetry.cap_hit_counts()["ask.wait_max_s"] == 1
+
+    async def test_a_deadline_at_the_maximum_is_accepted(self) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        await toolbox.call("ask", {"session_id": PEER, "content": "q", "deadline_s": 50})
+
+        assert host.asks[0]["deadline_s"] == 50.0
+
+    async def test_it_needs_the_message_grant_and_never_asks_itself(self) -> None:
+        toolbox, client, _ = _toolbox()
+        denied = await toolbox.call("ask", {"session_id": PEER, "content": "q"})
+        assert denied.is_error and "'message' grant" in denied.text
+
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        own = await toolbox.call("ask", {"session_id": SELF, "content": "q"})
+        assert own.is_error and "your own session" in own.text
+        assert client.calls == [] and host.asks == []
+
+    async def test_it_resolves_a_name_like_send_message(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.sessions = [_named("alpha", PEER)]
+
+        await toolbox.call("ask", {"to": "alpha", "content": "q"})
+
+        assert host.asks[0]["recipient_id"] == PEER
+
+    async def test_an_unknown_name_is_an_error_and_nothing_is_awaited(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.sessions = []
+
+        result = await toolbox.call("ask", {"to": "nobody", "content": "q"})
+
+        assert result.is_error and "no session named 'nobody'" in result.text
+        assert host.asks == []
+
+    def test_only_a_sessions_own_broker_serves_it(self) -> None:
+        assert "ask" in TRANSCRIPT_ONLY_TOOLS
+
+    async def test_a_host_that_holds_no_inbox_refuses(self) -> None:
+        client = FakeClient()
+        toolbox = ForgeMcpToolbox(
+            client=client,
+            host=_NoInboxHost(),
+            grants=(ForgeMcpGrant.MESSAGE,),
+            limits=LIMITS,
+        )
+
+        result = await toolbox.call("ask", {"session_id": PEER, "content": "q"})
+
+        assert result.is_error and "own MCP" in result.text and client.calls == []
+
+
+class TestMeshRouting:
+    async def test_a_message_to_a_mesh_peer_goes_over_the_mesh_not_through_forge(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peer_ids = {PEER: "peer-9"}
+
+        result = await toolbox.call(
+            "send_message", {"session_id": PEER, "content": "hi", "request_id": "r-1"}
+        )
+
+        assert not result.is_error
+        assert result.structured["path"] == "mesh" and result.structured["status"] == "delivered"
+        assert client.calls == []
+        assert host.mesh_sends[0]["peer"] == "peer-9" and host.mesh_sends[0]["expect_reply"]
+
+    async def test_a_name_that_is_a_mesh_peer_is_routed_over_the_mesh(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peer_ids = {"alpha": "peer-9"}
+
+        result = await toolbox.call(
+            "send_message", {"to": "alpha", "content": "hi", "urgent": True}
+        )
+
+        assert result.structured["path"] == "mesh" and host.mesh_sends[0]["urgent"] is True
+        assert client.calls == []
+
+    async def test_a_recipient_that_is_not_a_peer_goes_through_forge(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call("send_message", {"session_id": PEER, "content": "hi"})
+
+        assert result.structured["path"] == "forge"
+        assert client.calls[0][0] == "send_message" and host.mesh_sends == []
+
+    async def test_a_mesh_that_is_down_is_an_error_and_never_a_forge_send(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_down = True
+
+        for tool, args in (
+            ("send_message", {"session_id": PEER, "content": "hi"}),
+            ("ask", {"session_id": PEER, "content": "hi"}),
+        ):
+            result = await toolbox.call(tool, args)
+            assert result.is_error and "mesh is not running" in result.text
+        assert client.calls == [] and host.mesh_sends == [] and host.asks == []
+
+    async def test_a_peer_that_refuses_the_message_is_an_error(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peer_ids = {PEER: "peer-9"}
+        host.mesh_send_error = ForgeApiError("mesh peer refused the message: inbox off", status=502)
+
+        result = await toolbox.call("send_message", {"session_id": PEER, "content": "hi"})
+
+        assert result.is_error and "inbox off" in result.text and client.calls == []
+
+    async def test_a_session_reply_to_a_mesh_peer_goes_over_the_mesh(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peer_ids = {PEER: "peer-9"}
+        host.inbox["m-1"] = _envelope()
+
+        result = await toolbox.call("reply", {"message_id": "m-1", "content": "done"})
+
+        assert result.structured["path"] == "mesh" and client.calls == []
+        assert host.mesh_sends[0]["peer"] == "peer-9"
+        assert host.mesh_sends[0]["in_reply_to"] == "m-1"
+
+    async def test_a_session_reply_to_a_non_peer_goes_through_forge(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.inbox["m-1"] = _envelope()
+
+        result = await toolbox.call("reply", {"message_id": "m-1", "content": "done"})
+
+        assert result.structured["path"] == "forge" and host.mesh_sends == []
+
+    async def test_ask_over_the_mesh_waits_on_the_peer_not_on_forge(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peer_ids = {PEER: "peer-9"}
+
+        result = await toolbox.call(
+            "ask", {"session_id": PEER, "content": "q", "request_id": "q-1"}
+        )
+
+        assert not result.is_error and result.structured["path"] == "mesh"
+        wait = host.asks[0]
+        assert wait["mesh_peer"] == "peer-9" and wait["delivery_confirmed"] is True
+        assert client.calls == []
+        from niuu.domain.peer_envelope import derive_message_id
+        from niuu.domain.peer_message import PeerAddress, PeerKind
+
+        assert wait["message_id"] == derive_message_id(
+            PeerAddress(PeerKind.SESSION, SELF), PeerAddress(PeerKind.MESH_PEER, "peer-9"), "q-1"
+        )
+
+    async def test_an_ask_whose_send_gets_no_answer_waits_as_unconfirmed(self) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peer_ids = {PEER: "peer-9"}
+        host.mesh_send_error = ForgeApiError("did not answer", status=504)
+        host.ask_result = {"outcome": "delivery_unknown", "detail": "x"}
+
+        result = await toolbox.call("ask", {"session_id": PEER, "content": "q"})
+
+        assert host.asks[0]["delivery_confirmed"] is False
+        assert result.is_error and result.structured["outcome"] == "delivery_unknown"
+
+    async def test_an_ask_refused_by_the_peer_is_an_error_not_a_wait(self) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peer_ids = {PEER: "peer-9"}
+        host.mesh_send_error = ForgeApiError("refused: inbox off", status=502)
+
+        result = await toolbox.call("ask", {"session_id": PEER, "content": "q"})
+
+        assert result.is_error and "refused" in result.text and host.asks == []
+
+    async def test_a_peer_that_is_this_session_is_refused(self) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peer_ids = {PEER: SELF}
+
+        for tool in ("send_message", "ask"):
+            result = await toolbox.call(tool, {"session_id": PEER, "content": "q"})
+            assert result.is_error and "your own session" in result.text
+        assert host.mesh_sends == []
+
+
+class _NoInboxHost(ForgeMcpHost):
+    @property
+    def session_id(self) -> str | None:
+        return SELF
+
+    async def environment(self) -> dict[str, Any]:
+        return {}
+
+    async def notify(self, draft: NotificationDraft) -> dict[str, Any]:
+        return {}
+
+
+class TestReply:
+    async def test_a_session_reply_goes_back_with_in_reply_to(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.inbox["m-1"] = _envelope()
+
+        result = await toolbox.call("reply", {"message_id": "m-1", "content": "build is green"})
+
+        assert not result.is_error and result.structured["via"] == "session"
+        name, (session_id, content, _request, instance_id) = client.calls[0]
+        assert (name, session_id, content, instance_id) == (
+            "send_message",
+            PEER,
+            "build is green",
+            None,
+        )
+        assert client.envelope_args == [{"in_reply_to": "m-1", "urgent": False}]
+
+    async def test_a_mesh_reply_goes_back_over_the_mesh(self) -> None:
+        toolbox, client, host = _toolbox()
+        host.inbox["m-2"] = _envelope(
+            message_id="m-2",
+            reply=ReplyRoute(kind=ReplyKind.MESH, target="peer-7"),
+            thread="question-1",
+        )
+
+        result = await toolbox.call("reply", {"message_id": "m-2", "content": "done"})
+
+        assert not result.is_error and result.structured["via"] == "mesh"
+        assert host.mesh_sends[0]["peer"] == "peer-7"
+        assert host.mesh_sends[0]["thread"] == "question-1"  # the answer joins the thread
+        assert host.mesh_sends[0]["in_reply_to"] == "m-2" and not host.mesh_sends[0]["expect_reply"]
+        assert client.calls == []
+
+    async def test_a_room_reply_is_posted_to_the_hosts_room(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.inbox["m-3"] = _envelope(
+            message_id="m-3",
+            room_id="huddle-1",
+            reply=ReplyRoute(kind=ReplyKind.ROOM, target=PEER, node="thor"),
+        )
+
+        result = await toolbox.call("reply", {"message_id": "m-3", "content": "agreed"})
+
+        assert not result.is_error and result.structured["via"] == "room"
+        assert client.calls == [("post_room_message", (PEER, "huddle-1", "agreed"))]
+
+    async def test_a_message_with_no_reply_route_is_refused_with_the_reason(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.inbox["m-4"] = _envelope(message_id="m-4", reply=None)
+
+        result = await toolbox.call("reply", {"message_id": "m-4", "content": "hi"})
+
+        assert result.is_error and "takes no reply" in result.text
+        assert client.calls == [] and host.mesh_sends == []
+
+    async def test_an_unknown_message_id_is_an_error(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call("reply", {"message_id": "nope", "content": "hi"})
+
+        assert result.is_error and "received no message 'nope'" in result.text
+        assert client.calls == []
+
+    @pytest.mark.parametrize("kind", [ReplyKind.SESSION, ReplyKind.ROOM])
+    async def test_session_and_room_replies_need_the_message_grant(self, kind) -> None:
+        toolbox, client, host = _toolbox()
+        host.inbox["m-5"] = _envelope(
+            message_id="m-5", room_id="r", reply=ReplyRoute(kind=kind, target=PEER)
+        )
+
+        result = await toolbox.call("reply", {"message_id": "m-5", "content": "hi"})
+
+        assert result.is_error and "'message' grant" in result.text
+        assert client.calls == []
+
+    async def test_a_room_route_without_a_room_is_refused(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.inbox["m-6"] = _envelope(
+            message_id="m-6", reply=ReplyRoute(kind=ReplyKind.ROOM, target=PEER)
+        )
+
+        result = await toolbox.call("reply", {"message_id": "m-6", "content": "hi"})
+
+        assert result.is_error and "no room" in result.text
+        assert client.calls == []
+
+    async def test_forges_refusal_reaches_the_agent(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.inbox["m-1"] = _envelope()
+        client.fail = ForgeApiError("Session gone", status=404)
+
+        result = await toolbox.call("reply", {"message_id": "m-1", "content": "x"})
+
+        assert result.is_error and "404" in result.text
+
+    def test_reply_is_a_session_broker_tool_only(self) -> None:
+        assert {"reply", "room_post", "mesh_send"} <= TRANSCRIPT_ONLY_TOOLS
+
+
+class TestRoomPost:
+    HOST = str(uuid.uuid4())
+
+    async def test_a_post_names_the_room_and_not_the_host(self) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call("room_post", {"room_id": "huddle-1", "content": "hi all"})
+
+        assert not result.is_error
+        posted = host.room_posts[0]
+        assert (posted["room_id"], posted["content"], posted["host_session_id"]) == (
+            "huddle-1",
+            "hi all",
+            "",
+        )
+        assert result.structured["message_id"] == "room-msg-1"
+
+    async def test_a_host_is_named_only_to_tell_two_rooms_apart(self) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        await toolbox.call(
+            "room_post", {"room_id": "huddle-1", "host_session_id": self.HOST, "content": "hi"}
+        )
+
+        assert host.room_posts[0]["host_session_id"] == self.HOST
+
+    async def test_a_refusal_carries_the_reason(self) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        async def refuse(*_args, **_kwargs):
+            raise ForgeApiError("this session is not in room 'huddle-1'", status=403)
+
+        host.post_room_message = refuse  # type: ignore[method-assign]
+
+        result = await toolbox.call("room_post", {"room_id": "huddle-1", "content": "hi"})
+
+        assert result.is_error and "not in room 'huddle-1'" in result.text
+
+    async def test_it_needs_the_message_grant(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        result = await toolbox.call("room_post", {"room_id": "r", "content": "hi"})
+
+        assert result.is_error and "'message' grant" in result.text and host.room_posts == []
+
+    async def test_the_default_host_does_not_know_any_rooms(self) -> None:
+        class Bare(ForgeMcpHost):
+            session_id = None
+
+            async def environment(self):
+                return {}
+
+            async def notify(self, draft):
+                return {}
+
+        with pytest.raises(ForgeApiError, match="room_post needs"):
+            await Bare().post_room_message("r", "x")
+
+
+class TestMeshSend:
+    async def test_it_sends_through_the_host_with_a_request_id(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        result = await toolbox.call(
+            "mesh_send", {"peer": "peer-7", "content": "hello", "expect_reply": True}
+        )
+
+        assert not result.is_error
+        sent = host.mesh_sends[0]
+        assert (sent["peer"], sent["content"], sent["expect_reply"]) == ("peer-7", "hello", True)
+        assert sent["request_id"].startswith("fmcp-")
+        assert result.structured["request_id"] == sent["request_id"]
+
+    def test_it_is_listed_only_when_the_mesh_is_enabled(self) -> None:
+        toolbox, _, host = _toolbox()
+        assert "mesh_send" in [tool["name"] for tool in toolbox.list_tools()]
+        host.mesh = False
+        assert "mesh_send" not in [tool["name"] for tool in toolbox.list_tools()]
+
+    async def test_a_call_without_a_mesh_is_refused_with_the_reason(self) -> None:
+        toolbox, _, host = _toolbox()
+        host.mesh = False
+
+        result = await toolbox.call("mesh_send", {"peer": "p", "content": "hi"})
+
+        assert result.is_error and "no mesh" in result.text
+        assert host.mesh_sends == []
+
+    async def test_the_hosts_refusal_reaches_the_agent(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        async def refuse(*_args, **_kwargs):
+            raise ForgeApiError("mesh peer 'p' refused the message", status=502)
+
+        host.send_mesh_message = refuse  # type: ignore[method-assign]
+
+        result = await toolbox.call("mesh_send", {"peer": "p", "content": "hi"})
+
+        assert result.is_error and "refused the message" in result.text
+
+    async def test_the_default_host_has_no_mesh_or_inbox(self) -> None:
+        class Bare(ForgeMcpHost):
+            session_id = None
+
+            async def environment(self):
+                return {}
+
+            async def notify(self, draft):
+                return {}
+
+        bare = Bare()
+        assert bare.mesh_host() is False
+        with pytest.raises(ForgeApiError, match="mesh_send"):
+            await bare.send_mesh_message(
+                "p", "x", expect_reply=False, request_id="r", in_reply_to=""
+            )
+
+
+class TestMeshPublish:
+    async def test_it_publishes_through_the_host_with_a_request_id(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        result = await toolbox.call(
+            "mesh_publish",
+            {
+                "topic": " review.requested ",
+                "content": "please review PR 12",
+                "correlation_id": "pr-12",
+                "in_reply_to": "evt-0",
+            },
+        )
+
+        assert not result.is_error
+        published = host.mesh_publishes[0]
+        assert published["topic"] == "review.requested"
+        assert (published["content"], published["correlation_id"]) == (
+            "please review PR 12",
+            "pr-12",
+        )
+        assert published["in_reply_to"] == "evt-0"
+        assert published["request_id"].startswith("fmcp-")
+        assert result.structured["request_id"] == published["request_id"]
+        assert result.structured["event_id"] == "evt-1"
+
+    async def test_it_names_no_recipient_and_takes_no_sender(self) -> None:
+        toolbox, _, host = _toolbox()
+        spec = {tool["name"]: tool for tool in toolbox.list_tools()}["mesh_publish"]
+
+        assert set(spec["inputSchema"]["properties"]) == {
+            "topic",
+            "content",
+            "correlation_id",
+            "in_reply_to",
+            "request_id",
+        }
+        forged = await toolbox.call(
+            "mesh_publish", {"topic": "t", "content": "x", "sender": "the CEO"}
+        )
+        assert forged.is_error and host.mesh_publishes == []
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [{"topic": "  ", "content": "x"}, {"topic": "t", "content": "  "}, {"content": "x"}],
+    )
+    async def test_a_blank_or_missing_argument_is_refused(self, arguments) -> None:
+        toolbox, _, host = _toolbox()
+
+        result = await toolbox.call("mesh_publish", arguments)
+
+        assert result.is_error and host.mesh_publishes == []
+
+    def test_it_is_listed_only_when_the_mesh_is_enabled(self) -> None:
+        toolbox, _, host = _toolbox()
+        assert "mesh_publish" in [tool["name"] for tool in toolbox.list_tools()]
+        host.mesh = False
+        assert "mesh_publish" not in [tool["name"] for tool in toolbox.list_tools()]
+
+    async def test_a_call_without_a_mesh_is_refused_with_the_reason(self) -> None:
+        toolbox, _, host = _toolbox()
+        host.mesh = False
+
+        result = await toolbox.call("mesh_publish", {"topic": "t", "content": "hi"})
+
+        assert result.is_error and "no mesh" in result.text
+        assert host.mesh_publishes == []
+
+    async def test_the_hosts_refusal_reaches_the_agent(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        async def refuse(*_args, **_kwargs):
+            raise ForgeApiError("'t' is not a topic this session declares it publishes", status=403)
+
+        host.publish_mesh_event = refuse  # type: ignore[method-assign]
+
+        result = await toolbox.call("mesh_publish", {"topic": "t", "content": "hi"})
+
+        assert result.is_error and "declares it publishes" in result.text
+
+    async def test_the_default_host_has_no_mesh(self) -> None:
+        class Bare(ForgeMcpHost):
+            session_id = None
+
+            async def environment(self):
+                return {}
+
+            async def notify(self, draft):
+                return {}
+
+        with pytest.raises(ForgeApiError, match="mesh_publish"):
+            await Bare().publish_mesh_event(
+                "t", "x", request_id="r", correlation_id="", in_reply_to=""
+            )
+
+
+class TestMeshPeers:
+    async def test_it_returns_the_hosts_table_unranked_with_the_filters_it_was_given(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        result = await toolbox.call("mesh_peers", {"role": "reviewer", "consumes": "x"})
+
+        assert not result.is_error
+        assert host.mesh_peer_queries == [
+            {"role": "reviewer", "capability": "", "consumes": "x", "produces": ""}
+        ]
+        assert result.structured["peers"] == [{"peer_id": "p-1", "role": "reviewer"}]
+
+    async def test_it_takes_no_filter_it_does_not_name(self) -> None:
+        toolbox, _, host = _toolbox()
+        spec = {tool["name"]: tool for tool in toolbox.list_tools()}["mesh_peers"]
+
+        assert set(spec["inputSchema"]["properties"]) == {
+            "role",
+            "capability",
+            "consumes",
+            "produces",
+        }
+        assert (await toolbox.call("mesh_peers", {"best": True})).is_error
+        assert host.mesh_peer_queries == []
+
+    def test_it_is_listed_only_when_the_mesh_is_enabled(self) -> None:
+        toolbox, _, host = _toolbox()
+        assert "mesh_peers" in [tool["name"] for tool in toolbox.list_tools()]
+        host.mesh = False
+        assert "mesh_peers" not in [tool["name"] for tool in toolbox.list_tools()]
+
+    async def test_a_call_without_a_mesh_is_refused_with_the_reason(self) -> None:
+        toolbox, _, host = _toolbox()
+        host.mesh = False
+
+        result = await toolbox.call("mesh_peers", {})
+
+        assert result.is_error and "no mesh" in result.text and host.mesh_peer_queries == []
+
+    async def test_the_hosts_refusal_reaches_the_agent(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        async def refuse(**_kwargs):
+            raise ForgeApiError("this session has no peer discovery", status=503)
+
+        host.mesh_peers = refuse  # type: ignore[method-assign]
+
+        result = await toolbox.call("mesh_peers", {})
+
+        assert result.is_error and "no peer discovery" in result.text
+
+    async def test_the_default_host_has_no_mesh(self) -> None:
+        class Bare(ForgeMcpHost):
+            session_id = None
+
+            async def environment(self):
+                return {}
+
+            async def notify(self, draft):
+                return {}
+
+        with pytest.raises(ForgeApiError, match="mesh_peers"):
+            await Bare().mesh_peers(role="", capability="", consumes="", produces="")
+
+
+class TestMeshFollowing:
+    async def test_a_topic_or_a_thread_is_followed_and_unfollowed_through_the_host(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        followed = await toolbox.call("mesh_subscribe", {"topic": " help.needed "})
+        thread = await toolbox.call("mesh_subscribe", {"correlation_id": "pr-12"})
+        gone = await toolbox.call("mesh_unsubscribe", {"topic": "help.needed"})
+
+        assert not (followed.is_error or thread.is_error or gone.is_error)
+        assert host.follows == [
+            ("subscribe", {"topic": "help.needed", "correlation_id": ""}),
+            ("subscribe", {"topic": "", "correlation_id": "pr-12"}),
+            ("unsubscribe", {"topic": "help.needed", "correlation_id": ""}),
+        ]
+        assert followed.structured["status"] == "followed"
+
+    @pytest.mark.parametrize(
+        "arguments", [{}, {"topic": "a.b", "correlation_id": "c"}, {"topic": " "}]
+    )
+    @pytest.mark.parametrize("tool", ["mesh_subscribe", "mesh_unsubscribe"])
+    async def test_exactly_one_of_topic_and_correlation_id_is_required(
+        self, tool, arguments
+    ) -> None:
+        toolbox, _, host = _toolbox()
+
+        result = await toolbox.call(tool, arguments)
+
+        assert result.is_error and "exactly one of topic or correlation_id" in result.text
+        assert host.follows == []
+
+    def test_they_are_listed_only_when_the_mesh_is_enabled(self) -> None:
+        toolbox, _, host = _toolbox()
+        names = [tool["name"] for tool in toolbox.list_tools()]
+        assert "mesh_subscribe" in names and "mesh_unsubscribe" in names
+        host.mesh = False
+        names = [tool["name"] for tool in toolbox.list_tools()]
+        assert "mesh_subscribe" not in names and "mesh_unsubscribe" not in names
+
+    async def test_the_hosts_refusal_reaches_the_agent(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        async def refuse(**_kwargs):
+            raise ForgeApiError("'thread.x' is a platform topic", status=409)
+
+        host.mesh_subscribe = refuse  # type: ignore[method-assign]
+
+        result = await toolbox.call("mesh_subscribe", {"topic": "thread.x"})
+
+        assert result.is_error and "platform topic" in result.text
+
+    async def test_the_default_host_has_no_mesh(self) -> None:
+        class Bare(ForgeMcpHost):
+            session_id = None
+
+            async def environment(self):
+                return {}
+
+            async def notify(self, draft):
+                return {}
+
+        for call in (Bare().mesh_subscribe, Bare().mesh_unsubscribe):
+            with pytest.raises(ForgeApiError, match="needs a Forge session's own MCP"):
+                await call(topic="a.b", correlation_id="")
+
+
+class TestMeshAsk:
+    async def test_a_question_to_the_producers_of_a_topic_goes_through_the_host(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        result = await toolbox.call(
+            "mesh_ask", {"content": "did it finish?", "producers_of": " deploy.status "}
+        )
+
+        assert not result.is_error
+        asked = host.asks_made[0]
+        assert (asked["producers_of"], asked["peers"], asked["wait_s"]) == ("deploy.status", [], 0)
+        assert asked["request_id"].startswith("fmcp-")
+        assert result.structured["request_id"] == asked["request_id"]
+        assert result.structured["question_id"] == "q-1"
+
+    async def test_a_question_to_chosen_peers_names_them(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        await toolbox.call("mesh_ask", {"content": "q", "peers": ["a", "b"], "wait_s": 3})
+
+        assert host.asks_made[0]["peers"] == ["a", "b"] and host.asks_made[0]["wait_s"] == 3
+
+    @pytest.mark.parametrize(
+        ("arguments", "text"),
+        [
+            ({"content": "q"}, "exactly one of producers_of or peers"),
+            ({"content": "q", "producers_of": "t", "peers": ["a"]}, "exactly one"),
+            ({"content": "q", "peers": ["a", "a"]}, "must not repeat"),
+            ({"content": "q", "peers": [" "]}, "must be peer ids"),
+            ({"content": " ", "producers_of": "t"}, "must not be blank"),
+            ({"content": "q", "producers_of": "t", "wait_s": -1}, "wait_s"),
+        ],
+    )
+    async def test_an_unclear_audience_or_argument_is_refused_before_anything_is_sent(
+        self, arguments, text
+    ) -> None:
+        toolbox, _, host = _toolbox()
+
+        result = await toolbox.call("mesh_ask", arguments)
+
+        assert result.is_error and text in result.text and host.asks_made == []
+
+    async def test_a_wait_above_the_ceiling_is_a_named_refusal_that_sends_nothing(self) -> None:
+        from niuu import cap_telemetry
+
+        toolbox, _, host = _toolbox()
+        cap_telemetry.reset_cap_hits()
+
+        result = await toolbox.call(
+            "mesh_ask", {"content": "q", "producers_of": "t", "wait_s": host.ask_max_s + 1}
+        )
+
+        assert result.is_error and "ask.wait_max_s" in result.text
+        assert "Nothing was sent" in result.text
+        assert host.asks_made == [] and cap_telemetry.cap_hit_counts()["ask.wait_max_s"] == 1
+
+    def test_it_is_listed_only_when_the_mesh_is_enabled(self) -> None:
+        toolbox, _, host = _toolbox()
+        assert "mesh_ask" in [tool["name"] for tool in toolbox.list_tools()]
+        host.mesh = False
+        assert "mesh_ask" not in [tool["name"] for tool in toolbox.list_tools()]
+
+    async def test_the_hosts_refusal_reaches_the_agent(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        async def refuse(*_args, **_kwargs):
+            raise ForgeApiError("no peer announces that it produces 't'", status=409)
+
+        host.mesh_ask = refuse  # type: ignore[method-assign]
+
+        result = await toolbox.call("mesh_ask", {"content": "q", "producers_of": "t"})
+
+        assert result.is_error and "no peer announces" in result.text
+
+    async def test_the_default_host_has_no_mesh(self) -> None:
+        class Bare(ForgeMcpHost):
+            session_id = None
+
+            async def environment(self):
+                return {}
+
+            async def notify(self, draft):
+                return {}
+
+        with pytest.raises(ForgeApiError, match="mesh_ask needs"):
+            await Bare().mesh_ask("q", producers_of="t", peers=[], request_id="r", wait_s=0)
+
+
+class TestEventsAndQuestionsAreTwoUseCases:
+    """Events go to a topic's consumers; questions go to the peers that produce a topic."""
+
+    def _descriptions(self) -> dict[str, str]:
+        toolbox, _, _ = _toolbox()
+        return {tool["name"]: tool["description"] for tool in toolbox.list_tools()}
+
+    def test_publishing_announces_on_a_declared_topic_and_points_questions_to_mesh_ask(
+        self,
+    ) -> None:
+        text = self._descriptions()["mesh_publish"]
+
+        assert text.startswith("Publish an EVENT")
+        assert "your persona declares it produces" in text
+        assert "no subscribers is normal" in text.lower()
+        assert "not how you ask a question" in text and "`mesh_ask`" in text
+        assert "help.needed" not in text
+
+    def test_asking_goes_to_producers_or_chosen_peers_and_never_to_silence(self) -> None:
+        text = self._descriptions()["mesh_ask"]
+
+        assert text.startswith("Ask a QUESTION")
+        for phrase in (
+            "not to the topic's consumers",
+            "your own `produces` list does not limit a question",
+            "refused with the reason",
+            "silence is never the outcome",
+            "nothing waits",
+            "all_asked_answered",
+            "never end the wait early",
+        ):
+            assert phrase in text
+
+    def test_listing_peers_is_for_choosing_them_yourself(self) -> None:
+        text = self._descriptions()["mesh_peers"]
+
+        assert "not a step before every message" in text and "mesh_ask(producers_of=" in text
+
+    @pytest.mark.parametrize("tool", ["send_message", "ask", "mesh_send"])
+    def test_direct_messages_say_they_are_for_one_specific_peer(self, tool) -> None:
+        text = self._descriptions()[tool]
+
+        assert "ONE specific" in text and "`mesh_ask`" in text
+
+    def test_reply_says_it_is_direct_and_points_at_publishing_for_the_thread(self) -> None:
+        text = self._descriptions()["reply"]
+
+        assert "directly to its sender" in text and "mesh_publish" in text
+
+
+class TestPeerToolArguments:
+    @pytest.mark.parametrize(
+        ("tool", "arguments"),
+        [
+            ("send_message", {"to": "alpha", "content": "   "}),
+            ("reply", {"message_id": "m-1", "content": "   "}),
+            ("room_post", {"room_id": "r", "host_session_id": PEER, "content": "   "}),
+            ("mesh_send", {"peer": "p", "content": "   "}),
+        ],
+    )
+    async def test_blank_content_is_refused_before_anything_is_sent(self, tool, arguments) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call(tool, arguments)
+
+        assert result.is_error and "content must not be blank" in result.text
+        assert client.calls == [] and host.mesh_sends == []
+
+    async def test_a_host_session_id_must_be_a_session_uuid(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call(
+            "room_post", {"room_id": "r", "host_session_id": "not-a-uuid", "content": "hi"}
+        )
+
+        assert result.is_error and "Forge session UUID" in result.text
+        assert client.calls == []
+
+
+class TestUnconfirmedSends:
+    """A send that Forge or the mesh could not confirm may still have been delivered."""
+
+    @pytest.mark.parametrize("status", [None, 408, 502, 504])
+    async def test_a_forge_send_that_was_not_confirmed_says_it_may_have_been_delivered(
+        self, status
+    ) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.fail = ForgeApiError("no answer", status=status)
+
+        result = await toolbox.call("send_message", {"session_id": PEER, "content": "hi"})
+
+        sent_request_id = client.calls[0][1][2]
+        assert result.is_error
+        assert "may have been delivered" in result.text
+        assert "same request_id" in result.text and sent_request_id in result.text
+        assert "failed" not in result.text.lower().split("(")[0]
+
+    async def test_a_definitive_refusal_is_not_reported_as_maybe_delivered(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.fail = ForgeApiError("no such session", status=404)
+
+        result = await toolbox.call("send_message", {"session_id": PEER, "content": "hi"})
+
+        assert result.is_error and "may have been delivered" not in result.text
+        assert "404" in result.text
+
+    async def test_a_retry_with_the_request_id_from_the_error_reuses_it(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.fail = ForgeApiError("no answer", status=504)
+        first = await toolbox.call("send_message", {"session_id": PEER, "content": "hi"})
+        request_id = client.calls[0][1][2]
+        assert request_id in first.text
+        client.fail = None
+
+        second = await toolbox.call(
+            "send_message", {"session_id": PEER, "content": "hi", "request_id": request_id}
+        )
+
+        assert not second.is_error and second.structured["request_id"] == request_id
+        assert [call[1][2] for call in client.calls] == [request_id, request_id]
+
+    async def test_a_pending_forge_send_carries_the_retry_note_with_its_request_id(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        async def pending(*args, **kwargs):
+            return {"status": "pending", "delivery": "pending"}
+
+        client.send_message = pending
+
+        result = await toolbox.call(
+            "send_message", {"session_id": PEER, "content": "hi", "request_id": "r-7"}
+        )
+
+        assert not result.is_error and result.structured["status"] == "pending"
+        assert "may have been" in result.structured["note"]
+        assert "'r-7'" in result.structured["note"]
+
+    async def test_a_mesh_send_the_recipient_did_not_confirm_is_maybe_delivered(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peer_ids = {PEER: "peer-9"}
+        host.mesh_send_error = ForgeApiError("did not confirm the message", status=504)
+
+        for tool, args in (
+            ("send_message", {"session_id": PEER, "content": "hi", "request_id": "r-1"}),
+            ("mesh_send", {"peer": "peer-9", "content": "hi", "request_id": "r-1"}),
+        ):
+            result = await toolbox.call(tool, args)
+            assert result.is_error and "may have been delivered" in result.text
+            assert "'r-1'" in result.text
+        assert client.calls == []
+
+    async def test_a_reply_that_was_not_confirmed_says_so_on_every_route(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.inbox["m-1"] = _envelope()
+        client.fail = ForgeApiError("no answer", status=504)
+
+        result = await toolbox.call(
+            "reply", {"message_id": "m-1", "content": "done", "request_id": "r-2"}
+        )
+
+        assert result.is_error and "may have been delivered" in result.text
+        assert "'r-2'" in result.text
+
+    async def test_an_ask_whose_send_was_not_confirmed_names_the_request_id_to_retry_with(
+        self,
+    ) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.fail = ForgeApiError("no answer", status=504)
+
+        result = await toolbox.call(
+            "ask", {"session_id": PEER, "content": "hi", "request_id": "r-3"}
+        )
+
+        assert result.is_error and "may have been delivered" in result.text
+        assert "'r-3'" in result.text and host.asks == []

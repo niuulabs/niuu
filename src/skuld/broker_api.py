@@ -39,7 +39,12 @@ from niuu.domain.presented_files import (
     presented_version_label,
 )
 from niuu.domain.text_projection import projection_revision
-from niuu.room_access import ROOM_ROLE_HEADER, ROOM_ROLE_RANK, required_role_for_route
+from niuu.room_access import (
+    ROOM_CALLER_SESSION_HEADER,
+    ROOM_ROLE_HEADER,
+    ROOM_ROLE_RANK,
+    required_role_for_route,
+)
 from skuld.conversation_models import ConversationTurn
 from skuld.conversation_read import conversation_rows, wait_history_quiet
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turn, is_elided_input
@@ -1428,6 +1433,13 @@ class _DirectedRoomMessageRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class _SessionRoomMessageRequest(BaseModel):
+    """A member session speaking in a room this session hosts (stamped by Forge)."""
+
+    room_id: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1)
+
+
 class _ResendPromptRequest(BaseModel):
     """Request body for resending the configured initial prompt into a room."""
 
@@ -1611,6 +1623,32 @@ async def send_directed_room_message(request: Request, body: _DirectedRoomMessag
         raise HTTPException(404, str(exc))
 
     return {"status": "sent", "message_id": message_id}
+
+
+@app.post("/api/room/session-message")
+async def send_session_room_message(request: Request, body: _SessionRoomMessageRequest) -> dict:
+    """Record a message a member session says in a room this session hosts.
+
+    Forge stamps the calling session from its verified credential
+    (``ROOM_CALLER_SESSION_HEADER``); the message is recorded as said by that session only
+    when it is seated in the named room.
+    """
+    caller = request.headers.get(ROOM_CALLER_SESSION_HEADER, "").strip()
+    if not caller:
+        raise HTTPException(
+            403,
+            "A room message from a session must come through Forge with the calling session's "
+            "credential; no calling session was stamped on this request",
+        )
+    try:
+        message_id = await broker.handle_session_room_message(caller, body.room_id, body.content)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    return {"status": "sent", "message_id": message_id, "room_id": body.room_id}
 
 
 @app.post("/api/room/resend-prompt")

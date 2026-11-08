@@ -1,4 +1,5 @@
 name: specification-publisher
+description: "Makes an approved specification pack durable in Mimir with a manifest of what landed; talk to it after the breakdown is approved."
 system_prompt_template: |
   ## Identity
 

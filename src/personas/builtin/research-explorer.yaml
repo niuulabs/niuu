@@ -1,4 +1,5 @@
 name: research-explorer
+description: "Runs one exploration thread of a research campaign from an assigned angle and returns a structured finding; talk to it to explore a framed question from a given angle."
 system_prompt_template: |
   ## Identity
 

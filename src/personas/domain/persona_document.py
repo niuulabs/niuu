@@ -27,6 +27,7 @@ _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$")
 _PORTABLE_DEFINITION_FIELDS = frozenset(
     {
         "name",
+        "description",
         "system_prompt_template",
         "allowed_tools",
         "forbidden_tools",
@@ -389,6 +390,7 @@ def _validate_definition(persona_id: str, definition: Mapping[str, Any]) -> None
         raise PersonaDocumentError(
             f"Portable persona id '{persona_id}' does not match definition.name '{name}'"
         )
+    _validate_optional_string(definition, "description")
     _validate_optional_string(definition, "system_prompt_template")
     _validate_string_list(definition, "allowed_tools")
     _validate_string_list(definition, "forbidden_tools")
@@ -487,7 +489,8 @@ def _string_set(value: Any) -> set[str]:
     return {str(item).strip() for item in value if str(item).strip()}
 
 
-def _produced_events(definition: Mapping[str, Any]) -> set[str]:
+def produced_event_types(definition: Mapping[str, Any]) -> set[str]:
+    """Every event type the persona declares it produces: its default and its mapped ones."""
     raw = definition.get("produces")
     if not isinstance(raw, dict):
         return set()
@@ -496,6 +499,17 @@ def _produced_events(definition: Mapping[str, Any]) -> set[str]:
     if isinstance(event_map, dict):
         events.update(str(value).strip() for value in event_map.values())
     return {event for event in events if event}
+
+
+def consumed_event_types(definition: Mapping[str, Any]) -> set[str]:
+    """Every event type the persona declares it consumes."""
+    raw = definition.get("consumes")
+    if not isinstance(raw, dict):
+        return set()
+    return _string_set(raw.get("event_types"))
+
+
+_produced_events = produced_event_types
 
 
 class _StrictSafeLoader(yaml.SafeLoader):

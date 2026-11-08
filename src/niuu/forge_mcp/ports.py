@@ -7,6 +7,7 @@ from typing import Any
 
 from niuu.domain.artifact_reports import ArtifactReport
 from niuu.domain.notifications import NotificationDraft
+from niuu.domain.peer_message import PeerMessage
 from niuu.domain.workflow_step import WorkflowStepCloseArgs
 from niuu.forge_mcp.models import ForgeApiError
 
@@ -40,9 +41,27 @@ class ForgeClient(ABC):
 
     @abstractmethod
     async def send_message(
-        self, session_id: str, *, content: str, request_id: str, instance_id: str | None
+        self,
+        session_id: str,
+        *,
+        content: str,
+        request_id: str,
+        instance_id: str | None,
+        in_reply_to: str = "",
+        urgent: bool = False,
     ) -> dict[str, Any]:
-        """``POST /sessions/{id}/messages`` with a caller-stable ``request_id``."""
+        """``POST /sessions/{id}/messages`` with a caller-stable ``request_id``.
+
+        Forge stamps the sender from the caller's session credential. ``in_reply_to`` names
+        the message this one answers; ``urgent`` lets it interrupt a running turn."""
+
+    @abstractmethod
+    async def post_room_message(
+        self, host_session_id: str, *, room_id: str, content: str
+    ) -> dict[str, Any]:
+        """``POST /sessions/{host}/room/session-message``: speak in a room the host runs.
+
+        Forge stamps the calling session; the host accepts it only from a member of the room."""
 
     @abstractmethod
     async def get_message_delivery(
@@ -133,6 +152,151 @@ class ForgeMcpHost(ABC):
         raise ForgeApiError(
             "request_secret needs a Forge session's own MCP (it asks in that session's chat "
             "and writes the value into that session's runtime)",
+            status=501,
+        )
+
+    async def received_peer_message(self, message_id: str) -> PeerMessage:
+        """A peer message this session received, by id, so the ``reply`` tool can answer it.
+
+        Raises :class:`niuu.domain.peer_message.PeerMessageError` when this session never
+        received a message with that id. Only a session's own broker keeps its inbox;
+        other hosts refuse."""
+        raise ForgeApiError(
+            "reply needs a Forge session's own MCP (only that session's broker holds the "
+            "messages it received)",
+            status=501,
+        )
+
+    def ask_wait_max_s(self) -> float:
+        """The longest one ``ask`` may wait (``ask.wait_max_s``); a larger deadline is refused."""
+        raise ForgeApiError(
+            "ask needs a Forge session's own MCP (the answer arrives in that session's inbox)",
+            status=501,
+        )
+
+    async def ask_for_answer(
+        self,
+        *,
+        recipient_id: str,
+        instance_id: str | None,
+        message_id: str,
+        request_id: str,
+        delivery_confirmed: bool,
+        deadline_s: float,
+        mesh_peer: str | None = None,
+    ) -> dict[str, Any]:
+        """Wait for ``recipient_id``'s reply to ``message_id``; return ``{outcome, ...}``.
+
+        ``delivery_confirmed`` is whether the send was confirmed delivered (Forge's answer, or the
+        recipient's Skuld over the mesh; a pending, unconfirmed or timed-out send is not).
+        ``mesh_peer`` is the recipient's peer id when the send went over the mesh: its state
+        then comes from the mesh, not Forge. Only a session's own broker holds the inbox the answer
+        arrives in; other hosts refuse."""
+        raise ForgeApiError(
+            "ask needs a Forge session's own MCP (the answer arrives in that session's inbox)",
+            status=501,
+        )
+
+    def mesh_host(self) -> bool:
+        """Whether this session has the mesh enabled, so the mesh tools are listed."""
+        return False
+
+    async def mesh_peer_for(self, *, session_id: str | None, name: str | None) -> str | None:
+        """The mesh peer id of a recipient named by session id or name, or ``None``.
+
+        ``None`` means the recipient is not in this session's mesh peer table (or this host has
+        no mesh), so the send goes through Forge. A session whose mesh is enabled but not
+        running raises instead: it cannot tell, and it never falls back to Forge."""
+        return None
+
+    async def send_mesh_message(
+        self,
+        peer: str,
+        content: str,
+        *,
+        expect_reply: bool,
+        request_id: str,
+        in_reply_to: str,
+        urgent: bool = False,
+        thread: str = "",
+    ) -> dict[str, Any]:
+        """Send a peer message to a mesh peer, stamped with this session's identity.
+
+        Only a session's own broker has the mesh; other hosts refuse."""
+        raise ForgeApiError(
+            "mesh_send needs a Forge session's own MCP (the mesh belongs to that session's broker)",
+            status=501,
+        )
+
+    async def mesh_peers(
+        self, *, role: str, capability: str, consumes: str, produces: str
+    ) -> dict[str, Any]:
+        """The peers this session's mesh discovery knows, with what each announced.
+
+        Only a session's own broker has the mesh; other hosts refuse."""
+        raise ForgeApiError(
+            "mesh_peers needs a Forge session's own MCP (the mesh belongs to that session's "
+            "broker)",
+            status=501,
+        )
+
+    async def publish_mesh_event(
+        self,
+        topic: str,
+        content: str,
+        *,
+        request_id: str,
+        correlation_id: str,
+        in_reply_to: str,
+    ) -> dict[str, Any]:
+        """Publish an event onto the mesh topic, stamped with this session's identity.
+
+        Only a session's own broker has the mesh; other hosts refuse."""
+        raise ForgeApiError(
+            "mesh_publish needs a Forge session's own MCP (the mesh belongs to that session's "
+            "broker)",
+            status=501,
+        )
+
+    async def post_room_message(
+        self, room_id: str, content: str, *, host_session_id: str = "", request_id: str = ""
+    ) -> dict[str, Any]:
+        """Say something in a room this session is in. Only a session's own broker knows them."""
+        raise ForgeApiError(
+            "room_post needs a Forge session's own MCP (the session's broker knows its rooms)",
+            status=501,
+        )
+
+    async def mesh_ask(
+        self,
+        content: str,
+        *,
+        producers_of: str,
+        peers: list[str],
+        request_id: str,
+        wait_s: float,
+    ) -> dict[str, Any]:
+        """Put a question to the peers that produce a topic, or to chosen peers.
+
+        Only a session's own broker has the mesh; other hosts refuse."""
+        raise ForgeApiError(
+            "mesh_ask needs a Forge session's own MCP (the mesh belongs to that session's broker)",
+            status=501,
+        )
+
+    async def mesh_subscribe(self, *, topic: str, correlation_id: str) -> dict[str, Any]:
+        """Start listening to a mesh topic or follow a thread. Only a session's own broker."""
+        raise ForgeApiError(
+            "mesh_subscribe needs a Forge session's own MCP (the mesh belongs to that session's "
+            "broker)",
+            status=501,
+        )
+
+    async def mesh_unsubscribe(self, *, topic: str, correlation_id: str) -> dict[str, Any]:
+        """Stop following a topic or thread followed at runtime. Only a session's own broker."""
+        raise ForgeApiError(
+            "mesh_unsubscribe needs a Forge session's own MCP (the mesh belongs to that "
+            "session's broker)",
             status=501,
         )
 

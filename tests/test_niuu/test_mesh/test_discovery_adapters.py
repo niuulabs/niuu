@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from niuu.adapters.discovery._failures import DiscoveryError
 from niuu.adapters.discovery._identity import (
     load_or_create_peer_id,
     load_or_create_realm_key,
@@ -415,9 +416,11 @@ class TestMdnsDiscoveryAdapter:
     async def test_handshake_returns_none_without_pynng(self) -> None:
         adapter = self._make_adapter()
         candidate = _make_candidate()
-        with patch("niuu.adapters.discovery.mdns.pynng", None):
-            result = await adapter.handshake(candidate)
-        assert result is None
+        with (
+            patch("niuu.adapters.discovery.mdns.pynng", None),
+            pytest.raises(DiscoveryError, match="pynng"),
+        ):
+            await adapter.handshake(candidate)
 
     @pytest.mark.asyncio
     async def test_handshake_returns_none_no_handshake_port(self) -> None:
@@ -430,8 +433,11 @@ class TestMdnsDiscoveryAdapter:
     @pytest.mark.asyncio
     async def test_start_skips_without_zeroconf(self) -> None:
         adapter = self._make_adapter()
-        with patch("niuu.adapters.discovery.mdns.AsyncZeroconf", None):
-            await adapter.start()  # should not raise
+        with (
+            patch("niuu.adapters.discovery.mdns.AsyncZeroconf", None),
+            pytest.raises(DiscoveryError, match="zeroconf"),
+        ):
+            await adapter.start()
 
     @pytest.mark.asyncio
     async def test_stop_noop_when_not_started(self) -> None:
@@ -574,7 +580,7 @@ class TestSleipnirDiscoveryAdapter:
         adapter._on_join.append(joins.append)
 
         raw = {
-            "event_type": "ravn.mesh.announce",
+            "event_type": "mesh.announce",
             "source": "ravn:peer-b",
             "payload": {
                 "identity": {
@@ -601,7 +607,7 @@ class TestSleipnirDiscoveryAdapter:
     async def test_handle_announce_own_peer_ignored(self) -> None:
         adapter = self._make_adapter()
         raw = {
-            "event_type": "ravn.mesh.announce",
+            "event_type": "mesh.announce",
             "source": "ravn:peer-a",
             "payload": {
                 "identity": {"peer_id": "peer-a"},
@@ -620,7 +626,7 @@ class TestSleipnirDiscoveryAdapter:
         adapter._on_leave.append(leaves.append)
 
         raw = {
-            "event_type": "ravn.mesh.announce",
+            "event_type": "mesh.announce",
             "source": "ravn:peer-b",
             "payload": {
                 "identity": {"peer_id": "peer-b"},
@@ -645,7 +651,7 @@ class TestSleipnirDiscoveryAdapter:
         adapter._peers["peer-b"] = peer
 
         raw = {
-            "event_type": "ravn.mesh.announce",
+            "event_type": "mesh.announce",
             "source": "ravn:peer-b",
             "payload": {
                 "identity": {"peer_id": "peer-b"},
@@ -682,8 +688,11 @@ class TestSleipnirDiscoveryAdapter:
     @pytest.mark.asyncio
     async def test_start_skips_without_aio_pika(self) -> None:
         adapter = self._make_adapter()
-        with patch("niuu.adapters.discovery.sleipnir.aio_pika", None):
-            await adapter.start()  # should not raise, just warn
+        with (
+            patch("niuu.adapters.discovery.sleipnir.aio_pika", None),
+            pytest.raises(DiscoveryError, match="aio_pika"),
+        ):
+            await adapter.start()
 
     def test_peers_returns_copy(self) -> None:
         adapter = self._make_adapter()
@@ -736,9 +745,11 @@ class TestK8sDiscoveryAdapter:
 
     def test_list_candidates_returns_empty_without_k8s(self) -> None:
         adapter = self._make_adapter()
-        with patch("niuu.adapters.discovery.k8s.k8s_client", None):
-            candidates = adapter._list_candidates()
-        assert candidates == []
+        with (
+            patch("niuu.adapters.discovery.k8s.k8s_client", None),
+            pytest.raises(DiscoveryError, match="package is missing"),
+        ):
+            adapter._list_candidates()
 
     def test_list_candidates_with_mock_k8s(self) -> None:
         adapter = self._make_adapter()
@@ -817,8 +828,11 @@ class TestK8sDiscoveryAdapter:
     @pytest.mark.asyncio
     async def test_start_skips_without_k8s(self) -> None:
         adapter = self._make_adapter()
-        with patch("niuu.adapters.discovery.k8s.k8s_client", None):
-            await adapter.start()  # should not raise
+        with (
+            patch("niuu.adapters.discovery.k8s.k8s_client", None),
+            pytest.raises(DiscoveryError, match="kubernetes package"),
+        ):
+            await adapter.start()
 
     @pytest.mark.asyncio
     async def test_stop_noop_when_not_started(self) -> None:

@@ -138,6 +138,15 @@ class PlacementPodManager(PodManager):
     def delivers_forge_session_token(self) -> bool:
         return all(child.delivers_forge_session_token for child in self._children())
 
+    def delivers_forge_session_token_for(self, session: Session) -> bool:
+        """Whether the manager that runs *session* delivers its credential.
+
+        The whole-Forge property above is for the question "can every session get one"; a
+        launch only needs the manager it is placed on, so a pool with no runtime does not
+        take the credential away from local sessions.
+        """
+        return self._for(session).delivers_forge_session_token
+
     @property
     def reports_startup_stages(self) -> bool:
         return any(child.reports_startup_stages for child in self._children())

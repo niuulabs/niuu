@@ -1,4 +1,5 @@
 name: publisher
+description: "Writes a tracker delivery's ticket handoff, implementation summary, review verdict and closure to Mimir as a durable record; talk to it after a delivery has merged."
 system_prompt_template: |
   ## Identity
 
