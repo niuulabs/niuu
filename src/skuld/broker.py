@@ -16,6 +16,7 @@ import signal
 import socket
 import time
 import uuid
+from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -53,6 +54,7 @@ from niuu.domain.transcript_reducer import (
     steering_target_id,
 )
 from niuu.mesh import mesh_event_prefix
+from niuu.mesh.attestation import VERIFIED_SENDER_KEY
 from niuu.mesh.cluster import read_cluster_pub_addresses
 from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
@@ -111,7 +113,7 @@ from skuld.mesh_follows import MeshFollowMixin
 from skuld.mesh_topics import MeshTopics, mesh_topics
 from skuld.peer_inbox import PEER_STATE_RPC_TYPE, PeerInboxMixin, PeerMessageUnconfirmedError
 from skuld.preview import PreviewForwarder, PreviewPortWatcher
-from skuld.room_delivery import RoomDelivery, RoomDeliveryError
+from skuld.room_delivery import ROOM_MESSAGE_RPC_TYPE, RoomDelivery, RoomDeliveryError
 from skuld.service_manager import (  # noqa: F401
     ServiceCreateRequest,
     ServiceManager,
@@ -1037,6 +1039,7 @@ class Broker(
             rpc_handlers={
                 PRESENT_FILE_RPC_TYPE: _present_peer_file,
                 PEER_STATE_RPC_TYPE: self.peer_state_rpc,
+                ROOM_MESSAGE_RPC_TYPE: self.handle_room_message_rpc,
             },
         )
 
@@ -4062,6 +4065,52 @@ class Broker(
             await self._send_explicit_human_message_to_transport(content)
         return msg_id
 
+    async def handle_room_message_rpc(self, message: dict) -> dict:
+        """A member session posts in a room over the mesh, instead of through Forge.
+
+        The caller is the session the mesh verified (its certificate names it), never one the
+        message claims. With mesh signing off nothing is verified, so this refuses and says
+        to post through Forge (which is what a session does when signing is off).
+        """
+        if not self._settings.mesh.attestation.required:
+            return {
+                "status": "refused",
+                "error": "this session's mesh does not verify senders "
+                "(mesh.attestation.required is off), so a room post over the mesh cannot be "
+                "attributed; post through Forge",
+            }
+        raw = message.get(VERIFIED_SENDER_KEY)
+        caller = raw.get("session_id") if isinstance(raw, dict) else ""
+        if not caller:
+            return {"status": "refused", "error": "the mesh named no verified session for you"}
+        room_id, content = message.get("room_id"), message.get("content")
+        if not isinstance(room_id, str) or not isinstance(content, str):
+            return {"status": "refused", "error": "a room post needs a room_id and content"}
+        try:
+            message_id = await self.handle_session_room_message(caller, room_id, content)
+        except PermissionError as exc:
+            return {"status": "refused", "error": str(exc)}
+        except (ValueError, RuntimeError) as exc:
+            return {"status": "error", "error": str(exc)}
+        return {"status": "accepted", "message_id": message_id}
+
+    def room_seats(self) -> dict[str, dict[str, str]]:
+        """The rooms this session has been told it is in, and who hosts each.
+
+        Learned from what was said in them: a message said in a room names the room and the
+        session that relayed it, its host. {room_id: {host_session_id: host_node}}. It
+        includes nothing this session has not been told, and the inbox is durable, so it
+        survives a restart.
+        """
+        seats: dict[str, dict[str, str]] = {}
+        for entry in self._peer_inbox.values():
+            envelope = entry.envelope
+            if envelope.room_id and envelope.relayed_by is not None:
+                seats.setdefault(envelope.room_id, {})[envelope.relayed_by.id] = (
+                    envelope.relayed_by.node
+                )
+        return seats
+
     async def handle_session_room_message(
         self, caller_session_id: str, room_id: str, content: str
     ) -> str:
@@ -4280,7 +4329,25 @@ class Broker(
                     },
                 }
             )
+        if session_id:
+            await self._tell_member_it_is_seated(participant_id, meta.room_ids)
         return asdict(meta)
+
+    async def _tell_member_it_is_seated(self, participant_id: str, room_ids: Iterable[str]) -> None:
+        """Tell a session that joined a room which room it is in and who hosts it.
+
+        The member's Skuld learns its rooms from what is said in them, so the first thing said
+        to a new member says where it now is and how to speak. A member that cannot be told
+        fails the join loudly: it is seated, but could not answer the room.
+        """
+        host = self._host_peer_address()
+        for room_id in room_ids:
+            await self._room_bridge.tell_member(
+                participant_id,
+                f"You were seated in room {room_id}, hosted by session {host.id}. Speak in it "
+                f'with room_post(room_id="{room_id}", content=...).',
+                room_id,
+            )
 
     async def heartbeat_environment(
         self,

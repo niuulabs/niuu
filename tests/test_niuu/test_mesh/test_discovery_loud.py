@@ -240,7 +240,7 @@ class TestAmqp:
         adapter = self._adapter()
 
         await adapter._handle_announce(
-            {"event_type": "ravn.mesh.announce", "payload": {"identity": "peer-b"}}
+            {"event_type": "mesh.announce", "payload": {"identity": "peer-b"}}
         )
 
         assert refusal_counts() == {"sleipnir.malformed": 1} and adapter.peers() == {}
@@ -253,7 +253,7 @@ class TestAmqp:
 
         await adapter._handle_announce(
             {
-                "event_type": "ravn.mesh.announce",
+                "event_type": "mesh.announce",
                 "payload": {"identity": {"peer_id": "peer-b", "realm_id": "realm"}},
             }
         )

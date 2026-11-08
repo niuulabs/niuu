@@ -162,7 +162,7 @@ class TestAmqpSleipnir:
 
     def _announce(self, identity: dict, action: str = "join", status: str = "idle") -> dict:
         return {
-            "event_type": "ravn.mesh.announce",
+            "event_type": "mesh.announce",
             "source": f"ravn:{identity['peer_id']}",
             "payload": {
                 "identity": identity,

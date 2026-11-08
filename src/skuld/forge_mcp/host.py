@@ -62,6 +62,7 @@ from skuld.peer_inbox import (
     AnswerWait,
     TakenAnswer,
 )
+from skuld.room_delivery import ROOM_MESSAGE_RPC_TYPE
 from skuld.session_runtime import RuntimeDirError
 
 if TYPE_CHECKING:
@@ -522,6 +523,75 @@ class BrokerForgeMcpHost(ForgeMcpHost):
                 status=503,
             )
         return adapter
+
+    async def post_room_message(
+        self, room_id: str, content: str, *, host_session_id: str = "", request_id: str = ""
+    ) -> dict[str, Any]:
+        """Say something in a room this session is in, as this session.
+
+        The host is not named by the caller: this session knows its rooms from what was said
+        in them, and each names the session that hosts it. When the host is a mesh peer and
+        the mesh verifies senders, the post goes straight to it over the mesh and the host
+        takes the caller from the certificate; otherwise it goes through Forge, which stamps
+        the caller. A room this session is not in is refused with the reason.
+        ``host_session_id`` is needed only when two hosts use the same room id.
+        """
+        broker = self._broker
+        seats = broker.room_seats()
+        hosts = dict(seats.get(room_id, {}))
+        if host_session_id:
+            hosts = {host: node for host, node in hosts.items() if host == host_session_id}
+        if not hosts:
+            known = ", ".join(sorted(seats)) or "none"
+            raise ForgeApiError(
+                f"this session is not in room {room_id!r} as far as it has been told (rooms it "
+                f"is in: {known}). A room says where you are the first time it speaks to "
+                "you; ask the room's host to join this session to it",
+                status=403,
+            )
+        if len(hosts) > 1:
+            raise ForgeApiError(
+                f"room id {room_id!r} is used by {len(hosts)} hosts ({', '.join(sorted(hosts))}); "
+                "pass host_session_id to say which room you mean",
+                status=409,
+            )
+        (host,) = hosts
+        answer: dict[str, Any] = {"room_id": room_id, "host_session_id": host}
+        mesh = broker._settings.mesh
+        peer = await self.mesh_peer_for(session_id=host, name=None) if mesh.enabled else None
+        if peer is not None and mesh.attestation.required:
+            posted = await self._post_room_message_over_mesh(peer, room_id, content)
+            return {**answer, "path": "mesh", **posted}
+        posted = await self._client.post_room_message(host, room_id=room_id, content=content)
+        return {**answer, "path": "forge", **posted}
+
+    async def _post_room_message_over_mesh(
+        self, peer: str, room_id: str, content: str
+    ) -> dict[str, Any]:
+        adapter = self._mesh_adapter_or_raise()
+        try:
+            reply = await adapter.send_rpc(
+                peer,
+                {"type": ROOM_MESSAGE_RPC_TYPE, "room_id": room_id, "content": content},
+            )
+        except PeerNotFoundError as exc:
+            raise ForgeApiError(
+                f"the room's host {peer!r} left this session's peer table", status=404
+            ) from exc
+        except TimeoutError as exc:
+            raise ForgeApiError(
+                f"the room's host {peer!r} did not answer within mesh.rpc_timeout_s; the post "
+                "may or may not have arrived",
+                status=504,
+            ) from exc
+        if reply.get("status") != "accepted":
+            refused = reply.get("status") == "refused"
+            raise ForgeApiError(
+                f"the room's host {peer!r} did not take the post: "
+                f"{reply.get('error') or reply.get('status')}",
+                status=403 if refused else 502,
+            )
+        return {"status": "accepted", "message_id": reply.get("message_id", "")}
 
     async def mesh_peer_for(self, *, session_id: str | None, name: str | None) -> str | None:
         """The mesh peer id a recipient is, or ``None`` when it is not in the peer table.

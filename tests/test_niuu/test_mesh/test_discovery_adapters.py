@@ -580,7 +580,7 @@ class TestSleipnirDiscoveryAdapter:
         adapter._on_join.append(joins.append)
 
         raw = {
-            "event_type": "ravn.mesh.announce",
+            "event_type": "mesh.announce",
             "source": "ravn:peer-b",
             "payload": {
                 "identity": {
@@ -607,7 +607,7 @@ class TestSleipnirDiscoveryAdapter:
     async def test_handle_announce_own_peer_ignored(self) -> None:
         adapter = self._make_adapter()
         raw = {
-            "event_type": "ravn.mesh.announce",
+            "event_type": "mesh.announce",
             "source": "ravn:peer-a",
             "payload": {
                 "identity": {"peer_id": "peer-a"},
@@ -626,7 +626,7 @@ class TestSleipnirDiscoveryAdapter:
         adapter._on_leave.append(leaves.append)
 
         raw = {
-            "event_type": "ravn.mesh.announce",
+            "event_type": "mesh.announce",
             "source": "ravn:peer-b",
             "payload": {
                 "identity": {"peer_id": "peer-b"},
@@ -651,7 +651,7 @@ class TestSleipnirDiscoveryAdapter:
         adapter._peers["peer-b"] = peer
 
         raw = {
-            "event_type": "ravn.mesh.announce",
+            "event_type": "mesh.announce",
             "source": "ravn:peer-b",
             "payload": {
                 "identity": {"peer_id": "peer-b"},

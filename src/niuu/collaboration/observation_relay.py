@@ -30,7 +30,7 @@ DirectedSend = Callable[[str, str, dict[str, Any]], Awaitable[str]]
 NotificationSend = Callable[[dict[str, Any]], Awaitable[None]]
 
 _ORIGIN_TOKEN_SPLIT = re.compile(r"[\s:/,]+")
-_IGNORED_EVENT_PREFIXES = ("ravn.mesh.",)
+_IGNORED_EVENT_PREFIXES = ("mesh.",)
 
 
 def render_observation(event: SleipnirEvent, payload_preview_chars: int) -> str:

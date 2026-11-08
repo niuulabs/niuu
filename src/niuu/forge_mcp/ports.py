@@ -258,6 +258,15 @@ class ForgeMcpHost(ABC):
             status=501,
         )
 
+    async def post_room_message(
+        self, room_id: str, content: str, *, host_session_id: str = "", request_id: str = ""
+    ) -> dict[str, Any]:
+        """Say something in a room this session is in. Only a session's own broker knows them."""
+        raise ForgeApiError(
+            "room_post needs a Forge session's own MCP (the session's broker knows its rooms)",
+            status=501,
+        )
+
     async def mesh_ask(
         self,
         content: str,

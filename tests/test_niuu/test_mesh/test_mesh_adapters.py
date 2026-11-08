@@ -126,13 +126,13 @@ class _FlakySleipnirPublisher(_FakeSleipnirTransport):
         await super().publish(event)
 
 
-_RPC_REPLY_TOPIC = "ravn.mesh.rpc.reply.other_peer.nabc1234"
+_RPC_REPLY_TOPIC = "mesh.rpc.reply.other_peer.nabc1234"
 
 
 def _rpc_request(correlation_id: str = "corr-rpc", **fields: Any) -> SleipnirEvent:
     """An RPC request for peer ``test-peer`` as it arrives from the transport."""
     return SleipnirEvent(
-        event_type="ravn.mesh.rpc.test_peer",
+        event_type="mesh.rpc.test_peer",
         source="other_peer",
         payload={"rpc_request": {"action": "test"}, "reply_topic": _RPC_REPLY_TOPIC},
         summary="rpc request",
@@ -205,7 +205,7 @@ class TestSleipnirMeshAdapterUnit:
 
         assert len(transport.published) == 1
         sleipnir_event = transport.published[0]
-        assert sleipnir_event.event_type == "ravn.mesh.test.topic"
+        assert sleipnir_event.event_type == "mesh.test.topic"
         assert sleipnir_event.payload["ravn_type"] == "thought"
 
     @pytest.mark.asyncio
@@ -218,7 +218,7 @@ class TestSleipnirMeshAdapterUnit:
 
         assert len(transport.published) == 1
         sleipnir_event = transport.published[0]
-        assert sleipnir_event.event_type == "ravn.mesh.activity.flock_coder"
+        assert sleipnir_event.event_type == "mesh.activity.flock_coder"
         assert sleipnir_event.payload["ravn_source"] == "flock-coder"
 
     @pytest.mark.asyncio
@@ -247,11 +247,11 @@ class TestSleipnirMeshAdapterUnit:
         handler_a.assert_awaited_once()
         handler_b.assert_not_awaited()
         published = transport.published[0]
-        assert published.event_type == "ravn.mesh.realm_flock_a.review.completed"
+        assert published.event_type == "mesh.realm_flock_a.review.completed"
         assert published.payload["ravn_environment_id"] == "flock-a"
 
     def test_environment_prefix_sanitizes_for_transport(self) -> None:
-        assert mesh_event_prefix(" Flock/A:B ") == "ravn.mesh.realm_flock_a_b"
+        assert mesh_event_prefix(" Flock/A:B ") == "mesh.realm_flock_a_b"
 
     @pytest.mark.asyncio
     async def test_publish_failure_logs_environment_context_and_propagates(self, caplog) -> None:
@@ -295,7 +295,7 @@ class TestSleipnirMeshAdapterUnit:
         await adapter.subscribe("test.topic", handler)
 
         assert len(transport.subscriptions) == 1
-        assert transport.subscriptions[0].topic == "ravn.mesh.test.topic"
+        assert transport.subscriptions[0].topic == "mesh.test.topic"
 
     @pytest.mark.asyncio
     async def test_subscribe_sanitizes_invalid_topic_segments(
@@ -306,7 +306,7 @@ class TestSleipnirMeshAdapterUnit:
         await adapter.subscribe("activity.flock-coder", handler)
 
         assert len(transport.subscriptions) == 1
-        assert transport.subscriptions[0].topic == "ravn.mesh.activity.flock_coder"
+        assert transport.subscriptions[0].topic == "mesh.activity.flock_coder"
 
     @pytest.mark.asyncio
     async def test_subscribe_handler_receives_converted_event(
@@ -427,7 +427,7 @@ class TestSleipnirMeshAdapterUnit:
                 await transport.publish(reply)
 
         # Subscribe to handle RPC requests
-        await transport.subscribe(["ravn.mesh.rpc.*"], respond)
+        await transport.subscribe(["mesh.rpc.*"], respond)
 
         result = await adapter.send("any-peer", {"msg": "hello"}, timeout_s=1.0)
         assert result == {"status": "ok"}
@@ -446,11 +446,11 @@ class TestSleipnirMeshAdapterUnit:
         from sleipnir.domain.events import SleipnirEvent
 
         request = SleipnirEvent(
-            event_type="ravn.mesh.rpc.test_peer",  # sanitized: test-peer -> test_peer
+            event_type="mesh.rpc.test_peer",  # sanitized: test-peer -> test_peer
             source="other_peer",
             payload={
                 "rpc_request": {"action": "test"},
-                "reply_topic": "ravn.mesh.rpc.reply.other_peer.nabc1234",  # prefixed nonce
+                "reply_topic": "mesh.rpc.reply.other_peer.nabc1234",  # prefixed nonce
             },
             summary="rpc request",
             urgency=0.5,
@@ -481,11 +481,11 @@ class TestSleipnirMeshAdapterUnit:
         from sleipnir.domain.events import SleipnirEvent
 
         request = SleipnirEvent(
-            event_type="ravn.mesh.rpc.test_peer",
+            event_type="mesh.rpc.test_peer",
             source="other_peer",
             payload={
                 "rpc_request": {"action": "test"},
-                "reply_topic": "ravn.mesh.rpc.reply.other_peer.nabc1234",
+                "reply_topic": "mesh.rpc.reply.other_peer.nabc1234",
             },
             summary="rpc request",
             urgency=0.5,
@@ -503,7 +503,7 @@ class TestSleipnirMeshAdapterUnit:
 
         handler.assert_awaited_once_with({"action": "test"})
         assert "failed to send RPC reply" in caplog.text
-        assert "reply_topic=ravn.mesh.rpc.reply.other_peer.nabc1234" in caplog.text
+        assert "reply_topic=mesh.rpc.reply.other_peer.nabc1234" in caplog.text
         assert "correlation_id=corr-reply" in caplog.text
 
         await adapter.stop()
@@ -659,7 +659,7 @@ class TestRpcRedelivery:
         assert result == {"status": "complete", "output": "done"}
         request = next(e for e in transport.published if "rpc_request" in e.payload)
         target_rpc_subscription = next(
-            s for s in transport.subscriptions if s.topic == "ravn.mesh.rpc.peer_b"
+            s for s in transport.subscriptions if s.topic == "mesh.rpc.peer_b"
         )
 
         await target_rpc_subscription.handler(_redelivered(request))

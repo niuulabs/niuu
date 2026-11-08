@@ -176,6 +176,7 @@ class FakeHost(ForgeMcpHost):
         self.mesh_peer_queries: list[dict[str, str]] = []
         self.follows: list[tuple[str, dict[str, str]]] = []
         self.asks_made: list[dict[str, Any]] = []
+        self.room_posts: list[dict[str, Any]] = []
         self.inbox: dict[str, PeerMessage] = {}
         self.mesh_peer_ids: dict[str, str] = {}
         self.mesh_down = False
@@ -219,6 +220,12 @@ class FakeHost(ForgeMcpHost):
         if self.mesh_send_error is not None:
             raise self.mesh_send_error
         return {"message_id": "mesh-msg-1", "status": "accepted"}
+
+    async def post_room_message(self, room_id, content, *, host_session_id="", request_id=""):
+        self.room_posts.append(
+            {"room_id": room_id, "content": content, "host_session_id": host_session_id}
+        )
+        return {"room_id": room_id, "message_id": "room-msg-1", "path": "mesh"}
 
     async def mesh_ask(self, content, *, producers_of, peers, request_id, wait_s):
         self.asks_made.append(
@@ -1346,44 +1353,60 @@ class TestReply:
 class TestRoomPost:
     HOST = str(uuid.uuid4())
 
-    async def test_a_post_goes_to_the_hosting_session(self) -> None:
-        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+    async def test_a_post_names_the_room_and_not_the_host(self) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
 
-        result = await toolbox.call(
-            "room_post", {"room_id": "huddle-1", "host_session_id": self.HOST, "content": "hi all"}
-        )
+        result = await toolbox.call("room_post", {"room_id": "huddle-1", "content": "hi all"})
 
         assert not result.is_error
-        assert client.calls == [("post_room_message", (self.HOST, "huddle-1", "hi all"))]
+        posted = host.room_posts[0]
+        assert (posted["room_id"], posted["content"], posted["host_session_id"]) == (
+            "huddle-1",
+            "hi all",
+            "",
+        )
         assert result.structured["message_id"] == "room-msg-1"
 
-    async def test_a_member_refusal_carries_the_hosts_reason(self) -> None:
-        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
-        client.fail = ForgeApiError("Session x is not a member of room huddle-1", status=403)
+    async def test_a_host_is_named_only_to_tell_two_rooms_apart(self) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
 
-        result = await toolbox.call(
+        await toolbox.call(
             "room_post", {"room_id": "huddle-1", "host_session_id": self.HOST, "content": "hi"}
         )
 
-        assert result.is_error and "not a member of room huddle-1" in result.text
+        assert host.room_posts[0]["host_session_id"] == self.HOST
+
+    async def test_a_refusal_carries_the_reason(self) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        async def refuse(*_args, **_kwargs):
+            raise ForgeApiError("this session is not in room 'huddle-1'", status=403)
+
+        host.post_room_message = refuse  # type: ignore[method-assign]
+
+        result = await toolbox.call("room_post", {"room_id": "huddle-1", "content": "hi"})
+
+        assert result.is_error and "not in room 'huddle-1'" in result.text
 
     async def test_it_needs_the_message_grant(self) -> None:
-        toolbox, client, _ = _toolbox()
+        toolbox, _, host = _toolbox()
 
-        result = await toolbox.call(
-            "room_post", {"room_id": "r", "host_session_id": self.HOST, "content": "hi"}
-        )
+        result = await toolbox.call("room_post", {"room_id": "r", "content": "hi"})
 
-        assert result.is_error and "'message' grant" in result.text and client.calls == []
+        assert result.is_error and "'message' grant" in result.text and host.room_posts == []
 
-    async def test_a_session_does_not_post_into_its_own_room_this_way(self) -> None:
-        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+    async def test_the_default_host_does_not_know_any_rooms(self) -> None:
+        class Bare(ForgeMcpHost):
+            session_id = None
 
-        result = await toolbox.call(
-            "room_post", {"room_id": "r", "host_session_id": SELF, "content": "hi"}
-        )
+            async def environment(self):
+                return {}
 
-        assert result.is_error and "own session" in result.text and client.calls == []
+            async def notify(self, draft):
+                return {}
+
+        with pytest.raises(ForgeApiError, match="room_post needs"):
+            await Bare().post_room_message("r", "x")
 
 
 class TestMeshSend:

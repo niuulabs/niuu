@@ -322,15 +322,28 @@ The first rows are the default for the two use cases; the direct tools after the
 | `send_message` | `message` grant | send to a session by `to` or `session_id`; optional `urgent` |
 | `ask(to / session_id, content, deadline_s?)` | `message` grant | send to a session and **wait for its answer** (see "Asking and waiting") |
 | `reply(message_id, content)` | the route's own need | answer a message you received, by the route its sender gave: session, mesh peer or room. A message sent as a notice (no reply route) is refused with the reason |
-| `room_post(room_id, host_session_id, content)` | `message` grant | speak in a room another session hosts. The host records the message in the room as said by this session, and refuses it when the session is not seated in that room |
+| `room_post(room_id, content)` | `message` grant | speak in a room another session hosts. The session knows its rooms and their hosts itself; the host records the message as said by this session and refuses it when the session is not seated in the room |
 | `mesh_send(peer, content, expect_reply)` | mesh enabled on this session | send a peer message to a mesh peer id. Listed only when `mesh.enabled` is true |
 | `mesh_peers(role?, capability?, consumes?, produces?)` | mesh enabled on this session | list the peers on the mesh with what each announced: name, persona, role, description, capabilities, topics consumed and produced, activity state. Facts only (see "Finding a peer"). Listed only when `mesh.enabled` is true |
 
-`room_post` takes the hosting session explicitly: the "Relayed by" line of a message from
-the room names the host, and the "Said in room" line names the room. Forge proxies the
-call to the host as `POST /sessions/{host}/room/session-message` and stamps the calling
-session itself; the room host trusts only that stamp. `reply` to a room message uses the
-same call.
+`room_post` names the room and not its host. A session learns which rooms it is in, and who
+hosts each, from what is said in them: every message said in a room names the room (the "Said
+in room" line) and the session that relayed it (the "Relayed by" line), and the first thing a
+host says to a session it seats is a notice saying so ("You were seated in room R, hosted by
+session H. Speak in it with room_post"). The notice is part of the join: a member that cannot
+be told fails the join loudly. The table is read from the durable peer inbox, so it survives a
+restart.
+
+- **A room the session was never told of is refused** (403), listing the rooms it is in.
+- **Path.** When the host is a mesh peer in this session's peer table and the mesh verifies
+  senders, the post goes straight to it over the mesh (`room_message` RPC) and the host takes the
+  caller from the certificate, never from the message; otherwise it goes through Forge
+  (`POST /sessions/{host}/room/session-message`), which stamps the calling session. A mesh
+  failure (host left the table, no answer) is an error and is not rerouted through Forge. With
+  mesh signing off nothing could attribute a mesh post, so the host refuses one and the session
+  uses Forge.
+- **`host_session_id` is optional** and needed only when two hosts use the same room id; the
+  refusal then lists the hosts. `reply` to a room message uses the same call.
 
 ## Finding a peer
 
@@ -573,7 +586,7 @@ publishes, with the same machinery as the mesh, and whoever acts on an event che
 - **One switch.** `mesh.attestation.required: false` turns this off with the rest: nothing is
   signed or checked, and each service logs that once at startup.
 - **Limits.** Any platform service may publish any platform event; a compromised service can
-  forge another's events. The mesh's own events (`ravn.mesh.*`) are not platform events and
+  forge another's events. The mesh's own events (`mesh.*`) are not platform events and
   carry their peers' signatures. Services other than Forge and Ting (Mímir, Bifröst) do not
   publish on the bus in this repo's compositions; one that does must wrap its bus with
   `niuu.mesh.platform_events.SigningBus` using `start_platform_signer`, or its events are
@@ -702,7 +715,32 @@ counted on `skuld.collaboration.deliveries{outcome="failed"}` and logged at erro
 never logged and dropped. A member that sits in several rooms needs the message to name
 the room (`metadata.room_id`); a member in no room cannot be messaged.
 
-## Not yet done
+## Wire names and rolling out the rename
 
-- The `ravn.mesh` wire prefix keeps its name. New peer-message traffic uses the neutral
-  `peer_message` RPC type; renaming the prefix is a wider change.
+The mesh's wire prefix is `mesh`, the name of the mesh event type, instead of `ravn.mesh`. It
+names everything the mesh puts on a bus:
+
+| What | Before | Now |
+|---|---|---|
+| Event types of published events | `ravn.mesh.<topic>`, `ravn.mesh.realm_<realm>.<topic>` | `mesh.<topic>`, `mesh.realm_<realm>.<topic>` |
+| Announcements | `ravn.mesh.announce` | `mesh.announce` |
+| RPC legs | `ravn.mesh.rpc.<peer>`, `ravn.mesh.rpc.reply.<peer>.<nonce>` | `mesh.rpc.<peer>`, `mesh.rpc.reply.<peer>.<nonce>` |
+| AMQP exchange and routing key | `ravn.mesh`, `ravn.mesh.announce` | `mesh`, `mesh.announce` |
+| NATS subjects | `sleipnir.ravn.mesh.>` | `sleipnir.mesh.>` |
+| The relay's ignore rule | events under `ravn.mesh.` | events under `mesh.` |
+
+`mesh` is registered as a Sleipnir namespace. There is no compatibility alias: the old runtime
+is gone and the rebuilt one starts on the new name.
+
+**Rolling out the rename: old and new peers do not see each other.** A peer announces and
+listens on its own prefix only, so during a rollout a session on the old name and one on the new
+name do not discover each other, cannot message each other and receive nothing the other
+publishes, and nothing reports an error for that (the traffic is simply on other subjects).
+Roll a flock together: stop the sessions and residents on the old name and start them on the new
+one, or accept that the two halves are separate flocks until the roll finishes. Anything outside
+this repository that publishes or subscribes to `ravn.mesh.*` (a script, a NATS or RabbitMQ
+permission rule, a dashboard) must change with it. Two side effects: the browser bridge
+(`skuld.sleipnir_bridge`, which forwards `ravn.*`) no longer carries mesh traffic, which it did
+only as a side effect of the pattern, and a bus permission rule for sessions is now
+`mesh.*` instead of `ravn.mesh.*`.
+

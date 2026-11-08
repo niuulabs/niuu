@@ -249,13 +249,13 @@ class _ReplyArgs(_Args):
 
 class _RoomPostArgs(_Args):
     room_id: str = Field(min_length=1, max_length=200)
-    host_session_id: str
+    host_session_id: str = ""
     content: str = Field(min_length=1)
 
     @field_validator("host_session_id")
     @classmethod
     def _session_uuid(cls, value: str) -> str:
-        return _uuid_text(value)
+        return _uuid_text(value) if value else value
 
     @field_validator("content")
     @classmethod
@@ -1226,22 +1226,26 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="room_post",
         description=(
-            "Say something in a room you are a member of. The room belongs to a session, its "
-            "host: pass that session's id as `host_session_id` (the 'Relayed by' line of a message "
-            "from the room shows it) and the `room_id` (the 'Said in room' line). The host records "
-            "the message in the room as said by this session, with you named as the speaker, and "
-            "refuses it, with the reason, when you are not a member of that room."
+            "Say something in a room you are a member of. Pass the `room_id` (the 'Said in "
+            "room' line of a message from the room, or the notice that told you that you were "
+            "seated); you do not name the host, your session knows which session hosts each "
+            "room it is in. The host records the message in the room as said by this session, "
+            "with you named as the speaker. When the host is a mesh peer the post goes to it "
+            "directly over the mesh, otherwise through Forge. A room you have not been told you "
+            "are in is refused with the reason, listing the rooms you are in; the host refuses "
+            "a post from a session that is not seated in the room. `host_session_id` is needed "
+            "only in the rare case that two hosts use the same room id."
         ),
         input_schema=_object(
             {
                 "room_id": {"type": "string", "minLength": 1},
                 "host_session_id": {
                     **_SESSION_ID_SCHEMA,
-                    "description": "The session that hosts the room.",
+                    "description": "Only to tell apart two hosts that use the same room id.",
                 },
                 "content": {"type": "string", "minLength": 1},
             },
-            required=("room_id", "host_session_id", "content"),
+            required=("room_id", "content"),
         ),
         args_model=_RoomPostArgs,
         grant=ForgeMcpGrant.MESSAGE,
@@ -2221,15 +2225,14 @@ class ForgeMcpToolbox:
         )
 
     async def _room_post(self, args: _RoomPostArgs) -> ToolResult:
-        refused = self._refuse_self(args.host_session_id, "room_post")
-        if refused is not None:
-            return refused
-        answer = await self._client.post_room_message(
-            args.host_session_id, room_id=args.room_id, content=args.content
+        request_id = f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
+        answer = await self._host.post_room_message(
+            args.room_id,
+            args.content,
+            host_session_id=args.host_session_id,
+            request_id=request_id,
         )
-        return self._ok(
-            {"room_id": args.room_id, "host_session_id": args.host_session_id, **answer}
-        )
+        return self._ok(answer)
 
     async def _mesh_send(self, args: _MeshSendArgs) -> ToolResult:
         request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"

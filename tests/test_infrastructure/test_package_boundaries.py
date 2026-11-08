@@ -55,7 +55,7 @@ def test_niuu_does_not_import_feature_packages() -> None:
 
 
 #: Every module and subpackage of ``ravn`` that a dotted path can name.  Wire names
-#: that merely start with ``ravn.`` (``ravn.mesh.*`` event types, ``ravn.memory.*``
+#: that merely start with ``ravn.`` (``ravn.memory.*``
 #: metrics, ``ravn.niuu.world/*`` labels) are not modules and are not listed.
 _RAVN_MODULES = (
     "adapters",

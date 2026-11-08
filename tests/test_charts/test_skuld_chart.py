@@ -1189,26 +1189,32 @@ MESH_KEYS = {
 }
 
 
-def _mesh_config(**values) -> dict:
+MESH_CHARTS = ["skuld", "skuld-planner"]
+
+
+def _mesh_config(chart: str, **values) -> dict:
     args: list[str] = []
     for key, value in values.items():
         args += ["--set-json", f"mesh.{key}={json.dumps(value)}"]
-    return _rendered_skuld_config("skuld", *args)["mesh"]
+    return _rendered_skuld_config(chart, *args)["mesh"]
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+@pytest.mark.parametrize("mesh_chart", MESH_CHARTS)
 class TestMeshValues:
-    def test_a_chart_that_sets_nothing_renders_what_skuld_defaults_to(self):
+    def test_a_chart_that_sets_nothing_renders_what_skuld_defaults_to(self, mesh_chart):
         from skuld.config import MeshConfig, SkuldSettings
 
-        config = _rendered_skuld_config("skuld")
+        config = _rendered_skuld_config(mesh_chart)
 
         assert config["mesh"] == {"enabled": False, "transport": "nng"}
         assert SkuldSettings(**config).mesh == MeshConfig()
 
     @pytest.mark.parametrize(("value_key", "config_key"), sorted(MESH_KEYS.items()))
-    def test_each_value_renders_into_the_config_key_it_names(self, value_key, config_key):
-        mesh = _mesh_config(**{value_key: MESH_VALUES[value_key]})
+    def test_each_value_renders_into_the_config_key_it_names(
+        self, mesh_chart, value_key, config_key
+    ):
+        mesh = _mesh_config(mesh_chart, **{value_key: MESH_VALUES[value_key]})
 
         expected = MESH_VALUES[value_key]
         if value_key == "nng":
@@ -1226,11 +1232,11 @@ class TestMeshValues:
             }
         assert mesh[config_key] == expected
 
-    def test_every_value_together_is_accepted_by_skuld(self):
+    def test_every_value_together_is_accepted_by_skuld(self, mesh_chart):
         from skuld.config import SkuldSettings
 
         config = _rendered_skuld_config(
-            "skuld",
+            mesh_chart,
             "--set-json",
             "mesh=" + json.dumps(MESH_VALUES),
         )
@@ -1250,32 +1256,39 @@ class TestMeshValues:
         assert (mesh.rpc_timeout_s, mesh.rpc_reply_cache_size) == (20, 64)
         assert (mesh.diff_max_bytes, mesh.diff_timeout_s) == (4096, 7)
 
-    def test_the_chart_covers_every_setting_skuld_has_so_a_new_one_cannot_be_forgotten(self):
+    def test_the_chart_covers_every_setting_skuld_has_so_a_new_one_cannot_be_forgotten(
+        self, mesh_chart
+    ):
         from skuld.config import MeshConfig
 
         assert set(MESH_KEYS.values()) == set(MeshConfig.model_fields)
 
-    def test_an_empty_string_or_null_keeps_skuld_s_default(self):
-        mesh = _mesh_config(peerId="", realmId="", role="", capabilities=None, rpcTimeoutS=None)
+    def test_an_empty_string_or_null_keeps_skuld_s_default(self, mesh_chart):
+        mesh = _mesh_config(
+            mesh_chart, peerId="", realmId="", role="", capabilities=None, rpcTimeoutS=None
+        )
 
         assert mesh == {"enabled": False, "transport": "nng"}
 
-    def test_a_values_file_that_never_set_mesh_values_still_renders(self):
+    def test_a_values_file_that_never_set_mesh_values_still_renders(self, mesh_chart):
         # Pre-existing releases only ever set `enabled`, `transport` and `peerPorts`.
-        mesh = _mesh_config(peerPorts=[{"name": "mesh", "containerPort": 7001}], enabled=True)
+        mesh = _mesh_config(
+            mesh_chart, peerPorts=[{"name": "mesh", "containerPort": 7001}], enabled=True
+        )
 
         assert mesh == {"enabled": True, "transport": "nng"}
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
-def test_mesh_attestation_renders_nothing_by_default_and_only_what_is_set():
+@pytest.mark.parametrize("mesh_chart", MESH_CHARTS)
+def test_mesh_attestation_renders_nothing_by_default_and_only_what_is_set(mesh_chart):
     from skuld.config import SkuldSettings
 
-    default = _rendered_skuld_config("skuld")
+    default = _rendered_skuld_config(mesh_chart)
     assert "attestation" not in default["mesh"]
 
     config = _rendered_skuld_config(
-        "skuld",
+        mesh_chart,
         "--set",
         "mesh.attestation.required=false",
         "--set",
@@ -1287,3 +1300,35 @@ def test_mesh_attestation_renders_nothing_by_default_and_only_what_is_set():
     assert settings.mesh.attestation.required is False
     assert settings.mesh.attestation.clock_skew_s == 60
     assert settings.mesh.attestation.event_max_age_s == 3600
+
+
+class TestThePlannerSharesTheSkuldMeshChart:
+    """The planner renders the mesh settings with the very same template, and has the same
+    values, so a setting added to one cannot be missing from the other."""
+
+    def test_the_planner_uses_the_skuld_charts_template_file(self):
+        skuld = CHART_DIR / "templates" / "_mesh-config.tpl"
+        planner = CHART_DIR.parent / "skuld-planner" / "templates" / "_mesh-config.tpl"
+
+        assert planner.is_symlink() and planner.resolve() == skuld.resolve()
+
+    def test_the_planner_has_exactly_the_skuld_charts_mesh_values(self):
+        skuld = yaml.safe_load((CHART_DIR / "values.yaml").read_text())["mesh"]
+        planner = yaml.safe_load((CHART_DIR.parent / "skuld-planner" / "values.yaml").read_text())[
+            "mesh"
+        ]
+
+        assert planner == skuld
+
+    @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+    def test_both_charts_render_the_same_mesh_section_for_the_same_values(self):
+        values = [
+            arg
+            for k, v in MESH_VALUES.items()
+            for arg in ("--set-json", f"mesh.{k}={json.dumps(v)}")
+        ]
+
+        skuld = _rendered_skuld_config("skuld", *values)["mesh"]
+        planner = _rendered_skuld_config("skuld-planner", *values)["mesh"]
+
+        assert planner == skuld and set(skuld) == set(MESH_KEYS.values())

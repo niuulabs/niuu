@@ -64,8 +64,8 @@ async def test_event_bus_discovery_ignores_other_realms() -> None:
     await outsider.start()
     await bus.flush()
 
-    assert first._announce_event_type == "ravn.mesh.realm_flock_a.announce"
-    assert outsider._announce_event_type == "ravn.mesh.realm_flock_b.announce"
+    assert first._announce_event_type == "mesh.realm_flock_a.announce"
+    assert outsider._announce_event_type == "mesh.realm_flock_b.announce"
     assert first.peers() == {}
     assert outsider.peers() == {}
     await outsider.stop()

@@ -7,7 +7,7 @@ with the same machinery as the mesh (:mod:`niuu.mesh.attestation`), under a ``se
 Forge's ``authority``) certificate, and whoever *acts* on a platform event checks it.
 
 * :class:`SigningBus` wraps the service's bus and signs every event except the mesh's own
-  (``ravn.mesh``), which peers sign with their own certificates.
+  (``mesh``), which peers sign with their own certificates.
 * :class:`PlatformEventVerifier` is called by a subscriber at the point where it would act: an
   event that is unsigned, signed by anyone but a platform service, altered, or stale is refused
   with the reason, logged at error and counted (``niuu.mesh.attestation.refusals``,

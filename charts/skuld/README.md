@@ -290,6 +290,8 @@ A session joins a flock as a mesh peer when `mesh.enabled` is true: it announces
 
 Setting `mesh.enabled` or `mesh.transport` had no effect on the broker before these values were rendered; only `mesh.peerPorts` did.
 
+The `skuld-planner` chart renders the same section with the same template (`templates/_mesh-config.tpl`, symlinked into the planner chart) and has the same `mesh` values, so the two cannot drift; a test compares them.
+
 ### Environment Variables
 
 | Key | Type | Default | Description |

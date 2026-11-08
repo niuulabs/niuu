@@ -153,7 +153,7 @@ class TestPlatformEvents:
 
     async def test_the_meshs_own_events_are_not_touched(self, authority) -> None:
         signer = await _signer(authority, KIND_SERVICE)
-        wire = await _published(signer, _event("ravn.mesh.realm_x.code", note="peer-signed"))
+        wire = await _published(signer, _event("mesh.realm_x.code", note="peer-signed"))
         assert ATTESTATION_KEY not in wire.payload
 
     async def test_a_batch_is_signed_and_the_bus_is_otherwise_the_wrapped_one(
