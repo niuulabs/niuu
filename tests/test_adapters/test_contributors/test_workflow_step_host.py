@@ -1,14 +1,14 @@
 """Tests for WorkflowStepHostContributor."""
 
+from uuid import uuid4
+
 from volundr.adapters.outbound.contributors.workflow_step_host import (
     WorkflowStepHostContributor,
     workflow_realm,
 )
-from uuid import uuid4
-
 from volundr.domain.models import GitSource, Session
-from volundr.domain.projects import SessionCoordination, SessionReference
 from volundr.domain.ports import SessionContext
+from volundr.domain.projects import SessionCoordination, SessionReference
 
 RUN_ID = "9d8e8e8c-0c72-4283-a7c9-77c85263aa7b"
 
