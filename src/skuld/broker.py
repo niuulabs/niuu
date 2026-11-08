@@ -3421,10 +3421,14 @@ class Broker(
         # transport that CAN correlate a consumption signal (Codex turn/started) flips
         # the bubble; transports that can't simply ignore the kwargs.
         outbound = await self._apply_retrieval_reflex(content)
-        accepted = await asyncio.wait_for(
-            self._transport.send_message(outbound, msg_id=msg_id, request_id=request_id),
-            timeout=timeout,
-        )
+        sending = self._transport.send_message(outbound, msg_id=msg_id, request_id=request_id)
+        if getattr(self._transport.capabilities, "send_runs_turn", False) is True:
+            # The send returns when the whole turn is over (SDK, ``claude -p``). Cutting it at
+            # the attempt timeout would cancel a healthy turn and run it again; the transport's
+            # own turn timeout is what bounds it, and that one is loud.
+            accepted = await sending
+        else:
+            accepted = await asyncio.wait_for(sending, timeout=timeout)
         if accepted is False:
             raise DeliveryNotAcceptedError("Transport rejected the message before accepting input")
 

@@ -882,3 +882,31 @@ class TestRendering:
         assert peer_turn_id("s", ["a", "b"]) == peer_turn_id("s", ["a", "b"])
         assert peer_turn_id("s", ["a", "b"]) != peer_turn_id("s", ["a"])
         assert peer_turn_id("s", ["a"]) != peer_turn_id("t", ["a"])
+
+
+class TestStartup:
+    async def test_a_restored_message_is_handed_over_once_the_transport_is_up(
+        self, tmp_path
+    ) -> None:
+        before = _inbox_broker(tmp_path, activity="active")
+        await _accept(before, _message())
+        broker = Broker(
+            SkuldSettings(
+                session={"id": SESSION_ID, "workspace_dir": str(tmp_path / "workspace")},
+                transport="subprocess",
+                chronicle_watcher_enabled=False,
+            )
+        )
+        broker._restore_durable_peer_inbox(_restart_frames(before))
+        injected = asyncio.Event()
+
+        async def inject() -> None:
+            injected.set()
+
+        broker._inject_at_turn_boundary = inject
+
+        try:
+            await broker.startup()
+            await asyncio.wait_for(injected.wait(), timeout=5)
+        finally:
+            await broker.shutdown()

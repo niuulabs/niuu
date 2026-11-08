@@ -515,7 +515,10 @@ class DeliveryConfig(BaseModel):
         gt=0,
         description=(
             "Per-attempt timeout for a single transport send/redirect. A wedged "
-            "send-lock that never returns is bounded by this and retried."
+            "send-lock that never returns is bounded by this and retried. Does not apply to a "
+            "transport whose send returns only when the turn is over "
+            "(capabilities.send_runs_turn): the turn takes as long as it takes, and the "
+            "transport's own turn timeout bounds it."
         ),
     )
     initial_backoff_seconds: float = Field(
