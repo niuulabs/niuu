@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from niuu.domain.notifications import NotificationDraft
+from niuu.domain.workflow_step import WorkflowStepCloseArgs, WorkflowStepCloseError
 from niuu.forge_mcp import (
     TOOL_NAMES,
     ForgeApiError,
@@ -144,6 +145,21 @@ class FakeClient(ForgeClient):
 class FakeHost(ForgeMcpHost):
     def __init__(self) -> None:
         self.drafts: list[NotificationDraft] = []
+        self.step_open = False
+        self.closes: list[WorkflowStepCloseArgs] = []
+        self.close_error: WorkflowStepCloseError | None = None
+
+    def workflow_step_open(self) -> bool:
+        return self.step_open
+
+    def workflow_step_unavailable_reason(self) -> str:
+        return "no workflow step is open."
+
+    async def close_workflow_step(self, args: WorkflowStepCloseArgs) -> dict[str, Any]:
+        if self.close_error is not None:
+            raise self.close_error
+        self.closes.append(args)
+        return {"activation_id": args.activation_id, "state": "closed"}
 
     @property
     def session_id(self) -> str | None:
@@ -166,12 +182,15 @@ class TestToolList:
     def test_every_tool_is_listed_with_a_schema(self) -> None:
         toolbox, _, _ = _toolbox()
         tools = toolbox.list_tools()
-        assert [tool["name"] for tool in tools] == list(TOOL_NAMES)
+        assert [tool["name"] for tool in tools] == [
+            name for name in TOOL_NAMES if name != "workflow_step_close"
+        ]
         assert set(TOOL_NAMES) == {
             "environment",
             "notify",
             "report_artifact",
             "request_secret",
+            "workflow_step_close",
             "describe_session",
             "list_notifications",
             "list_sessions",
@@ -543,7 +562,9 @@ class TestFeedNotify:
         assert {"session_id", "instance_id", "idempotency_key"} <= set(schema["properties"])
         assert "feed-only" in notify["description"]
         assert [tool["name"] for tool in toolbox.list_tools()] == [
-            name for name in TOOL_NAMES if name not in {"report_artifact", "request_secret"}
+            name
+            for name in TOOL_NAMES
+            if name not in {"report_artifact", "request_secret", "workflow_step_close"}
         ]
 
     def test_transcript_mode_keeps_the_session_schema(self) -> None:
@@ -675,3 +696,67 @@ class TestDescribeSession:
         assert session["short_description"] == "Reviewing PR"
         assert session["short_description_updated_at"] == "2026-10-16T12:00:00+00:00"
         assert "description" not in session  # unset fields are omitted from summaries
+
+
+CLOSE_ARGS = {
+    "activation_id": "3f2b8c1e-5a47-4d0e-9b61-7c1e2a9d4f10",
+    "ending": "verdict",
+    "verdict": "implemented",
+    "outcome": {"summary": "done"},
+    "note": "all green",
+    "evidence": [{"kind": "commit", "ref": "abc123", "summary": "the change"}],
+}
+
+
+class TestWorkflowStepClose:
+    def test_offered_only_while_the_host_has_an_open_step(self) -> None:
+        toolbox, _, host = _toolbox()
+        assert "workflow_step_close" not in [tool["name"] for tool in toolbox.list_tools()]
+        host.step_open = True
+        assert "workflow_step_close" in [tool["name"] for tool in toolbox.list_tools()]
+
+    async def test_environment_lists_the_tool_only_while_a_step_is_open(self) -> None:
+        toolbox, _, host = _toolbox()
+        closed = await toolbox.call("environment", {})
+        host.step_open = True
+        opened = await toolbox.call("environment", {})
+        assert "workflow_step_close" not in closed.structured["tools"]
+        assert "workflow_step_close" in opened.structured["tools"]
+
+    async def test_a_close_reaches_the_host_with_validated_arguments(self) -> None:
+        toolbox, _, host = _toolbox()
+        host.step_open = True
+        result = await toolbox.call("workflow_step_close", CLOSE_ARGS)
+        assert not result.is_error
+        assert host.closes[0].verdict == "implemented"
+        assert host.closes[0].evidence[0].ref == "abc123"
+
+    async def test_a_call_with_no_open_step_says_why(self) -> None:
+        toolbox, _, host = _toolbox()
+        result = await toolbox.call("workflow_step_close", CLOSE_ARGS)
+        assert result.is_error
+        assert "no workflow step is open" in result.text
+        assert not host.closes
+
+    async def test_the_hosts_rejection_reaches_the_agent_as_a_tool_error(self) -> None:
+        toolbox, _, host = _toolbox()
+        host.step_open = True
+        host.close_error = WorkflowStepCloseError("verdict 'x' is not valid; use implemented")
+        result = await toolbox.call("workflow_step_close", CLOSE_ARGS)
+        assert result.is_error
+        assert "verdict 'x' is not valid; use implemented" in result.text
+
+    async def test_malformed_arguments_are_refused_before_the_host(self) -> None:
+        toolbox, _, host = _toolbox()
+        host.step_open = True
+        result = await toolbox.call(
+            "workflow_step_close", {"activation_id": "a", "ending": "someday"}
+        )
+        assert result.is_error
+        assert "Invalid arguments for workflow_step_close" in result.text
+        assert not host.closes
+
+    async def test_the_feed_endpoint_does_not_serve_it(self) -> None:
+        toolbox, _ = _feed_toolbox()
+        with pytest.raises(UnknownToolError):
+            await toolbox.call("workflow_step_close", CLOSE_ARGS)

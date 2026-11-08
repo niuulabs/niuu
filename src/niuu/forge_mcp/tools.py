@@ -54,6 +54,13 @@ from niuu.domain.session_description import (
     DESCRIPTION_MAX_CHARS,
     SHORT_DESCRIPTION_MAX_CHARS,
 )
+from niuu.domain.workflow_step import (
+    STEP_ENDINGS,
+    WAITING_ON_KINDS,
+    WORKFLOW_STEP_CLOSE_TOOL,
+    WorkflowStepCloseArgs,
+    WorkflowStepCloseError,
+)
 from niuu.forge_mcp.guidance import (
     COMPACT_NOTIFICATION_GUIDANCE,
     NOTIFICATION_IMAGE_GUIDANCE,
@@ -728,6 +735,69 @@ _REQUEST_SECRET_SCHEMA = _object(
     required=("name", "purpose"),
 )
 
+_WORKFLOW_STEP_CLOSE_DESCRIPTION = (
+    "Close the workflow step you were activated for. Call it exactly once when the step's "
+    "instructions say you are done (or cannot continue), naming the `activation_id` from "
+    "those instructions. `ending` is one of: `verdict` (hand off: give a `verdict` from the "
+    "step's valid verdicts and, when the step defines an outcome schema, an `outcome` that "
+    "matches it), `waiting` (you are blocked on something that will resolve later: give "
+    "`waiting_on`; the step stays open and you close it again when it resolves), `done` "
+    "(the step is finished and hands nothing off) or `failed` (give `failure_reason`). Only "
+    "the endings the step lists are allowed. Ending your turn without calling this tool "
+    "leaves the step open and is reported as unclosed; nothing is inferred from your reply. "
+    "A rejected call returns the exact reason and records nothing: fix the arguments and "
+    "call again."
+)
+
+_WORKFLOW_STEP_CLOSE_SCHEMA = _object(
+    {
+        "activation_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The activation id given in the step's instructions.",
+        },
+        "ending": {"type": "string", "enum": list(STEP_ENDINGS)},
+        "verdict": {
+            "type": ["string", "null"],
+            "description": "Required for ending=verdict; one of the step's valid verdicts.",
+        },
+        "outcome": {
+            "type": ["object", "null"],
+            "description": "The outcome fields the step's outcome schema defines.",
+        },
+        "note": {"type": ["string", "null"], "description": "A short note for the record."},
+        "evidence": {
+            "type": "array",
+            "items": _object(
+                {
+                    "kind": {"type": "string", "minLength": 1},
+                    "ref": {"type": "string", "minLength": 1},
+                    "summary": {"type": "string"},
+                },
+                required=("kind", "ref"),
+            ),
+            "description": "What supports the ending: commits, files, test runs, links.",
+        },
+        "waiting_on": {
+            "type": ["object", "null"],
+            "description": "Required for ending=waiting: what the step is waiting for.",
+            "properties": {
+                "kind": {"type": "string", "enum": list(WAITING_ON_KINDS)},
+                "ref": {"type": "string", "minLength": 1},
+                "reason": {"type": "string"},
+            },
+            "required": ["kind", "ref"],
+            "additionalProperties": False,
+        },
+        "failure_reason": {
+            "type": ["string", "null"],
+            "description": "Required for ending=failed: why the step cannot be completed.",
+        },
+    },
+    required=("activation_id", "ending"),
+)
+
+
 TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="environment",
@@ -757,6 +827,12 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         description=_REQUEST_SECRET_DESCRIPTION,
         input_schema=_REQUEST_SECRET_SCHEMA,
         args_model=_RequestSecretArgs,
+    ),
+    ToolSpec(
+        name=WORKFLOW_STEP_CLOSE_TOOL,
+        description=_WORKFLOW_STEP_CLOSE_DESCRIPTION,
+        input_schema=_WORKFLOW_STEP_CLOSE_SCHEMA,
+        args_model=WorkflowStepCloseArgs,
     ),
     ToolSpec(
         name="describe_session",
@@ -983,7 +1059,11 @@ FEED_NOTIFY_SPEC = ToolSpec(
 #: Tools that write the caller's own durable transcript (or, for ``request_secret``, put a
 #: card in it and a file in the session's runtime), so only a session's own broker
 #: (transcript mode) can serve them.
-TRANSCRIPT_ONLY_TOOLS = frozenset({"report_artifact", "request_secret"})
+TRANSCRIPT_ONLY_TOOLS = frozenset({"report_artifact", "request_secret", WORKFLOW_STEP_CLOSE_TOOL})
+
+#: Tools offered only while the caller's host says they apply (``workflow_step_close`` while a
+#: workflow step is open on the session). Hidden from the list otherwise, refused if called.
+HOST_GATED_TOOLS = frozenset({WORKFLOW_STEP_CLOSE_TOOL})
 
 
 def _specs_for(mode: ForgeMcpNotifyMode) -> tuple[ToolSpec, ...]:
@@ -1131,6 +1211,7 @@ class ForgeMcpToolbox:
             "describe_session": self._describe_session,
             "report_artifact": self._report_artifact,
             "request_secret": self._request_secret,
+            WORKFLOW_STEP_CLOSE_TOOL: self._workflow_step_close,
             "list_notifications": self._list_notifications,
             "list_sessions": self._list_sessions,
             "get_session": self._get_session,
@@ -1146,14 +1227,26 @@ class ForgeMcpToolbox:
     def grants(self) -> frozenset[ForgeMcpGrant]:
         return self._grants
 
+    def _offered(self, spec: ToolSpec) -> bool:
+        if spec.name not in HOST_GATED_TOOLS:
+            return True
+        return self._host.workflow_step_open()
+
     def list_tools(self) -> list[dict[str, Any]]:
-        """Every tool, granted or not, so the model learns why a denied one fails."""
-        return [spec.to_mcp() for spec in self._tool_specs]
+        """Every tool, granted or not, so the model learns why a denied one fails.
+
+        A host-gated tool (``workflow_step_close``) is listed only while its host says it applies.
+        """
+        return [spec.to_mcp() for spec in self._tool_specs if self._offered(spec)]
 
     async def call(self, name: str, arguments: dict[str, Any] | None) -> ToolResult:
         spec = self._specs.get(name)
         if spec is None:
             raise UnknownToolError(name)
+        if not self._offered(spec):
+            return ToolResult.error(
+                f"{name} is not available now: {self._host.workflow_step_unavailable_reason()}"
+            )
         if spec.grant is not None and spec.grant not in self._grants:
             return ToolResult.error(
                 f"The {name} tool needs the '{spec.grant.value}' grant, which this session "
@@ -1171,6 +1264,8 @@ class ForgeMcpToolbox:
             return ToolResult.error(_forge_error_text(name, exc))
         except SecretRequestError as exc:
             return ToolResult.error(f"{name} failed: {exc}")
+        except WorkflowStepCloseError as exc:
+            return ToolResult.error(f"{name} rejected: {exc}")
 
     def _ok(self, payload: dict[str, Any]) -> ToolResult:
         return ToolResult.of(payload, max_chars=self._limits.output_max_chars)
@@ -1188,7 +1283,7 @@ class ForgeMcpToolbox:
         environment["tools"] = [
             spec.name
             for spec in self._tool_specs
-            if spec.grant is None or spec.grant in self._grants
+            if self._offered(spec) and (spec.grant is None or spec.grant in self._grants)
         ]
         return self._ok(environment)
 
@@ -1233,6 +1328,10 @@ class ForgeMcpToolbox:
         except ValidationError as exc:
             return ToolResult.error(_validation_text("report_artifact", exc))
         return self._ok(await self._host.report_artifact(report))
+
+    async def _workflow_step_close(self, args: WorkflowStepCloseArgs) -> ToolResult:
+        """The host checks the close against its open step and records it; a bad one raises."""
+        return self._ok(await self._host.close_workflow_step(args))
 
     async def _request_secret(self, args: _RequestSecretArgs) -> ToolResult:
         """The host's result carries a path only; the value never passes through here."""

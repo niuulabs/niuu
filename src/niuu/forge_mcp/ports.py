@@ -7,6 +7,7 @@ from typing import Any
 
 from niuu.domain.artifact_reports import ArtifactReport
 from niuu.domain.notifications import NotificationDraft
+from niuu.domain.workflow_step import WorkflowStepCloseArgs
 from niuu.forge_mcp.models import ForgeApiError
 
 
@@ -132,5 +133,24 @@ class ForgeMcpHost(ABC):
         raise ForgeApiError(
             "request_secret needs a Forge session's own MCP (it asks in that session's chat "
             "and writes the value into that session's runtime)",
+            status=501,
+        )
+
+    def workflow_step_open(self) -> bool:
+        """Whether a workflow step is open here, so ``workflow_step_close`` applies."""
+        return False
+
+    def workflow_step_unavailable_reason(self) -> str:
+        """Why ``workflow_step_close`` is not offered; shown when it is called anyway."""
+        return "this session is not hosting a workflow step."
+
+    async def close_workflow_step(self, args: WorkflowStepCloseArgs) -> dict[str, Any]:
+        """Check ``args`` against the open step, record the close and report it.
+
+        Raises :class:`niuu.domain.workflow_step.WorkflowStepCloseError` with the exact reason
+        when the close is not allowed; nothing is recorded then. Only a session's own broker
+        hosts steps; other hosts refuse."""
+        raise ForgeApiError(
+            "workflow_step_close needs a Forge session's own MCP (it closes that session's step)",
             status=501,
         )
