@@ -1226,7 +1226,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
             "`mesh_publish` (to a topic it consumes). It returns facts and nothing ranks them: "
             "the choice is yours. Optional filters are exact matches on one announced fact "
             "(role, capability, a topic consumed or produced); all given filters must match. A "
-            "field a peer did not announce is empty. Peers are announced on a heartbeat, so check "
+            "fact a peer's discovery did not carry is null and listed in `not_announced`: that "
+            "is unknown, not an empty role. Peers are announced on a heartbeat, so check "
             "last_heartbeat before relying on activity_state. Listed only on a session whose "
             "mesh is enabled."
         ),

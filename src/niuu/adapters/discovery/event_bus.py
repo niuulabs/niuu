@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from niuu.mesh import mesh_event_prefix
-from niuu.mesh.identity import MeshCandidate, MeshPeer
+from niuu.mesh.identity import MeshCandidate, MeshPeer, unannounced_facts
 from niuu.ports.discovery import PeerCallback
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher, SleipnirSubscriber, Subscription
@@ -166,6 +166,9 @@ class EventBusDiscoveryAdapter:
                         callback(peer)
             return
         now = datetime.now(UTC)
+        # A peer's busy flag travels with its activity state; an older peer announced a
+        # constant "idle" status, which says nothing about it.
+        not_announced = unannounced_facts(identity, keys={"busy": "activity_state"})
         peer = self._peers.get(peer_id)
         if peer is not None:
             peer.persona = str(identity.get("persona") or "")
@@ -179,6 +182,7 @@ class EventBusDiscoveryAdapter:
             peer.role = str(identity.get("role") or "")
             peer.description = str(identity.get("description") or "")
             peer.activity_state = str(identity.get("activity_state") or "")
+            peer.not_announced = not_announced
             peer.last_seen = now
             peer.last_heartbeat = now
             peer.status = str(payload.get("status") or "idle")  # type: ignore[assignment]
@@ -204,6 +208,7 @@ class EventBusDiscoveryAdapter:
             role=str(identity.get("role") or ""),
             description=str(identity.get("description") or ""),
             activity_state=str(identity.get("activity_state") or ""),
+            not_announced=not_announced,
             trust_level="verified",
             first_seen=now,
             last_seen=now,

@@ -146,6 +146,7 @@ class TestPeerTable:
             "task_count": 0,
             "trust_level": "unverified",
             "last_heartbeat": peer.last_heartbeat.isoformat(),
+            "not_announced": [],
         }
 
     def test_filters_are_exact_matches_that_must_all_hold_and_the_order_is_not_a_preference(
@@ -166,6 +167,34 @@ class TestPeerTable:
         assert [p["peer_id"] for p in peer_table(peers, consumes="x")] == ["a"]
         assert [p["peer_id"] for p in peer_table(peers, produces="y")] == ["c"]
         assert peer_table(peers, role="review") == []  # exact, not a prefix or a guess
+
+
+class TestNotAnnounced:
+    def test_a_fact_the_discovery_did_not_carry_is_null_and_named_never_an_empty_string(
+        self,
+    ) -> None:
+        peer = _peer(
+            "static-1",
+            role="",
+            consumes_event_types=[],
+            not_announced=["activity_state", "busy", "emits_event_types"],
+        )
+
+        facts = describe_peer(peer)
+
+        assert facts["activity_state"] is None and facts["status"] is None
+        assert facts["produces"] is None
+        assert facts["not_announced"] == ["activity_state", "busy", "emits_event_types"]
+        # What the peer did announce, even when empty, stays what it announced.
+        assert facts["role"] == "" and facts["consumes"] == []
+
+    def test_a_filter_never_matches_a_fact_that_was_not_announced(self) -> None:
+        peers = [
+            _peer("a", role="reviewer"),
+            _peer("b", role="reviewer", not_announced=["role"]),
+        ]
+
+        assert [p["peer_id"] for p in peer_table(peers, role="reviewer")] == ["a"]
 
 
 class TestMeshPeersHost:

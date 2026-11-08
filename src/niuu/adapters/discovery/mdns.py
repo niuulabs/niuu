@@ -12,6 +12,14 @@ Registers ``{peer_id}._ravn._tcp.local`` with TXT records:
 - ``rep_addr``       — nng REP address for mesh.send()
 - ``pub_addr``       — nng PUB address for mesh.subscribe()
 - ``handshake_port`` — temporary nng PAIR port for HMAC exchange
+- ``consumes`` / ``emits`` — event types consumed / emitted (comma separated)
+- ``activity``       — the peer's activity state, refreshed on every re-registration
+- ``busy``           — ``1`` while the peer is working
+
+A TXT record cannot hold a peer's description (a record is limited to 255 bytes) or the rest
+of what a chooser reads, so the full identity (role, description, display name, ...) is
+carried by the handshake instead and is a snapshot of that moment. Only the activity state,
+the busy flag and the topics are refreshed from TXT after it.
 
 **Handshake (HMAC-SHA256 challenge-response)**
 
@@ -47,7 +55,7 @@ from niuu.adapters.discovery._identity import (
     load_or_create_realm_key,
     realm_id_hash,
 )
-from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer
+from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer, unannounced_facts
 from niuu.ports.discovery import PeerCallback
 
 if TYPE_CHECKING:
@@ -300,6 +308,11 @@ class MdnsDiscoveryAdapter:
         # Include event types this persona consumes (for mesh routing)
         if self._identity.consumes_event_types:
             records["consumes"] = ",".join(self._identity.consumes_event_types)
+        if self._identity.emits_event_types:
+            records["emits"] = ",".join(self._identity.emits_event_types)
+        # Always present, so a peer can tell "idle" from "this peer does not announce it".
+        records["activity"] = getattr(self._identity, "activity_state", "")
+        records["busy"] = "1" if getattr(self._identity, "busy", False) else "0"
         return records
 
     async def _register_service(self) -> None:
@@ -421,8 +434,32 @@ class MdnsDiscoveryAdapter:
         )
         self._candidates[peer_id] = candidate
 
+        known = self._peers.get(peer_id)
+        if known is not None:
+            self._apply_txt_refresh(known, props)
+
         if peer_id not in self._peers and peer_id not in self._pending_handshakes:
             asyncio.ensure_future(self._initiate_handshake(candidate))
+
+    @staticmethod
+    def _apply_txt_refresh(peer: MeshPeer, props: dict[str, Any]) -> None:
+        """Take a known peer's live facts from its re-registered TXT records.
+
+        Only what changes after the handshake: a peer whose TXT lacks ``activity`` is an
+        older one and keeps what its handshake said.
+        """
+        if "activity" not in props:
+            return
+        busy = str(props.get("busy") or "0") == "1"
+        now = datetime.now(UTC)
+        peer.activity_state = str(props.get("activity") or "")
+        peer.status = "busy" if busy else "idle"
+        peer.last_seen = now
+        peer.last_heartbeat = now
+        if props.get("consumes") is not None:
+            peer.consumes_event_types = [t for t in str(props["consumes"]).split(",") if t]
+        if props.get("emits") is not None:
+            peer.emits_event_types = [t for t in str(props["emits"]).split(",") if t]
 
     def _remove_candidate(self, peer_id: str) -> None:
         self._candidates.pop(peer_id, None)
@@ -648,7 +685,17 @@ class MdnsDiscoveryAdapter:
             capabilities=raw.get("capabilities", []),
             permission_mode=raw.get("permission_mode", ""),
             version=raw.get("version", ""),
+            display_name=str(raw.get("display_name") or ""),
+            participant_type=str(raw.get("participant_type") or "ravn"),
             consumes_event_types=raw.get("consumes_event_types", []),
+            emits_event_types=list(raw.get("emits_event_types") or []),
+            role=str(raw.get("role") or ""),
+            description=str(raw.get("description") or ""),
+            activity_state=str(raw.get("activity_state") or ""),
+            status="busy" if raw.get("busy") else "idle",
+            # The handshake carries the whole identity, so a fact is announced when the
+            # peer's identity has the key at all (an older peer's has none of the new ones).
+            not_announced=unannounced_facts(raw),
             rep_address=raw.get("rep_address") or (candidate.rep_address if candidate else None),
             pub_address=raw.get("pub_address") or (candidate.pub_address if candidate else None),
             spiffe_id=raw.get("spiffe_id"),

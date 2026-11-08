@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from niuu.mesh.events import MeshEvent, MeshEventType
+from niuu.mesh.identity import CHOOSER_FACTS
 from personas.domain.persona_document import (
     PortablePersonaDefinition,
     consumed_event_types,
@@ -174,10 +175,13 @@ def build_publication(
 def describe_peer(peer: Any) -> dict[str, Any]:
     """The facts a discovered peer announced, as a chooser reads them.
 
-    Nothing here is ranked or scored. A field a peer's announcement did not carry (an older
-    Skuld, a Ravn, an mDNS peer) is empty, which says only that it did not announce it.
+    Nothing here is ranked or scored. A fact the peer's announcement did not carry (an older
+    Skuld, a Kubernetes or static discovery that cannot say it) is ``null`` and named in
+    ``not_announced``: that is not the same as the peer announcing an empty role or no
+    topics, and it is never rendered as an empty string.
     """
-    return {
+    missing = set(getattr(peer, "not_announced", ()))
+    facts: dict[str, Any] = {
         "peer_id": peer.peer_id,
         "name": getattr(peer, "display_name", ""),
         "kind": getattr(peer, "participant_type", ""),
@@ -193,6 +197,22 @@ def describe_peer(peer: Any) -> dict[str, Any]:
         "trust_level": peer.trust_level,
         "last_heartbeat": peer.last_heartbeat.isoformat(),
     }
+    for fact, field in _FACT_FIELDS.items():
+        if fact in missing:
+            facts[field] = None
+    facts["not_announced"] = [fact for fact in CHOOSER_FACTS if fact in missing]
+    return facts
+
+
+#: The tool-output field each chooser fact fills when the peer announced it.
+_FACT_FIELDS = {
+    "role": "role",
+    "description": "description",
+    "activity_state": "activity_state",
+    "busy": "status",
+    "consumes_event_types": "consumes",
+    "emits_event_types": "produces",
+}
 
 
 def peer_table(

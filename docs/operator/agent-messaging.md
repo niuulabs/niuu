@@ -189,7 +189,7 @@ agent, and `mesh_peers` returns the table of what the session's discovery has he
 The filters (`role`, `capability`, `consumes`, `produces`) are exact matches on one announced
 fact and all must hold. The result is in peer id order, which is not a preference: nothing is
 ranked, scored or routed, and the choice is the agent's judgment. A field a peer did not
-announce is empty (an older Skuld, a Ravn that sets no role, an mDNS peer). A session with no
+announce is `null` (see below). A session with no
 discovery configured gets an error that names the remedy, never an empty table, which would
 read as "nobody is there".
 
@@ -198,12 +198,23 @@ activity changes and the next heartbeat carries it, so `activity_state` can lag 
 interval. Check `last_heartbeat` before relying on it. A peer that is `awaiting_input` is
 blocked on a person.
 
-**Which discovery adapters carry the new fields.** `event_bus` (the transport-neutral
-adapter used over NATS and nng) carries role, description and activity state, along with the
-display name, capabilities and topics it already carried. The mDNS, Kubernetes, static and
-AMQP adapters announce what they announced before; their peers show those fields empty.
-Announcements from older and newer participants both parse: unknown fields are ignored and
-missing ones are empty.
+**What a discovery could not tell you is `null`, not empty.** A fact a peer's announcement
+did not carry comes back as `null` and is named in that peer's `not_announced` list. That is
+different from a peer announcing an empty role or no topics (`""` and `[]`): it means unknown.
+A filter never matches a fact that was not announced. The facts are `role`, `description`,
+`activity_state`, `busy` (shown as `status`), `consumes_event_types` and `emits_event_types`
+(shown as `consumes` and `produces`).
+
+| Discovery | What it carries | Not announced by its nature |
+|---|---|---|
+| `event_bus` (over NATS or nng) | everything, refreshed on every heartbeat | nothing; an older peer's missing keys are named |
+| `sleipnir` (AMQP) | everything, refreshed on every heartbeat | nothing; an older peer's missing keys are named |
+| `mdns` | everything in the handshake, as a snapshot: role, description, display name, topics, activity. After it, the activity state, busy flag and topics follow the peer's re-registered TXT records | description and role are never in TXT (a record is limited to 255 bytes), so they stay as of the handshake |
+| `k8s` | role, description and topics, from the pod annotations `ravn.niuu.world/role`, `/description`, `/consumes`, `/emits`, read when the peer is first seen | `activity_state` and `busy` (a pod's annotations are written by its deployer, not by the running peer); and any fact whose annotation is absent |
+| `static` | role, description and topics, from the cluster file entry | `activity_state` and `busy` (a file cannot say what a peer is doing); and any fact the entry leaves out |
+
+Announcements from older and newer participants both parse: unknown keys are ignored and
+missing ones are `not_announced`.
 
 **The default flow.**
 
