@@ -153,6 +153,7 @@ class ResidentFlockAdapter:
                 self._bus,
                 self._bus,
                 manage_transport_lifecycle=False,
+                attestor=peer.attestor if isinstance(peer, AttestedMesh) else None,
             )
             resident_peer = _ResidentPeer(
                 mesh=peer,

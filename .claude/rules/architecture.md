@@ -197,8 +197,9 @@ read-only; the HelmRelease values carry only the file path (Skuld's
 `forge_mcp.token_file`), never the token, and the Secret is deleted when the
 session stops. The broker uses it for Forge MCP calls and for durable
 presented-file uploads. The
-Volundr chart leaves `session_tokens` off unless workload identity signs with a
-configured key. When adding a NEW Forge route a session broker may call, add it
+Volundr chart turns `session_tokens` and this projection on wherever Forge has a signing key
+(workload identity with `signingKey.existingSecret`, or `forge_mcp.session_tokens.signing_key_file`);
+enabling them without one fails the render. When adding a NEW Forge route a session broker may call, add it
 to the allow-list and give it a `require_scope(...)` naming a `forge:*` scope.
 
 ### Exception: mesh sender attestation (`mesh_peer` certificates)
@@ -249,6 +250,16 @@ never leaves its process.
   replies are fresh within `mesh.attestation.clock_skew_s`, events within
   `mesh.attestation.event_max_age_s`. A replay inside the window repeats what the sender
   really sent, and `message_id` and `event_id` dedup is the inbox's.
+- **An event's certificate is judged at signing time**, so a bus redelivery still verifies;
+  an event can therefore be accepted up to `mesh.attestation.event_max_age_s` after its
+  certificate expired. The bound for a stopped or compromised session is the certificate
+  lifetime plus that age, and the signed stop notice (which only reaches receivers on a
+  networked bus) ends it sooner.
+- **Discovery announcements are signed** by the discovery adapters that share the bus
+  (`event_bus`, `sleipnir`) through the same peer identity (`MeshAttestor`), bound to the peer
+  they describe and ordered per peer. Platform events (`ObservationRelay`) are published by
+  services that hold no mesh certificate and are not signed; keep mesh peers off the platform
+  event subjects with bus permissions.
 - **Fail closed, counted, never silent.** An unverifiable request gets a signed `refused`
   reply naming the reason; an unverifiable event is not handled; an unverifiable reply
   raises. Each counts on `niuu.mesh.attestation.refusals` by reason, direction and claimed

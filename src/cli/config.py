@@ -25,6 +25,7 @@ from pydantic_settings import (
 
 from bifrost.config import BifrostConfig
 from niuu.domain.observability import ObservabilityConfig
+from niuu.mesh.config import MeshAttestationConfig
 from volundr.compute.config import ComputeConfig
 
 DEFAULT_CONFIG_DIR = Path.home() / ".niuu"
@@ -133,6 +134,45 @@ class PodManagerConfig(BaseModel):
         data.pop("adapter", None)
         data.pop("runtime_backend", None)
         return data
+
+
+class MeshConfig(BaseModel):
+    """The mesh of the sessions this machine launches, and whether it proves who sends what.
+
+    ``attestation.required`` is the one decision about mesh signing for everything this
+    machine runs (Forge's residents and revocation notices, and every locally launched
+    session). It is on by default and needs no setup: Forge's own key file signs the
+    certificates. ``required: false`` runs the mesh unauthenticated, which is the
+    operator's choice; Forge and each session log that once at startup, and Forge reports it
+    on ``/health``. The other keys are Skuld's own ``mesh`` settings for local sessions;
+    unset keeps Skuld's default.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool | None = Field(default=None, description="Skuld mesh.enabled for sessions.")
+    transport: str | None = Field(default=None, description="Skuld mesh.transport.")
+    peer_id: str | None = Field(default=None, description="Skuld mesh.peer_id.")
+    realm_id: str | None = Field(default=None, description="Skuld mesh.realm_id.")
+    attestation: MeshAttestationConfig = Field(
+        default_factory=MeshAttestationConfig,
+        description="Proof of who sent each mesh message (see the class docstring).",
+    )
+
+    def session_settings(self) -> dict[str, Any]:
+        """Skuld ``mesh`` settings for local sessions (attestation travels as Forge's decision)."""
+        return {
+            key: getattr(self, key)
+            for key in ("enabled", "transport", "peer_id", "realm_id")
+            if getattr(self, key) is not None
+        }
+
+    def forge_env(self) -> dict[str, str]:
+        """Forge's ``mesh.attestation`` settings, for the fields the operator set."""
+        return {
+            f"MESH__ATTESTATION__{name.upper()}": str(getattr(self.attestation, name)).lower()
+            for name in self.attestation.model_fields_set
+        }
 
 
 class DockerVllmConfig(BaseModel):
@@ -1236,6 +1276,7 @@ class CLISettings(BaseSettings):
     host_auth: AuthConfig = Field(default_factory=AuthConfig)
     guild: GuildConfig = Field(default_factory=GuildConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
+    mesh: MeshConfig = Field(default_factory=MeshConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     remote: RemoteConfig = Field(default_factory=RemoteConfig)
     residents: ResidentsConfig = Field(default_factory=ResidentsConfig)

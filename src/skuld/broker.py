@@ -981,6 +981,7 @@ class Broker(
             adapters_config=list(mesh_cfg.discovery_adapters or mesh_cfg.adapters),
             own_identity=own_identity,
             sleipnir_transport_builder=_sleipnir_transport,
+            attestor=self._mesh_attested.attestor if self._mesh_attested is not None else None,
         )
 
         if self._room_bridge is not None and discovery is not None:

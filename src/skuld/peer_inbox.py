@@ -612,6 +612,18 @@ class PeerInboxMixin:
             error,
         )
 
+    def mesh_attestation_status(self) -> dict[str, Any] | None:
+        """Whether this session's mesh proves who sends what; ``None`` without a mesh.
+
+        ``unauthenticated`` is the operator's decision (``mesh.attestation.required:
+        false``), reported so it is visible, not an error.
+        """
+        settings = getattr(self, "_settings", None)
+        if settings is None or not settings.mesh.enabled:
+            return None
+        required = settings.mesh.attestation.required
+        return {"required": required, "state": "signed" if required else "unauthenticated"}
+
     def peer_message_status(self) -> dict[str, Any]:
         """Per sender/recipient pair counts, for the session status. No cap, only visibility."""
         pairs = [

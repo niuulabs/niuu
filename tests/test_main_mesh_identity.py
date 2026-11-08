@@ -39,7 +39,7 @@ def _tokens(settings: Settings) -> ForgeSessionTokenService | None:
 class TestConfig:
     def test_defaults(self) -> None:
         config = ForgeMcpConfig().mesh_identity
-        assert config.enabled is True and config.ttl_seconds == 900
+        assert config.ttl_seconds == 900
 
     @pytest.mark.parametrize("ttl", [0, 1, -5])
     def test_a_ttl_the_issuer_cannot_use_is_refused(self, ttl: int) -> None:
@@ -47,9 +47,12 @@ class TestConfig:
             ForgeMcpMeshIdentityConfig(ttl_seconds=ttl)
 
     def test_it_is_set_through_forge_mcp(self, tmp_path) -> None:
-        settings = _settings(tmp_path, mesh_identity={"ttl_seconds": 120, "enabled": False})
+        settings = _settings(tmp_path, mesh_identity={"ttl_seconds": 120})
         assert settings.forge_mcp.mesh_identity.ttl_seconds == 120
-        assert settings.forge_mcp.mesh_identity.enabled is False
+
+    def test_the_old_second_switch_is_refused_not_ignored(self, tmp_path) -> None:
+        with pytest.raises(ValidationError, match="enabled"):
+            _settings(tmp_path, mesh_identity={"enabled": False})
 
 
 class TestIssuerComposition:
@@ -83,8 +86,9 @@ class TestIssuerComposition:
         second = _create_mesh_certificate_issuer(settings, _tokens(settings))
         assert first.jwks() == second.jwks()
 
-    def test_disabled_by_config_means_no_mesh_identity(self, tmp_path) -> None:
-        settings = _settings(tmp_path, mesh_identity={"enabled": False})
+    def test_signing_off_means_no_mesh_identity(self, tmp_path) -> None:
+        settings = _settings(tmp_path)
+        settings.mesh.attestation.required = False
         assert _create_mesh_certificate_issuer(settings, _tokens(settings)) is None
 
     def test_no_session_credentials_means_no_mesh_identity(self, tmp_path) -> None:
@@ -102,7 +106,7 @@ class TestIssuerComposition:
         )
         with pytest.raises(
             MeshIdentityUnavailableError,
-            match="cannot sign mesh certificates.*forge_mcp.mesh_identity.enabled: false",
+            match="cannot sign mesh certificates.*mesh.attestation.required: false",
         ):
             _create_mesh_certificate_issuer(settings, tokens)
 

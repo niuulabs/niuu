@@ -12,7 +12,7 @@ wants, the mesh realm it joins); Forge decides everything the certificate says.
 * 403 not the session's own Forge session credential
 * 409 the peer id is held by another live session or resident
 * 422 the public key is not a raw Ed25519 key, or the body is malformed
-* 503 Forge runs without a mesh identity (``forge_mcp.mesh_identity.enabled`` or
+* 503 Forge runs without a mesh identity (``mesh.attestation.required: false`` or
   ``forge_mcp.session_tokens.enabled`` is false)
 """
 

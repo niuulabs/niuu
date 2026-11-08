@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -62,6 +62,7 @@ from niuu.domain.presented_files import (
 )
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.forge_mcp.models import ForgeMcpGrant
+from niuu.mesh.config import MeshAttestationConfig
 from personas.config import PersonaSourceConfig
 from skuld.tool_result_preview import PREVIEW_EDGE_LIMIT, PREVIEW_MAX_EDGE, PREVIEW_MIN_EDGE
 from volundr.compute.config import ComputeConfig
@@ -1802,23 +1803,34 @@ class ForgeMcpSessionTokenConfig(BaseModel):
     )
 
 
+class MeshSettings(BaseModel):
+    """The one decision about proof of who sent a mesh message, for everything Forge runs.
+
+    ``attestation.required`` governs Forge's own signers (residents and the revocation
+    publisher) and the sessions Forge launches: it is applied to the local pod manager's
+    ``mesh`` setting and the Flux pod manager's ``session_defaults.mesh``, and a value
+    set there that disagrees with it is refused at startup. False is the operator's
+    decision to run the mesh unauthenticated: Forge logs that once at startup and reports
+    it on ``/health``.
+    """
+
+    attestation: MeshAttestationConfig = Field(default_factory=MeshAttestationConfig)
+
+
 class ForgeMcpMeshIdentityConfig(BaseModel):
     """The mesh certificate Forge issues to a session's peer (``POST .../mesh-identity``).
 
     A certificate proves to other mesh peers who sent a message (``niuu.mesh.attestation``).
     It is signed with the same key as the ``forge_session`` credentials, so it exists only
     where ``forge_mcp.session_tokens`` is enabled; with that enabled, the mesh identity
-    must come up too, and Forge refuses to start when it cannot. ``enabled: false`` is the
-    operator's decision to run without it: the route answers 503 and no revocation is
-    published.
+    must come up too, and Forge refuses to start when it cannot. Whether the mesh proves
+    its senders at all is the one decision ``mesh.attestation.required``: with it false
+    Forge issues no certificates, signs nothing and publishes no revocations. There is no
+    separate switch here, so the two cannot disagree.
     """
 
-    enabled: bool = Field(
-        default=True,
-        description="Issue mesh certificates to sessions and to Forge-hosted resident peers. "
-        "Only meaningful with forge_mcp.session_tokens.enabled: without session tokens "
-        "there is no mesh identity.",
-    )
+    model_config = ConfigDict(extra="forbid")
+
     ttl_seconds: int = Field(
         default=900,
         ge=2,
@@ -3621,6 +3633,7 @@ class Settings(BaseSettings):
     artifacts: ArtifactsConfig = Field(default_factory=ArtifactsConfig)
     host_identity: HostIdentityConfig = Field(default_factory=HostIdentityConfig)
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
+    mesh: MeshSettings = Field(default_factory=MeshSettings)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
     auth_mode: str = Field(

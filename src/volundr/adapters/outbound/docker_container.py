@@ -25,6 +25,8 @@ import hashlib
 import json
 import logging
 import os
+import shutil
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +37,9 @@ from docker.errors import DockerException, ImageNotFound, NotFound
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
 from volundr.adapters.outbound.local_process import (
+    FORGE_MCP_GRANTS_ENV,
+    FORGE_MCP_TOKEN_ENV,
+    FORGE_MCP_TOKEN_FILE_ENV,
     LocalProcessPodManager,
     ProcessInfo,
     ProcessState,
@@ -65,6 +70,11 @@ DEFAULT_READY_PROBE_TIMEOUT_SECONDS = 2.0
 MANAGED_BY = "docker_container"
 LABEL_SESSION = "niuu.session-id"
 LABEL_MANAGED_BY = "niuu.managed-by"
+#: Where the session's Forge credential is mounted (read-only) inside its container.
+FORGE_SESSION_SANDBOX_DIR = "/run/secrets/niuu-forge-session"
+FORGE_SESSION_TOKEN_FILENAME = "token"
+_PRIVATE_FILE_MODE = 0o600
+_PRIVATE_DIR_MODE = 0o700
 
 
 class _NetworkRegistry:
@@ -321,6 +331,72 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
     def _session_home_dir(self, session_id: str) -> Path:
         return self._workspaces_dir / f"{session_id}.home"
 
+    def _session_forge_dir(self, session_id: str) -> Path:
+        return self._workspaces_dir / f"{session_id}.forge-session"
+
+    @staticmethod
+    def _apply_forge_session_env_file(env: dict[str, str], spec: SessionSpec) -> None:
+        """Name the session credential's file (never the token) in the broker env.
+
+        A container's environment is stored in its config and printed by
+        ``docker inspect``, unlike a local process's, so the token itself is mounted
+        as a read-only file (see ``_write_forge_session_token``) and only its path
+        and grants are env. Neither the platform's own env nor the launch spec may
+        supply (or keep) a credential this launch did not mint.
+        """
+        env.pop(FORGE_MCP_TOKEN_ENV, None)
+        env.pop(FORGE_MCP_GRANTS_ENV, None)
+        env.pop(FORGE_MCP_TOKEN_FILE_ENV, None)
+        credential = spec.forge_session
+        if credential is None:
+            return
+        env[FORGE_MCP_TOKEN_FILE_ENV] = (
+            f"{FORGE_SESSION_SANDBOX_DIR}/{FORGE_SESSION_TOKEN_FILENAME}"
+        )
+        env[FORGE_MCP_GRANTS_ENV] = ",".join(grant.value for grant in credential.grants)
+
+    def _remove_forge_session_dir(self, session_id: str) -> None:
+        try:
+            shutil.rmtree(self._session_forge_dir(session_id))
+        except FileNotFoundError:
+            return
+
+    def _write_forge_session_token(
+        self, session_id: str, spec: SessionSpec
+    ) -> dict[str, dict[str, str]]:
+        """Write this launch's credential (0600, in a 0700 directory) and return its bind.
+
+        The directory is rewritten on every start, so a restarted session never sees
+        the previous launch's token, and is removed when the container is. The file is
+        read by the broker's user, which is Forge's own only when ``run_as_host_user``
+        is on: with any other user a 0600 file would be unreadable, so that is refused
+        rather than loosening the mode.
+        """
+        directory = self._session_forge_dir(session_id)
+        credential = spec.forge_session
+        if credential is None:
+            self._remove_forge_session_dir(session_id)
+            return {}
+        if not self._run_as_host_user:
+            raise ValueError(
+                "A Forge session credential is minted for this session, but "
+                "run_as_host_user is off, so the container's user cannot read a private "
+                "token file; set run_as_host_user: true on the docker pod manager, or set "
+                "forge_mcp.session_tokens.enabled: false"
+            )
+        directory.mkdir(mode=_PRIVATE_DIR_MODE, parents=True, exist_ok=True)
+        directory.chmod(_PRIVATE_DIR_MODE)
+        fd, temp_name = tempfile.mkstemp(prefix=".token-", dir=directory)
+        try:
+            os.fchmod(fd, _PRIVATE_FILE_MODE)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(credential.token)
+            os.replace(temp_name, directory / FORGE_SESSION_TOKEN_FILENAME)
+        except BaseException:
+            Path(temp_name).unlink(missing_ok=True)
+            raise
+        return {str(directory): {"bind": FORGE_SESSION_SANDBOX_DIR, "mode": "ro"}}
+
     def _container_environment(
         self,
         session: Session,
@@ -358,6 +434,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         env["SKULD__PERSISTENCE_MOUNT_PATH"] = self._sandbox_home
         env["SKULD__PERSISTENT_HOME_PATH"] = self._sandbox_home
         env["SKULD__VOLUNDR_API_URL"] = self._platform_url
+        self._apply_forge_session_env_file(env, spec)
 
         session_vals = spec.values.get("session", {})
         if isinstance(session_vals, dict):
@@ -431,6 +508,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
             str(home_dir): {"bind": self._sandbox_home, "mode": "rw"},
         }
         volumes.update(self._host_path_binds(spec))
+        volumes.update(self._write_forge_session_token(session_id, spec))
         kwargs: dict[str, Any] = {
             "image": self._skuld_image,
             "name": self.container_name(session_id),
@@ -539,6 +617,13 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
             return
         self._alive[session_id] = False
         self._ready.discard(session_id)
+        try:
+            await self._stop_container(session_id)
+        finally:
+            # The launch's credential is dead once the session stops; do not leave it behind.
+            await asyncio.to_thread(self._remove_forge_session_dir, session_id)
+
+    async def _stop_container(self, session_id: str) -> None:
         container = await asyncio.to_thread(self._get_container, session_id)
         if container is None:
             return

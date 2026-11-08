@@ -114,8 +114,8 @@ verify others arrive in the same answer, so there is no per-message call to Forg
   `skuld.peer.messages{outcome="refused"}`; the session status `peer_messages.unverified`
   carries the counts.
 - **A session that cannot get a certificate does not start its mesh.** The error names the
-  fix: enable `forge_mcp.session_tokens` on the Forge that launches it (and, for
-  Kubernetes and Flux sessions, `forge_mcp.session_tokens.projection_adapter`), set
+  fix: give the Forge that launches it a signing key so that `forge_mcp.session_tokens`
+  is on (the Volundr chart then also sets up the Kubernetes and Flux delivery), set
   `volundr_api_url`, or set `mesh.attestation.required: false` to run the mesh
   unauthenticated, which is the operator's explicit choice.
 
@@ -133,6 +133,65 @@ verify others arrive in the same answer, so there is no per-message call to Forg
 | `not_authority` | Something other than Forge tried to revoke a session. |
 | `trust_unavailable` | This peer holds no usable Forge keys. |
 
+**Turning signing off.** It is one decision, `mesh.attestation.required`, and it is **on by
+default in every shape**, mini mode included (Forge's own key file signs the certificates, so
+it needs no setup). Turning it off is the operator's choice; it is not an error, but it is
+logged once at startup by every component and reported:
+
+| Where | How to turn it off | Where it shows |
+|---|---|---|
+| Mini mode (`niuu platform up`) | `mesh: {attestation: {required: false}}` in `~/.niuu/config.yaml` (`NIUU_MESH__ATTESTATION__REQUIRED=false` also works). The same section carries the local sessions' mesh settings: `enabled`, `transport`, `peer_id`, `realm_id`. It reaches Forge's own signers and every locally launched session's Skuld settings from this one value | Forge logs once at startup; `GET /health` shows `mesh_attestation: {required: false, state: "unauthenticated"}`; each session logs once and reports `mesh_attestation` in its activity metadata |
+| Forge in a cluster | Volundr chart `mesh.attestation.required: false` (Forge setting `mesh.attestation.required`). Forge carries it into the sessions it launches through the local and Flux pod managers (`session_defaults.mesh`); a different value set there fails startup | same |
+| A Skuld by itself | Skuld chart `mesh.attestation.required: false` (setting `mesh.attestation.required`) | the session log and activity metadata |
+
+What it means when off: nothing on the mesh proves its sender. Any peer on the bus can claim to
+be any session, send in its name, forge its replies and announcements, and publish events as
+it; Forge issues no certificates, signs no resident traffic and publishes no revocation
+notices. Peers with signing on refuse everything an unsigned peer sends, so **turn it off
+for the whole deployment, not for one component**. A pod manager with no place for Skuld's
+mesh settings (the VM, OpenShell, Docker and direct Kubernetes managers) cannot be given the
+decision by Forge: Forge names it in a warning at startup, and its sessions need
+`SKULD__MESH__ATTESTATION__REQUIRED=false` by their own configuration.
+
+**How long a stopped session is still believed.** Plan for the longest of these, not the
+shortest:
+
+- *Requests and replies* (`peer_message`, `peer_state`, ...): a certificate is checked when the
+  message arrives and the message must be signed within `mesh.attestation.clock_skew_s`, so a
+  stolen key works for at most the certificate lifetime plus that skew.
+- *Published events:* an event's certificate is judged at the time **the sender signed it**, so
+  that an event redelivered by the bus still verifies. A stolen key can therefore sign an event
+  with a back-dated time and have it accepted up to `mesh.attestation.event_max_age_s` (default
+  1 h) **after the certificate expired**. The bound for an event is the certificate lifetime
+  plus `event_max_age_s`.
+- *The signed "session stopped" notice* ends all of this at once for every receiver that gets
+  it. It travels on the mesh bus. The default bus (`InProcessBus`, `sleipnir.adapter` in the
+  charts) delivers only inside one process, so on it a stopped session's notice reaches no
+  other pod, and the bounds above are the whole story. A networked bus (NATS, RabbitMQ) delivers
+  it to every pod, as long as the receiver is connected when it is sent; a receiver that was
+  offline then relies on the bounds above. Lower `forge_mcp.mesh_identity.ttl_seconds` and
+  `mesh.attestation.event_max_age_s` to tighten them; the second must stay above the bus's
+  redelivery window.
+
+**Discovery announcements are signed too.** Peers choose whom to ask from the peer table
+(role, description, topics, activity), so an announcement carries the same proof: a forged one
+does not add or change a peer, and a forged `leave` does not remove one. The peer an
+announcement describes must be the peer that signed it, and an announcement older than one
+already accepted from that peer is refused, so a captured `leave` cannot be replayed after a
+newer heartbeat. This covers the discovery adapters that share the mesh bus (`event_bus`,
+`sleipnir`). `static` (configuration) and `k8s` (the cluster's own API) do not ride the bus;
+`mdns` proves membership with the realm key's handshake.
+
+**Platform events are not mesh messages.** The resident's `ObservationRelay` forwards
+events that Forge, Ting and Mímir publish on the bus (a plan was approved, a gate opened). Those
+publishers are services, not mesh peers: they hold no mesh certificate, and Forge issues
+certificates only to sessions and residents. These events are therefore not signed, and
+anyone allowed to publish on the bus can forge one. The relay ignores everything under the mesh
+prefix (`ravn.mesh.`), so a mesh peer cannot pass itself off as a platform service through the
+mesh. The control that closes the rest is on the bus itself: let sessions publish only under
+`ravn.mesh.*` (NATS subject permissions, a RabbitMQ user per session), which is an extra layer
+this platform does not set up for you.
+
 **Where the session credential reaches the session** (it is what the certificate request
 uses; a session without one cannot start its mesh unless attestation is off):
 
@@ -140,8 +199,9 @@ uses; a session without one cannot start its mesh unless attestation is off):
 |---|---|
 | Local process, OpenShell sandbox | delivered (environment variable, file) |
 | VM slots and registered hosts | delivered when `compute.credential_delivery` is configured |
-| Kubernetes and Flux session pods | delivered only with `forge_mcp.session_tokens.projection_adapter` (`sessionCredentialProjection.enabled` in the Volundr chart); not on by default |
-| Docker container pod manager, direct Kubernetes pod manager | **not delivered**: sessions there cannot start a mesh with attestation on until that is fixed |
+| Kubernetes and Flux session pods | delivered through a per-session Secret. The Volundr chart turns this on by itself wherever Forge has a signing key (workload identity with `signingKey.existingSecret`, or `forge_mcp.session_tokens.signing_key_file`); without a key, session credentials stay off and a session's mesh will not start |
+| Docker container pod manager | delivered as a read-only 0600 file mount (needs `run_as_host_user`; a launch that cannot read it is refused with the remedy) |
+| Direct Kubernetes pod manager | delivered through the per-session Secret; `volundr_api_url` must be set (the launch is refused with the remedy otherwise) |
 
 ## Address by name
 

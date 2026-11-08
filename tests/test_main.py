@@ -752,6 +752,7 @@ class TestLifespan:
             patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
             patch("volundr.main.database_pool", _mock_db_pool),
             patch("volundr.main.import_class", side_effect=selective_import),
+            patch("volundr.composition_builders.import_class", side_effect=selective_import),
             patch("volundr.main._seed_configured_integrations", seed_integrations),
             patch("volundr.main._seed_linear_integration", seed_linear),
             patch("volundr.main._has_seeded_linear_integration", return_value=False),
@@ -818,6 +819,7 @@ class TestLifespan:
             patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
             patch("volundr.main.database_pool", _mock_db_pool),
             patch("volundr.main.import_class", side_effect=selective_import),
+            patch("volundr.composition_builders.import_class", side_effect=selective_import),
             patch("volundr.main.AuditSubscriber", return_value=subscriber),
             patch(
                 "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",

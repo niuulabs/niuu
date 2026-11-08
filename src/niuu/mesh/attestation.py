@@ -76,6 +76,7 @@ PURPOSE_RPC = "rpc"
 PURPOSE_RPC_REPLY = "rpc_reply"
 PURPOSE_EVENT = "event"
 PURPOSE_REVOCATION = "revocation"
+PURPOSE_ANNOUNCE = "announce"
 
 COUNTER_REFUSALS = "niuu.mesh.attestation.refusals"
 COUNTER_REVOCATIONS = "niuu.mesh.attestation.revocations"
@@ -691,6 +692,7 @@ __all__ = [
     "KIND_RESIDENT",
     "KIND_SESSION",
     "MESH_AUDIENCE",
+    "PURPOSE_ANNOUNCE",
     "PURPOSE_EVENT",
     "PURPOSE_RPC",
     "PURPOSE_RPC_REPLY",

@@ -100,6 +100,62 @@ Namespace of the session pods that receive their Forge credential from a Secret
 {{- end }}
 
 {{/*
+Which signing key Forge's session credentials use, empty when it has none it can keep.
+The workload-identity key is the one Envoy validates; otherwise Forge needs its own key
+file (forgeMcp.session_tokens.signing_key_file) on a persistent volume the operator
+mounts, because the root filesystem is read-only and a key lost with the pod would
+invalidate every running broker's credential and certificate.
+*/}}
+{{- define "volundr.sessionTokenKey" -}}
+{{- $tokens := get (.Values.forgeMcp | default dict) "session_tokens" | default dict -}}
+{{- if and .Values.workloadIdentity.enabled .Values.workloadIdentity.signingKey.existingSecret -}}
+workload-identity
+{{- else if get $tokens "signing_key_file" -}}
+key-file
+{{- end -}}
+{{- end }}
+
+{{/*
+"true" when Forge mints a scoped credential for each session launch
+(forge_mcp.session_tokens.enabled): forgeMcp.session_tokens.enabled when set,
+otherwise on exactly where a signing key is configured (see volundr.sessionTokenKey).
+*/}}
+{{- define "volundr.sessionTokensEnabled" -}}
+{{- $tokens := get (.Values.forgeMcp | default dict) "session_tokens" | default dict -}}
+{{- if hasKey $tokens "enabled" -}}
+{{- if $tokens.enabled -}}true{{- end -}}
+{{- else if include "volundr.sessionTokenKey" . -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Pod managers whose session pods get their Forge credential from a mounted Secret
+(sessionCredentialProjection); every other pod manager either hands it to the broker
+itself (delivers_forge_session_token) or has no session pod to mount it into.
+*/}}
+{{- define "volundr.projectionPodManagers" -}}
+volundr.adapters.outbound.flux.FluxPodManager
+volundr.adapters.outbound.direct_k8s_pod_manager.DirectK8sPodManager
+{{- end }}
+
+{{/*
+"true" when each session's Forge credential is projected into its pod as a Secret:
+sessionCredentialProjection.enabled when set, otherwise on wherever session credentials
+are on and the pod manager needs the projection.
+*/}}
+{{- define "volundr.sessionCredentialProjectionEnabled" -}}
+{{- $enabled := .Values.sessionCredentialProjection.enabled -}}
+{{- if kindIs "invalid" $enabled -}}
+{{- if and (include "volundr.sessionTokensEnabled" .) (has (include "volundr.podManagerAdapter" .) (splitList "\n" (include "volundr.projectionPodManagers" .))) -}}
+true
+{{- end -}}
+{{- else if $enabled -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
 Namespace of the ServiceAccounts VM sessions run as (Forge requests their tokens there)
 */}}
 {{- define "volundr.guestMetadataNamespace" -}}

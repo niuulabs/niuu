@@ -185,6 +185,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_secret_injection_adapter,
     _create_workflow_execution_credential_service,
     _runtime_backend,
+    _start_sleipnir_bus,
     _validate_remote_room_role_config,
     create_oauth_client_registry,
     create_presented_file_store,
@@ -964,39 +965,35 @@ def create_app(
             git_registry = create_git_registry(settings.git)
 
             # Sleipnir integration (optional — enabled via sleipnir.enabled config)
-            sleipnir_bus = None
-            if settings.sleipnir.enabled:
-                try:
-                    sl_cls = import_class(settings.sleipnir.adapter)
-                    sleipnir_kwargs = resolve_secret_kwargs(
-                        settings.sleipnir.kwargs,
-                        settings.sleipnir.secret_kwargs_env,
-                    )
-                    sleipnir_bus = sl_cls(**sleipnir_kwargs)
-                    if hasattr(sleipnir_bus, "start"):
-                        await sleipnir_bus.start()
-                    logger.info(
-                        "Sleipnir integration enabled: adapter=%s",
-                        settings.sleipnir.adapter.rsplit(".", 1)[-1],
-                    )
-                except Exception:
-                    logger.exception("Failed to initialise Sleipnir integration")
-                    sleipnir_bus = None
+            sleipnir_bus = await _start_sleipnir_bus(settings)
 
             # Mesh identity: certificates for session peers and Forge-hosted residents,
             # signed with the session-credential key. Revocations ride the Sleipnir bus;
             # without one the certificate lifetime is the only bound.
+            mesh_signing = settings.mesh.attestation.required
+            app.state.mesh_signing = mesh_signing
+            if not mesh_signing:
+                logger.warning(
+                    "mesh.attestation.required is false: the mesh runs unauthenticated. Forge's "
+                    "resident peers and revocation notices are not signed, and the sessions this "
+                    "Forge launches accept any claimed sender on the mesh. This is an operator "
+                    "decision; set mesh.attestation.required: true to prove who sends what"
+                )
             mesh_certificate_issuer = _create_mesh_certificate_issuer(
                 settings, forge_session_tokens
             )
             mesh_peer_claims = PostgresMeshPeerClaims(pool)
             mesh_revocation_publisher = None
-            if mesh_certificate_issuer is not None and sleipnir_bus is not None:
+            if mesh_certificate_issuer is not None and sleipnir_bus is not None and mesh_signing:
                 mesh_revocation_publisher = await _create_mesh_revocation_publisher(
-                    settings, mesh_certificate_issuer, mesh_peer_claims, sleipnir_bus
+                    settings,
+                    mesh_certificate_issuer,
+                    mesh_peer_claims,
+                    sleipnir_bus,
+                    settings.mesh.attestation,
                 )
-            elif mesh_certificate_issuer is not None:
-                logger.info(
+            elif mesh_certificate_issuer is not None and mesh_signing:
+                logger.warning(
                     "Mesh revocations are not published: Forge has no Sleipnir bus "
                     "(sleipnir.enabled); a stopped session's certificate lasts until it "
                     "expires (forge_mcp.mesh_identity.ttl_seconds)"
@@ -1340,9 +1337,10 @@ def create_app(
                     persona_provider=session_persona_provider,
                     mesh_certificates=(
                         ResidentMeshCertificates(mesh_certificate_issuer, mesh_peer_claims)
-                        if mesh_certificate_issuer is not None
+                        if mesh_certificate_issuer is not None and mesh_signing
                         else None
                     ),
+                    attestation=settings.mesh.attestation,
                 )
                 if sleipnir_bus is not None
                 else None
@@ -2568,6 +2566,12 @@ def create_app(
     async def health_check() -> dict[str, Any]:
         """Health check endpoint, with presented-file usage when the store is on."""
         health: dict[str, Any] = {"status": "healthy"}
+        signing = getattr(app.state, "mesh_signing", None)
+        if signing is not None:
+            health["mesh_attestation"] = {
+                "required": signing,
+                "state": "signed" if signing else "unauthenticated",
+            }
         quota = getattr(app.state, "presented_file_quota", None)
         store = getattr(app.state, "presented_file_store", None)
         if quota is not None and store is not None:

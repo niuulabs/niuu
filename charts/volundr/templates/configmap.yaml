@@ -151,22 +151,31 @@ data:
       secret_kwargs_env: {}
       {{- end }}
     {{- /*
-    Forge session credentials need a signing key. The pod's root filesystem is
-    read-only, so the local key-file issuer cannot work here: unless forgeMcp sets
-    session_tokens.enabled explicitly, they are on only when workload identity
-    signs with a configured key. Volundr refuses to start when they are enabled
-    without a usable key.
+    Forge session credentials (forge_session) are what a session broker needs to ask
+    Forge for its mesh certificate, so they are on wherever Forge has a signing key
+    (volundr.sessionTokenKey): the workload-identity key, or a key file the operator
+    set on a persistent volume. The pod's root filesystem is read-only, so Forge's
+    default key file cannot be created here, and a key kept only in the pod would be
+    lost with it: enabling credentials without a key is refused at render time rather
+    than at Forge's startup. forgeMcp.session_tokens.enabled: false turns them off.
     */}}
     {{- $forgeMcp := deepCopy (.Values.forgeMcp | default dict) }}
     {{- $sessionTokens := get $forgeMcp "session_tokens" | default dict }}
+    {{- $tokensOn := include "volundr.sessionTokensEnabled" . }}
     {{- if not (hasKey $sessionTokens "enabled") }}
-    {{- $workloadSigns := false }}
-    {{- if and .Values.workloadIdentity.enabled .Values.workloadIdentity.signingKey.existingSecret }}
-    {{- $workloadSigns = true }}
+    {{- $_ := set $sessionTokens "enabled" (not (empty $tokensOn)) }}
     {{- end }}
-    {{- $_ := set $sessionTokens "enabled" $workloadSigns }}
+    {{- if and $tokensOn (not (include "volundr.sessionTokenKey" .)) }}
+    {{- fail "forgeMcp.session_tokens.enabled needs a signing key Forge can keep: enable workloadIdentity with signingKey.existingSecret (Forge signs with it), or set forgeMcp.session_tokens.signing_key_file to a path on a persistent volume you mount into the Forge pod (extraVolumes and extraVolumeMounts; the root filesystem is read-only). Or set forgeMcp.session_tokens.enabled: false to run sessions without a Forge credential" }}
     {{- end }}
-    {{- if .Values.sessionCredentialProjection.enabled }}
+    {{- $meshIdentity := get $forgeMcp "mesh_identity" | default dict }}
+    {{- if hasKey $meshIdentity "enabled" }}
+    {{- fail "forgeMcp.mesh_identity.enabled was removed: whether the mesh proves who sends what is the one decision mesh.attestation.required (false runs it unauthenticated)" }}
+    {{- end }}
+    {{- if include "volundr.sessionCredentialProjectionEnabled" . }}
+    {{- if not $tokensOn }}
+    {{- fail "sessionCredentialProjection.enabled has no credential to project: session credentials are off. Enable workloadIdentity with signingKey.existingSecret or set forgeMcp.session_tokens.signing_key_file, or set sessionCredentialProjection.enabled: false" }}
+    {{- end }}
     {{- if not (get $sessionTokens "projection_adapter") }}
     {{- $_ := set $sessionTokens "projection_adapter" "volundr.adapters.outbound.execution_credential_k8s.KubernetesExecutionCredentialProjection" }}
     {{- $_ := set $sessionTokens "projection_kwargs" (dict "namespace" (include "volundr.sessionCredentialNamespace" .) "mount_path" .Values.sessionCredentialProjection.mountPath "secret_prefix" "forge-session" "volume_prefix" "forge-session" "purpose" "forge-session-credential") }}
@@ -179,19 +188,32 @@ data:
     {{- if and (eq .Values.presentedFiles.persistence.accessMode "ReadWriteOnce") (not .Values.rollout.colocate) }}
     {{- fail "presentedFiles.persistence.accessMode ReadWriteOnce mounts on one node only: keep rollout.colocate true (every Forge pod on one node) or use ReadWriteMany" }}
     {{- end }}
-    {{- if not $sessionTokens.enabled }}
-    {{- fail "presentedFiles.enabled needs Forge session credentials (brokers upload with them): enable workloadIdentity with signingKey.existingSecret, or set forgeMcp.session_tokens.enabled" }}
+    {{- if not $tokensOn }}
+    {{- fail "presentedFiles.enabled needs Forge session credentials (brokers upload with them): enable workloadIdentity with signingKey.existingSecret, or set forgeMcp.session_tokens.signing_key_file" }}
     {{- end }}
     {{- /* These pod managers hand the broker its credential themselves
     (delivers_forge_session_token); every other one needs the projection. */}}
     {{- $selfDelivering := list "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager" "volundr.adapters.outbound.local_process.LocalProcessPodManager" }}
     {{- if and (not (get $sessionTokens "projection_adapter")) (not (has (include "volundr.podManagerAdapter" .) $selfDelivering)) }}
-    {{- fail "presentedFiles.enabled needs sessionCredentialProjection.enabled: session pods must hold their Forge credential to upload presented files" }}
+    {{- fail "presentedFiles.enabled needs session pods to hold their Forge credential to upload presented files: remove sessionCredentialProjection.enabled: false (the projection is on wherever session credentials are, for the Flux and Kubernetes pod managers)" }}
     {{- end }}
     {{- end }}
     {{- $_ := set $forgeMcp "session_tokens" $sessionTokens }}
 
     forge_mcp: {{ toJson $forgeMcp }}
+    {{- $attestation := dict }}
+    {{- range $key, $value := ((.Values.mesh | default dict).attestation | default dict) }}
+    {{- if not (kindIs "invalid" $value) }}
+    {{- $_ := set $attestation $key $value }}
+    {{- end }}
+    {{- end }}
+    {{- if $attestation }}
+
+    # One decision about proof of who sent each mesh message, for Forge's own signers and
+    # the sessions it launches. Needs no setting: signing is on by default.
+    mesh:
+      attestation: {{ toJson $attestation }}
+    {{- end }}
 
     {{- if .Values.computeHosts.enabled }}
     {{- if .Values.compute }}

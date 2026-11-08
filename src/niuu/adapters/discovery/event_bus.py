@@ -18,6 +18,8 @@ class EventBusDiscoveryAdapter:
     """Discover flock peers using whichever transport backs Sleipnir."""
 
     requires_sleipnir_transport = True
+    #: ``build_discovery_adapters`` passes ``attestor`` to adapters that set this.
+    signs_announcements = True
 
     def __init__(
         self,
@@ -28,7 +30,9 @@ class EventBusDiscoveryAdapter:
         heartbeat_interval_s: float = 30.0,
         peer_ttl_s: float = 90.0,
         manage_transport_lifecycle: bool = True,
+        attestor: Any | None = None,
     ) -> None:
+        self._attestor = attestor
         self._identity = own_identity
         self._publisher = publisher
         self._subscriber = subscriber
@@ -131,16 +135,19 @@ class EventBusDiscoveryAdapter:
             )
         }
         busy = bool(getattr(self._identity, "busy", False))
+        announcement: dict[str, Any] = {
+            "identity": identity,
+            "action": action,
+            "status": "busy" if busy else "idle",
+            "task_count": 0,
+        }
+        if self._attestor is not None:
+            announcement = self._attestor.sign(announcement)
         await self._publisher.publish(
             SleipnirEvent(
                 event_type=self._announce_event_type,
                 source=f"ravn:{self._identity.peer_id}",
-                payload={
-                    "identity": identity,
-                    "action": action,
-                    "status": "busy" if busy else "idle",
-                    "task_count": 0,
-                },
+                payload=announcement,
                 summary=f"Flock peer {action}: {self._identity.peer_id}",
                 domain="code",
                 urgency=0.3,
@@ -155,6 +162,10 @@ class EventBusDiscoveryAdapter:
             return
         peer_id = str(identity.get("peer_id") or "")
         if not peer_id or peer_id == self._identity.peer_id:
+            return
+        if self._attestor is not None and not self._attestor.accept(payload):
+            # Refused, counted and logged by the attestor: an announcement nobody can
+            # vouch for neither adds, updates nor removes a peer.
             return
         if str(identity.get("realm_id") or "") != self._identity.realm_id:
             return

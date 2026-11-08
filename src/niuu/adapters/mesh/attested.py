@@ -32,6 +32,7 @@ from typing import Any
 
 from niuu.mesh.attestation import (
     COUNTER_REFUSALS,
+    PURPOSE_ANNOUNCE,
     PURPOSE_EVENT,
     PURPOSE_RPC,
     PURPOSE_RPC_REPLY,
@@ -57,6 +58,7 @@ DIRECTION_REQUEST = "request"
 DIRECTION_REPLY = "reply"
 DIRECTION_EVENT = "event"
 DIRECTION_REVOCATION = "revocation"
+DIRECTION_ANNOUNCEMENT = "announcement"
 
 #: Called for every refusal: ``(error, direction, topic_or_type)``.
 RefusalListener = Callable[[AttestationRefusedError, str, str], None]
@@ -188,6 +190,57 @@ def _bind_envelope_reply(raw: Any, sender: VerifiedSender, *, relayed: bool) -> 
     )
 
 
+class MeshAttestor:
+    """Signs and verifies what rides the bus beside the mesh: discovery announcements.
+
+    A peer table decides whom agents ask, so a forged announcement steers questions and a
+    forged ``leave`` silences a real peer. An announcement is signed like any mesh message,
+    and one is accepted only if its certificate checks out, the peer it announces is the
+    one that signed it, and it is not older than the last one accepted from that peer (a
+    captured ``leave`` cannot be replayed after a newer heartbeat).
+    """
+
+    def __init__(
+        self,
+        signer: MeshSigner,
+        verifier: MeshAttestationVerifier,
+        refuse: Callable[[AttestationRefusedError, str, str], None],
+    ) -> None:
+        self._signer = signer
+        self._verifier = verifier
+        self._refuse = refuse
+        self._last_signed: dict[str, int] = {}
+
+    def sign(self, announcement: Mapping[str, Any]) -> dict[str, Any]:
+        """The announcement with its attestation attached."""
+        return {**announcement, "attestation": self._signer.attest(PURPOSE_ANNOUNCE, announcement)}
+
+    def accept(self, announcement: Mapping[str, Any]) -> bool:
+        """Whether *announcement* is genuine; a refusal is logged, counted and returns False."""
+        body = {key: value for key, value in announcement.items() if key != "attestation"}
+        identity = body.get("identity")
+        claimed = str(identity.get("peer_id") or "") if isinstance(identity, Mapping) else ""
+        try:
+            sender = self._verifier.verify(
+                announcement.get("attestation"), PURPOSE_ANNOUNCE, body, claimed=claimed
+            )
+            if sender.peer_id != claimed:
+                raise _mismatch(
+                    f"announcement for {claimed!r} is signed by {sender.peer_id!r}", claimed
+                )
+            if sender.signed_at_ms < self._last_signed.get(sender.peer_id, 0):
+                raise AttestationRefusedError(
+                    AttestationReason.STALE,
+                    f"announcement from {sender.peer_id!r} is older than one already accepted",
+                    claimed=claimed,
+                )
+        except AttestationRefusedError as error:
+            self._refuse(error, DIRECTION_ANNOUNCEMENT, claimed or "announce")
+            return False
+        self._last_signed[sender.peer_id] = sender.signed_at_ms
+        return True
+
+
 class AttestedMesh:
     """A MeshPort that signs what it sends and verifies what it receives."""
 
@@ -208,6 +261,7 @@ class AttestedMesh:
         self._event_max_age_ms = int(event_max_age_s * 1000)
         self._on_refusal = on_refusal
         self._revocation_subscribed = False
+        self._attestor = MeshAttestor(signer, verifier, self._refused)
 
     def __getattr__(self, name: str) -> Any:
         # Everything that is not part of the signed surface (``subscriber``, ...) is the
@@ -217,6 +271,11 @@ class AttestedMesh:
     @property
     def inner(self) -> Any:
         return self._inner
+
+    @property
+    def attestor(self) -> MeshAttestor:
+        """Signs and verifies discovery announcements with this peer's identity."""
+        return self._attestor
 
     @property
     def signer(self) -> MeshSigner:
@@ -258,9 +317,7 @@ class AttestedMesh:
 
     async def publish(self, event: MeshEvent, topic: str) -> None:
         subject = event_subject(event, topic)
-        attestation = self._signer.attest(
-            PURPOSE_EVENT, subject, extra={"topic": subject["topic"]}
-        )
+        attestation = self._signer.attest(PURPOSE_EVENT, subject, extra={"topic": subject["topic"]})
         await self._inner.publish(replace(event, attestation=attestation), topic)
 
     async def subscribe(self, topic: str, handler: Callable[[MeshEvent], Awaitable[None]]) -> None:
@@ -495,6 +552,7 @@ class VerifiedSleipnirSubscriber:
 __all__ = [
     "REVOCATION_TOPIC",
     "AttestedMesh",
+    "MeshAttestor",
     "VerifiedSleipnirSubscriber",
     "bind_event",
     "bind_rpc",

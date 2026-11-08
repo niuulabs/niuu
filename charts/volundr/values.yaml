@@ -655,10 +655,11 @@ artifacts: {}
 # in Forge's database, so any number of replicas (and a rolling update's two pods)
 # share one quota. Session brokers upload with their session credential, so enabling
 # this also needs session credentials delivered to session pods
-# (`sessionCredentialProjection`, unless the pod manager delivers it itself as
-# OpenShell does, and forgeMcp session_tokens on: the default when
-# workloadIdentity signs with signingKey.existingSecret). The chart refuses to render
-# without them. See docs/operator/artifact-publications.md ("Presented files on a
+# (`sessionCredentialProjection`, which is on wherever session credentials are, unless
+# the pod manager delivers it itself as OpenShell does; session credentials are on
+# wherever Forge has a signing key: workloadIdentity with signingKey.existingSecret,
+# or forgeMcp.session_tokens.signing_key_file). The chart refuses to render without
+# them. See docs/operator/artifact-publications.md ("Presented files on a
 # cluster").
 presentedFiles:
   # -- Keep Forge's own copy of every presented file
@@ -695,9 +696,17 @@ presentedFiles:
 # HelmRelease values; the token never does. Renders
 # forge_mcp.session_tokens.projection_adapter (KubernetesExecutionCredentialProjection)
 # and a Role granting Forge Secret get/create/patch/delete in that namespace only.
+# Session pods need it to ask Forge for their mesh certificate, so it is on wherever
+# Forge mints session credentials (see forgeMcp below) and its pod manager is Flux or
+# DirectK8s; the OpenShell and local-process pod managers deliver the credential
+# themselves and need none.
 sessionCredentialProjection:
-  # -- Mount each session's Forge credential into its pod (needed by presentedFiles)
-  enabled: false
+  # -- null follows session credentials (on where they are, for the Flux and DirectK8s
+  # pod managers). false runs session pods without a Forge credential, so a session
+  # whose mesh needs a certificate cannot start; true forces it for any pod manager
+  # (and the chart refuses it while session credentials are off). The presented-files
+  # store needs it.
+  enabled: null
   # -- Namespace of the session pods (empty: podManager.kwargs.namespace)
   namespace: ""
   # -- Where the credential directory is mounted in the session pod
@@ -775,26 +784,53 @@ push:
 # Forge MCP session credentials and the Forge-hosted MCP endpoint. Rendered verbatim
 # as config.yaml's `forge_mcp:` section (snake_case keys; see ForgeMcpConfig). Empty
 # keeps the defaults (no default grants, HTTP endpoint on with no browser origins),
-# except session_tokens.enabled: unless set here it is true only when
-# workloadIdentity is enabled with signingKey.existingSecret, because the read-only
-# root filesystem rules out the local key file and Volundr refuses to start with
-# session credentials enabled but no usable key. The local process pod manager
-# delivers session credentials itself; Flux and Kubernetes session pods get them
-# through `sessionCredentialProjection`. See docs/operator/forge-mcp.md. Example:
+# except session_tokens.enabled: unless set here it is true wherever Forge has a
+# signing key it can keep: workloadIdentity enabled with signingKey.existingSecret, or
+# session_tokens.signing_key_file set to a path on a persistent volume you mount
+# (extraVolumes, extraVolumeMounts). Forge's default key file is under the home
+# directory, which the read-only root filesystem rules out, and a key kept only in the
+# pod would be lost with it and invalidate every running session's credential. Without
+# a key they stay off by default, and `session_tokens.enabled: true` without one fails
+# the render. `session_tokens.enabled: false` turns them off wherever a key exists
+# (sessions then have no Forge credential, so no mesh certificate). The local process
+# pod manager delivers session credentials itself; Flux and Kubernetes session pods
+# get them through `sessionCredentialProjection`, which follows. See
+# docs/operator/forge-mcp.md. Example:
 #   forgeMcp:
 #     default_grants: []
 #     role_grants: {coordinator: [lifecycle, message], worker: [message]}   # the default; {} for none
 #     session_tokens: {ttl_seconds: 604800}
-#     mesh_identity: {enabled: true, ttl_seconds: 900}   # the default; see below
+#     mesh_identity: {ttl_seconds: 900}   # the default; see below
 #     http: {allowed_origins: ["https://forge.example.com"]}
 # `mesh_identity` is the certificate Forge issues to a session's mesh peer
 # (POST /api/v1/forge/sessions/{id}/mesh-identity) so other peers can verify who sent a
 # message. It is signed with the session-credential key, so it is on exactly where
-# session_tokens are; `ttl_seconds` (default 900) bounds how long a leaked or stale
+# session_tokens are (with them off no certificates are issued); `ttl_seconds` (default 900) bounds how long a leaked or stale
 # certificate is believed (peers renew at half of it). Forge also publishes a signed
 # "session stopped" revocation on its Sleipnir bus when `sleipnir` is enabled; without
-# a bus the ttl is the only bound. `enabled: false` runs the mesh without sender proof.
+# a bus the ttl is the only bound, and the revocation reaches session pods only over a
+# networked `sleipnir.adapter` (the in-process default stays inside Forge's own pod).
+# Whether the mesh proves who sends what is `mesh.attestation.required` below, not a setting here.
 forgeMcp: {}
+
+# One decision about proof of who sent each mesh message, for Forge's own signers (residents,
+# revocation notices) and the sessions Forge launches (the local and Flux pod managers carry it
+# into the Skuld `mesh` settings; a different value set there fails startup). On by default and
+# needs no setting. `required: false` runs the mesh unauthenticated: Forge logs that once at
+# startup and reports it on /health. The other keys (renew_fraction, retry_fraction,
+# clock_skew_s, event_max_age_s) tune the proof; see niuu.mesh.config.MeshAttestationConfig.
+mesh:
+  attestation:
+    # -- false runs the mesh unauthenticated. Null keeps true.
+    required: null
+    # -- Fraction of the certificate lifetime after which a peer renews it. Null keeps 0.5.
+    renew_fraction: null
+    # -- Fraction of the lifetime between retries after a failed renewal. Null keeps 0.1.
+    retry_fraction: null
+    # -- Seconds a request's signing time may differ from the receiver's clock. Null keeps 300.
+    clock_skew_s: null
+    # -- Oldest a published event may be on receipt. Null keeps 3600.
+    event_max_age_s: null
 
 # Chronicle configuration
 chronicle:

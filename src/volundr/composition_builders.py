@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+import json
 import logging
 import socket
 import typing
@@ -149,8 +151,8 @@ def _create_mesh_certificate_issuer(
     mesh certificates; one that cannot is fatal, never "no mesh identity".
     """
     cfg = settings.forge_mcp.mesh_identity
-    if not cfg.enabled:
-        logger.info("Mesh identity: disabled (forge_mcp.mesh_identity.enabled)")
+    if not settings.mesh.attestation.required:
+        logger.info("Mesh identity: not issued (mesh.attestation.required is false)")
         return None
     if session_tokens is None:
         logger.info(
@@ -163,9 +165,9 @@ def _create_mesh_certificate_issuer(
         getattr(signing, "jwks", None)
     ):
         raise MeshIdentityUnavailableError(
-            "forge_mcp.mesh_identity is enabled but the session-credential signer "
+            "mesh.attestation.required is true but the session-credential signer "
             f"({type(signing).__name__}) cannot sign mesh certificates; use a workload "
-            "identity issuer, or set forge_mcp.mesh_identity.enabled: false."
+            "identity issuer, or set mesh.attestation.required: false."
         )
     logger.info("Mesh identity: certificates valid for %ss", cfg.ttl_seconds)
     return MeshCertificateIssuer(signing, ttl_seconds=cfg.ttl_seconds)
@@ -549,6 +551,72 @@ def _nested_pod_manager_parameters(cls: type, kwargs: dict[str, Any]) -> set[str
     }
 
 
+def _mesh_mapping(raw: Any, where: str) -> dict[str, Any]:
+    if raw in (None, ""):
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{where} must be a mapping, got {raw!r}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f"{where} must be a mapping, got {type(raw).__name__}")
+    return dict(raw)
+
+
+def _apply_mesh_decision(
+    cls: type, kwargs: dict[str, Any], settings: Settings, *, covered: bool
+) -> None:
+    """Carry ``mesh.attestation.required`` into the sessions this pod manager launches.
+
+    It is one decision for everything Forge runs. Where the pod manager has a place for
+    Skuld's mesh settings (``mesh`` for the local process manager, ``session_defaults.mesh``
+    for Flux) the decision is written there, and a different value set there is refused at
+    startup rather than letting a session disagree with Forge. Signing is Skuld's default, so
+    only the operator's ``false`` has to be written. A pod manager with no such place gets a
+    warning that names it, once, so the gap is visible.
+    """
+    required = settings.mesh.attestation.required
+    parameters = inspect.signature(cls.__init__).parameters
+    if "mesh" in parameters:
+        mesh = _mesh_mapping(kwargs.get("mesh"), "pod_manager.kwargs.mesh")
+        holder, key, where = mesh, "mesh", "pod_manager.kwargs.mesh"
+        target = mesh
+    elif "session_defaults" in parameters:
+        defaults = _mesh_mapping(
+            kwargs.get("session_defaults"), "pod_manager.kwargs.session_defaults"
+        )
+        mesh = _mesh_mapping(defaults.get("mesh"), "pod_manager.kwargs.session_defaults.mesh")
+        defaults["mesh"] = mesh
+        holder, key, where = (
+            defaults,
+            "session_defaults",
+            "pod_manager.kwargs.session_defaults.mesh",
+        )
+        target = mesh
+    else:
+        if not required and not covered:
+            logger.warning(
+                "mesh.attestation.required is false, but %s has no setting for the Skuld mesh "
+                "configuration of its sessions: they keep Skuld's own setting (signing on) "
+                "unless SKULD__MESH__ATTESTATION__REQUIRED=false reaches them another way",
+                cls.__name__,
+            )
+        return
+    attestation = _mesh_mapping(target.get("attestation"), f"{where}.attestation")
+    explicit = attestation.get("required")
+    if explicit is not None and bool(explicit) != required:
+        raise ValueError(
+            f"{where}.attestation.required is {explicit} but mesh.attestation.required is "
+            f"{required}: mesh signing is one decision, set only mesh.attestation.required"
+        )
+    if required:
+        return
+    attestation["required"] = False
+    target["attestation"] = attestation
+    kwargs[key] = holder
+
+
 def _build_pod_manager(settings: Settings, adapter: str, kwargs: dict[str, Any]) -> PodManager:
     cls = import_class(adapter)
     kwargs = dict(kwargs)
@@ -567,6 +635,9 @@ def _build_pod_manager(settings: Settings, adapter: str, kwargs: dict[str, Any])
                 dict(nested.get("kwargs") or {}), dict(nested.get("secret_kwargs_env") or {})
             ),
         )
+    _apply_mesh_decision(
+        cls, kwargs, settings, covered=bool(_nested_pod_manager_parameters(cls, kwargs))
+    )
     kwargs.setdefault("server_public_host", settings.server_public_host)
     kwargs.setdefault("server_host", settings.server_host)
     kwargs.setdefault("server_port", settings.server_port)
@@ -923,3 +994,30 @@ def _create_contributors(
         logger.info("Session contributor: session_mcp (auto-wired)")
 
     return contributors
+
+
+async def _start_sleipnir_bus(settings: Settings) -> Any | None:
+    """Start the configured Sleipnir bus, or ``None`` when ``sleipnir.enabled`` is false.
+
+    Enabled but unable to start is fatal: Forge running on without its bus would silently
+    stop events, audit and mesh revocations.
+    """
+    if not settings.sleipnir.enabled:
+        return None
+    try:
+        bus_class = import_class(settings.sleipnir.adapter)
+        bus = bus_class(
+            **resolve_secret_kwargs(settings.sleipnir.kwargs, settings.sleipnir.secret_kwargs_env)
+        )
+        if hasattr(bus, "start"):
+            await bus.start()
+    except Exception as exc:
+        raise RuntimeError(
+            f"sleipnir.enabled is true but the bus {settings.sleipnir.adapter!r} could not "
+            f"start: {exc!r}. Fix sleipnir.adapter / sleipnir.kwargs, or set "
+            "sleipnir.enabled: false to run without a bus"
+        ) from exc
+    logger.info(
+        "Sleipnir integration enabled: adapter=%s", settings.sleipnir.adapter.rsplit(".", 1)[-1]
+    )
+    return bus
