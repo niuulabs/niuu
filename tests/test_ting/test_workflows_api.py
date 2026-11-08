@@ -41,6 +41,7 @@ from ting.domain.workflow_document import (
 )
 from ting.domain.workflow_versioning import next_workflow_version
 from ting.ports.volundr import (
+    ForgeProjectRef,
     HostTagSetsUnreadableError,
     SpawnRequest,
     VolundrPort,
@@ -205,10 +206,15 @@ class RecordingVolundrPort(VolundrPort):
         self._tag_sets_unreadable = tag_sets_unreadable
         self.requests: list[SpawnRequest] = []
         self.stopped: list[str] = []
+        #: Forge projects this host has, by id.
+        self.projects: dict[str, ForgeProjectRef] = {}
 
     @property
     def name(self) -> str:
         return self._name
+
+    async def get_project(self, project_id, *, auth_token=None, principal=None):
+        return self.projects.get(project_id)
 
     @property
     def tags(self) -> list[str]:
@@ -1667,6 +1673,51 @@ class TestWorkflowCatalogAPI:
         assert launched.id == campaign.id
         assert payload["prompt"].startswith("Research whether AI grief companions")
         assert "Workflow Launch" in payload["initiative_context"]
+
+    def test_a_run_launched_into_a_project_records_it_for_its_sessions(self) -> None:
+        workflow = _make_research_workflow()
+        adapter = RecordingVolundrPort(name="cpu", target_id="cpu-1")
+        project_id = "11111111-1111-1111-1111-111111111111"
+        adapter.projects[project_id] = ForgeProjectRef(id=project_id, name="Probe", instance_id="h")
+        campaign_repo = RecordingCampaignRepository()
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([adapter]),
+            campaign_repo=campaign_repo,
+            workflow_runs=FakeWorkflowRuns(),
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Probe the thread.", "projectId": project_id},
+        )
+
+        assert response.status_code == 201
+        [campaign] = campaign_repo.items.values()
+        assert campaign.metadata["forge_project_id"] == project_id
+
+    def test_a_launch_into_a_project_its_forge_lacks_is_refused(self) -> None:
+        workflow = _make_research_workflow()
+        campaign_repo = RecordingCampaignRepository()
+        runs = FakeWorkflowRuns()
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([RecordingVolundrPort()]),
+            campaign_repo=campaign_repo,
+            workflow_runs=runs,
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Probe.", "projectId": "22222222-2222-2222-2222-222222222222"},
+        )
+
+        assert response.status_code == 404
+        assert "is not on this run's Forge" in response.json()["detail"]
+        assert campaign_repo.items == {}
+        assert runs.launched == []
 
     def test_a_run_that_cannot_start_fails_its_campaign_and_the_launch(self) -> None:
         workflow = _make_research_workflow()

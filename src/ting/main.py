@@ -1392,6 +1392,7 @@ def create_app(
                     **step_sessions_config.kwargs,
                     "volundr_factory": app.state.volundr_factory,
                     "campaigns": workflow_campaign_repo,
+                    "sagas": app.state.saga_repo,
                 }
             )
             step_engine = WorkflowStepEngine(

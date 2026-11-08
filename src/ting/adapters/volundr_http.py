@@ -260,6 +260,11 @@ class VolundrHTTPAdapter(VolundrPort):
                     "workflow_run_id": request.run_id,
                     "workflow_member": request.member,
                     **({"system_prompt": request.system_prompt} if request.system_prompt else {}),
+                    **(
+                        {"coordination": _coordination_payload(request.membership)}
+                        if request.membership is not None
+                        else {}
+                    ),
                 },
             )
             if resp.status_code >= 400:

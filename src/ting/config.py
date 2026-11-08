@@ -1185,7 +1185,7 @@ class StepSessionsConfig(BaseModel):
         default="ting.adapters.forge_step_sessions.ForgeStepSessions",
         description=(
             "Fully qualified StepSessionPort class. It is built with the Forge connection "
-            "factory and the campaign repository, plus the plain kwargs below."
+            "factory, the campaign and project repositories, plus the plain kwargs below."
         ),
     )
     kwargs: dict[str, Any] = Field(

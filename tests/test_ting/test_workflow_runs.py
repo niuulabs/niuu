@@ -41,7 +41,7 @@ from ting.domain.workflow_steps import (
 )
 from ting.ports.volundr import ActivityEvent
 
-from .fake_forge import FakeForge, FakeForgeFactory
+from .fake_forge import FakeForge, FakeForgeFactory, FakeSagas
 from .graph_builders import edge, end, stage, trigger
 from .step_support import InMemoryStepRepository
 
@@ -180,6 +180,7 @@ class Harness:
             sessions=ForgeStepSessions(
                 volundr_factory=factory,  # type: ignore[arg-type]
                 campaigns=self.campaigns,  # type: ignore[arg-type]
+                sagas=FakeSagas(),
             ),
             definitions=CampaignStepRunDefinitions(self.campaigns),  # type: ignore[arg-type]
             settings=EngineSettings(step_deadline_seconds=600.0, session_poll_seconds=0.01),

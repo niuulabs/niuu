@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -16,7 +17,9 @@ from ting.adapters.forge_step_sessions import (
     step_session_name,
     step_session_tag,
 )
-from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.models import Saga, SagaStatus, WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.services.run_thread import FORGE_OBJECTIVE_MAX, RunProjectError, run_objective
+from ting.ports.volundr import SessionMembership
 from ting.ports.workflow_steps import (
     DeliveredEvent,
     PersonaRef,
@@ -26,7 +29,7 @@ from ting.ports.workflow_steps import (
 )
 
 from . import workflow_step_contract as contract
-from .fake_forge import FakeForge, FakeForgeFactory
+from .fake_forge import FakeForge, FakeForgeFactory, FakeSagas
 
 PERSONA_DOCUMENT = {
     "schema_version": 1,
@@ -91,7 +94,7 @@ def _sessions(campaign: WorkflowCampaign, forge: FakeForge | None = None, **kwar
     adapter = ForgeStepSessions(
         volundr_factory=FakeForgeFactory(forge),
         campaigns=_Campaigns(campaign),
-        **kwargs,
+        **{"sagas": FakeSagas(), **kwargs},
     )
     return adapter, forge
 
@@ -348,7 +351,7 @@ async def test_a_run_without_a_connection_uses_its_owners_primary_forge() -> Non
 
 async def test_a_run_with_no_campaign_is_an_error() -> None:
     sessions = ForgeStepSessions(
-        volundr_factory=FakeForgeFactory(FakeForge()), campaigns=_Campaigns()
+        volundr_factory=FakeForgeFactory(FakeForge()), campaigns=_Campaigns(), sagas=FakeSagas()
     )
 
     with pytest.raises(StepSessionError, match="has no campaign"):
@@ -638,3 +641,96 @@ async def test_a_replacement_over_a_foreign_session_is_refused() -> None:
 
     with pytest.raises(StepSessionError, match="not run add-endpoint-abc123's session"):
         await sessions.replace_session(campaign.id, "coder", PERSONA_REF, "ses-1")
+
+
+# -- A run as one thread: its sessions join the run's project -------------------------
+
+
+def _saga(**overrides) -> Saga:
+    values = {
+        "id": uuid4(),
+        "tracker_id": "proj-1",
+        "tracker_type": "linear",
+        "slug": "billing",
+        "name": "Billing",
+        "repos": [],
+        "feature_branch": "",
+        "status": SagaStatus.ACTIVE,
+        "created_at": datetime.now(UTC),
+        "base_branch": "main",
+        "owner_id": "user-1",
+    }
+    values.update(overrides)
+    return Saga(**values)
+
+
+def _with(campaign: WorkflowCampaign, **metadata) -> WorkflowCampaign:
+    return replace(
+        campaign,
+        metadata={**campaign.metadata, "prompt": "Add the export endpoint\n\nDetails", **metadata},
+    )
+
+
+async def test_a_run_launched_into_a_project_puts_each_member_in_it() -> None:
+    campaign = _with(_campaign(), forge_project_id="11111111-1111-1111-1111-111111111111")
+    sessions, forge = _sessions(campaign)
+
+    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+
+    [request] = forge.create_requests
+    assert request.membership == SessionMembership(
+        project_id="11111111-1111-1111-1111-111111111111",
+        role="coder",
+        objective="Build: Add the export endpoint",
+        labels=("workflow-run:add-endpoint-abc123",),
+    )
+    # A project the run was launched into already exists; Ting creates none.
+    assert forge.projects_created == []
+
+
+async def test_a_tickets_run_joins_the_tickets_project_creating_it_under_its_id() -> None:
+    saga = _saga()
+    campaign = _with(_campaign(), ticket={"sagaId": str(saga.id), "issueId": "issue-1"})
+    sessions, forge = _sessions(campaign, sagas=FakeSagas(saga))
+
+    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+
+    [request] = forge.create_requests
+    assert request.membership is not None
+    assert request.membership.project_id == str(saga.forge_project_id)
+    assert forge.projects[str(saga.forge_project_id)].name == "Billing"
+
+
+async def test_a_run_in_no_project_creates_its_sessions_as_before() -> None:
+    campaign = _with(_campaign())
+    sessions, forge = _sessions(campaign)
+
+    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+
+    [request] = forge.create_requests
+    assert request.membership is None
+
+
+async def test_a_ticket_whose_project_is_gone_stops_the_session_create() -> None:
+    campaign = _with(_campaign(), ticket={"sagaId": str(uuid4()), "issueId": "issue-1"})
+    sessions, forge = _sessions(campaign)
+
+    with pytest.raises(RunProjectError, match="no longer has"):
+        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    assert forge.create_requests == []
+
+
+def test_an_objective_past_forges_limit_is_cut_and_counted(monkeypatch) -> None:
+    hits: list[dict] = []
+    monkeypatch.setattr(
+        "ting.domain.services.run_thread.record_truncation",
+        lambda knob, **kwargs: hits.append({"knob": knob, **kwargs}),
+    )
+    campaign = _with(_campaign(), prompt="x" * (FORGE_OBJECTIVE_MAX + 50))
+
+    objective = run_objective(campaign)
+
+    assert len(objective) == FORGE_OBJECTIVE_MAX
+    assert objective.endswith("…")
+    [hit] = hits
+    assert hit["kept"] == FORGE_OBJECTIVE_MAX

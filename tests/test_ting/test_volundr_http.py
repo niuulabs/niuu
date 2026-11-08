@@ -1569,6 +1569,7 @@ class TestStepSessions:
         assert "persona_name" not in body
         assert body["source"]["branch"] == "feat/x"
         assert "system_prompt" not in body  # the member has no extra prompt
+        assert "coordination" not in body  # the run is in no project
         assert session.id == "ses-9"
         assert session.tracker_issue_id == "workflow:run"
 
@@ -1594,6 +1595,39 @@ class TestStepSessions:
         )
 
         assert json.loads(route.calls[0].request.content)["system_prompt"] == "Only touch probe/."
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_step_session_joins_the_runs_project_as_its_member(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        route = respx.post(SESSIONS_URL).mock(
+            return_value=httpx.Response(201, json={"id": "ses-9", "name": "n", "status": "created"})
+        )
+
+        await adapter.create_step_session(
+            StepSessionRequest(
+                name="n",
+                model="m",
+                persona_definition={},
+                tracker_issue_id="workflow:run",
+                run_id=contract.RUN_ID,
+                member="reviewer",
+                membership=SessionMembership(
+                    project_id="11111111-1111-1111-1111-111111111111",
+                    role="reviewer",
+                    objective="Build: Add the export endpoint",
+                    labels=("workflow-run:run",),
+                ),
+            )
+        )
+
+        assert json.loads(route.calls[0].request.content)["coordination"] == {
+            "project_id": "11111111-1111-1111-1111-111111111111",
+            "role": "reviewer",
+            "objective": "Build: Add the export endpoint",
+            "labels": ["workflow-run:run"],
+        }
 
     @pytest.mark.asyncio
     @respx.mock

@@ -223,6 +223,8 @@ export interface SessionStartup {
 
 export interface VolundrSession {
   sessionDefinition?: string;
+  /** The Ting workflow run this session works for (the slug of its `workflow:` tag). */
+  runId?: string;
   coordination?: SessionCoordination;
   id: string;
   name: string;

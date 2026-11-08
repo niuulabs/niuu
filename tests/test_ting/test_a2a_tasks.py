@@ -66,6 +66,7 @@ from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
 from ting.system_workflows import load_system_workflows
 
+from .fake_forge import FakeSagas
 from .step_support import InMemoryStepRepository
 
 A2A_PATH = "/api/v1/ting/a2a"
@@ -784,7 +785,7 @@ class _NullEventBus:
 
 
 def _workflow_runs(
-    campaigns: WorkflowCampaignRepository, factory: RecordingVolundrFactory
+    campaigns: WorkflowCampaignRepository, factory: RecordingVolundrFactory, sagas: Any = None
 ) -> WorkflowRuns:
     """The real step engine over an in-memory ledger and the real Forge session adapter."""
     steps = InMemoryStepRepository()
@@ -797,7 +798,10 @@ def _workflow_runs(
         engine=WorkflowStepEngine(
             repository=steps,
             sessions=ForgeStepSessions(
-                volundr_factory=factory, campaigns=campaigns, default_model="gpt-5.5"
+                volundr_factory=factory,
+                campaigns=campaigns,
+                sagas=sagas or FakeSagas(),
+                default_model="gpt-5.5",
             ),
             definitions=CampaignStepRunDefinitions(campaigns),
             settings=EngineSettings(step_deadline_seconds=600.0, session_poll_seconds=0.01),
@@ -839,7 +843,7 @@ def _make_client(
     app.state.ticket_coordinator_repo = SimpleNamespace(get=AsyncMock(return_value=None))
     launch_repo = launch_repo or InMemoryA2ALaunchRepository()
     factory = volundr_factory or RecordingVolundrFactory([port])
-    app.state.workflow_runs = _workflow_runs(campaigns, factory)
+    app.state.workflow_runs = _workflow_runs(campaigns, factory, app.state.saga_repo)
     app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
     app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaigns
     app.dependency_overrides[resolve_a2a_launch_repo] = lambda: launch_repo
@@ -1156,7 +1160,10 @@ class TestSendMessage:
         campaign = next(iter(campaigns._campaigns.values()))
         assert campaign.metadata["ticket"] == ticket
         assert campaign.status is WorkflowCampaignStatus.RUNNING
-        assert len(port.step_session_requests) == 1
+        [request] = port.step_session_requests
+        # The ticket's run joins the ticket's project.
+        assert request.membership is not None
+        assert request.membership.project_id == str(saga_id)
 
     def test_campaign_names_the_workload_that_sent_the_task(self) -> None:
         """A resident's exchanged token (act.sub) is recorded on the campaign it launches."""

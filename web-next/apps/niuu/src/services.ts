@@ -845,6 +845,7 @@ function toDomainSession(session: VolundrSession): Session {
     tokensOut: 0,
     preview: toSessionPreview(session),
     trackerIssue: session.trackerIssue,
+    ...(session.runId ? { runId: session.runId } : {}),
     origin: session.origin,
     error: session.error,
     readState: session.readState,

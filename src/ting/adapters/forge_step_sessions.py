@@ -32,8 +32,20 @@ from uuid import UUID
 import httpx
 
 from ting.domain.models import WorkflowCampaign
+from ting.domain.services.run_thread import (
+    run_label,
+    run_objective,
+    run_project,
+)
 from ting.domain.step_instructions import render_step_instructions
-from ting.ports.volundr import StepSessionRequest, VolundrFactory, VolundrPort, VolundrSession
+from ting.ports.saga_repository import SagaRepository
+from ting.ports.volundr import (
+    SessionMembership,
+    StepSessionRequest,
+    VolundrFactory,
+    VolundrPort,
+    VolundrSession,
+)
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_steps import (
     PersonaRef,
@@ -115,11 +127,13 @@ class ForgeStepSessions(StepSessionPort):
         *,
         volundr_factory: VolundrFactory,
         campaigns: WorkflowCampaignRepository,
+        sagas: SagaRepository,
         default_model: str = "",
         name_prefix: str = "wf",
     ) -> None:
         self._factory = volundr_factory
         self._campaigns = campaigns
+        self._sagas = sagas
         self._default_model = default_model
         self._prefix = name_prefix
         self._locks: dict[tuple[UUID, str], asyncio.Lock] = {}
@@ -274,6 +288,7 @@ class ForgeStepSessions(StepSessionPort):
                 branch=str(campaign.metadata.get("branch") or ""),
                 base_branch=str(campaign.metadata.get("base_branch") or ""),
                 system_prompt=self._extra_prompt_of(campaign, member),
+                membership=await self._membership(forge, campaign, member),
             )
         )
         logger.info(
@@ -284,6 +299,23 @@ class ForgeStepSessions(StepSessionPort):
             campaign.slug,
         )
         return created.id
+
+    async def _membership(
+        self, forge: VolundrPort, campaign: WorkflowCampaign, member: str
+    ) -> SessionMembership | None:
+        """The run's project, with the member as its role and the run as its objective."""
+        project = await run_project(campaign, self._sagas)
+        if project is None:
+            return None
+        if project.name is not None:
+            # A ticket's project is created on Forge under the id Work uses for it.
+            await forge.ensure_project(project.id, project.name)
+        return SessionMembership(
+            project_id=project.id,
+            role=member,
+            objective=run_objective(campaign),
+            labels=(run_label(campaign),),
+        )
 
     async def _stop_replaced(
         self, forge: VolundrPort, session: VolundrSession, campaign: WorkflowCampaign

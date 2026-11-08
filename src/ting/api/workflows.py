@@ -43,6 +43,7 @@ from ting.domain.services.dispatch_service import (
     TargetSelectionError,
     select_adapter_by_tags,
 )
+from ting.domain.services.run_thread import RUN_PROJECT_KEY
 from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_document import (
     WorkflowPlacement,
@@ -157,6 +158,15 @@ class WorkflowLaunchBody(BaseModel):
     connection_id: str | None = Field(default=None, max_length=255, alias="connectionId")
     model: str = Field(default="", max_length=255)
     workflow_version: str | None = Field(default=None, alias="workflowVersion", max_length=64)
+    project_id: UUID | None = Field(
+        default=None,
+        alias="projectId",
+        description=(
+            "The Forge project the run belongs to. Its sessions join it, so Forge's "
+            "Sessions page shows the run together under the project. It must exist on the "
+            "run's Forge."
+        ),
+    )
     definition: str | None = Field(default=None, max_length=255)
     context: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
@@ -820,6 +830,8 @@ async def prepare_workflow_launch(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No Volundr connection is available for this user",
         )
+    if launch.project_id is not None:
+        await _require_project(target_adapter, str(launch.project_id), bearer_token, principal)
     settings = request.app.state.settings
     return WorkflowLaunchExecution(
         workflow=workflow,
@@ -839,12 +851,27 @@ async def prepare_workflow_launch(
     )
 
 
+async def _require_project(
+    forge: VolundrPort, project_id: str, auth_token: str | None, principal: Principal
+) -> None:
+    """A launch into a project names one its Forge has; anything else is refused."""
+    if await forge.get_project(project_id, auth_token=auth_token, principal=principal) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Project {project_id} is not on this run's Forge; create it there first, "
+                "or launch without projectId"
+            ),
+        )
+
+
 def workflow_run_metadata(
     launch: WorkflowLaunchBody, execution: WorkflowLaunchExecution
 ) -> dict[str, Any]:
     """The campaign metadata a run's sessions are created from (repo, branches, model)."""
     return {
         "launch_slug": execution.slug,
+        **({RUN_PROJECT_KEY: str(launch.project_id)} if launch.project_id is not None else {}),
         # What the person asked for, so the run's review page can say what it is about.
         "prompt": launch.prompt,
         **({"repo": launch.repo} if launch.repo else {}),

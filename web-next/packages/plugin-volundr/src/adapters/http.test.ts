@@ -1454,6 +1454,8 @@ describe('buildVolundrHttpAdapter', () => {
     const session = await buildVolundrHttpAdapter(client).getSession('s1');
 
     expect(session.trackerIssue).toBeUndefined();
+    // It names the run it works for.
+    expect(session.runId).toBe('a2a-509e14f61f0b48bfa43f05aab3bad1b9');
   });
 
   it('getActiveSessions calls GET /sessions?active=true', async () => {

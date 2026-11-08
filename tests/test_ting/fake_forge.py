@@ -10,9 +10,11 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from ting.domain.models import Saga
 from ting.ports.volundr import (
     ActivityEvent,
     ActivityStreamConnected,
+    ForgeProjectRef,
     StepSessionRequest,
     VolundrPort,
     VolundrSession,
@@ -28,6 +30,9 @@ class FakeForge(VolundrPort):
         self.stopped: list[str] = []
         self.started: list[str] = []
         self.step_states: dict[tuple[str, str], dict[str, Any]] = {}
+        #: Forge projects by id, and the ids ensure_project created.
+        self.projects: dict[str, ForgeProjectRef] = {}
+        self.projects_created: list[str] = []
         self.fail_create: Exception | None = None
         self.fail_deliver: Exception | None = None
         self.fail_stop: set[str] = set()
@@ -44,6 +49,17 @@ class FakeForge(VolundrPort):
     @property
     def target_id(self) -> str:
         return self._name
+
+    async def get_project(self, project_id, *, auth_token=None, principal=None):
+        return self.projects.get(project_id)
+
+    async def ensure_project(self, project_id, name, *, auth_token=None, principal=None):
+        if project_id not in self.projects:
+            self.projects[project_id] = ForgeProjectRef(
+                id=project_id, name=name, instance_id=self._name
+            )
+            self.projects_created.append(project_id)
+        return self.projects[project_id]
 
     async def create_step_session(self, request, *, auth_token=None, principal=None):
         if self.fail_create is not None:
@@ -146,6 +162,19 @@ class FakeForge(VolundrPort):
             id=session_id, name=name, status=status, tracker_issue_id=tracker_issue_id
         )
         return session_id
+
+
+class FakeSagas:
+    """The projects (sagas) a run's ticket can name, by id."""
+
+    def __init__(self, *sagas: Saga) -> None:
+        self._items = {saga.id: saga for saga in sagas}
+
+    async def get_saga(self, saga_id, *, owner_id=None, conn=None):
+        saga = self._items.get(saga_id)
+        if saga is None or (owner_id is not None and saga.owner_id != owner_id):
+            return None
+        return saga
 
 
 class FakeForgeFactory:

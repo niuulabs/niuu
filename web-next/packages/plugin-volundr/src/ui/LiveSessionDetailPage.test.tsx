@@ -1093,6 +1093,16 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.queryByText('Archived')).not.toBeInTheDocument();
     });
 
+    it("links a workflow run's session to the run", async () => {
+      wrap('test-session-id-1234', { session: { ...RUNNING_SESSION, runId: 'probe-9' } });
+
+      await screen.findByTestId('live-session-detail-page');
+      const link = within(screen.getByTestId('session-run')).getByRole('link', { name: 'probe-9' });
+      expect(link).toHaveAttribute('href', '/ting/review/run/probe-9');
+      fireEvent.click(link);
+      expect(navigate).toHaveBeenCalledWith({ to: '/ting/review/run/probe-9' });
+    });
+
     it('shows a distinct session handle and linked tracker issue', async () => {
       localStorage.setItem('niuu.forge.details', '1');
       wrap('test-session-id-1234', {

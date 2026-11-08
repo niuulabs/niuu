@@ -34,7 +34,7 @@ from ting.domain.workflow_steps import (
 from ting.ports.event_bus import TingEvent
 from ting.ports.volundr import StepSessionRequest, VolundrSession
 
-from .fake_forge import FakeForge, FakeForgeFactory
+from .fake_forge import FakeForge, FakeForgeFactory, FakeSagas
 from .graph_builders import edge, end, stage, trigger
 from .step_support import InMemoryStepRepository
 
@@ -216,6 +216,7 @@ class StuckHarness:
         self.sessions = ForgeStepSessions(
             volundr_factory=factory,  # type: ignore[arg-type]
             campaigns=self.campaigns,  # type: ignore[arg-type]
+            sagas=FakeSagas(),
         )
         self.projector = WorkflowCampaignProjector(
             repo=self.campaigns,  # type: ignore[arg-type]

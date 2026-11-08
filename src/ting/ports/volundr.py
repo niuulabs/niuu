@@ -124,6 +124,9 @@ class StepSessionRequest:
     #: The stage member's ``systemPromptExtra``: appended after the persona's own
     #: instructions, in the form each harness takes (Forge's ``system_prompt``).
     system_prompt: str = ""
+    #: The run's project, the member's role in it, the run as objective and its label,
+    #: so Forge shows the run's sessions together; ``None`` for a run in no project.
+    membership: SessionMembership | None = None
 
 
 @dataclass(frozen=True)

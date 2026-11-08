@@ -617,15 +617,28 @@ function waitsAtGate(metadata: Record<string, unknown> | null | undefined): bool
   return (context as { gate_status?: unknown }).gate_status === GATE_PENDING;
 }
 
+/** Ting tags each session of a workflow run `workflow:<run slug>`. */
+export const WORKFLOW_RUN_TAG = 'workflow:';
+
+/** The workflow run a session works for, from Ting's tag on it. */
+function workflowRunOf(session: SessionPayload): string | undefined {
+  const identifier = session.trackerIssueId ?? session.tracker_issue_id ?? '';
+  return identifier.startsWith(WORKFLOW_RUN_TAG)
+    ? identifier.slice(WORKFLOW_RUN_TAG.length)
+    : undefined;
+}
+
 function normalizeSession(session: SessionPayload): VolundrSession {
+  const runId = workflowRunOf(session);
   const trackerIssue =
     session.trackerIssue ??
     (() => {
       const identifier = session.trackerIssueId ?? session.tracker_issue_id ?? null;
       const url = session.issueTrackerUrl ?? session.issue_tracker_url ?? '';
       if (!identifier) return undefined;
-      // Ting keys a workflow launch as "workflow:<run>": a run, not a ticket to link.
-      if (identifier.startsWith('workflow:')) return undefined;
+      // Ting keys a workflow run's sessions "workflow:<run>": a run, not a ticket to link.
+      // The session carries it as `runId`, which links to the run's own page.
+      if (runId !== undefined) return undefined;
       return {
         id: identifier,
         identifier,
@@ -638,6 +651,7 @@ function normalizeSession(session: SessionPayload): VolundrSession {
   return {
     id: session.id,
     name: session.name,
+    ...(runId !== undefined ? { runId } : {}),
     ...(session.coordination
       ? {
           coordination: {

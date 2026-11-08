@@ -2591,6 +2591,26 @@ function SessionIdChip({ sessionId }: { sessionId: string }) {
   );
 }
 
+/** The workflow run a session works for, opened on the run's review page. */
+function RunLink({ runId }: { runId: string }) {
+  const navigate = useNavigate();
+  const to = `/ting/review/run/${encodeURIComponent(runId)}`;
+  return (
+    <span className="niuu-live-session__ticket" data-testid="session-run">
+      <a
+        href={to}
+        title={`Open workflow run ${runId}`}
+        onClick={(event) => {
+          event.preventDefault();
+          void navigate({ to: to as never });
+        }}
+      >
+        {runId}
+      </a>
+    </span>
+  );
+}
+
 function TicketLink({ issue }: { issue: VolundrSession['trackerIssue'] }) {
   if (!issue) return null;
   if (!issue.url) {
@@ -4252,6 +4272,10 @@ function LiveSessionDetailPageInner({
                           sessionTrackerIssue && {
                             id: 'ticket',
                             node: <TicketLink issue={sessionTrackerIssue} />,
+                          },
+                          liveSession?.runId && {
+                            id: 'run',
+                            node: <RunLink runId={liveSession.runId} />,
                           },
                           sessionDetail && {
                             id: 'activity',

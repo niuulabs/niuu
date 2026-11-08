@@ -31,6 +31,7 @@ from tests.test_ting.test_a2a_tasks import RecordingVolundrFactory, RecordingVol
 from ting.adapters.campaign_step_definitions import CampaignStepRunDefinitions
 from ting.adapters.forge_step_sessions import ForgeStepSessions
 from ting.adapters.postgres_a2a_launches import PostgresA2ALaunchReservationRepository
+from ting.adapters.postgres_sagas import PostgresSagaRepository
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
 from ting.adapters.postgres_workflow_steps import PostgresWorkflowStepRepository
 from ting.adapters.postgres_workflows import PostgresWorkflowRepository
@@ -143,7 +144,10 @@ def _step_engine(pool, campaign_repo, factory) -> WorkflowRuns:
         engine=WorkflowStepEngine(
             repository=steps,
             sessions=ForgeStepSessions(
-                volundr_factory=factory, campaigns=campaign_repo, default_model="gpt-5.5"
+                volundr_factory=factory,
+                campaigns=campaign_repo,
+                sagas=PostgresSagaRepository(pool),
+                default_model="gpt-5.5",
             ),
             definitions=CampaignStepRunDefinitions(campaign_repo),
             settings=EngineSettings(step_deadline_seconds=600.0, session_poll_seconds=0.01),
