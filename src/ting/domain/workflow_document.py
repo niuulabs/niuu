@@ -1456,6 +1456,12 @@ def _validate_node_kinds(nodes: list[dict[str, Any]]) -> None:
                 "nothing interprets a conditional branch. Route on a gate decision or on a "
                 "persona verdict instead"
             )
+        if kind == "gate" and node.get("mode") == "evidence":
+            raise WorkflowDocumentError(
+                f"Workflow gate {node_id!r} uses mode 'evidence', which the step engine does "
+                "not evaluate: it would wait for a person instead of checking the evidence. "
+                "Make it a person gate, or 'automated_approval' for an agent to answer"
+            )
         if kind not in {item.value for item in NodeKind}:
             raise WorkflowDocumentError(
                 f"Workflow node {node_id!r} has unknown kind {kind!r}; the engine runs: {known}"

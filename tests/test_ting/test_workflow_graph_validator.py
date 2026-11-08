@@ -75,6 +75,13 @@ def test_cond_nodes_are_refused_because_nothing_interprets_them() -> None:
     refuses(graph, "'branch' is a cond node; cond nodes are not supported")
 
 
+def test_evidence_gates_are_refused_because_the_engine_does_not_evaluate_them() -> None:
+    graph = base_graph()
+    graph["nodes"].append({"id": "proof", "kind": "gate", "label": "Proof", "mode": "evidence"})
+
+    refuses(graph, "'proof' uses mode 'evidence', which the step engine does not evaluate")
+
+
 def test_an_include_that_was_not_resolved_is_not_a_node_kind_the_engine_runs() -> None:
     graph = base_graph()
     graph["nodes"].append({"id": "inc", "kind": "include", "label": "Inc"})
