@@ -174,7 +174,8 @@ class TestOneDecision:
         from volundr.composition_builders import _apply_mesh_decision
 
         class Elsewhere:
-            def __init__(self, **_extra) -> None: ...
+            def __init__(self, **_extra) -> None:
+                pass
 
         with pytest.raises(ValueError, match="Elsewhere has no setting"):
             _apply_mesh_decision(Elsewhere, {}, self._settings(False), covered=False)
