@@ -7,6 +7,7 @@ from typing import Any
 
 from niuu.domain.artifact_reports import ArtifactReport
 from niuu.domain.notifications import NotificationDraft
+from niuu.domain.peer_message import PeerMessage
 from niuu.domain.workflow_step import WorkflowStepCloseArgs
 from niuu.forge_mcp.models import ForgeApiError
 
@@ -133,6 +134,18 @@ class ForgeMcpHost(ABC):
         raise ForgeApiError(
             "request_secret needs a Forge session's own MCP (it asks in that session's chat "
             "and writes the value into that session's runtime)",
+            status=501,
+        )
+
+    async def received_peer_message(self, message_id: str) -> PeerMessage:
+        """A peer message this session received, by id, so the ``reply`` tool can answer it.
+
+        Raises :class:`niuu.domain.peer_message.PeerMessageError` when this session never
+        received a message with that id. Only a session's own broker keeps its inbox;
+        other hosts refuse."""
+        raise ForgeApiError(
+            "reply needs a Forge session's own MCP (only that session's broker holds the "
+            "messages it received)",
             status=501,
         )
 
