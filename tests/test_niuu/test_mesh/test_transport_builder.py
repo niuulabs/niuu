@@ -200,3 +200,16 @@ class TestNngKwargs:
         )
         assert kwargs["advertise_host"] == "10.0.3.4"
         assert kwargs["rediscover_interval_s"] == 2.5
+
+
+def test_nats_servers_survive_an_environment_variable_as_a_list_or_as_text():
+    from niuu.mesh.config import MeshNatsConfig
+
+    assert MeshNatsConfig(servers='["nats://a:4222", "nats://b:4222"]').servers == [
+        "nats://a:4222",
+        "nats://b:4222",
+    ]
+    assert MeshNatsConfig(servers="nats://a:4222, nats://b:4222").servers == [
+        "nats://a:4222",
+        "nats://b:4222",
+    ]

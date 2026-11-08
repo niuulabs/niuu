@@ -79,7 +79,9 @@ class TestMiniModeConfig:
         kwargs["mesh"] = _local_session_mesh(_resolve_local_pod_manager_env(settings))
         manager = _build_pod_manager(forge, LOCAL, kwargs)
 
-        assert _mesh_env(manager._mesh) == {  # noqa: SLF001
+        env = _mesh_env(manager._mesh)  # noqa: SLF001
+        assert env.pop("SKULD__MESH__DISCOVERY_ADAPTERS")  # the default for this shape
+        assert env == {
             "SKULD__MESH__ENABLED": "true",
             "SKULD__MESH__ATTESTATION__REQUIRED": "false",
         }

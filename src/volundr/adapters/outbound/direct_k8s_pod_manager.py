@@ -27,7 +27,12 @@ from volundr.adapters.outbound.local_process import (
     FORGE_MCP_TOKEN_ENV,
     FORGE_MCP_TOKEN_FILE_ENV,
 )
-from volundr.adapters.outbound.mesh_settings import mesh_environment, parse_mesh_settings
+from volundr.adapters.outbound.mesh_settings import (
+    mesh_environment,
+    mesh_is_nng,
+    mesh_with_defaults,
+    parse_mesh_settings,
+)
 from volundr.domain.models import Session, SessionSpec, SessionStatus
 from volundr.domain.ports import CredentialStorePort, PodManager, PodStartResult
 from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
@@ -195,6 +200,12 @@ _FORGE_MCP_ENV_NAMES = frozenset(
 )
 
 
+#: Where a pod's nng PUB socket listens, and the port k8s discovery dials it on.
+DEFAULT_MESH_NNG_PORT = 7480
+#: The pod's own IP, from the downward API: the host other pods dial it at.
+POD_IP_ENV = "POD_IP"
+
+
 class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
     """Direct Kubernetes API implementation of PodManager.
 
@@ -234,6 +245,7 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
         codex_auth_kwargs: dict | None = None,
         volundr_api_url: str = "",
         mesh: dict | str | None = None,
+        mesh_nng_port: int = DEFAULT_MESH_NNG_PORT,
         **_extra: object,
     ):
         """``volundr_api_url`` is where a session pod reaches this Forge (the cluster-side
@@ -248,7 +260,20 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
         self._ingress_backend = ingress_backend
         self._external_url = external_url.rstrip("/")
         self._volundr_api_url = str(volundr_api_url).strip().rstrip("/")
-        self._mesh = parse_mesh_settings(mesh)
+        # Pods find each other by listing the session pods of the realm (k8s discovery) and
+        # dial the PUB socket every pod opens on its own IP; the operator only enables the mesh.
+        self._mesh = mesh_with_defaults(
+            parse_mesh_settings(mesh),
+            {
+                "nng": {
+                    "pub_sub_address": f"tcp://0.0.0.0:{mesh_nng_port}",
+                    "advertise_host": f"$({POD_IP_ENV})",
+                },
+                "discovery_adapters": [
+                    {"adapter": "k8s", "namespace": namespace, "nng_port": mesh_nng_port}
+                ],
+            },
+        )
         self._skuld_image = skuld_image
         self._reh_image = reh_image
         self._nginx_image = nginx_image
@@ -357,9 +382,16 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
             {"name": name, "value": value}
             for name, value in self._brokered_credential_environment(spec).items()
         )
-        env.extend(
-            {"name": name, "value": value} for name, value in mesh_environment(self._mesh).items()
-        )
+        mesh_env = mesh_environment(self._mesh)
+        if any(f"$({POD_IP_ENV})" in value for value in mesh_env.values()):
+            # Defined before the entries that refer to it, which Kubernetes expands.
+            env.append(
+                {
+                    "name": POD_IP_ENV,
+                    "valueFrom": {"fieldRef": {"fieldPath": "status.podIP"}},
+                }
+            )
+        env.extend({"name": name, "value": value} for name, value in mesh_env.items())
 
         # Handle git config from spec values.
         git_config = spec.values.get("git", {})
@@ -1029,6 +1061,9 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
             names.append("git-clone")
             annotations[inject_key] = ",".join(dict.fromkeys(names))
 
+        pod_labels, mesh_annotations = self._mesh_pod_identity(session)
+        annotations.update(mesh_annotations)
+
         return {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
@@ -1046,13 +1081,29 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
                 },
                 "template": {
                     "metadata": {
-                        "labels": labels,
+                        "labels": {**labels, **pod_labels},
                         "annotations": annotations,
                     },
                     "spec": pod_spec,
                 },
             },
         }
+
+    def _mesh_pod_identity(self, session: Session) -> tuple[dict[str, str], dict[str, str]]:
+        """The labels and annotations k8s discovery reads: realm, and this pod's peer id."""
+        if not mesh_is_nng(self._mesh):
+            return {}, {}
+        adapters = self._mesh.get("discovery_adapters") or []
+        if not any(entry.get("adapter") == "k8s" for entry in adapters):
+            return {}, {}
+        peer_id = str(self._mesh.get("peer_id") or session.id)
+        return (
+            {
+                "ravn.niuu.world/realm": str(self._mesh.get("realm_id") or ""),
+                "ravn.niuu.world/role": "agent",
+            },
+            {"ravn.niuu.world/peer-id": peer_id},
+        )
 
     @staticmethod
     def _add_persistent_scratch(pod_spec: dict[str, Any], session: Session) -> None:

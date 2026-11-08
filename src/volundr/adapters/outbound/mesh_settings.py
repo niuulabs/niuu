@@ -11,6 +11,7 @@ about mesh signing reaches every session whichever pod manager starts it
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from volundr.domain.models import SessionSpec
@@ -30,6 +31,37 @@ def parse_mesh_settings(raw: dict | str | None, where: str = "pod_manager mesh")
     if not isinstance(raw, dict):
         raise ValueError(f"{where} must be a mapping, got {type(raw).__name__}")
     return dict(raw)
+
+
+def mesh_is_nng(mesh: Mapping[str, Any]) -> bool:
+    """Whether the sessions run a mesh on the nng transport (Skuld's default transport)."""
+    enabled = mesh.get("enabled")
+    if isinstance(enabled, str):
+        enabled = enabled.strip().lower() == "true"
+    return bool(enabled) and str(mesh.get("transport") or "nng") == "nng"
+
+
+def mesh_with_defaults(mesh: dict, defaults: Mapping[str, Any]) -> dict:
+    """Fill in what the platform knows about this shape, for a mesh the operator enabled.
+
+    ``mesh.enabled: true`` on nng is all the operator has to say: the pod manager that
+    starts the sessions knows where they run (one host, or a cluster) and so how they find
+    each other. Whatever the operator set stays as set: a key of ``defaults`` is added only
+    when the mesh has none, a mapping fills in only its missing keys, and
+    ``discovery_adapters`` is left alone when any discovery (``adapters`` too) is configured.
+    A mesh that is off, or on another transport (NATS has its own), is returned unchanged.
+    """
+    if not mesh_is_nng(mesh):
+        return mesh
+    merged = dict(mesh)
+    for key, value in defaults.items():
+        if key == "discovery_adapters" and (mesh.get("discovery_adapters") or mesh.get("adapters")):
+            continue
+        if isinstance(value, Mapping):
+            merged[key] = {**value, **dict(mesh.get(key) or {})}
+            continue
+        merged.setdefault(key, value)
+    return merged
 
 
 def mesh_environment(mesh: dict, prefix: str = "SKULD__MESH") -> dict[str, str]:
