@@ -104,6 +104,8 @@ _REQUEST_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,200}$"
 _ROLE_PATTERN = r"^[a-z][a-z0-9_-]{0,39}$"
 _INSTANCE_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,100}$"
 _MCP_REQUEST_ID_PREFIX = "fmcp-"
+#: The status ``send_mesh_message`` raises with when the peer's Skuld did not answer the RPC.
+_MESH_RPC_TIMEOUT_STATUS = 504
 _TRUNCATION_MARK = "…"
 
 
@@ -1066,7 +1068,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
             "boundary as usual. To keep waiting, call ask again with the SAME request_id (it "
             "is returned in every result): the message is not sent twice. `deadline_s` is how "
             "long to wait; it defaults to, and may not exceed, ask.wait_max_s (the longest an "
-            "MCP tool call may run here), and a larger one is refused with that named."
+            "MCP tool call may run here), and a larger one is refused with that named. A mesh "
+            "peer is asked directly over the mesh, and its own state is read from it."
         ),
         input_schema=_object(
             {
@@ -1694,6 +1697,29 @@ class ForgeMcpToolbox:
     # -- granted: message
 
     async def _send_message(self, args: _SendMessageArgs) -> ToolResult:
+        peer = await self._mesh_peer(args)
+        if peer is not None:
+            refused = self._refuse_self(peer, "send_message")
+            if refused is not None:
+                return refused
+            request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
+            sent = await self._host.send_mesh_message(
+                peer,
+                args.content,
+                expect_reply=True,
+                request_id=request_id,
+                in_reply_to="",
+                urgent=args.urgent,
+            )
+            return self._ok(
+                {
+                    "path": "mesh",
+                    "peer": peer,
+                    "request_id": request_id,
+                    "status": "delivered" if sent.get("status") == "accepted" else sent["status"],
+                    "delivery": sent["status"],
+                }
+            )
         target = await self._resolve_recipient(args)
         if isinstance(target, ToolResult):
             return target
@@ -1711,12 +1737,17 @@ class ForgeMcpToolbox:
         )
         return self._ok(
             {
+                "path": "forge",
                 "session_id": session_id,
                 "request_id": request_id,
                 "status": result.get("status"),
                 "delivery": result.get("delivery"),
             }
         )
+
+    async def _mesh_peer(self, args: _SendMessageArgs) -> str | None:
+        """The recipient's mesh peer id when it is in this session's peer table, else ``None``."""
+        return await self._host.mesh_peer_for(session_id=args.session_id, name=args.to)
 
     async def _resolve_recipient(
         self, args: _SendMessageArgs
@@ -1780,14 +1811,29 @@ class ForgeMcpToolbox:
                 denied = self._require_message_grant("reply")
                 if denied is not None:
                     return denied
-                result = await self._client.send_message(
-                    route.target,
-                    content=args.content,
-                    request_id=request_id,
-                    instance_id=None,
-                    in_reply_to=args.message_id,
-                )
-                answer = {"status": result.get("status"), "delivery": result.get("delivery")}
+                peer = await self._host.mesh_peer_for(session_id=route.target, name=None)
+                if peer is not None:
+                    sent = await self._host.send_mesh_message(
+                        peer,
+                        args.content,
+                        expect_reply=True,
+                        request_id=request_id,
+                        in_reply_to=args.message_id,
+                    )
+                    answer = {"path": "mesh", "peer": peer, "status": sent["status"]}
+                else:
+                    result = await self._client.send_message(
+                        route.target,
+                        content=args.content,
+                        request_id=request_id,
+                        instance_id=None,
+                        in_reply_to=args.message_id,
+                    )
+                    answer = {
+                        "path": "forge",
+                        "status": result.get("status"),
+                        "delivery": result.get("delivery"),
+                    }
             case ReplyKind.ROOM:
                 denied = self._require_message_grant("reply")
                 if denied is not None:
@@ -1853,6 +1899,9 @@ class ForgeMcpToolbox:
             )
             record_cap_hit("ask.wait_max_s", message)
             return ToolResult.error(message)
+        peer = await self._mesh_peer(args)
+        if peer is not None:
+            return await self._ask_over_mesh(args, peer, deadline_s)
         target = await self._resolve_recipient(args)
         if isinstance(target, ToolResult):
             return target
@@ -1881,10 +1930,65 @@ class ForgeMcpToolbox:
             delivery_confirmed=sent.get("status") == "delivered",
             deadline_s=deadline_s,
         )
-        result = self._ok(
-            {"session_id": session_id, "request_id": request_id, "message_id": message_id, **ended}
+        return self._ask_result(
+            {
+                "path": "forge",
+                "session_id": session_id,
+                "request_id": request_id,
+                "message_id": message_id,
+                **ended,
+            }
         )
-        if ended.get("outcome") == AskOutcome.ANSWERED:
+
+    async def _ask_over_mesh(self, args: _AskArgs, peer: str, deadline_s: float) -> ToolResult:
+        """Ask a mesh peer: the recipient's Skuld acknowledges the send and reports its state."""
+        refused = self._refuse_self(peer, "ask")
+        if refused is not None:
+            return refused
+        request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
+        message_id = derive_message_id(
+            PeerAddress(kind=PeerKind.SESSION, id=str(self._host.session_id)),
+            PeerAddress(kind=PeerKind.MESH_PEER, id=peer),
+            request_id,
+        )
+        try:
+            sent = await self._host.send_mesh_message(
+                peer,
+                args.content,
+                expect_reply=True,
+                request_id=request_id,
+                in_reply_to="",
+                urgent=args.urgent,
+            )
+            confirmed = sent.get("status") == "accepted"
+        except ForgeApiError as exc:
+            if exc.status != _MESH_RPC_TIMEOUT_STATUS:
+                raise
+            # No answer from the recipient's Skuld: the message may have arrived. That is
+            # delivery_unknown, and the wait goes on (an answer would settle it).
+            confirmed = False
+        ended = await self._host.ask_for_answer(
+            recipient_id=peer,
+            instance_id=None,
+            message_id=message_id,
+            request_id=request_id,
+            delivery_confirmed=confirmed,
+            deadline_s=deadline_s,
+            mesh_peer=peer,
+        )
+        return self._ask_result(
+            {
+                "path": "mesh",
+                "peer": peer,
+                "request_id": request_id,
+                "message_id": message_id,
+                **ended,
+            }
+        )
+
+    def _ask_result(self, payload: dict[str, Any]) -> ToolResult:
+        result = self._ok(payload)
+        if payload.get("outcome") == AskOutcome.ANSWERED:
             return result
         return replace(result, is_error=True)
 

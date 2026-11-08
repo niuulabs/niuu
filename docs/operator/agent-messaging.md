@@ -29,6 +29,39 @@ of them. The message id derives from the sender, the recipient and the `request_
 retry with the same `request_id` carries the same id and is never delivered twice. A person
 calling the same route (a PAT or login) keeps the plain user-turn path.
 
+## The default pattern: send, end your turn, the reply wakes you
+
+Most conversations between agents need no waiting. Send the message (`send_message`, or
+`mesh_send`), say what you need back, **end your turn**, and do other work or stop. The
+recipient answers with `reply`, which lands in your inbox. If your harness is idle the inbox
+hands it the reply at once as a new turn; if it is mid-turn the reply waits for the turn
+boundary. Nothing polls and nothing blocks. Use `ask` (below) only as a convenience for a short
+question you want answered inside the current turn.
+
+## Direct routing: the mesh first, Forge for the rest
+
+Agents in the same flock talk directly, without Forge in the middle.
+
+- **Which path.** For `send_message`, `ask` and a `reply` to a session, the sending Skuld checks
+  its mesh peer table (the verified flock members discovery maintains). A recipient named by
+  `session_id` is a peer when a peer with that id is in the table; one named by `to` is a peer
+  when `to` is a peer id, or the name a Skuld peer announces (its session name). A peer is
+  reached Skuld to Skuld by the `peer_message` mesh RPC. Every other recipient goes through
+  Forge as before. The result says which: `"path": "mesh"` or `"path": "forge"`.
+- **Delivery is acknowledged end to end.** The recipient's Skuld answers the RPC: `accepted`
+  (held in its durable inbox; same meaning as Forge's "delivered") or `refused` with the reason,
+  which is an error to the sender. Forge records nothing about a mesh message. An RPC that gets
+  no answer within `mesh.rpc_timeout_s` is an error for `send_message` ("may or may not have
+  arrived: retry with the same request_id"), and `delivery_unknown` for `ask`.
+- **No fallback.** With the mesh enabled but not running, a send to any recipient is refused
+  with that reason: whether the recipient is a peer cannot be known, and nothing is rerouted
+  through Forge. A name two peers carry is an error that lists them; send to the peer id.
+- **Stamping is unchanged.** The sending Skuld stamps itself as the sender (session id, name,
+  node); the reply route is its own mesh peer id.
+- **Caveat.** A Skuld announces `mesh.peer_id` when configured, else its session id, as its
+  peer id. A name matches only the display name a Skuld announces, the session name; Ravn
+  residents are addressed by peer id.
+
 ## Who may message whom
 
 **A session may message any session its owner owns, on any node of its Guild** (decided
@@ -114,7 +147,12 @@ that call (Skuld's stdio server also waits on the broker for `forge_mcp.broker_r
   explicitly from `forge_mcp.tool_timeout_s` (default 120 s).
 - Claude Code's wall-clock `MCP_TOOL_TIMEOUT` defaults to about 28 hours and does not extend on
   progress; its idle timeout for a stdio server is 30 minutes without a response or progress
-  (Claude Code MCP documentation). Skuld's own stdio server is the tighter one.
+  (Claude Code MCP documentation). A server entry's own `timeout` (milliseconds) replaces
+  `MCP_TOOL_TIMEOUT` for that server only. Skuld sets it from the same `tool_timeout_sec` it
+  gives Codex, so both engines are bounded by `forge_mcp.tool_timeout_s` for the Forge server
+  (and for any launch-spec server that declares `tool_timeout_sec`). Skuld deliberately does
+  not set the `MCP_TOOL_TIMEOUT` environment variable, which would also shorten the calls of
+  every other MCP server.
 
 So `ask.wait_max_s` (default 50 s) must stay below both `forge_mcp.broker_request_timeout_s`
 (default 60 s) and `forge_mcp.tool_timeout_s` (default 120 s); a configuration that does not
@@ -132,11 +170,24 @@ A wait that runs into the ceiling itself (`deadline`, `not_started` or `delivery
 `ask.wait_max_s` (`ravn.cap.hits`). A shorter deadline the caller chose is its own decision and
 counts only on `skuld.ask.outcomes`.
 
-**Mesh peers.** A wait on a mesh peer would need the same three things on the mesh path:
-`mesh_send` to return the derived `message_id`, the answer to arrive as a peer message whose
-`in_reply_to` matches (the sender's Skuld inbox already holds it), and a state source for
-"peer blocked or gone" from the flock membership instead of Forge's session row. It is not
-built.
+**Asking a mesh peer.** `ask` to a recipient in the mesh peer table takes the direct path and
+no Forge call at all. The answer is matched by `in_reply_to` in your own inbox exactly as
+above. The send is acknowledged by the recipient's Skuld (`accepted`), or it is an error
+(`refused`) with the reason. What Forge would have told you comes from the recipient itself:
+
+| Outcome | Over the mesh |
+|---|---|
+| `answered` | as above |
+| `gone` | the peer is no longer in the peer table, or its Skuld reports its transport stopped |
+| `blocked` | its Skuld reports `awaiting_input` (answering the `peer_state` RPC, with the kind of input) |
+| `not_started` | its Skuld lists your message among those it accepted and has not handed to the harness |
+| `delivery_unknown` | the send RPC got no answer within `mesh.rpc_timeout_s` (it may have arrived) |
+| `deadline` | none of the above; names `ask.wait_max_s`. If the peer's state could not be read (its Skuld did not answer `peer_state`, or is not a Skuld) the detail says so |
+
+The `peer_state` RPC is a read of the session's activity state and the ids of its unread
+messages; peers are trusted as flock members (realm-verified discovery), and the RPC carries
+no message content. A peer that is not a Skuld cannot answer it; `ask` then still returns the
+answer or a deadline, never `blocked` or `not_started`.
 
 ## Room hosts relay envelopes
 

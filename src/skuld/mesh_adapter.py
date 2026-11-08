@@ -33,10 +33,16 @@ from niuu.domain.peer_message import (
     ReplyRoute,
 )
 from niuu.mesh.events import MeshEvent, MeshEventType
+from niuu.mesh.identity import MeshPeer
 from niuu.mesh.participant import MeshParticipant
 from niuu.ports.mesh import MeshPort
 from skuld.config import MeshConfig
-from skuld.peer_inbox import CHANNEL_MESH, PeerAcceptance, PeerMessageRefusedError
+from skuld.peer_inbox import (
+    CHANNEL_MESH,
+    PEER_STATE_RPC_TYPE,
+    PeerAcceptance,
+    PeerMessageRefusedError,
+)
 from sleipnir.ports.events import SleipnirSubscriber
 
 logger = logging.getLogger("skuld.mesh_adapter")
@@ -81,6 +87,13 @@ class SkuldMeshAdapter:
     @property
     def peer_id(self) -> str:
         return self._peer_id
+
+    def peers(self) -> dict[str, MeshPeer]:
+        """The verified peer table, keyed by peer id; empty when no discovery is configured."""
+        discovery = self._participant.discovery
+        if discovery is None:
+            return {}
+        return dict(discovery.peers())
 
     @property
     def is_running(self) -> bool:
@@ -175,6 +188,14 @@ class SkuldMeshAdapter:
             target_peer_id,
             {"type": PEER_MESSAGE_FRAME, "envelope": message.to_wire()},
             timeout_s=self._config.rpc_timeout_s,
+        )
+
+    async def request_peer_state(self, target_peer_id: str) -> dict[str, Any]:
+        """Ask a peer's Skuld what it is doing (``peer_state`` RPC); raises like ``send``."""
+        if self._mesh is None:
+            raise RuntimeError("Mesh is unavailable")
+        return await self._mesh.send(
+            target_peer_id, {"type": PEER_STATE_RPC_TYPE}, timeout_s=self._config.rpc_timeout_s
         )
 
     async def _handle_rpc(self, message: dict) -> dict:

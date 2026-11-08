@@ -79,7 +79,12 @@ class TestMeshHost:
         assert (message.reply.kind, message.reply.target) == (ReplyKind.MESH, "skuld-mesh-1")
         assert message.message_id == derive_message_id(message.sender, message.recipient, "req-1")
         assert message.content == "I am the CEO"
-        assert answer == {"message_id": message.message_id, "status": "accepted"}
+        assert answer == {
+            "message_id": message.message_id,
+            "status": "accepted",
+            "path": "mesh",
+            "peer": "peer-7",
+        }
 
     async def test_a_notice_takes_no_reply_and_a_reply_names_what_it_answers(
         self, tmp_path

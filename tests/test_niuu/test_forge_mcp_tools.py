@@ -173,6 +173,9 @@ class FakeHost(ForgeMcpHost):
         self.mesh = True
         self.mesh_sends: list[dict[str, Any]] = []
         self.inbox: dict[str, PeerMessage] = {}
+        self.mesh_peers: dict[str, str] = {}
+        self.mesh_down = False
+        self.mesh_send_error: ForgeApiError | None = None
         self.ask_max_s = 50.0
         self.asks: list[dict[str, Any]] = []
         self.ask_result: dict[str, Any] = {"outcome": "answered", "answer": "yes", "from": "bob"}
@@ -190,7 +193,14 @@ class FakeHost(ForgeMcpHost):
     def mesh_host(self) -> bool:
         return self.mesh
 
-    async def send_mesh_message(self, peer, content, *, expect_reply, request_id, in_reply_to):
+    async def mesh_peer_for(self, *, session_id, name):
+        if self.mesh_down:
+            raise ForgeApiError("this session's mesh is not running", status=503)
+        return self.mesh_peers.get(session_id or name)
+
+    async def send_mesh_message(
+        self, peer, content, *, expect_reply, request_id, in_reply_to, urgent=False
+    ):
         self.mesh_sends.append(
             {
                 "peer": peer,
@@ -198,8 +208,11 @@ class FakeHost(ForgeMcpHost):
                 "expect_reply": expect_reply,
                 "request_id": request_id,
                 "in_reply_to": in_reply_to,
+                "urgent": urgent,
             }
         )
+        if self.mesh_send_error is not None:
+            raise self.mesh_send_error
         return {"message_id": "mesh-msg-1", "status": "accepted"}
 
     async def received_peer_message(self, message_id: str) -> PeerMessage:
@@ -1042,6 +1055,128 @@ class TestAsk:
         result = await toolbox.call("ask", {"session_id": PEER, "content": "q"})
 
         assert result.is_error and "own MCP" in result.text and client.calls == []
+
+
+class TestMeshRouting:
+    async def test_a_message_to_a_mesh_peer_goes_over_the_mesh_not_through_forge(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peers = {PEER: "peer-9"}
+
+        result = await toolbox.call(
+            "send_message", {"session_id": PEER, "content": "hi", "request_id": "r-1"}
+        )
+
+        assert not result.is_error
+        assert result.structured["path"] == "mesh" and result.structured["status"] == "delivered"
+        assert client.calls == []
+        assert host.mesh_sends[0]["peer"] == "peer-9" and host.mesh_sends[0]["expect_reply"]
+
+    async def test_a_name_that_is_a_mesh_peer_is_routed_over_the_mesh(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peers = {"alpha": "peer-9"}
+
+        result = await toolbox.call(
+            "send_message", {"to": "alpha", "content": "hi", "urgent": True}
+        )
+
+        assert result.structured["path"] == "mesh" and host.mesh_sends[0]["urgent"] is True
+        assert client.calls == []
+
+    async def test_a_recipient_that_is_not_a_peer_goes_through_forge(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call("send_message", {"session_id": PEER, "content": "hi"})
+
+        assert result.structured["path"] == "forge"
+        assert client.calls[0][0] == "send_message" and host.mesh_sends == []
+
+    async def test_a_mesh_that_is_down_is_an_error_and_never_a_forge_send(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_down = True
+
+        for tool, args in (
+            ("send_message", {"session_id": PEER, "content": "hi"}),
+            ("ask", {"session_id": PEER, "content": "hi"}),
+        ):
+            result = await toolbox.call(tool, args)
+            assert result.is_error and "mesh is not running" in result.text
+        assert client.calls == [] and host.mesh_sends == [] and host.asks == []
+
+    async def test_a_peer_that_refuses_the_message_is_an_error(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peers = {PEER: "peer-9"}
+        host.mesh_send_error = ForgeApiError("mesh peer refused the message: inbox off", status=502)
+
+        result = await toolbox.call("send_message", {"session_id": PEER, "content": "hi"})
+
+        assert result.is_error and "inbox off" in result.text and client.calls == []
+
+    async def test_a_session_reply_to_a_mesh_peer_goes_over_the_mesh(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peers = {PEER: "peer-9"}
+        host.inbox["m-1"] = _envelope()
+
+        result = await toolbox.call("reply", {"message_id": "m-1", "content": "done"})
+
+        assert result.structured["path"] == "mesh" and client.calls == []
+        assert host.mesh_sends[0]["peer"] == "peer-9"
+        assert host.mesh_sends[0]["in_reply_to"] == "m-1"
+
+    async def test_a_session_reply_to_a_non_peer_goes_through_forge(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.inbox["m-1"] = _envelope()
+
+        result = await toolbox.call("reply", {"message_id": "m-1", "content": "done"})
+
+        assert result.structured["path"] == "forge" and host.mesh_sends == []
+
+    async def test_ask_over_the_mesh_waits_on_the_peer_not_on_forge(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peers = {PEER: "peer-9"}
+
+        result = await toolbox.call(
+            "ask", {"session_id": PEER, "content": "q", "request_id": "q-1"}
+        )
+
+        assert not result.is_error and result.structured["path"] == "mesh"
+        wait = host.asks[0]
+        assert wait["mesh_peer"] == "peer-9" and wait["delivery_confirmed"] is True
+        assert client.calls == []
+        from niuu.domain.peer_envelope import derive_message_id
+        from niuu.domain.peer_message import PeerAddress, PeerKind
+
+        assert wait["message_id"] == derive_message_id(
+            PeerAddress(PeerKind.SESSION, SELF), PeerAddress(PeerKind.MESH_PEER, "peer-9"), "q-1"
+        )
+
+    async def test_an_ask_whose_send_gets_no_answer_waits_as_unconfirmed(self) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peers = {PEER: "peer-9"}
+        host.mesh_send_error = ForgeApiError("did not answer", status=504)
+        host.ask_result = {"outcome": "delivery_unknown", "detail": "x"}
+
+        result = await toolbox.call("ask", {"session_id": PEER, "content": "q"})
+
+        assert host.asks[0]["delivery_confirmed"] is False
+        assert result.is_error and result.structured["outcome"] == "delivery_unknown"
+
+    async def test_an_ask_refused_by_the_peer_is_an_error_not_a_wait(self) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peers = {PEER: "peer-9"}
+        host.mesh_send_error = ForgeApiError("refused: inbox off", status=502)
+
+        result = await toolbox.call("ask", {"session_id": PEER, "content": "q"})
+
+        assert result.is_error and "refused" in result.text and host.asks == []
+
+    async def test_a_peer_that_is_this_session_is_refused(self) -> None:
+        toolbox, _, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peers = {PEER: SELF}
+
+        for tool in ("send_message", "ask"):
+            result = await toolbox.call(tool, {"session_id": PEER, "content": "q"})
+            assert result.is_error and "your own session" in result.text
+        assert host.mesh_sends == []
 
 
 class _NoInboxHost(ForgeMcpHost):

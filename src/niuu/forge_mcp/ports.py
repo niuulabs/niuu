@@ -183,11 +183,14 @@ class ForgeMcpHost(ABC):
         request_id: str,
         delivery_confirmed: bool,
         deadline_s: float,
+        mesh_peer: str | None = None,
     ) -> dict[str, Any]:
         """Wait for ``recipient_id``'s reply to ``message_id``; return ``{outcome, ...}``.
 
-        ``delivery_confirmed`` is whether Forge confirmed the send as delivered (a pending or
-        unconfirmed send is not). Only a session's own broker holds the inbox the answer
+        ``delivery_confirmed`` is whether the send was confirmed delivered (Forge's answer, or the
+        recipient's Skuld over the mesh; a pending, unconfirmed or timed-out send is not).
+        ``mesh_peer`` is the recipient's peer id when the send went over the mesh: its state
+        then comes from the mesh, not Forge. Only a session's own broker holds the inbox the answer
         arrives in; other hosts refuse."""
         raise ForgeApiError(
             "ask needs a Forge session's own MCP (the answer arrives in that session's inbox)",
@@ -198,8 +201,23 @@ class ForgeMcpHost(ABC):
         """Whether this session has the mesh enabled, so ``mesh_send`` is listed."""
         return False
 
+    async def mesh_peer_for(self, *, session_id: str | None, name: str | None) -> str | None:
+        """The mesh peer id of a recipient named by session id or name, or ``None``.
+
+        ``None`` means the recipient is not in this session's mesh peer table (or this host has
+        no mesh), so the send goes through Forge. A session whose mesh is enabled but not
+        running raises instead: it cannot tell, and it never falls back to Forge."""
+        return None
+
     async def send_mesh_message(
-        self, peer: str, content: str, *, expect_reply: bool, request_id: str, in_reply_to: str
+        self,
+        peer: str,
+        content: str,
+        *,
+        expect_reply: bool,
+        request_id: str,
+        in_reply_to: str,
+        urgent: bool = False,
     ) -> dict[str, Any]:
         """Send a peer message to a mesh peer, stamped with this session's identity.
 

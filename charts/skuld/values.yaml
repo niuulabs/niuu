@@ -319,7 +319,8 @@ forgeMcp:
   # Null keeps the broker default (60). Must exceed secretRequests.waitMaxS.
   brokerRequestTimeoutS: null
   # -- Seconds the engine allows one MCP tool call (forge_mcp.tool_timeout_s). Null keeps the broker
-  # default (120). Must exceed secretRequests.waitMaxS.
+  # default (120). Set as Codex's tool_timeout_sec and as Claude Code's per-server timeout for the
+  # Forge server, so both engines are bounded by it. Must exceed secretRequests.waitMaxS and ask.waitMaxS.
   toolTimeoutS: null
 
 # request_secret / request-secret: the agent asks the user for a secret through a masked chat card.

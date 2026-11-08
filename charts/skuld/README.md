@@ -257,7 +257,7 @@ An agent asks the user for a secret with `request-secret` or the Forge MCP `requ
 | `ask.pollIntervalS` | int | `2` | Seconds between checks of whether an `ask` recipient is blocked on a person or gone (`ask.poll_interval_s`) |
 | `ask.waitMaxS` | int | `50` | Longest one `ask` call waits, and the ceiling for a caller's `deadline_s`, in seconds (`ask.wait_max_s`); must stay below `forgeMcp.brokerRequestTimeoutS` and `forgeMcp.toolTimeoutS` |
 | `forgeMcp.brokerRequestTimeoutS` | number | `null` | Seconds the engine allows one stdio-server to broker tool call (`forge_mcp.broker_request_timeout_s`); null keeps the broker default of 60 |
-| `forgeMcp.toolTimeoutS` | number | `null` | Seconds the engine allows one MCP tool call (`forge_mcp.tool_timeout_s`); null keeps the broker default of 120 |
+| `forgeMcp.toolTimeoutS` | number | `null` | Seconds the engine allows one MCP tool call (`forge_mcp.tool_timeout_s`), set for both Codex (`tool_timeout_sec`) and Claude Code (per-server `timeout`); null keeps the broker default of 120 |
 
 ### Environment Variables
 

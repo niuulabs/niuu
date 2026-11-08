@@ -106,7 +106,7 @@ from skuld.file_routes import (  # noqa: F401
 )
 from skuld.forge_mcp.integration import ForgeSessionMixin
 from skuld.history_hydration import fetch_durable_history, merge_history_turns
-from skuld.peer_inbox import PeerInboxMixin
+from skuld.peer_inbox import PEER_STATE_RPC_TYPE, PeerInboxMixin
 from skuld.preview import PreviewForwarder, PreviewPortWatcher
 from skuld.room_delivery import RoomDelivery, RoomDeliveryError
 from skuld.service_manager import (  # noqa: F401
@@ -942,7 +942,8 @@ class Broker(
             peer_id=mesh_cfg.peer_id or self.session_id or "skuld",
             realm_id=mesh_cfg.realm_id,
             persona=mesh_cfg.persona,
-            display_name="Skuld",
+            # The session's name, so a peer can address this session by it.
+            display_name=self._settings.session.name or "Skuld",
             participant_type="skuld",
             capabilities=list(mesh_cfg.capabilities),
             permission_mode="full_access",
@@ -998,7 +999,10 @@ class Broker(
             peer_inbox=self,
             # Flock members share the workspace, not this broker's loopback secret:
             # their present-file comes over the mesh they already speak.
-            rpc_handlers={PRESENT_FILE_RPC_TYPE: _present_peer_file},
+            rpc_handlers={
+                PRESENT_FILE_RPC_TYPE: _present_peer_file,
+                PEER_STATE_RPC_TYPE: self.peer_state_rpc,
+            },
         )
 
         try:

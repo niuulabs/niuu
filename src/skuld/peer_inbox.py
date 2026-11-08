@@ -51,6 +51,10 @@ PEER_TURN_SOURCE = "peer_message"
 #: Namespace of the deterministic id of the user turn that carries a batch of peer messages.
 _PEER_TURN_NAMESPACE = "peer-messages"
 
+#: The mesh RPC ``type`` through which a peer asks this session what it is doing (an ``ask``
+#: waiting on a mesh peer cannot read it from Forge).
+PEER_STATE_RPC_TYPE = "peer_state"
+
 #: The OTel counter every message increments, once per outcome.
 PEER_MESSAGES_COUNTER = "skuld.peer.messages"
 
@@ -527,6 +531,20 @@ class PeerInboxMixin:
                 entry.consumed_by = ""
                 raise
             return TakenAnswer(entry.envelope, already_delivered=False)
+
+    async def peer_state_rpc(self, _message: dict) -> dict[str, Any]:
+        """Answer a mesh peer's ``peer_state`` RPC: this session's activity state, what kind of
+        person-input it waits on if blocked, and the messages accepted but not yet read."""
+        state = str(self._activity_state)
+        answer: dict[str, Any] = {
+            "status": "ok",
+            "activity_state": state,
+            "waiting": self.pending_peer_message_ids(),
+        }
+        kind = self._activity_extra.get("kind") if state == "awaiting_input" else None
+        if isinstance(kind, str) and kind:
+            answer["kind"] = kind
+        return answer
 
     def pending_peer_message_ids(self) -> list[str]:
         """Messages accepted and not yet handed to the harness (or taken by an ask)."""
