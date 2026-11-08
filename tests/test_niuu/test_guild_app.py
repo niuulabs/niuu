@@ -66,8 +66,8 @@ def test_create_app_mounts_only_guild_routes(monkeypatch) -> None:
         assert "/api/v1/niuu/targets/volundr" in paths
         assert "/api/v1/niuu/observatory/snapshot" in paths
         assert "/api/v1/forge/sessions" in paths
-        assert "/api/v1/ravn/ravens" in paths
-        assert "/api/v1/ravn/sessions" in paths
+        assert "/api/v1/ravn/ravens" not in paths
+        assert "/api/v1/ravn/sessions" not in paths
         assert "/api/v1/tokens" not in paths
         assert "/api/v1/features" not in paths
         assert "/api/v1/identity/auth/config" not in paths
@@ -126,33 +126,6 @@ def test_create_app_seeds_embedded_forge_when_no_workers_configured(monkeypatch)
     seed_instances.assert_not_awaited()
     seed_embedded.assert_awaited_once()
     instance_repo.ensure_schema.assert_awaited_once()
-
-
-def test_create_app_never_threads_dev_identity_to_the_ravn_session_proxy(monkeypatch) -> None:
-    """Guild has no local dev-identity mode: every route may proxy to another
-    machine, so the Ravn session proxy is built with no dev_identity kwarg at
-    all — it forwards only the caller's bearer token regardless of host mode."""
-    from fastapi import APIRouter
-
-    received_kwargs: list[dict] = []
-
-    def _router(_service, **kwargs):
-        received_kwargs.append(kwargs)
-        return APIRouter()
-
-    monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
-    monkeypatch.setattr(
-        guild_app, "PostgresInstanceRepository", lambda _pool: _DummyInstanceRepository()
-    )
-    monkeypatch.setattr(guild_app, "PostgresPATRepository", lambda _pool: object())
-    monkeypatch.setattr(guild_app, "create_pat_validator", lambda *_args: _DummyPATValidator())
-    monkeypatch.setattr(guild_app, "seed_configured_instances", AsyncMock(return_value=0))
-    monkeypatch.setattr(guild_app, "create_ravn_session_proxy_router", _router)
-
-    with TestClient(guild_app.create_app(settings=Settings())):
-        pass
-
-    assert received_kwargs == [{"embedded_forge_app": None, "owner_probe_timeout_seconds": 15.0}]
 
 
 def test_create_app_configures_guild_transport_from_settings(monkeypatch) -> None:

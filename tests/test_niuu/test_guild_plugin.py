@@ -50,7 +50,6 @@ def test_guild_plugin_route_domains_are_stable_without_configured_workers() -> N
         "guild-instances-api",
         "forge-api",
         "session-api",
-        "ravn-aggregate-api",
     ]
     assert route_domains[0].prefixes == (
         "/api/v1/niuu/instances",
@@ -62,10 +61,6 @@ def test_guild_plugin_route_domains_are_stable_without_configured_workers() -> N
     assert route_domains[2].prefixes == (
         "/api/v1/forge/sessions",
         "/api/v1/forge/chronicles",
-    )
-    assert route_domains[3].prefixes == (
-        "/api/v1/ravn/ravens",
-        "/api/v1/ravn/sessions",
     )
 
 
@@ -91,7 +86,6 @@ niuu:
         "guild-instances-api",
         "forge-api",
         "session-api",
-        "ravn-aggregate-api",
     ]
     assert route_domains[1].prefixes == ("/api/v1/forge",)
     assert route_domains[2].prefixes == (

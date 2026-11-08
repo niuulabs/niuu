@@ -197,7 +197,7 @@ def _validate_identity_adapter_class(cls: type, auth_mode: str) -> None:
             f"token's signature, but identity.adapter={name} does not. Configure "
             "identity.adapters.jwks.JwksIdentityAdapter (or "
             "JwksBearerAuthenticationAdapter for a header-only slot such as "
-            "RAVN_API_AUTH), or set auth.mode: none to run without authentication "
+            "HOST_IDENTITY), or set auth.mode: none to run without authentication "
             "explicitly instead of silently starting an unverified host."
         )
 

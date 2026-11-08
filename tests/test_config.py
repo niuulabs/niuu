@@ -171,22 +171,16 @@ class TestSettings:
         assert settings.forge_stream_queue_maxsize == 64
 
     def test_guild_transport_timeout_defaults(self):
-        """The pin-handshake ceiling and the owner-probe timeout are
-        configured, not hardcoded — see niuu.adapters.outbound.guild_transport
-        and niuu.adapters.inbound.rest_ravn."""
+        """The pin-handshake ceiling is configured, not hardcoded — see
+        niuu.adapters.outbound.guild_transport."""
         settings = Settings()
 
         assert settings.guild_transport_connect_timeout_seconds == 5.0
-        assert settings.guild_owner_probe_timeout_seconds == 15.0
 
     def test_guild_transport_timeout_settings_are_configurable(self):
-        settings = Settings(
-            guild_transport_connect_timeout_seconds=2.0,
-            guild_owner_probe_timeout_seconds=30.0,
-        )
+        settings = Settings(guild_transport_connect_timeout_seconds=2.0)
 
         assert settings.guild_transport_connect_timeout_seconds == 2.0
-        assert settings.guild_owner_probe_timeout_seconds == 30.0
 
     def test_preview_cache_dir_defaults_to_mini_mode_home(self):
         """Mini mode's writable HOME keeps working unchanged; Kubernetes must

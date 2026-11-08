@@ -3451,24 +3451,6 @@ class Settings(BaseSettings):
             "handshake that fetches a pinned instance's live certificate."
         ),
     )
-    guild_workload_delegation_url: str = Field(
-        default="",
-        description=(
-            "Platform URL serving /api/v1/tokens/workload/delegations (niuu-shared, e.g. "
-            "https://yggdrasil.niuu.world). When set, the Guild records the delegation that "
-            "lets a resident's own ServiceAccount act for the person deploying it, and "
-            "revokes it when the resident is deleted, for instances whose config names a "
-            "workload_verifier. Empty: no delegation is recorded."
-        ),
-    )
-    guild_owner_probe_timeout_seconds: float = Field(
-        default=15.0,
-        gt=0,
-        description=(
-            "Timeout for the Ravn resident/session proxy's owner-probe HTTP GET "
-            "(niuu.adapters.inbound.rest_ravn) and its TLS-pin handshake."
-        ),
-    )
     guild_transport_trusted_plaintext_host_suffixes: list[str] = Field(
         default_factory=lambda: [".svc.cluster.local", ".svc"],
         description=(

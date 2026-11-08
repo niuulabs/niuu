@@ -255,15 +255,12 @@ forgeStream:
   queueMaxsize: 256
 
 # Timeouts for outbound calls this Guild instance makes to other Guild
-# instances (niuu.adapters.outbound.guild_transport / the Ravn owner-probe).
+# instances (niuu.adapters.outbound.guild_transport).
 guildTransport:
   # -- Ceiling for the connect leg of every outbound Guild call, and the
   # timeout for the bare handshake that fetches a pinned instance's live
   # certificate.
   connectTimeoutSeconds: 5.0
-  # -- Timeout for the Ravn resident/session proxy's owner-probe HTTP GET
-  # and its TLS-pin handshake.
-  ownerProbeTimeoutSeconds: 15.0
   # -- How long the facade remembers which node owns a session (and each node's
   # projects id) and reads it there alone. Lower it when sessions move between nodes.
   sessionOwnerTtlSeconds: 3600.0
