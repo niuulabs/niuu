@@ -79,3 +79,14 @@ def test_cli_runtime_images_install_bubblewrap() -> None:
         dockerfile = (REPO_ROOT / dockerfile_path).read_text()
         assert "    bubblewrap \\\n" in dockerfile
         assert "&& bwrap --version" in dockerfile
+
+
+def test_session_images_install_the_mesh_k8s_discovery_extra() -> None:
+    """The skuld chart's cluster mesh discovers peers by listing pods with the kubernetes
+    package; a session image without it never becomes ready once its mesh is on."""
+    for dockerfile_path in ("containers/skuld/Dockerfile", "containers/openshell/Dockerfile"):
+        dockerfile = (REPO_ROOT / dockerfile_path).read_text()
+        syncs = [line for line in dockerfile.splitlines() if line.startswith("RUN uv sync ")]
+        assert syncs, dockerfile_path
+        for sync in syncs:
+            assert "--extra mesh-k8s" in sync, dockerfile_path

@@ -91,6 +91,14 @@ redis = [
 k8s = [
     "kubernetes-asyncio>=36.1.0",
 ]
+# The mesh's `k8s` discovery (niuu.adapters.discovery.k8s), the skuld chart's default for
+# a session mesh on nng in a cluster: it lists the realm's pods. Skuld and OpenShell images
+# install it; without it a session that joins a cluster mesh refuses to start its mesh.
+# 36.x: kubernetes 37 requires pydantic>=2.14.2 and python-dateutil>=3, which would move every
+# package of the platform; bump with those.
+mesh-k8s = [
+    "kubernetes>=36.0.3,<37",
+]
 otel = [
     "opentelemetry-api>=1.44.0",
     "opentelemetry-sdk>=1.44.0",
