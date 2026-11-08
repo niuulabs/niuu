@@ -19,6 +19,7 @@ from typing import Any
 
 from niuu.adapters.cli import CliTurnRunner
 from niuu.domain.outcome import parse_outcome_block
+from niuu.domain.peer_message import PEER_MESSAGE_FRAME, PeerMessage
 from niuu.mesh.events import MeshEvent, MeshEventType
 from niuu.mesh.participant import MeshParticipant
 from niuu.ports.cli import CLITransport
@@ -145,6 +146,20 @@ class SkuldMeshAdapter:
                 "content": content,
                 "metadata": metadata,
             },
+            timeout_s=self._config.rpc_timeout_s,
+        )
+
+    async def send_peer_message(self, target_peer_id: str, message: PeerMessage) -> dict[str, Any]:
+        """Send a stamped peer message envelope to a mesh peer and return its answer.
+
+        Raises ``RuntimeError`` when the mesh is unavailable; a transport failure or a peer
+        that does not know the peer, or the type, surfaces from the mesh or in the answer.
+        """
+        if self._mesh is None:
+            raise RuntimeError("Mesh is unavailable")
+        return await self._mesh.send(
+            target_peer_id,
+            {"type": PEER_MESSAGE_FRAME, "envelope": message.to_wire()},
             timeout_s=self._config.rpc_timeout_s,
         )
 

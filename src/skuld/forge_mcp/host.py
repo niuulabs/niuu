@@ -15,6 +15,14 @@ from typing import TYPE_CHECKING, Any
 from niuu.build_identity import build_identity
 from niuu.domain.artifact_reports import ArtifactReport, build_report_turn
 from niuu.domain.notifications import NotificationDraft, build_notification_turn
+from niuu.domain.peer_envelope import derive_message_id
+from niuu.domain.peer_message import (
+    PeerAddress,
+    PeerKind,
+    PeerMessage,
+    ReplyKind,
+    ReplyRoute,
+)
 from niuu.domain.services.forge_session_token import SESSION_ID_CLAIM
 from niuu.domain.workflow_step import WorkflowStepCloseArgs
 from niuu.forge_mcp.credentials import is_forge_session_claims, token_scopes, unverified_claims
@@ -25,6 +33,7 @@ from niuu.forge_mcp.models import (
     SecretRequestError,
 )
 from niuu.forge_mcp.ports import ForgeClient, ForgeMcpHost
+from niuu.ports.mesh import PeerNotFoundError
 from skuld.conversation_models import ConversationTurn
 from skuld.session_runtime import RuntimeDirError
 
@@ -223,6 +232,64 @@ class BrokerForgeMcpHost(ForgeMcpHost):
 
     def workflow_step_host(self) -> bool:
         return self._broker._settings.workflow_steps.enabled
+
+    def mesh_host(self) -> bool:
+        return self._broker._settings.mesh.enabled
+
+    async def send_mesh_message(
+        self, peer: str, content: str, *, expect_reply: bool, request_id: str, in_reply_to: str
+    ) -> dict[str, Any]:
+        """Send a peer message envelope to a mesh peer, stamped with this session's identity.
+
+        The sender is this session (id, name, node) and, when a reply is expected, the reply
+        route is this session's mesh peer id. Nothing about the sender comes from ``content``.
+        A mesh that is down, a peer that is unknown or unreachable, and a peer that refuses
+        the message are errors, never a quiet success.
+        """
+        broker = self._broker
+        adapter = broker._mesh_adapter
+        if adapter is None:
+            raise ForgeApiError(
+                "this session's mesh is not running (mesh.enabled is set but the adapter did "
+                "not start); check the broker log, or set mesh.enabled to false",
+                status=503,
+            )
+        sender = PeerAddress(
+            kind=PeerKind.SESSION,
+            id=str(broker.session_id),
+            name=broker._settings.session.name,
+            node=socket.gethostname(),
+        )
+        recipient = PeerAddress(kind=PeerKind.MESH_PEER, id=peer)
+        message = PeerMessage(
+            message_id=derive_message_id(sender, recipient, request_id),
+            sender=sender,
+            recipient=recipient,
+            sent_at=datetime.now(UTC),
+            content=content,
+            reply=ReplyRoute(kind=ReplyKind.MESH, target=adapter.peer_id) if expect_reply else None,
+            in_reply_to=in_reply_to,
+        )
+        try:
+            answer = await adapter.send_peer_message(peer, message)
+        except PeerNotFoundError as exc:
+            raise ForgeApiError(
+                f"mesh peer {peer!r} is not in this session's peer table; "
+                "check the peer id with the flock's member list",
+                status=404,
+            ) from exc
+        except TimeoutError as exc:
+            raise ForgeApiError(
+                f"mesh peer {peer!r} did not answer within mesh.rpc_timeout_s; the message may "
+                "or may not have arrived: retry with the same request_id",
+                status=504,
+            ) from exc
+        failure = answer.get("error") or (
+            answer.get("status") if answer.get("status") == "error" else None
+        )
+        if failure:
+            raise ForgeApiError(f"mesh peer {peer!r} refused the message: {failure}", status=502)
+        return {"message_id": message.message_id, "status": answer.get("status") or "sent"}
 
     async def close_workflow_step(self, args: WorkflowStepCloseArgs) -> dict[str, Any]:
         """Close the session's open workflow step; a close the step does not allow raises."""
