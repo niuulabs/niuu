@@ -19,6 +19,7 @@ from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
+from niuu.mesh.attestation import MeshSigner
 from niuu.mesh.platform_events import SigningBus
 from niuu.mesh.platform_identity import (
     platform_event_verifier,
@@ -589,6 +590,24 @@ async def _integration_repository(settings: Settings, pool):
     yield PostgresIntegrationRepository(pool)
 
 
+async def start_ting_platform_signer(
+    settings: Settings, sleipnir_bus: object | None
+) -> MeshSigner | None:
+    """Ting's platform-event signer, or ``None`` when Ting has no bus.
+
+    Without a bus Ting publishes no platform events and its event triggers, which
+    subscribe to the bus, act on none, so there is nothing to sign or check and no
+    signing key is needed. With a bus, signing follows ``mesh.attestation`` as everywhere.
+    """
+    if sleipnir_bus is None:
+        return None
+    return await start_platform_signer(
+        "ting",
+        settings.mesh.attestation,
+        workload_identity=settings.workload_identity,
+    )
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -861,11 +880,9 @@ def create_app(
                 sleipnir_bus = sl_cls(**settings.sleipnir.kwargs)
             # Platform events are signed as service:ting; the same signer's keys verify the
             # events Ting acts on. With mesh.attestation.required false both are off (logged).
-            platform_signer = await start_platform_signer(
-                "ting",
-                settings.mesh.attestation,
-                workload_identity=settings.workload_identity,
-            )
+            # Without a bus Ting publishes no platform events and its triggers (which need
+            # the bus) act on none, so there is nothing to sign or check and no key is needed.
+            platform_signer = await start_ting_platform_signer(settings, sleipnir_bus)
             platform_verifier = (
                 platform_event_verifier(
                     verifier_for(platform_signer, settings.mesh.attestation),
