@@ -16,7 +16,13 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+        {{- if include "skuld.meshK8sDiscovery" . }}
+        {{- include "skuld.meshPodLabels" . | nindent 8 }}
+        {{- end }}
       {{- $annotations := deepCopy (.Values.podAnnotations | default dict) }}
+      {{- if include "skuld.meshK8sDiscovery" . }}
+      {{- $_ := set $annotations "ravn.niuu.world/peer-id" (.Values.mesh.peerId | default .Values.session.id) }}
+      {{- end }}
       {{- if and .Values.git.credentials.tokenFile (hasKey $annotations "vault.hashicorp.com/agent-inject") }}
       {{- $names := splitList "," (index $annotations "vault.hashicorp.com/agent-inject-containers" | default "skuld") }}
       {{- $_ := set $annotations "vault.hashicorp.com/agent-inject-containers" (join "," (uniq (append $names "git-clone"))) }}
@@ -284,7 +290,15 @@ spec:
             - name: broker
               containerPort: 8081
               protocol: TCP
+            {{- if include "skuld.meshK8sDiscovery" . }}
+            - name: mesh-pub
+              containerPort: {{ include "skuld.meshNngPort" . }}
+              protocol: TCP
+            {{- end }}
           env:
+            {{- if include "skuld.meshK8sDiscovery" . }}
+            {{- include "skuld.meshEnv" . | nindent 12 }}
+            {{- end }}
             # WORKSPACE_DIR is computed from template helpers — kept as env var
             - name: WORKSPACE_DIR
               value: {{ include "skuld.workspacePath" . | quote }}

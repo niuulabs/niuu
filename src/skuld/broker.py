@@ -55,7 +55,6 @@ from niuu.domain.transcript_reducer import (
 )
 from niuu.mesh import mesh_event_prefix
 from niuu.mesh.attestation import VERIFIED_SENDER_KEY
-from niuu.mesh.cluster import read_cluster_pub_addresses
 from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
 from niuu.observability import get_observability
@@ -685,6 +684,9 @@ class Broker(
         self._mesh_topics: MeshTopics | None = None
         self._mesh_identity: Any = None
         self._mesh_discovery: Any = None
+        # The nng transport and the PUB address it announced, when the mesh runs on nng.
+        self._mesh_nng_transport: Any = None
+        self._mesh_pub_address: str | None = None
 
         # Optional mesh-to-collaboration bridge.
         self._collaboration_mesh_bridge: Any = None
@@ -876,11 +878,15 @@ class Broker(
         )
         from niuu.mesh.participant import MeshParticipant
         from niuu.mesh.transport_builder import (
-            build_nng_transport,
             build_transport,
             resolve_transport_kwargs,
         )
-        from skuld.mesh_adapter import MeshPeerIdError, SkuldMeshAdapter, resolve_mesh_peer_id
+        from skuld.mesh_adapter import (
+            MeshConfigurationError,
+            MeshPeerIdError,
+            SkuldMeshAdapter,
+            resolve_mesh_peer_id,
+        )
 
         mesh_cfg = self._settings.mesh
         # The one id of this session on the mesh: the transport, the certificate Forge signs,
@@ -919,18 +925,27 @@ class Broker(
             from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter  # noqa: PLC0415
 
             if mesh_cfg.transport == "nng":
-                nng_cfg = getattr(mesh_cfg, "nng", None)
-                address = (
-                    getattr(nng_cfg, "pub_sub_address", "tcp://127.0.0.1:0")
-                    if nng_cfg
-                    else "tcp://127.0.0.1:0"
+                if not (mesh_cfg.discovery_adapters or mesh_cfg.adapters):
+                    raise MeshConfigurationError(
+                        "mesh.enabled with the nng transport has no peer discovery: a session "
+                        "dials only the peers discovery tells it about, so it would run alone "
+                        "and say nothing. Set mesh.discovery_adapters (`registry` for sessions "
+                        "that share a host, `k8s` in a cluster, `static` for a fixed list), or "
+                        "let the pod manager that starts this session set it"
+                    )
+                kwargs = resolve_transport_kwargs(
+                    self._settings,
+                    "nng",
+                    service_prefix="skuld",
+                    discovered_peers=self._discovered_pub_addresses,
                 )
-                peer_addresses = read_cluster_pub_addresses(mesh_cfg.adapters)
-                transport = build_nng_transport(
-                    address=address,
-                    service_id=f"skuld:{own_peer_id}",
-                    peer_addresses=peer_addresses or None,
-                )
+                # One id: the transport's, discovery's and the certificate's.
+                kwargs["service_id"] = own_peer_id
+                transport = build_transport("nng", **kwargs)
+                # Bind now so the address is known before discovery announces it.
+                await transport.bind()
+                self._mesh_nng_transport = transport
+                self._mesh_pub_address = transport.pub_address
             else:
                 transport = build_transport(
                     mesh_cfg.transport,
@@ -978,6 +993,7 @@ class Broker(
             emits_event_types=["code.changed", *topics.produces],
             role=topics.role,
             description=topics.description,
+            pub_address=self._mesh_pub_address,
             activity_state=self._activity_state,
             busy=self._coarse_bucket(self._activity_state) == "running",
         )
@@ -1020,6 +1036,9 @@ class Broker(
                 )
 
             await discovery.watch(_on_join, _on_leave)
+
+        if self._mesh_nng_transport is not None and discovery is not None:
+            await discovery.watch(self._on_mesh_peer_change, self._on_mesh_peer_change)
 
         participant = MeshParticipant(
             mesh=mesh,
@@ -1204,6 +1223,43 @@ class Broker(
         )
         self._mesh_attested = attested
         return attested
+
+    def _discovered_pub_addresses(self) -> list[str]:
+        """The PUB addresses of the peers discovery has found (what the nng SUB side dials).
+
+        A peer discovery found without an address cannot be dialed; that is said, once per
+        pass, rather than the peer being dropped from the table without a word.
+        """
+        discovery = self._mesh_discovery
+        if discovery is None:
+            return []
+        addresses: list[str] = []
+        for peer in discovery.peers().values():
+            if peer.pub_address:
+                addresses.append(peer.pub_address)
+                continue
+            logger.error(
+                "mesh peer %s has no nng PUB address, so this session cannot hear it: its "
+                "discovery must carry one (`k8s` needs mesh.nng.pub_sub_address's port as "
+                "`nng_port`)",
+                peer.peer_id,
+            )
+        return addresses
+
+    def _on_mesh_peer_change(self, _peer: Any) -> None:
+        """A peer joined or left: dial or hang up now, not at the next pass."""
+        transport = self._mesh_nng_transport
+        if transport is None:
+            return
+        task = asyncio.get_running_loop().create_task(
+            transport.refresh_peers(), name="skuld-mesh-refresh-peers"
+        )
+        task.add_done_callback(self._log_refresh_failure)
+
+    @staticmethod
+    def _log_refresh_failure(task: asyncio.Task) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("refreshing the nng peers failed", exc_info=task.exception())
 
     def _room_default_target_peer_id(self) -> str:
         """Peer that untargeted browser messages route to (resident sessions)."""

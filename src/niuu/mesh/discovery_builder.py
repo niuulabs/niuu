@@ -23,6 +23,7 @@ DISCOVERY_ALIASES: dict[str, str] = {
     "sleipnir": "niuu.adapters.discovery.sleipnir.SleipnirDiscoveryAdapter",
     "k8s": "niuu.adapters.discovery.k8s.K8sDiscoveryAdapter",
     "static": "niuu.adapters.discovery.static.StaticDiscoveryAdapter",
+    "registry": "niuu.adapters.discovery.registry.RegistryDiscoveryAdapter",
     "event_bus": "niuu.adapters.discovery.event_bus.EventBusDiscoveryAdapter",
 }
 

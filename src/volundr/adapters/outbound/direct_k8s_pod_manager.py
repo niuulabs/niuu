@@ -27,7 +27,13 @@ from volundr.adapters.outbound.local_process import (
     FORGE_MCP_TOKEN_ENV,
     FORGE_MCP_TOKEN_FILE_ENV,
 )
-from volundr.adapters.outbound.mesh_settings import mesh_environment, parse_mesh_settings
+from volundr.adapters.outbound.mesh_settings import (
+    mesh_environment,
+    mesh_is_nng,
+    mesh_lists_pods_of,
+    mesh_with_defaults,
+    parse_mesh_settings,
+)
 from volundr.domain.models import Session, SessionSpec, SessionStatus
 from volundr.domain.ports import CredentialStorePort, PodManager, PodStartResult
 from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
@@ -195,6 +201,16 @@ _FORGE_MCP_ENV_NAMES = frozenset(
 )
 
 
+#: Where a pod's nng PUB socket listens, and the port k8s discovery dials it on.
+DEFAULT_MESH_NNG_PORT = 7480
+#: The pod's own IP, from the downward API: the host other pods dial it at.
+POD_IP_ENV = "POD_IP"
+
+
+class MeshDiscoveryRbacError(RuntimeError):
+    """Forge cannot give a session's mesh the permission it needs to list pods."""
+
+
 class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
     """Direct Kubernetes API implementation of PodManager.
 
@@ -234,6 +250,7 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
         codex_auth_kwargs: dict | None = None,
         volundr_api_url: str = "",
         mesh: dict | str | None = None,
+        mesh_nng_port: int = DEFAULT_MESH_NNG_PORT,
         **_extra: object,
     ):
         """``volundr_api_url`` is where a session pod reaches this Forge (the cluster-side
@@ -248,7 +265,20 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
         self._ingress_backend = ingress_backend
         self._external_url = external_url.rstrip("/")
         self._volundr_api_url = str(volundr_api_url).strip().rstrip("/")
-        self._mesh = parse_mesh_settings(mesh)
+        # Pods find each other by listing the session pods of the realm (k8s discovery) and
+        # dial the PUB socket every pod opens on its own IP; the operator only enables the mesh.
+        self._mesh = mesh_with_defaults(
+            parse_mesh_settings(mesh),
+            {
+                "nng": {
+                    "pub_sub_address": f"tcp://0.0.0.0:{mesh_nng_port}",
+                    "advertise_host": f"$({POD_IP_ENV})",
+                },
+                "discovery_adapters": [
+                    {"adapter": "k8s", "namespace": namespace, "nng_port": mesh_nng_port}
+                ],
+            },
+        )
         self._skuld_image = skuld_image
         self._reh_image = reh_image
         self._nginx_image = nginx_image
@@ -357,9 +387,16 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
             {"name": name, "value": value}
             for name, value in self._brokered_credential_environment(spec).items()
         )
-        env.extend(
-            {"name": name, "value": value} for name, value in mesh_environment(self._mesh).items()
-        )
+        mesh_env = mesh_environment(self._mesh)
+        if any(f"$({POD_IP_ENV})" in value for value in mesh_env.values()):
+            # Defined before the entries that refer to it, which Kubernetes expands.
+            env.append(
+                {
+                    "name": POD_IP_ENV,
+                    "valueFrom": {"fieldRef": {"fieldPath": "status.podIP"}},
+                }
+            )
+        env.extend({"name": name, "value": value} for name, value in mesh_env.items())
 
         # Handle git config from spec values.
         git_config = spec.values.get("git", {})
@@ -1029,6 +1066,9 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
             names.append("git-clone")
             annotations[inject_key] = ",".join(dict.fromkeys(names))
 
+        pod_labels, mesh_annotations = self._mesh_pod_identity(session)
+        annotations.update(mesh_annotations)
+
         return {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
@@ -1046,13 +1086,97 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
                 },
                 "template": {
                     "metadata": {
-                        "labels": labels,
+                        "labels": {**labels, **pod_labels},
                         "annotations": annotations,
                     },
                     "spec": pod_spec,
                 },
             },
         }
+
+    def _mesh_rbac_name(self, session: Session) -> str:
+        return f"{self._release_name(session)}-mesh-discovery"
+
+    def _mesh_rbac_manifests(
+        self, session: Session, spec: SessionSpec
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """The Role and RoleBinding k8s discovery needs, or ``None`` when the mesh lists no pods.
+
+        Namespaced, and nothing but reading pods: the session's ServiceAccount (the one the
+        pod runs as) may get, list and watch the pods of this namespace.
+        """
+        if not mesh_lists_pods_of(self._mesh, self._namespace):
+            return None
+        name = self._mesh_rbac_name(session)
+        metadata = {
+            "name": name,
+            "namespace": self._namespace,
+            "labels": self._build_labels(session),
+        }
+        service_account = (
+            spec.pod_spec.service_account if spec.pod_spec and spec.pod_spec.service_account else ""
+        ) or "default"
+        role = {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "Role",
+            "metadata": dict(metadata),
+            "rules": [
+                {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch"]}
+            ],
+        }
+        binding = {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "RoleBinding",
+            "metadata": dict(metadata),
+            "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": name},
+            "subjects": [
+                {"kind": "ServiceAccount", "name": service_account, "namespace": self._namespace}
+            ],
+        }
+        return role, binding
+
+    async def _apply_mesh_rbac(self, session: Session, spec: SessionSpec) -> None:
+        """Create the discovery Role and binding before the pod starts; refuse if Forge cannot."""
+        manifests = self._mesh_rbac_manifests(session, spec)
+        if manifests is None:
+            return
+        role, binding = manifests
+        name = role["metadata"]["name"]
+        try:
+            for kind, manifest in (("role", role), ("role_binding", binding)):
+                await self._apply_resource(
+                    api_method_create=f"create_namespaced_{kind}",
+                    api_method_patch=f"patch_namespaced_{kind}",
+                    api_class="RbacAuthorizationV1Api",
+                    name=name,
+                    manifest=manifest,
+                )
+        except self._get_api_exception() as exc:
+            if exc.status != 403:
+                raise
+            raise MeshDiscoveryRbacError(
+                f"Forge may not create the Role and RoleBinding {name} in namespace "
+                f"{self._namespace} that the session's mesh needs to list pods (HTTP 403). Grant "
+                "its ServiceAccount create, get, patch and delete on roles and rolebindings "
+                "there (the volundr chart does when its pod manager is the direct Kubernetes "
+                "one), or give the mesh other discovery in mesh.discovery_adapters"
+            ) from exc
+
+    def _mesh_pod_identity(self, session: Session) -> tuple[dict[str, str], dict[str, str]]:
+        """The labels and annotations k8s discovery reads: realm, and this pod's peer id."""
+        if not mesh_is_nng(self._mesh):
+            return {}, {}
+        adapters = self._mesh.get("discovery_adapters") or []
+        if not any(entry.get("adapter") == "k8s" for entry in adapters):
+            return {}, {}
+        peer_id = str(self._mesh.get("peer_id") or session.id)
+        return (
+            {
+                "ravn.niuu.world/realm": str(self._mesh.get("realm_id") or ""),
+                "ravn.niuu.world/role": "agent",
+            },
+            {"ravn.niuu.world/peer-id": peer_id},
+        )
 
     @staticmethod
     def _add_persistent_scratch(pod_spec: dict[str, Any], session: Session) -> None:
@@ -1244,9 +1368,11 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
             CoreV1Api,
             CustomObjectsApi,
             NetworkingV1Api,
+            RbacAuthorizationV1Api,
         )
 
         api_map: dict[str, type] = {
+            "RbacAuthorizationV1Api": RbacAuthorizationV1Api,
             "AppsV1Api": AppsV1Api,
             "CoreV1Api": CoreV1Api,
             "NetworkingV1Api": NetworkingV1Api,
@@ -1426,6 +1552,9 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
             manifest=nginx_cm,
         )
 
+        # The pod lists pods to find its peers: its Role must exist before it starts.
+        await self._apply_mesh_rbac(session, spec)
+
         # Create the Deployment.
         deployment = self._build_deployment_manifest(session, spec)
         await self._apply_resource(
@@ -1503,7 +1632,17 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
             name=f"{release_name}-strip",
         )
 
-        if d1 or d2 or d3 or d4:
+        d5 = d6 = False
+        if mesh_lists_pods_of(self._mesh, self._namespace):
+            mesh_rbac = self._mesh_rbac_name(session)
+            d5 = await self._delete_resource(
+                "RbacAuthorizationV1Api", "delete_namespaced_role_binding", mesh_rbac
+            )
+            d6 = await self._delete_resource(
+                "RbacAuthorizationV1Api", "delete_namespaced_role", mesh_rbac
+            )
+
+        if d1 or d2 or d3 or d4 or d5 or d6:
             logger.info(
                 "Deleted K8s resources for session %s",
                 session.id,

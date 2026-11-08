@@ -145,7 +145,8 @@ class MeshConfig(BaseModel):
     certificates. ``required: false`` runs the mesh unauthenticated, which is the
     operator's choice; Forge and each session log that once at startup, and Forge reports it
     on ``/health``. The other keys are Skuld's own ``mesh`` settings for local sessions;
-    unset keeps Skuld's default.
+    unset keeps Skuld's default. ``enabled: true`` is enough: the mesh runs on nng, and
+    sessions on this machine find each other through a registry file (``discovery_adapters``).
     """
 
     model_config = {"extra": "forbid"}
@@ -154,6 +155,28 @@ class MeshConfig(BaseModel):
     transport: str | None = Field(default=None, description="Skuld mesh.transport.")
     peer_id: str | None = Field(default=None, description="Skuld mesh.peer_id.")
     realm_id: str | None = Field(default=None, description="Skuld mesh.realm_id.")
+    nng: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Skuld mesh.nng (pub_sub_address, advertise_host, rediscover_interval_s). Unset "
+            "keeps a loopback port the OS chooses, announced as the port it got."
+        ),
+    )
+    discovery_adapters: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Skuld mesh.discovery_adapters: how sessions find each other, as `adapter:` plus "
+            "that adapter's settings. Unset, sessions on this machine share one registry file "
+            "(`~/.niuu/mesh/peers.json`); set it to use `static`, `k8s` or `event_bus` instead."
+        ),
+    )
+    nats: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Skuld mesh.nats, for `transport: nats` (servers and the rest of "
+            "niuu.mesh.config.MeshNatsConfig). NATS is an option, never required."
+        ),
+    )
     attestation: MeshAttestationConfig = Field(
         default_factory=MeshAttestationConfig,
         description="Proof of who sent each mesh message (see the class docstring).",
@@ -163,7 +186,15 @@ class MeshConfig(BaseModel):
         """Skuld ``mesh`` settings for local sessions (attestation travels as Forge's decision)."""
         return {
             key: getattr(self, key)
-            for key in ("enabled", "transport", "peer_id", "realm_id")
+            for key in (
+                "enabled",
+                "transport",
+                "peer_id",
+                "realm_id",
+                "nng",
+                "discovery_adapters",
+                "nats",
+            )
             if getattr(self, key) is not None
         }
 

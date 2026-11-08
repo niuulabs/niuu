@@ -18,6 +18,17 @@ spec:
       from:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+    {{- if include "skuld.meshK8sDiscovery" . }}
+    # The other sessions of the realm dial this pod's mesh PUB socket.
+    - ports:
+        - protocol: TCP
+          port: {{ include "skuld.meshNngPort" . }}
+      from:
+        - podSelector:
+            matchLabels:
+              ravn.niuu.world/realm: {{ .Values.mesh.realmId | quote }}
+              ravn.niuu.world/role: agent
+    {{- end }}
     {{- with .Values.networkPolicy.extraIngress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

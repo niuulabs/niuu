@@ -29,8 +29,14 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- if or .Values.podAnnotations (and .Values.wsAuth.enforce_ownership .Values.envoy.enabled) }}
+        {{- if include "skuld.meshK8sDiscovery" . }}
+        {{- include "skuld.meshPodLabels" . | nindent 8 }}
+        {{- end }}
+      {{- if or .Values.podAnnotations (and .Values.wsAuth.enforce_ownership .Values.envoy.enabled) (include "skuld.meshK8sDiscovery" .) }}
       annotations:
+        {{- if include "skuld.meshK8sDiscovery" . }}
+        {{- include "skuld.meshPodAnnotations" . | nindent 8 }}
+        {{- end }}
         {{- if and .Values.wsAuth.enforce_ownership .Values.envoy.enabled }}
         checksum/authz: {{ include (print $.Template.BasePath "/authz-configmap.yaml") . | sha256sum }}
         {{- end }}
@@ -394,8 +400,16 @@ spec:
             {{- range .Values.mesh.peerPorts }}
             - {{- toYaml . | nindent 14 }}
             {{- end }}
+            {{- if include "skuld.meshK8sDiscovery" . }}
+            - name: mesh-pub
+              containerPort: {{ include "skuld.meshNngPort" . }}
+              protocol: TCP
+            {{- end }}
           env:
             {{- include "skuld.scratchEnv" . | nindent 12 }}
+            {{- if include "skuld.meshK8sDiscovery" . }}
+            {{- include "skuld.meshEnv" . | nindent 12 }}
+            {{- end }}
             - name: SKULD__SESSION__WORKSPACE_DIR
               value: {{ include "skuld.workspacePath" . | quote }}
             {{- if .Values.volundr.apiUrl }}

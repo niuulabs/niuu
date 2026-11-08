@@ -407,12 +407,12 @@ one:
 
 Discovery is how a session is seen, so none of its failures is quiet: a failed announce means
 peers stop seeing the session, and a failed list means a peer table that is wrong without
-saying so. Every adapter (`event_bus`, `sleipnir`, `mdns`, `k8s`, `static`, and the composite
+saying so. Every adapter (`event_bus`, `sleipnir`, `mdns`, `k8s`, `static`, `registry`, and the composite
 that runs several) follows the same rules (`niuu.adapters.discovery._failures`):
 
 | Failure | What happens | Why |
 |---|---|---|
-| The adapter is configured but cannot run: a missing package (`aio_pika`, `zeroconf`, `pynng`, `kubernetes`), an AMQP URL that is not set or does not connect, no cluster credentials, no LAN address, a named `cluster_file` that is absent or unreadable, the first announce that cannot be published | `start()` raises `DiscoveryError` with the remedy, and the session's mesh does not start | the operator asked for discovery; running without it is the fallback this avoids. A composite raises for any backend that fails and stops the ones that started |
+| The adapter is configured but cannot run: a missing package (`aio_pika`, `zeroconf`, `pynng`, `kubernetes`), a `registry` file that cannot be written or a session with no PUB address to register, an AMQP URL that is not set or does not connect, no cluster credentials, no LAN address, a named `cluster_file` that is absent or unreadable, the first announce that cannot be published | `start()` raises `DiscoveryError` with the remedy, and the session's mesh does not start | the operator asked for discovery; running without it is the fallback this avoids. A composite raises for any backend that fails and stops the ones that started |
 | A background iteration fails: a heartbeat that cannot be published, a Kubernetes list that fails, a static file that cannot be reloaded or has vanished, an mDNS responder error | error log, counted on `ravn.degraded` as `niuu.discovery.<adapter>.<operation>`, and the loop tries again at the next interval | it cannot raise into nothing, and stopping the loop would end discovery for good. Until a heartbeat succeeds peers age this session out, which is why it is an error and not a debug line |
 | A list or reload fails | the peer table is left as it was | an empty result would read as "every peer left" |
 | A consumer's `on_join` / `on_leave` callback raises | reported and counted (`<adapter>.join` / `<adapter>.leave`); the peer table is already updated and the other callbacks still run | one consumer's bug must not stop the others or corrupt the table |
@@ -426,16 +426,60 @@ host with no cluster file is normal; one the operator named must exist.
 
 ## Configuring the mesh
 
-Everything under Skuld's `mesh` settings (`skuld.config.MeshConfig`) is a value of the skuld
-chart's `mesh` block (`charts/skuld/values.yaml`, documented in its README) and renders
-into the broker's config file. Forge reaches a session pod through the same Helm values
-as for every other setting: the pod manager's `session_defaults`
-(`podManager.kwargs.session_defaults` in the volundr chart) is merged under what the session
-contributors add, and the result is the session's release values. There is no mesh
-contributor: the mesh settings that differ per session (topics, role, description) come from
-the session's pinned persona, which Skuld reads itself, so one set of `session_defaults`
-serves every session of a flock. Set at least `mesh.enabled`, a `mesh.realmId` shared by the
-flock, a transport and a discovery adapter:
+`mesh.enabled: true` is all an operator has to say. The mesh runs on **nng**, a peer-to-peer
+transport that needs no broker or server, and NATS stays an option for deployments that
+already run it, never a requirement. The pod manager that starts a session knows where it
+runs and so how its peers are found, so it sets the rest, unless the operator named it.
+
+On nng every session opens a PUB socket and dials the PUB socket of every peer discovery
+reports. So the two things that matter are *the address a session announces* and *how it
+learns its peers' addresses*:
+
+| Shape | Peers are found by | The address announced |
+|---|---|---|
+| **Mini mode** (`niuu platform up`) and any sessions that share a machine's file system | `registry` discovery: one JSON file beside the workspaces (`~/.niuu/mesh/peers.json`), where each session registers its address and the facts a peer chooses by; dead processes are pruned by pid | `tcp://127.0.0.1:<port the OS chose>` |
+| **Kubernetes** (direct pod manager) and **Flux** (the skuld chart) | `k8s` discovery: it lists the pods labelled with the realm (`ravn.niuu.world/realm`, `ravn.niuu.world/role: agent`) and reads each pod's peer id from its `ravn.niuu.world/peer-id` annotation | the pod's own IP (`POD_IP`, from the downward API) on `tcp://0.0.0.0:7480` |
+| **Docker, OpenShell, VMs and registered hosts** | not defaulted: name a discovery in `mesh.discovery_adapters` (`static`, or `k8s`/`event_bus` where they fit). Without one Skuld refuses to start the mesh | set `mesh.nng.pub_sub_address` and `mesh.nng.advertise_host` yourself |
+
+In every shape the session binds its PUB socket first, announces the address it really got
+(a port of 0 is announced as the port the OS gave), and dials and hangs up on peers as
+discovery reports them join and leave. A join or leave takes effect at once;
+`mesh.nng.rediscover_interval_s` (default 1 s) is the backstop. A peer that discovery found
+without an address cannot be heard and is logged at error, not skipped quietly.
+
+**A mesh that cannot find its peers does not run alone.** `mesh.enabled` on nng with no
+discovery is a startup error that names the settings; a registry file that cannot be written,
+or a cluster whose pods cannot be listed, fails the session's mesh start the same way.
+
+Set by the operator, and kept as set (a key the operator names is never replaced):
+
+- **Mini mode**: `mesh:` in `~/.niuu/config.yaml` takes `enabled`, `transport`, `peer_id`,
+  `realm_id`, `nng`, `discovery_adapters`, `nats` and `attestation`. The local pod manager
+  carries them into each session.
+- **Kubernetes/Flux**: the skuld chart's `mesh.*` values (`mesh.nng.port`,
+  `mesh.nng.pubSubAddress`, `mesh.nng.advertiseHost`, `mesh.discoveryAdapters`,
+  `mesh.discoverPods: false` to opt out of the cluster default). The default needs the
+  session's ServiceAccount to `list` pods in its namespace, and, with `networkPolicy.enabled`,
+  lets the realm's pods reach port 7480 (the chart adds that rule).
+- **Sessions on different machines without Kubernetes**: bind every interface and announce
+  the host the others can reach, and list the peers (or run a discovery that finds them):
+
+```yaml
+mesh:
+  enabled: true
+  nng:
+    pub_sub_address: tcp://0.0.0.0:7480
+    advertise_host: 10.0.3.4
+  discovery_adapters:
+    - adapter: static
+      cluster_file: /etc/niuu/mesh-peers.yaml   # peers: [{peer_id, pub_address, ...}]
+```
+
+A wildcard bind without `advertise_host` is an error: it has no address of its own to
+announce.
+
+**NATS** is chosen with `transport: nats`, the servers under `nats`, and a discovery that
+rides the bus:
 
 ```yaml
 podManager:
@@ -449,8 +493,24 @@ podManager:
         discoveryAdapters: [{adapter: event_bus}]
 ```
 
-Before the chart rendered these values, `mesh.enabled` and `mesh.transport` did nothing in a
-chart-deployed session.
+Everything under Skuld's `mesh` settings (`skuld.config.MeshConfig`) is a value of the skuld
+chart's `mesh` block (`charts/skuld/values.yaml`, documented in its README) and renders
+into the broker's config file. Forge reaches a session pod through the same Helm values as
+for every other setting: the pod manager's `session_defaults`
+(`podManager.kwargs.session_defaults` in the volundr chart) is merged under what the session
+contributors add, and the result is the session's release values. There is no mesh
+contributor: the mesh settings that differ per session (topics, role, description) come from
+the session's pinned persona, which Skuld reads itself, so one set of `session_defaults`
+serves every session of a flock.
+
+**What a session may do without setup.** `mesh_peers`, `mesh_publish` (on the topics its
+persona declares) and `mesh_ask` need no grant, so events and questions work as soon as the
+mesh is on. The direct tools (`send_message`, `ask`, `reply`, `mesh_send`) still need the
+`message` grant: it lets a session put text into any other session its owner owns, which is
+a way for one session that read hostile content to steer the others, so it is given by
+role (workers and coordinators carry it) or by the operator per session, not to every
+session by default. Direct messages are not the default way to talk (see the top of this
+page); a session that needs one is created with `forge_mcp.grants: [message]`.
 
 ## Who sent a mesh message
 
