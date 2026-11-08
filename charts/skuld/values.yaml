@@ -645,6 +645,10 @@ mesh:
   # -- Topics mesh_publish may publish (mesh.publish_event_types), in addition to the pinned
   # persona's `produces`. A topic in neither is refused.
   publishEventTypes: null
+  # -- Topics every session may publish whatever its persona declares (mesh.standard_event_types),
+  # so any agent can ask a question or ask for help by publishing. Null keeps `["help.needed"]`;
+  # an empty list removes the standard topics.
+  standardEventTypes: null
   # -- Attention hint (0.0-1.0) on events mesh_publish publishes (mesh.published_event_urgency).
   # Null keeps 0.8.
   publishedEventUrgency: null

@@ -277,6 +277,7 @@ A session joins a flock as a mesh peer when `mesh.enabled` is true: it announces
 | `mesh.tools` | list | `null` | Tools announced (`mesh.tools`) |
 | `mesh.consumesEventTypes` | list | `null` | Topics subscribed to (`mesh.consumes_event_types`); null keeps `["code.requested"]`; a pinned persona's `consumes` are added |
 | `mesh.publishEventTypes` | list | `null` | Topics `mesh_publish` may publish (`mesh.publish_event_types`), added to the pinned persona's `produces`; any other topic is refused |
+| `mesh.standardEventTypes` | list | `null` | Topics every session may publish whatever its persona declares (`mesh.standard_event_types`); null keeps `["help.needed"]`, an empty list removes them |
 | `mesh.publishedEventUrgency` | number | `null` | Attention hint 0.0-1.0 on published events (`mesh.published_event_urgency`); null keeps 0.8 |
 | `mesh.nng.pubSubAddress` | string | `""` | NNG publish/subscribe address (`mesh.nng.pub_sub_address`) |
 | `mesh.nng.reqRepAddress` | string | `""` | NNG request/reply address (`mesh.nng.req_rep_address`) |

@@ -209,6 +209,9 @@ data:
       {{- if kindIs "slice" .Values.mesh.publishEventTypes }}
       publish_event_types: {{ .Values.mesh.publishEventTypes | toJson }}
       {{- end }}
+      {{- if kindIs "slice" .Values.mesh.standardEventTypes }}
+      standard_event_types: {{ .Values.mesh.standardEventTypes | toJson }}
+      {{- end }}
       {{- if not (kindIs "invalid" .Values.mesh.publishedEventUrgency) }}
       published_event_urgency: {{ .Values.mesh.publishedEventUrgency | toJson }}
       {{- end }}

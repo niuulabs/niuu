@@ -118,6 +118,15 @@ class MeshConfig(BaseModel):
             "``consumes.event_types`` are subscribed in addition (``skuld.mesh_topics``)."
         ),
     )
+    standard_event_types: list[str] = Field(
+        default_factory=lambda: ["help.needed"],
+        description=(
+            "Topics every session may publish whatever its persona declares, so any agent can "
+            "ask a question or ask for help by publishing. The default is the one the old Ravn "
+            "runtime made available to all personas. Others subscribe to it (a persona's "
+            "``consumes``, or ``mesh_subscribe``). Empty removes the standard topics."
+        ),
+    )
     role: str = Field(
         default="",
         description=(

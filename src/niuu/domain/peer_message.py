@@ -149,6 +149,9 @@ class PeerMessage:
     room_id: str = ""
     relayed_by: PeerAddress | None = None
     urgent: bool = False
+    #: The conversation this message belongs to: a mesh publication's correlation id. Messages
+    #: of one thread are rendered together. Empty for a message that belongs to none.
+    thread: str = ""
 
     def __post_init__(self) -> None:
         if not self.message_id.strip():
@@ -171,6 +174,7 @@ class PeerMessage:
             "room_id": self.room_id,
             "relayed_by": self.relayed_by.to_wire() if self.relayed_by else None,
             "urgent": self.urgent,
+            "thread": self.thread,
         }
 
     @classmethod
@@ -202,6 +206,7 @@ class PeerMessage:
             if relayed_by is None
             else PeerAddress.from_wire(relayed_by, field_name="relayed_by"),
             urgent=urgent,
+            thread=_text(raw.get("thread"), "thread"),  # absent before threads existed
         )
 
 
@@ -223,6 +228,8 @@ def render_for_harness(message: PeerMessage) -> str:
         lines.append(f"[Said in room {message.room_id}]")
     if message.relayed_by is not None:
         lines.append(f"[Relayed by {message.relayed_by.label()}]")
+    if message.thread and message.thread != message.message_id:
+        lines.append(f"[Thread {message.thread}]")
     if message.in_reply_to:
         lines.append(f"[In reply to your message {message.in_reply_to}]")
     lines.append("")

@@ -39,7 +39,15 @@ from niuu.forge_mcp.ports import ForgeClient, ForgeMcpHost
 from niuu.observability import get_observability
 from niuu.ports.mesh import PeerNotFoundError
 from skuld.conversation_models import ConversationTurn
-from skuld.mesh_topics import UndeclaredTopicError, build_publication, peer_table
+from skuld.mesh_follows import MeshFollowError, follow_for
+from skuld.mesh_topics import (
+    InvalidTopicError,
+    UndeclaredTopicError,
+    build_publication,
+    peer_table,
+    publication_topics,
+    validate_subscribable_topic,
+)
 from skuld.peer_inbox import (
     CHANNEL_MESH,
     OUTCOME_FAILED,
@@ -53,6 +61,9 @@ from skuld.session_runtime import RuntimeDirError
 
 if TYPE_CHECKING:
     from skuld.broker import Broker
+
+#: Counts of the topics and threads a session followed or stopped following.
+MESH_FOLLOWS_COUNTER = "skuld.mesh.follows"
 
 logger = logging.getLogger("skuld.broker")
 
@@ -670,23 +681,106 @@ class BrokerForgeMcpHost(ForgeMcpHost):
             in_reply_to=in_reply_to,
             trace_context=get_observability().inject(),
         )
-        try:
-            await adapter.publish_event(event, topic)
-        except Exception as exc:
-            self._count_publication(topic, OUTCOME_FAILED)
-            logger.error("mesh_publish of %s (event %s) failed: %s", topic, event.event_id, exc)
-            raise ForgeApiError(
-                f"the mesh did not accept the event on {topic!r}: {exc}. Nothing is known to "
-                "have been published; retry with the same request_id once the mesh is back",
-                status=502,
-            ) from exc
+        # An answer also goes to the peer it answers, so that peer needs no subscription.
+        answered = self._answered_peer(in_reply_to)
+        copies = publication_topics(event, topic, answered)
+        for index, target in enumerate(copies):
+            try:
+                await adapter.publish_event(event, target)
+            except Exception as exc:
+                self._count_publication(topic, OUTCOME_FAILED)
+                logger.error(
+                    "mesh_publish of %s (event %s) failed on %s: %s",
+                    topic,
+                    event.event_id,
+                    target,
+                    exc,
+                )
+                done = (
+                    f" It had already gone to {index} of its {len(copies)} destinations."
+                    if index
+                    else " Nothing is known to have been published."
+                )
+                raise ForgeApiError(
+                    f"the mesh did not accept the event on {topic!r}: {exc}.{done} Retry with "
+                    "the same request_id once the mesh is back; consumers drop the repeat",
+                    status=502,
+                ) from exc
         self._count_publication(topic, OUTCOME_PUBLISHED)
-        return {
+        answer = {
             "event_id": event.event_id,
             "topic": topic,
             "correlation_id": event.correlation_id,
             "status": "published",
         }
+        if answered:
+            answer["answered_peer"] = answered
+        return answer
+
+    def _answered_peer(self, in_reply_to: str) -> str:
+        """The mesh peer whose message this publication answers, if it came over the mesh.
+
+        An id this session never received (such as its own earlier event) names no peer: the
+        publication is still part of that thread, it just has nobody to be sent to directly.
+        """
+        if not in_reply_to:
+            return ""
+        entry = self._broker._peer_inbox.get(in_reply_to)
+        if entry is None or entry.envelope.reply is None:
+            return ""
+        if entry.envelope.reply.kind is not ReplyKind.MESH:
+            return ""
+        return entry.envelope.reply.target
+
+    async def mesh_subscribe(self, *, topic: str, correlation_id: str) -> dict[str, Any]:
+        """Start listening to a topic or follow a thread, durably. Any valid topic is allowed.
+
+        The persona's ``consumes`` stays the standing subscription; this adds to it and
+        survives a restart. Nothing waits for an event.
+        """
+        return await self._change_follow(topic, correlation_id, follow=True)
+
+    async def mesh_unsubscribe(self, *, topic: str, correlation_id: str) -> dict[str, Any]:
+        """Stop following a topic or thread that was followed at runtime."""
+        return await self._change_follow(topic, correlation_id, follow=False)
+
+    async def _change_follow(
+        self, topic: str, correlation_id: str, *, follow: bool
+    ) -> dict[str, Any]:
+        broker = self._broker
+        action = "followed" if follow else "unfollowed"
+        try:
+            target = follow_for(
+                topic=validate_subscribable_topic(topic) if topic else "",
+                correlation_id=correlation_id,
+            )
+            if follow:
+                new = await broker.follow_mesh(target)
+            else:
+                await broker.unfollow_mesh(target)
+                new = True
+        except (MeshFollowError, InvalidTopicError) as exc:
+            self._count_follow("refused", topic or correlation_id)
+            raise ForgeApiError(str(exc), status=409) from exc
+        except RuntimeError as exc:
+            self._count_follow("failed", topic or correlation_id)
+            raise ForgeApiError(
+                f"the mesh did not change the subscription: {exc}", status=503
+            ) from exc
+        self._count_follow(action if new else "already", target.topic)
+        return {
+            "status": action if new else "already",
+            "topic": target.topic,
+            **({"correlation_id": target.thread} if target.thread else {}),
+            **broker.mesh_subscriptions(),
+        }
+
+    def _count_follow(self, outcome: str, subject: str) -> None:
+        get_observability().count(
+            MESH_FOLLOWS_COUNTER,
+            attributes={"outcome": outcome, "topic": subject},
+            description="Topics and threads this session followed or stopped following.",
+        )
 
     def _count_publication(self, topic: str, outcome: str) -> None:
         """Count a publication on ``skuld.peer.messages``, the recipient being the topic."""

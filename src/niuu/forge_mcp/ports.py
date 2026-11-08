@@ -257,6 +257,22 @@ class ForgeMcpHost(ABC):
             status=501,
         )
 
+    async def mesh_subscribe(self, *, topic: str, correlation_id: str) -> dict[str, Any]:
+        """Start listening to a mesh topic or follow a thread. Only a session's own broker."""
+        raise ForgeApiError(
+            "mesh_subscribe needs a Forge session's own MCP (the mesh belongs to that session's "
+            "broker)",
+            status=501,
+        )
+
+    async def mesh_unsubscribe(self, *, topic: str, correlation_id: str) -> dict[str, Any]:
+        """Stop following a topic or thread followed at runtime. Only a session's own broker."""
+        raise ForgeApiError(
+            "mesh_unsubscribe needs a Forge session's own MCP (the mesh belongs to that "
+            "session's broker)",
+            status=501,
+        )
+
     def workflow_step_host(self) -> bool:
         """Whether this session hosts workflow steps, so ``workflow_step_close`` is listed."""
         return False

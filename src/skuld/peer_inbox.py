@@ -151,12 +151,34 @@ def peer_turn_id(session_id: str, message_ids: list[str]) -> str:
 
 
 def render_peer_turn(entries: list[PeerInboxEntry]) -> str:
-    """The text of one turn: each message as the contract renders it, oldest first."""
+    """The text of one turn: each message as the contract renders it, oldest first.
+
+    Messages of one thread (a mesh publication and the answers to it) are rendered together
+    under a thread header, in the order they arrived; threads and single messages follow
+    the order of their first message. Any number of answers may be in one turn, and none
+    is waited for.
+    """
     if len(entries) == 1:
         return render_for_harness(entries[0].envelope)
+    groups: dict[str, list[PeerInboxEntry]] = {}
+    for entry in entries:
+        # A message with no thread is its own group.
+        key = entry.envelope.thread or f"\0{entry.envelope.message_id}"
+        groups.setdefault(key, []).append(entry)
+    blocks = []
+    for key, members in groups.items():
+        body = _BATCH_SEPARATOR.join(render_for_harness(member.envelope) for member in members)
+        if len(members) == 1:
+            blocks.append(body)
+            continue
+        blocks.append(f"[Thread {key}: {len(members)} messages]\n\n{body}")
     header = f"[{len(entries)} messages arrived while you were working, oldest first]"
-    body = _BATCH_SEPARATOR.join(render_for_harness(entry.envelope) for entry in entries)
-    return f"{header}\n\n{body}"
+    if any(len(members) > 1 for members in groups.values()):
+        header = (
+            f"[{len(entries)} messages arrived while you were working, grouped by thread; "
+            "oldest first]"
+        )
+    return f"{header}\n\n" + _BATCH_SEPARATOR.join(blocks)
 
 
 @dataclass

@@ -83,7 +83,9 @@ class TestDeclaredTopics:
             _settings(consumes_event_types=["code.requested"], publish_event_types=["build.done"])
         )
 
-        assert topics == MeshTopics(consumes=("code.requested",), produces=("build.done",))
+        assert topics == MeshTopics(
+            consumes=("code.requested",), produces=("build.done", "help.needed")
+        )
 
     def test_the_personas_consumes_are_subscribed_and_its_produces_may_be_published(self) -> None:
         persona = _persona(
@@ -101,6 +103,7 @@ class TestDeclaredTopics:
             "extra.topic",
             "review.done",
             "review.changes_requested",
+            "help.needed",
         }
         assert topics.persona_id == "reviewer"
 
@@ -338,10 +341,12 @@ class TestAdapterPublish:
         assert [call.args[0] for call in mesh.subscribe.await_args_list] == [
             "code.requested",
             "review.requested",
+            adapter.inbox_topic,
         ]
         assert [call.args[0] for call in mesh.unsubscribe.await_args_list] == [
             "code.requested",
             "review.requested",
+            adapter.inbox_topic,
         ]
 
 
@@ -404,7 +409,7 @@ class TestFanOutAndLateAnswers:
                     PeerKind.MESH_PEER, "skuld-pub", name="skuld-pub"
                 )
                 assert envelope.reply == ReplyRoute(ReplyKind.MESH, "skuld-pub")
-                assert "[Correlation pr-12]" in envelope.content
+                assert envelope.thread == "pr-12"
                 assert "please review PR 12" in envelope.content
                 assert envelope.in_reply_to == ""
             assert mesh.inboxes.bystander.accepted == []
@@ -529,7 +534,7 @@ class TestConsumerEnvelope:
         await adapter._handle_outcome_event(event)
 
         [(envelope, _)] = inbox.accepted
-        assert envelope.in_reply_to == "" and "[Correlation" not in envelope.content
+        assert envelope.in_reply_to == "" and envelope.thread == event.event_id
         assert envelope.content == "[Request for event type t]\nwork"
         assert envelope.recipient == PeerAddress(PeerKind.SESSION, "session-of-c")
         assert envelope.reply == ReplyRoute(ReplyKind.MESH, "pub")
@@ -555,7 +560,7 @@ class TestBrokerWiring:
         await broker._start_mesh_adapter()
         try:
             assert broker._mesh_adapter._consumes == ("code.requested", "review.requested")
-            assert broker._mesh_topics.produces == ("review.done",)
+            assert broker._mesh_topics.produces == ("review.done", "help.needed")
             host = BrokerForgeMcpHost(broker, client=SimpleNamespace())
             answer = await host.publish_mesh_event(
                 "review.done", "ok", request_id="r", correlation_id="", in_reply_to=""
