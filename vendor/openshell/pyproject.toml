@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openshell"
+version = "0.1.8.dev40+ge9825820d"
+description = "OpenShell is the safe, private runtime for autonomous AI agents."
+license = "Apache-2.0"
+authors = [{ name = "NVIDIA Inc." }]
+requires-python = ">=3.11"
+dependencies = [
+    "cloudpickle>=3.0",
+    "grpcio>=1.60",
+    "googleapis-common-protos>=1.63",
+    "httpx>=0.27",
+    "protobuf>=4.25",
+]
+
+[project.urls]
+source = "https://github.com/jve/OpenShell/tree/e9825820d9d8ea809f7de3b4160c105f83848d95"
+documentation = "https://docs.nvidia.com/openshell/latest/"
+
+[tool.hatch.build.targets.wheel]
+packages = ["openshell"]

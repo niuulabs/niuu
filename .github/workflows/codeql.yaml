@@ -1,8 +1,8 @@
 name: CodeQL
 
 on:
+  # Topic branches accept PRs too; scan them before they reach dev.
   pull_request:
-    branches: [main, dev]
   push:
     branches: [main, dev]
   schedule:
@@ -11,8 +11,9 @@ on:
 permissions: read-all
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  # Every pushed commit needs an analysis; only superseded PR runs may be cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   analyze:

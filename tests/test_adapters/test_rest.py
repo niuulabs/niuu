@@ -2449,7 +2449,13 @@ class TestNodeInstanceFields:
             response = client.get("/api/v1/forge/stats", params={"instance_id": NOATUN.id})
 
         assert response.status_code == 503
-        assert "https://guild.example" in response.json()["detail"]
+        assert response.json()["detail"] == (
+            "This Forge node belongs to the Guild at https://guild.example, but its instance "
+            "id there is not recorded. On a host joined with `niuu join`, run "
+            "`niuu guild heartbeat --once`; on a cluster, set the Volundr chart's "
+            "guild.instanceId, guild.instanceName and guild.instanceSlug from the Guild's "
+            "registry (GET /api/v1/niuu/targets/volundr)."
+        )
 
 
 class TestListRepos:

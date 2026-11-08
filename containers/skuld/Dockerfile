@@ -34,9 +34,8 @@ RUN set -eux; \
 WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
-# uv.lock locates the OpenShell SDK wheel in vendor/wheels/ (see [tool.uv.sources]);
-# keep it beside the lockfile so a sync never fetches it from GitHub.
-COPY vendor/wheels/ /app/vendor/wheels/
+# Build the pinned OpenShell SDK from local source, without release downloads.
+COPY vendor/openshell/ /app/vendor/openshell/
 # --extra dsh bundles the DeepSeek Harness runtime (single-file exe, exact-pinned)
 # for DshJsonRpcTransport; the binary needs no Node at runtime.
 # --extra nats: a session whose mesh transport is NATS (mesh.nats) cannot start

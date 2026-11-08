@@ -522,17 +522,12 @@ jobs:
     name: Scan the macOS session bundle
     needs: darwin-bundle
     if: ${{ !cancelled() && needs.darwin-bundle.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: macos-15
     permissions:
       contents: read
       packages: read
       security-events: write
     steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
-        with:
-          egress-policy: audit
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -540,7 +535,10 @@ jobs:
       - uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
 
       - name: Install Syft and Grype
-        run: bash containers/python-security/install-scanners.sh
+        run: |
+          mkdir -p "${RUNNER_TEMP}/scanners"
+          bash containers/python-security/install-scanners.sh "${RUNNER_TEMP}/scanners"
+          echo "${RUNNER_TEMP}/scanners" >> "$GITHUB_PATH"
 
       - name: Scan the bundle
         env:
@@ -548,11 +546,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/pulled" "${RUNNER_TEMP}/bundle"
-          oras pull "${REF}" --output "${RUNNER_TEMP}/pulled"
+          digest=$(oras resolve "${REF}")
+          bundle_ref="${REF%:*}@${digest}"
+          oras pull "${bundle_ref}" --output "${RUNNER_TEMP}/pulled"
           tar -xzf "${RUNNER_TEMP}"/pulled/*.tar.gz -C "${RUNNER_TEMP}/bundle"
-          syft scan "dir:${RUNNER_TEMP}/bundle" -o "syft-json=sbom-skuld-darwin.syft.json"
+          "${RUNNER_TEMP}/bundle/python/bin/python3" -B containers/python-security/verify.py \
+            "${bundle_ref}" > python-security-skuld-darwin.json
+          SYFT_GOLANG_CAPTURE_SYMBOLS=all SYFT_COMPLIANCE_MISSING_VERSION=drop \
+            syft scan "dir:${RUNNER_TEMP}/bundle" -o "syft-json=sbom-skuld-darwin.syft.json"
           grype "sbom:sbom-skuld-darwin.syft.json" -o "json=grype-skuld-darwin-raw.json"
+          python3 containers/python-security/vex.py "${bundle_ref}" \
+            python-security-skuld-darwin.json grype-skuld-darwin-raw.json \
+            "${RUNNER_TEMP}/bundle" > python-security-skuld-darwin.vex.json
           grype "sbom:sbom-skuld-darwin.syft.json" --only-fixed --fail-on critical \
+            --vex python-security-skuld-darwin.vex.json \
             -o "json=grype-skuld-darwin-filtered.json" -o "sarif=grype-skuld-darwin.sarif"
 
       - name: Preserve scan evidence
@@ -563,6 +570,7 @@ jobs:
           path: |
             grype-skuld-darwin-*.json
             sbom-skuld-darwin.syft.json
+            python-security-skuld-darwin*.json
           retention-days: 30
 
       - name: Upload Grype results

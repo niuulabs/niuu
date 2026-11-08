@@ -127,7 +127,7 @@ def test_the_stored_key_is_written_where_ssh_reads_it_and_nobody_else_can(tmp_pa
     assert access.public_key == keys.public_key
     public = path.with_name("id_ed25519.pub")
     assert public.read_text() == keys.public_key + "\n"
-    assert _mode(public) == 0o644
+    assert _mode(public) == 0o600
     assert not list(path.parent.glob(".*"))
     logged = [r.getMessage() for r in caplog.records if "host access" in r.getMessage()]
     assert logged == [f"Forge host access: SSH key {keys.fingerprint} from the credential store"]
@@ -138,6 +138,8 @@ def test_the_store_is_the_truth_a_restart_rewrites_the_file(tmp_path, keys):
     _access(tmp_path, generate_host_access_key())
     path = _key_path(tmp_path)
     path.chmod(0o644)
+    public = path.with_name("id_ed25519.pub")
+    public.chmod(0o644)
     path.parent.chmod(0o755)
 
     _access(tmp_path, keys)
@@ -145,6 +147,7 @@ def test_the_store_is_the_truth_a_restart_rewrites_the_file(tmp_path, keys):
     assert path.read_text() == keys.private_key
     assert _mode(path) == 0o600
     assert _mode(path.parent) == 0o700
+    assert _mode(public) == 0o600
 
 
 def test_a_public_file_left_by_another_key_is_replaced(tmp_path, keys):
