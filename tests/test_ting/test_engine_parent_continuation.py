@@ -1,11 +1,10 @@
-"""The Volundr parent continuation adapter is domain-neutral.
+"""The engine parent continuation is domain-neutral.
 
 It is constructed once, in ``main.py``, and handed to both the generic
-``WorkflowExecutionService``/``WorkflowWaitService`` and (today) the code
-delivery specialization. These tests exercise it against a plain, non-
-delivery ``WorkflowExecution`` — no ``ting.delivery`` import anywhere in this
-module — to prove a workflow that isn't code delivery can still resume its
-parent session and forward a wait observation.
+``WorkflowExecutionService``/``WorkflowWaitService`` and (today) the code delivery
+specialization. These tests exercise it against a plain, non-delivery
+``WorkflowExecution`` to prove a workflow that isn't code delivery can still close its
+parent run's waiting steps and cancel the run.
 """
 
 from __future__ import annotations
@@ -13,11 +12,12 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
-from ting.adapters.parent_workflow_continuation import VolundrParentWorkflowContinuation
+from ting.adapters.engine_parent_continuation import EngineParentWorkflowContinuation
 from ting.domain.workflow_execution import (
     ChildTemplate,
     ExecutionBudget,
@@ -36,46 +36,6 @@ def _digest(value: str) -> str:
     return "sha256:" + sha256(value.encode()).hexdigest()
 
 
-def _graph_snapshot() -> dict:
-    """A pinned graph for a non-delivery editorial workflow.
-
-    Names a subworkflow node (for resume/notify) and a wait node (for a
-    terminal observation), each with event names unlike anything code
-    delivery uses, to prove the continuation reads them from the pinned
-    graph rather than assuming a fixed vocabulary.
-    """
-    return {
-        "graph": {
-            "nodes": [
-                {
-                    "id": "commission-translations",
-                    "kind": "subworkflow",
-                    "blockedEvent": "translations.blocked",
-                },
-                {
-                    "id": "await-fact-check",
-                    "kind": "wait",
-                    "conditions": ["fact-check"],
-                },
-            ],
-            "edges": [
-                {
-                    "id": "translations-joined",
-                    "source": "commission-translations",
-                    "target": "publish-handbook",
-                    "label": "translations.verified -> translations.verified",
-                },
-                {
-                    "id": "fact-check-observed",
-                    "source": "await-fact-check",
-                    "target": "publish-handbook",
-                    "label": "fact-check.observed -> fact-check.observed",
-                },
-            ],
-        }
-    }
-
-
 def _editorial_execution(**changes) -> WorkflowExecution:
     now = datetime.now(UTC)
     schema = {"type": "object", "properties": {}, "additionalProperties": True}
@@ -88,7 +48,7 @@ def _editorial_execution(**changes) -> WorkflowExecution:
         workflow_id=uuid4(),
         workflow_revision=_digest("workflow"),
         workflow_digest=_digest("workflow"),
-        parent_session_id="session-1",
+        parent_session_id="",
         parent_node_id="commission-translations",
         connection_id="",
         policy=ExpansionPolicy(
@@ -109,80 +69,84 @@ def _editorial_execution(**changes) -> WorkflowExecution:
         ),
         budget=ExecutionBudget(total_units=100),
         deadline=now + timedelta(hours=1),
-        workflow_snapshot=_graph_snapshot(),
+        workflow_snapshot={"graph": {"nodes": [], "edges": []}},
         created_at=now,
         updated_at=now,
     )
     return replace(value, **changes)
 
 
-class _RecordingAdapter:
-    def __init__(self) -> None:
-        self.calls: list[tuple[tuple, dict]] = []
+class _Runs:
+    def __init__(self, *, finished: bool = False) -> None:
+        self.closed: list[tuple] = []
+        self.canceled: list[tuple] = []
+        self._finished = finished
 
-    async def publish_workflow_event(self, *args, **kwargs) -> None:
-        self.calls.append((args, kwargs))
+    async def close_wait(self, run_id, node_id, verdict, *, outcome, note=""):
+        self.closed.append((run_id, node_id, verdict, outcome, note))
+
+    async def state(self, run_id):
+        return SimpleNamespace(finished=self._finished)
+
+    async def cancel(self, campaign, reason):
+        self.canceled.append((campaign, reason))
 
 
-class _SingleOwnerFactory:
-    def __init__(self, adapter: _RecordingAdapter) -> None:
-        self._adapter = adapter
+class _Campaigns:
+    def __init__(self, campaign) -> None:
+        self._campaign = campaign
 
-    async def primary_for_owner(self, owner_id: str):
-        assert owner_id == "editor-1"
-        return self._adapter
+    async def get_campaign(self, campaign_id):
+        if self._campaign is not None and self._campaign.id == campaign_id:
+            return self._campaign
+        return None
 
-    async def for_connection(self, owner_id: str, connection_id: str):
-        raise AssertionError("no explicit connection expected for this execution")
+
+def _continuation(runs: _Runs, campaign=None) -> EngineParentWorkflowContinuation:
+    return EngineParentWorkflowContinuation(
+        runs=lambda: runs, campaigns=lambda: _Campaigns(campaign)
+    )
 
 
 @pytest.mark.asyncio
-async def test_generic_continuation_resumes_a_plain_non_delivery_execution() -> None:
-    """A workflow execution with no delivery row can still resume its parent."""
+async def test_children_joined_closes_the_subworkflow_step_with_the_joined_verdict() -> None:
     execution = _editorial_execution()
-    adapter = _RecordingAdapter()
-    continuation = VolundrParentWorkflowContinuation(volundr_factory=_SingleOwnerFactory(adapter))
+    runs = _Runs()
 
-    await continuation.resume_parent(
+    await _continuation(runs).resume_parent(
         execution,
         generation=1,
         results=[{"childKey": "fr", "attemptId": "attempt-1"}],
     )
 
-    assert len(adapter.calls) == 1
-    args, kwargs = adapter.calls[0]
-    # The event name comes from the pinned graph's own outgoing edge, not a
-    # literal the caller supplied.
-    assert args[:2] == ("session-1", "translations.verified")
-    assert kwargs["payload"]["parentNodeId"] == "commission-translations"
-    assert kwargs["payload"]["generation"] == 1
-    assert kwargs["request_id"] == kwargs["payload"]["continuationId"]
+    [(run_id, node_id, verdict, outcome, _)] = runs.closed
+    assert (run_id, node_id, verdict) == (execution.id, "commission-translations", "joined")
+    assert outcome["generation"] == 1
+    assert outcome["results"] == [{"childKey": "fr", "attemptId": "attempt-1"}]
 
 
 @pytest.mark.asyncio
-async def test_generic_continuation_notifies_parent_of_blocked_children() -> None:
+async def test_blocked_children_close_the_subworkflow_step_with_the_blocked_verdict() -> None:
     execution = _editorial_execution()
-    adapter = _RecordingAdapter()
-    continuation = VolundrParentWorkflowContinuation(volundr_factory=_SingleOwnerFactory(adapter))
+    runs = _Runs()
 
-    await continuation.notify_parent(
+    await _continuation(runs).notify_parent(
         execution,
         generation=1,
         correlation_revision=3,
         children=[{"childKey": "fr", "failureKind": "transient"}],
     )
 
-    assert len(adapter.calls) == 1
-    args, kwargs = adapter.calls[0]
-    assert args[:2] == ("session-1", "translations.blocked")
-    assert kwargs["payload"]["revision"] == 3
+    [(_, node_id, verdict, outcome, _)] = runs.closed
+    assert (node_id, verdict) == ("commission-translations", "blocked")
+    assert outcome["revision"] == 3
+    assert outcome["children"] == [{"childKey": "fr", "failureKind": "transient"}]
 
 
 @pytest.mark.asyncio
-async def test_generic_continuation_forwards_a_terminal_wait_observation() -> None:
+async def test_a_terminal_wait_observation_closes_that_waits_step() -> None:
     execution = _editorial_execution()
-    adapter = _RecordingAdapter()
-    continuation = VolundrParentWorkflowContinuation(volundr_factory=_SingleOwnerFactory(adapter))
+    runs = _Runs()
     wait = WorkflowWait(
         id=uuid4(),
         execution_id=execution.id,
@@ -202,10 +166,37 @@ async def test_generic_continuation_forwards_a_terminal_wait_observation() -> No
         detail={"summary": "translations complete"},
     )
 
-    await continuation.notify_wait_observation(execution, wait, observation)
+    await _continuation(runs).notify_wait_observation(execution, wait, observation)
 
-    assert len(adapter.calls) == 1
-    args, kwargs = adapter.calls[0]
-    assert args[:2] == ("session-1", "fact-check.observed")
-    assert kwargs["payload"]["waitId"] == str(wait.id)
-    assert kwargs["payload"]["nodeId"] == "await-fact-check"
+    [(_, node_id, verdict, outcome, _)] = runs.closed
+    assert (node_id, verdict) == ("await-fact-check", "observed")
+    assert outcome["waitId"] == str(wait.id)
+    assert outcome["nodeId"] == "await-fact-check"
+    assert outcome["conditionType"] == "fact-check"
+
+
+@pytest.mark.asyncio
+async def test_stopping_the_parent_cancels_its_run() -> None:
+    execution = _editorial_execution()
+    campaign = SimpleNamespace(id=execution.id)
+    runs = _Runs()
+
+    await _continuation(runs, campaign).stop_parent(execution)
+
+    assert runs.canceled == [(campaign, "the execution was canceled by its owner")]
+
+
+@pytest.mark.asyncio
+async def test_stopping_a_parent_whose_run_ended_changes_nothing() -> None:
+    execution = _editorial_execution()
+    runs = _Runs(finished=True)
+
+    await _continuation(runs, SimpleNamespace(id=execution.id)).stop_parent(execution)
+
+    assert runs.canceled == []
+
+
+@pytest.mark.asyncio
+async def test_stopping_a_parent_with_no_run_is_an_error() -> None:
+    with pytest.raises(LookupError, match="no run to stop"):
+        await _continuation(_Runs(), None).stop_parent(_editorial_execution())

@@ -30,7 +30,6 @@ from niuu.config import CorsConfig, HttpAuthAdapterConfig, InstanceRegistryConfi
 from niuu.config_models import WorkloadIdentityConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
-from ting.domain.exceptions import WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
 
 
 # Config file search paths (in order of priority).
@@ -46,6 +45,12 @@ def _config_paths() -> list[Path]:
 
 
 CONFIG_PATHS = _config_paths()
+
+
+#: Why settings of the removed Ravn flock runtime stop Ting instead of being ignored.
+RAVN_FLOCK_REMOVED_MESSAGE = (
+    "the Ravn flock runtime is gone: workflow steps run on harness sessions started by Ting"
+)
 
 
 class DatabaseConfig(BaseModel):
@@ -320,15 +325,13 @@ class DispatchConfig(BaseModel):
     def _reject_removed_keys(cls, data: Any) -> Any:
         flock = data.get("flock") if isinstance(data, dict) else None
         if isinstance(flock, dict) and flock.get("enabled"):
-            raise ValueError(
-                f"{WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}; remove dispatch.flock.enabled"
-            )
+            raise ValueError(f"{RAVN_FLOCK_REMOVED_MESSAGE}; remove dispatch.flock.enabled")
         reject_removed_keys(
             "dispatch",
             data,
             {
                 "flock": (
-                    f"{WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}; remove dispatch.flock. "
+                    f"{RAVN_FLOCK_REMOVED_MESSAGE}; remove dispatch.flock. "
                     "Its Mimir settings moved to dispatch.mimir (hosted_url, service_auth, "
                     "registry_path); its other settings no longer have a use"
                 ),
@@ -336,7 +339,7 @@ class DispatchConfig(BaseModel):
                     "the in-process Ravn dispatcher is gone; remove dispatch.in_process"
                 ),
                 "workflow_cli_turn_timeout_seconds": (
-                    "workflow steps have no runner, so there is no turn to time out; "
+                    "workflow steps run on harness sessions whose turns Ting does not time; "
                     "remove dispatch.workflow_cli_turn_timeout_seconds"
                 ),
             },
@@ -776,28 +779,6 @@ class EventTriggerConfig(BaseModel):
     )
 
 
-class RavnOutcomeConfig(BaseModel):
-    """Configuration for the RavnOutcomeHandler adapter.
-
-    Example YAML::
-
-        ravn_outcome:
-          enabled: true
-    """
-
-    enabled: bool = Field(
-        default=False,
-        description=(
-            "Enable the Ravn completion subscriber for canonical "
-            "ravn.session.ended events plus compatibility ravn.task.completed events."
-        ),
-    )
-    owner_id: str = Field(
-        default="api",
-        description="Owner ID used when looking up runs from ravn outcome events.",
-    )
-
-
 class NotificationConfig(BaseModel):
     """Notification service configuration."""
 
@@ -822,12 +803,12 @@ class EventsConfig(BaseModel):
 class StaleCampaignConfig(BaseModel):
     """When an unfinished workflow campaign is given up on, and how often to look.
 
-    A campaign that waits for an answer nobody sends, or whose session sits
-    idle, keeps its session pod. On a node shared by one owner's sessions
-    those pods starved every later launch: eight idle builder sessions held
-    93% of the node's memory for up to 19 hours. Expired campaigns fail with
-    the reason, which notifies the caller and stops the session. 0 disables a
-    check.
+    A campaign that waits for an answer nobody sends keeps its run's session
+    pods. On a node shared by one owner's sessions those pods starved every
+    later launch: eight idle builder sessions held 93% of the node's memory
+    for up to 19 hours. An expired wait cancels the run, which fails the
+    campaign with the reason, notifies the caller and stops the sessions. 0
+    disables the check.
     """
 
     sweep_interval_seconds: float = Field(
@@ -841,21 +822,6 @@ class StaleCampaignConfig(BaseModel):
         description=(
             "Fail a campaign that has waited this long for an answer to its "
             "input request (A2A INPUT_REQUIRED); 0 never expires a wait."
-        ),
-    )
-    idle_timeout_seconds: float = Field(
-        default=2 * 3600.0,
-        ge=0.0,
-        description=(
-            "Fail a submitted or working campaign whose session has made no progress "
-            "for this long: idle, gone, or reporting busy with nothing recorded since "
-            "(a busy report is re-sent as a heartbeat, so it is not progress; entering "
-            "the busy state or a usage report is). Workflow graphs declare no run "
-            "timeout to derive this from; it is the time an owner gets to notice and "
-            "nudge a stalled session before its pod is reclaimed, and must exceed the "
-            "longest single agent turn without a usage report. Each expiry is logged at "
-            "error, counted on ting_a2a_campaigns_expired_total{reason}, and pushed to "
-            "the A2A caller as a FAILED task whose status message says why. 0 disables."
         ),
     )
 
@@ -1027,11 +993,11 @@ class TicketCoordinatorConfig(BaseModel):
             data,
             {
                 "model": (
-                    f"{WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}; a ticket coordinator is no "
+                    f"{RAVN_FLOCK_REMOVED_MESSAGE}; a ticket coordinator is no "
                     "longer launched. Remove ticket_coordinator.model"
                 ),
                 "ravn_config": (
-                    f"{WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}; a ticket coordinator is no "
+                    f"{RAVN_FLOCK_REMOVED_MESSAGE}; a ticket coordinator is no "
                     "longer launched. Remove ticket_coordinator.ravn_config"
                 ),
             },
@@ -1211,8 +1177,29 @@ class WorkflowExecutionConfig(BaseModel):
         return self
 
 
+class StepSessionsConfig(BaseModel):
+    """The harness sessions that run a run's steps (dynamic adapter pattern)."""
+
+    adapter: str = Field(
+        default="ting.adapters.forge_step_sessions.ForgeStepSessions",
+        description=(
+            "Fully qualified StepSessionPort class. It is built with the Forge connection "
+            "factory and the campaign repository, plus the plain kwargs below."
+        ),
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Plain keyword arguments passed to the adapter, e.g. name_prefix, or "
+            "default_model for members whose stage names none (defaults to dispatch.default_model)."
+        ),
+    )
+
+
 class WorkflowStepsConfig(BaseModel):
     """The step engine that runs workflow graphs on harness sessions."""
+
+    sessions: StepSessionsConfig = Field(default_factory=StepSessionsConfig)
 
     step_deadline_seconds: float = Field(
         default=4 * 3600.0,
@@ -1260,8 +1247,11 @@ class Settings(BaseSettings):
             data,
             {
                 "flock_flows": (
-                    f"{WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}; flock flows are gone. "
-                    "Remove flock_flows"
+                    f"{RAVN_FLOCK_REMOVED_MESSAGE}; flock flows are gone. Remove flock_flows"
+                ),
+                "ravn_outcome": (
+                    f"{RAVN_FLOCK_REMOVED_MESSAGE}; runs finish when their workflow's end node "
+                    "completes, not on a Ravn event. Remove ravn_outcome"
                 ),
             },
         )
@@ -1325,7 +1315,6 @@ class Settings(BaseSettings):
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
     event_triggers: EventTriggerConfig = Field(default_factory=EventTriggerConfig)
-    ravn_outcome: RavnOutcomeConfig = Field(default_factory=RavnOutcomeConfig)
     server_host: str = Field(
         default="0.0.0.0",
         validation_alias=AliasChoices("server_host", "HOST"),
