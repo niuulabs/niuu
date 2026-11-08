@@ -613,7 +613,9 @@ def _apply_mesh_decision(
 def _build_pod_manager(settings: Settings, adapter: str, kwargs: dict[str, Any]) -> PodManager:
     cls = import_class(adapter)
     kwargs = dict(kwargs)
-    for name in _nested_pod_manager_parameters(cls, kwargs):
+    # Found before the nested configs are replaced by the managers built from them.
+    nested_names = _nested_pod_manager_parameters(cls, kwargs)
+    for name in nested_names:
         nested = kwargs[name]
         unknown = set(nested) - {"adapter", "kwargs", "secret_kwargs_env"}
         if unknown:
@@ -628,9 +630,7 @@ def _build_pod_manager(settings: Settings, adapter: str, kwargs: dict[str, Any])
                 dict(nested.get("kwargs") or {}), dict(nested.get("secret_kwargs_env") or {})
             ),
         )
-    _apply_mesh_decision(
-        cls, kwargs, settings, covered=bool(_nested_pod_manager_parameters(cls, kwargs))
-    )
+    _apply_mesh_decision(cls, kwargs, settings, covered=bool(nested_names))
     kwargs.setdefault("server_public_host", settings.server_public_host)
     kwargs.setdefault("server_host", settings.server_host)
     kwargs.setdefault("server_port", settings.server_port)
