@@ -211,6 +211,9 @@ class ActivityReportingMixin:
         peer_status = self.peer_message_status()
         if peer_status["pairs"]:
             metadata["peer_messages"] = peer_status
+        attestation = self.mesh_attestation_status()
+        if attestation is not None:
+            metadata["mesh_attestation"] = attestation
         return {
             "state": state,
             "state_since": self._state_since_iso(self._activity_state_since),

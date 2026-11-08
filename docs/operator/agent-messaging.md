@@ -133,6 +133,26 @@ verify others arrive in the same answer, so there is no per-message call to Forg
 | `not_authority` | Something other than Forge tried to revoke a session. |
 | `trust_unavailable` | This peer holds no usable Forge keys. |
 
+**Turning signing off.** It is one decision, `mesh.attestation.required`, and it is **on by
+default in every shape**, mini mode included (Forge's own key file signs the certificates, so
+it needs no setup). Turning it off is the operator's choice; it is not an error, but it is
+logged once at startup by every component and reported:
+
+| Where | How to turn it off | Where it shows |
+|---|---|---|
+| Mini mode (`niuu platform up`) | `mesh: {attestation: {required: false}}` in `~/.niuu/config.yaml` (`NIUU_MESH__ATTESTATION__REQUIRED=false` also works). The same section carries the local sessions' mesh settings: `enabled`, `transport`, `peer_id`, `realm_id`. It reaches Forge's own signers and every locally launched session's Skuld settings from this one value | Forge logs once at startup; `GET /health` shows `mesh_attestation: {required: false, state: "unauthenticated"}`; each session logs once and reports `mesh_attestation` in its activity metadata |
+| Forge in a cluster | Volundr chart `mesh.attestation.required: false` (Forge setting `mesh.attestation.required`). Forge carries it into the sessions it launches through the local and Flux pod managers (`session_defaults.mesh`); a different value set there fails startup | same |
+| A Skuld by itself | Skuld chart `mesh.attestation.required: false` (setting `mesh.attestation.required`) | the session log and activity metadata |
+
+What it means when off: nothing on the mesh proves its sender. Any peer on the bus can claim to
+be any session, send in its name, forge its replies and announcements, and publish events as
+it; Forge issues no certificates, signs no resident traffic and publishes no revocation
+notices. Peers with signing on refuse everything an unsigned peer sends, so **turn it off
+for the whole deployment, not for one component**. A pod manager with no place for Skuld's
+mesh settings (the VM, OpenShell, Docker and direct Kubernetes managers) cannot be given the
+decision by Forge: Forge names it in a warning at startup, and its sessions need
+`SKULD__MESH__ATTESTATION__REQUIRED=false` by their own configuration.
+
 **How long a stopped session is still believed.** Plan for the longest of these, not the
 shortest:
 

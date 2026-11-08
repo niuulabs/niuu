@@ -2173,7 +2173,6 @@ class TestSessionCredentialsNeedNoSetup:
         args = (*WORKLOAD_SIGNING_KEY, "--set", "forgeMcp.mesh_identity.ttl_seconds=600")
         parsed = ForgeMcpConfig.model_validate(_rendered_configmap(*args)["forge_mcp"])
         assert parsed.session_tokens.enabled is True
-        assert parsed.mesh_identity.enabled is True
         assert parsed.mesh_identity.ttl_seconds == 600
 
     def test_enabling_credentials_without_a_key_is_refused_with_the_remedy(self):
@@ -2191,16 +2190,19 @@ class TestSessionCredentialsNeedNoSetup:
         )
         assert "needs a signing key Forge can keep" in error
 
-    def test_mesh_identity_without_credentials_is_refused(self):
-        error = _render_failure("--set", "forgeMcp.mesh_identity.enabled=true")
-        assert "forgeMcp.mesh_identity.enabled needs session credentials" in error
-        assert "forgeMcp.mesh_identity.enabled: false" in error
+    def test_the_old_mesh_identity_switch_is_refused_with_the_new_name(self):
+        error = _render_failure("--set", "forgeMcp.mesh_identity.enabled=false")
+        assert "mesh.attestation.required" in error
 
-    def test_mesh_identity_can_be_switched_off_explicitly(self):
-        args = (*WORKLOAD_SIGNING_KEY, "--set", "forgeMcp.mesh_identity.enabled=false")
-        config = _rendered_configmap(*args)["forge_mcp"]
-        assert config["mesh_identity"] == {"enabled": False}
-        assert config["session_tokens"]["enabled"] is True
+    def test_mesh_signing_renders_nothing_by_default_and_the_one_switch_when_set(self):
+        assert "mesh" not in _rendered_configmap(*WORKLOAD_SIGNING_KEY)
+        config = _rendered_configmap(
+            *WORKLOAD_SIGNING_KEY, "--set", "mesh.attestation.required=false"
+        )
+        assert config["mesh"] == {"attestation": {"required": False}}
+        from volundr.config import MeshSettings
+
+        assert MeshSettings.model_validate(config["mesh"]).attestation.required is False
 
     def test_a_projection_with_nothing_to_project_is_refused(self):
         error = _render_failure("--set", "sessionCredentialProjection.enabled=true")

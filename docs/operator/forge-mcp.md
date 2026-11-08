@@ -488,7 +488,6 @@ forge_mcp:
     key_id: niuu-forge-session
     audiences: [volundr-api]
   mesh_identity:
-    enabled: true                    # false: no mesh certificates, no revocations
     ttl_seconds: 900                 # how long a leaked or stale certificate is believed
   http:
     enabled: true
@@ -528,7 +527,9 @@ Forge decides everything the certificate says; the peer supplies only its key, t
 wants and its realm. Errors: `401` the credential is revoked (session gone, restarted,
 stopped or archived), `403` not the session's own credential, `409` the peer id is held by
 another live session or resident, `422` the key is not a raw Ed25519 key or the body is
-malformed, `503` this Forge runs without a mesh identity.
+malformed, `503` this Forge runs without a mesh identity (session credentials are off, or
+`mesh.attestation.required` is false, the one switch for mesh signing: see
+`docs/operator/agent-messaging.md`).
 
 - **Memberships.** `tenant:<tenant id>` from the session row. A Forge session has no link to
   a resident runtime's flock or realm, so no `flock:` or `realm:` membership is issued to

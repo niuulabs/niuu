@@ -169,8 +169,8 @@ data:
     {{- fail "forgeMcp.session_tokens.enabled needs a signing key Forge can keep: enable workloadIdentity with signingKey.existingSecret (Forge signs with it), or set forgeMcp.session_tokens.signing_key_file to a path on a persistent volume you mount into the Forge pod (extraVolumes and extraVolumeMounts; the root filesystem is read-only). Or set forgeMcp.session_tokens.enabled: false to run sessions without a Forge credential" }}
     {{- end }}
     {{- $meshIdentity := get $forgeMcp "mesh_identity" | default dict }}
-    {{- if and (hasKey $meshIdentity "enabled") $meshIdentity.enabled (not $tokensOn) }}
-    {{- fail "forgeMcp.mesh_identity.enabled needs session credentials (the certificate is signed with their key and requested with their credential): enable workloadIdentity with signingKey.existingSecret or set forgeMcp.session_tokens.signing_key_file, or set forgeMcp.mesh_identity.enabled: false" }}
+    {{- if hasKey $meshIdentity "enabled" }}
+    {{- fail "forgeMcp.mesh_identity.enabled was removed: whether the mesh proves who sends what is the one decision mesh.attestation.required (false runs it unauthenticated)" }}
     {{- end }}
     {{- if include "volundr.sessionCredentialProjectionEnabled" . }}
     {{- if not $tokensOn }}
@@ -201,6 +201,19 @@ data:
     {{- $_ := set $forgeMcp "session_tokens" $sessionTokens }}
 
     forge_mcp: {{ toJson $forgeMcp }}
+    {{- $attestation := dict }}
+    {{- range $key, $value := ((.Values.mesh | default dict).attestation | default dict) }}
+    {{- if not (kindIs "invalid" $value) }}
+    {{- $_ := set $attestation $key $value }}
+    {{- end }}
+    {{- end }}
+    {{- if $attestation }}
+
+    # One decision about proof of who sent each mesh message, for Forge's own signers and
+    # the sessions it launches. Needs no setting: signing is on by default.
+    mesh:
+      attestation: {{ toJson $attestation }}
+    {{- end }}
 
     {{- if .Values.computeHosts.enabled }}
     {{- if .Values.compute }}
