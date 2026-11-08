@@ -746,3 +746,12 @@ permission rule, a dashboard) must change with it. Two side effects: the browser
 only as a side effect of the pattern, and a bus permission rule for sessions is now
 `mesh.*` instead of `ravn.mesh.*`.
 
+**Every NATS JetStream durable is renamed once.** A durable's name ends in a digest of its
+filter subject, and that digest moved from SHA-1 to SHA-256 in the same release. On the first
+start of the new version each consumer group creates its durable under the new name, starting
+at new messages (`DeliverPolicy.NEW`). Messages an old pod had received but not acknowledged
+when it stopped are not redelivered, so roll during a quiet moment. The old durables stay on
+the stream until removed; with `limits` retention (the default) they hold no extra data, and
+with `interest` retention they keep messages alive, so delete them after the roll
+(`nats consumer rm <stream> <old durable>`).
+
