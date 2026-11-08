@@ -258,6 +258,53 @@ Change a boost → run `uv run python scripts/mimir_ranking_ablation.py
 
 ---
 
+## Typed facts (`mimir_fact_*`)
+
+Pages are prose a model maintains. A *fact* is one claim about one subject with
+who wrote it, from what evidence, how far it can be trusted, and when it holds.
+Residents that kept their beliefs as prose read their own opinions back as
+established truth; facts keep provenance and trust apart from that.
+
+**Trust levels**, highest first: `person` (confirmed by a person), `operator`
+(curated by an operator), `tool` (observed by a tool), `agent` (written by an
+agent). They are assigned by the platform from the caller's authenticated
+identity (`facts.trust.role_levels`, `scope_levels`). A request cannot name one:
+`trust`, `author` and `confidence` in a request are refused. A resident, or any
+workload acting for a user, is an `agent` (or a `tool` when a configured scope
+says so) and never higher, whatever roles its token carries. A fact derived
+from other facts takes the lowest level among them. A caller can retire or
+replace only facts at or below its own level.
+
+**Tools** (MCP, and `build_mimir_fact_tools` for in-process agents):
+`mimir_fact_remember`, `_recall` (`min_trust`, `as_of`), `_forget` (who and why
+recorded, history kept), `_entity`, `_context_pack` (ranked, token-budgeted,
+lists everything it left out and why), `_share` and `_receive`. A fact received
+from a peer keeps its original author and evidence, records who brought it in,
+and arrives at no more than the importing caller's own level, because the
+peer's claim of trust cannot be checked.
+
+**Backend: gbrain.** Facts are stored in gbrain's own fact table through its
+memory verbs (`remember`, `recall`, `entity`, `forget`), so they live where the
+rest of the brain lives: embedded (PGlite) on a local install, PostgreSQL on a
+cluster (`charts/gbrain`, `engine: postgres`). Mímir adds what gbrain lacks by
+sealing it into the fact's provenance text with an HMAC (`signing_key_file`),
+so a row written to gbrain directly cannot claim a trust level: it reads back
+as an unattested `external` fact at the lowest level.
+
+```yaml
+facts:
+  adapter: mimir.adapters.gbrain_facts.GBrainFactAdapter   # the default
+  kwargs:
+    mcp_url: http://brain.niuu.svc.cluster.local:3131/mcp
+    api_token_file: /run/secrets/gbrain/token               # read + write scope
+    signing_key_file: /run/secrets/mimir/fact-signing-key   # long random secret, Mímir only
+  trust:
+    role_levels: {volundr:admin: person, mimir:curator: operator}
+```
+
+Omit `facts` to serve no fact tools. With `facts` set, a backend that cannot be
+built stops startup. Limits that apply are in [limits.md](limits.md).
+
 ## 8. Deployment options
 
 1. **Inside the platform (default)** — the `mimir` plugin mounts on the niuu

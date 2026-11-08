@@ -10,6 +10,9 @@ Tools:
   mimir_publish_files — publish workspace markdown files into the wiki
   mimir_search  — full-text search, returns list of matching pages
   mimir_lint    — health-check: orphans, contradictions, staleness, gaps
+
+Typed facts (``build_mimir_fact_tools``, see ``mimir.fact_tools``):
+  mimir_fact_remember / _recall / _forget / _entity / _context_pack / _share / _receive
 """
 
 from __future__ import annotations
@@ -23,9 +26,12 @@ from typing import Any
 
 from mimir.compiled_truth import parse_page as parse_compiled_truth_page
 from mimir.exceptions import MimirUnavailableError
+from mimir.fact_tools import FACT_TOOLS, FactToolSpec, run_fact_tool
+from mimir.facts import FactService
 from mimir.file_security import PathSecurityError, resolve_safe
 from mimir.ports.entity_extractor import EntityExtractorPort
 from niuu.domain.mimir import MimirSource, compute_content_hash, compute_source_id
+from niuu.domain.mimir_facts import FactCaller, FactError
 from niuu.domain.tool import ToolResult
 from niuu.ports.mimir import MimirPort
 from niuu.ports.tool import ToolPort
@@ -975,3 +981,53 @@ def build_mimir_tools(
     if workspace is not None:
         tools.append(MimirPublishFilesTool(adapter, workspace))
     return tools
+
+
+# ---------------------------------------------------------------------------
+# Typed facts
+# ---------------------------------------------------------------------------
+
+
+class MimirFactTool(ToolPort):
+    """One typed-fact tool bound to the identity the platform gave this agent.
+
+    The *caller* is fixed when the tool is built, by the composition root, from
+    the agent's own identity. The model's arguments cannot change it, so an
+    agent cannot write a fact above its own trust level.
+    """
+
+    def __init__(
+        self, name: str, spec: FactToolSpec, service: FactService, caller: FactCaller
+    ) -> None:
+        self._name = name
+        self._spec = spec
+        self._service = service
+        self._caller = caller
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return self._spec.description
+
+    @property
+    def input_schema(self) -> dict:
+        return self._spec.schema
+
+    @property
+    def required_permission(self) -> str:
+        return _PERMISSION if self._spec.write else _PERMISSION_READ
+
+    async def execute(self, input: dict) -> ToolResult:
+        try:
+            result = await run_fact_tool(self._service, self._caller, self._name, input)
+        except FactError as exc:
+            return ToolResult(tool_call_id="", content=str(exc), is_error=True)
+        return ToolResult(tool_call_id="", content=json.dumps(result, indent=2))
+
+
+def build_mimir_fact_tools(service: FactService, caller: FactCaller) -> list[ToolPort]:
+    """The typed-fact tools for an agent whose identity is *caller*."""
+    return [MimirFactTool(name, spec, service, caller) for name, spec in FACT_TOOLS.items()]
