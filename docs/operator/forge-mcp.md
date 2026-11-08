@@ -103,7 +103,7 @@ cannot be created there); set `forgeMcp.session_tokens.enabled` to override.
 | Grant | Adds scope | Tools |
 |---|---|---|
 | none | `forge:notify`, `forge:session:read`, `forge:session:secret` | `environment`, `notify`, `describe_session`, `list_notifications`, `list_sessions`, `get_session`, `session_transcript` |
-| `message` | `forge:session:message` | `send_message`, `message_status` |
+| `message` | `forge:session:message` | `send_message`, `message_status`, `room_post`, and `reply` when the answer goes to a session or a room (see [agent messaging](agent-messaging.md)) |
 | `lifecycle` | `forge:session:lifecycle` | `create_session`, `start_session`, `stop_session` (never delete or archive) |
 
 A session's grants are the union of four sources:
@@ -119,8 +119,10 @@ A session's grants are the union of four sources:
 4. **The project role.** A session filed in a project carries the grants of its role
    (`coordination.role`) from `forge_mcp.role_grants`, applied at every mint. By
    default a `coordinator` gets `lifecycle` and `message`, so it can create, start,
-   stop and steer its workers. Workers, any role not listed and sessions in no project
-   get none. Set `role_grants: {}` to grant nothing by role.
+   stop and steer its workers, and a `worker` gets `message`, so it can hand work over,
+   ask and answer any session its owner owns (it still cannot create, start or stop
+   sessions). Any role not listed and sessions in no project get none. Set
+   `role_grants: {}` to grant nothing by role.
 
 Grants from the first two sources, and those an operator sets (below), are stored on
 the session row (`workload_config.forge_mcp.grants`), so they survive restarts and are
@@ -326,28 +328,28 @@ A session credential is local to the node that minted it. The Guild facade there
 To supervise sessions across nodes, use a PAT or your own identity against the Guild,
 or connect to that node's own endpoint.
 
-### Messages to the parent or project on another node (LEX-1710)
+### Messages to another node (LEX-1710, widened 2026-11-08)
 
-One exception, for `send_message` only: a session with the `message` grant can message
-**its parent session and the sessions of its own project** on another node of its Guild.
-Nothing wider crosses nodes.
+`send_message` reaches **any session its owner owns, on any node of its Guild**. The
+session's own node relays a message for a target it does not hold.
 
 1. The session sends `POST /sessions/{id}/messages` to its own node, as usual. That
    node has verified the credential. When the target is not local, it relays the
    message **without the credential** to
    `POST /api/v1/forge/sessions/{id}/messages/relayed` on the owning node. The body
-   carries the sender, as the home node attests it: session id and name, node name,
-   project, parent.
+   carries the sender, as the home node attests it: session id and name and node name.
+   It also carries the envelope fields the caller may set (`in_reply_to`, `urgent`, and
+   a room host's `peer` block, below).
    - The owning node is found among this host's registry, else through the Guild
      this host belongs to (`guild.url`).
    - A host with neither answers 404 and says to set `guild.url`.
-2. The owning node checks the relation against its own copy of the target session:
-   the target is the sender's `coordination.parent`, or it is in the sender's
-   `coordination.project_id`.
+2. The owning node checks the target belongs to the same owner (the relay arrives with
+   the owner's credential) and is not the sender itself.
    - Otherwise it refuses with 403 and the reason.
-   - If the relation holds, it delivers through the normal route, with the same
-     delivered / pending / failed answer. The message is prefixed with
-     `[Message from session <name> (<id>) on <node>, relayed through the Guild]`.
+   - If it does, it builds the **peer message envelope** from the attested sender and
+     delivers it through the normal route, with the same delivered / pending / failed
+     answer. The old `[Message from session … relayed through the Guild]` text prefix is
+     gone: the sender is the envelope's own field.
 3. A session credential cannot call the relay route itself (403); it is not on the
    session allow-list.
 
@@ -457,6 +459,7 @@ forge_mcp:
   default_grants: []                 # message, lifecycle: added to every session
   role_grants:                       # by project role (coordination.role), at every mint
     coordinator: [lifecycle, message]   # the default; {} grants nothing by role
+    worker: [message]                   # the default
   session_tokens:
     enabled: true                    # false: no session credentials, no grants
     ttl_seconds: 2592000             # backstop; revocation is tied to the launch
