@@ -416,7 +416,14 @@ def _payload_to_config(payload: dict[str, Any]) -> PersonaConfig:
         injects.extend(event.get("injects", []))
 
     fan_in_strategy = payload.get("fan_in_strategy")
-    runtime_fan_in = _FAN_IN_TO_RUNTIME.get(str(fan_in_strategy), "merge")
+    runtime_fan_in = "merge"
+    if fan_in_strategy is not None:
+        runtime_fan_in = _FAN_IN_TO_RUNTIME.get(str(fan_in_strategy))
+        if runtime_fan_in is None:
+            raise ValueError(
+                f"persona fan_in_strategy {fan_in_strategy!r} is not a fan-in strategy; "
+                f"use one of: {', '.join(sorted(_FAN_IN_TO_RUNTIME))}"
+            )
     params = payload.get("fan_in_params") or {}
     contributes_to = ""
     if isinstance(params, dict):

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from niuu.domain.outcome import OutcomeField
 from personas.adapters.loader import (
     _BUILTIN_PERSONAS_DIR,
@@ -303,9 +305,9 @@ class TestParseFanIn:
         assert f.strategy == "merge"
         assert f.contributes_to == ""
 
-    def test_non_dict_returns_defaults(self) -> None:
-        f = parse_fan_in("bad")
-        assert f.strategy == "merge"
+    def test_non_mapping_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="fan_in must be a mapping"):
+            parse_fan_in("bad")
 
     def test_parses_strategy(self) -> None:
         f = parse_fan_in({"strategy": "all_must_pass"})
@@ -315,9 +317,11 @@ class TestParseFanIn:
         f = parse_fan_in({"contributes_to": "review.verdict"})
         assert f.contributes_to == "review.verdict"
 
-    def test_invalid_strategy_defaults_to_merge(self) -> None:
-        f = parse_fan_in({"strategy": "unknown_strategy"})
-        assert f.strategy == "merge"
+    def test_invalid_strategy_is_refused_with_the_valid_ones(self) -> None:
+        with pytest.raises(ValueError, match="'unknown_strategy'") as excinfo:
+            parse_fan_in({"strategy": "unknown_strategy"})
+        for strategy in ("all_must_pass", "any_pass", "majority", "merge"):
+            assert strategy in str(excinfo.value)
 
     def test_all_valid_strategies(self) -> None:
         for strategy in ("all_must_pass", "any_pass", "majority", "merge"):

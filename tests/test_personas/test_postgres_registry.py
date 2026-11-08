@@ -366,7 +366,7 @@ class TestHelperNormalization:
                 "produces_event_type": "code.changed",
                 "produces_schema": {"file": "string", "": "bad"},
                 "consumes_events": [{"name": "code.requested", "injects": ["summary", "summary"]}],
-                "fan_in_strategy": "collect",
+                "fan_in_strategy": "quorum",
                 "fan_in_params": {"contributes_to": "summary"},
             },
             fallback=fallback,
@@ -379,6 +379,7 @@ class TestHelperNormalization:
 
         config = _payload_to_config(normalized)
         assert config.permission_mode == "workspace-write"
+        assert config.fan_in.strategy == "majority"
         assert config.fan_in.contributes_to == "summary"
         assert config.consumes.injects == ["summary"]
 
@@ -386,6 +387,15 @@ class TestHelperNormalization:
         assert payload["permission_mode"] == "default"
         assert "executor" not in payload
         assert payload["consumes_events"] == [{"name": "code.requested"}]
+
+    def test_an_unknown_fan_in_strategy_is_refused_not_merged(self):
+        fallback = _BuiltinLoader().load("coder")
+        normalized = _normalize_payload(
+            {"name": "coder", "fan_in_strategy": "collect"}, fallback=fallback
+        )
+
+        with pytest.raises(ValueError, match="'collect' is not a fan-in strategy"):
+            _payload_to_config(normalized)
 
     def test_normalize_payload_requires_name(self):
         with pytest.raises(ValueError, match="Persona name is required"):

@@ -334,12 +334,22 @@ def parse_consumes(raw: Any) -> PersonaConsumes:
 
 
 def parse_fan_in(raw: Any) -> PersonaFanIn:
-    """Parse the ``fan_in:`` section of a persona YAML dict."""
-    if not isinstance(raw, dict):
+    """Parse the ``fan_in:`` section of a persona YAML dict.
+
+    An absent section is the default (``merge``). A section that is not a mapping,
+    or names a strategy that does not exist, raises: a persona that asks for a
+    strategy and cannot get it must not silently merge instead.
+    """
+    if raw is None:
         return PersonaFanIn()
+    if not isinstance(raw, dict):
+        raise ValueError("persona fan_in must be a mapping")
     strategy = str(raw.get("strategy", "merge"))
     if strategy not in VALID_FAN_IN_STRATEGIES:
-        strategy = "merge"
+        raise ValueError(
+            f"persona fan_in.strategy {strategy!r} is not a fan-in strategy; "
+            f"use one of: {', '.join(sorted(VALID_FAN_IN_STRATEGIES))}"
+        )
     contributes_to = str(raw.get("contributes_to", ""))
     return PersonaFanIn(
         strategy=strategy,  # type: ignore[arg-type]
