@@ -259,6 +259,37 @@ An agent asks the user for a secret with `request-secret` or the Forge MCP `requ
 | `forgeMcp.brokerRequestTimeoutS` | number | `null` | Seconds the engine allows one stdio-server to broker tool call (`forge_mcp.broker_request_timeout_s`); null keeps the broker default of 60 |
 | `forgeMcp.toolTimeoutS` | number | `null` | Seconds the engine allows one MCP tool call (`forge_mcp.tool_timeout_s`), set for both Codex (`tool_timeout_sec`) and Claude Code (per-server `timeout`); null keeps the broker default of 120 |
 
+### Mesh
+
+A session joins a flock as a mesh peer when `mesh.enabled` is true: it announces itself (persona, role, description, capabilities, the topics it consumes and produces, its activity), receives what peers send into its inbox, and gets the `mesh_send`, `mesh_publish` and `mesh_peers` session tools. Every value below renders into the `mesh` section of the broker's config file under the key shown; a value left `null` (or empty) keeps Skuld's own default, so a chart that sets none of them renders `enabled: false` and `transport: "nng"` exactly as Skuld defaults. Forge hands these to a session pod as it does every other value of this chart: the pod manager's `session_defaults` (the volundr chart's `podManager.kwargs`) and the session contributors merge into the release values.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mesh.enabled` | bool | `false` | Join the flock as a mesh peer (`mesh.enabled`) |
+| `mesh.transport` | string | `"nng"` | Mesh transport: `nng`, `nats`, `in_process` or a Sleipnir transport class path (`mesh.transport`) |
+| `mesh.peerPorts` | list | `[]` | Container ports to expose for direct mesh peers; not a Skuld setting |
+| `mesh.peerId` | string | `""` | This peer's id (`mesh.peer_id`); empty uses the pod's host name |
+| `mesh.realmId` | string | `""` | Realm the peer announces in and discovers within (`mesh.realm_id`) |
+| `mesh.persona` | string | `null` | Persona name announced when no persona is pinned (`mesh.persona`); null keeps `coder` |
+| `mesh.role` | string | `""` | What the session is for, announced so peers can choose (`mesh.role`); empty announces the pinned persona's id |
+| `mesh.description` | string | `""` | What the session does, announced to peers (`mesh.description`); the pinned persona's own description wins |
+| `mesh.capabilities` | list | `null` | Capabilities announced (`mesh.capabilities`) |
+| `mesh.tools` | list | `null` | Tools announced (`mesh.tools`) |
+| `mesh.consumesEventTypes` | list | `null` | Topics subscribed to (`mesh.consumes_event_types`); null keeps `["code.requested"]`; a pinned persona's `consumes` are added |
+| `mesh.publishEventTypes` | list | `null` | Topics `mesh_publish` may publish (`mesh.publish_event_types`), added to the pinned persona's `produces`; any other topic is refused |
+| `mesh.publishedEventUrgency` | number | `null` | Attention hint 0.0-1.0 on published events (`mesh.published_event_urgency`); null keeps 0.8 |
+| `mesh.nng.pubSubAddress` | string | `""` | NNG publish/subscribe address (`mesh.nng.pub_sub_address`) |
+| `mesh.nng.reqRepAddress` | string | `""` | NNG request/reply address (`mesh.nng.req_rep_address`) |
+| `mesh.adapters` | list | `null` | Mesh adapter entries (`mesh.adapters`): an `adapter` alias or class path plus that adapter's settings |
+| `mesh.discoveryAdapters` | list | `null` | Discovery adapter entries (`mesh.discovery_adapters`); with none, `mesh_peers` is an error |
+| `mesh.nats` | map | `{}` | NATS JetStream settings (`mesh.nats`), keys of `niuu.mesh.config.MeshNatsConfig` |
+| `mesh.rpcTimeoutS` | number | `null` | Seconds a mesh request waits for the peer's answer (`mesh.rpc_timeout_s`); null keeps 10 |
+| `mesh.rpcReplyCacheSize` | int | `null` | Replies remembered so a retried request is answered once (`mesh.rpc_reply_cache_size`) |
+| `mesh.diffMaxBytes` | int | `null` | Largest diff a peer may fetch (`mesh.diff_max_bytes`); null keeps 8192 |
+| `mesh.diffTimeoutS` | number | `null` | Seconds a diff request may take (`mesh.diff_timeout_s`); null keeps 10 |
+
+Setting `mesh.enabled` or `mesh.transport` had no effect on the broker before these values were rendered; only `mesh.peerPorts` did.
+
 ### Environment Variables
 
 | Key | Type | Default | Description |
