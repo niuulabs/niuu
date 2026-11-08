@@ -1375,6 +1375,13 @@ class TestMeshOnNngInACluster:
             {"adapter": "k8s", "namespace": "sessions", "nng_port": 7480}
         ]
 
+    def test_the_pod_announces_itself_as_a_skuld_session_by_its_name(self):
+        docs = self._docs("--set", "mesh.enabled=true", "--set", "session.name=wf-probe-coder")
+        annotations = self._kind(docs, "Deployment")["spec"]["template"]["metadata"]["annotations"]
+
+        assert annotations["ravn.niuu.world/participant-type"] == "skuld"
+        assert annotations["ravn.niuu.world/display-name"] == "wf-probe-coder"
+
     def test_the_pod_gets_its_ip_its_realm_label_and_its_peer_id(self):
         docs = self._docs("--set", "mesh.enabled=true", "--set", "mesh.realmId=flock-a")
         pod = self._kind(docs, "Deployment")["spec"]["template"]
@@ -1463,6 +1470,7 @@ class TestMeshOnNngInACluster:
         assert config["mesh"]["discovery_adapters"][0]["adapter"] == "k8s"
         assert pod["metadata"]["labels"]["ravn.niuu.world/role"] == "agent"
         assert "ravn.niuu.world/peer-id" in pod["metadata"]["annotations"]
+        assert pod["metadata"]["annotations"]["ravn.niuu.world/participant-type"] == "skuld"
         assert "POD_IP" in [e["name"] for e in skuld["env"]]
 
 

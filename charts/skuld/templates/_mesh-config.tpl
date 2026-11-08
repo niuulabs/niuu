@@ -46,8 +46,13 @@ ravn.niuu.world/realm: {{ .Values.mesh.realmId | quote }}
 ravn.niuu.world/role: agent
 {{- end }}
 
+{{- /* The session is a Skuld participant, addressed by its name (niuu k8s discovery). */ -}}
 {{- define "skuld.meshPodAnnotations" -}}
 ravn.niuu.world/peer-id: {{ .Values.mesh.peerId | default .Values.session.id | quote }}
+ravn.niuu.world/participant-type: "skuld"
+{{- with .Values.session.name }}
+ravn.niuu.world/display-name: {{ . | quote }}
+{{- end }}
 {{- end }}
 
 {{- /* The pod's own IP, and the host other pods dial this one at. */ -}}

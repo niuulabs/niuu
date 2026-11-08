@@ -22,6 +22,10 @@ spec:
       {{- $annotations := deepCopy (.Values.podAnnotations | default dict) }}
       {{- if include "skuld.meshK8sDiscovery" . }}
       {{- $_ := set $annotations "ravn.niuu.world/peer-id" (.Values.mesh.peerId | default .Values.session.id) }}
+      {{- $_ := set $annotations "ravn.niuu.world/participant-type" "skuld" }}
+      {{- with .Values.session.name }}
+      {{- $_ := set $annotations "ravn.niuu.world/display-name" . }}
+      {{- end }}
       {{- end }}
       {{- if and .Values.git.credentials.tokenFile (hasKey $annotations "vault.hashicorp.com/agent-inject") }}
       {{- $names := splitList "," (index $annotations "vault.hashicorp.com/agent-inject-containers" | default "skuld") }}

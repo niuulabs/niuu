@@ -1163,7 +1163,7 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
             ) from exc
 
     def _mesh_pod_identity(self, session: Session) -> tuple[dict[str, str], dict[str, str]]:
-        """The labels and annotations k8s discovery reads: realm, and this pod's peer id."""
+        """The labels and annotations k8s discovery reads: realm, peer id, kind and name."""
         if not mesh_is_nng(self._mesh):
             return {}, {}
         adapters = self._mesh.get("discovery_adapters") or []
@@ -1175,7 +1175,11 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
                 "ravn.niuu.world/realm": str(self._mesh.get("realm_id") or ""),
                 "ravn.niuu.world/role": "agent",
             },
-            {"ravn.niuu.world/peer-id": peer_id},
+            {
+                "ravn.niuu.world/peer-id": peer_id,
+                "ravn.niuu.world/participant-type": "skuld",
+                **({"ravn.niuu.world/display-name": session.name} if session.name else {}),
+            },
         )
 
     @staticmethod

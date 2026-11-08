@@ -113,6 +113,8 @@ class TestDirectKubernetes:
         assert template["metadata"]["labels"]["ravn.niuu.world/realm"] == "flock-a"
         assert template["metadata"]["labels"]["ravn.niuu.world/role"] == "agent"
         assert template["metadata"]["annotations"]["ravn.niuu.world/peer-id"] == str(session.id)
+        assert template["metadata"]["annotations"]["ravn.niuu.world/participant-type"] == "skuld"
+        assert template["metadata"]["annotations"]["ravn.niuu.world/display-name"] == "s"
 
     def test_a_mesh_that_is_off_adds_no_pod_ip_and_no_labels(self) -> None:
         manager = self._manager(None)

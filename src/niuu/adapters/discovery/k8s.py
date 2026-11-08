@@ -15,11 +15,18 @@ for subsequent Sleipnir communication — no handshake socket is opened.
     ravn.niuu.world/consumes: "review.requested,code.changed"   # optional, comma separated
     ravn.niuu.world/emits: "review.completed"                   # optional, comma separated
     ravn.niuu.world/pub-address: "tcp://10.0.3.4:7480"          # optional, the nng PUB address
+    ravn.niuu.world/participant-type: "skuld"     # what kind of participant the pod runs
+    ravn.niuu.world/display-name: "fix-login-bug" # the name peers address it by, optional
 
 Annotations are written by whatever deploys the pod and are read when the peer is first
 seen, so the live facts a peer would announce itself (its activity state and busy flag) can
 not be carried here: they are reported as not announced. A fact whose annotation is absent
 is reported as not announced too.
+
+``participant-type`` is what the peer is (``skuld`` for a Forge session, ``ravn`` for a
+resident); a pod that does not carry it keeps the :class:`MeshIdentity` default. Every writer
+of these annotations in this repository sets it (the skuld and skuld-planner charts and Forge's
+direct Kubernetes pod manager), so a session never shows up as a Ravn with no name.
 """
 
 from __future__ import annotations
@@ -55,6 +62,8 @@ _ANN_DESCRIPTION = "ravn.niuu.world/description"
 _ANN_CONSUMES = "ravn.niuu.world/consumes"
 _ANN_EMITS = "ravn.niuu.world/emits"
 _ANN_PUB_ADDRESS = "ravn.niuu.world/pub-address"
+_ANN_PARTICIPANT_TYPE = "ravn.niuu.world/participant-type"
+_ANN_DISPLAY_NAME = "ravn.niuu.world/display-name"
 #: The chooser facts a pod annotation can carry; the rest change while the peer runs.
 _CARRIED_FACTS = ("role", "description", "consumes_event_types", "emits_event_types")
 _LABEL_REALM = "ravn.niuu.world/realm"
@@ -202,6 +211,9 @@ class K8sDiscoveryAdapter:
                 else [],
                 permission_mode=candidate.metadata.get("permission_mode", ""),
                 version="",
+                display_name=candidate.metadata.get("display_name", ""),
+                participant_type=candidate.metadata.get("participant_type")
+                or MeshIdentity.participant_type,
                 role=candidate.metadata.get("role", ""),
                 description=candidate.metadata.get("description", ""),
                 consumes_event_types=_split_topics(candidate.metadata.get("consumes_event_types")),
@@ -264,6 +276,8 @@ class K8sDiscoveryAdapter:
                         "persona": annotations.get(_ANN_PERSONA, ""),
                         "capabilities": annotations.get(_ANN_CAPABILITIES, ""),
                         "permission_mode": annotations.get(_ANN_PERMISSION_MODE, ""),
+                        "display_name": annotations.get(_ANN_DISPLAY_NAME, ""),
+                        "participant_type": annotations.get(_ANN_PARTICIPANT_TYPE, ""),
                         "realm_id": self._identity.realm_id,
                         **{
                             key: annotations[annotation]
