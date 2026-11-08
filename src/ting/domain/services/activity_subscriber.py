@@ -28,7 +28,7 @@ except ImportError:
     _catalog_run_needs_approval = None  # type: ignore[assignment]
 
 from ting.config import WatcherConfig
-from ting.domain.models import PR_STATE_MERGED, RavnOutcome, Run, RunStatus, SessionMessage
+from ting.domain.models import PR_STATE_MERGED, Run, RunStatus, SessionMessage
 from ting.ports.activity_projection import ActivityProjector
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.event_bus import EventBusPort, TingEvent
@@ -125,7 +125,6 @@ class SessionActivitySubscriber:
         # owner_id -> {cluster_key: task} — one isolated task per (owner, cluster).
         self._owner_tasks: dict[str, dict[str, asyncio.Task[None]]] = {}
         self._pending_evaluations: dict[str, asyncio.Task[None]] = {}
-        self._completed_workflow_sessions: set[str] = set()
         # (owner_id, cluster_key) -> backoff state, isolated per cluster so one
         # cluster's outage never affects another's reconnect cadence.
         self._cluster_backoff: dict[tuple[str, str], _ClusterBackoffState] = {}
@@ -153,7 +152,6 @@ class SessionActivitySubscriber:
         for task in self._pending_evaluations.values():
             task.cancel()
         self._pending_evaluations.clear()
-        self._completed_workflow_sessions.clear()
         cluster_tasks = [task for tasks in self._owner_tasks.values() for task in tasks.values()]
         for task in cluster_tasks:
             task.cancel()
@@ -772,18 +770,8 @@ class SessionActivitySubscriber:
             )
         ):
             return
-        if await self._try_handle_authoritative_completion(event, volundr, owner_id):
-            return
 
         if event.session_status in self._FAILED_STATUSES:
-            if event.session_id in self._completed_workflow_sessions:
-                logger.info(
-                    "Ignoring terminal session status %s for already-completed workflow session %s",
-                    event.session_status,
-                    event.session_id[:8],
-                )
-                self._completed_workflow_sessions.discard(event.session_id)
-                return
             await self._on_session_failed(event, volundr, owner_id)
             return
 
@@ -806,41 +794,6 @@ class SessionActivitySubscriber:
         )
         task.add_done_callback(self._on_eval_done)
         self._pending_evaluations[event.session_id] = task
-
-    async def _try_handle_authoritative_completion(
-        self,
-        event: ActivityEvent,
-        volundr: VolundrPort,
-        owner_id: str,
-    ) -> bool:
-        """Process authoritative workflow terminal outcomes immediately.
-
-        Local flock sessions emit a deterministic terminal outcome right before
-        Volundr stops the session. If Ting waits on the normal idle debounce,
-        the subsequent ``stopped`` lifecycle event can arrive first and
-        incorrectly downgrade a successful workflow run to FAILED/Canceled.
-        """
-        if event.state != "idle" or self._review_engine is None:
-            return False
-        if not _is_authoritative_completion_metadata(event.metadata):
-            return False
-
-        pending = self._pending_evaluations.pop(event.session_id, None)
-        if pending is not None:
-            pending.cancel()
-
-        run, _tracker = await self._find_run_for_session(event.session_id, owner_id)
-        if run is None:
-            return False
-
-        session = await volundr.get_session(event.session_id)
-        if session is None or session.workload_type != "ravn_flock":
-            return False
-
-        handled = await self._try_handle_flock_completion(event, run, owner_id)
-        if handled:
-            self._completed_workflow_sessions.add(event.session_id)
-        return handled
 
     @staticmethod
     def _on_eval_done(task: asyncio.Task) -> None:  # type: ignore[type-arg]
@@ -872,15 +825,6 @@ class SessionActivitySubscriber:
         if session.status in ("stopped", "failed"):
             await self._handle_session_end(
                 run, tracker, volundr, owner_id, reason=f"Session {session.status}"
-            )
-            return
-
-        if session.workload_type == "ravn_flock":
-            if await self._try_handle_flock_completion(event, run, owner_id):
-                return
-            logger.info(
-                "Skipping idle completion evaluation for flock session %s; awaiting ravn outcome",
-                event.session_id[:8],
             )
             return
 
@@ -1073,85 +1017,6 @@ class SessionActivitySubscriber:
             connection_id=connection_id,
         )
 
-    async def _try_handle_flock_completion(
-        self,
-        event: ActivityEvent,
-        run: Run,
-        owner_id: str,
-    ) -> bool:
-        """Route authoritative local flock completion through ReviewEngine.
-
-        In co-hosted development runs the canonical local path is:
-        Skuld room outcome -> Volundr session activity SSE -> Ting.
-        """
-        if self._review_engine is None:
-            return False
-
-        metadata = event.metadata
-        if metadata.get("completion_source") != "ravn_flock":
-            return False
-
-        structured = metadata.get("structured_outcome")
-        if not isinstance(structured, dict) or not structured:
-            logger.warning(
-                "Flock completion metadata missing structured_outcome for session %s",
-                event.session_id[:8],
-            )
-            return False
-        structured_payload = (
-            structured.get("outcome") if isinstance(structured.get("outcome"), dict) else structured
-        )
-        if not isinstance(structured_payload, dict) or not structured_payload:
-            logger.warning(
-                "Flock completion metadata missing nested outcome payload for session %s",
-                event.session_id[:8],
-            )
-            return False
-
-        outcome = RavnOutcome(
-            verdict=str(structured_payload.get("verdict") or "escalate"),
-            tests_passing=_coerce_bool(structured_payload.get("tests_passing")),
-            scope_adherence=_coerce_float(structured_payload.get("scope_adherence")),
-            pr_url=_coerce_str(structured_payload.get("pr_url")),
-            files_changed=_coerce_str_list(
-                structured_payload.get("files_changed") or metadata.get("files_changed")
-            ),
-            summary=_coerce_str(structured_payload.get("summary")) or "",
-            authoritative=str(metadata.get("completion_peer_id") or "").startswith(
-                "workflow-stop:"
-            ),
-            checks=[
-                dict(item)
-                for item in structured_payload.get("checks", [])
-                if isinstance(item, dict)
-            ],
-        )
-        if outcome.authoritative:
-            logger.info(
-                "Handling workflow-terminal flock completion for session %s run=%s verdict=%s",
-                event.session_id[:8],
-                run.tracker_id,
-                outcome.verdict,
-            )
-            await self._review_engine.handle_workflow_completion(
-                run.tracker_id,
-                owner_id,
-            )
-            return True
-
-        logger.info(
-            "Handling local flock completion for session %s run=%s verdict=%s",
-            event.session_id[:8],
-            run.tracker_id,
-            outcome.verdict,
-        )
-        await self._review_engine.handle_ravn_outcome(
-            run.tracker_id,
-            owner_id,
-            outcome,
-        )
-        return True
-
     async def _handle_completion(
         self,
         run: Run,
@@ -1337,64 +1202,6 @@ class SessionActivitySubscriber:
                 },
             )
         )
-
-
-def _coerce_bool(value: object) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"true", "yes", "1"}:
-            return True
-        if lowered in {"false", "no", "0"}:
-            return False
-    return None
-
-
-def _coerce_float(value: object) -> float | None:
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        try:
-            return float(stripped)
-        except ValueError:
-            return None
-    return None
-
-
-def _coerce_str(value: object) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _coerce_str_list(value: object) -> list[str]:
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return []
-
-
-def _is_authoritative_completion_metadata(metadata: dict) -> bool:
-    if metadata.get("completion_source") != "ravn_flock":
-        return False
-    if not str(metadata.get("completion_peer_id") or "").startswith("workflow-stop:"):
-        return False
-
-    structured = metadata.get("structured_outcome")
-    if not isinstance(structured, dict) or not structured:
-        return False
-    if isinstance(structured.get("outcome"), dict):
-        structured_payload = structured["outcome"]
-    else:
-        structured_payload = structured
-    if not isinstance(structured_payload, dict) or not structured_payload:
-        return False
-
-    return bool(structured_payload.get("authoritative") or metadata.get("outcome_valid"))
 
 
 def _help_needed_payload(metadata: dict) -> dict[str, object] | None:

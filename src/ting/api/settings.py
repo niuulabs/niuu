@@ -1,9 +1,8 @@
 """Compatibility settings endpoints for Ting's web-next HTTP adapter.
 
 These routes own operator-facing settings under ``/api/v1/ting/settings/*``.
-They intentionally remain separate from runtime flock execution config served by
-``/api/v1/ting/flock/config`` so the host can mount settings independently from
-workflow execution concerns.
+The "flock" section is the operator's defaults for new sagas (name, base branch,
+repositories); it does not configure how workflow steps run.
 """
 
 from __future__ import annotations

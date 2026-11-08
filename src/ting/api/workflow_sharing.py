@@ -121,7 +121,7 @@ def create_workflow_sharing_router() -> APIRouter:
             )
             errors = binding_errors(
                 body.bindings,
-                registry_path=request.app.state.settings.dispatch.flock.mimir_registry_path,
+                registry_path=request.app.state.settings.dispatch.mimir.registry_path,
                 tenant_id=principal.tenant_id,
             )
             if errors:

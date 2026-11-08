@@ -24,6 +24,7 @@ from .test_a2a_tasks import (
     _make_client,
     _rpc,
     _send_params,
+    runner_stand_in,  # noqa: F401 - autouse: workflow launches are refused without a runner
 )
 
 PLANNING = "Ticket Planning Flow"

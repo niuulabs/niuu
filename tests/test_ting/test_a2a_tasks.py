@@ -28,6 +28,7 @@ from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from niuu.domain.models import Principal
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+from ting.api import a2a as a2a_api
 from ting.api.a2a import (
     _launch_digest,
     campaign_to_task,
@@ -36,9 +37,10 @@ from ting.api.a2a import (
 )
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import create_research_router, resolve_workflow_campaign_repo
-from ting.api.workflows import resolve_workflow_repo
+from ting.api.workflows import WorkflowLaunchExecution, resolve_workflow_repo
 from ting.config import A2AConfig, AuthConfig, Settings
 from ting.domain.a2a_launch import A2ALaunchReservation
+from ting.domain.exceptions import WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
 from ting.domain.models import (
     WorkflowCampaign,
     WorkflowCampaignStatus,
@@ -686,6 +688,73 @@ def _make_client(
     return TestClient(app), campaigns, port
 
 
+async def _launch_that_reaches_a_runner(
+    *,
+    workflow: WorkflowDefinition,
+    launch: Any,
+    volundr_factory: Any,
+    principal: Principal,
+    bearer_token: str | None = None,
+    pinned_workflow_snapshot: dict[str, Any] | None = None,
+    launch_slug: str | None = None,
+    session_membership: Any = None,
+    **_unused: Any,
+) -> WorkflowLaunchExecution:
+    """Stands in for ``launch_workflow_execution``, which is refused until steps have a runner.
+
+    Most of what these tests pin comes after the launch: how the task, its campaign, its
+    placement, its retry and its failure are recorded. This starts one plain session on the
+    connection the launch names, as a working runner would.
+    """
+    adapter = (
+        await volundr_factory.for_connection(principal.user_id, launch.connection_id)
+        if launch.connection_id
+        else await volundr_factory.primary_for_owner(principal.user_id)
+    )
+    membership = await session_membership(adapter) if session_membership else None
+    session = await adapter.spawn_session(
+        SpawnRequest(
+            name=launch.session_name,
+            repo=launch.repo,
+            branch=launch.branch,
+            base_branch=launch.base_branch,
+            model=launch.model,
+            membership=membership,
+            tracker_issue_id=f"workflow:{launch_slug}",
+            tracker_issue_url="",
+            system_prompt="",
+            initial_prompt=launch.prompt,
+            workload_config={
+                "workflow": pinned_workflow_snapshot,
+                "provenance": dict(launch.provenance),
+                **(
+                    {"workflow_result_schema": dict(launch.inherited_result_schema)}
+                    if launch.inherited_result_schema
+                    else {}
+                ),
+            },
+            integration_ids=await adapter.list_integration_ids(
+                auth_token=bearer_token, principal=principal
+            ),
+        ),
+        auth_token=bearer_token,
+        principal=principal,
+    )
+    return WorkflowLaunchExecution(
+        workflow=workflow,
+        workflow_snapshot=pinned_workflow_snapshot or {},
+        slug=launch_slug or "",
+        session=session,
+        adapter=adapter,
+        connection_id=getattr(adapter, "target_id", None) or None,
+    )
+
+
+@pytest.fixture(autouse=True)
+def runner_stand_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(a2a_api, "launch_workflow_execution", _launch_that_reaches_a_runner)
+
+
 def _rpc(
     client: TestClient,
     method: str,
@@ -853,7 +922,6 @@ class TestSendMessage:
         assert result["metadata"]["sessionId"] == "session-123"
 
         assert len(port.spawned) == 1
-        assert port.spawned[0].workload_type == "ravn_flock"
         assert port.spawned[0].integration_ids == ["integration-github", "integration-memory"]
         assert port.spawned[0].workload_config["provenance"]["trace_context"] == {
             "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
@@ -933,7 +1001,6 @@ class TestSendMessage:
         provenance = workload["provenance"]["workflow_execution"]
         assert provenance["execution_id"] == str(ledger.execution.id)
         assert provenance["parent_session_key"] == f"workflow:execution-{ledger.execution.id.hex}"
-        assert workload["ravn_config"]["workflow_execution"]["enabled"] is True
         assert workload["provenance"]["trace_context"] == {
             "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
             "tracestate": "niuu=resident",
@@ -1425,8 +1492,6 @@ class TestSendMessage:
         assert membership.parent_session_id == "parent-session"
         assert membership.role == "worker"
         assert port.spawned[0].workload_config["workflow_result_schema"] == result_schema
-        developer_runtime = port.spawned[0].workload_config["ravn_config"]["workflow_execution"]
-        assert "result_schema" not in developer_runtime
 
     def test_human_token_is_unaffected_by_scope_check(self) -> None:
         workflow = _make_workflow()
@@ -1623,7 +1688,7 @@ class TestSendMessage:
                 repo="",
                 branch="",
                 base_branch="",
-                workload_type="ravn_flock",
+                workload_type="default",
             )
         )
 
@@ -1825,6 +1890,33 @@ class TestSendMessage:
         assert saved[0].session_id == ""
         assert saved[0].status == WorkflowCampaignStatus.PENDING
         assert saved[0].last_activity_at > long_ago + timedelta(minutes=59)
+
+
+class TestSendMessageWithoutARunner:
+    """The real launch: workflow steps have no runner (NIU-1198), so the task is refused."""
+
+    @pytest.fixture(autouse=True)
+    def runner_stand_in(self) -> None:
+        """Overrides the module's stand-in: these tests want the real launch."""
+
+    def test_the_task_is_refused_as_unsupported_and_its_campaign_marked_failed(self) -> None:
+        import asyncio
+
+        workflow = _make_workflow()
+        client, campaigns, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+
+        response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+
+        assert response.status_code == 200
+        error = response.json()["error"]
+        assert error["code"] == -32004
+        assert error["message"] == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
+        assert port.spawned == []
+        [campaign] = asyncio.run(campaigns.list_campaigns(owner_id="user-1"))
+        assert campaign.status == WorkflowCampaignStatus.FAILED
+        assert campaign.metadata["failure_error"] == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
 
 
 class TestGateContinuation:

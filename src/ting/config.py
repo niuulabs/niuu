@@ -27,13 +27,10 @@ from pydantic_settings import (
 from bifrost.config import BifrostConfig
 from identity.authz_config import AuthorizationAdapterConfig
 from niuu.config import CorsConfig, HttpAuthAdapterConfig, InstanceRegistryConfig
-from niuu.config_models import (
-    SessionDefinitionConfig,
-    WorkloadIdentityConfig,
-    default_session_definitions,
-)
+from niuu.config_models import WorkloadIdentityConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
+from ting.domain.exceptions import WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
 
 
 # Config file search paths (in order of priority).
@@ -49,11 +46,6 @@ def _config_paths() -> list[Path]:
 
 
 CONFIG_PATHS = _config_paths()
-BUNDLED_FLOCK_FLOWS_PATH = (Path(__file__).parent / "flock_flows.yaml").resolve()
-
-# Default for ``dispatch.workflow_cli_turn_timeout_seconds``; the dispatch service's
-# own config defaults to the same value.
-DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS = 120.0
 
 
 class DatabaseConfig(BaseModel):
@@ -256,94 +248,29 @@ class PlannerConfig(BaseModel):
     )
 
 
-class PersonaOverride(BaseModel):
-    """Per-persona LLM and iteration override for flock dispatch.
+def reject_removed_keys(config_name: str, data: Any, removed: dict[str, str]) -> None:
+    """Fail loudly when *data* sets a key that no longer exists.
 
-    Accepted in ``FlockConfig.default_personas`` alongside bare strings (legacy).
-    The ``llm`` dict is forwarded verbatim as the per-persona ``llm`` key in
-    ``workload_config.personas``; ravn merges it over the global ``llm_config``.
+    Settings ignore unknown keys, so a removed key would otherwise be dropped
+    silently and the operator would believe it still took effect.
+
+    :param removed: Maps each removed key to the remedy shown in the error.
     """
-
-    name: str = Field(description="Ravn persona name (e.g. 'coordinator', 'reviewer').")
-    llm: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Per-persona LLM override merged over the global llm_config.",
-    )
-    system_prompt_extra: str | None = Field(
-        default=None,
-        description="Extra instructions appended to this persona's system prompt.",
-    )
-    iteration_budget: int | None = Field(
-        default=None,
-        description="Max iterations for this persona; overrides the persona's own default.",
-    )
-    consumes_event_types: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Optional replacement event subscription list for this persona within a flock. "
-            "Use this to narrow auto-triggered personas to a single canonical path."
-        ),
-    )
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to the wire dict format consumed by workload_config.personas."""
-        d: dict[str, Any] = {"name": self.name}
-        if self.llm:
-            d["llm"] = dict(self.llm)
-        if self.system_prompt_extra:
-            d["system_prompt_extra"] = self.system_prompt_extra
-        if self.iteration_budget is not None:
-            d["iteration_budget"] = self.iteration_budget
-        if self.consumes_event_types:
-            d["consumes_event_types"] = list(self.consumes_event_types)
-        return d
+    if not isinstance(data, dict):
+        return
+    for key, remedy in removed.items():
+        if key in data:
+            raise ValueError(f"{config_name}.{key} was removed: {remedy}")
 
 
-class FlockConfig(BaseModel):
-    """Flock dispatch configuration."""
+class DispatchMimirConfig(BaseModel):
+    """Where Ting reaches Mimir when it resolves a workflow's knowledge mounts."""
 
-    enabled: bool = Field(
-        default=False,
-        description="When True, eligible runs are dispatched as ravn_flock sessions.",
-    )
-    default_personas: list[PersonaOverride] = Field(
-        default_factory=lambda: [
-            PersonaOverride(name="coordinator"),
-            PersonaOverride(name="coder"),
-            PersonaOverride(name="reviewer"),
-        ],
-        description=(
-            "Ravn persona names included in every flock session. "
-            "Accepts bare strings (legacy) or per-persona override objects."
-        ),
-    )
-    default_workflow_name: str = Field(
+    hosted_url: str = Field(
         default="",
-        description=(
-            "Name of the system Ting workflow automatically assigned to flock-enabled "
-            "sagas when no explicit workflow is selected. Empty assigns none."
-        ),
+        description="URL of the hosted Mimir that workflow knowledge mounts resolve against.",
     )
-
-    @field_validator("default_personas", mode="before")
-    @classmethod
-    def _coerce_personas(cls, v: Any) -> list[Any]:
-        """Accept both legacy list[str] and new list[dict|PersonaOverride]."""
-        if not isinstance(v, list):
-            return v
-        result = []
-        for item in v:
-            if isinstance(item, str):
-                result.append({"name": item})
-            else:
-                result.append(item)
-        return result
-
-    mimir_hosted_url: str = Field(
-        default="",
-        description="URL of the Mimir knowledge base for coordinator context queries.",
-    )
-    mimir_service_auth: HttpAuthAdapterConfig = Field(
+    service_auth: HttpAuthAdapterConfig = Field(
         default_factory=HttpAuthAdapterConfig,
         description=(
             "Credential Ting presents to Mimir when it reads a campaign's artifacts "
@@ -353,78 +280,11 @@ class FlockConfig(BaseModel):
             "WorkloadIdentityBearerTokenAuthAdapter with audience mimir."
         ),
     )
-    mimir_registry_path: str = Field(
+    registry_path: str = Field(
         default="~/.ravn/mimir/.mimir-registry.json",
         description=(
             "Path to the persisted Mimir registry used to resolve registry-backed "
             "workflow resource mounts into concrete path/url runtime config."
-        ),
-    )
-    sleipnir_publish_urls: list[str] = Field(
-        default_factory=list,
-        description="Sleipnir publish URLs for flock task event routing.",
-    )
-    llm_config: dict = Field(
-        default_factory=dict,
-        description=(
-            "LLM provider config for ravn flock nodes. "
-            "Dict matching ravn's `llm:` config block (model, max_tokens, timeout, provider). "
-            "When empty, ravn nodes use their own default or image-baked config."
-        ),
-    )
-    ravn_config: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Additional config deep-merged into every Ravn node in a flock. "
-            "Use this for deployment-owned platform and observability settings."
-        ),
-    )
-    observability: dict[str, Any] = Field(
-        default_factory=dict,
-        description="OpenTelemetry export settings shared by the flock's Ravn and Skuld runtimes.",
-    )
-    daily_budget_usd: float = Field(
-        default=25.0,
-        ge=0.0,
-        description=(
-            "Per-node Ravn daily budget cap for flock sessions. "
-            "Set to 0 to keep the daemon default."
-        ),
-    )
-
-
-class InProcessDispatchConfig(BaseModel):
-    """In-process (single-turn) dispatch configuration.
-
-    Controls the LLM used by :class:`~ting.adapters.ravn_dispatcher.RavnDispatcher`
-    when running single-turn agent calls in-process (as opposed to spinning up a
-    flock pod).
-
-    Fallback chain for ``llm_config``:
-      1. ``dispatch.in_process.llm_config`` — if non-empty, use this.
-      2. ``dispatch.flock.llm_config`` — if in_process is absent/empty, mirror
-         flock config so both paths use the same model without duplication.
-
-    Example YAML::
-
-        dispatch:
-          flock:
-            llm_config:
-              model: claude-opus-4-6
-              max_tokens: 8192
-          # Optional: override model for cheaper in-process single-turn calls.
-          in_process:
-            llm_config:
-              model: claude-sonnet-4-6
-              max_tokens: 4096
-    """
-
-    llm_config: dict = Field(
-        default_factory=dict,
-        description=(
-            "LLM config for in-process RavnDispatcher calls. "
-            "Dict matching ravn's `llm:` config block (model, max_tokens, timeout). "
-            "When empty, falls back to dispatch.flock.llm_config."
         ),
     )
 
@@ -453,21 +313,36 @@ class DispatchConfig(BaseModel):
             "auto-pick the next ready issue after a phase gate unlocks."
         ),
     )
-    workflow_cli_turn_timeout_seconds: float = Field(
-        default=DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS,
-        ge=0.0,
-        allow_inf_nan=False,
-        description=(
-            "Seconds a workflow persona running on Claude Code (the Agent SDK "
-            "transport) may spend on one turn. A turn is the persona's whole "
-            "agent loop for a task, every model and tool call included, so a "
-            "slow model needs a larger value. A turn that reaches the limit is "
-            "interrupted. 0 turns the limit off. Codex personas get no per-turn "
-            "limit from this setting."
-        ),
-    )
-    flock: FlockConfig = Field(default_factory=FlockConfig)
-    in_process: InProcessDispatchConfig = Field(default_factory=InProcessDispatchConfig)
+    mimir: DispatchMimirConfig = Field(default_factory=DispatchMimirConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_keys(cls, data: Any) -> Any:
+        flock = data.get("flock") if isinstance(data, dict) else None
+        if isinstance(flock, dict) and flock.get("enabled"):
+            raise ValueError(
+                f"{WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}; remove dispatch.flock.enabled"
+            )
+        reject_removed_keys(
+            "dispatch",
+            data,
+            {
+                "flock": (
+                    f"{WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}; remove dispatch.flock. "
+                    "Its Mimir settings moved to dispatch.mimir (hosted_url, service_auth, "
+                    "registry_path); its other settings no longer have a use"
+                ),
+                "in_process": (
+                    "the in-process Ravn dispatcher is gone; remove dispatch.in_process"
+                ),
+                "workflow_cli_turn_timeout_seconds": (
+                    "workflow steps have no runner, so there is no turn to time out; "
+                    "remove dispatch.workflow_cli_turn_timeout_seconds"
+                ),
+            },
+        )
+        return data
+
     dispatch_prompt_template: str = Field(
         default=(
             "# Task: {identifier} — {title}\n"
@@ -691,17 +566,26 @@ class LLMConfig(BaseModel):
             "Used as correlation_id in Sleipnir events."
         ),
     )
-    ravn_decomposer_enabled: bool = Field(
-        default=False,
-        description=(
-            "When True, BifrostAdapter dispatches to the decomposer ravn persona "
-            "before falling back to the direct Anthropic API call."
-        ),
-    )
-    ravn_decomposer_timeout: float = Field(
-        default=120.0,
-        description="HTTP timeout in seconds for decomposer ravn dispatch calls.",
-    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_keys(cls, data: Any) -> Any:
+        reject_removed_keys(
+            "llm",
+            data,
+            {
+                "ravn_decomposer_enabled": (
+                    "the decomposer ran on the in-process Ravn dispatcher, which is gone; "
+                    "saga decomposition always calls the model API directly. "
+                    "Remove llm.ravn_decomposer_enabled"
+                ),
+                "ravn_decomposer_timeout": (
+                    "the decomposer ran on the in-process Ravn dispatcher, which is gone. "
+                    "Remove llm.ravn_decomposer_timeout"
+                ),
+            },
+        )
+        return data
 
 
 class LinearConfig(BaseModel):
@@ -916,26 +800,6 @@ class RavnOutcomeConfig(BaseModel):
     owner_id: str = Field(
         default="api",
         description="Owner ID used when looking up runs from ravn outcome events.",
-    )
-
-
-class FlockFlowsConfig(BaseModel):
-    """Flock flow provider configuration (dynamic adapter pattern).
-
-    Example YAML::
-
-        flock_flows:
-          adapter: "ting.adapters.flows.config.ConfigFlockFlowProvider"
-          kwargs:
-            path: /etc/ting/flock_flows.yaml
-    """
-
-    adapter: str = Field(
-        default="ting.adapters.flows.config.ConfigFlockFlowProvider",
-        description="Fully-qualified class path for the flock flow provider.",
-    )
-    kwargs: dict[str, Any] = Field(
-        default_factory=lambda: {"path": str(BUNDLED_FLOCK_FLOWS_PATH)},
     )
 
 
@@ -1159,21 +1023,25 @@ class TicketCoordinatorConfig(BaseModel):
         default="ticket-coordinator",
         description="Ravn persona that coordinates a ticket.",
     )
-    model: str = Field(
-        default="gpt-5.6-terra",
-        description=(
-            "Model a coordinator runs on. Its session definition and executor are worked "
-            "out as for a workflow stage, so a coordinator authenticates the same way."
-        ),
-    )
-    ravn_config: dict[str, Any] = Field(
-        default_factory=lambda: {"memory": {"reflection_model": "same-as-agent"}},
-        description=(
-            "Merged into the coordinator's Ravn configuration. The default keeps "
-            "episode reflection on the coordinator's own model, because a Forge "
-            "flock may run on an endpoint that serves no other model."
-        ),
-    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_keys(cls, data: Any) -> Any:
+        reject_removed_keys(
+            "ticket_coordinator",
+            data,
+            {
+                "model": (
+                    f"{WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}; a ticket coordinator is no "
+                    "longer launched. Remove ticket_coordinator.model"
+                ),
+                "ravn_config": (
+                    f"{WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}; a ticket coordinator is no "
+                    "longer launched. Remove ticket_coordinator.ravn_config"
+                ),
+            },
+        )
+        return data
 
 
 class WorkflowExecutionDeliveryConfig(BaseModel):
@@ -1369,6 +1237,21 @@ class Settings(BaseSettings):
         loc_by_alias=False,
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_keys(cls, data: Any) -> Any:
+        reject_removed_keys(
+            "settings",
+            data,
+            {
+                "flock_flows": (
+                    f"{WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}; flock flows are gone. "
+                    "Remove flock_flows"
+                ),
+            },
+        )
+        return data
+
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     observability: TingObservabilityConfig = Field(default_factory=TingObservabilityConfig)
     cors: CorsConfig = Field(default_factory=CorsConfig)
@@ -1384,9 +1267,6 @@ class Settings(BaseSettings):
     workflow_import: WorkflowImportConfig = Field(default_factory=WorkflowImportConfig)
     volundr: VolundrConfig = Field(default_factory=VolundrConfig)
     bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
-    session_definitions: dict[str, SessionDefinitionConfig] = Field(
-        default_factory=default_session_definitions
-    )
     git: GitConfig = Field(default_factory=GitConfig)
     niuu: InstanceRegistryConfig = Field(default_factory=InstanceRegistryConfig)
     linear: LinearConfig = Field(default_factory=LinearConfig)
@@ -1430,7 +1310,6 @@ class Settings(BaseSettings):
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
     event_triggers: EventTriggerConfig = Field(default_factory=EventTriggerConfig)
     ravn_outcome: RavnOutcomeConfig = Field(default_factory=RavnOutcomeConfig)
-    flock_flows: FlockFlowsConfig = Field(default_factory=FlockFlowsConfig)
     server_host: str = Field(
         default="0.0.0.0",
         validation_alias=AliasChoices("server_host", "HOST"),

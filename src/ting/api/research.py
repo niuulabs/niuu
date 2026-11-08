@@ -1418,8 +1418,8 @@ def _campaign_knowledge(
         bearer_token = _service_mimir_token(service_auth)
     return resolve_mimir_workload(
         workflow_mimir_from_snapshot(campaign.workflow_snapshot),
-        hosted_url=settings.dispatch.flock.mimir_hosted_url,
-        registry_path=settings.dispatch.flock.mimir_registry_path,
+        hosted_url=settings.dispatch.mimir.hosted_url,
+        registry_path=settings.dispatch.mimir.registry_path,
         bearer_token=bearer_token,
     )
 
@@ -1432,7 +1432,7 @@ def _service_mimir_token(service_auth: HttpAuthPort | None) -> str:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
                 "A scoped credential cannot read campaign artifacts: Ting has no Mimir "
-                "credential of its own. Set dispatch.flock.mimir_service_auth (workload "
+                "credential of its own. Set dispatch.mimir.service_auth (workload "
                 "identity with audience mimir)."
             ),
         )

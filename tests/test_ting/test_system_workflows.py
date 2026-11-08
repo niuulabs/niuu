@@ -726,7 +726,7 @@ async def test_bundled_memory_wells_provision_without_a_stored_integration(workf
 
     store = AsyncMock()
     contributor = SecretInjectionContributor(credential_store=store)
-    context = SessionContext(workload_type="ravn_flock", workload_config={"mimir": mimir})
+    context = SessionContext(workload_type="default", workload_config={"mimir": mimir})
 
     assert await contributor._build_mappings(context, "owner-without-a-volundr-integration") == []
     store.get.assert_not_called()

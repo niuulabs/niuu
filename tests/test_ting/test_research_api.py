@@ -15,10 +15,16 @@ from fastapi.testclient import TestClient
 from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from niuu.domain.models import Principal
 from ting.adapters.memory_event_bus import InMemoryEventBus
+from ting.api import research as research_api
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import create_research_router, resolve_workflow_campaign_repo
+from ting.api.workflow_runner_refusal import register_workflow_runner_refusal
 from ting.api.workflows import resolve_workflow_repo
 from ting.config import AuthConfig, Settings
+from ting.domain.exceptions import (
+    WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE,
+    WorkflowStepsHaveNoRunnerError,
+)
 from ting.domain.models import (
     CampaignStageState,
     WorkflowCampaign,
@@ -394,6 +400,7 @@ def _make_client(
     app = FastAPI()
     app.state.authorization = AllowAllAuthorizationAdapter()
     app.include_router(create_research_router())
+    register_workflow_runner_refusal(app)
     app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
     app.state.event_bus = InMemoryEventBus()
     app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
@@ -402,106 +409,56 @@ def _make_client(
     return TestClient(app)
 
 
-def test_create_campaign_launches_workflow_and_persists_record(tmp_path: Path) -> None:
+_CAMPAIGN_BODY = {
+    "question": "Map the competitive landscape for retrieval-augmented generation tools.",
+    "name": "RAG competitor map",
+    "mode": "exploratory",
+    "repo": "niuulabs/volundr",
+    "branch": "dev",
+}
+
+
+def test_create_campaign_is_refused_because_workflow_steps_have_no_runner(tmp_path: Path) -> None:
     workflow = _research_workflow(tmp_path)
-    workflow_repo = InMemoryWorkflowRepository([workflow])
     campaign_repo = InMemoryWorkflowCampaignRepository()
     volundr_port = RecordingVolundrPort()
-    client = _make_client(workflow_repo, campaign_repo, RecordingVolundrFactory(volundr_port))
-
-    response = client.post(
-        "/api/v1/ting/research/campaigns",
-        headers=_headers(),
-        json={
-            "question": "Map the competitive landscape for retrieval-augmented generation tools.",
-            "name": "RAG competitor map",
-            "mode": "exploratory",
-            "audience": "product leadership",
-            "deliverable": "briefing memo",
-            "success": "clear competitors and differentiation",
-            "constraints": ["Use public sources only"],
-            "repo": "niuulabs/volundr",
-            "branch": "dev",
-            "model": "gpt-5.5",
-            "definition": "skuldCodex",
-            "gateAutoForwardAfter": "",
-        },
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]),
+        campaign_repo,
+        RecordingVolundrFactory(volundr_port),
     )
 
-    assert response.status_code == 201
-    body = response.json()
-    assert body["workflowName"] == "Research Campaign"
-    assert body["status"] == "running"
-    assert len(volundr_port.requests) == 1
-    assert volundr_port.requests[0].tracker_issue_id.startswith("workflow:")
-    assert volundr_port.requests[0].name == "rag-competitor-map"
-    assert volundr_port.requests[0].model == "gpt-5.5"
-    assert volundr_port.requests[0].definition == "skuldCodex"
-    assert "- Title: RAG competitor map" in volundr_port.requests[0].initial_prompt
-    assert body["name"] == "RAG competitor map"
+    response = client.post(
+        "/api/v1/ting/research/campaigns", headers=_headers(), json=_CAMPAIGN_BODY
+    )
 
-    campaigns = client.get("/api/v1/ting/research/campaigns", headers=_headers()).json()
-    assert len(campaigns) == 1
-    assert campaigns[0]["slug"] == body["slug"]
-    assert campaigns[0]["metadata"]["mode"] == "exploratory"
+    assert response.status_code == 501
+    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+    assert volundr_port.requests == []
+    assert client.get("/api/v1/ting/research/campaigns", headers=_headers()).json() == []
 
 
-def test_create_campaign_uses_selected_volundr_target(tmp_path: Path) -> None:
-    workflow = _research_workflow(tmp_path)
-    workflow_repo = InMemoryWorkflowRepository([workflow])
-    campaign_repo = InMemoryWorkflowCampaignRepository()
+def test_create_campaign_on_a_selected_target_spawns_nothing_on_any_target(
+    tmp_path: Path,
+) -> None:
     noatun = RecordingVolundrPort(name="noatun", target_id="volundr-noatun")
     valhalla = RecordingVolundrPort(name="valhalla", target_id="volundr-valhalla")
     client = _make_client(
-        workflow_repo,
-        campaign_repo,
+        InMemoryWorkflowRepository([_research_workflow(tmp_path)]),
+        InMemoryWorkflowCampaignRepository(),
         RecordingVolundrFactory(noatun, valhalla),
     )
 
     response = client.post(
         "/api/v1/ting/research/campaigns",
         headers=_headers(),
-        json={
-            "question": "Can research choose a remote execution target?",
-            "mode": "exploratory",
-            "repo": "niuulabs/volundr",
-            "branch": "dev",
-            "connectionId": "volundr-valhalla",
-        },
+        json={**_CAMPAIGN_BODY, "connectionId": "volundr-valhalla"},
     )
 
-    assert response.status_code == 201
-    body = response.json()
+    assert response.status_code == 501
+    assert response.json()["detail"] == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
     assert noatun.requests == []
-    assert len(valhalla.requests) == 1
-    assert valhalla.requests[0].workload_type == "ravn_flock"
-    assert body["metadata"]["connection_id"] == "volundr-valhalla"
-    assert body["metadata"]["cluster_name"] == "valhalla"
-    import asyncio
-
-    campaigns = asyncio.run(campaign_repo.list_campaigns(owner_id="user-1"))
-    assert campaigns[0].connection_id == "volundr-valhalla"
-
-
-def test_create_campaign_rejects_unknown_volundr_target(tmp_path: Path) -> None:
-    workflow = _research_workflow(tmp_path)
-    client = _make_client(
-        InMemoryWorkflowRepository([workflow]),
-        InMemoryWorkflowCampaignRepository(),
-        RecordingVolundrFactory(RecordingVolundrPort(target_id="volundr-noatun")),
-    )
-
-    response = client.post(
-        "/api/v1/ting/research/campaigns",
-        headers=_headers(),
-        json={
-            "question": "Should unknown targets silently fall back?",
-            "connectionId": "missing-target",
-        },
-    )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == "Volundr target not found: missing-target"
+    assert valhalla.requests == []
 
 
 def test_list_campaigns_includes_research_launched_over_a2a(tmp_path: Path) -> None:
@@ -684,45 +641,23 @@ def test_list_campaigns_asks_forge_nothing_for_a_run_with_no_session(tmp_path: P
     assert volundr_port.get_session_principals == []
 
 
-def test_create_campaign_normalizes_long_session_names_for_volundr(tmp_path: Path) -> None:
-    workflow = _research_workflow(tmp_path)
-    workflow_repo = InMemoryWorkflowRepository([workflow])
-    campaign_repo = InMemoryWorkflowCampaignRepository()
-    volundr_port = RecordingVolundrPort()
-    client = _make_client(workflow_repo, campaign_repo, RecordingVolundrFactory(volundr_port))
-
-    response = client.post(
-        "/api/v1/ting/research/campaigns",
-        headers=_headers(),
-        json={
-            "question": (
-                "Should Ting add a dedicated Research Center tab for workflow-backed research "
-                "experiences that keep artifacts visible end-to-end?"
-            ),
-            "mode": "evaluative",
-            "audience": "platform",
-            "deliverable": "memo",
-            "success": "clear recommendation",
-            "constraints": ["avoid tracker coupling"],
-            "repo": "",
-            "branch": "dev",
-        },
-    )
-
-    assert response.status_code == 201
-    assert len(volundr_port.requests) == 1
-    assert volundr_port.requests[0].name.endswith(tuple("abcdefghijklmnopqrstuvwxyz0123456789"))
-    assert "-" in volundr_port.requests[0].name
-    assert response.json()["name"].startswith("Should Ting add a dedicated Research Center tab")
-
-
-def test_create_campaign_prefers_research_tagged_workflow_by_default(tmp_path: Path) -> None:
+def test_create_campaign_prefers_research_tagged_workflow_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     delivery_workflow = _non_research_workflow(tmp_path)
     research_workflow = _research_workflow(tmp_path)
-    workflow_repo = InMemoryWorkflowRepository([delivery_workflow, research_workflow])
-    campaign_repo = InMemoryWorkflowCampaignRepository()
-    volundr_port = RecordingVolundrPort()
-    client = _make_client(workflow_repo, campaign_repo, RecordingVolundrFactory(volundr_port))
+    launched: list[WorkflowDefinition] = []
+
+    async def refuse(*, workflow: WorkflowDefinition, **_: object) -> None:
+        launched.append(workflow)
+        raise WorkflowStepsHaveNoRunnerError()
+
+    monkeypatch.setattr(research_api, "launch_workflow_execution", refuse)
+    client = _make_client(
+        InMemoryWorkflowRepository([delivery_workflow, research_workflow]),
+        InMemoryWorkflowCampaignRepository(),
+        RecordingVolundrFactory(RecordingVolundrPort()),
+    )
 
     response = client.post(
         "/api/v1/ting/research/campaigns",
@@ -735,10 +670,8 @@ def test_create_campaign_prefers_research_tagged_workflow_by_default(tmp_path: P
         },
     )
 
-    assert response.status_code == 201
-    body = response.json()
-    assert body["workflowId"] == str(research_workflow.id)
-    assert body["workflowName"] == "Research Campaign"
+    assert response.status_code == 501
+    assert [workflow.id for workflow in launched] == [research_workflow.id]
 
 
 def test_patch_campaign_updates_title_and_slug(tmp_path: Path) -> None:
@@ -845,7 +778,7 @@ def test_detail_reads_artifacts_from_mimir_and_uses_manifest_for_publish_state(
         repo="niuulabs/volundr",
         branch="dev",
         base_branch="",
-        workload_type="ravn_flock",
+        workload_type="default",
     )
 
     wiki_root = tmp_path / "wiki"

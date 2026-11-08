@@ -6,6 +6,7 @@ overriding FastAPI dependencies with mock implementations.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -25,8 +26,13 @@ from ting.api.dispatch import (
     resolve_volundr_factory,
 )
 from ting.api.tracker import resolve_trackers
+from ting.api.workflow_runner_refusal import register_workflow_runner_refusal
 from ting.config import AuthConfig, Settings
 from ting.config import DispatchConfig as DispatchCfg
+from ting.domain.exceptions import (
+    WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE,
+    WorkflowStepsHaveNoRunnerError,
+)
 from ting.domain.models import (
     DispatcherState,
     Saga,
@@ -423,6 +429,7 @@ def _make_test_app(
 ) -> FastAPI:
     settings = settings or _make_settings()
     app = FastAPI()
+    register_workflow_runner_refusal(app)
     app.include_router(create_dispatch_router())
     app.state.settings = settings
     svc = _make_dispatch_service(tracker, volundr_factory, saga_repo, dispatcher_repo, settings)
@@ -591,6 +598,11 @@ class TestGetConfig:
         assert len(data["models"]) == 2
         assert data["models"][0]["id"] == "claude-sonnet-4-6"
 
+    def test_carries_no_flock_settings(self, client: TestClient):
+        data = client.get("/api/v1/ting/dispatch/config").json()
+
+        assert not [key for key in data if key.startswith("flock")]
+
 
 class TestGetQueue:
     def test_returns_ready_issues(self, client: TestClient):
@@ -744,6 +756,71 @@ class TestGetQueue:
 
 
 class TestApproveDispatch:
+    def test_a_ravn_flock_workload_is_refused_with_501(
+        self, client: TestClient, saga_repo: MockSagaRepo, mock_volundr: MockVolundr
+    ):
+        resp = client.post(
+            "/api/v1/ting/dispatch/approve",
+            json={
+                "items": [
+                    {"saga_id": str(saga_repo.sagas[0].id), "issue_id": "i-1", "repo": "org/repo-a"}
+                ],
+                "workload_type": "ravn_flock",
+            },
+        )
+
+        assert resp.status_code == 501
+        assert resp.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+        assert mock_volundr.spawned == []
+
+    def test_a_saga_that_runs_a_workflow_is_refused_with_501_and_spawns_nothing(
+        self, client: TestClient, saga_repo: MockSagaRepo, mock_volundr: MockVolundr
+    ):
+        plain = saga_repo.sagas[0]
+        saga_repo.sagas.append(
+            replace(
+                plain,
+                id=uuid4(),
+                slug="beta",
+                workflow_id=uuid4(),
+                workflow_snapshot={"name": "Review Flow", "graph": {"nodes": [{"id": "n"}]}},
+            )
+        )
+
+        resp = client.post(
+            "/api/v1/ting/dispatch/approve",
+            json={
+                "items": [
+                    {"saga_id": str(plain.id), "issue_id": "i-1", "repo": "org/repo-a"},
+                    {
+                        "saga_id": str(saga_repo.sagas[1].id),
+                        "issue_id": "i-1",
+                        "repo": "org/repo-a",
+                    },
+                ],
+            },
+        )
+
+        assert resp.status_code == 501
+        assert resp.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+        assert mock_volundr.spawned == []
+
+    def test_the_solo_workload_still_spawns(
+        self, client: TestClient, saga_repo: MockSagaRepo, mock_volundr: MockVolundr
+    ):
+        resp = client.post(
+            "/api/v1/ting/dispatch/approve",
+            json={
+                "items": [
+                    {"saga_id": str(saga_repo.sagas[0].id), "issue_id": "i-1", "repo": "org/repo-a"}
+                ],
+                "workload_type": "solo",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(mock_volundr.spawned) == 1
+
     def test_spawns_sessions(
         self,
         client: TestClient,
@@ -1129,9 +1206,44 @@ class TestListClusters:
         assert registry.principals[0].tenant_id == "tenant-a"
 
 
+class TestDispatchAliasRefusal:
+    def _client(self, service: AsyncMock) -> TestClient:
+        app = FastAPI()
+        register_workflow_runner_refusal(app)
+        app.include_router(create_dispatch_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [DispatchAliasTracker()]
+        app.dependency_overrides[resolve_dispatch_service] = lambda: service
+        app.dependency_overrides[resolve_dispatcher_repo] = MockDispatcherRepo
+        app.state.settings = _make_settings()
+        return TestClient(app)
+
+    def test_single_run_alias_maps_the_refusal_to_501(self) -> None:
+        service = AsyncMock()
+        service.dispatch_issues.side_effect = WorkflowStepsHaveNoRunnerError()
+
+        response = self._client(service).post("/api/v1/ting/dispatch/i-1", headers=_auth_headers())
+
+        assert response.status_code == 501
+        assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+
+    def test_batch_alias_maps_the_refusal_to_501_not_a_failed_item(self) -> None:
+        service = AsyncMock()
+        service.dispatch_issues.side_effect = WorkflowStepsHaveNoRunnerError()
+
+        response = self._client(service).post(
+            "/api/v1/ting/dispatch/batch",
+            json={"run_ids": ["i-1"]},
+            headers=_auth_headers(),
+        )
+
+        assert response.status_code == 501
+        assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+
+
 class TestDispatchAliases:
     def _client(self, tracker: DispatchAliasTracker, service: AsyncMock) -> TestClient:
         app = FastAPI()
+        register_workflow_runner_refusal(app)
         app.include_router(create_dispatch_router())
         app.dependency_overrides[resolve_trackers] = lambda: [tracker]
         app.dependency_overrides[resolve_dispatch_service] = lambda: service

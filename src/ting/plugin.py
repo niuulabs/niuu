@@ -78,17 +78,15 @@ class TingPlugin(ServicePlugin):
             APIRouteDomain(
                 name="workflow-api",
                 prefixes=(
-                    "/api/v1/ting/flock",
-                    "/api/v1/ting/flock_flows",
                     "/api/v1/ting/research",
                     "/api/v1/ting/specs",
                 ),
-                description="Flock configuration and flow library routes.",
+                description="Research and specification workflow routes.",
             ),
             APIRouteDomain(
                 name="settings-api",
                 prefixes=("/api/v1/ting/settings",),
-                description="Ting settings for flock, dispatch defaults, and notifications.",
+                description="Ting settings for saga and dispatch defaults and notifications.",
             ),
             APIRouteDomain(
                 name="ting-channel-api",

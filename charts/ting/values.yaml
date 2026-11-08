@@ -75,9 +75,8 @@ ingress:
 config:
   logLevel: "info"
   logFormat: "json"
-  # -- OpenTelemetry trace/metric export for Ting's own process (distinct
-  # from dispatch.flock.observability below, which is for the Ravn/Skuld
-  # flock nodes Ting launches). Empty (the default) means unconfigured —
+  # -- OpenTelemetry trace/metric export for Ting's own process.
+  # Empty (the default) means unconfigured —
   # observability.enabled defaults to false, a decision, not a fallback.
   # Fields match niuu.domain.observability.ObservabilityConfig.
   observability: {}
@@ -117,31 +116,14 @@ watcher:
 
 # Dispatcher configuration
 dispatch:
-  flock:
-    # -- Additional config deep-merged into every dynamically launched Ravn node.
-    ravnConfig: {}
-    # -- Shared OTEL exporter settings; runtime service names stay ravn and skuld.
-    observability: {}
+  mimir:
     # -- Credential Ting presents to Mimir when reading a campaign's artifacts
     # for a caller holding a scoped workload credential (a resident's A2A build).
     # Scoped credentials are never forwarded. Use workload identity with
     # audience mimir; with no credential such reads fail with HTTP 503.
-    mimirServiceAuth:
+    serviceAuth:
       adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
       kwargs: {}
-
-  # -- In-process (single-turn) dispatch configuration.
-  # Controls the LLM used by the RavnDispatcher when running the
-  # decomposer persona inline (no mesh, no pod).
-  # When llmConfig is empty, falls back to dispatch.flock.llmConfig.
-  #
-  # Example — force opus for all in-process calls:
-  #   inProcess:
-  #     llmConfig:
-  #       model: claude-opus-4-6
-  #       max_tokens: 8192
-  inProcess:
-    llmConfig: {}
 
   # -- Default system prompt injected into every dispatched session
   defaultSystemPrompt: |
@@ -197,11 +179,6 @@ dispatch:
   # {repo}, {feature_branch}, {run_branch}.
   # Leave empty to use the built-in default from config.py.
   dispatchPromptTemplate: ""
-  # -- Seconds a workflow persona running on Claude Code may spend on one
-  # turn: its whole agent loop for a task, every model and tool call
-  # included. A turn that reaches it is interrupted. Raise it for slow or
-  # self-hosted models; 0 turns the limit off. Codex personas are not limited.
-  workflowCliTurnTimeoutSeconds: 120.0
 
 # Planner configuration
 planner:
@@ -543,24 +520,6 @@ workloadIdentity:
     key: private-key.pem
   verifiers: []
   mappings: []
-
-# Flock flow configuration — reusable named persona compositions
-flockFlows:
-  # -- Enable flock flow ConfigMap and RBAC
-  enabled: false
-  # -- Fully-qualified adapter class path
-  adapter: "ting.adapters.flows.config.ConfigFlockFlowProvider"
-  # -- Extra kwargs forwarded to the adapter constructor
-  kwargs: {}
-  # -- Predefined flows (rendered into the ConfigMap)
-  flows: []
-  #   - name: code-review-flow
-  #     description: "Standard code review with coordinator + reviewer"
-  #     personas:
-  #       - name: coordinator
-  #       - name: reviewer
-  #     mesh_transport: nng
-  #     max_concurrent_tasks: 3
 
 credentialStore:
   # -- Fully-qualified class path for the credential store adapter

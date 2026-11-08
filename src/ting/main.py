@@ -71,14 +71,7 @@ from ting.api.dispatch import resolve_saga_repo as dispatch_resolve_saga_repo
 from ting.api.dispatcher import create_dispatcher_router, resolve_dispatcher_repo
 from ting.api.dispatcher import resolve_event_bus as dispatcher_resolve_event_bus
 from ting.api.events import create_events_router, resolve_event_bus
-from ting.api.flock_config import create_flock_config_router
-from ting.api.flock_flows import (
-    create_flock_flows_router,
-    resolve_flow_provider,
-    resolve_persona_names,
-)
 from ting.api.health import create_health_router
-from ting.api.persona_names import build_persona_names_dependency
 from ting.api.phases import create_saga_phases_router
 from ting.api.research import create_research_router, resolve_workflow_campaign_repo
 from ting.api.runs import create_runs_router, resolve_git, resolve_run_repo
@@ -104,6 +97,7 @@ from ting.api.workflow_executions import (
     resolve_workflow_execution_repo,
     resolve_workflow_execution_service,
 )
+from ting.api.workflow_runner_refusal import register_workflow_runner_refusal
 from ting.api.workflows import (
     create_workflows_router,
     resolve_workflow_launch_campaign_repo,
@@ -136,10 +130,7 @@ from ting.domain.services.resource_authorization import (
 )
 from ting.domain.services.review_engine import ReviewEngine
 from ting.domain.services.ticket_advance import TicketAdvancer
-from ting.domain.services.ticket_coordinator import (
-    TicketCoordinatorService,
-    coordinator_ravn_config,
-)
+from ting.domain.services.ticket_coordinator import TicketCoordinatorService
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.services.workflow_execution import WorkflowExecutionService
 from ting.domain.services.workflow_migration import workflow_catalog_migration_is_current
@@ -147,7 +138,6 @@ from ting.domain.services.workflow_wait import WorkflowWaitService
 from ting.infrastructure.database import database_pool
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.event_bus import EventBusPort
-from ting.ports.flock_flow import FlockFlowProvider
 from ting.ports.git import GitPort
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.tracker import TrackerPort, TrackerResolution, TrackerResolutionFailure
@@ -182,10 +172,6 @@ def _dispatch_service_config(settings: Settings) -> DispatchServiceConfig:
         default_model=settings.dispatch.default_model,
         default_session_definition=settings.dispatch.default_session_definition,
         dispatch_prompt_template=settings.dispatch.dispatch_prompt_template,
-        session_definitions=settings.session_definitions,
-        configured_models=list(settings.bifrost.models),
-        workflow_cli_turn_timeout_seconds=settings.dispatch.workflow_cli_turn_timeout_seconds,
-        live_flock=settings.dispatch.flock,
     )
 
 
@@ -645,6 +631,8 @@ def create_app(
             content={"detail": f"{exc} — retry once Guild's instance registry is reachable"},
         )
 
+    register_workflow_runner_refusal(app)
+
     app.state.settings = settings
     app.state.review_widgets = load_review_widgets(
         settings.review_widgets.module_manifest_files,
@@ -656,9 +644,7 @@ def create_app(
     app.state.workload_identity_service = create_workload_identity_service(
         settings.workload_identity
     )
-    app.state.mimir_service_auth = _create_http_auth_adapter(
-        settings.dispatch.flock.mimir_service_auth
-    )
+    app.state.mimir_service_auth = _create_http_auth_adapter(settings.dispatch.mimir.service_auth)
 
     # -- Routers --
     app.include_router(create_health_router())
@@ -684,8 +670,6 @@ def create_app(
         if settings.workflow_execution.delivery.enabled:
             app.include_router(create_delivery_executions_router())
     app.include_router(create_specs_router())
-    app.include_router(create_flock_flows_router())
-    app.include_router(create_flock_config_router())
     from ting.adapters.inbound.auth import extract_principal as _extract_principal
 
     app.include_router(create_pats_router(_extract_principal))
@@ -864,23 +848,8 @@ def create_app(
                 sl_cls = import_class(settings.sleipnir.adapter)
                 sleipnir_bus = sl_cls(**settings.sleipnir.kwargs)
 
-            # Wire flock flow provider (dynamic adapter pattern)
-            ff_cfg = settings.flock_flows
-            ff_cls = import_class(ff_cfg.adapter)
-            flow_provider: FlockFlowProvider = ff_cls(**ff_cfg.kwargs)
-            app.state.flow_provider = flow_provider
-            logger.info("Flock flow provider: %s", ff_cfg.adapter.rsplit(".", 1)[-1])
-
-            async def _resolve_flow_provider() -> FlockFlowProvider:
-                return flow_provider
-
-            app.dependency_overrides[resolve_flow_provider] = _resolve_flow_provider
-
             persona_source: PersonaPort | None = FilesystemPersonaAdapter()
             app.state.persona_source = persona_source
-            app.dependency_overrides[resolve_persona_names] = build_persona_names_dependency(
-                persona_source
-            )
 
             workflow_repo_cls = import_class(settings.workflow_repository.adapter)
             workflow_repo_kwargs = dict(settings.workflow_repository.kwargs)
@@ -1180,7 +1149,6 @@ def create_app(
                 dispatcher_repo=dispatcher_repo,
                 config=_dispatch_service_config(settings),
                 sleipnir_publisher=sleipnir_bus,
-                flow_provider=flow_provider,
                 workflow_repo=workflow_repo,
                 persona_source=persona_source,
             )
@@ -1327,17 +1295,6 @@ def create_app(
                     volundr=adapter,
                     principal=principal,
                     auth_token=None,
-                    persona=settings.ticket_coordinator.persona,
-                    model=settings.ticket_coordinator.model,
-                    session_definitions=settings.session_definitions,
-                    configured_models=list(settings.bifrost.models),
-                    cli_turn_timeout_seconds=settings.dispatch.workflow_cli_turn_timeout_seconds,
-                    ravn_config=coordinator_ravn_config(
-                        settings.dispatch.flock.ravn_config,
-                        settings.ticket_coordinator.ravn_config,
-                    ),
-                    platform_origin=settings.a2a.public_base_url.rstrip("/"),
-                    anonymous_platform=settings.auth.allow_anonymous_dev,
                 )
 
             workflow_campaign_projector = WorkflowCampaignProjector(
@@ -1450,13 +1407,6 @@ def create_app(
             llm_adapter = llm_cls(**llm_kwargs)
             logger.info("LLM adapter: %s", llm_cfg.adapter.rsplit(".", 1)[-1])
 
-            # Determine effective LLM config for in-process RavnDispatcher.
-            # Prefers dispatch.in_process.llm_config; falls back to
-            # dispatch.flock.llm_config so both paths share the same model by default.
-            in_process_llm_config: dict = dict(settings.dispatch.in_process.llm_config) or dict(
-                settings.dispatch.flock.llm_config
-            )
-
             # Wire Sleipnir publisher into the LLM adapter when both are enabled.
             if sleipnir_bus is not None and hasattr(llm_adapter, "set_publisher"):
                 from ting.adapters.bifrost_publisher import BifrostPublisher  # noqa: PLC0415
@@ -1467,14 +1417,6 @@ def create_app(
                 )
                 llm_adapter.set_publisher(bifrost_pub)
                 logger.info("Bifrost publisher wired to Sleipnir")
-
-            # Wire default LLM config into the LLM adapter (BifrostAdapter decomposer path).
-            if in_process_llm_config and hasattr(llm_adapter, "set_default_llm_config"):
-                llm_adapter.set_default_llm_config(in_process_llm_config)
-                logger.info(
-                    "BifrostAdapter: default_llm_config injected keys=%s",
-                    list(in_process_llm_config.keys()),
-                )
 
             async def _resolve_llm() -> _LLMPort:
                 return llm_adapter

@@ -10,15 +10,16 @@ import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
-import yaml
 
 from niuu.domain.models import Principal
-from ting.config import FlockConfig, PersonaOverride
-from ting.domain.flock_flow import FlockFlowConfig, FlockPersonaOverride
+from ting.domain.exceptions import (
+    WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE,
+    WorkflowStepsHaveNoRunnerError,
+)
 from ting.domain.models import (
     Phase,
     PhaseStatus,
@@ -38,7 +39,6 @@ from ting.domain.services.dispatch_service import (
     DispatchService,
     HostTagsUnreadableError,
     TargetSelectionError,
-    _format_persona_label,
     build_prompt,
     host_selector_config,
     host_selector_for,
@@ -49,9 +49,7 @@ from ting.domain.services.dispatch_service import (
 from ting.domain.templates import TemplatePhase, TemplateRun
 from ting.ports.volundr import HostTagSetsUnreadableError, SpawnRequest
 from ting.ports.workflow_repository import WorkflowRepository
-from ting.system_workflows import load_system_workflows
 
-from ..stubs import StubFlockFlowProvider
 from ..test_dispatch_api import (
     MockDispatcherRepo,
     MockTrackerFactory,
@@ -1286,153 +1284,31 @@ class TestActiveSagaFiltering:
 
 
 # -------------------------------------------------------------------
-# Per-persona LLM override tests (NIU-637)
+# Workflows have no runner (NIU-1198)
 # -------------------------------------------------------------------
 
-
-class TestFormatPersonaLabel:
-    """_format_persona_label produces the correct log string."""
-
-    def test_no_llm_shows_inherit(self):
-        assert _format_persona_label({"name": "coordinator"}) == "coordinator(inherit)"
-
-    def test_alias_shown(self):
-        assert (
-            _format_persona_label({"name": "auditor", "llm": {"primary_alias": "balanced"}})
-            == "auditor(balanced)"
-        )
-
-    def test_alias_with_thinking(self):
-        assert (
-            _format_persona_label(
-                {"name": "reviewer", "llm": {"primary_alias": "powerful", "thinking_enabled": True}}
-            )
-            == "reviewer(powerful/thinking)"
-        )
-
-    def test_thinking_false_no_suffix(self):
-        persona = {
-            "name": "reviewer",
-            "llm": {"primary_alias": "powerful", "thinking_enabled": False},
-        }
-        assert _format_persona_label(persona) == "reviewer(powerful)"
-
-    def test_empty_llm_shows_inherit(self):
-        assert _format_persona_label({"name": "coder", "llm": {}}) == "coder(inherit)"
+_WORKFLOW_SNAPSHOT = {
+    "workflow_id": str(uuid4()),
+    "name": "Review Flow",
+    "version": "1.0.0",
+    "graph": {"nodes": [{"id": "stage-1", "kind": "stage"}], "edges": []},
+}
 
 
-class TestPersonaOverrideModel:
-    """PersonaOverride pydantic model: construction and serialisation."""
-
-    def test_bare_string_coerced_by_flock_config(self):
-        cfg = FlockConfig(default_personas=["coordinator", "reviewer"])  # type: ignore[arg-type]
-        assert len(cfg.default_personas) == 2
-        assert all(isinstance(p, PersonaOverride) for p in cfg.default_personas)
-        assert cfg.default_personas[0].name == "coordinator"
-        assert cfg.default_personas[1].name == "reviewer"
-
-    def test_dict_accepted(self):
-        cfg = FlockConfig(
-            default_personas=[
-                {"name": "coordinator"},
-                {"name": "reviewer", "llm": {"primary_alias": "powerful"}, "iteration_budget": 40},
-            ]
-        )
-        assert cfg.default_personas[1].llm == {"primary_alias": "powerful"}
-        assert cfg.default_personas[1].iteration_budget == 40
-
-    def test_to_dict_minimal(self):
-        p = PersonaOverride(name="coordinator")
-        assert p.to_dict() == {"name": "coordinator"}
-
-    def test_to_dict_with_overrides(self):
-        p = PersonaOverride(
-            name="reviewer",
-            llm={"primary_alias": "powerful", "thinking_enabled": True},
-            iteration_budget=40,
-        )
-        d = p.to_dict()
-        assert d == {
-            "name": "reviewer",
-            "llm": {"primary_alias": "powerful", "thinking_enabled": True},
-            "iteration_budget": 40,
-        }
-
-    def test_to_dict_omits_empty_llm(self):
-        p = PersonaOverride(name="coordinator")
-        assert "llm" not in p.to_dict()
-
-    def test_to_dict_omits_none_iteration_budget(self):
-        p = PersonaOverride(name="coordinator")
-        assert "iteration_budget" not in p.to_dict()
-
-    def test_to_dict_omits_none_system_prompt_extra(self):
-        p = PersonaOverride(name="coordinator")
-        assert "system_prompt_extra" not in p.to_dict()
+def test_refusal_message_is_exact():
+    assert (
+        WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
+        == "workflow steps have no runner: steps will run on harness sessions (NIU-1198)"
+    )
+    assert str(WorkflowStepsHaveNoRunnerError()) == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
 
 
-class TestFlockConfigYamlParse:
-    """FlockConfig handles legacy string lists and per-persona dicts from YAML."""
-
-    def test_legacy_string_list(self):
-        raw = yaml.safe_load(
-            """
-            enabled: true
-            default_personas:
-              - coordinator
-              - reviewer
-            """
-        )
-        cfg = FlockConfig(**raw)
-        assert [p.name for p in cfg.default_personas] == ["coordinator", "reviewer"]
-        assert all(p.llm == {} for p in cfg.default_personas)
-
-    def test_per_persona_dict_list(self):
-        raw = yaml.safe_load(
-            """
-            enabled: true
-            default_personas:
-              - name: coordinator
-              - name: reviewer
-                llm:
-                  primary_alias: powerful
-                  thinking_enabled: true
-                iteration_budget: 40
-              - name: security-auditor
-                llm:
-                  primary_alias: balanced
-            """
-        )
-        cfg = FlockConfig(**raw)
-        names = [p.name for p in cfg.default_personas]
-        assert names == ["coordinator", "reviewer", "security-auditor"]
-        coordinator = cfg.default_personas[0]
-        reviewer = cfg.default_personas[1]
-        auditor = cfg.default_personas[2]
-        assert coordinator.llm == {}
-        assert reviewer.llm == {"primary_alias": "powerful", "thinking_enabled": True}
-        assert reviewer.iteration_budget == 40
-        assert auditor.llm == {"primary_alias": "balanced"}
+def _workflow_saga(saga: Saga) -> Saga:
+    return replace(saga, workflow_id=uuid4(), workflow_snapshot=_WORKFLOW_SNAPSHOT)
 
 
-class TestBuildSpawnRequestPersonaOverrides:
-    """_build_spawn_request emits the correct personas list-of-dicts."""
-
-    def _make_saga(self) -> Saga:
-        return Saga(
-            id=uuid4(),
-            tracker_id="proj-1",
-            tracker_type="linear",
-            slug="alpha",
-            name="Alpha",
-            repos=["org/repo"],
-            feature_branch="feat/alpha",
-            base_branch="main",
-            status=SagaStatus.ACTIVE,
-            created_at=datetime.now(UTC),
-        )
-
-    def _make_issue(self) -> TrackerIssue:
+class TestBuildSpawnRequest:
+    def _issue(self) -> TrackerIssue:
         return TrackerIssue(
             id="i-1",
             identifier="ALPHA-1",
@@ -1442,351 +1318,164 @@ class TestBuildSpawnRequestPersonaOverrides:
             url="https://linear.app/i-1",
         )
 
-    def _call(self, config: DispatchConfig, saga, issue):
-        svc = MagicMock()
-        svc._config = config
-        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo")
-        return DispatchService._build_spawn_request(
-            svc,
-            item=item,
+    def _call(self, service: DispatchService, saga: Saga, **overrides):
+        return service._build_spawn_request(
+            item=DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo"),
             saga=saga,
-            issue=issue,
+            issue=self._issue(),
             effective_model="claude-sonnet-4-6",
-            effective_prompt="",
-            integration_ids=[],
+            effective_prompt="Be helpful.",
+            integration_ids=["int-1"],
+            **overrides,
         )
 
-    def test_legacy_string_personas_emit_dicts(self):
-        """Legacy list[str] → list-of-dicts in workload_config."""
-        config = DispatchConfig(
-            flock_enabled=True,
-            flock_default_personas=[{"name": "coordinator"}, {"name": "reviewer"}],
-        )
-        req = self._call(config, self._make_saga(), self._make_issue())
-        assert req.workload_config["personas"] == [{"name": "run-executor"}, {"name": "reviewer"}]
+    def test_plain_issue_is_one_plain_session(self, service: DispatchService):
+        request = self._call(service, _make_saga(), session_definition="skuldCodex")
 
-    def test_per_persona_overrides_forwarded(self):
-        """Per-persona overrides are forwarded into workload_config."""
-        personas = [
-            {"name": "run-executor"},
-            {"name": "coding-agent"},
-            {
-                "name": "reviewer",
-                "llm": {"primary_alias": "powerful", "thinking_enabled": True},
-                "iteration_budget": 40,
-                "consumes_event_types": ["review.requested"],
-            },
-            {"name": "security-auditor", "llm": {"primary_alias": "balanced"}},
-        ]
-        config = DispatchConfig(flock_enabled=True, flock_default_personas=personas)
-        req = self._call(config, self._make_saga(), self._make_issue())
-        emitted = req.workload_config["personas"]
-        assert emitted[0] == {"name": "run-executor"}
-        assert emitted[1] == {"name": "coding-agent"}
-        assert emitted[2] == {
-            "name": "reviewer",
-            "llm": {"primary_alias": "powerful", "thinking_enabled": True},
-            "iteration_budget": 40,
-            "consumes_event_types": ["review.requested"],
-        }
-        assert emitted[3] == {"name": "security-auditor", "llm": {"primary_alias": "balanced"}}
+        assert request.name == "alpha-1"
+        assert request.workload_type == "default"
+        assert request.workload_config == {}
+        assert request.definition == "skuldCodex"
+        assert request.integration_ids == ["int-1"]
+        assert "ALPHA-1" in request.initial_prompt
 
-    def test_global_llm_config_still_present(self):
-        """Global llm_config key is still included alongside per-persona personas."""
-        llm = {"primary_alias": "balanced"}
-        config = DispatchConfig(
-            flock_enabled=True,
-            flock_default_personas=[{"name": "coordinator"}],
-            flock_llm_config=llm,
-        )
-        req = self._call(config, self._make_saga(), self._make_issue())
-        assert req.workload_config["llm_config"] == llm
-        assert req.workload_config["personas"] == [{"name": "coordinator"}]
+    def test_a_workflow_snapshot_is_refused(self, service: DispatchService):
+        with pytest.raises(WorkflowStepsHaveNoRunnerError) as raised:
+            self._call(service, _make_saga(), workflow_snapshot=_WORKFLOW_SNAPSHOT)
 
-    def test_info_log_emitted(self, caplog):
-        """INFO log includes session name and formatted persona labels."""
-        config = DispatchConfig(
-            flock_enabled=True,
-            flock_default_personas=[
-                {"name": "coordinator"},
-                {
-                    "name": "reviewer",
-                    "llm": {"primary_alias": "powerful", "thinking_enabled": True},
-                },
-                {"name": "security-auditor", "llm": {"primary_alias": "balanced"}},
-            ],
-        )
-        saga = self._make_saga()
-        issue = self._make_issue()
-        with caplog.at_level(logging.INFO, logger="ting.domain.services.dispatch_service"):
-            self._call(config, saga, issue)
-        assert any("coordinator(inherit)" in r.message for r in caplog.records)
-        assert any("reviewer(powerful/thinking)" in r.message for r in caplog.records)
-        assert any("security-auditor(balanced)" in r.message for r in caplog.records)
+        assert str(raised.value) == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
 
-    def test_workflow_snapshot_forces_flock_dispatch(self):
-        config = DispatchConfig(flock_enabled=False, flock_default_personas=[])
-        saga = self._make_saga()
-        issue = self._make_issue()
-        workflow_snapshot = {
-            "workflow_id": str(uuid4()),
-            "name": "Review Flow",
-            "version": "1.0.0",
-            "graph": {
-                "nodes": [
-                    {
-                        "id": "stage-1",
-                        "kind": "stage",
-                        "label": "Review",
-                        "stageMembers": [
-                            {
-                                "personaId": "reviewer",
-                                "model": "claude-sonnet-4-6",
-                                "budget": 40,
-                            }
-                        ],
-                    }
-                ]
-            },
-        }
 
-        svc = MagicMock()
-        svc._config = config
-        svc._flow_provider = None
-        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo")
-        req = DispatchService._build_spawn_request(
-            svc,
-            item=item,
-            saga=saga,
-            issue=issue,
-            effective_model="claude-sonnet-4-6",
-            effective_prompt="",
-            integration_ids=[],
-            workflow_snapshot=workflow_snapshot,
-        )
-
-        assert req.workload_type == "ravn_flock"
-        assert req.workload_config["workflow"]["name"] == "Review Flow"
-        assert req.workload_config["daily_budget_usd"] == 25.0
-        assert req.workload_config["personas"] == [
-            {
-                "name": "reviewer",
-                "iteration_budget": 40,
-                "llm": {"model": "claude-sonnet-4-6"},
-                "executor": {
-                    "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
-                    "kwargs": {
-                        "transport_adapter": "skuld.transports.sdk.SDKTransport",
-                        "transport_kwargs": {"turn_timeout_s": 120.0},
-                    },
-                },
-            }
-        ]
-
-    @pytest.mark.parametrize("turn_timeout_s", [900.0, 0.0])
-    def test_workflow_snapshot_gives_claude_personas_the_configured_turn_timeout(
-        self, turn_timeout_s: float
+class TestWorkflowRefusal:
+    @pytest.mark.asyncio
+    async def test_spawn_single_does_not_swallow_the_refusal(
+        self, service: DispatchService, volundr: MockVolundr, tracker: MockTracker
     ):
-        config = DispatchConfig(
-            flock_enabled=False,
-            flock_default_personas=[],
-            workflow_cli_turn_timeout_seconds=turn_timeout_s,
-        )
-        saga = self._make_saga()
-        issue = self._make_issue()
-        workflow_snapshot = {
-            "workflow_id": str(uuid4()),
-            "name": "Mixed Flow",
-            "version": "1.0.0",
-            "graph": {
-                "nodes": [
-                    {
-                        "id": "stage-1",
-                        "kind": "stage",
-                        "label": "Implement",
-                        "stageMembers": [
-                            {"personaId": "coder", "model": "claude-sonnet-4-6", "budget": 40}
-                        ],
-                    },
-                    {
-                        "id": "stage-2",
-                        "kind": "stage",
-                        "label": "Review",
-                        "stageMembers": [
-                            {"personaId": "reviewer", "model": "gpt-5.5", "budget": 25}
-                        ],
-                    },
-                ]
-            },
-        }
+        saga = _make_saga()
+        issue = tracker.issues["proj-1"][0]
 
-        svc = MagicMock()
-        svc._config = config
-        svc._flow_provider = None
-        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo")
-        req = DispatchService._build_spawn_request(
-            svc,
-            item=item,
-            saga=saga,
-            issue=issue,
-            effective_model="claude-sonnet-4-6",
-            effective_prompt="",
-            integration_ids=[],
-            workflow_snapshot=workflow_snapshot,
-        )
+        with pytest.raises(WorkflowStepsHaveNoRunnerError):
+            await service._spawn_single(
+                target_volundr=volundr,
+                item=DispatchItem(saga_id=str(saga.id), issue_id=issue.id, repo="org/repo-a"),
+                saga=saga,
+                issue=issue,
+                adapter=tracker,
+                effective_model="claude-sonnet-4-6",
+                effective_prompt="",
+                integration_ids=[],
+                session_definition=None,
+                auth_token=None,
+                principal=None,
+                owner_id="dev-user",
+                workflow_snapshot=_WORKFLOW_SNAPSHOT,
+            )
 
-        executors = {
-            persona["name"]: persona["executor"]["kwargs"]
-            for persona in req.workload_config["personas"]
-        }
-        assert executors["coder"] == {
-            "transport_adapter": "skuld.transports.sdk.SDKTransport",
-            "transport_kwargs": {"turn_timeout_s": turn_timeout_s},
-        }
-        assert executors["reviewer"] == {
-            "transport_adapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
-            "transport_kwargs": {"skip_permissions": True},
-        }
+        assert volundr.spawned == []
 
-    def test_workflow_snapshot_ignores_incompatible_default_session_definition(self):
-        config = DispatchConfig(
-            flock_enabled=False,
-            flock_default_personas=[],
-            default_session_definition="skuldClaude",
-        )
-        saga = self._make_saga()
-        issue = self._make_issue()
-        workflow_snapshot = {
-            "workflow_id": str(uuid4()),
-            "name": "OpenAI Flow",
-            "version": "1.0.0",
-            "graph": {
-                "nodes": [
-                    {
-                        "id": "stage-1",
-                        "kind": "stage",
-                        "label": "Implement",
-                        "stageMembers": [
-                            {
-                                "personaId": "developer",
-                                "model": "gpt-5.5",
-                                "budget": 40,
-                            }
-                        ],
-                    }
-                ]
-            },
-        }
+    @pytest.mark.asyncio
+    async def test_a_saga_workflow_refuses_the_batch_before_anything_is_spawned(
+        self, service: DispatchService, volundr: MockVolundr, saga_repo: MockSagaRepo
+    ):
+        plain = saga_repo.sagas[0]
+        with_workflow = _workflow_saga(replace(plain, id=uuid4(), slug="beta"))
+        saga_repo.sagas.append(with_workflow)
 
-        svc = MagicMock()
-        svc._config = config
-        svc._flow_provider = None
-        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo")
-        req = DispatchService._build_spawn_request(
-            svc,
-            item=item,
-            saga=saga,
-            issue=issue,
-            effective_model="claude-sonnet-4-6",
-            effective_prompt="",
-            integration_ids=[],
-            session_definition=config.default_session_definition,
-            workflow_snapshot=workflow_snapshot,
-        )
-
-        assert req.definition == "skuldCodex"
-        assert req.workload_config["personas"] == [
-            {
-                "name": "developer",
-                "iteration_budget": 40,
-                "llm": {"model": "gpt-5.5"},
-                "executor": {
-                    "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
-                    "kwargs": {
-                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport"),
-                        "transport_kwargs": {"skip_permissions": True},
-                    },
-                },
-            }
-        ]
-
-    def test_tracker_code_review_flow_defaults_to_codex_websocket_runtime(self):
-        config = DispatchConfig(flock_enabled=False, flock_default_personas=[])
-        saga = self._make_saga()
-        issue = self._make_issue()
-        workflow_snapshot = next(
-            {
-                "workflow_id": str(workflow.id),
-                "name": workflow.name,
-                "version": workflow.version,
-                "graph": workflow.graph,
-            }
-            for workflow in load_system_workflows()
-            if workflow.name == "Code & Review Flow"
-        )
-
-        svc = MagicMock()
-        svc._config = config
-        svc._flow_provider = None
-        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo")
-        req = DispatchService._build_spawn_request(
-            svc,
-            item=item,
-            saga=saga,
-            issue=issue,
-            effective_model="claude-sonnet-4-6",
-            effective_prompt="",
-            integration_ids=[],
-            workflow_snapshot=workflow_snapshot,
-        )
-
-        assert req.definition == "skuldCodex"
-        assert req.workload_type == "ravn_flock"
-        assert req.workload_config["workflow"]["name"] == "Code & Review Flow"
-        assert req.workload_config["personas"] == [
-            {
-                "name": "coder",
-                "iteration_budget": 40,
-                "consumes_event_types": [
-                    "delivery.requested",
-                    "review.changes_requested",
+        with pytest.raises(WorkflowStepsHaveNoRunnerError) as raised:
+            await service.dispatch_issues(
+                "dev-user",
+                [
+                    DispatchItem(saga_id=str(plain.id), issue_id="i-1", repo="org/repo-a"),
+                    DispatchItem(saga_id=str(with_workflow.id), issue_id="i-1", repo="org/repo-a"),
                 ],
-                "llm": {"model": "gpt-5.6-terra"},
-                "executor": {
-                    "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
-                    "kwargs": {
-                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport"),
-                        "transport_kwargs": {"skip_permissions": True},
-                    },
-                },
-            },
-            {
-                "name": "reviewer",
-                "iteration_budget": 24,
-                "consumes_event_types": ["code.changed"],
-                "llm": {"model": "gpt-5.6-terra"},
-                "executor": {
-                    "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
-                    "kwargs": {
-                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport"),
-                        "transport_kwargs": {"skip_permissions": True},
-                    },
-                },
-            },
-            {
-                "name": "closer",
-                "iteration_budget": 20,
-                "consumes_event_types": ["review.passed"],
-                "llm": {"model": "gpt-5.6-terra"},
-                "executor": {
-                    "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
-                    "kwargs": {
-                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport"),
-                        "transport_kwargs": {"skip_permissions": True},
-                    },
-                },
-            },
-        ]
+            )
+
+        assert str(raised.value) == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
+        assert volundr.spawned == []
+
+    @pytest.mark.asyncio
+    async def test_a_workflow_named_on_the_item_refuses(
+        self, volundr: MockVolundr, tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        workflow = WorkflowDefinition(
+            id=uuid4(),
+            name="Review Flow",
+            description="",
+            version="1.0.0",
+            scope=WorkflowScope.SYSTEM,
+            owner_id="owner-1",
+            graph={"nodes": [], "edges": []},
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        service = DispatchService(
+            tracker_factory=MockTrackerFactory([tracker]),
+            volundr_factory=MockVolundrFactory(adapters=[volundr]),
+            saga_repo=saga_repo,
+            dispatcher_repo=MockDispatcherRepo(),
+            config=DispatchConfig(),
+            workflow_repo=_StubWorkflowRepo([workflow]),
+        )
+        saga = saga_repo.sagas[0]
+
+        with pytest.raises(WorkflowStepsHaveNoRunnerError):
+            await service.dispatch_issues(
+                "dev-user",
+                [
+                    DispatchItem(
+                        saga_id=str(saga.id),
+                        issue_id="i-1",
+                        repo="org/repo-a",
+                        workflow_id=str(workflow.id),
+                    )
+                ],
+            )
+
+        assert volundr.spawned == []
+
+    @pytest.mark.asyncio
+    async def test_a_single_workflow_item_is_refused(
+        self, service: DispatchService, volundr: MockVolundr, saga_repo: MockSagaRepo
+    ):
+        saga_repo.sagas[0] = _workflow_saga(saga_repo.sagas[0])
+
+        with pytest.raises(WorkflowStepsHaveNoRunnerError):
+            await service.dispatch_issues(
+                "dev-user",
+                [
+                    DispatchItem(
+                        saga_id=str(saga_repo.sagas[0].id), issue_id="i-1", repo="org/repo-a"
+                    )
+                ],
+            )
+
+        assert volundr.spawned == []
+
+    @pytest.mark.asyncio
+    async def test_template_naming_a_flock_flow_is_refused(self, tmp_path):
+        (tmp_path / "flocked.yaml").write_text(
+            "name: Flocked\n"
+            "flock_flow: code-review-flow\n"
+            "stages:\n"
+            "  - name: review\n"
+            "    sequential:\n"
+            "      - persona: reviewer\n"
+            "        prompt: review it\n",
+            encoding="utf-8",
+        )
+        repo = MockSagaRepo()
+        service = DispatchService(
+            tracker_factory=MockTrackerFactory([]),
+            volundr_factory=MockVolundrFactory(adapters=[MockVolundr()]),
+            saga_repo=repo,
+            dispatcher_repo=MockDispatcherRepo(),
+            config=DispatchConfig(templates_dir=tmp_path),
+        )
+
+        with pytest.raises(WorkflowStepsHaveNoRunnerError):
+            await service.create_saga_from_template("flocked", {}, "owner-1")
+
+        assert repo.sagas == []
 
 
 class _StubWorkflowRepo(WorkflowRepository):
@@ -1911,7 +1600,7 @@ class TestResolveWorkflowSnapshot:
 
 
 # ---------------------------------------------------------------------------
-# NIU-644: _dispatch_template_phase with flock_flow_name
+# _dispatch_template_phase
 # ---------------------------------------------------------------------------
 
 
@@ -1970,7 +1659,6 @@ def _make_run(phase_id, persona: str = "reviewer") -> Run:
 
 def _make_dispatch_service(
     volundr: MockVolundr,
-    flow_provider=None,
     saga_repo: MockSagaRepo | None = None,
     tracker_factory: MockTrackerFactory | None = None,
     dispatcher_repo: MockDispatcherRepo | None = None,
@@ -1984,46 +1672,15 @@ def _make_dispatch_service(
             default_system_prompt="Be helpful.",
             default_model="claude-sonnet-4-6",
         ),
-        flow_provider=flow_provider,
     )
 
 
-class TestDispatchTemplatePhaseFlockFlow:
-    """NIU-644: _dispatch_template_phase flock_flow_name integration."""
+class TestDispatchTemplatePhase:
+    """_dispatch_template_phase spawns plain sessions."""
 
     @pytest.mark.asyncio
-    async def test_flock_flow_name_resolves_to_ravn_flock(self):
-        """When flock_flow_name resolves, workload_type is ravn_flock."""
-        flow = FlockFlowConfig(
-            name="code-review-flow",
-            personas=[FlockPersonaOverride(name="reviewer")],
-        )
-        provider = StubFlockFlowProvider({"code-review-flow": flow})
-        volundr = MockVolundr()
-        volundr.integration_ids = ["int-telegram", "int-linear"]
-        repo = MockSagaRepo()
-        service = _make_dispatch_service(volundr, provider, repo)
-
-        saga = _make_saga()
-        phase = _make_phase(saga.id)
-        run = _make_run(phase.id)
-        repo.sagas.append(saga)
-        await repo.save_phase(phase)
-        await repo.save_run(run)
-
-        tpl_phase = _make_template_phase()
-        await service._dispatch_template_phase(
-            saga, phase, [run], tpl_phase, "owner-1", flock_flow_name="code-review-flow"
-        )
-
-        assert len(volundr.spawned) == 1
-        assert volundr.spawned[0].workload_type == "ravn_flock"
-        assert "personas" in volundr.spawned[0].workload_config
-        assert volundr.spawned[0].integration_ids == ["int-telegram", "int-linear"]
-
-    @pytest.mark.asyncio
-    async def test_empty_flock_flow_name_is_solo_dispatch(self):
-        """Without flock_flow_name, workload_type is default."""
+    async def test_runs_are_plain_sessions(self):
+        """A template run is one plain session: workload_type default, no workload config."""
         volundr = MockVolundr()
         volundr.integration_ids = ["int-telegram"]
         repo = MockSagaRepo()
@@ -2037,9 +1694,7 @@ class TestDispatchTemplatePhaseFlockFlow:
         await repo.save_run(run)
 
         tpl_phase = _make_template_phase()
-        await service._dispatch_template_phase(
-            saga, phase, [run], tpl_phase, "owner-1", flock_flow_name=""
-        )
+        await service._dispatch_template_phase(saga, phase, [run], tpl_phase, "owner-1")
 
         assert len(volundr.spawned) == 1
         assert volundr.spawned[0].workload_type == "default"
@@ -2101,7 +1756,6 @@ class TestDispatchTemplatePhaseFlockFlow:
             runs,
             tpl_phase,
             "owner-1",
-            flock_flow_name="",
         )
 
         assert len(volundr.spawned) == 2

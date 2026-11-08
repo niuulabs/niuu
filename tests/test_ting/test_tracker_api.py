@@ -25,6 +25,10 @@ from ting.api.tracker import (
     resolve_trackers,
 )
 from ting.config import AuthConfig
+from ting.domain.exceptions import (
+    WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE,
+    WorkflowStepsHaveNoRunnerError,
+)
 from ting.domain.models import (
     Phase,
     PhaseStatus,
@@ -495,12 +499,15 @@ class InMemoryWorkflowRepository(WorkflowRepository):
 
 
 class _DispatchRecorder:
-    def __init__(self, *, should_fail: bool = False) -> None:
+    def __init__(self, *, should_fail: bool = False, refuse: bool = False) -> None:
         self.should_fail = should_fail
+        self.refuse = refuse
         self.calls: list[tuple[str, str]] = []
 
     async def try_auto_continue(self, owner_id: str, saga_tracker_id: str) -> None:
         self.calls.append((owner_id, saga_tracker_id))
+        if self.refuse:
+            raise WorkflowStepsHaveNoRunnerError()
         if self.should_fail:
             raise RuntimeError("dispatch unavailable")
 
@@ -1065,6 +1072,34 @@ class TestImportProject:
 
         assert response.status_code == 200
         assert "Failed to kick off initial dispatch" in response.json()["warnings"][0]
+
+    def test_start_immediately_reports_the_refusal_when_the_workflow_has_no_runner(
+        self,
+        mock_tracker: MockTracker,
+    ):
+        workflow = _workflow()
+        client = _build_test_client(
+            mock_tracker,
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+            dispatch_service=_DispatchRecorder(refuse=True),
+        )
+
+        response = client.post(
+            "/api/v1/ting/tracker/import",
+            json={
+                "project_id": "proj-1",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "workflow_id": str(workflow.id),
+                "start_immediately": True,
+            },
+        )
+
+        assert response.status_code == 200
+        warnings = response.json()["warnings"]
+        assert len(warnings) == 1
+        assert "was refused" in warnings[0]
+        assert WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE in warnings[0]
 
 
 class TestImportWithoutRepository:

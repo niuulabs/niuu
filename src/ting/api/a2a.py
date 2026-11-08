@@ -87,7 +87,7 @@ from ting.api.workflows import (
     resolve_workflow_repo,
 )
 from ting.domain.a2a_launch import A2ALaunchReservation
-from ting.domain.exceptions import WorkflowDocumentError
+from ting.domain.exceptions import WorkflowDocumentError, WorkflowStepsHaveNoRunnerError
 from ting.domain.execution_snapshot import pinned_child_workflow
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus, WorkflowDefinition
 from ting.domain.services.ticket_coordinator import child_membership, ticket_membership
@@ -611,6 +611,9 @@ class WorkflowTaskHandler(RequestHandler):
                 # that dies here never reaches this line; the campaign
                 # projector closes that run once its launch lease has passed.
                 await self._mark_campaign_failed(pending, reason=str(exc))
+                if isinstance(exc, WorkflowStepsHaveNoRunnerError):
+                    # A valid task this server cannot run: say so, not "internal error".
+                    raise UnsupportedOperationError(str(exc)) from exc
                 raise
             span.set_attribute("ting.session.id", str(execution.session.id))
             telemetry.event(

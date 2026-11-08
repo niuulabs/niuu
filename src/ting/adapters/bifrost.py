@@ -13,7 +13,6 @@ import httpx
 
 from ting.adapters.anthropic_client import anthropic_messages_call
 from ting.adapters.bifrost_publisher import BifrostPublisher
-from ting.adapters.ravn_dispatcher import RavnDispatcher
 from ting.domain.models import SagaStructure
 from ting.domain.validation import ValidationError, parse_and_validate
 from ting.ports.llm import LLMPort
@@ -110,8 +109,6 @@ class BifrostAdapter(LLMPort):
         budget_tokens: int = 0,
         quota_warning_threshold: float = 0.8,
         agent_id: str = "",
-        ravn_decomposer_enabled: bool = False,
-        ravn_decomposer_timeout: float = 120.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -124,47 +121,22 @@ class BifrostAdapter(LLMPort):
         self._budget_tokens = budget_tokens
         self._quota_warning_threshold = quota_warning_threshold
         self._agent_id = agent_id
-        self._ravn_decomposer_enabled = ravn_decomposer_enabled
         # Runtime state
         self._publisher: BifrostPublisher | None = None
         self._provider_healthy: bool = True
         self._total_tokens: int = 0
         self._quota_warning_emitted: bool = False
         self._quota_exceeded_emitted: bool = False
-        self._ravn: RavnDispatcher | None = None
-        if ravn_decomposer_enabled:
-            self._ravn = RavnDispatcher(
-                base_url=base_url,
-                api_key=api_key,
-                timeout=ravn_decomposer_timeout,
-            )
 
     def set_publisher(self, publisher: BifrostPublisher) -> None:
         """Inject the Sleipnir publisher.  Called from main.py after wiring."""
         self._publisher = publisher
 
-    def set_default_llm_config(self, config: dict) -> None:
-        """Inject the default LLM config into the embedded RavnDispatcher.
-
-        Called from main.py after the in-process LLM config is resolved so the
-        ravn decomposer path honours the same model/max_tokens overrides.
-        No-ops when ravn_decomposer_enabled=False.
-        """
-        if self._ravn is not None:
-            self._ravn._default_llm_config = config
-
     async def decompose_spec(self, spec: str, repo: str, *, model: str) -> SagaStructure:
-        # Try decomposer ravn persona first when enabled
-        if self._ravn_decomposer_enabled and self._ravn is not None:
-            result = await self._try_decomposer_ravn(spec, repo, model=model)
-            if result is not None:
-                return result
-            logger.info("decomposer ravn returned no result — falling back to direct API call")
-
         return await self._decompose_via_api(spec, repo, model=model)
 
     async def _decompose_via_api(self, spec: str, repo: str, *, model: str) -> SagaStructure:
-        """Direct Anthropic API decomposition — original imperative path."""
+        """Decompose through the Anthropic-compatible Messages API."""
         prompt = self._decomposition_prompt.format(spec=spec, repo=repo)
         last_error: Exception | None = None
 
@@ -202,48 +174,6 @@ class BifrostAdapter(LLMPort):
             f"Failed to decompose spec after {self._max_retries} attempts: {last_error}"
         )
 
-    async def _try_decomposer_ravn(
-        self, spec: str, repo: str, *, model: str
-    ) -> SagaStructure | None:
-        """Dispatch to the decomposer ravn persona and validate the result.
-
-        Returns a :class:`SagaStructure` on success, ``None`` to fall back.
-        """
-        if self._ravn is None:
-            return None
-
-        context = f"Repository: {repo}\n\nSpecification:\n{spec}"
-
-        try:
-            outcome = await self._ravn.dispatch("decomposer", context, model=model)
-        except Exception:
-            logger.warning("decomposer ravn dispatch failed", exc_info=True)
-            return None
-
-        if outcome is None:
-            return None
-
-        phases_raw = outcome.get("phases")
-        if not phases_raw:
-            logger.warning("decomposer ravn outcome missing 'phases' field")
-            return None
-
-        try:
-            result = parse_and_validate(
-                str(phases_raw),
-                min_estimate_hours=self._min_estimate_hours,
-                max_estimate_hours=self._max_estimate_hours,
-            )
-            logger.info(
-                "decomposer ravn produced saga %r with %d phase(s)",
-                result.name,
-                len(result.phases),
-            )
-            return result
-        except (json.JSONDecodeError, ValidationError) as exc:
-            logger.warning("decomposer ravn outcome failed validation: %s", exc)
-            return None
-
     async def _call_api(self, prompt: str, *, model: str) -> tuple[str, dict]:
         """Call the Anthropic-compatible Messages API.
 
@@ -261,10 +191,8 @@ class BifrostAdapter(LLMPort):
         )
 
     async def close(self) -> None:
-        """Close the underlying HTTP clients."""
+        """Close the underlying HTTP client."""
         await self._client.aclose()
-        if self._ravn is not None:
-            await self._ravn.close()
 
     # ------------------------------------------------------------------
     # Event emission helpers
