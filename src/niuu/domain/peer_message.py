@@ -32,6 +32,17 @@ from typing import Any
 
 PEER_MESSAGE_VERSION = 1
 
+#: The frame type that carries an envelope. It is used three ways:
+#:
+#: * Forge's WebSocket frame to the recipient's Skuld:
+#:   ``{"type": "peer_message", "envelope": <wire>, "request_id": ...}``. Skuld answers
+#:   with the existing ``user_delivered`` or ``user_delivery_failed`` frame for that
+#:   ``request_id``, once the envelope is durably in its inbox, not when the harness
+#:   reads it.
+#: * The frame type of Skuld's event-log entry for an inbox message.
+#: * The mesh RPC ``type`` whose payload is ``{"envelope": <wire>}``.
+PEER_MESSAGE_FRAME = "peer_message"
+
 
 class PeerMessageError(ValueError):
     """A peer message that is malformed, or a lookup of one that does not exist."""
