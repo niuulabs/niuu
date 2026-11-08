@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import typer
 import yaml
 
-from ting.adapters.workflow_bundle import WorkflowBundleCodec
-from ting.adapters.workflow_source_files import FilesystemWorkflowSourceReader
-from ting.domain.services.workflow_authoring import WorkflowBuild, compile_workflow
+if TYPE_CHECKING:
+    from ting.domain.services.workflow_authoring import WorkflowBuild
 
 
 def _build(source: Path) -> WorkflowBuild:
+    from ting.adapters.workflow_source_files import FilesystemWorkflowSourceReader
+    from ting.domain.services.workflow_authoring import compile_workflow
+
     try:
         return compile_workflow(source.name, FilesystemWorkflowSourceReader(str(source.parent)))
     except (OSError, ValueError) as exc:
@@ -36,6 +39,8 @@ def create_workflow_commands() -> typer.Typer:
         output: Path = typer.Option(..., "--output", "-o", help="New importable .zip bundle."),
     ) -> None:
         """Pin dependency content and package it for the existing workflow importer."""
+        from ting.adapters.workflow_bundle import WorkflowBundleCodec
+
         result = _build(source)
         if output.suffix.lower() != ".zip":
             raise typer.BadParameter("Output must end in .zip")

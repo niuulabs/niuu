@@ -31,7 +31,7 @@
 # whose tree no PR tested. Set the repository variable DEV_PROMOTION=off to
 # always rebuild.
 #
-# CLI binaries are release-only (release.yaml) — too slow for dev.
+# CLI binaries are opt-in (cli-binaries.yaml) and release-only (release.yaml).
 #
 # The dev prerelease tags (v*-dev.N) are skipped by release.yaml so they
 # never create a production GitHub Release.
@@ -895,9 +895,8 @@ jobs:
           helm push .helm-packages/niuu-[0-9]*.tgz ${{ env.CHART_REPO }}
 
   # ---------------------------------------------------------------------------
-  # Shared CLI assets — build once, reuse in packaging jobs
+  # CLI binaries
   # ---------------------------------------------------------------------------
-  # CLI binaries (Nuitka + embedded PostgreSQL) are NOT built on dev —
-  # they dominated dev wall-clock (~40 min of matrix builds) and nothing on the
-  # dev branch consumes the artifacts. Release builds them (release.yaml).
+  # Native CLI binaries are opt-in through cli-binaries.yaml and built on
+  # release through release.yaml; routine dev pushes do not compile them.
   # ---------------------------------------------------------------------------

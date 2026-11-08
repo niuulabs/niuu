@@ -3860,15 +3860,12 @@ dependencies = [
 [package.optional-dependencies]
 cli = [
     { name = "cramjam" },
-    { name = "nuitka", extra = ["onefile"] },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-instrumentation-fastapi" },
     { name = "opentelemetry-instrumentation-httpx" },
     { name = "opentelemetry-sdk" },
-    { name = "ordered-set" },
-    { name = "patchelf", marker = "sys_platform == 'linux'" },
     { name = "sigstore" },
     { name = "textual" },
     { name = "typer" },
@@ -3906,6 +3903,21 @@ k8s = [
 ]
 nats = [
     { name = "nats-py", extra = ["nkeys"] },
+]
+nuitka = [
+    { name = "cramjam" },
+    { name = "nuitka", extra = ["onefile"] },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-instrumentation-fastapi" },
+    { name = "opentelemetry-instrumentation-httpx" },
+    { name = "opentelemetry-sdk" },
+    { name = "ordered-set" },
+    { name = "patchelf", marker = "sys_platform == 'linux'" },
+    { name = "sigstore" },
+    { name = "textual" },
+    { name = "typer" },
 ]
 openshell = [
     { name = "openshell" },
@@ -3982,7 +3994,7 @@ requires-dist = [
     { name = "nats-py", extras = ["nkeys"], marker = "extra == 'dev'", specifier = ">=2.15.0" },
     { name = "nats-py", extras = ["nkeys"], marker = "extra == 'nats'", specifier = ">=2.15.0" },
     { name = "nemo-switchyard", marker = "extra == 'switchyard'", git = "https://github.com/NVIDIA-NeMo/Switchyard.git?rev=578e1b7cbd9db9577c4a9f14b0218ebc543b2049" },
-    { name = "nuitka", extras = ["onefile"], marker = "extra == 'cli'", specifier = ">=4.2.1" },
+    { name = "nuitka", extras = ["onefile"], marker = "extra == 'nuitka'", specifier = ">=4.2.1" },
     { name = "openshell", marker = "python_full_version >= '3.12' and extra == 'openshell'", path = "vendor/wheels/openshell-0.1.8.dev40+ge9825820d-py3-none-any.whl" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.44.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otel'", specifier = ">=1.44.0" },
@@ -3990,9 +4002,9 @@ requires-dist = [
     { name = "opentelemetry-instrumentation-fastapi", marker = "extra == 'otel'", specifier = ">=0.65b0" },
     { name = "opentelemetry-instrumentation-httpx", marker = "extra == 'otel'", specifier = ">=0.65b0" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.44.0" },
-    { name = "ordered-set", marker = "extra == 'cli'", specifier = ">=4.1" },
+    { name = "ordered-set", marker = "extra == 'nuitka'", specifier = ">=4.1" },
     { name = "packaging", specifier = ">=24.0" },
-    { name = "patchelf", marker = "sys_platform == 'linux' and extra == 'cli'", specifier = ">=0.19.1.0" },
+    { name = "patchelf", marker = "sys_platform == 'linux' and extra == 'nuitka'", specifier = ">=0.19.1.0" },
     { name = "pillow", specifier = ">=13.0.0" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "pydantic-settings", specifier = ">=2.15.0" },
@@ -4028,13 +4040,14 @@ requires-dist = [
     { name = "typer", marker = "extra == 'dev'", specifier = ">=0.27.2" },
     { name = "urllib3", specifier = ">=2.8.0" },
     { name = "uvicorn", specifier = ">=0.52.4" },
+    { name = "volundr", extras = ["cli"], marker = "extra == 'nuitka'" },
     { name = "volundr", extras = ["otel"], marker = "extra == 'cli'" },
     { name = "volundr", extras = ["provenance"], marker = "extra == 'cli'" },
     { name = "volundr", extras = ["provenance"], marker = "extra == 'dev'" },
     { name = "websockets", specifier = ">=17.1" },
     { name = "zeroconf", specifier = ">=0.151.3" },
 ]
-provides-extras = ["switchyard", "openshell", "dsh", "nats", "embeddings", "provenance", "test", "rabbitmq", "redis", "k8s", "otel", "encryption", "infra", "cli", "tui", "dev"]
+provides-extras = ["switchyard", "openshell", "dsh", "nats", "embeddings", "provenance", "test", "rabbitmq", "redis", "k8s", "otel", "encryption", "infra", "cli", "nuitka", "tui", "dev"]
 
 [package.metadata.requires-dev]
 dev = [

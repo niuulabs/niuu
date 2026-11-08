@@ -115,6 +115,7 @@ def main() -> None:
     parser.add_argument("--live", action="store_true", help="Require real model file creation")
     parser.add_argument("--model", default="sonnet")
     parser.add_argument("--timeout", type=float, default=180)
+    parser.add_argument("--timings-output", type=Path, help="Write measured platform startup time")
     args = parser.parse_args()
     binary = args.niuu.resolve(strict=True)
     if not shutil.which("claude"):
@@ -166,6 +167,7 @@ def main() -> None:
 
     base = env["NIUU_QUICKSTART_URL"]
     session_id = None
+    started = time.perf_counter()
     with (run / "platform.log").open("w") as log:
         process = subprocess.Popen(
             ["bash", "-euc", "exec " + command("start")],
@@ -177,6 +179,14 @@ def main() -> None:
         )
         try:
             wait_until(lambda: request(base, "/health"), process, args.timeout, "health")
+            if args.timings_output:
+                args.timings_output.parent.mkdir(parents=True, exist_ok=True)
+                args.timings_output.write_text(
+                    json.dumps(
+                        {"platform_startup_seconds": round(time.perf_counter() - started, 3)}
+                    )
+                    + "\n"
+                )
             subprocess.run(
                 ["bash", "-euc", command("health")],
                 cwd=run,
