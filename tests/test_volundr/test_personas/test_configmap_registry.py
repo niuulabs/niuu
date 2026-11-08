@@ -11,6 +11,7 @@ import pytest
 
 from personas.adapters.loader import FilesystemPersonaAdapter
 from personas.domain.persona import PersonaConfig, PersonaLLMConfig
+from personas.domain.persona_document import PersonaDocumentError
 from volundr.adapters.personas.configmap import KubernetesConfigMapPersonaRegistry
 
 # ---------------------------------------------------------------------------
@@ -245,7 +246,11 @@ class TestIsBuiltin:
     def test_custom_persona_returns_false(self) -> None:
         registry, _ = _make_registry()
         assert registry.is_builtin("my-custom-persona") is False
-        assert registry.is_builtin("") is False
+
+    def test_invalid_name_is_refused(self) -> None:
+        registry, _ = _make_registry()
+        with pytest.raises(PersonaDocumentError):
+            registry.is_builtin("")
 
     def test_all_builtin_names_are_recognized(self) -> None:
         registry, _ = _make_registry()

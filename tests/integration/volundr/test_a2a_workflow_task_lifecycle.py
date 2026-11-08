@@ -156,7 +156,7 @@ async def test_a2a_task_lifecycle_uses_postgres_and_volundr_http(
         campaign = campaigns[0]
         assert campaign.status is WorkflowCampaignStatus.FAILED
         assert "workflow steps have no runner" in campaign.metadata["failure_error"]
-        assert campaign.session_id is None
+        assert not campaign.session_id
 
         lifecycle_logs = [
             record.getMessage()
@@ -244,7 +244,7 @@ async def test_ravn_a2a_tool_build_backend_commissions_real_workflow_task(
         assert campaign.workflow_id == workflow.id
         assert campaign.metadata["surface"] == "a2a"
         assert campaign.status is WorkflowCampaignStatus.FAILED
-        assert campaign.session_id is None
+        assert not campaign.session_id
     finally:
         await _stop_server(ting_server)
         await _stop_server(volundr_server)
