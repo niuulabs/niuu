@@ -568,12 +568,10 @@ describe('createMockWorkflowService', () => {
       workflowVersion: '0.9.0',
     });
     expect(result.slug).toBe('ship-the-release');
-    expect(result.status).toBe('starting');
-    expect(result.clusterName).toBe('mock');
-    expect(result.sessionName).toContain('ship-the-release');
+    expect(result.status).toBe('pending');
+    expect(result.campaignSlug).toContain('ship-the-release');
     expect(result.workflowVersion).toBe('0.9.0');
     expect(result.documentRevision).toBeTruthy();
-    expect(result.chatEndpoint).toBeNull();
   });
 
   it('launchWorkflow falls back to the workflow name when prompt is empty', async () => {
@@ -590,16 +588,7 @@ describe('createMockWorkflowService', () => {
       prompt: '!!!',
     });
     expect(result.slug).toBe('workflow');
-    expect(result.sessionName).toContain('workflow');
-  });
-
-  it('launchWorkflow honours an explicit session name', async () => {
-    const svc = createMockWorkflowService();
-    const result = await svc.launchWorkflow('00000000-0000-0000-0000-000000000a01', {
-      prompt: 'go',
-      sessionName: 'my-session',
-    });
-    expect(result.sessionName).toBe('my-session');
+    expect(result.campaignSlug).toContain('workflow');
   });
 
   it('launchWorkflow defaults workflowVersion to an empty string when neither the request nor the workflow has one', async () => {

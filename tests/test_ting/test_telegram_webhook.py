@@ -1050,28 +1050,56 @@ class TestDispatchCommand:
         called_items, _ = dispatch_service.dispatched[0]
         assert called_items[0].saga_id == str(saga.id)
 
-    def test_dispatch_of_a_workflow_saga_is_answered_with_the_refusal(
+    def test_dispatch_of_a_workflow_saga_is_answered_with_the_run_it_started(
         self,
         client: TestClient,
         saga_repo: StubSagaRepo,
         dispatch_service: StubDispatchService,
         reply_client: StubReplyClient,
     ):
-        from ting.domain.exceptions import (
-            WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE,
-            WorkflowStepsHaveNoRunnerError,
-        )
+        from ting.domain.services.dispatch_service import DispatchResult
+
+        saga = saga_repo.add_saga(slug="alpha")
+        item = _make_queue_item(identifier="NIU-221", saga_id=str(saga.id))
+        dispatch_service.queue = [item]
+        dispatch_service.next_results = [
+            DispatchResult(
+                issue_id=item.issue_id,
+                session_id="",
+                session_name="niu-221-run",
+                status="spawned",
+                campaign_id="c-1",
+                campaign_slug="niu-221-0123456789ab",
+            )
+        ]
+
+        resp = _post_webhook(client, "/dispatch NIU-221")
+
+        assert resp.status_code == 200
+        reply = reply_client.replies[0][1]
+        assert "Dispatched" in reply
+        assert "run `niu-221-0123456789ab`" in reply
+        assert "session" not in reply
+
+    def test_dispatch_by_a_dispatcher_that_cannot_start_runs_is_answered_with_the_refusal(
+        self,
+        client: TestClient,
+        saga_repo: StubSagaRepo,
+        dispatch_service: StubDispatchService,
+        reply_client: StubReplyClient,
+    ):
+        from ting.domain.services.dispatch_service import WorkflowRunsNotConfiguredError
 
         saga = saga_repo.add_saga(slug="alpha")
         dispatch_service.queue = [_make_queue_item(identifier="NIU-221", saga_id=str(saga.id))]
-        dispatch_service.refusal = WorkflowStepsHaveNoRunnerError()
+        dispatch_service.refusal = WorkflowRunsNotConfiguredError("no launcher configured")
 
         resp = _post_webhook(client, "/dispatch NIU-221")
 
         assert resp.status_code == 200
         reply = reply_client.replies[0][1]
         assert "refused" in reply
-        assert WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE in reply
+        assert "no launcher configured" in reply
         assert "Dispatched" not in reply
 
     def test_dispatch_case_insensitive_identifier(

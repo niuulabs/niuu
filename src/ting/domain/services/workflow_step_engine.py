@@ -52,6 +52,7 @@ from ting.domain.workflow_steps import (
     EVENT_RUN_COMPLETED,
     EVENT_RUN_FAILED,
     EVENT_RUN_LAUNCHED,
+    EVENT_STEP_UNCLOSED,
     TERMINAL_RUN_EVENTS,
     Ending,
     GateActor,
@@ -286,6 +287,61 @@ class WorkflowStepEngine:
             raise
         return await self._after(ledger, definition, graph)
 
+    async def note_unclosed(
+        self,
+        activation_id: UUID,
+        session_id: str | None,
+        attempt: int,
+    ) -> RunState:
+        """Record that a session ended its turn with the step still open.
+
+        The step stays open: nothing is guessed from what the session said. The fact
+        is written to the run's event log and counted, for stuck detection to act on.
+        A report for a step the session does not own is a fencing rejection, as for a
+        close.
+        """
+        found = await self._repository.find_step(activation_id)
+        if found is None:
+            self._count_rejection("unknown_activation")
+            raise StepFencingError(activation_id, "no such activation")
+        now = self._clock()
+        async with self._repository.transaction(found.run_id) as tx:
+            state = await tx.load()
+            step = check_fence(
+                state.step(activation_id),
+                activation_id=activation_id,
+                session_id=session_id,
+                attempt=attempt,
+            )
+            ledger = _Ledger(tx, state, now)
+            await ledger.append(
+                EVENT_STEP_UNCLOSED,
+                {
+                    "activation_id": str(step.id),
+                    "node_id": step.node_id,
+                    "member": step.member,
+                    "attempt": step.attempt,
+                    "session_id": session_id,
+                },
+                source=step.id,
+            )
+        logger.error(
+            "Workflow step %s (%s/%s) of run %s: its session %s ended a turn without closing it",
+            step.id,
+            step.node_id,
+            step.member,
+            step.run_id,
+            session_id,
+        )
+        get_observability().count(
+            "ting_workflow_step_unclosed_total",
+            description=(
+                "Turns a harness session ended with its workflow step still open and no "
+                "close call. The step stays open for stuck detection."
+            ),
+        )
+        return await self._repository.load(found.run_id)
+
     async def resolve_gate(
         self,
         run_id: UUID,
@@ -392,7 +448,12 @@ class WorkflowStepEngine:
         bound = await self._bind_session(step, session_id)
         if bound is None:
             return
-        activation = self._activation(bound, graph, await self._repository.load(step.run_id))
+        activation = self._activation(
+            bound,
+            graph,
+            await self._repository.load(step.run_id),
+            definition.workflow_name,
+        )
         try:
             await self._sessions.deliver(activation)
         except Exception as exc:
@@ -442,7 +503,9 @@ class WorkflowStepEngine:
         await self._after(ledger, definition, graph)
 
     @staticmethod
-    def _activation(step: WorkflowStep, graph: StepGraph, state: RunState) -> StepActivation:
+    def _activation(
+        step: WorkflowStep, graph: StepGraph, state: RunState, workflow_name: str
+    ) -> StepActivation:
         node = graph.nodes[step.node_id]
         member = node.member(step.member or "")
         contract = member.contract if member is not None else None
@@ -470,6 +533,10 @@ class WorkflowStepEngine:
             inputs=delivered,
             deadline_at=step.deadline_at,
             valid_verdicts=tuple(sorted(contract.produces_map)) if contract is not None else (),
+            outcome_schema=contract.outcome_schema if contract is not None else None,
+            verdict_events=dict(contract.produces_map) if contract is not None else {},
+            default_event=contract.produces_event if contract is not None else "",
+            workflow_name=workflow_name,
         )
 
     # -- helpers ----------------------------------------------------------------

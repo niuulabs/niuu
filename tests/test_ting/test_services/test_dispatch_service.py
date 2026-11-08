@@ -16,10 +16,6 @@ from uuid import uuid4
 import pytest
 
 from niuu.domain.models import Principal
-from ting.domain.exceptions import (
-    WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE,
-    WorkflowStepsHaveNoRunnerError,
-)
 from ting.domain.models import (
     Phase,
     PhaseStatus,
@@ -30,6 +26,8 @@ from ting.domain.models import (
     TrackerIssue,
     TrackerMilestone,
     TrackerProject,
+    WorkflowCampaign,
+    WorkflowCampaignStatus,
     WorkflowDefinition,
     WorkflowScope,
 )
@@ -39,6 +37,7 @@ from ting.domain.services.dispatch_service import (
     DispatchService,
     HostTagsUnreadableError,
     TargetSelectionError,
+    WorkflowRunsNotConfiguredError,
     build_prompt,
     host_selector_config,
     host_selector_for,
@@ -47,6 +46,8 @@ from ting.domain.services.dispatch_service import (
     with_host_selector,
 )
 from ting.domain.templates import TemplatePhase, TemplateRun
+from ting.domain.ticket_coordinator import TICKET_METADATA_KEY, ticket_of
+from ting.domain.workflow_steps import RunState
 from ting.ports.volundr import HostTagSetsUnreadableError, SpawnRequest
 from ting.ports.workflow_repository import WorkflowRepository
 
@@ -56,6 +57,7 @@ from ..test_dispatch_api import (
     MockVolundr,
     MockVolundrFactory,
 )
+from ..test_research_api import InMemoryWorkflowCampaignRepository
 from ..test_tracker_api import MockSagaRepo, MockTracker
 
 # -------------------------------------------------------------------
@@ -1284,7 +1286,7 @@ class TestActiveSagaFiltering:
 
 
 # -------------------------------------------------------------------
-# Workflows have no runner (NIU-1198)
+# Workflows run on the step engine
 # -------------------------------------------------------------------
 
 _WORKFLOW_SNAPSHOT = {
@@ -1295,16 +1297,50 @@ _WORKFLOW_SNAPSHOT = {
 }
 
 
-def test_refusal_message_is_exact():
-    assert (
-        WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
-        == "workflow steps have no runner: steps will run on harness sessions (NIU-1198)"
-    )
-    assert str(WorkflowStepsHaveNoRunnerError()) == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
-
-
 def _workflow_saga(saga: Saga) -> Saga:
     return replace(saga, workflow_id=uuid4(), workflow_snapshot=_WORKFLOW_SNAPSHOT)
+
+
+class _RecordingLauncher:
+    """Stands in for WorkflowRuns: remembers every campaign it was asked to start."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.launched: list[tuple[WorkflowCampaign, dict]] = []
+        self.error = error
+
+    async def launch(self, campaign, payload=None, *, trigger_node_id=None):
+        if self.error is not None:
+            raise self.error
+        self.launched.append((campaign, dict(payload or {})))
+        return RunState(run_id=campaign.id)
+
+
+def _workflow_service(
+    tracker: MockTracker,
+    volundr: MockVolundr,
+    saga_repo: MockSagaRepo,
+    launcher: _RecordingLauncher | None,
+    campaigns: InMemoryWorkflowCampaignRepository | None,
+    **extra,
+) -> DispatchService:
+    return DispatchService(
+        tracker_factory=MockTrackerFactory([tracker]),
+        volundr_factory=MockVolundrFactory(adapters=[volundr]),
+        saga_repo=saga_repo,
+        dispatcher_repo=MockDispatcherRepo(),
+        config=DispatchConfig(default_model="claude-sonnet-4-6"),
+        workflow_runs=launcher,
+        campaign_repo=campaigns,
+        **extra,
+    )
+
+
+def _spy_on_tracker(tracker: MockTracker) -> tuple[AsyncMock, AsyncMock]:
+    progress = AsyncMock()
+    state = AsyncMock()
+    tracker.update_run_progress = progress
+    tracker.update_run_state = state
+    return progress, state
 
 
 class TestBuildSpawnRequest:
@@ -1339,62 +1375,80 @@ class TestBuildSpawnRequest:
         assert request.integration_ids == ["int-1"]
         assert "ALPHA-1" in request.initial_prompt
 
-    def test_a_workflow_snapshot_is_refused(self, service: DispatchService):
-        with pytest.raises(WorkflowStepsHaveNoRunnerError) as raised:
-            self._call(service, _make_saga(), workflow_snapshot=_WORKFLOW_SNAPSHOT)
 
-        assert str(raised.value) == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
-
-
-class TestWorkflowRefusal:
+class TestWorkflowRuns:
     @pytest.mark.asyncio
-    async def test_spawn_single_does_not_swallow_the_refusal(
-        self, service: DispatchService, volundr: MockVolundr, tracker: MockTracker
+    async def test_a_saga_workflow_starts_a_run_not_a_session(
+        self, volundr: MockVolundr, tracker: MockTracker, saga_repo: MockSagaRepo
     ):
-        saga = _make_saga()
-        issue = tracker.issues["proj-1"][0]
+        saga = _workflow_saga(saga_repo.sagas[0])
+        saga_repo.sagas[0] = saga
+        launcher = _RecordingLauncher()
+        campaigns = InMemoryWorkflowCampaignRepository()
+        progress, state = _spy_on_tracker(tracker)
+        service = _workflow_service(tracker, volundr, saga_repo, launcher, campaigns)
 
-        with pytest.raises(WorkflowStepsHaveNoRunnerError):
-            await service._spawn_single(
-                target_volundr=volundr,
-                item=DispatchItem(saga_id=str(saga.id), issue_id=issue.id, repo="org/repo-a"),
-                saga=saga,
-                issue=issue,
-                adapter=tracker,
-                effective_model="claude-sonnet-4-6",
-                effective_prompt="",
-                integration_ids=[],
-                session_definition=None,
-                auth_token=None,
-                principal=None,
-                owner_id="dev-user",
-                workflow_snapshot=_WORKFLOW_SNAPSHOT,
-            )
+        [result] = await service.dispatch_issues(
+            "dev-user",
+            [DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo-a")],
+            model="claude-opus",
+        )
 
         assert volundr.spawned == []
+        [(campaign, payload)] = launcher.launched
+        assert result.status == "spawned"
+        assert result.session_id == ""
+        assert result.campaign_id == str(campaign.id)
+        assert result.campaign_slug == campaign.slug
+        assert campaign.session_id == ""
+        assert campaign.status == WorkflowCampaignStatus.PENDING
+        assert campaign.owner_id == "dev-user"
+        assert campaign.workflow_snapshot == _WORKFLOW_SNAPSHOT
+        assert campaign.workflow_id == saga.workflow_id
+        assert ticket_of(campaign.metadata) == (str(saga.id), "i-1")
+        assert campaign.metadata[TICKET_METADATA_KEY]["identifier"] == "ALPHA-1"
+        assert campaign.metadata["dispatch_run"] is True
+        assert campaign.metadata["repo"] == "org/repo-a"
+        assert campaign.metadata["branch"] == "feat/alpha"
+        assert campaign.metadata["base_branch"] == "dev"
+        assert campaign.metadata["model"] == "claude-opus"
+        assert payload["issue"]["identifier"] == "ALPHA-1"
+        assert "ALPHA-1" in payload["prompt"]
+        assert campaigns._campaigns[campaign.id] == campaign
+        progress.assert_awaited_once()
+        assert progress.await_args.args == ("i-1",)
+        assert progress.await_args.kwargs["status"] == RunStatus.RUNNING
+        assert "session_id" not in progress.await_args.kwargs
+        state.assert_awaited_once_with("i-1", RunStatus.RUNNING)
 
     @pytest.mark.asyncio
-    async def test_a_saga_workflow_refuses_the_batch_before_anything_is_spawned(
-        self, service: DispatchService, volundr: MockVolundr, saga_repo: MockSagaRepo
+    async def test_a_batch_runs_plain_items_as_sessions_and_workflow_items_as_runs(
+        self, volundr: MockVolundr, tracker: MockTracker, saga_repo: MockSagaRepo
     ):
         plain = saga_repo.sagas[0]
         with_workflow = _workflow_saga(replace(plain, id=uuid4(), slug="beta"))
         saga_repo.sagas.append(with_workflow)
+        launcher = _RecordingLauncher()
+        service = _workflow_service(
+            tracker, volundr, saga_repo, launcher, InMemoryWorkflowCampaignRepository()
+        )
 
-        with pytest.raises(WorkflowStepsHaveNoRunnerError) as raised:
-            await service.dispatch_issues(
-                "dev-user",
-                [
-                    DispatchItem(saga_id=str(plain.id), issue_id="i-1", repo="org/repo-a"),
-                    DispatchItem(saga_id=str(with_workflow.id), issue_id="i-1", repo="org/repo-a"),
-                ],
-            )
+        results = await service.dispatch_issues(
+            "dev-user",
+            [
+                DispatchItem(saga_id=str(plain.id), issue_id="i-1", repo="org/repo-a"),
+                DispatchItem(saga_id=str(with_workflow.id), issue_id="i-1", repo="org/repo-a"),
+            ],
+        )
 
-        assert str(raised.value) == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
-        assert volundr.spawned == []
+        assert [r.status for r in results] == ["spawned", "spawned"]
+        assert len(volundr.spawned) == 1
+        assert results[0].session_id and not results[0].campaign_id
+        assert results[1].campaign_id and not results[1].session_id
+        assert len(launcher.launched) == 1
 
     @pytest.mark.asyncio
-    async def test_a_workflow_named_on_the_item_refuses(
+    async def test_a_workflow_named_on_the_item_starts_that_workflow(
         self, volundr: MockVolundr, tracker: MockTracker, saga_repo: MockSagaRepo
     ):
         workflow = WorkflowDefinition(
@@ -1408,51 +1462,193 @@ class TestWorkflowRefusal:
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
         )
-        service = DispatchService(
-            tracker_factory=MockTrackerFactory([tracker]),
-            volundr_factory=MockVolundrFactory(adapters=[volundr]),
-            saga_repo=saga_repo,
-            dispatcher_repo=MockDispatcherRepo(),
-            config=DispatchConfig(),
+        launcher = _RecordingLauncher()
+        service = _workflow_service(
+            tracker,
+            volundr,
+            saga_repo,
+            launcher,
+            InMemoryWorkflowCampaignRepository(),
             workflow_repo=_StubWorkflowRepo([workflow]),
         )
         saga = saga_repo.sagas[0]
 
-        with pytest.raises(WorkflowStepsHaveNoRunnerError):
-            await service.dispatch_issues(
-                "dev-user",
-                [
-                    DispatchItem(
-                        saga_id=str(saga.id),
-                        issue_id="i-1",
-                        repo="org/repo-a",
-                        workflow_id=str(workflow.id),
-                    )
-                ],
-            )
+        [result] = await service.dispatch_issues(
+            "dev-user",
+            [
+                DispatchItem(
+                    saga_id=str(saga.id),
+                    issue_id="i-1",
+                    repo="org/repo-a",
+                    workflow_id=str(workflow.id),
+                )
+            ],
+        )
 
+        assert result.status == "spawned"
+        [(campaign, _)] = launcher.launched
+        assert campaign.workflow_name == "Review Flow"
         assert volundr.spawned == []
 
     @pytest.mark.asyncio
-    async def test_a_single_workflow_item_is_refused(
-        self, service: DispatchService, volundr: MockVolundr, saga_repo: MockSagaRepo
+    @pytest.mark.parametrize("missing", ["launcher", "campaigns"])
+    async def test_a_workflow_item_without_a_launcher_refuses_the_batch_before_anything_starts(
+        self,
+        volundr: MockVolundr,
+        tracker: MockTracker,
+        saga_repo: MockSagaRepo,
+        missing: str,
     ):
-        saga_repo.sagas[0] = _workflow_saga(saga_repo.sagas[0])
+        plain = saga_repo.sagas[0]
+        with_workflow = _workflow_saga(replace(plain, id=uuid4(), slug="beta"))
+        saga_repo.sagas.append(with_workflow)
+        service = _workflow_service(
+            tracker,
+            volundr,
+            saga_repo,
+            None if missing == "launcher" else _RecordingLauncher(),
+            None if missing == "campaigns" else InMemoryWorkflowCampaignRepository(),
+        )
 
-        with pytest.raises(WorkflowStepsHaveNoRunnerError):
+        with pytest.raises(WorkflowRunsNotConfiguredError, match="workflow_runs="):
             await service.dispatch_issues(
                 "dev-user",
                 [
-                    DispatchItem(
-                        saga_id=str(saga_repo.sagas[0].id), issue_id="i-1", repo="org/repo-a"
-                    )
+                    DispatchItem(saga_id=str(plain.id), issue_id="i-1", repo="org/repo-a"),
+                    DispatchItem(saga_id=str(with_workflow.id), issue_id="i-1", repo="org/repo-a"),
                 ],
             )
 
         assert volundr.spawned == []
 
     @pytest.mark.asyncio
-    async def test_template_naming_a_flock_flow_is_refused(self, tmp_path):
+    async def test_a_run_that_cannot_start_fails_its_campaign_and_the_item(
+        self, volundr: MockVolundr, tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        saga = _workflow_saga(saga_repo.sagas[0])
+        saga_repo.sagas[0] = saga
+        campaigns = InMemoryWorkflowCampaignRepository()
+        progress, _ = _spy_on_tracker(tracker)
+        service = _workflow_service(
+            tracker, volundr, saga_repo, _RecordingLauncher(RuntimeError("no capacity")), campaigns
+        )
+
+        [result] = await service.dispatch_issues(
+            "dev-user",
+            [DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo-a")],
+        )
+
+        assert result.status == "failed"
+        [failed] = campaigns._campaigns.values()
+        assert failed.status == WorkflowCampaignStatus.FAILED
+        assert failed.metadata["failure_error"] == "no capacity"
+        progress.assert_not_awaited()
+
+
+class TestSettleWorkflowRun:
+    def _campaign(self, saga: Saga, status: WorkflowCampaignStatus, **metadata) -> WorkflowCampaign:
+        now = datetime.now(UTC)
+        return WorkflowCampaign(
+            id=uuid4(),
+            slug="alpha-1-run",
+            name="ALPHA-1",
+            owner_id="dev-user",
+            workflow_id=uuid4(),
+            workflow_version="1.0.0",
+            workflow_name="Review Flow",
+            workflow_snapshot=_WORKFLOW_SNAPSHOT,
+            session_id="",
+            session_name="",
+            status=status,
+            active_stage_id=None,
+            stage_state=[],
+            metadata={
+                "dispatch_run": True,
+                TICKET_METADATA_KEY: {
+                    "sagaId": str(saga.id),
+                    "issueId": "i-1",
+                    "identifier": "ALPHA-1",
+                    "title": "Setup CI",
+                },
+                **metadata,
+            },
+            created_at=now,
+            updated_at=now,
+        )
+
+    def _service(self, tracker, volundr, saga_repo) -> DispatchService:
+        service = _workflow_service(
+            tracker,
+            volundr,
+            saga_repo,
+            _RecordingLauncher(),
+            InMemoryWorkflowCampaignRepository(),
+        )
+        service.try_auto_continue = AsyncMock(return_value=[])
+        return service
+
+    @pytest.mark.asyncio
+    async def test_a_completed_run_merges_the_tracker_run_and_dispatches_the_next(
+        self, volundr: MockVolundr, tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        progress, state = _spy_on_tracker(tracker)
+        service = self._service(tracker, volundr, saga_repo)
+        campaign = self._campaign(saga_repo.sagas[0], WorkflowCampaignStatus.COMPLETED)
+
+        await service.settle_workflow_run(campaign)
+
+        progress.assert_awaited_once_with("i-1", status=RunStatus.MERGED, reason=None)
+        state.assert_awaited_once_with("i-1", RunStatus.MERGED)
+        service.try_auto_continue.assert_awaited_once_with(
+            "dev-user", "proj-1", tracker_connection_id=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_run_fails_the_tracker_run_with_the_reason(
+        self, volundr: MockVolundr, tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        progress, state = _spy_on_tracker(tracker)
+        service = self._service(tracker, volundr, saga_repo)
+        campaign = self._campaign(
+            saga_repo.sagas[0], WorkflowCampaignStatus.FAILED, failure_error="step failed"
+        )
+
+        await service.settle_workflow_run(campaign)
+
+        progress.assert_awaited_once_with("i-1", status=RunStatus.FAILED, reason="step failed")
+        state.assert_awaited_once_with("i-1", RunStatus.FAILED)
+        service.try_auto_continue.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_runs_the_dispatcher_did_not_start_or_that_have_not_ended_are_left_alone(
+        self, volundr: MockVolundr, tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        progress, _ = _spy_on_tracker(tracker)
+        service = self._service(tracker, volundr, saga_repo)
+        saga = saga_repo.sagas[0]
+
+        await service.settle_workflow_run(
+            replace(self._campaign(saga, WorkflowCampaignStatus.COMPLETED), metadata={})
+        )
+        await service.settle_workflow_run(self._campaign(saga, WorkflowCampaignStatus.RUNNING))
+
+        progress.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_dispatched_run_whose_saga_is_gone_is_an_error(
+        self, volundr: MockVolundr, tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        service = self._service(tracker, volundr, saga_repo)
+        campaign = self._campaign(saga_repo.sagas[0], WorkflowCampaignStatus.COMPLETED)
+        saga_repo.sagas.clear()
+
+        with pytest.raises(LookupError, match="is gone"):
+            await service.settle_workflow_run(campaign)
+
+
+class TestFlockFlowTemplates:
+    @pytest.mark.asyncio
+    async def test_template_naming_a_flock_flow_is_refused_and_saves_nothing(self, tmp_path):
         (tmp_path / "flocked.yaml").write_text(
             "name: Flocked\n"
             "flock_flow: code-review-flow\n"
@@ -1472,7 +1668,7 @@ class TestWorkflowRefusal:
             config=DispatchConfig(templates_dir=tmp_path),
         )
 
-        with pytest.raises(WorkflowStepsHaveNoRunnerError):
+        with pytest.raises(ValueError, match="flocks no longer exist"):
             await service.create_saga_from_template("flocked", {}, "owner-1")
 
         assert repo.sagas == []

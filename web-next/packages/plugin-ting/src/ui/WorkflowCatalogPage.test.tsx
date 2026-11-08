@@ -176,10 +176,9 @@ function makeServices(overrides: Record<string, unknown> = {}) {
         workflowId: buildWorkflow.id,
         workflowName: buildWorkflow.name,
         slug: 'build-and-ship',
-        sessionId: 'sess-9',
-        sessionName: 'build-and-ship',
-        status: 'starting',
-        clusterName: 'valhalla',
+        campaignId: 'camp-9',
+        campaignSlug: 'build-and-ship-0123456789ab',
+        status: 'pending',
       }),
     },
     'ting.specs': {
@@ -404,8 +403,8 @@ describe('WorkflowCatalogPage', () => {
     );
     await waitFor(() =>
       expect(mockNavigate).toHaveBeenCalledWith({
-        to: '/volundr/sessions/$sessionId',
-        params: { sessionId: 'sess-9' },
+        to: '/ting/review/run/$slug',
+        params: { slug: 'build-and-ship-0123456789ab' },
       }),
     );
   });

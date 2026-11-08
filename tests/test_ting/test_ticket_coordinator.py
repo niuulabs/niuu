@@ -1,4 +1,4 @@
-"""Tests for the persistent coordinator session a ticket works through."""
+"""Tests for starting a ticket's workflow runs and closing the ticket's record."""
 
 from __future__ import annotations
 
@@ -10,16 +10,17 @@ from uuid import uuid4
 import pytest
 
 from niuu.domain.models import Principal
-from ting.domain.exceptions import (
-    WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE,
-    WorkflowStepsHaveNoRunnerError,
+from ting.domain.models import (
+    Saga,
+    SagaBoardWorkflow,
+    SagaStatus,
+    TrackerIssue,
+    WorkflowCampaignStatus,
 )
-from ting.domain.models import Saga, SagaStatus, TrackerIssue
 from ting.domain.services.ticket_coordinator import (
     TicketCoordinatorService,
     TicketWorkflow,
-    child_membership,
-    ticket_membership,
+    ticket_branch,
 )
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.ticket_coordinator import (
@@ -28,15 +29,17 @@ from ting.domain.ticket_coordinator import (
     ticket_metadata,
     ticket_of,
 )
-from ting.ports.volundr import ForgeProjectRef
+from ting.domain.workflow_steps import RunStateError
 
 NOW = datetime(2026, 10, 30, 12, tzinfo=UTC)
 PRINCIPAL = Principal(user_id="owner-1", email="", tenant_id="tenant-1", roles=[])
-WORKFLOW = TicketWorkflow(id="workflow-1", name="Reviewed Delivery Flow")
+WORKFLOW_ID = uuid4()
+WORKFLOW = TicketWorkflow(id=str(WORKFLOW_ID), name="Reviewed Delivery Flow")
+SNAPSHOT = {"name": "Reviewed Delivery Flow", "graph": {"nodes": [], "edges": []}}
 
 
-def _saga() -> Saga:
-    return Saga(
+def _saga(**changes) -> Saga:
+    fields = dict(
         id=uuid4(),
         tracker_id="project-1",
         tracker_type="linear",
@@ -47,7 +50,12 @@ def _saga() -> Saga:
         status=SagaStatus.ACTIVE,
         created_at=NOW,
         base_branch="main",
+        workflow_id=WORKFLOW_ID,
+        workflow_version="1.0.0",
+        workflow_snapshot=SNAPSHOT,
     )
+    fields.update(changes)
+    return Saga(**fields)
 
 
 def _issue() -> TrackerIssue:
@@ -67,63 +75,147 @@ def _coordinator(saga: Saga, *, status=TicketCoordinatorStatus.ACTIVE) -> Ticket
         issue_id="issue-1",
         owner_id="owner-1",
         tenant_id="tenant-1",
-        session_id="session-1",
+        session_id="",
         connection_id=None,
         status=status,
         created_at=NOW,
+        advanced_from="earlier-run",
     )
 
 
-def _project(project_id: str, name: str, **_: object) -> ForgeProjectRef:
-    return ForgeProjectRef(id=project_id, name=name, instance_id="forge-host")
-
-
-def _service(*, current: TicketCoordinator | None, session_status: str = "running"):
+def _service(*, current: TicketCoordinator | None, active_run: str | None = None):
     repo = MagicMock()
     repo.get = AsyncMock(return_value=current)
     repo.save = AsyncMock(side_effect=lambda item: item)
     repo.close = AsyncMock()
-    volundr = MagicMock()
-    volundr.get_session = AsyncMock(
-        return_value=SimpleNamespace(status=session_status, activity_state=None)
-    )
-    volundr.spawn_session = AsyncMock(return_value=SimpleNamespace(id="session-2"))
-    volundr.ensure_project = AsyncMock(side_effect=_project)
-    volundr.join_project = AsyncMock()
-    volundr.send_directed_room_message = AsyncMock()
-    volundr.start_session = AsyncMock()
-    volundr.stop_session = AsyncMock()
+    campaigns = MagicMock()
+    campaigns.save_ticket_campaign = AsyncMock(return_value=active_run)
+    campaigns.save_campaign = AsyncMock(side_effect=lambda item: item)
+    runs = MagicMock()
+    runs.launch = AsyncMock()
     service = TicketCoordinatorService(
-        repo=repo,
-        volundr=volundr,
-        principal=Principal(user_id="owner-1", email="", tenant_id="tenant-1", roles=[]),
-        auth_token="token",
+        repo=repo, campaigns=campaigns, runs=runs, principal=PRINCIPAL
     )
-    return service, repo, volundr
+    return service, repo, campaigns, runs
 
 
 @pytest.mark.parametrize(
-    "current",
-    [
-        None,
-        _coordinator(_saga()),
-        _coordinator(_saga(), status=TicketCoordinatorStatus.CLOSED),
-    ],
-    ids=["no-coordinator", "active-coordinator", "closed-coordinator"],
+    "current_status",
+    [None, TicketCoordinatorStatus.ACTIVE, TicketCoordinatorStatus.CLOSED],
+    ids=["no-record", "active-record", "closed-record"],
 )
-async def test_starting_a_workflow_is_refused_because_steps_have_no_runner(
-    current: TicketCoordinator | None,
-) -> None:
-    service, repo, volundr = _service(current=current)
+async def test_starting_a_workflow_creates_the_tickets_run_and_launches_it(current_status) -> None:
+    saga = _saga()
+    current = None if current_status is None else _coordinator(saga, status=current_status)
+    service, repo, campaigns, runs = _service(current=current)
 
-    with pytest.raises(WorkflowStepsHaveNoRunnerError) as raised:
-        await service.start_workflow(_saga(), _issue(), WORKFLOW)
+    record = await service.start_workflow(saga, _issue(), WORKFLOW, connection_id="forge-1")
 
-    assert str(raised.value) == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
-    volundr.spawn_session.assert_not_awaited()
-    volundr.send_directed_room_message.assert_not_awaited()
-    volundr.start_session.assert_not_awaited()
+    (campaign,) = [call.args[0] for call in campaigns.save_ticket_campaign.await_args_list]
+    assert campaigns.save_ticket_campaign.await_args.kwargs == {
+        "saga_id": saga.id,
+        "issue_id": "issue-1",
+    }
+    assert ticket_of(campaign.metadata) == (str(saga.id), "issue-1")
+    assert campaign.workflow_id == WORKFLOW_ID
+    assert campaign.workflow_snapshot is SNAPSHOT
+    assert campaign.session_id == ""
+    assert campaign.connection_id == "forge-1"
+    assert campaign.status == WorkflowCampaignStatus.PENDING
+    assert campaign.owner_id == "owner-1"
+    assert campaign.metadata["repo"] == "jve/repo"
+    assert campaign.metadata["branch"] == ticket_branch(saga, _issue()) == "feat/platform-niu-1"
+    assert campaign.metadata["base_branch"] == "main"
+    runs.launch.assert_awaited_once()
+    launched, payload = runs.launch.await_args.args
+    assert launched is campaign
+    assert payload["prompt"].startswith("Ticket NIU-1: Ship it")
+    assert payload["ticket"] == campaign.metadata["ticket"]
+    assert payload["branch"] == "feat/platform-niu-1"
+    assert record.session_id == ""
+    assert record.status == TicketCoordinatorStatus.ACTIVE
+    assert record.requested_workflow_id == WORKFLOW.id
+    assert record.start_error is None
+    assert record.requested_at <= campaign.created_at
+    if current_status is not None:
+        assert record.advanced_from == "earlier-run"
+        assert record.created_at == NOW
+    repo.save.assert_awaited_once()
+
+
+async def test_a_project_board_runs_the_version_it_pinned() -> None:
+    other_id = uuid4()
+    pinned = {"name": "Pinned Flow", "graph": {"nodes": [], "edges": []}}
+    saga = _saga(
+        board_workflows=(
+            SagaBoardWorkflow(
+                workflow_id=other_id, workflow_version="2.0.0", workflow_snapshot=pinned
+            ),
+        )
+    )
+    service, _, campaigns, _ = _service(current=None)
+
+    await service.start_workflow(
+        saga, _issue(), TicketWorkflow(id=str(other_id), name="Pinned Flow"), connection_id=None
+    )
+
+    campaign = campaigns.save_ticket_campaign.await_args.args[0]
+    assert campaign.workflow_snapshot is pinned
+    assert campaign.workflow_version == "2.0.0"
+    assert campaign.workflow_name == "Pinned Flow"
+
+
+async def test_an_isolated_workflow_works_on_its_own_branch() -> None:
+    isolated = {
+        "name": "Isolated",
+        "graph": {"nodes": [], "edges": [], "workingBranch": "isolated"},
+    }
+    saga = _saga(workflow_snapshot=isolated)
+    service, _, campaigns, runs = _service(current=None)
+
+    await service.start_workflow(saga, _issue(), WORKFLOW, connection_id=None)
+
+    campaign = campaigns.save_ticket_campaign.await_args.args[0]
+    assert campaign.metadata["branch"] == f"workflow/{campaign.slug}"
+    assert campaign.metadata["base_branch"] == "main"
+    assert runs.launch.await_args.args[1]["branch"] == f"workflow/{campaign.slug}"
+
+
+async def test_a_workflow_not_on_the_board_is_refused_before_anything_is_saved() -> None:
+    service, repo, campaigns, runs = _service(current=None)
+
+    with pytest.raises(RunStateError, match="not on this project's board"):
+        await service.start_workflow(
+            _saga(), _issue(), TicketWorkflow(id=str(uuid4()), name="Elsewhere"), connection_id=None
+        )
+
     repo.save.assert_not_awaited()
+    campaigns.save_ticket_campaign.assert_not_awaited()
+    runs.launch.assert_not_awaited()
+
+
+async def test_a_ticket_with_a_run_in_progress_is_refused() -> None:
+    service, _, _, runs = _service(current=None, active_run="niu-1-running")
+
+    with pytest.raises(RunStateError, match="already has a run in progress"):
+        await service.start_workflow(_saga(), _issue(), WORKFLOW, connection_id=None)
+
+    runs.launch.assert_not_awaited()
+
+
+async def test_a_run_that_cannot_start_fails_its_campaign_and_says_why_on_the_ticket() -> None:
+    service, repo, campaigns, runs = _service(current=None)
+    runs.launch.side_effect = RuntimeError("no persona pinned")
+
+    with pytest.raises(RuntimeError, match="no persona pinned"):
+        await service.start_workflow(_saga(), _issue(), WORKFLOW, connection_id=None)
+
+    failed = campaigns.save_campaign.await_args.args[0]
+    assert failed.status == WorkflowCampaignStatus.FAILED
+    assert failed.metadata["failure_error"] == "no persona pinned"
+    assert repo.save.await_args.args[0].start_error == (
+        "Reviewed Delivery Flow could not start: no persona pinned"
+    )
 
 
 def test_ticket_metadata_round_trips() -> None:
@@ -140,14 +232,13 @@ def test_campaigns_without_a_full_ticket_link_have_none(metadata: dict) -> None:
     assert ticket_of(metadata) is None
 
 
-async def test_closing_stops_the_session_and_records_it() -> None:
+async def test_closing_records_the_ticket_as_closed() -> None:
     saga = _saga()
     current = _coordinator(saga)
-    service, repo, volundr = _service(current=current)
+    service, repo, _, _ = _service(current=current)
 
     await service.close(current)
 
-    volundr.stop_session.assert_awaited_once()
     repo.close.assert_awaited_once_with(saga.id, "issue-1")
 
 
@@ -155,97 +246,11 @@ async def test_a_ticket_waiting_at_a_gate_never_expires() -> None:
     projector = WorkflowCampaignProjector.__new__(WorkflowCampaignProjector)
     projector._input_wait_timeout = 1.0
     campaign = SimpleNamespace(
-        status="blocked",
-        session_id="session-1",
+        status=WorkflowCampaignStatus.BLOCKED,
+        session_id="",
         metadata={"ticket": {"sagaId": "s", "issueId": "i"}},
         last_activity_at=datetime(2026, 1, 1, tzinfo=UTC),
         updated_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
 
     assert await projector._stale_expiry(campaign, now=NOW) is None
-
-
-async def test_a_workflow_session_joins_under_the_tickets_coordinator() -> None:
-    saga = _saga()
-    _, _, volundr = _service(current=None)
-
-    membership = await ticket_membership(
-        volundr, saga, _coordinator(saga), "Delivery", auth_token="token", principal=PRINCIPAL
-    )
-
-    volundr.join_project.assert_awaited_once_with(
-        _coordinator(saga).session_id,
-        str(saga.id),
-        role="coordinator",
-        auth_token="token",
-        principal=PRINCIPAL,
-    )
-    assert membership.role == "worker"
-    assert membership.parent_instance_id == "forge-host"
-    assert membership.parent_session_id == _coordinator(saga).session_id
-    assert membership.objective == "Delivery"
-    assert membership.labels == (f"work-project:{saga.id}",)
-
-
-async def test_a_ticket_with_no_coordinator_joins_its_project_without_a_parent() -> None:
-    saga = _saga()
-    _, _, volundr = _service(current=None)
-
-    membership = await ticket_membership(
-        volundr, saga, None, "Delivery", auth_token=None, principal=PRINCIPAL
-    )
-
-    volundr.join_project.assert_not_awaited()
-    assert membership.project_id == str(saga.id)
-    assert membership.parent_session_id == ""
-    assert membership.labels == (f"work-project:{saga.id}",)
-
-
-def _parent_forge(project_id: str | None, *, known: bool = True) -> MagicMock:
-    forge = MagicMock()
-    forge.session_project = AsyncMock(return_value=project_id)
-    forge.get_project = AsyncMock(
-        return_value=(
-            ForgeProjectRef(id=project_id or "", name="Home name", instance_id="parent-host")
-            if known
-            else None
-        )
-    )
-    return forge
-
-
-async def test_a_child_of_a_session_outside_any_project_joins_none() -> None:
-    target = MagicMock()
-
-    membership = await child_membership(
-        target, _parent_forge(None), "parent-1", "Work", auth_token=None, principal=PRINCIPAL
-    )
-
-    assert membership is None
-
-
-async def test_a_child_on_another_forge_links_back_to_its_parents_host() -> None:
-    _, _, target = _service(current=None)
-
-    membership = await child_membership(
-        target, _parent_forge("project-1"), "parent-1", "Work", auth_token=None, principal=PRINCIPAL
-    )
-
-    target.ensure_project.assert_awaited_once_with(
-        "project-1", "Home name", auth_token=None, principal=PRINCIPAL
-    )
-    assert membership.project_id == "project-1"
-    assert membership.parent_instance_id == "parent-host"
-    assert membership.parent_session_id == "parent-1"
-
-
-async def test_a_parent_naming_a_vanished_project_stops_the_launch() -> None:
-    with pytest.raises(LookupError, match="project-1"):
-        await child_membership(
-            MagicMock(),
-            _parent_forge("project-1", known=False),
-            "parent-1",
-            "Work",
-            auth_token=None,
-            principal=PRINCIPAL,
-        )

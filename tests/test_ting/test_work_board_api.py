@@ -20,9 +20,8 @@ from niuu.review_widgets import ReviewWidget
 from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.sagas import resolve_saga_repo
 from ting.api.work import create_work_router, resolve_work_trackers
-from ting.api.workflow_runner_refusal import register_workflow_runner_refusal
 from ting.config import AuthConfig, Settings
-from ting.domain.exceptions import WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
+from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import (
     Run,
     RunStatus,
@@ -36,10 +35,25 @@ from ting.domain.models import (
 )
 from ting.domain.ticket_coordinator import TicketCoordinator, TicketCoordinatorStatus
 from ting.domain.workflow_board import SESSION_GONE_REASON
+from ting.domain.workflow_steps import (
+    ActorKind,
+    GateActor,
+    GateDecision,
+    GateRefusedError,
+    RunEvent,
+    RunState,
+    RunStateError,
+    StepInput,
+    StepKind,
+    StepState,
+    WaitingOn,
+    WaitingOnKind,
+    WorkflowStep,
+)
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.ticket_coordinator_repository import TicketCoordinatorRepository
 from ting.ports.tracker import TrackerPort, TrackerResolution
-from ting.ports.volundr import ForgeProjectRef, PublicSessionLogEntry, PublicSessionLogPage
+from ting.ports.volundr import ForgeProjectRef
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.system_workflows import load_system_workflows
 
@@ -173,7 +187,7 @@ def _coordinator(saga: Saga, issue_id: str = "issue-1") -> TicketCoordinator:
         issue_id=issue_id,
         owner_id="owner-1",
         tenant_id="tenant-1",
-        session_id="coordinator-session",
+        session_id="",
         connection_id=None,
         status=TicketCoordinatorStatus.ACTIVE,
         created_at=NOW,
@@ -191,8 +205,8 @@ def _campaign(saga: Saga, *, status: WorkflowCampaignStatus) -> WorkflowCampaign
         workflow_version="1.0.0",
         workflow_name="Reviewed Delivery Flow",
         workflow_snapshot=_snapshot(),
-        session_id="run-session",
-        session_name="a2a-run",
+        session_id="",
+        session_name="",
         connection_id=None,
         status=status,
         active_stage_id=None,
@@ -205,6 +219,27 @@ def _campaign(saga: Saga, *, status: WorkflowCampaignStatus) -> WorkflowCampaign
     )
 
 
+class FakeRuns:
+    """The step engine as the board sees it: each run's gates, and what was decided."""
+
+    def __init__(self, gates: list[dict[str, Any]] | Exception = ()) -> None:
+        self._gates = gates
+        self.resolve_gate = AsyncMock()
+        self.launch = AsyncMock()
+        self.ledger = SimpleNamespace(events=(), steps=())
+
+    async def gates(self, campaign):
+        if isinstance(self._gates, Exception):
+            raise self._gates
+        return list(self._gates)
+
+    async def pending_gates(self, campaign):
+        return [gate for gate in await self.gates(campaign) if gate["status"] == "pending"]
+
+    async def state(self, run_id):
+        return self.ledger
+
+
 def _client(
     saga: Saga,
     *,
@@ -215,6 +250,7 @@ def _client(
     coordinators: _Coordinators | None = None,
     forges: list[MagicMock] | None = None,
     unresolved: int = 0,
+    runs_engine: FakeRuns | None = None,
 ) -> TestClient:
     project = TrackerProject(
         id="project-1",
@@ -248,7 +284,10 @@ def _client(
             ),
         )
     app.include_router(create_work_router())
-    register_workflow_runner_refusal(app)
+    # The gates of an engine run come from the adapter's list, as they did from its session.
+    app.state.workflow_runs = runs_engine or FakeRuns(
+        getattr(adapter, "gates", ()) if adapter is not None else ()
+    )
     app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
     campaign_repo = MagicMock(spec=WorkflowCampaignRepository)
     campaign_repo.list_campaigns = AsyncMock(return_value=campaigns or [])
@@ -258,6 +297,15 @@ def _client(
     campaign_repo.list_campaign_summaries = partial(
         WorkflowCampaignRepository.list_campaign_summaries, campaign_repo
     )
+    campaign_repo.save_ticket_campaign = AsyncMock(return_value=None)
+    campaign_repo.save_campaign = AsyncMock(side_effect=lambda item: item)
+    campaign_repo.get_campaign_by_slug = AsyncMock(
+        side_effect=lambda slug, owner_id: next(
+            (item for item in campaigns or [] if item.slug == slug and item.owner_id == owner_id),
+            None,
+        )
+    )
+    app.state.campaign_repo = campaign_repo
     app.state.ticket_coordinator_repo = coordinators or _Coordinators()
     app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
     app.dependency_overrides[resolve_work_trackers] = lambda: TrackerResolution(adapters=(tracker,))
@@ -289,11 +337,7 @@ def _adapter(
     adapter.send_directed_room_message = AsyncMock()
     adapter.start_session = AsyncMock()
     adapter.stop_session = AsyncMock()
-    adapter.get_workflow_gates = AsyncMock(
-        side_effect=gates if isinstance(gates, Exception) else None,
-        return_value=gates,
-    )
-    adapter.resolve_workflow_gate = AsyncMock(return_value={"status": "resolved"})
+    adapter.gates = gates
     return adapter
 
 
@@ -318,8 +362,9 @@ def test_project_detail_returns_the_columns_and_the_waiting_gate() -> None:
     client = _client(
         saga,
         issues=[_issue(), _issue("issue-2", "backlog")],
-        runs=[_run()],
+        runs=[],
         adapter=adapter,
+        campaigns=[_campaign(saga, status=WorkflowCampaignStatus.BLOCKED)],
     )
 
     body = client.get(f"/api/v1/ting/work/project/{saga.id}", headers=HEADERS).json()
@@ -370,7 +415,7 @@ def test_a_session_whose_agent_died_is_blocked_not_running() -> None:
 
 def test_a_session_still_booting_is_not_an_unreadable_one() -> None:
     saga = _saga(_snapshot())
-    adapter = _adapter(RuntimeError("the broker is not listening yet"))
+    adapter = _adapter([])
     adapter.get_session.return_value = SimpleNamespace(
         activity_state=None, chat_endpoint=None, status="provisioning"
     )
@@ -380,16 +425,16 @@ def test_a_session_still_booting_is_not_an_unreadable_one() -> None:
 
     assert body["tasks"][0]["board"]["columnId"] == "building"
     assert body["tasks"][0]["board"]["state"] == "running"
-    adapter.get_workflow_gates.assert_not_awaited()
 
 
-def test_an_unreadable_session_is_reported_and_never_guessed() -> None:
+def test_a_run_whose_ledger_cannot_be_read_is_reported_and_never_guessed() -> None:
     saga = _saga(_snapshot())
     client = _client(
         saga,
         issues=[_issue()],
-        runs=[_run()],
-        adapter=_adapter(RuntimeError("pod gone")),
+        runs=[],
+        adapter=_adapter(RuntimeError("ledger gone")),
+        campaigns=[_campaign(saga, status=WorkflowCampaignStatus.RUNNING)],
     )
 
     body = client.get(f"/api/v1/ting/work/project/{saga.id}", headers=HEADERS).json()
@@ -407,7 +452,7 @@ def test_an_unreadable_session_is_reported_and_never_guessed() -> None:
     assert coverage["error"]["code"] == "sourceReadFailed"
 
 
-def test_no_forge_connection_is_reported_for_running_tickets() -> None:
+def test_a_dispatched_session_on_no_forge_connection_is_reported_for_running_tickets() -> None:
     saga = _saga(_snapshot())
     client = _client(saga, issues=[_issue()], runs=[_run()], adapter=None)
 
@@ -431,28 +476,62 @@ def _start(
     )
 
 
-def test_starting_a_ticket_is_refused_because_its_workflow_has_no_runner() -> None:
+def _engine(client: TestClient) -> FakeRuns:
+    return client.app.state.workflow_runs
+
+
+def _saved_run(client: TestClient) -> WorkflowCampaign:
+    return client.app.state.campaign_repo.save_ticket_campaign.await_args.args[0]
+
+
+def test_starting_a_ticket_launches_its_workflow_run() -> None:
     saga = _saga(_snapshot())
-    adapter = _adapter([])
     coordinators = _Coordinators()
     client = _client(
         saga,
         issues=[_issue(status_type="unstarted")],
         runs=[],
-        adapter=adapter,
+        adapter=_adapter([]),
         coordinators=coordinators,
     )
 
     response = _start(client, saga)
 
-    assert response.status_code == 501
-    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
-    adapter.spawn_session.assert_not_awaited()
-    adapter.send_directed_room_message.assert_not_awaited()
-    assert coordinators.rows == {}
+    assert response.status_code == 200
+    assert response.json() == {"status": "coordinating", "sessionId": ""}
+    campaign = _saved_run(client)
+    assert campaign.session_id == ""
+    assert campaign.connection_id == "forge-a"
+    assert campaign.metadata["ticket"]["issueId"] == "issue-1"
+    launched, payload = _engine(client).launch.await_args.args
+    assert launched is campaign
+    assert payload["prompt"].startswith("Ticket ISSUE-1")
+    record = coordinators.rows[(saga.id, "issue-1")]
+    assert record.session_id == ""
+    assert record.requested_workflow_id == str(saga.workflow_id)
 
 
-def test_a_started_ticket_shows_as_starting_with_its_coordinator() -> None:
+def test_a_workflow_that_cannot_start_is_refused_and_remembered_on_the_ticket() -> None:
+    saga = _saga(_snapshot())
+    coordinators = _Coordinators()
+    client = _client(
+        saga,
+        issues=[_issue(status_type="unstarted")],
+        runs=[],
+        adapter=_adapter([]),
+        coordinators=coordinators,
+    )
+    _engine(client).launch.side_effect = WorkflowDocumentError("no persona pinned for coder")
+
+    response = _start(client, saga)
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "no persona pinned for coder"}
+    record = coordinators.rows[(saga.id, "issue-1")]
+    assert record.start_error.endswith("no persona pinned for coder")
+
+
+def test_a_started_ticket_shows_as_starting() -> None:
     saga = _saga(_snapshot())
     client = _client(
         saga,
@@ -467,59 +546,35 @@ def test_a_started_ticket_shows_as_starting_with_its_coordinator() -> None:
     assert task["board"]["state"] == "starting"
     assert task["board"]["columnId"] == "building"
     assert task["coordinator"] == {
-        "sessionId": "coordinator-session",
+        "sessionId": "",
         "status": "active",
         "connectionId": None,
-        "chatEndpoint": "ws://forge/s/session/session",
+        "chatEndpoint": None,
         "startError": None,
     }
 
 
-def test_a_ticket_left_on_starting_is_refused_when_asked_again() -> None:
+def test_a_ticket_left_on_starting_can_be_asked_again() -> None:
     saga = _saga(_snapshot())
-    adapter = _adapter([])
     client = _client(
         saga,
         issues=[_issue(status_type="unstarted")],
         runs=[],
-        adapter=adapter,
+        adapter=_adapter([]),
         coordinators=_Coordinators(_coordinator(saga)),
     )
 
-    response = _start(client, saga)
-
-    assert response.status_code == 501
-    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
-    adapter.spawn_session.assert_not_awaited()
-    adapter.send_directed_room_message.assert_not_awaited()
-
-
-def test_a_deleted_coordinator_session_reads_blocked() -> None:
-    saga = _saga(_snapshot())
-    adapter = _adapter([])
-    adapter.get_session.return_value = None
-    client = _client(
-        saga,
-        issues=[_issue(status_type="unstarted")],
-        runs=[],
-        adapter=adapter,
-        coordinators=_Coordinators(_coordinator(saga)),
-    )
-
-    board = _board_task(client, saga)["board"]
-
-    assert board["state"] == "blocked"
-    assert board["reason"] == SESSION_GONE_REASON
+    assert _start(client, saga).status_code == 200
+    _engine(client).launch.assert_awaited_once()
 
 
 def test_a_ticket_with_a_run_in_progress_cannot_start_again() -> None:
     saga = _planned_saga()
-    adapter = _adapter([])
     client = _client(
         saga,
         issues=[_issue()],
         runs=[],
-        adapter=adapter,
+        adapter=_adapter([]),
         campaigns=[_run_of(saga, DELIVERY, WorkflowCampaignStatus.RUNNING)],
         coordinators=_Coordinators(_coordinator(saga)),
     )
@@ -528,7 +583,7 @@ def test_a_ticket_with_a_run_in_progress_cannot_start_again() -> None:
 
     assert response.status_code == 409
     assert "already has a run in progress" in response.json()["detail"]
-    adapter.send_directed_room_message.assert_not_awaited()
+    _engine(client).launch.assert_not_awaited()
 
 
 def test_a_project_without_a_workflow_cannot_start_a_ticket() -> None:
@@ -538,14 +593,13 @@ def test_a_project_without_a_workflow_cannot_start_a_ticket() -> None:
     assert _start(client, saga).status_code == 409
 
 
-def test_a_coordinator_run_places_the_ticket_by_its_own_session() -> None:
+def test_a_run_places_the_ticket_by_its_own_ledger_and_answers_its_gate() -> None:
     saga = _saga(_snapshot())
-    adapter = _adapter([_pending_gate()])
     client = _client(
         saga,
         issues=[_issue()],
         runs=[],
-        adapter=adapter,
+        adapter=_adapter([_pending_gate()]),
         campaigns=[_campaign(saga, status=WorkflowCampaignStatus.BLOCKED)],
         coordinators=_Coordinators(_coordinator(saga)),
     )
@@ -554,45 +608,31 @@ def test_a_coordinator_run_places_the_ticket_by_its_own_session() -> None:
 
     assert task["board"]["columnId"] == "code-review"
     assert task["workflowRun"]["taskId"] == "a2a-run"
-    assert task["workflowRun"]["sessionId"] == "run-session"
+    assert task["workflowRun"]["sessionId"] is None
 
     assert _decide(client, saga).status_code == 200
-    assert adapter.resolve_workflow_gate.await_args.args[0] == "run-session"
+    campaign, node_id, decision = _engine(client).resolve_gate.await_args.args
+    assert (campaign.slug, node_id, decision) == (
+        "a2a-run",
+        "delivery-code-gate",
+        GateDecision.APPROVE,
+    )
 
 
-def test_a_closed_ticket_closes_its_coordinator() -> None:
+def test_a_closed_ticket_closes_its_record() -> None:
     saga = _saga(_snapshot())
-    adapter = _adapter([])
     coordinators = _Coordinators(_coordinator(saga))
     client = _client(
         saga,
         issues=[_issue(status_type="completed")],
         runs=[],
-        adapter=adapter,
+        adapter=_adapter([]),
         coordinators=coordinators,
     )
 
     client.get(f"/api/v1/ting/work/project/{saga.id}", headers=HEADERS)
 
-    adapter.stop_session.assert_awaited_once()
     assert coordinators.rows[(saga.id, "issue-1")].status == TicketCoordinatorStatus.CLOSED
-
-
-def test_a_coordinator_that_would_not_close_is_reported() -> None:
-    saga = _saga(_snapshot())
-    adapter = _adapter([])
-    adapter.stop_session.side_effect = httpx.ConnectError("forge down")
-    client = _client(
-        saga,
-        issues=[_issue(status_type="completed")],
-        runs=[],
-        adapter=adapter,
-        coordinators=_Coordinators(_coordinator(saga)),
-    )
-
-    body = client.get(f"/api/v1/ting/work/project/{saga.id}", headers=HEADERS).json()
-
-    assert _coverage(body, "ticketCoordinators")["error"]["code"] == "closeFailed"
 
 
 def _decide(client: TestClient, saga: Saga, **overrides: Any) -> httpx.Response:
@@ -609,38 +649,50 @@ def _decide(client: TestClient, saga: Saga, **overrides: Any) -> httpx.Response:
     )
 
 
-def test_approving_forwards_the_decision_to_the_session_that_owns_the_gate() -> None:
+def _waiting_client(saga: Saga, *, gates=None, **overrides) -> TestClient:
+    return _client(
+        saga,
+        issues=[_issue()],
+        runs=[],
+        adapter=_adapter([_pending_gate()] if gates is None else gates),
+        campaigns=[_campaign(saga, status=WorkflowCampaignStatus.BLOCKED)],
+        **overrides,
+    )
+
+
+def test_approving_records_the_decision_on_the_run_that_owns_the_gate() -> None:
     saga = _saga(_snapshot())
-    adapter = _adapter([_pending_gate()])
-    client = _client(saga, issues=[_issue()], runs=[_run()], adapter=adapter)
+    client = _waiting_client(saga)
 
     response = _decide(client, saga)
 
     assert response.status_code == 200
-    assert response.json() == {"status": "resolved", "sessionId": "session-1", "gateId": "gate-1"}
-    args, kwargs = adapter.resolve_workflow_gate.await_args
-    assert args == ("session-1", "gate-1", "APPROVE")
-    assert kwargs["notes"] == ""
-    assert kwargs["source"] == "ting.board"
-    assert kwargs["auth_token"] == "token"
+    assert response.json() == {
+        "status": "resolved",
+        "sessionId": "",
+        "gateId": "gate-1",
+    }
+    args, kwargs = _engine(client).resolve_gate.await_args
+    assert args[0].slug == "a2a-run"
+    assert args[1:] == ("delivery-code-gate", GateDecision.APPROVE)
+    assert kwargs == {"by": GateActor(ActorKind.PERSON, "owner-1"), "note": ""}
 
 
 def test_requesting_changes_needs_a_comment() -> None:
     saga = _saga(_snapshot())
-    adapter = _adapter([_pending_gate()])
-    client = _client(saga, issues=[_issue()], runs=[_run()], adapter=adapter)
+    client = _waiting_client(saga)
 
     response = _decide(client, saga, decision="request_changes", notes="   ")
 
     assert response.status_code == 422
-    adapter.resolve_workflow_gate.assert_not_awaited()
+    _engine(client).resolve_gate.assert_not_awaited()
 
     response = _decide(client, saga, decision="request_changes", notes="Handle the empty case.")
 
     assert response.status_code == 200
-    args, kwargs = adapter.resolve_workflow_gate.await_args
-    assert args == ("session-1", "gate-1", "CHANGES_REQUESTED")
-    assert kwargs["notes"] == "Handle the empty case."
+    args, kwargs = _engine(client).resolve_gate.await_args
+    assert args[2] == GateDecision.REQUEST_CHANGES
+    assert kwargs["note"] == "Handle the empty case."
 
 
 @pytest.mark.parametrize(
@@ -649,20 +701,18 @@ def test_requesting_changes_needs_a_comment() -> None:
 )
 def test_a_decision_on_a_gate_that_changed_is_refused(overrides: dict[str, str]) -> None:
     saga = _saga(_snapshot())
-    adapter = _adapter([_pending_gate()])
-    client = _client(saga, issues=[_issue()], runs=[_run()], adapter=adapter)
+    client = _waiting_client(saga)
 
     response = _decide(client, saga, **overrides)
 
     assert response.status_code == 409
     assert "Review it again" in response.json()["detail"]
-    adapter.resolve_workflow_gate.assert_not_awaited()
+    _engine(client).resolve_gate.assert_not_awaited()
 
 
 def test_a_ticket_with_no_waiting_gate_cannot_be_decided() -> None:
     saga = _saga(_snapshot())
-    adapter = _adapter([])
-    client = _client(saga, issues=[_issue()], runs=[_run()], adapter=adapter)
+    client = _waiting_client(saga, gates=[])
 
     assert _decide(client, saga).status_code == 409
 
@@ -674,26 +724,16 @@ def test_an_unknown_ticket_is_not_found() -> None:
     assert _decide(client, saga).status_code == 404
 
 
-def test_a_decision_without_a_forge_connection_is_unavailable() -> None:
+@pytest.mark.parametrize("refusal", [GateRefusedError("no open gate"), RunStateError("finished")])
+def test_a_decision_the_engine_refuses_stays_loud(refusal: Exception) -> None:
     saga = _saga(_snapshot())
-    client = _client(saga, issues=[_issue()], runs=[_run()], adapter=None)
+    client = _waiting_client(saga)
+    _engine(client).resolve_gate.side_effect = refusal
 
-    assert _decide(client, saga).status_code == 503
+    response = _decide(client, saga)
 
-
-@pytest.mark.parametrize(("upstream", "expected"), [(403, 403), (409, 409), (500, 502)])
-def test_a_refused_decision_stays_loud(upstream: int, expected: int) -> None:
-    saga = _saga(_snapshot())
-    adapter = _adapter([_pending_gate()])
-    request = httpx.Request("POST", "http://forge.test/resolve")
-    adapter.resolve_workflow_gate.side_effect = httpx.HTTPStatusError(
-        "refused",
-        request=request,
-        response=httpx.Response(upstream, request=request),
-    )
-    client = _client(saga, issues=[_issue()], runs=[_run()], adapter=adapter)
-
-    assert _decide(client, saga).status_code == expected
+    assert response.status_code == 409
+    assert response.json() == {"detail": str(refusal)}
 
 
 PLANNING = "Ticket Planning Flow"
@@ -918,57 +958,56 @@ def test_a_run_of_a_workflow_off_the_board_is_not_guessed() -> None:
     assert _board_task(client, saga)["board"]["state"] == "unknown"
 
 
-def test_the_first_start_into_a_dropped_workflow_is_refused() -> None:
+def test_the_first_start_into_a_dropped_workflow_launches_it() -> None:
     saga = _planned_saga()
-    adapter = _adapter([])
     coordinators = _Coordinators()
     client = _client(
         saga,
         issues=[_issue(status_type="unstarted")],
         runs=[],
-        adapter=adapter,
+        adapter=_adapter([]),
         coordinators=coordinators,
     )
 
     response = _start(client, saga, column_id="planning")
 
-    assert response.status_code == 501
-    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
-    adapter.spawn_session.assert_not_awaited()
-    assert coordinators.rows == {}
+    assert response.status_code == 200
+    assert _saved_run(client).workflow_name == PLANNING
+    _engine(client).launch.assert_awaited_once()
+    assert coordinators.rows[(saga.id, "issue-1")].requested_workflow_id == str(
+        _bundled(PLANNING).id
+    )
 
 
-def test_a_start_without_a_column_is_refused_after_choosing_the_first_workflow() -> None:
+def test_a_start_without_a_column_launches_the_first_workflow() -> None:
     saga = _planned_saga()
-    adapter = _adapter([])
-    client = _client(saga, issues=[_issue(status_type="unstarted")], runs=[], adapter=adapter)
+    client = _client(saga, issues=[_issue(status_type="unstarted")], runs=[], adapter=_adapter([]))
 
     response = _start(client, saga)
 
-    assert response.status_code == 501
-    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
-    adapter.spawn_session.assert_not_awaited()
+    assert response.status_code == 200
+    assert _saved_run(client).workflow_name == PLANNING
 
 
-def test_the_next_workflow_is_refused_too_and_asks_the_coordinator_nothing() -> None:
+def test_the_next_workflow_launches_on_the_version_the_board_pinned() -> None:
     saga = _planned_saga()
-    adapter = _adapter([])
     coordinators = _Coordinators(_coordinator(saga))
     client = _client(
         saga,
         issues=[_issue()],
         runs=[],
-        adapter=adapter,
+        adapter=_adapter([]),
         campaigns=[_run_of(saga, PLANNING, WorkflowCampaignStatus.COMPLETED)],
         coordinators=coordinators,
     )
 
     response = _start(client, saga)
 
-    assert response.status_code == 501
-    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
-    adapter.spawn_session.assert_not_awaited()
-    adapter.send_directed_room_message.assert_not_awaited()
+    assert response.status_code == 200
+    campaign = _saved_run(client)
+    assert campaign.workflow_name == DELIVERY
+    assert campaign.workflow_snapshot == _pin(DELIVERY).workflow_snapshot
+    _engine(client).launch.assert_awaited_once()
 
 
 def test_a_ticket_with_a_pending_request_reads_as_starting() -> None:
@@ -1042,7 +1081,7 @@ def test_a_ticket_enters_a_workflow_only_at_its_first_column(column_id, detail) 
 
     assert response.status_code == 409
     assert response.json()["detail"] == detail
-    adapter.spawn_session.assert_not_awaited()
+    _engine(client).launch.assert_not_awaited()
 
 
 def test_a_ticket_with_an_active_run_cannot_enter_another_workflow() -> None:
@@ -1061,10 +1100,10 @@ def test_a_ticket_with_an_active_run_cannot_enter_another_workflow() -> None:
 
     assert response.status_code == 409
     assert "run in progress" in response.json()["detail"]
-    adapter.send_directed_room_message.assert_not_awaited()
+    _engine(client).launch.assert_not_awaited()
 
 
-def test_a_failed_run_is_not_held_back_but_the_start_is_refused() -> None:
+def test_a_failed_run_does_not_hold_back_a_new_start() -> None:
     saga = _planned_saga()
     adapter = _adapter([])
     client = _client(
@@ -1078,9 +1117,8 @@ def test_a_failed_run_is_not_held_back_but_the_start_is_refused() -> None:
 
     response = _start(client, saga, column_id="planning")
 
-    assert response.status_code == 501
-    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
-    adapter.send_directed_room_message.assert_not_awaited()
+    assert response.status_code == 200
+    _engine(client).launch.assert_awaited_once()
 
 
 def test_a_done_ticket_cannot_start() -> None:
@@ -1106,18 +1144,19 @@ def test_a_ticket_whose_place_cannot_be_read_cannot_start() -> None:
     assert "cannot read" in response.json()["detail"]
 
 
-def test_a_coordinator_that_died_before_its_run_appeared_blocks_the_ticket() -> None:
+def test_a_start_that_failed_blocks_the_ticket_with_its_reason() -> None:
     saga = _planned_saga()
     coordinator = replace(
         _coordinator(saga),
         requested_workflow_id=str(_bundled(DELIVERY).id),
         requested_at=NOW + timedelta(hours=1),
+        start_error="Reviewed Delivery Flow could not start: no session",
     )
     client = _client(
         saga,
         issues=[_issue()],
         runs=[],
-        adapter=_adapter([], activity_state="error"),
+        adapter=_adapter([]),
         campaigns=[_run_of(saga, PLANNING, WorkflowCampaignStatus.COMPLETED)],
         coordinators=_Coordinators(coordinator),
     )
@@ -1125,6 +1164,7 @@ def test_a_coordinator_that_died_before_its_run_appeared_blocks_the_ticket() -> 
     board = _board_task(client, saga)["board"]
 
     assert (board["columnId"], board["state"]) == ("building", "blocked")
+    assert board["reason"] == "Reviewed Delivery Flow could not start: no session"
 
 
 def test_a_closed_coordinator_leaves_an_unstarted_ticket_in_the_backlog() -> None:
@@ -1150,11 +1190,11 @@ def test_a_dispatched_run_reads_the_workflow_assigned_to_the_project() -> None:
         workflow_id=delivery.id,
         workflow_snapshot=_pin(DELIVERY).workflow_snapshot,
     )
-    client = _client(saga, issues=[_issue()], runs=[_run()], adapter=_adapter([_pending_gate()]))
+    client = _client(saga, issues=[_issue()], runs=[_run()], adapter=_adapter([]))
 
     board = _board_task(client, saga)["board"]
 
-    assert (board["columnId"], board["state"]) == ("code-review", "needsDecision")
+    assert (board["columnId"], board["state"]) == ("building", "running")
 
 
 def _on_no_forge(name: str) -> MagicMock:
@@ -1163,22 +1203,18 @@ def _on_no_forge(name: str) -> MagicMock:
     return forge
 
 
-def test_a_run_on_another_forge_reads_its_real_state() -> None:
+def test_a_dispatched_run_on_another_forge_reads_its_real_state() -> None:
     saga = _saga(_snapshot())
     primary = _on_no_forge("forge-a")
-    other = _adapter([_pending_gate()], name="forge-b")
+    other = _adapter([], name="forge-b")
     client = _client(
         saga, issues=[_issue()], runs=[_run()], adapter=primary, forges=[primary, other]
     )
 
     board = _board_task(client, saga)["board"]
 
-    assert (board["columnId"], board["state"]) == ("code-review", "needsDecision")
+    assert (board["columnId"], board["state"]) == ("building", "running")
     assert board["reason"] != SESSION_GONE_REASON
-    primary.get_workflow_gates.assert_not_awaited()
-    assert _decide(client, saga).status_code == 200
-    other.resolve_workflow_gate.assert_awaited_once()
-    primary.resolve_workflow_gate.assert_not_awaited()
 
 
 def test_a_session_on_no_forge_reads_as_gone() -> None:
@@ -1230,69 +1266,37 @@ def test_no_registered_forge_makes_a_session_unreadable_not_gone() -> None:
     assert _coverage(body, "workflowGates")["status"] == "unavailable"
 
 
-def test_a_coordinator_is_read_from_its_own_forge_without_asking_the_others() -> None:
+def test_a_run_on_the_step_engine_is_read_from_its_ledger_without_any_forge() -> None:
     saga = _saga(_snapshot())
-    other = _on_no_forge("forge-a")
-    own = _adapter([], name="forge-b")
-    client = _client(
-        saga,
-        issues=[_issue(status_type="unstarted")],
-        runs=[],
-        adapter=other,
-        forges=[other, own],
-        coordinators=_Coordinators(replace(_coordinator(saga), connection_id="forge-b")),
-    )
-
-    board = _board_task(client, saga)["board"]
-
-    assert board["reason"] != SESSION_GONE_REASON
-    other.get_session.assert_not_awaited()
-    own.get_session.assert_awaited_once()
-
-
-def test_a_campaign_is_read_from_the_forge_it_launched_on() -> None:
-    saga = _saga(_snapshot())
-    other = _on_no_forge("forge-a")
-    own = _adapter([_pending_gate()], name="forge-b")
-    campaign = replace(
-        _campaign(saga, status=WorkflowCampaignStatus.RUNNING), connection_id="forge-b"
-    )
     client = _client(
         saga,
         issues=[_issue()],
         runs=[],
-        adapter=other,
-        forges=[other, own],
-        campaigns=[campaign],
-        coordinators=_Coordinators(replace(_coordinator(saga), connection_id="forge-b")),
-    )
-
-    board = _board_task(client, saga)["board"]
-
-    assert (board["columnId"], board["state"]) == ("code-review", "needsDecision")
-    other.get_session.assert_not_awaited()
-    assert own.get_session.await_count == 2
-    assert _decide(client, saga).status_code == 200
-    own.resolve_workflow_gate.assert_awaited_once()
-
-
-def test_a_connection_that_no_longer_resolves_is_unreadable_never_gone() -> None:
-    saga = _saga(_snapshot())
-    other = _on_no_forge("forge-a")
-    client = _client(
-        saga,
-        issues=[_issue(status_type="unstarted")],
-        runs=[],
-        adapter=other,
-        forges=[other],
-        coordinators=_Coordinators(replace(_coordinator(saga), connection_id="forge-b")),
+        adapter=None,
+        campaigns=[_campaign(saga, status=WorkflowCampaignStatus.RUNNING)],
     )
 
     body = client.get(f"/api/v1/ting/work/project/{saga.id}", headers=HEADERS).json()
 
-    assert body["tasks"][0]["board"]["reason"] != SESSION_GONE_REASON
-    assert _coverage(body, "workflowGates")["error"]["code"] == "sourceReadFailed"
-    other.get_session.assert_not_awaited()
+    assert body["tasks"][0]["board"]["state"] == "running"
+    assert _coverage(body, "workflowGates")["status"] == "complete"
+
+
+def test_runs_are_not_read_where_the_step_engine_is_not_configured() -> None:
+    saga = _saga(_snapshot())
+    client = _client(
+        saga,
+        issues=[_issue()],
+        runs=[],
+        adapter=None,
+        campaigns=[_campaign(saga, status=WorkflowCampaignStatus.RUNNING)],
+    )
+    del client.app.state.workflow_runs
+
+    body = client.get(f"/api/v1/ting/work/project/{saga.id}", headers=HEADERS).json()
+
+    assert body["tasks"][0]["board"]["state"] == "unknown"
+    assert _coverage(body, "workflowGates")["error"]["code"] == "notConfigured"
 
 
 PLAN_PANEL = {
@@ -1310,30 +1314,60 @@ def _reviews(client: TestClient, saga: Saga, issue_id: str = "issue-1") -> httpx
     )
 
 
-def _log(*frames: tuple[str, dict[str, Any]]) -> PublicSessionLogPage:
-    return PublicSessionLogPage(
-        entries=tuple(
-            PublicSessionLogEntry(
-                session_id="run-session", seq=seq, kind=kind, payload=payload, ts=NOW
-            )
-            for seq, (kind, payload) in enumerate(frames, start=1)
+def _gate_ledger(
+    campaign: WorkflowCampaign,
+    *,
+    node_id: str = "plan-review-gate",
+    outcome: dict[str, Any] | None = None,
+    note: str = "",
+    state: StepState = StepState.WAITING,
+    verdict: str | None = None,
+) -> RunState:
+    """A run's ledger with one outcome event and the gate it opened."""
+    event = RunEvent(
+        run_id=campaign.id,
+        seq=1,
+        event_type="plan.drafted",
+        generation=0,
+        created_at=NOW,
+        payload={
+            "node_id": "plan",
+            "member": "planner",
+            "verdict": "drafted",
+            "outcome": outcome or {},
+            "note": note,
+        },
+    )
+    gate = WorkflowStep(
+        id=uuid4(),
+        run_id=campaign.id,
+        node_id=node_id,
+        member=None,
+        kind=StepKind.GATE,
+        attempt=1,
+        generation=0,
+        state=state,
+        created_at=NOW,
+        activated_at=NOW,
+        inputs=(
+            StepInput(
+                seq=1, event_type="plan.drafted", edge_id="e1", node_id="plan", member="planner"
+            ),
         ),
-        scanned_through=len(frames),
-        has_more=False,
+        waiting_on=(
+            WaitingOn(WaitingOnKind.PERSON, "person", NOW) if state is StepState.WAITING else None
+        ),
+        verdict=verdict,
     )
+    return RunState(run_id=campaign.id, steps=(gate,), events=(event,))
 
 
-def test_a_ticket_review_is_read_back_from_its_runs_log() -> None:
+def test_a_ticket_review_is_read_back_from_the_runs_ledger() -> None:
     saga = _planned_saga()
-    adapter = _adapter([])
-    adapter.get_public_session_log_page = AsyncMock(
-        return_value=_log(
-            ("room_outcome", {"fields": {"plan": "Trace every tick"}}),
-            ("workflow_gate", {"gate": _plan_gate()}),
-        )
-    )
     run = _run_of(saga, PLANNING, WorkflowCampaignStatus.BLOCKED)
-    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[run])
+    client = _client(saga, issues=[_issue()], runs=[], adapter=_adapter([]), campaigns=[run])
+    ledger = _gate_ledger(run, outcome={"plan": "Trace every tick"})
+    _engine(client).ledger = ledger
 
     response = _reviews(client, saga)
 
@@ -1343,52 +1377,47 @@ def test_a_ticket_review_is_read_back_from_its_runs_log() -> None:
     (review,) = body["reviews"]
     assert review["columnId"] == "plan-review"
     assert review["taskId"] == "a2a-run"
+    assert review["sessionId"] == ""
     assert review["panels"] == [PLAN_PANEL]
     assert review["revisions"][0]["fields"] == {"plan": "Trace every tick"}
     assert review["revisions"][0]["status"] == "pending"
-    assert review["chatEndpoint"] == "ws://forge/s/session/session"
+    assert review["revisions"][0]["activationId"] == str(ledger.steps[0].id)
+    assert review["chatEndpoint"] is None
+
+
+def test_a_decided_gate_is_a_revision_with_its_decision() -> None:
+    saga = _planned_saga()
+    run = _run_of(saga, PLANNING, WorkflowCampaignStatus.RUNNING)
+    client = _client(saga, issues=[_issue()], runs=[], adapter=_adapter([]), campaigns=[run])
+    _engine(client).ledger = _gate_ledger(
+        run,
+        outcome={"plan": "v1"},
+        note="Rename it.",
+        state=StepState.DONE,
+        verdict="request_changes",
+    )
+
+    (review,) = _reviews(client, saga).json()["reviews"]
+
+    assert review["revisions"][0]["status"] == "changes_requested"
+    assert review["revisions"][0]["notes"] == ""
 
 
 def test_another_tickets_runs_are_not_this_tickets_review() -> None:
     saga = _planned_saga()
-    adapter = _adapter([])
-    adapter.get_public_session_log_page = AsyncMock(return_value=_log())
     run = _run_of(saga, PLANNING, WorkflowCampaignStatus.BLOCKED)
-    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[run])
+    client = _client(saga, issues=[_issue()], runs=[], adapter=_adapter([]), campaigns=[run])
+    _engine(client).ledger = _gate_ledger(run)
 
     response = _reviews(client, saga, issue_id="issue-2")
 
     assert response.json() == {"reviews": [], "unreadableRuns": [], "planSlug": None}
-    adapter.get_public_session_log_page.assert_not_awaited()
 
 
-def test_a_run_whose_session_is_gone_is_named_not_dropped() -> None:
-    saga = _planned_saga()
-    adapter = _adapter([])
-    adapter.get_session = AsyncMock(return_value=None)
-    run = _run_of(saga, PLANNING, WorkflowCampaignStatus.COMPLETED)
-    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[run])
-
-    assert _reviews(client, saga).json() == {
-        "reviews": [],
-        "unreadableRuns": ["Ticket Planning Flow"],
-        "planSlug": None,
-    }
-
-
-def test_a_forge_that_cannot_be_asked_stays_loud() -> None:
-    saga = _planned_saga()
-    adapter = _adapter([])
-    adapter.get_session = AsyncMock(side_effect=httpx.ConnectError("down"))
-    run = _run_of(saga, PLANNING, WorkflowCampaignStatus.BLOCKED)
-    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[run])
-
-    assert _reviews(client, saga).status_code == 503
-
-
-def test_reviews_need_a_forge() -> None:
+def test_reviews_need_the_step_engine() -> None:
     saga = _planned_saga()
     client = _client(saga, issues=[_issue()], runs=[], adapter=None)
+    del client.app.state.workflow_runs
 
     assert _reviews(client, saga).status_code == 503
 
@@ -1423,7 +1452,6 @@ def test_reviews_list_runs_across_projects_from_their_campaigns() -> None:
     assert item["state"] == "waiting"
     assert item["identifier"] == "ISSUE-1"
     assert item["projectName"] == saga.name
-    adapter.get_workflow_gates.assert_not_awaited()
 
 
 def test_reviews_list_a_waiting_run_that_has_no_ticket() -> None:
@@ -1480,24 +1508,10 @@ def _decide_run(client: TestClient, **overrides: Any) -> httpx.Response:
 
 def test_a_run_with_no_ticket_shows_its_gate_for_review() -> None:
     saga = _planned_saga()
-    adapter = _adapter([])
-    adapter.get_public_session_log_page = AsyncMock(
-        return_value=_log(
-            (
-                "workflow_gate",
-                {
-                    "gate": {
-                        "id": "gate-1",
-                        "activation_id": "activation-1",
-                        "node_id": "merge-gate",
-                        "status": "pending",
-                        "summary": "Ready to merge",
-                    }
-                },
-            )
-        )
-    )
-    client = _run_client(_ticketless_run(saga), adapter)
+    run = _ticketless_run(saga)
+    client = _run_client(run, _adapter([]))
+    ledger = _gate_ledger(run, node_id="merge-gate", note="Ready to merge")
+    _engine(client).ledger = ledger
 
     response = client.get(
         "/api/v1/ting/work/runs/a2a-run/reviews",
@@ -1508,65 +1522,13 @@ def test_a_run_with_no_ticket_shows_its_gate_for_review() -> None:
     body = response.json()
     assert body["run"]["title"] == "Plan NIU-1125 only"
     assert body["run"]["startedBy"] == "regin"
-    assert body["run"]["sessionId"] == "run-session"
+    assert body["run"]["sessionId"] == ""
     (review,) = body["reviews"]
     assert review["title"] == "merge-gate"
-    assert review["chatEndpoint"] == "ws://forge/s/session/session"
-    assert review["revisions"][0]["activationId"] == "activation-1"
+    assert review["chatEndpoint"] is None
+    assert review["revisions"][0]["activationId"] == str(ledger.steps[0].id)
+    assert review["revisions"][0]["summary"] == "Ready to merge"
     assert body["unreadableRuns"] == []
-
-
-def test_a_run_review_names_the_artifact_version_it_shows() -> None:
-    saga = _planned_saga()
-    adapter = _adapter([])
-    file_id = "pf_" + "a" * 32
-    part = {
-        "id": file_id,
-        "type": "tool_use",
-        "name": "present_file",
-        "input": {
-            "file_id": file_id,
-            "name": "plan.md",
-            "mime": "text/markdown",
-            "artifact_key": "plan",
-            "version_label": "v1",
-        },
-    }
-    adapter.get_public_session_log_page = AsyncMock(
-        return_value=_log(
-            ("conversation.turn", {"type": "conversation.turn", "turn": {"parts": [part]}}),
-            (
-                "workflow_gate",
-                {
-                    "gate": {
-                        "id": "gate-1",
-                        "activation_id": "activation-1",
-                        "node_id": "merge-gate",
-                        "status": "pending",
-                    }
-                },
-            ),
-        )
-    )
-    client = _run_client(_ticketless_run(saga), adapter)
-
-    body = client.get(
-        "/api/v1/ting/work/runs/a2a-run/reviews",
-        headers={**HEADERS, "authorization": "Bearer token"},
-    ).json()
-
-    (review,) = body["reviews"]
-    assert review["revisions"][0]["artifacts"] == [
-        {
-            "artifactKey": "plan",
-            "providerKey": "run-session:plan",
-            "revisionId": file_id,
-            "name": "plan.md",
-            "versionLabel": "v1",
-            "mime": "text/markdown",
-            "url": None,
-        }
-    ]
 
 
 def test_another_owners_run_is_not_found() -> None:
@@ -1580,21 +1542,9 @@ def test_another_owners_run_is_not_found() -> None:
     assert repo.get_campaign_by_slug.await_args.kwargs == {"owner_id": "owner-1"}
 
 
-def test_a_run_whose_session_is_gone_says_so() -> None:
+def test_a_run_with_no_open_gate_has_nothing_to_answer() -> None:
     saga = _planned_saga()
-    adapter = _adapter([])
-    adapter.get_session = AsyncMock(return_value=None)
-    client = _run_client(_ticketless_run(saga), adapter)
-
-    body = client.get("/api/v1/ting/work/runs/a2a-run/reviews", headers=HEADERS).json()
-
-    assert body["reviews"] == []
-    assert body["unreadableRuns"] == ["Reviewed Delivery Flow"]
-
-
-def test_a_run_with_no_session_has_nothing_to_read_or_answer() -> None:
-    saga = _planned_saga()
-    client = _run_client(_ticketless_run(saga, session_id=None), _adapter([]))
+    client = _run_client(_ticketless_run(saga), _adapter([]))
 
     body = client.get("/api/v1/ting/work/runs/a2a-run/reviews", headers=HEADERS).json()
 
@@ -1602,36 +1552,31 @@ def test_a_run_with_no_session_has_nothing_to_read_or_answer() -> None:
     assert _decide_run(client).status_code == 409
 
 
-def test_approving_a_run_forwards_the_decision_to_its_session() -> None:
+def test_approving_a_run_records_the_decision_on_its_ledger() -> None:
     saga = _planned_saga()
-    adapter = _adapter([_pending_gate()])
-    client = _run_client(_ticketless_run(saga), adapter)
+    client = _run_client(_ticketless_run(saga), _adapter([_pending_gate()]))
 
     response = _decide_run(client)
 
     assert response.status_code == 200
-    assert response.json() == {
-        "status": "resolved",
-        "sessionId": "run-session",
-        "gateId": "gate-1",
-    }
-    args, kwargs = adapter.resolve_workflow_gate.await_args
-    assert args == ("run-session", "gate-1", "APPROVE")
-    assert kwargs["source"] == "ting.board"
+    assert response.json() == {"status": "resolved", "sessionId": "", "gateId": "gate-1"}
+    args, kwargs = _engine(client).resolve_gate.await_args
+    assert args[0].slug == "a2a-run"
+    assert args[1:] == ("delivery-code-gate", GateDecision.APPROVE)
+    assert kwargs == {"by": GateActor(ActorKind.PERSON, "owner-1"), "note": ""}
 
 
 def test_asking_a_run_for_changes_needs_a_comment() -> None:
     saga = _planned_saga()
-    adapter = _adapter([_pending_gate()])
-    client = _run_client(_ticketless_run(saga), adapter)
+    client = _run_client(_ticketless_run(saga), _adapter([_pending_gate()]))
 
     assert _decide_run(client, decision="request_changes", notes="  ").status_code == 422
-    adapter.resolve_workflow_gate.assert_not_awaited()
+    _engine(client).resolve_gate.assert_not_awaited()
 
     response = _decide_run(client, decision="request_changes", notes="Handle the empty case.")
 
     assert response.status_code == 200
-    assert adapter.resolve_workflow_gate.await_args.kwargs["notes"] == "Handle the empty case."
+    assert _engine(client).resolve_gate.await_args.kwargs["note"] == "Handle the empty case."
 
 
 @pytest.mark.parametrize(
@@ -1645,41 +1590,32 @@ def test_asking_a_run_for_changes_needs_a_comment() -> None:
 )
 def test_a_decision_on_a_run_gate_that_changed_is_refused(gates: list[dict[str, Any]]) -> None:
     saga = _planned_saga()
-    adapter = _adapter(gates)
-    client = _run_client(_ticketless_run(saga), adapter)
+    client = _run_client(_ticketless_run(saga), _adapter(gates))
 
     response = _decide_run(client)
 
     assert response.status_code == 409
     assert "Review it again" in response.json()["detail"]
-    adapter.resolve_workflow_gate.assert_not_awaited()
+    _engine(client).resolve_gate.assert_not_awaited()
 
 
-def test_a_stopped_run_says_why_its_gate_cannot_be_answered() -> None:
+def test_a_run_gate_the_engine_refuses_stays_loud() -> None:
     saga = _planned_saga()
-    adapter = _adapter([_pending_gate()])
-    adapter.get_session = AsyncMock(
-        return_value=SimpleNamespace(activity_state="idle", chat_endpoint=None, status="stopped")
-    )
-    client = _run_client(_ticketless_run(saga), adapter)
+    client = _run_client(_ticketless_run(saga), _adapter([_pending_gate()]))
+    _engine(client).resolve_gate.side_effect = GateRefusedError("gate has no open request")
 
     response = _decide_run(client)
 
     assert response.status_code == 409
-    assert "stopped" in response.json()["detail"]
-    adapter.resolve_workflow_gate.assert_not_awaited()
+    assert response.json() == {"detail": "gate has no open request"}
 
 
-def test_a_run_gate_refused_by_its_session_stays_loud() -> None:
+def test_a_run_gate_cannot_be_answered_where_the_step_engine_is_not_configured() -> None:
     saga = _planned_saga()
-    adapter = _adapter([_pending_gate()])
-    failure = httpx.Response(409, request=httpx.Request("POST", "http://forge/gate"))
-    adapter.resolve_workflow_gate = AsyncMock(
-        side_effect=httpx.HTTPStatusError("refused", request=failure.request, response=failure)
-    )
-    client = _run_client(_ticketless_run(saga), adapter)
+    client = _run_client(_ticketless_run(saga), _adapter([_pending_gate()]))
+    del client.app.state.workflow_runs
 
-    assert _decide_run(client).status_code == 409
+    assert _decide_run(client).status_code == 503
 
 
 def test_a_ticket_review_names_the_plan_its_project_came_from() -> None:
@@ -1714,20 +1650,20 @@ def test_a_workflow_that_needs_no_repository_is_not_held_back_by_a_missing_one()
     snapshot = _snapshot()
     snapshot["graph"] = {**snapshot["graph"], "requiresRepository": False}
     saga = replace(_saga(snapshot), repos=[], base_branch="")
-    adapter = _adapter([])
     client = _client(
         saga,
         issues=[_issue(status_type="unstarted")],
         runs=[],
-        adapter=adapter,
+        adapter=_adapter([]),
         coordinators=_Coordinators(),
     )
 
     response = _start(client, saga)
 
-    assert response.status_code == 501
-    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
-    adapter.spawn_session.assert_not_awaited()
+    assert response.status_code == 200
+    campaign = _saved_run(client)
+    assert "repo" not in campaign.metadata
+    _engine(client).launch.assert_awaited_once()
 
 
 def test_a_workflow_that_needs_a_repository_cannot_start_without_one() -> None:
@@ -1745,7 +1681,7 @@ def test_a_workflow_that_needs_a_repository_cannot_start_without_one() -> None:
 
     assert response.status_code == 409
     assert "needs a repository" in response.json()["detail"]
-    adapter.spawn_session.assert_not_awaited()
+    _engine(client).launch.assert_not_awaited()
 
 
 def test_a_project_whose_forge_is_gone_never_starts_on_another() -> None:
@@ -1761,4 +1697,4 @@ def test_a_project_whose_forge_is_gone_never_starts_on_another() -> None:
     client.app.state.volundr_factory.for_connection = AsyncMock(return_value=None)
 
     assert _start(client, saga).status_code == 503
-    primary.spawn_session.assert_not_awaited()
+    _engine(client).launch.assert_not_awaited()

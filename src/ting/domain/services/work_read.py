@@ -27,7 +27,6 @@ from ting.domain.models import (
     WorkflowCampaignStatus,
 )
 from ting.domain.ticket_coordinator import (
-    PENDING_GATES_KEY,
     PULL_REQUEST_KEY,
     TicketCoordinator,
     TicketCoordinatorStatus,
@@ -38,7 +37,6 @@ from ting.domain.tracker_routing import TrackerRoutingError, select_tracker_for_
 from ting.domain.workflow_board import (
     BACKLOG_COLUMN_ID,
     DONE_COLUMN_ID,
-    GATE_STATUS_PENDING,
     BoardPlacement,
     BoardTicketState,
     BoardWorkflow,
@@ -72,19 +70,30 @@ _CAMPAIGN_RUN_STATUS = {
 
 @dataclass(frozen=True)
 class SessionProgress:
-    """What a live session says about its run; gates are newest first."""
+    """What a run says about itself: its gates (newest first) and whether it failed.
+
+    A run on the step engine is read from its ledger; a dispatched run, from the one
+    session it works in.
+    """
 
     gates: list[dict[str, Any]]
     failed: bool = False
     chat_endpoint: str | None = None
     blocked_reason: str | None = None
-    #: Why the session cannot answer right now, while it is stopped or starting.
-    away_reason: str | None = None
 
 
 #: Reads one session given its id and the Forge connection it was launched on,
 #: which is None when only the session id is known (a dispatched run).
 SessionGateReader = Callable[[str, str | None], Awaitable[SessionProgress]]
+
+#: Reads a workflow run on the step engine from its ledger. A run has no single
+#: session, so it is addressed by its campaign.
+RunGateReader = Callable[[WorkflowCampaign], Awaitable[SessionProgress]]
+
+
+def progress_key(campaign: WorkflowCampaign) -> str:
+    """What a campaign's progress is filed under: its session, or else the run itself."""
+    return campaign.session_id or f"run:{campaign.id}"
 
 
 class WorkKind(StrEnum):
@@ -295,6 +304,7 @@ class WorkReadService:
         tracker_resolution_failures: tuple[TrackerResolutionFailure, ...] = (),
         campaign_lifecycle_available: bool = True,
         session_gates: SessionGateReader | None = None,
+        run_gates: RunGateReader | None = None,
         coordinator_repo: TicketCoordinatorRepository | None = None,
     ) -> None:
         self._principal = principal
@@ -305,6 +315,7 @@ class WorkReadService:
         self._tracker_resolution_failures = tracker_resolution_failures
         self._campaign_lifecycle_available = campaign_lifecycle_available
         self._session_gates = session_gates
+        self._run_gates = run_gates
         self._coordinator_repo = coordinator_repo
 
     async def list_work(
@@ -539,8 +550,8 @@ class WorkReadService:
         ticket_runs = {issue_id: runs[-1] for issue_id, runs in ticket_history.items()}
         gates_by_session: dict[str, SessionProgress] = {}
         if board is not None:
-            gates_by_session, gate_coverage = await self._read_session_gates(
-                _live_sessions(issue_runs, coordinators, ticket_runs)
+            gates_by_session, gate_coverage = await self._read_progress(
+                _live_sessions(issue_runs), _live_runs(ticket_runs)
             )
             coverage.extend(gate_coverage)
         tasks = tuple(
@@ -563,7 +574,7 @@ class WorkReadService:
                     if board is not None
                     else None
                 ),
-                coordinator=_coordinator_ref(coordinators.get(issue.id), gates_by_session),
+                coordinator=_coordinator_ref(coordinators.get(issue.id)),
                 workflow_run=_workflow_run(ticket_runs.get(issue.id)),
             )
             for issue, run in issue_runs
@@ -611,18 +622,19 @@ class WorkReadService:
                 runs.setdefault(ticket[1], []).append(campaign)
         return runs
 
-    async def _read_session_gates(
+    async def _read_progress(
         self,
         sessions: dict[str, str | None],
+        runs: list[WorkflowCampaign],
     ) -> tuple[dict[str, SessionProgress], tuple[SourceCoverage, ...]]:
-        session_ids = list(sessions)
-        if not session_ids:
-            return {}, (
-                SourceCoverage(
-                    source="workflowGates", connection_id=None, status=CoverageStatus.COMPLETE
-                ),
-            )
-        if self._session_gates is None:
+        """Read every live session and every live run once, keyed as ``progress_key`` files them."""
+        reads: list[tuple[str, Awaitable[SessionProgress]]] = []
+        missing_reader = False
+        if sessions and self._session_gates is None:
+            missing_reader = True
+        if runs and self._run_gates is None:
+            missing_reader = True
+        if missing_reader:
             return {}, (
                 SourceCoverage(
                     source="workflowGates",
@@ -634,17 +646,27 @@ class WorkReadService:
                     ),
                 ),
             )
-        results = await asyncio.gather(
-            *(self._session_gates(session_id, sessions[session_id]) for session_id in session_ids),
-            return_exceptions=True,
-        )
+        if self._session_gates is not None:
+            reads.extend(
+                (session_id, self._session_gates(session_id, connection_id))
+                for session_id, connection_id in sessions.items()
+            )
+        if self._run_gates is not None:
+            reads.extend((progress_key(campaign), self._run_gates(campaign)) for campaign in runs)
+        if not reads:
+            return {}, (
+                SourceCoverage(
+                    source="workflowGates", connection_id=None, status=CoverageStatus.COMPLETE
+                ),
+            )
+        results = await asyncio.gather(*(read for _, read in reads), return_exceptions=True)
         gates: dict[str, SessionProgress] = {}
-        for session_id, result in zip(session_ids, results, strict=True):
+        for (key, _), result in zip(reads, results, strict=True):
             if isinstance(result, asyncio.CancelledError):
                 raise result
             if not isinstance(result, BaseException):
-                gates[session_id] = result
-        if len(gates) == len(session_ids):
+                gates[key] = result
+        if len(gates) == len(reads):
             return gates, (
                 SourceCoverage(
                     source="workflowGates",
@@ -1069,43 +1091,35 @@ def _operational_run_index(runs: list[Run]) -> dict[str, Run]:
 
 def _live_sessions(
     issue_runs: list[tuple[TrackerIssue, Run | None]],
-    coordinators: dict[str, TicketCoordinator],
-    ticket_runs: dict[str, WorkflowCampaign],
 ) -> dict[str, str | None]:
-    """Sessions whose state decides where a ticket sits, each with its Forge connection.
+    """Sessions whose state decides where a dispatched ticket sits, each with its connection.
 
-    A connection is None when only the session id is known. Where one session
-    is named both ways, the known connection wins so it is read from one Forge.
+    A connection is None when only the session id is known.
     """
     sessions: dict[str, str | None] = {}
-
-    def add(session_id: str, connection_id: str | None) -> None:
-        sessions[session_id] = connection_id or sessions.get(session_id)
-
     for _, run in issue_runs:
         if run is not None and run.session_id and run.status != RunStatus.MERGED:
-            add(run.session_id, None)
-    for coordinator in coordinators.values():
-        if coordinator.status == TicketCoordinatorStatus.ACTIVE:
-            add(coordinator.session_id, coordinator.connection_id)
-    for campaign in ticket_runs.values():
-        if campaign.session_id and campaign.status != WorkflowCampaignStatus.COMPLETED:
-            add(campaign.session_id, campaign.connection_id)
+            sessions[run.session_id] = None
     return dict(sorted(sessions.items()))
 
 
-def _coordinator_ref(
-    coordinator: TicketCoordinator | None,
-    sessions: dict[str, SessionProgress],
-) -> TicketCoordinatorRef | None:
+def _live_runs(ticket_runs: dict[str, WorkflowCampaign]) -> list[WorkflowCampaign]:
+    """Ticket runs read from their ledger: every unfinished run on the step engine."""
+    return [
+        campaign
+        for campaign in ticket_runs.values()
+        if not campaign.session_id and campaign.status != WorkflowCampaignStatus.COMPLETED
+    ]
+
+
+def _coordinator_ref(coordinator: TicketCoordinator | None) -> TicketCoordinatorRef | None:
     if coordinator is None:
         return None
-    progress = sessions.get(coordinator.session_id)
     return TicketCoordinatorRef(
         session_id=coordinator.session_id,
         status=coordinator.status,
         connection_id=coordinator.connection_id,
-        chat_endpoint=progress.chat_endpoint if progress is not None else None,
+        chat_endpoint=None,
         start_error=coordinator.start_error,
     )
 
@@ -1146,8 +1160,8 @@ def _placement(
 ) -> BoardPlacement:
     """Place a ticket by its newest run, read through that run's own pinned workflow."""
     placement = _ticket_placement(project, saga, issue, run, campaigns, coordinator, sessions)
-    session_id = campaigns[-1].session_id if campaigns else run.session_id if run else None
-    progress = sessions.get(session_id or "")
+    key = progress_key(campaigns[-1]) if campaigns else run.session_id if run else None
+    progress = sessions.get(key or "")
     return replace(
         placement,
         passed_workflow_ids=_passed_workflows(saga, run, campaigns),
@@ -1171,7 +1185,7 @@ def _ticket_placement(
         campaign = None
     requested = _requested_workflow(project, coordinator, run, campaign)
     if requested is not None:
-        return _placement_starting(project, issue, requested, coordinator, sessions)
+        return _placement_starting(project, issue, requested, coordinator)
     if campaign is not None:
         return _placement_of_run(
             project,
@@ -1179,9 +1193,8 @@ def _ticket_placement(
             workflow_id=str(campaign.workflow_id),
             pinned=board_from_snapshot(campaign.workflow_snapshot),
             run_status=_CAMPAIGN_RUN_STATUS[campaign.status],
-            session_id=campaign.session_id,
+            session_id=progress_key(campaign),
             sessions=sessions,
-            remembered_gates=_remembered_gates(campaign),
             failure_reason=str(campaign.metadata.get("failure_error") or "") or None,
         )
     if run is not None:
@@ -1196,7 +1209,7 @@ def _ticket_placement(
             sessions=sessions,
         )
     if coordinator is not None and coordinator.status == TicketCoordinatorStatus.ACTIVE:
-        return _placement_starting(project, issue, project.first_workflow, coordinator, sessions)
+        return _placement_starting(project, issue, project.first_workflow, coordinator)
     return BoardPlacement(column_id=BACKLOG_COLUMN_ID, state=BoardTicketState.NOT_STARTED)
 
 
@@ -1226,50 +1239,26 @@ def _placement_of_run(
     run_status: RunStatus,
     session_id: str | None,
     sessions: dict[str, SessionProgress],
-    remembered_gates: tuple[dict[str, Any], ...] = (),
     failure_reason: str | None = None,
 ) -> BoardPlacement:
+    """Where a run puts its ticket; ``session_id`` is the key its progress is filed under."""
     live = run_status != RunStatus.MERGED and bool(session_id)
     if live and session_id not in sessions:
         return BoardPlacement(column_id=None, state=BoardTicketState.UNKNOWN)
     if pinned is None:
         return off_board_placement()
     progress = sessions.get(session_id or "", SessionProgress(gates=[]))
-    away = progress.away_reason is not None
-    placement = place_on_project(
+    return place_on_project(
         project,
         workflow_id,
         place_ticket(
             pinned,
             run_status=run_status,
             issue_status_type=issue.status_type,
-            gates=list(remembered_gates) if away else progress.gates,
+            gates=progress.gates,
             session_failed=progress.failed,
             blocked_reason=progress.blocked_reason or failure_reason,
         ),
-    )
-    if (
-        away
-        and remembered_gates
-        and placement.state in {BoardTicketState.NEEDS_DECISION, BoardTicketState.BLOCKED}
-    ):
-        # Where the ticket is, without a decision the session could not take yet.
-        return replace(
-            placement,
-            state=BoardTicketState.BLOCKED,
-            gate=None,
-            reason=progress.away_reason,
-        )
-    return placement
-
-
-def _remembered_gates(campaign: WorkflowCampaign) -> tuple[dict[str, Any], ...]:
-    """The gate the run was last waiting on, kept for when its session cannot be asked."""
-    gates = campaign.metadata.get(PENDING_GATES_KEY)
-    if not isinstance(gates, list):
-        return ()
-    return tuple(
-        {**gate, "status": GATE_STATUS_PENDING} for gate in gates if isinstance(gate, dict)
     )
 
 
@@ -1278,30 +1267,13 @@ def _placement_starting(
     issue: TrackerIssue,
     workflow: BoardWorkflow,
     coordinator: TicketCoordinator,
-    sessions: dict[str, SessionProgress],
 ) -> BoardPlacement:
-    """The coordinator was asked to start this workflow and its run has not appeared."""
+    """Ting was asked to start this workflow and its run has not appeared yet."""
     if coordinator.start_error:
         return BoardPlacement(
             column_id=workflow.board.first_column.id,
             state=BoardTicketState.BLOCKED,
             reason=coordinator.start_error,
-        )
-    progress = sessions.get(coordinator.session_id)
-    if progress is None:
-        return BoardPlacement(column_id=None, state=BoardTicketState.UNKNOWN)
-    if progress.failed:
-        return place_on_project(
-            project,
-            workflow.id,
-            place_ticket(
-                workflow.board,
-                run_status=RunStatus.RUNNING,
-                issue_status_type=issue.status_type,
-                gates=[],
-                session_failed=True,
-                blocked_reason=progress.blocked_reason,
-            ),
         )
     return BoardPlacement(column_id=workflow.board.first_column.id, state=BoardTicketState.STARTING)
 

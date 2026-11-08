@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from ting.config import (
+    RAVN_FLOCK_REMOVED_MESSAGE,
     DatabaseConfig,
     DispatchConfig,
     DispatchMimirConfig,
@@ -15,7 +16,6 @@ from ting.config import (
     WorkflowExecutionConfig,
     WorkflowStepsConfig,
 )
-from ting.domain.exceptions import WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
 
 
 class TestWorkflowStepsConfig:
@@ -136,7 +136,7 @@ class TestRemovedWorkflowRunnerSettings:
         with pytest.raises(ValueError) as raised:
             Settings(dispatch={"flock": {"enabled": True}})
 
-        assert WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE in str(raised.value)
+        assert RAVN_FLOCK_REMOVED_MESSAGE in str(raised.value)
         assert "remove dispatch.flock.enabled" in str(raised.value)
 
     def test_enabling_flock_through_the_environment_is_fatal(
@@ -177,6 +177,13 @@ class TestRemovedWorkflowRunnerSettings:
     def test_removed_decomposer_keys_are_fatal(self, key: str) -> None:
         with pytest.raises(ValueError, match=rf"llm\.{key} was removed"):
             LLMConfig(**{key: True})
+
+    def test_ravn_outcome_section_is_fatal(self) -> None:
+        with pytest.raises(ValueError) as raised:
+            Settings(ravn_outcome={"enabled": True})
+
+        assert RAVN_FLOCK_REMOVED_MESSAGE in str(raised.value)
+        assert "Remove ravn_outcome" in str(raised.value)
 
     def test_flock_flows_section_is_fatal(self) -> None:
         with pytest.raises(ValueError, match="settings.flock_flows was removed"):

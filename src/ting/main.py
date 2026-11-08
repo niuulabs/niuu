@@ -34,12 +34,13 @@ from niuu.utils import import_class, resolve_secret_kwargs
 from personas.adapters.loader import FilesystemPersonaAdapter
 from personas.ports.persona import PersonaPort
 from ting.adapters.a2a_push_dispatcher import A2APushDispatcher
+from ting.adapters.campaign_step_definitions import CampaignStepRunDefinitions
+from ting.adapters.engine_parent_continuation import EngineParentWorkflowContinuation
 from ting.adapters.github_git import GitHubGitAdapter
 from ting.adapters.guild_instances import GuildInstanceRegistryClient
 from ting.adapters.inbound.rest_integrations import create_telegram_setup_router
 from ting.adapters.inbound.rest_pats import create_pats_router
 from ting.adapters.inbound.rest_telegram_webhook import create_telegram_webhook_router
-from ting.adapters.parent_workflow_continuation import VolundrParentWorkflowContinuation
 from ting.adapters.plain_child_gates import (
     SchemaOnlyChildResultVerifier,
     UndeclaredReviewAttestor,
@@ -54,6 +55,7 @@ from ting.adapters.postgres_sagas import PostgresSagaRepository
 from ting.adapters.postgres_ticket_coordinators import PostgresTicketCoordinatorRepository
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
 from ting.adapters.postgres_workflow_executions import PostgresWorkflowExecutionRepository
+from ting.adapters.postgres_workflow_steps import PostgresWorkflowStepRepository
 from ting.adapters.tracker_factory import TrackerAdapterFactory
 from ting.adapters.volundr_factory import GuildRegistryUnavailableError, VolundrAdapterFactory
 from ting.adapters.workflow_execution_worker import ExecutionReconciler, WorkflowExecutionWorker
@@ -97,7 +99,6 @@ from ting.api.workflow_executions import (
     resolve_workflow_execution_repo,
     resolve_workflow_execution_service,
 )
-from ting.api.workflow_runner_refusal import register_workflow_runner_refusal
 from ting.api.workflows import (
     create_workflows_router,
     resolve_workflow_launch_campaign_repo,
@@ -134,7 +135,10 @@ from ting.domain.services.ticket_coordinator import TicketCoordinatorService
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.services.workflow_execution import WorkflowExecutionService
 from ting.domain.services.workflow_migration import workflow_catalog_migration_is_current
+from ting.domain.services.workflow_runs import WorkflowRuns
+from ting.domain.services.workflow_step_engine import WorkflowStepEngine
 from ting.domain.services.workflow_wait import WorkflowWaitService
+from ting.domain.step_engine import EngineSettings
 from ting.infrastructure.database import database_pool
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.event_bus import EventBusPort
@@ -631,8 +635,6 @@ def create_app(
             content={"detail": f"{exc} — retry once Guild's instance registry is reachable"},
         )
 
-    register_workflow_runner_refusal(app)
-
     app.state.settings = settings
     app.state.review_widgets = load_review_widgets(
         settings.review_widgets.module_manifest_files,
@@ -913,8 +915,9 @@ def create_app(
                     (f"http://{settings.local_platform_host}:{settings.local_platform_port}"),
                 )
                 execution_gateway = gateway_cls(**gateway_kwargs)
-                parent_continuation = VolundrParentWorkflowContinuation(
-                    volundr_factory=app.state.volundr_factory
+                parent_continuation = EngineParentWorkflowContinuation(
+                    runs=lambda: app.state.workflow_runs,
+                    campaigns=lambda: app.state.workflow_campaign_repo,
                 )
 
                 # The generic pack's own repository is scoped to exclude rows the
@@ -1286,28 +1289,29 @@ def create_app(
 
             stale_campaigns = settings.a2a.stale_campaigns
 
-            def _background_coordinators(
-                adapter: VolundrPort, principal: Principal
-            ) -> TicketCoordinatorService:
-                # No request here: the adapter carries the owner's own connection credentials.
+            def _background_coordinators(principal: Principal) -> TicketCoordinatorService:
+                # `workflow_runs` is built below, before any call can reach this.
                 return TicketCoordinatorService(
                     repo=app.state.ticket_coordinator_repo,
-                    volundr=adapter,
+                    campaigns=workflow_campaign_repo,
+                    runs=workflow_runs,
                     principal=principal,
-                    auth_token=None,
                 )
+
+            workflow_step_repo = PostgresWorkflowStepRepository(pool)
+
+            async def _run_launched(run_id: uuid.UUID) -> bool:
+                return (await workflow_step_repo.load(run_id)).launched
 
             workflow_campaign_projector = WorkflowCampaignProjector(
                 repo=workflow_campaign_repo,
-                volundr_factory=app.state.volundr_factory,
                 event_bus=event_bus,
+                run_launched=_run_launched,
                 push_dispatcher=a2a_push_dispatcher,
                 sweep_interval_seconds=stale_campaigns.sweep_interval_seconds,
                 input_wait_timeout_seconds=stale_campaigns.input_wait_timeout_seconds,
-                idle_timeout_seconds=stale_campaigns.idle_timeout_seconds,
                 launch_lease_seconds=settings.a2a.launch_lease_seconds,
                 coordinator_repo=app.state.ticket_coordinator_repo,
-                coordinator_persona=settings.ticket_coordinator.persona,
                 ticket_advancer=TicketAdvancer(
                     saga_repo=saga_repo,
                     campaign_repo=workflow_campaign_repo,
@@ -1316,7 +1320,35 @@ def create_app(
                     volundr_factory=app.state.volundr_factory,
                     coordinators=_background_coordinators,
                 ),
+                on_run_finished=(dispatch_svc.settle_workflow_run,),
             )
+            step_sessions_config = settings.workflow_steps.sessions
+            step_sessions = import_class(step_sessions_config.adapter)(
+                **{
+                    "default_model": settings.dispatch.default_model,
+                    **step_sessions_config.kwargs,
+                    "volundr_factory": app.state.volundr_factory,
+                    "campaigns": workflow_campaign_repo,
+                }
+            )
+            workflow_runs = WorkflowRuns(
+                engine=WorkflowStepEngine(
+                    repository=workflow_step_repo,
+                    sessions=step_sessions,
+                    definitions=CampaignStepRunDefinitions(workflow_campaign_repo),
+                    settings=EngineSettings(
+                        step_deadline_seconds=settings.workflow_steps.step_deadline_seconds
+                    ),
+                ),
+                steps=workflow_step_repo,
+                campaigns=workflow_campaign_repo,
+                sink=workflow_campaign_projector,
+                volundr_factory=app.state.volundr_factory,
+            )
+            workflow_campaign_projector.bind_runs(workflow_runs)
+            dispatch_svc.bind_workflow_runs(workflow_runs, workflow_campaign_repo)
+            app.state.workflow_runs = workflow_runs
+            app.state.workflow_step_repo = workflow_step_repo
             app.state.workflow_campaign_projector = workflow_campaign_projector
             await workflow_campaign_projector.start()
 
@@ -1460,6 +1492,7 @@ def create_app(
                 sleipnir_publisher=sleipnir_bus,
                 workflow_campaign_projector=workflow_campaign_projector,
                 attested_review_projector=attested_review_projector,
+                workflow_runs=workflow_runs,
             )
             app.state.subscriber = subscriber
             await subscriber.start()
@@ -1490,47 +1523,10 @@ def create_app(
                         len(et_cfg.rules),
                     )
 
-            # Wire RavnOutcomeHandler (canonical ravn.session.ended plus compatibility task events)
-            ravn_outcome_handler = None
-            ravn_help_needed_handler = None
-            if (
-                settings.ravn_outcome.enabled
-                and sleipnir_bus is not None
-                and hasattr(sleipnir_bus, "subscribe")
-            ):
-                from ting.adapters.ravn_help_needed_handler import (  # noqa: PLC0415
-                    RavnHelpNeededHandler,
-                )
-                from ting.adapters.ravn_outcome_handler import RavnOutcomeHandler  # noqa: PLC0415
-
-                ravn_help_needed_handler = RavnHelpNeededHandler(
-                    subscriber=sleipnir_bus,
-                    tracker_factory=app.state.tracker_factory,
-                    event_bus=event_bus,
-                    owner_id=settings.ravn_outcome.owner_id,
-                )
-                await ravn_help_needed_handler.start()
-                app.state.ravn_help_needed_handler = ravn_help_needed_handler
-                logger.info("RavnHelpNeededHandler started")
-
-                ravn_outcome_handler = RavnOutcomeHandler(
-                    subscriber=sleipnir_bus,
-                    tracker_factory=app.state.tracker_factory,
-                    review_engine=review_engine,
-                    owner_id=settings.ravn_outcome.owner_id,
-                )
-                await ravn_outcome_handler.start()
-                app.state.ravn_outcome_handler = ravn_outcome_handler
-                logger.info("RavnOutcomeHandler started")
-
             logger.info("Ting started — database pool ready")
             yield
 
             # Lifecycle cleanup
-            if ravn_help_needed_handler is not None:
-                await ravn_help_needed_handler.stop()
-            if ravn_outcome_handler is not None:
-                await ravn_outcome_handler.stop()
             if event_trigger_adapter is not None:
                 await event_trigger_adapter.stop()
             await subscriber.stop()

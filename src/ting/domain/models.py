@@ -178,40 +178,6 @@ class SessionMessage:
 
 
 @dataclass(frozen=True)
-class RavnOutcome:
-    """Structured outcome from a ``ravn.task.completed`` event payload.
-
-    Published by the ravn flock coordinator at the end of a task session.
-    Fields map directly to the ``produces.schema`` declared by the coordinator
-    persona.
-    """
-
-    verdict: str
-    """Final verdict from the coordinator: ``"approve"`` | ``"retry"`` | ``"escalate"``."""
-
-    tests_passing: bool | None
-    """Whether all CI / test suite checks pass. ``None`` means unknown."""
-
-    scope_adherence: float | None
-    """Fraction (0.0–1.0) of work that stayed within declared scope. ``None`` means unknown."""
-
-    pr_url: str | None
-    """URL of the pull request created by the session, if any."""
-
-    files_changed: list[str]
-    """List of file paths changed in the session."""
-
-    summary: str
-    """Human-readable one-line summary from the coordinator."""
-
-    authoritative: bool = False
-    """Whether the outcome came from a deterministic workflow/runtime stop node."""
-
-    checks: list[dict[str, Any]] = field(default_factory=list)
-    """Structured child outcomes that contributed to the final verdict."""
-
-
-@dataclass(frozen=True)
 class DispatcherState:
     id: UUID
     owner_id: str

@@ -27,7 +27,6 @@ except ImportError:
 from niuu.domain.models import Principal
 from niuu.domain.tags import matches_tags, residual_selector, satisfiable, validate_match
 from personas.domain.persona_document import PortablePersonaSource
-from ting.domain.exceptions import WorkflowStepsHaveNoRunnerError
 from ting.domain.models import (
     DispatcherState,
     Phase,
@@ -38,9 +37,12 @@ from ting.domain.models import (
     SagaStatus,
     TrackerIssue,
     TrackerProject,
+    WorkflowCampaign,
+    WorkflowCampaignStatus,
     WorkflowScope,
 )
 from ting.domain.templates import BUNDLED_TEMPLATES_DIR, TemplatePhase, load_template
+from ting.domain.ticket_coordinator import TICKET_METADATA_KEY, ticket_metadata, ticket_of
 from ting.domain.tracker_routing import select_tracker_for_saga
 from ting.domain.utils import _slugify
 from ting.domain.workflow_snapshot import workflow_name_from_snapshot
@@ -54,7 +56,9 @@ from ting.ports.volundr import (
     VolundrFactory,
     VolundrPort,
 )
+from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
+from ting.ports.workflow_runs import WorkflowRunLauncher
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +71,14 @@ _READY_STATUSES = {"todo", "backlog", "triage"}
 _READY_STATUS_TYPES = {"unstarted"}
 _ACTIVE_SESSION_STATUSES = {"running", "starting", "creating"}
 _COMPLETED_LINEAR_STATES = {"completed", "cancelled"}
+#: Campaign metadata key that marks a run the dispatcher started for a saga item.
+DISPATCH_RUN_KEY = "dispatch_run"
+#: Surface recorded on the campaign of a dispatched workflow run.
+DISPATCH_SURFACE = "ting.dispatch"
+
+
+class WorkflowRunsNotConfiguredError(RuntimeError):
+    """A saga item runs a workflow but the dispatcher has nothing to start a run with."""
 
 
 def _sanitize_log(value: object) -> str:
@@ -119,6 +131,9 @@ class DispatchResult:
     session_name: str
     status: str
     cluster_name: str = ""
+    #: The campaign of the workflow run an item started; a run has no single session.
+    campaign_id: str = ""
+    campaign_slug: str = ""
 
 
 @dataclass(frozen=True)
@@ -407,6 +422,8 @@ class DispatchService:
         event_bus: EventBusPort | None = None,
         workflow_repo: WorkflowRepository | None = None,
         persona_source: PortablePersonaSource | None = None,
+        workflow_runs: WorkflowRunLauncher | None = None,
+        campaign_repo: WorkflowCampaignRepository | None = None,
     ) -> None:
         self._tracker_factory = tracker_factory
         self._volundr_factory = volundr_factory
@@ -418,6 +435,19 @@ class DispatchService:
         self._event_bus = event_bus
         self._workflow_repo = workflow_repo
         self._persona_source = persona_source
+        self._workflow_runs = workflow_runs
+        self._campaign_repo = campaign_repo
+
+    def bind_workflow_runs(
+        self, workflow_runs: WorkflowRunLauncher, campaign_repo: WorkflowCampaignRepository
+    ) -> None:
+        """Give the service the means to start a workflow run for a saga item.
+
+        The run service is built after the dispatcher at the composition root, which
+        has no hard dependency on it until a workflow-carrying item is dispatched.
+        """
+        self._workflow_runs = workflow_runs
+        self._campaign_repo = campaign_repo
 
     async def _dispatch_capacity_snapshot(
         self,
@@ -560,10 +590,11 @@ class DispatchService:
         connection_id: str | None = None,
         session_definition: str | None = None,
     ) -> list[DispatchResult]:
-        """Spawn Volundr sessions for the given items.
+        """Start the given items: a Volundr session each, or a workflow run for an item whose
+        saga (or request) names a workflow.
 
-        :raises WorkflowStepsHaveNoRunnerError: When any item belongs to a saga (or names a
-            workflow) that carries a workflow. Raised before any session is spawned, so a
+        :raises WorkflowRunsNotConfiguredError: When an item runs a workflow and this service
+            has no run launcher or campaign repository. Raised before anything starts, so a
             refused batch has no side effects.
         """
         await self._dispatcher_repo.get_or_create(owner_id)
@@ -607,14 +638,13 @@ class DispatchService:
             if known_saga is None:
                 continue
             snapshots[index] = await self._resolve_workflow_snapshot(item, known_saga)
-            if snapshots[index][0]:
-                logger.error(
-                    "Dispatch of issue %s refused: its saga %s runs a workflow and "
-                    "workflow steps have no runner",
-                    _sanitize_log(item.issue_id),
-                    _sanitize_log(known_saga.slug),
+            if snapshots[index][0] and (self._workflow_runs is None or self._campaign_repo is None):
+                raise WorkflowRunsNotConfiguredError(
+                    f"Issue {_sanitize_log(item.issue_id)} runs saga "
+                    f"{_sanitize_log(known_saga.slug)}'s workflow, but this dispatcher has no "
+                    "workflow run launcher and campaign repository; build DispatchService "
+                    "with workflow_runs= and campaign_repo="
                 )
-                raise WorkflowStepsHaveNoRunnerError()
 
         results: list[DispatchResult] = []
         for index, item in enumerate(items):
@@ -679,22 +709,38 @@ class DispatchService:
                 )
                 continue
 
-            result = await self._spawn_single(
-                target_volundr=target_volundr,
-                item=item,
-                saga=saga,
-                issue=issue,
-                adapter=select_tracker_for_saga(adapters, saga),
-                effective_model=effective_model,
-                effective_prompt=effective_prompt,
-                integration_ids=integration_ids,
-                session_definition=item.session_definition or effective_session_definition,
-                auth_token=auth_token,
-                principal=principal,
-                owner_id=owner_id,
-                workflow_snapshot=workflow_snapshot,
+            tracker = select_tracker_for_saga(adapters, saga)
+            if workflow_snapshot:
+                results.append(
+                    await self._launch_workflow_run(
+                        target_volundr=target_volundr,
+                        item=item,
+                        saga=saga,
+                        issue=issue,
+                        adapter=tracker,
+                        effective_model=effective_model,
+                        workflow_snapshot=workflow_snapshot,
+                        principal=principal,
+                        owner_id=owner_id,
+                    )
+                )
+                continue
+            results.append(
+                await self._spawn_single(
+                    target_volundr=target_volundr,
+                    item=item,
+                    saga=saga,
+                    issue=issue,
+                    adapter=tracker,
+                    effective_model=effective_model,
+                    effective_prompt=effective_prompt,
+                    integration_ids=integration_ids,
+                    session_definition=item.session_definition or effective_session_definition,
+                    auth_token=auth_token,
+                    principal=principal,
+                    owner_id=owner_id,
+                )
             )
-            results.append(result)
 
         return results
 
@@ -822,9 +868,6 @@ class DispatchService:
         :raises ValueError: When the template fails validation.
         """
         template = load_template(template_name, self._config.templates_dir, payload)
-
-        if template.flock_flow:
-            raise WorkflowStepsHaveNoRunnerError()
 
         now = datetime.now(UTC)
         saga_id = uuid.uuid4()
@@ -1210,17 +1253,8 @@ class DispatchService:
         effective_prompt: str,
         integration_ids: list[str],
         session_definition: str | None = None,
-        workflow_snapshot: dict[str, Any] | None = None,
     ) -> SpawnRequest:
-        """Build the SpawnRequest for one plain Forge session working on *issue*.
-
-        A workflow is not a plain session: its steps need a runner, and there is
-        none until they run on harness sessions, so a workflow snapshot is refused.
-
-        :raises WorkflowStepsHaveNoRunnerError: When *workflow_snapshot* is set.
-        """
-        if workflow_snapshot:
-            raise WorkflowStepsHaveNoRunnerError()
+        """Build the SpawnRequest for one plain Forge session working on *issue*."""
         return SpawnRequest(
             name=issue.identifier.lower(),
             repo=item.repo,
@@ -1255,13 +1289,8 @@ class DispatchService:
         auth_token: str | None,
         principal: Principal | None,
         owner_id: str,
-        workflow_snapshot: dict[str, Any] | None = None,
     ) -> DispatchResult:
-        """Spawn a single session and update run progress.
-
-        :raises WorkflowStepsHaveNoRunnerError: When the item carries a workflow. Never
-            reported as a ``failed`` result: that would read as a transient failure.
-        """
+        """Spawn a single session and update run progress."""
         try:
             request = self._build_spawn_request(
                 item=item,
@@ -1271,7 +1300,6 @@ class DispatchService:
                 effective_prompt=effective_prompt,
                 integration_ids=integration_ids,
                 session_definition=session_definition,
-                workflow_snapshot=workflow_snapshot,
             )
             request = with_host_selector(
                 request, target_volundr, item.target_tags, item.target_match
@@ -1345,8 +1373,6 @@ class DispatchService:
                 status="spawned",
                 cluster_name=session.cluster_name,
             )
-        except WorkflowStepsHaveNoRunnerError:
-            raise
         except Exception:
             logger.error("Failed to spawn session for %s", issue.identifier, exc_info=True)
             return DispatchResult(
@@ -1355,6 +1381,248 @@ class DispatchService:
                 session_name="",
                 status="failed",
             )
+
+    async def _launch_workflow_run(
+        self,
+        *,
+        target_volundr: VolundrPort,
+        item: DispatchItem,
+        saga: Saga,
+        issue: TrackerIssue,
+        adapter: TrackerPort,
+        effective_model: str,
+        workflow_snapshot: dict[str, Any],
+        principal: Principal | None,
+        owner_id: str,
+    ) -> DispatchResult:
+        """Start the ticket's workflow run on the step engine and record the dispatch.
+
+        A workflow run has one session per stage member and none that is the ticket's, so
+        the tracker run is marked RUNNING without a session. The run's campaign carries
+        the ticket and ``DISPATCH_RUN_KEY``; when the campaign ends,
+        :meth:`settle_workflow_run` moves the tracker run with it.
+        """
+        launcher = self._workflow_runs
+        campaigns = self._campaign_repo
+        if launcher is None or campaigns is None:
+            raise WorkflowRunsNotConfiguredError("dispatcher has no workflow run launcher")
+        campaign: WorkflowCampaign | None = None
+        try:
+            prompt = build_prompt(
+                issue,
+                item.repo,
+                saga.feature_branch,
+                template=self._config.dispatch_prompt_template,
+            )
+            base_branch = base_branch_for_repo(saga, item.repo)
+            now = datetime.now(UTC)
+            campaign_id = uuid.uuid4()
+            campaign = WorkflowCampaign(
+                id=campaign_id,
+                tenant_id=principal.tenant_id if principal is not None else saga.tenant_id,
+                slug=f"{_slugify(issue.identifier)}-{campaign_id.hex[:12]}",
+                name=f"{issue.identifier} {issue.title}".strip(),
+                owner_id=owner_id,
+                workflow_id=saga.workflow_id or uuid.UUID(int=0),
+                workflow_version=str(workflow_snapshot.get("version") or ""),
+                workflow_name=str(workflow_snapshot.get("name") or ""),
+                workflow_snapshot=workflow_snapshot,
+                session_id="",
+                session_name="",
+                status=WorkflowCampaignStatus.PENDING,
+                active_stage_id=None,
+                stage_state=[],
+                metadata={
+                    "surface": DISPATCH_SURFACE,
+                    DISPATCH_RUN_KEY: True,
+                    TICKET_METADATA_KEY: ticket_metadata(
+                        saga_id=saga.id,
+                        issue_id=issue.id,
+                        identifier=issue.identifier,
+                        title=issue.title,
+                    ),
+                    "prompt": prompt,
+                    "repo": item.repo,
+                    "branch": saga.feature_branch,
+                    "base_branch": base_branch,
+                    "model": effective_model,
+                },
+                created_at=now,
+                updated_at=now,
+                last_activity_at=now,
+                connection_id=getattr(target_volundr, "target_id", None) or None,
+            )
+            saved = await campaigns.save_campaign(campaign)
+            await launcher.launch(
+                saved,
+                {
+                    "prompt": prompt,
+                    "repo": item.repo,
+                    "branch": saga.feature_branch,
+                    "base_branch": base_branch,
+                    "issue": {
+                        "id": issue.id,
+                        "identifier": issue.identifier,
+                        "title": issue.title,
+                        "description": issue.description or "",
+                        "url": issue.url,
+                    },
+                },
+            )
+            await self._record_workflow_run_started(
+                adapter=adapter,
+                saga=saga,
+                issue=issue,
+                principal=principal,
+                owner_id=owner_id,
+            )
+            return DispatchResult(
+                issue_id=item.issue_id,
+                session_id="",
+                session_name=saved.slug,
+                status="spawned",
+                cluster_name=getattr(target_volundr, "name", "") or "",
+                campaign_id=str(saved.id),
+                campaign_slug=saved.slug,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to start the workflow run for %s: %s", issue.identifier, exc, exc_info=True
+            )
+            if campaign is not None:
+                await self._fail_unstarted(campaigns, campaign, str(exc))
+            return DispatchResult(
+                issue_id=item.issue_id,
+                session_id="",
+                session_name="",
+                status="failed",
+            )
+
+    @staticmethod
+    async def _fail_unstarted(
+        campaigns: WorkflowCampaignRepository, campaign: WorkflowCampaign, reason: str
+    ) -> None:
+        """A campaign whose run did not start fails with the reason; it is never left pending."""
+        try:
+            await campaigns.save_campaign(
+                replace(
+                    campaign,
+                    status=WorkflowCampaignStatus.FAILED,
+                    metadata={**campaign.metadata, "failure_error": reason},
+                    updated_at=datetime.now(UTC),
+                )
+            )
+        except Exception:
+            logger.error(
+                "Workflow run %s did not start and its campaign could not be failed",
+                campaign.slug,
+                exc_info=True,
+            )
+
+    async def _record_workflow_run_started(
+        self,
+        *,
+        adapter: TrackerPort,
+        saga: Saga,
+        issue: TrackerIssue,
+        principal: Principal | None,
+        owner_id: str,
+    ) -> None:
+        """Mark the ticket's tracker run RUNNING and tell the event bus."""
+        progress_scope = {}
+        if _supports_keyword_arg(adapter.update_run_progress, "tenant_id"):
+            progress_scope["tenant_id"] = principal.tenant_id if principal is not None else ""
+        await adapter.update_run_progress(
+            issue.id,
+            status=RunStatus.RUNNING,
+            owner_id=owner_id,
+            **progress_scope,
+            phase_tracker_id=issue.milestone_id,
+            saga_tracker_id=saga.tracker_id,
+        )
+        try:
+            await adapter.update_run_state(issue.id, RunStatus.RUNNING)
+        except Exception:
+            logger.error(
+                "FAILED: %s.update_run_state for %s",
+                type(adapter).__name__,
+                issue.id,
+                exc_info=True,
+            )
+        await self._emit_run_state(owner_id, issue, "RUNNING", session_id="")
+
+    async def settle_workflow_run(self, campaign: WorkflowCampaign) -> None:
+        """Move the tracker run of a dispatched workflow run when its campaign ends.
+
+        A merged run frees its slot and lets the saga's next issues dispatch; a failed
+        one is marked failed with the run's reason. A campaign the dispatcher did not
+        start, or one that has not ended, is not this service's.
+        """
+        if not campaign.metadata.get(DISPATCH_RUN_KEY):
+            return
+        if campaign.status not in {WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED}:
+            return
+        ticket = ticket_of(campaign.metadata)
+        if ticket is None:
+            raise ValueError(f"dispatched run {campaign.slug} records no ticket")
+        saga = await self._saga_repo.get_saga(uuid.UUID(ticket[0]), owner_id=campaign.owner_id)
+        if saga is None:
+            raise LookupError(f"saga {ticket[0]} of dispatched run {campaign.slug} is gone")
+        tracker = select_tracker_for_saga(
+            await self._tracker_factory.for_owner(campaign.owner_id), saga
+        )
+        completed = campaign.status == WorkflowCampaignStatus.COMPLETED
+        status = RunStatus.MERGED if completed else RunStatus.FAILED
+        await tracker.update_run_progress(
+            ticket[1],
+            status=status,
+            reason=None if completed else str(campaign.metadata.get("failure_error") or ""),
+        )
+        try:
+            await tracker.update_run_state(ticket[1], status)
+        except Exception:
+            logger.error(
+                "FAILED: %s.update_run_state for %s",
+                type(tracker).__name__,
+                ticket[1],
+                exc_info=True,
+            )
+        issue = TrackerIssue(
+            id=ticket[1],
+            identifier=str(campaign.metadata[TICKET_METADATA_KEY].get("identifier") or ""),
+            title=str(campaign.metadata[TICKET_METADATA_KEY].get("title") or ""),
+            description="",
+            status="",
+            status_type="",
+        )
+        await self._emit_run_state(campaign.owner_id, issue, status.value.upper(), session_id="")
+        if completed:
+            await self.try_auto_continue(
+                campaign.owner_id,
+                saga.tracker_id,
+                tracker_connection_id=saga.tracker_connection_id or None,
+            )
+
+    async def _emit_run_state(
+        self, owner_id: str, issue: TrackerIssue, status: str, *, session_id: str
+    ) -> None:
+        if self._event_bus is None:
+            return
+        await self._event_bus.emit(
+            TingEvent(
+                event="run.state_changed",
+                owner_id=owner_id,
+                data={
+                    "session_id": session_id,
+                    "owner_id": owner_id,
+                    "tracker_id": issue.identifier,
+                    "url": issue.url,
+                    "status": status,
+                    "pr_id": None,
+                    "pr_url": None,
+                },
+            )
+        )
 
     async def _resolve_workflow_snapshot(
         self,

@@ -103,6 +103,27 @@ class SpawnRequest:
 
 
 @dataclass(frozen=True)
+class StepSessionRequest:
+    """A harness session that hosts a run's steps for one stage member.
+
+    ``persona_definition`` is the pinned portable persona document of the run's
+    snapshot (``{schema_version, id, revision, definition}``); Forge runs exactly
+    that document. ``tracker_issue_id`` and the ``workflow_*`` metadata let a later
+    Ting find the session again.
+    """
+
+    name: str
+    model: str
+    persona_definition: dict
+    tracker_issue_id: str
+    run_id: str
+    member: str
+    repo: str = ""
+    branch: str = ""
+    base_branch: str = ""
+
+
+@dataclass(frozen=True)
 class VolundrSession:
     """Minimal session info returned from Volundr."""
 
@@ -359,6 +380,38 @@ class VolundrPort(ABC):
             "This Volundr adapter does not support integration-chain inspection"
         )
 
+    async def create_step_session(
+        self,
+        request: StepSessionRequest,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> VolundrSession:
+        """Create the harness session that hosts a run's steps for one stage member."""
+        raise NotImplementedError(f"{type(self).__name__} cannot create workflow step sessions")
+
+    async def deliver_workflow_step(
+        self,
+        session_id: str,
+        activation: dict,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        """Hand a step activation to the session. Re-delivering one is idempotent."""
+        raise NotImplementedError(f"{type(self).__name__} cannot deliver workflow steps")
+
+    async def get_workflow_step(
+        self,
+        session_id: str,
+        activation_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> dict | None:
+        """The session's durable state of one step (``active`` or ``closed``), if it has it."""
+        raise NotImplementedError(f"{type(self).__name__} cannot read workflow steps")
+
     @abstractmethod
     async def get_session(
         self,
@@ -420,20 +473,6 @@ class VolundrPort(ABC):
             principal=principal,
         )
 
-    async def publish_workflow_event(
-        self,
-        session_id: str,
-        event_type: str,
-        content: str,
-        *,
-        payload: dict | None = None,
-        request_id: str,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> None:
-        """Publish an idempotently identified event into a running workflow mesh."""
-        raise NotImplementedError("This Volundr adapter cannot publish workflow events")
-
     async def get_current_portable_persona(
         self,
         persona_id: str,
@@ -445,79 +484,6 @@ class VolundrPort(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not expose caller-scoped portable personas"
         )
-
-    async def join_room(
-        self,
-        session_id: str,
-        *,
-        participant_id: str,
-        display_name: str,
-        member_session_id: str,
-        notice_context: str,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> None:
-        """Seat an agent from another session in this session's room."""
-        raise NotImplementedError
-
-    async def leave_room(
-        self,
-        session_id: str,
-        participant_id: str,
-        *,
-        reason: str,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> None:
-        """End a participant's membership of this session's room."""
-        raise NotImplementedError
-
-    async def get_workflow_gates(
-        self,
-        session_id: str,
-        *,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> list[dict]:
-        """Return workflow gates for a running Volundr session."""
-        return []
-
-    async def resolve_workflow_gate(
-        self,
-        session_id: str,
-        gate_id: str,
-        decision: str,
-        *,
-        notes: str = "",
-        source: str = "ting",
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> dict:
-        """Resolve a workflow gate for a running Volundr session."""
-        raise NotImplementedError
-
-    async def get_help_requests(
-        self,
-        session_id: str,
-        *,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> list[dict]:
-        """Return peer help requests (agent questions) for a running session."""
-        return []
-
-    async def answer_help_request(
-        self,
-        session_id: str,
-        request_id: str,
-        answer: str,
-        *,
-        source: str = "ting",
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> dict:
-        """Answer a pending peer help request in a running session."""
-        raise NotImplementedError
 
     @abstractmethod
     async def stop_session(

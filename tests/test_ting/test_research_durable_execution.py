@@ -7,9 +7,9 @@ Ravn refuses to start that persona without an owner-bound
 ``POST /research/campaigns`` used to launch every workflow plainly, so every
 research campaign crashed the moment the frame stage handed over. These tests
 pin that it reserves an execution and launches the parent through the same
-trusted path ``POST /workflow-executions`` uses. Workflow steps have no runner
-until they run on harness sessions (NIU-1198), so that launch is refused with
-HTTP 501, and so is the plain launch of a workflow with no fan-out.
+trusted path ``POST /workflow-executions`` uses: the execution takes the campaign's id,
+the campaign's run is the parent, and the execution is marked running. A workflow with no
+fan-out launches plainly and reserves no execution.
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ from tests.test_ting.test_research_api import (
 )
 from ting.api.workflow_execution_launch import durable_parent_node_id
 from ting.api.workflow_executions import resolve_optional_workflow_execution_repo
-from ting.domain.exceptions import WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
 from ting.domain.models import WorkflowDefinition, WorkflowScope
+from ting.domain.workflow_execution import ExecutionState
 from ting.system_workflows import load_system_workflows
 
 _CAMPAIGNS_URL = "/api/v1/ting/research/campaigns"
@@ -61,12 +61,18 @@ class RecordingExecutionRepository:
         self.execution = execution
         return execution, True
 
-    async def attach_parent_session(self, execution_id, *, session_id, connection_id):
+    async def get_internal(self, execution_id):
         assert self.execution is not None and self.execution.id == execution_id
-        self.execution = replace(
-            self.execution, parent_session_id=session_id, connection_id=connection_id
-        )
         return self.execution
+
+    async def update_execution_state(
+        self, execution_id, *, state, suspension_reason, expected_revision
+    ):
+        assert self.execution is not None and self.execution.id == execution_id
+        assert expected_revision == self.execution.revision
+        self.execution = replace(
+            self.execution, state=ExecutionState(state), suspension_reason=suspension_reason
+        )
 
 
 class RefusingExecutionRepository:
@@ -91,7 +97,7 @@ def _client(workflow, factory, execution_repo, campaign_repo=None):
     return client, campaign_repo
 
 
-def test_fan_out_research_is_refused_when_its_parent_has_no_runner() -> None:
+def test_fan_out_research_starts_its_parent_run_under_the_execution() -> None:
     workflow = _bundled_research_campaign()
     port = RecordingVolundrPort(name="valhalla", target_id="volundr-valhalla")
     executions = RecordingExecutionRepository()
@@ -103,11 +109,21 @@ def test_fan_out_research_is_refused_when_its_parent_has_no_runner() -> None:
         json={**_SMIDJA_BODY, "workflowId": str(workflow.id), "connectionId": "volundr-valhalla"},
     )
 
-    assert response.status_code == 501, response.text
-    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["sessionId"] == ""
+    assert body["metadata"]["workflow_execution_id"] == body["id"]
     assert port.requests == []
-    assert not executions.execution.parent_session_id
-    assert campaign_repo._campaigns == {}
+    [reserved] = executions.reserved
+    assert str(reserved.id) == body["id"]
+    assert not reserved.parent_session_id
+    assert executions.execution.state is ExecutionState.RUNNING
+    assert executions.execution.suspension_reason == ""
+    [(campaign, payload)] = client.app.state.workflow_runs.launched
+    assert str(campaign.id) == body["id"]
+    assert campaign.connection_id == "volundr-valhalla"
+    assert "workflow_execution" in payload["context"]
+    assert list(campaign_repo._campaigns) == [campaign.id]
 
 
 def test_fan_out_research_needs_the_execution_ledger() -> None:
@@ -126,10 +142,10 @@ def test_fan_out_research_needs_the_execution_ledger() -> None:
     assert campaign_repo._campaigns == {}
 
 
-def test_research_without_fan_out_is_refused_without_reserving_an_execution(
+def test_research_without_fan_out_launches_without_reserving_an_execution(
     tmp_path: Path,
 ) -> None:
-    """No subworkflow node: no execution is reserved, and the plain launch is refused too."""
+    """No subworkflow node: no execution is reserved, and the run starts plainly."""
     workflow = _research_workflow(tmp_path)
     port = RecordingVolundrPort()
     client, campaign_repo = _client(
@@ -138,10 +154,11 @@ def test_research_without_fan_out_is_refused_without_reserving_an_execution(
 
     response = client.post(_CAMPAIGNS_URL, headers=_headers(), json=_SMIDJA_BODY)
 
-    assert response.status_code == 501, response.text
-    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+    assert response.status_code == 201, response.text
+    assert "workflow_execution_id" not in response.json()["metadata"]
     assert port.requests == []
-    assert campaign_repo._campaigns == {}
+    assert len(client.app.state.workflow_runs.launched) == 1
+    assert len(campaign_repo._campaigns) == 1
 
 
 def _workflow_with_nodes(nodes: list[dict]) -> WorkflowDefinition:

@@ -1407,11 +1407,9 @@ describe('buildWorkflowHttpAdapter', () => {
       workflowId: rawWorkflow.id,
       workflowName: rawWorkflow.name,
       slug: 'knowledge-flow',
-      sessionId: 'sess-123',
-      sessionName: 'knowledge-flow',
-      status: 'starting',
-      clusterName: 'valhalla',
-      chatEndpoint: 'wss://forge.example/sessions/sess-123/chat',
+      campaignId: 'camp-123',
+      campaignSlug: 'knowledge-flow-0123456789ab',
+      status: 'pending',
       workflowVersion: '1.2.0',
       documentRevision: 'sha256:workflow-12',
     });
@@ -1434,9 +1432,9 @@ describe('buildWorkflowHttpAdapter', () => {
         workflow_version: '1.2.0',
       },
     );
-    expect(result.sessionId).toBe('sess-123');
+    expect(result.campaignId).toBe('camp-123');
     expect(result).toMatchObject({
-      chatEndpoint: 'wss://forge.example/sessions/sess-123/chat',
+      campaignSlug: 'knowledge-flow-0123456789ab',
       workflowVersion: '1.2.0',
       documentRevision: 'sha256:workflow-12',
     });
@@ -1960,11 +1958,9 @@ describe('buildWorkflowHttpAdapter', () => {
       workflow_id: rawWorkflow.id,
       workflow_name: rawWorkflow.name,
       slug: 'knowledge-flow',
-      session_id: 'sess-999',
-      session_name: 'knowledge-flow-2',
+      campaign_id: 'camp-999',
+      campaign_slug: 'knowledge-flow-2-0123456789ab',
       status: 'queued',
-      cluster_name: 'bifrost',
-      chat_endpoint: null,
       workflow_version: '1.1.0',
       document_revision: 'sha256:workflow-11',
     });
@@ -1979,10 +1975,8 @@ describe('buildWorkflowHttpAdapter', () => {
     expect(result).toMatchObject({
       workflowId: rawWorkflow.id,
       workflowName: rawWorkflow.name,
-      sessionId: 'sess-999',
-      sessionName: 'knowledge-flow-2',
-      clusterName: 'bifrost',
-      chatEndpoint: null,
+      campaignId: 'camp-999',
+      campaignSlug: 'knowledge-flow-2-0123456789ab',
       workflowVersion: '1.1.0',
       documentRevision: 'sha256:workflow-11',
     });
@@ -2006,11 +2000,9 @@ describe('buildWorkflowHttpAdapter', () => {
       workflowId: '',
       workflowName: '',
       slug: 'knowledge-flow',
-      sessionId: '',
-      sessionName: '',
+      campaignId: '',
+      campaignSlug: '',
       status: 'queued',
-      clusterName: '',
-      chatEndpoint: null,
       workflowVersion: '',
       documentRevision: '',
     });

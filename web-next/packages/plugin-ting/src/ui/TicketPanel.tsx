@@ -210,7 +210,7 @@ function WorkflowTab({ board, task }: { board: WorkBoardLayout; task: WorkTask }
           Open ticket <ExternalLink aria-hidden="true" />
         </a>
         {runSessionId ? <SessionLink sessionId={runSessionId} label="Open run" /> : null}
-        {task.coordinator ? (
+        {task.coordinator?.sessionId ? (
           <SessionLink sessionId={task.coordinator.sessionId} label="Open coordinator" />
         ) : null}
       </div>

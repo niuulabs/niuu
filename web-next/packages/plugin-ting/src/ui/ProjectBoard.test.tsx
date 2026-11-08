@@ -401,6 +401,22 @@ describe('ProjectBoard', () => {
     expect(screen.getByText('The coordinator is starting up.')).toBeInTheDocument();
   });
 
+  it('says a ticket run on its own sessions has no coordinator to talk to', () => {
+    const sessionless: WorkTask = {
+      ...detail.tasks[2]!,
+      coordinator: { sessionId: '', status: 'active', connectionId: null, chatEndpoint: null },
+    };
+    renderBoard({ ...detail, tasks: [sessionless] }, service);
+
+    openGate();
+    fireEvent.click(screen.getByRole('tab', { name: 'Coordinator' }));
+
+    expect(screen.getByText(/runs in its own sessions/)).toBeInTheDocument();
+    expect(screen.queryByText('The coordinator is starting up.')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Workflow' }));
+    expect(screen.queryByRole('link', { name: 'Open coordinator' })).not.toBeInTheDocument();
+  });
+
   it('says when a ticket has no coordinator yet', () => {
     renderBoard(detail, service);
 

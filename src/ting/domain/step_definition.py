@@ -34,4 +34,5 @@ def step_run_definition(workflow: WorkflowDefinition) -> StepRunDefinition:
             alias: PersonaRef(alias, pin.id, pin.revision, pin.digest)
             for alias, pin in workflow.persona_dependencies.items()
         },
+        workflow_name=workflow.name,
     )
