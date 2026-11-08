@@ -5442,6 +5442,40 @@ def create_volundr_router(
             headers=headers,
         )
 
+    @router.post("/sessions/{session_id}/mesh-identity", operation_id="issue_session_mesh_identity")
+    async def mesh_identity(
+        request: Request,
+        session_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """A session's mesh certificate, issued by the Forge node that owns the session.
+
+        The body goes through as bytes, and so do Forge's status and its ``Cache-Control:
+        no-store``: the certificate is for the one session that asked and is never cached.
+        """
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        upstream = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/mesh-identity",
+            content_body=await request.body(),
+            params=None,
+            extra_headers={"content-type": "application/json"},
+            embedded_app=embedded_forge_app,
+        )
+        headers: dict[str, str] = {}
+        if cache := upstream.headers.get("cache-control"):
+            headers["cache-control"] = cache
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+            headers=headers,
+        )
+
     @router.get("/sessions/{session_id}/logs")
     async def get_logs(
         request: Request,

@@ -8,6 +8,7 @@ import sys
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import Depends, FastAPI, Request, Response
 from starlette.responses import JSONResponse
@@ -590,6 +591,19 @@ async def _integration_repository(settings: Settings, pool):
     yield PostgresIntegrationRepository(pool)
 
 
+def mesh_signing_report(*, required: bool, has_bus: bool) -> dict[str, Any]:
+    """What Ting's ``/health`` says about platform-event signing.
+
+    ``no_bus`` means Ting has no Sleipnir bus, so it publishes and acts on no platform
+    events and there is nothing to sign, which is not the same as signing switched off.
+    """
+    if not required:
+        return {"required": False, "state": "unauthenticated"}
+    if not has_bus:
+        return {"required": True, "state": "no_bus"}
+    return {"required": True, "state": "signed"}
+
+
 async def start_ting_platform_signer(
     settings: Settings, sleipnir_bus: object | None
 ) -> MeshSigner | None:
@@ -883,6 +897,10 @@ def create_app(
             # Without a bus Ting publishes no platform events and its triggers (which need
             # the bus) act on none, so there is nothing to sign or check and no key is needed.
             platform_signer = await start_ting_platform_signer(settings, sleipnir_bus)
+            app.state.mesh_signing = mesh_signing_report(
+                required=settings.mesh.attestation.required,
+                has_bus=sleipnir_bus is not None,
+            )
             platform_verifier = (
                 platform_event_verifier(
                     verifier_for(platform_signer, settings.mesh.attestation),
@@ -1637,8 +1655,12 @@ def create_app(
 
     @app.get("/health")
     @app.get("/api/v1/ting/health", include_in_schema=False)
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health(request: Request) -> dict[str, Any]:
+        body: dict[str, Any] = {"status": "ok"}
+        signing = getattr(request.app.state, "mesh_signing", None)
+        if signing is not None:
+            body["mesh_attestation"] = signing
+        return body
 
     return app
 

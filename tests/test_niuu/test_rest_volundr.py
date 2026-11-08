@@ -1980,6 +1980,41 @@ def test_secret_request_unknown_operation_or_id_is_not_forwarded() -> None:
 
 
 @respx.mock
+def test_mesh_identity_reaches_the_session_owner_and_is_never_cached() -> None:
+    """A mini-mode session asks the root for its mesh certificate; the owning Forge answers."""
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    path = "/api/v1/forge/sessions/s1/mesh-identity"
+    route = respx.post(f"http://alpha{path}").mock(
+        return_value=Response(200, json={"certificate": "c"}, headers={"cache-control": "no-store"})
+    )
+    body = b'{"public_key": "k", "peer_id": "s1", "mesh_realm": "proof"}'
+    response = client.post(path, headers=_headers(), content=body)
+    assert response.status_code == 200
+    assert response.json() == {"certificate": "c"}
+    assert response.headers["cache-control"] == "no-store"
+    assert route.calls.last.request.content == body
+
+
+@respx.mock
+def test_mesh_identity_refusals_pass_through_with_their_status() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    respx.post("http://alpha/api/v1/forge/sessions/s1/mesh-identity").mock(
+        return_value=Response(409, json={"detail": "peer id claimed"})
+    )
+    response = client.post(
+        "/api/v1/forge/sessions/s1/mesh-identity", headers=_headers(), json={"peer_id": "p"}
+    )
+    assert response.status_code == 409
+    assert response.json() == {"detail": "peer id claimed"}
+
+
+@respx.mock
 def test_activity_report_proxies_to_owner_with_body() -> None:
     """Broker activity heartbeats (incl. cli_session_id for resume) must reach
     the owning instance through the aggregate, not 404 at the gateway."""

@@ -574,6 +574,31 @@ class TestRpcRoundtrip:
         await peer_b.stop()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "peer_id", ["0bc569ee-3111-4fb4-8eef-b351d9f08f52", "9f1e", "7"], ids=str
+    )
+    async def test_rpc_reaches_a_peer_whose_id_starts_with_a_digit(self, peer_id: str) -> None:
+        """A session id is a UUID, and 10 in 16 of them start with a digit.
+
+        An event type segment must start with a letter, so the address of such a peer
+        is built from the id with a letter in front, on the sending and receiving side.
+        """
+        transport = _FakeSleipnirTransport()
+        sender = SleipnirMeshAdapter(
+            publisher=transport, subscriber=transport, own_peer_id="1a2b-sender"
+        )
+        receiver = SleipnirMeshAdapter(
+            publisher=transport, subscriber=transport, own_peer_id=peer_id
+        )
+        receiver.set_rpc_handler(AsyncMock(return_value={"echo": "hello"}))
+        await receiver.start()
+
+        result = await sender.send(peer_id, {"msg": "hello"}, timeout_s=2.0)
+
+        assert result == {"echo": "hello"}
+        await receiver.stop()
+
+    @pytest.mark.asyncio
     async def test_rpc_is_scoped_to_one_flock(self) -> None:
         transport = _FakeSleipnirTransport()
         requester = SleipnirMeshAdapter(

@@ -151,6 +151,32 @@ class TestMintAtStart:
         stored = await sessions.get(session.id)
         assert launch_id_of(stored.workload_config)  # the launch is still recorded
 
+    async def test_the_manager_that_runs_the_session_decides(self) -> None:
+        """A placement manager whose pool delivers nothing still serves local sessions."""
+
+        class PerSessionDelivery(MockPodManager):
+            delivers_forge_session_token = False  # the whole-Forge answer: not every session
+
+            def __init__(self, delivers_to: set[str]) -> None:
+                super().__init__()
+                self._delivers_to = delivers_to
+
+            def delivers_forge_session_token_for(self, session: Session) -> bool:
+                return session.name in self._delivers_to
+
+        sessions = InMemorySessionRepository()
+        pods = PerSessionDelivery({"local"})
+        service = SessionService(
+            sessions, pods, provisioning_initial_delay=0, forge_session_tokens=token_service()
+        )
+        for name in ("local", "pooled"):
+            session = await sessions.create(Session(name=name, owner_id=OWNER))
+            await service.start_session(session.id)
+            await service._provisioning_tasks[session.id]
+        local_spec, pooled_spec = (spec for _, spec in pods.start_calls[-2:])
+        assert local_spec.forge_session is not None
+        assert pooled_spec.forge_session is None
+
     async def test_no_mint_without_a_token_service(self) -> None:
         forge = build_forge_app(tokens=False)
         session = await forge.session()
