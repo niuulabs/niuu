@@ -77,6 +77,72 @@ itself.
 - Loops between agents are made visible, not capped. Every message is an envelope in the
   recipient's log with its sender and `in_reply_to`, and there is no hop or rate limit.
 
+## Who sent a mesh message
+
+The mesh transports prove a connection, not a sender. So every message on the mesh carries
+its own proof, and a receiver checks it before anything else sees the message. This works
+the same on every transport (Sleipnir over nng, NATS or RabbitMQ, the webhook adapter,
+in-process): **the signature is what proves the sender, not the transport.** NATS
+credentials or subject permissions, where a deployment adds them, are an extra layer
+later, never a substitute, and NATS may run across hosts without changing any of this.
+
+**Nothing to set up.** A session with `mesh.enabled` asks the Forge that launched it for a
+mesh certificate with the session credential it already holds, using a key it generates in
+its own memory. It signs what it sends and verifies what it receives. The keys needed to
+verify others arrive in the same answer, so there is no per-message call to Forge.
+
+- **What is proved.** The certificate (a short-lived `mesh_peer` token from Forge) binds the
+  peer id, the session and launch, the memberships (tenant, flock, realm) and the peer's
+  public key. The sender's session id, peer id, reply route and event `source` must be the
+  certified ones; a message that names another sender is refused. It covers `peer_message`,
+  `work_request`, `peer_state`, `present_file` and the other mesh RPCs, their replies
+  (`accepted`, `refused`, `peer_state` answers), and published events (`mesh_publish`, the
+  consumed outcome events). A reply signed by anyone but the peer that was asked is refused.
+- **Who may talk.** A sender must share at least one tenant, flock or realm with the
+  receiver. Owners are not compared, so a flock of residents and sessions with different
+  owners works. Forge sets the memberships from its records: today `tenant:<tenant>`.
+- **Revocation.** When a session stops or restarts, Forge announces it on the mesh, signed,
+  and receivers drop that launch at once. If a receiver was offline for the announcement, the
+  certificate lifetime ends it: `forge_mcp.mesh_identity.ttl_seconds` on Forge (default 900
+  s). Sessions renew in the background at half of it (`mesh.attestation.renew_fraction`), so
+  a session that runs for hours keeps renewing. The lifetime only bounds how long a leaked
+  or stale certificate is believed.
+- **Fails closed.** A request that cannot be verified is answered `refused` with the
+  `reason`, an event that cannot be verified is not handled, and a reply that cannot be
+  verified raises to the sender. Every refusal logs at error and counts on
+  `niuu.mesh.attestation.refusals` (`direction`, `reason`, claimed `sender`) and on
+  `skuld.peer.messages{outcome="refused"}`; the session status `peer_messages.unverified`
+  carries the counts.
+- **A session that cannot get a certificate does not start its mesh.** The error names the
+  fix: enable `forge_mcp.session_tokens` on the Forge that launches it (and, for
+  Kubernetes and Flux sessions, `forge_mcp.session_tokens.projection_adapter`), set
+  `volundr_api_url`, or set `mesh.attestation.required: false` to run the mesh
+  unauthenticated, which is the operator's explicit choice.
+
+| `reason` | Meaning |
+|---|---|
+| `missing` | The sender signed nothing (an old build, or `mesh.attestation.required: false` there). |
+| `malformed` | The proof is not in the expected shape. |
+| `cert_invalid` / `cert_expired` | The certificate is not Forge's, is not a mesh certificate, or its lifetime ended. |
+| `unknown_key` | Signed by a Forge key this peer has not got yet. Picked up at its next renewal. |
+| `signature_invalid` | The message was changed, or signed for another recipient, purpose or topic. |
+| `stale` | Outside `mesh.attestation.clock_skew_s` (requests) or `mesh.attestation.event_max_age_s` (events). Check clocks. |
+| `binding_mismatch` | The message names a sender, source or reply route other than the certified one. |
+| `not_member` | The sender shares no tenant, flock or realm with this peer. |
+| `revoked` | The sender's session stopped or restarted. |
+| `not_authority` | Something other than Forge tried to revoke a session. |
+| `trust_unavailable` | This peer holds no usable Forge keys. |
+
+**Where the session credential reaches the session** (it is what the certificate request
+uses; a session without one cannot start its mesh unless attestation is off):
+
+| Launch path | Credential |
+|---|---|
+| Local process, OpenShell sandbox | delivered (environment variable, file) |
+| VM slots and registered hosts | delivered when `compute.credential_delivery` is configured |
+| Kubernetes and Flux session pods | delivered only with `forge_mcp.session_tokens.projection_adapter` (`sessionCredentialProjection.enabled` in the Volundr chart); not on by default |
+| Docker container pod manager, direct Kubernetes pod manager | **not delivered**: sessions there cannot start a mesh with attestation on until that is fixed |
+
 ## Address by name
 
 `send_message` takes `to` (a session name) instead of `session_id`. The name is looked up

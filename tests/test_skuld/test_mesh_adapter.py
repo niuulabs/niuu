@@ -772,6 +772,7 @@ class TestBrokerMeshIntegration:
             transport="subprocess",
             mesh={
                 "enabled": True,
+                "attestation": {"required": False},
                 "peer_id": "test-skuld",
                 "transport": "in_process",
                 "rpc_reply_cache_size": 3,
@@ -807,6 +808,7 @@ class TestBrokerMeshIntegration:
             transport="subprocess",
             mesh={
                 "enabled": True,
+                "attestation": {"required": False},
                 "peer_id": "test-peer",
                 "transport": "nng",
                 "rpc_reply_cache_size": 3,
@@ -851,6 +853,7 @@ class TestBrokerMeshIntegration:
             transport="subprocess",
             mesh={
                 "enabled": True,
+                "attestation": {"required": False},
                 "peer_id": "test-peer",
                 "adapters": [{"adapter": "sleipnir", "transport": "nats"}],
                 "discovery_adapters": [{"adapter": "static"}],
@@ -884,7 +887,12 @@ class TestBrokerMeshIntegration:
         settings = SkuldSettings(
             session={"id": "s1", "workspace_dir": str(tmp_path)},
             transport="subprocess",
-            mesh={"enabled": True, "peer_id": "test-peer", "transport": "nng"},
+            mesh={
+                "enabled": True,
+                "peer_id": "test-peer",
+                "transport": "nng",
+                "attestation": {"required": False},
+            },
         )
         b = Broker(settings=settings)
         b._transport = MagicMock()
@@ -912,6 +920,7 @@ class TestBrokerMeshIntegration:
             transport="subprocess",
             mesh={
                 "enabled": True,
+                "attestation": {"required": False},
                 "peer_id": "test-peer",
                 "adapters": [{"adapter": "nonexistent.module.MeshAdapter"}],
                 "discovery_adapters": [{"adapter": "static", "peers": []}],
@@ -935,7 +944,12 @@ class TestBrokerMeshIntegration:
         settings = SkuldSettings(
             session={"id": "s1", "workspace_dir": str(tmp_path)},
             transport="subprocess",
-            mesh={"enabled": True, "peer_id": "test-peer", "transport": "nng"},
+            mesh={
+                "enabled": True,
+                "peer_id": "test-peer",
+                "transport": "nng",
+                "attestation": {"required": False},
+            },
         )
         b = Broker(settings=settings)
         b._transport = MagicMock()

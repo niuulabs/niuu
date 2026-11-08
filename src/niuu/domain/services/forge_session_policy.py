@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from niuu.domain.services.token_scope import (
+    FORGE_MESH_IDENTITY_SCOPE,
     FORGE_NOTIFY_SCOPE,
     FORGE_SESSION_LIFECYCLE_SCOPE,
     FORGE_SESSION_MESSAGE_SCOPE,
@@ -142,6 +143,8 @@ ROUTE_POLICIES: tuple[RoutePolicy, ...] = (
         FORGE_SESSION_SECRET_SCOPE,
         Binding.OWN,
     ),
+    # The session's mesh certificate: issued to, and renewed by, the session itself.
+    RoutePolicy("POST", f"{_S}/mesh-identity", FORGE_MESH_IDENTITY_SCOPE, Binding.OWN),
     # The Forge-hosted MCP. Each tool re-enters this allow-list as a REST call.
     RoutePolicy("POST", f"{FORGE_PREFIX}/mcp", None, Binding.NONE),
 )

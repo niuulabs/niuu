@@ -26,6 +26,8 @@ def event_to_dict(event: MeshEvent) -> dict:
         "session_id": event.session_id,
         "task_id": event.task_id,
         "root_correlation_id": event.root_correlation_id,
+        "event_id": event.event_id,
+        "attestation": event.attestation,
     }
 
 
@@ -41,6 +43,8 @@ def dict_to_event(raw: dict) -> MeshEvent:
         session_id=raw["session_id"],
         task_id=raw.get("task_id"),
         root_correlation_id=raw.get("root_correlation_id", ""),
+        **({"event_id": raw["event_id"]} if raw.get("event_id") else {}),
+        attestation=dict(raw.get("attestation") or {}),
     )
 
 

@@ -39,6 +39,9 @@ class MeshEvent:
     root_correlation_id: str = ""  # Traces back to the original trigger across the event chain
     trace_context: dict[str, str] = field(default_factory=dict)
     event_id: str = field(default_factory=lambda: uuid4().hex)
+    #: Proof of who published it (``niuu.mesh.attestation``): set by the publisher's
+    #: signing mesh, checked by the receiver's. Empty on an event nobody signed.
+    attestation: dict = field(default_factory=dict)
 
     @classmethod
     def thought(

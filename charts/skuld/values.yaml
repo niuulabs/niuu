@@ -613,6 +613,24 @@ mesh:
   enabled: false
   transport: nng
   peerPorts: []
+  # Proof of who sent each mesh message. On by default and needs no setting: the session asks
+  # the Forge that launched it for a certificate with the credential it already holds
+  # (forgeMcp.tokenFile; Kubernetes and Flux sessions need Forge's
+  # forge_mcp.session_tokens.projection_adapter for that). Every key is optional; null keeps
+  # the broker's default. The certificate lifetime is Forge's
+  # forge_mcp.mesh_identity.ttl_seconds (default 900 s).
+  attestation:
+    # -- false runs the mesh unauthenticated: any claimed sender is accepted. Null keeps true.
+    required: null
+    # -- Fraction of the certificate lifetime after which it is renewed. Null keeps 0.5.
+    renewFraction: null
+    # -- Fraction of the lifetime between retries after a failed renewal. Null keeps 0.1.
+    retryFraction: null
+    # -- Seconds a request's signing time may differ from this clock. Null keeps 300.
+    clockSkewS: null
+    # -- Oldest a published event may be on receipt. Null keeps 3600; must exceed the
+    # transport's redelivery window.
+    eventMaxAgeS: null
 
 # -- Secret mapping manifest for file-based credential injection.
 # Rendered into a ConfigMap and mounted at /run/secrets/manifest.json.

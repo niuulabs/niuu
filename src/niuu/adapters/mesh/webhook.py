@@ -431,6 +431,9 @@ class WebhookMeshAdapter:
                 "correlation_id": event.correlation_id,
                 "session_id": event.session_id,
                 "task_id": event.task_id,
+                "event_id": event.event_id,
+                "root_correlation_id": event.root_correlation_id,
+                "attestation": event.attestation,
             },
             "timestamp": datetime.now(UTC).isoformat(),
         }
@@ -462,4 +465,7 @@ class WebhookMeshAdapter:
             correlation_id=event_data.get("correlation_id", ""),
             session_id=event_data.get("session_id", ""),
             task_id=event_data.get("task_id"),
+            root_correlation_id=event_data.get("root_correlation_id", ""),
+            **({"event_id": event_data["event_id"]} if event_data.get("event_id") else {}),
+            attestation=dict(event_data.get("attestation") or {}),
         )

@@ -1131,3 +1131,25 @@ def test_ask_knobs_reach_runtime_configuration():
 
     with pytest.raises(ValidationError, match="ask.wait_max_s"):
         SkuldSettings(**_skuld_config("--set", "ask.waitMaxS=300"))
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_mesh_attestation_renders_nothing_by_default_and_only_what_is_set():
+    from skuld.config import SkuldSettings
+
+    default = _rendered_skuld_config("skuld")
+    assert "mesh" not in default
+
+    config = _rendered_skuld_config(
+        "skuld",
+        "--set",
+        "mesh.attestation.required=false",
+        "--set",
+        "mesh.attestation.clockSkewS=60",
+    )
+
+    assert config["mesh"] == {"attestation": {"required": False, "clock_skew_s": 60}}
+    settings = SkuldSettings(**config)
+    assert settings.mesh.attestation.required is False
+    assert settings.mesh.attestation.clock_skew_s == 60
+    assert settings.mesh.attestation.event_max_age_s == 3600

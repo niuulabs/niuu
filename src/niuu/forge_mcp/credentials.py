@@ -15,6 +15,7 @@ from typing import Any
 import jwt
 
 from niuu.domain.services.token_scope import (
+    FORGE_MESH_IDENTITY_SCOPE,
     FORGE_NOTIFY_SCOPE,
     FORGE_SESSION_LIFECYCLE_SCOPE,
     FORGE_SESSION_MESSAGE_SCOPE,
@@ -29,6 +30,7 @@ DEFAULT_SESSION_SCOPES: tuple[str, ...] = (
     FORGE_NOTIFY_SCOPE,
     FORGE_SESSION_READ_SCOPE,
     FORGE_SESSION_SECRET_SCOPE,
+    FORGE_MESH_IDENTITY_SCOPE,
 )
 
 #: The scope each operator grant adds.

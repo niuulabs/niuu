@@ -167,6 +167,35 @@ data:
       {{- end }}
     {{- end }}
 
+    {{- $attestation := dict }}
+    {{- range $key, $value := (.Values.mesh.attestation | default dict) }}
+    {{- if not (kindIs "invalid" $value) }}
+    {{- $_ := set $attestation $key $value }}
+    {{- end }}
+    {{- end }}
+    {{- if $attestation }}
+
+    # Proof of who sent each mesh message. Needs no setting to work: only what is set here
+    # is rendered, the rest keeps the broker's defaults.
+    mesh:
+      attestation:
+        {{- if not (kindIs "invalid" $attestation.required) }}
+        required: {{ $attestation.required | toJson }}
+        {{- end }}
+        {{- if not (kindIs "invalid" $attestation.renewFraction) }}
+        renew_fraction: {{ $attestation.renewFraction | toJson }}
+        {{- end }}
+        {{- if not (kindIs "invalid" $attestation.retryFraction) }}
+        retry_fraction: {{ $attestation.retryFraction | toJson }}
+        {{- end }}
+        {{- if not (kindIs "invalid" $attestation.clockSkewS) }}
+        clock_skew_s: {{ $attestation.clockSkewS | toJson }}
+        {{- end }}
+        {{- if not (kindIs "invalid" $attestation.eventMaxAgeS) }}
+        event_max_age_s: {{ $attestation.eventMaxAgeS | toJson }}
+        {{- end }}
+    {{- end }}
+
     # How request_secret waits for the user's answer in the chat card.
     secret_requests:
       poll_interval_s: {{ .Values.secretRequests.pollIntervalS | toJson }}

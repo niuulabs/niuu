@@ -152,6 +152,63 @@ class MeshSleipnirConfig(BaseModel):
     )
 
 
+class MeshAttestationConfig(BaseModel):
+    """Proof of who sent each mesh message (``niuu.mesh.attestation``).
+
+    On by default wherever the mesh is: a mesh peer signs what it sends with a key
+    that Forge certified, and verifies what it receives. Nothing here needs setting for
+    it to work; the knobs only tune it.
+    """
+
+    required: bool = Field(
+        default=True,
+        description=(
+            "Sign every mesh message and refuse every one that is not verifiably signed. "
+            "False is an operator decision to run an unauthenticated mesh (a peer then "
+            "accepts any claimed sender); with True, a peer that cannot get a certificate "
+            "from Forge does not start its mesh."
+        ),
+    )
+    renew_fraction: float = Field(
+        default=0.5,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Fraction of the certificate lifetime after which it is renewed in the "
+            "background. The lifetime itself is Forge's forge_mcp.mesh_identity.ttl_seconds."
+        ),
+    )
+    retry_fraction: float = Field(
+        default=0.1,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Fraction of the certificate lifetime between retries after a failed renewal. "
+            "Retries are counted; a certificate that expires before one succeeds makes "
+            "sending fail with the reason, and peers refuse what this peer signed."
+        ),
+    )
+    clock_skew_s: float = Field(
+        default=300.0,
+        gt=0.0,
+        description=(
+            "How far a request's signing time may differ from this peer's clock. Bounds "
+            "how long a captured request or reply could be replayed; a request outside it "
+            "is refused as stale."
+        ),
+    )
+    event_max_age_s: float = Field(
+        default=3600.0,
+        gt=0.0,
+        description=(
+            "Oldest a published event may be when it is received. Bounds replay of a "
+            "captured event. It must exceed the transport's redelivery window (JetStream "
+            "nak backoff) and any consumer-recovery replay window, or those redeliveries "
+            "are refused as stale and counted."
+        ),
+    )
+
+
 class DiscoveryMdnsConfig(BaseModel):
     """mDNS-specific discovery settings (Pi mode)."""
 

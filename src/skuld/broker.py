@@ -52,6 +52,7 @@ from niuu.domain.transcript_reducer import (
     steering_state_from_frame,
     steering_target_id,
 )
+from niuu.mesh import mesh_event_prefix
 from niuu.mesh.cluster import read_cluster_pub_addresses
 from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
@@ -675,6 +676,7 @@ class Broker(
 
         # Mesh adapter — only active when mesh.enabled is True
         self._mesh_adapter: Any = None
+        self._mesh_attested: Any = None
         self._mesh_topics: MeshTopics | None = None
 
         # Optional mesh-to-collaboration bridge.
@@ -939,6 +941,15 @@ class Broker(
                 rpc_reply_cache_size=mesh_cfg.rpc_reply_cache_size,
             )
 
+        # Prove who sends what: sign and verify every message on whatever transport this is.
+        if mesh_cfg.attestation.required:
+            mesh = await self._attest_mesh(mesh, own_peer_id)
+        else:
+            logger.warning(
+                "mesh.attestation.required is false: this session accepts any claimed sender "
+                "on the mesh and its messages carry no proof"
+            )
+
         # Build discovery adapter using shared niuu.mesh.discovery_builder
         own_identity = MeshIdentity(
             peer_id=mesh_cfg.peer_id or self.session_id or "skuld",
@@ -1042,6 +1053,13 @@ class Broker(
                 from sleipnir.ports.events import SleipnirSubscriber
 
                 sleipnir_subscriber = self._mesh_adapter.sleipnir_subscriber
+                if sleipnir_subscriber is not None and self._mesh_attested is not None:
+                    # The room trusts what it shows: only verified mesh events, with the
+                    # sender and the projection taken from the proof, not the envelope.
+                    sleipnir_subscriber = self._mesh_attested.verified_subscriber(
+                        sleipnir_subscriber,
+                        event_prefix=mesh_event_prefix(mesh_cfg.realm_id),
+                    )
                 if sleipnir_subscriber is None:
                     # Fallback: InProcessBus implements both Publisher and Subscriber.
                     # Only use it if it actually satisfies the Subscriber interface.
@@ -1107,7 +1125,38 @@ class Broker(
         except Exception as exc:
             logger.error("Mesh adapter start failed: %r", exc, exc_info=True)
             self._mesh_adapter = None
+            if self._mesh_attested is not None:
+                await self._mesh_attested.signer.stop()
+                self._mesh_attested = None
             raise
+
+    async def _attest_mesh(self, mesh: Any, own_peer_id: str) -> Any:
+        """Wrap the mesh so it signs and verifies; fatal when this session cannot sign."""
+        from skuld.mesh_attestation import (  # noqa: PLC0415
+            MeshAttestationUnavailableError,
+            attest_mesh,
+        )
+
+        if not self.volundr_api_url:
+            raise MeshAttestationUnavailableError(
+                "the mesh needs Forge to certify this session's mesh identity, and "
+                "volundr_api_url is not set. Set it, or set mesh.attestation.required: false "
+                "to run the mesh unauthenticated"
+            )
+        mesh_cfg = self._settings.mesh
+        attested = await attest_mesh(
+            mesh,
+            config=mesh_cfg.attestation,
+            peer_id=own_peer_id,
+            session_id=str(self.session_id),
+            mesh_realm=mesh_cfg.realm_id,
+            forge_token=self._settings.forge_mcp.token,
+            http_client=self._get_http_client,
+            request_timeout_s=self._settings.forge_mcp.forge_request_timeout_s,
+            on_refusal=self.record_unverified_mesh_sender,
+        )
+        self._mesh_attested = attested
+        return attested
 
     def _room_default_target_peer_id(self) -> str:
         """Peer that untargeted browser messages route to (resident sessions)."""

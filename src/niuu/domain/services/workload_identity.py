@@ -527,6 +527,20 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         )
         return IssuedWorkloadToken(token=token, expires_at=expires_at)
 
+    def sign_claims(self, payload: dict[str, Any]) -> str:
+        """Sign *payload* verbatim with this issuer's key (RS256, the issuer's ``kid``).
+
+        For credentials that are not bearer tokens for this platform's services and so
+        carry their own audience, such as the mesh certificates (``niuu.mesh.attestation``).
+        The caller sets every claim, including ``iss`` and ``aud``; nothing is added.
+        """
+        return jwt.encode(
+            payload,
+            self._private_key,
+            algorithm="RS256",
+            headers={"kid": getattr(self._config, "key_id", "niuu-workload")},
+        )
+
     def verify_token(self, token: str) -> dict[str, Any]:
         """Verify a token this service minted: RS256 signature, expiry, issuer, audience."""
         try:
