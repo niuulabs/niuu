@@ -54,10 +54,8 @@ ACTIVATION = {
     "valid_endings": ["verdict", "waiting", "done", "failed"],
     "valid_verdicts": ["implemented", "blocked"],
     "outcome_schema": {
-        "type": "object",
-        "properties": {"summary": {"type": "string"}, "files_changed": {"type": "integer"}},
-        "required": ["summary"],
-        "additionalProperties": False,
+        "summary": {"type": "string", "description": "what changed"},
+        "files_changed": {"type": "number", "description": "files touched", "required": False},
     },
     "deadline_at": "2026-11-08T12:00:00+00:00",
     "instructions": "# Workflow step: Implement\nYou are the coder. Close with the close tool.",
@@ -156,9 +154,10 @@ class TestStepRequest:
             ({"attempt": 0}, "greater than or equal to 1"),
             ({"valid_endings": []}, "at least 1 item"),
             ({"valid_endings": ["verdict", "verdict"]}, "must not repeat an ending"),
-            ({"valid_verdicts": []}, "could never close with one"),
             ({"valid_verdicts": ["a", "a"]}, "must not repeat a verdict"),
-            ({"outcome_schema": {"type": "array"}}, "must be an object JSON schema"),
+            ({"outcome_schema": {"summary": "text"}}, "field 'summary' must be a mapping"),
+            ({"outcome_schema": {"summary": {"type": "date"}}}, "unknown type 'date'"),
+            ({"outcome_schema": {"kind": {"type": "enum"}}}, "needs a non-empty values list"),
             ({"instructions": ""}, "at least 1 character"),
             ({"unexpected": 1}, "Extra inputs are not permitted"),
         ],
@@ -561,9 +560,8 @@ class TestClosingAStep:
             ({"verdict": "shipped"}, "verdict 'shipped' is not valid for this step"),
             ({"verdict": None}, "ending 'verdict' needs `verdict`"),
             ({"outcome": None}, "needs `outcome` (required fields: summary)"),
-            ({"outcome": {"files_changed": 2}}, "outcome is missing: summary"),
-            ({"outcome": {"summary": 5}}, "outcome.summary"),
-            ({"outcome": {"summary": "x", "extra": 1}}, "outcome has unknown fields: extra"),
+            ({"outcome": {"files_changed": 2}}, "required field 'summary' is missing"),
+            ({"outcome": {"summary": 5}}, "field 'summary': expected string"),
             (
                 {"waiting_on": WAITING_ON},
                 "`waiting_on` is only for ending 'waiting'",
@@ -631,6 +629,17 @@ class TestClosingAStep:
         )
 
         assert _step_reports(broker)[0]["ending"]["outcome"] == {"anything": [1, 2]}
+
+    async def test_empty_valid_verdicts_takes_any_verdict(self, tmp_path) -> None:
+        """A persona with one produced event and no verdict map: every verdict leads there."""
+        broker = _step_broker(tmp_path)
+        await _accept(broker, {**ACTIVATION, "valid_verdicts": [], "outcome_schema": None})
+
+        await broker.close_workflow_step(
+            WorkflowStepCloseArgs(**{**CLOSE, "verdict": "shipped", "outcome": None})
+        )
+
+        assert _step_reports(broker)[0]["ending"]["verdict"] == "shipped"
 
     async def test_waiting_keeps_the_step_open_and_it_can_close_again(self, tmp_path) -> None:
         broker = _step_broker(tmp_path)

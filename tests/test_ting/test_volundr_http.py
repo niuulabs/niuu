@@ -1562,10 +1562,9 @@ class TestStepSessions:
         assert body["persona_definition"] == document
         assert body["workflow_step_host"] is True
         assert body["issue_id"] == "workflow:run"
-        assert body["metadata"] == {
-            "workflow_run_id": contract.RUN_ID,
-            "workflow_member": "coder",
-        }
+        assert body["workflow_run_id"] == contract.RUN_ID
+        assert body["workflow_member"] == "coder"
+        assert "metadata" not in body
         assert body["model"] == "claude-sonnet-4-6"
         assert "persona_name" not in body
         assert body["source"]["branch"] == "feat/x"

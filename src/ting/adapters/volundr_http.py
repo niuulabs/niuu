@@ -256,10 +256,8 @@ class VolundrHTTPAdapter(VolundrPort):
                     "persona_definition": request.persona_definition,
                     "workflow_step_host": True,
                     "issue_id": request.tracker_issue_id,
-                    "metadata": {
-                        "workflow_run_id": request.run_id,
-                        "workflow_member": request.member,
-                    },
+                    "workflow_run_id": request.run_id,
+                    "workflow_member": request.member,
                 },
             )
             if resp.status_code >= 400:

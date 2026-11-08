@@ -23,11 +23,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from niuu.domain.json_schema import (
-    PortableSchemaError,
-    validate_object_instance,
-    validate_object_schema,
-)
+from niuu.domain.outcome import outcome_errors, outcome_schema_from_mapping
 from niuu.domain.workflow_step import (
     ENDING_FAILED,
     ENDING_VERDICT,
@@ -107,16 +103,10 @@ class WorkflowStepRequest(BaseModel):
             raise ValueError("valid_verdicts must not repeat a verdict")
         if any(not verdict.strip() for verdict in self.valid_verdicts):
             raise ValueError("valid_verdicts must not contain a blank verdict")
-        if ENDING_VERDICT in self.valid_endings and not self.valid_verdicts:
-            raise ValueError(
-                "valid_endings allows 'verdict' but valid_verdicts is empty, so the step "
-                "could never close with one"
-            )
+        # An empty valid_verdicts with 'verdict' allowed means the persona maps every verdict
+        # to one event (produces.event_type, no event_type_map): any non-blank verdict closes.
         if self.outcome_schema is not None:
-            try:
-                validate_object_schema(self.outcome_schema, field="outcome_schema")
-            except PortableSchemaError as exc:
-                raise ValueError(str(exc)) from exc
+            outcome_schema_from_mapping(self.outcome_schema)
         return self
 
 
@@ -231,19 +221,23 @@ def ending_from_close(step: WorkflowStep, args: WorkflowStepCloseArgs) -> dict[s
     _check_ending_fields(step, args)
     outcome = args.outcome
     if step.outcome_schema is not None:
+        schema = outcome_schema_from_mapping(step.outcome_schema)
         if outcome is None and args.ending == ENDING_VERDICT:
-            required = ", ".join(step.outcome_schema.get("required", [])) or "none required"
+            required = (
+                ", ".join(name for name, spec in schema.fields.items() if spec.required)
+                or "none required"
+            )
             raise WorkflowStepCloseError(
                 "this step defines an outcome schema, so a verdict ending needs `outcome` "
                 f"(required fields: {required}). Add it and call again."
             )
         if outcome is not None:
-            try:
-                validate_object_instance(outcome, step.outcome_schema, field="outcome")
-            except PortableSchemaError as exc:
+            errors = outcome_errors(outcome, schema)
+            if errors:
                 raise WorkflowStepCloseError(
-                    f"{exc}. Fix `outcome` to match the step's outcome schema and call again."
-                ) from exc
+                    f"outcome does not match the step's outcome schema: {'; '.join(errors)}. "
+                    "Fix `outcome` and call again."
+                )
     return {
         "kind": args.ending,
         "verdict": args.verdict,
@@ -259,10 +253,9 @@ def _check_ending_fields(step: WorkflowStep, args: WorkflowStepCloseArgs) -> Non
     """Each ending takes exactly its own fields: one that would be dropped is refused."""
     if args.ending == ENDING_VERDICT:
         if not (args.verdict or "").strip():
-            raise WorkflowStepCloseError(
-                f"ending 'verdict' needs `verdict`, one of: {', '.join(step.valid_verdicts)}."
-            )
-        if args.verdict not in step.valid_verdicts:
+            choices = ", ".join(step.valid_verdicts) or "any non-blank verdict"
+            raise WorkflowStepCloseError(f"ending 'verdict' needs `verdict`: {choices}.")
+        if step.valid_verdicts and args.verdict not in step.valid_verdicts:
             raise WorkflowStepCloseError(
                 f"verdict {args.verdict!r} is not valid for this step. Valid verdicts: "
                 f"{', '.join(step.valid_verdicts)}."
