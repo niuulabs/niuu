@@ -163,6 +163,20 @@ class SkuldMeshAdapter:
             timeout_s=self._config.rpc_timeout_s,
         )
 
+    async def send_peer_message(self, target_peer_id: str, message: PeerMessage) -> dict[str, Any]:
+        """Send a stamped peer message envelope to a mesh peer and return its answer.
+
+        Raises ``RuntimeError`` when the mesh is unavailable; a transport failure or a peer
+        that does not know the peer, or the type, surfaces from the mesh or in the answer.
+        """
+        if self._mesh is None:
+            raise RuntimeError("Mesh is unavailable")
+        return await self._mesh.send(
+            target_peer_id,
+            {"type": PEER_MESSAGE_FRAME, "envelope": message.to_wire()},
+            timeout_s=self._config.rpc_timeout_s,
+        )
+
     async def _handle_rpc(self, message: dict) -> dict:
         """Handle incoming RPC messages (peer_message, work_request, and the broker's own)."""
         msg_type = message.get("type", "")

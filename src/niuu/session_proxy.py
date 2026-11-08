@@ -19,7 +19,12 @@ from identity.adapters.http_auth import extract_principal
 from niuu.config import NiuuSettings
 from niuu.domain.models import Principal
 from niuu.ports.session_proxy import SessionProxyTarget
-from niuu.room_access import ROOM_ROLE_HEADER, ROOM_ROLE_RANK, required_role_for_route
+from niuu.room_access import (
+    ROOM_CALLER_SESSION_HEADER,
+    ROOM_ROLE_HEADER,
+    ROOM_ROLE_RANK,
+    required_role_for_route,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -838,7 +843,13 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
         # session only ever sees x-auth-* the proxy resolved itself. The room
         # role header is always dropped from the client's own request and
         # replaced with the proxy's own resolution, never conditionally.
-        dropped = {"host", "content-length", "transfer-encoding", ROOM_ROLE_HEADER}
+        dropped = {
+            "host",
+            "content-length",
+            "transfer-encoding",
+            ROOM_ROLE_HEADER,
+            ROOM_CALLER_SESSION_HEADER,
+        }
         if not skuld_reg.dev_identity:
             dropped |= _IDENTITY_HEADERS
         headers = {k: v for k, v in request.headers.items() if k.lower() not in dropped}

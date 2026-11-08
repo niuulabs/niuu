@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from niuu.domain.notifications import NotificationDraft
+from niuu.domain.peer_message import (
+    PeerAddress,
+    PeerKind,
+    PeerMessage,
+    PeerMessageError,
+    ReplyKind,
+    ReplyRoute,
+)
 from niuu.domain.workflow_step import WorkflowStepCloseArgs, WorkflowStepCloseError
 from niuu.forge_mcp import (
     TOOL_NAMES,
@@ -22,6 +31,7 @@ from niuu.forge_mcp import (
     ToolResult,
     UnknownToolError,
 )
+from niuu.forge_mcp.tools import TRANSCRIPT_ONLY_TOOLS
 
 SELF = str(uuid.uuid4())
 PEER = str(uuid.uuid4())
@@ -53,7 +63,9 @@ def _session(session_id: str, **extra: Any) -> dict[str, Any]:
 class FakeClient(ForgeClient):
     def __init__(self) -> None:
         self.calls: list[tuple[str, Any]] = []
+        self.envelope_args: list[dict[str, Any]] = []
         self.fail: ForgeApiError | None = None
+        self.sessions: list[dict[str, Any]] | None = None
 
     def _record(self, name: str, payload: Any) -> None:
         self.calls.append((name, payload))
@@ -70,6 +82,8 @@ class FakeClient(ForgeClient):
 
     async def list_sessions(self, params):
         self._record("list_sessions", params)
+        if self.sessions is not None:
+            return self.sessions
         return [_session(str(uuid.uuid4())) for _ in range(5)]
 
     async def get_session(self, session_id, *, instance_id):
@@ -90,9 +104,16 @@ class FakeClient(ForgeClient):
         rows.append({"id": "in-progress", "role": "assistant", "in_progress": True})
         return {"turns": rows, "total_turns": 40}
 
-    async def send_message(self, session_id, *, content, request_id, instance_id):
+    async def send_message(
+        self, session_id, *, content, request_id, instance_id, in_reply_to="", urgent=False
+    ):
         self._record("send_message", (session_id, content, request_id, instance_id))
+        self.envelope_args.append({"in_reply_to": in_reply_to, "urgent": urgent})
         return {"status": "delivered", "delivery": "delivered", "request_id": request_id}
+
+    async def post_room_message(self, host_session_id, *, room_id, content):
+        self._record("post_room_message", (host_session_id, room_id, content))
+        return {"status": "sent", "message_id": "room-msg-1"}
 
     async def get_message_delivery(self, session_id, *, request_id, instance_id):
         self._record("get_message_delivery", (session_id, request_id, instance_id))
@@ -149,9 +170,32 @@ class FakeHost(ForgeMcpHost):
         self.step_open = False
         self.closes: list[WorkflowStepCloseArgs] = []
         self.close_error: WorkflowStepCloseError | None = None
+        self.mesh = True
+        self.mesh_sends: list[dict[str, Any]] = []
+        self.inbox: dict[str, PeerMessage] = {}
 
     def workflow_step_host(self) -> bool:
         return self.step_host
+
+    def mesh_host(self) -> bool:
+        return self.mesh
+
+    async def send_mesh_message(self, peer, content, *, expect_reply, request_id, in_reply_to):
+        self.mesh_sends.append(
+            {
+                "peer": peer,
+                "content": content,
+                "expect_reply": expect_reply,
+                "request_id": request_id,
+                "in_reply_to": in_reply_to,
+            }
+        )
+        return {"message_id": "mesh-msg-1", "status": "accepted"}
+
+    async def received_peer_message(self, message_id: str) -> PeerMessage:
+        if message_id not in self.inbox:
+            raise PeerMessageError(f"this session received no message {message_id!r}")
+        return self.inbox[message_id]
 
     async def close_workflow_step(self, args: WorkflowStepCloseArgs) -> dict[str, Any]:
         if not self.step_open:
@@ -196,6 +240,9 @@ class TestToolList:
             "session_transcript",
             "send_message",
             "message_status",
+            "reply",
+            "room_post",
+            "mesh_send",
             "create_session",
             "start_session",
             "stop_session",
@@ -560,9 +607,7 @@ class TestFeedNotify:
         assert {"session_id", "instance_id", "idempotency_key"} <= set(schema["properties"])
         assert "feed-only" in notify["description"]
         assert [tool["name"] for tool in toolbox.list_tools()] == [
-            name
-            for name in TOOL_NAMES
-            if name not in {"report_artifact", "request_secret", "workflow_step_close"}
+            name for name in TOOL_NAMES if name not in TRANSCRIPT_ONLY_TOOLS
         ]
 
     def test_transcript_mode_keeps_the_session_schema(self) -> None:
@@ -773,3 +818,328 @@ class TestWorkflowStepClose:
         toolbox, _ = _feed_toolbox()
         with pytest.raises(UnknownToolError):
             await toolbox.call("workflow_step_close", CLOSE_ARGS)
+
+
+def _named(name: str, session_id: str, node: str = "node-a", **extra: Any) -> dict[str, Any]:
+    return _session(session_id, name=name, instance_id=node, instance_name=node.upper(), **extra)
+
+
+def _envelope(**fields: Any) -> PeerMessage:
+    base: dict[str, Any] = {
+        "message_id": "m-1",
+        "sender": PeerAddress(kind=PeerKind.SESSION, id=PEER, name="peer", node="thor"),
+        "recipient": PeerAddress(kind=PeerKind.SESSION, id=SELF, name="me"),
+        "sent_at": datetime(2026, 11, 8, tzinfo=UTC),
+        "content": "can you check the build?",
+        "reply": ReplyRoute(kind=ReplyKind.SESSION, target=PEER, node="thor"),
+    }
+    return PeerMessage(**{**base, **fields})
+
+
+class TestAddressByName:
+    async def test_a_unique_name_resolves_to_its_id_and_node(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.sessions = [_named("alpha", PEER, "node-b"), _named("beta", str(uuid.uuid4()))]
+
+        result = await toolbox.call("send_message", {"to": "alpha", "content": "hello"})
+
+        assert not result.is_error
+        assert client.calls[0] == ("list_sessions", {"scope": "guild"})
+        sent = next(args for name, args in client.calls if name == "send_message")
+        assert (sent[0], sent[3]) == (PEER, "node-b")
+        assert result.structured["session_id"] == PEER
+
+    async def test_an_unknown_name_is_an_error_naming_it(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.sessions = [_named("alpha", PEER)]
+
+        result = await toolbox.call("send_message", {"to": "ghost", "content": "hello"})
+
+        assert result.is_error and "'ghost'" in result.text
+        assert not any(name == "send_message" for name, _ in client.calls)
+
+    async def test_an_ambiguous_name_lists_the_candidates_and_picks_none(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        other = str(uuid.uuid4())
+        client.sessions = [
+            _named("alpha", PEER, "node-a", status="running"),
+            _named("alpha", other, "node-b", status="stopped"),
+        ]
+
+        result = await toolbox.call("send_message", {"to": "alpha", "content": "hello"})
+
+        assert result.is_error
+        assert "2 sessions are named 'alpha'" in result.text
+        assert f"id {PEER}" in result.text and f"id {other}" in result.text
+        assert "NODE-A" in result.text and "NODE-B" in result.text
+        assert not any(name == "send_message" for name, _ in client.calls)
+
+    async def test_instance_id_narrows_an_ambiguous_name(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        other = str(uuid.uuid4())
+        client.sessions = [_named("alpha", PEER, "node-a"), _named("alpha", other, "node-b")]
+
+        result = await toolbox.call(
+            "send_message", {"to": "alpha", "instance_id": "node-b", "content": "hello"}
+        )
+
+        assert not result.is_error and result.structured["session_id"] == other
+
+    async def test_a_name_that_is_the_callers_own_session_is_refused(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.sessions = [_named("me", SELF)]
+
+        result = await toolbox.call("send_message", {"to": "me", "content": "hello"})
+
+        assert result.is_error and "own session" in result.text
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [{"content": "x"}, {"to": "a", "session_id": PEER, "content": "x"}],
+    )
+    async def test_exactly_one_address_is_required(self, arguments) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call("send_message", arguments)
+
+        assert result.is_error and "exactly one of `to`" in result.text
+        assert client.calls == []
+
+    async def test_urgent_reaches_forge(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        await toolbox.call("send_message", {"session_id": PEER, "content": "now", "urgent": True})
+
+        assert client.envelope_args == [{"in_reply_to": "", "urgent": True}]
+
+    def test_names_show_in_get_and_list_summaries(self) -> None:
+        from niuu.forge_mcp.tools import _session_summary
+
+        assert _session_summary(_named("alpha", PEER))["name"] == "alpha"
+
+
+class TestReply:
+    async def test_a_session_reply_goes_back_with_in_reply_to(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.inbox["m-1"] = _envelope()
+
+        result = await toolbox.call("reply", {"message_id": "m-1", "content": "build is green"})
+
+        assert not result.is_error and result.structured["via"] == "session"
+        name, (session_id, content, _request, instance_id) = client.calls[0]
+        assert (name, session_id, content, instance_id) == (
+            "send_message",
+            PEER,
+            "build is green",
+            None,
+        )
+        assert client.envelope_args == [{"in_reply_to": "m-1", "urgent": False}]
+
+    async def test_a_mesh_reply_goes_back_over_the_mesh(self) -> None:
+        toolbox, client, host = _toolbox()
+        host.inbox["m-2"] = _envelope(
+            message_id="m-2", reply=ReplyRoute(kind=ReplyKind.MESH, target="peer-7")
+        )
+
+        result = await toolbox.call("reply", {"message_id": "m-2", "content": "done"})
+
+        assert not result.is_error and result.structured["via"] == "mesh"
+        assert host.mesh_sends[0]["peer"] == "peer-7"
+        assert host.mesh_sends[0]["in_reply_to"] == "m-2" and not host.mesh_sends[0]["expect_reply"]
+        assert client.calls == []
+
+    async def test_a_room_reply_is_posted_to_the_hosts_room(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.inbox["m-3"] = _envelope(
+            message_id="m-3",
+            room_id="huddle-1",
+            reply=ReplyRoute(kind=ReplyKind.ROOM, target=PEER, node="thor"),
+        )
+
+        result = await toolbox.call("reply", {"message_id": "m-3", "content": "agreed"})
+
+        assert not result.is_error and result.structured["via"] == "room"
+        assert client.calls == [("post_room_message", (PEER, "huddle-1", "agreed"))]
+
+    async def test_a_message_with_no_reply_route_is_refused_with_the_reason(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.inbox["m-4"] = _envelope(message_id="m-4", reply=None)
+
+        result = await toolbox.call("reply", {"message_id": "m-4", "content": "hi"})
+
+        assert result.is_error and "takes no reply" in result.text
+        assert client.calls == [] and host.mesh_sends == []
+
+    async def test_an_unknown_message_id_is_an_error(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call("reply", {"message_id": "nope", "content": "hi"})
+
+        assert result.is_error and "received no message 'nope'" in result.text
+        assert client.calls == []
+
+    @pytest.mark.parametrize("kind", [ReplyKind.SESSION, ReplyKind.ROOM])
+    async def test_session_and_room_replies_need_the_message_grant(self, kind) -> None:
+        toolbox, client, host = _toolbox()
+        host.inbox["m-5"] = _envelope(
+            message_id="m-5", room_id="r", reply=ReplyRoute(kind=kind, target=PEER)
+        )
+
+        result = await toolbox.call("reply", {"message_id": "m-5", "content": "hi"})
+
+        assert result.is_error and "'message' grant" in result.text
+        assert client.calls == []
+
+    async def test_a_room_route_without_a_room_is_refused(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.inbox["m-6"] = _envelope(
+            message_id="m-6", reply=ReplyRoute(kind=ReplyKind.ROOM, target=PEER)
+        )
+
+        result = await toolbox.call("reply", {"message_id": "m-6", "content": "hi"})
+
+        assert result.is_error and "no room" in result.text
+        assert client.calls == []
+
+    async def test_forges_refusal_reaches_the_agent(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.inbox["m-1"] = _envelope()
+        client.fail = ForgeApiError("Session gone", status=404)
+
+        result = await toolbox.call("reply", {"message_id": "m-1", "content": "x"})
+
+        assert result.is_error and "404" in result.text
+
+    def test_reply_is_a_session_broker_tool_only(self) -> None:
+        assert {"reply", "room_post", "mesh_send"} <= TRANSCRIPT_ONLY_TOOLS
+
+
+class TestRoomPost:
+    HOST = str(uuid.uuid4())
+
+    async def test_a_post_goes_to_the_hosting_session(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call(
+            "room_post", {"room_id": "huddle-1", "host_session_id": self.HOST, "content": "hi all"}
+        )
+
+        assert not result.is_error
+        assert client.calls == [("post_room_message", (self.HOST, "huddle-1", "hi all"))]
+        assert result.structured["message_id"] == "room-msg-1"
+
+    async def test_a_member_refusal_carries_the_hosts_reason(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.fail = ForgeApiError("Session x is not a member of room huddle-1", status=403)
+
+        result = await toolbox.call(
+            "room_post", {"room_id": "huddle-1", "host_session_id": self.HOST, "content": "hi"}
+        )
+
+        assert result.is_error and "not a member of room huddle-1" in result.text
+
+    async def test_it_needs_the_message_grant(self) -> None:
+        toolbox, client, _ = _toolbox()
+
+        result = await toolbox.call(
+            "room_post", {"room_id": "r", "host_session_id": self.HOST, "content": "hi"}
+        )
+
+        assert result.is_error and "'message' grant" in result.text and client.calls == []
+
+    async def test_a_session_does_not_post_into_its_own_room_this_way(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call(
+            "room_post", {"room_id": "r", "host_session_id": SELF, "content": "hi"}
+        )
+
+        assert result.is_error and "own session" in result.text and client.calls == []
+
+
+class TestMeshSend:
+    async def test_it_sends_through_the_host_with_a_request_id(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        result = await toolbox.call(
+            "mesh_send", {"peer": "peer-7", "content": "hello", "expect_reply": True}
+        )
+
+        assert not result.is_error
+        sent = host.mesh_sends[0]
+        assert (sent["peer"], sent["content"], sent["expect_reply"]) == ("peer-7", "hello", True)
+        assert sent["request_id"].startswith("fmcp-")
+        assert result.structured["request_id"] == sent["request_id"]
+
+    def test_it_is_listed_only_when_the_mesh_is_enabled(self) -> None:
+        toolbox, _, host = _toolbox()
+        assert "mesh_send" in [tool["name"] for tool in toolbox.list_tools()]
+        host.mesh = False
+        assert "mesh_send" not in [tool["name"] for tool in toolbox.list_tools()]
+
+    async def test_a_call_without_a_mesh_is_refused_with_the_reason(self) -> None:
+        toolbox, _, host = _toolbox()
+        host.mesh = False
+
+        result = await toolbox.call("mesh_send", {"peer": "p", "content": "hi"})
+
+        assert result.is_error and "no mesh" in result.text
+        assert host.mesh_sends == []
+
+    async def test_the_hosts_refusal_reaches_the_agent(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        async def refuse(*_args, **_kwargs):
+            raise ForgeApiError("mesh peer 'p' refused the message", status=502)
+
+        host.send_mesh_message = refuse  # type: ignore[method-assign]
+
+        result = await toolbox.call("mesh_send", {"peer": "p", "content": "hi"})
+
+        assert result.is_error and "refused the message" in result.text
+
+    async def test_the_default_host_has_no_mesh_or_inbox(self) -> None:
+        class Bare(ForgeMcpHost):
+            session_id = None
+
+            async def environment(self):
+                return {}
+
+            async def notify(self, draft):
+                return {}
+
+        bare = Bare()
+        assert bare.mesh_host() is False
+        with pytest.raises(ForgeApiError, match="mesh_send"):
+            await bare.send_mesh_message(
+                "p", "x", expect_reply=False, request_id="r", in_reply_to=""
+            )
+
+
+class TestPeerToolArguments:
+    @pytest.mark.parametrize(
+        ("tool", "arguments"),
+        [
+            ("send_message", {"to": "alpha", "content": "   "}),
+            ("reply", {"message_id": "m-1", "content": "   "}),
+            ("room_post", {"room_id": "r", "host_session_id": PEER, "content": "   "}),
+            ("mesh_send", {"peer": "p", "content": "   "}),
+        ],
+    )
+    async def test_blank_content_is_refused_before_anything_is_sent(self, tool, arguments) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call(tool, arguments)
+
+        assert result.is_error and "content must not be blank" in result.text
+        assert client.calls == [] and host.mesh_sends == []
+
+    async def test_a_host_session_id_must_be_a_session_uuid(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        result = await toolbox.call(
+            "room_post", {"room_id": "r", "host_session_id": "not-a-uuid", "content": "hi"}
+        )
+
+        assert result.is_error and "Forge session UUID" in result.text
+        assert client.calls == []

@@ -195,15 +195,28 @@ class PeerInboxMixin:
         self._spawn_boundary_injection(f"peer-inbox-accept-{envelope.message_id}")
         return PeerAcceptance(envelope.message_id, duplicate=False)
 
+    def _own_peer_identities(self) -> set[str]:
+        """The ids a message to this session may carry: its session id, and on the mesh its
+        mesh peer id (configured or the host name, not the session id)."""
+        identities = {str(self.session_id)}
+        if self._mesh_adapter is not None:
+            identities.add(self._mesh_adapter.peer_id)
+        return identities
+
     def _check_peer_message_acceptable(self, envelope: PeerMessage) -> None:
         if not self._settings.peer_inbox.enabled:
             raise PeerMessageRefusedError(
                 "this session does not take peer messages (peer_inbox.enabled is off)"
             )
-        if envelope.recipient.id != str(self.session_id):
+        if envelope.recipient.id not in self._own_peer_identities():
             raise PeerMessageRefusedError(
                 f"the message is addressed to {envelope.recipient.label()}, but this is "
                 f"session {self.session_id}"
+                + (
+                    f" (mesh peer {self._mesh_adapter.peer_id})"
+                    if self._mesh_adapter is not None
+                    else ""
+                )
             )
         if self._peer_inbox_restore_failure is not None:
             raise PeerMessageRefusedError(

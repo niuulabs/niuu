@@ -783,7 +783,7 @@ push:
 # through `sessionCredentialProjection`. See docs/operator/forge-mcp.md. Example:
 #   forgeMcp:
 #     default_grants: []
-#     role_grants: {coordinator: [lifecycle, message]}   # the default; {} for none
+#     role_grants: {coordinator: [lifecycle, message], worker: [message]}   # the default; {} for none
 #     session_tokens: {ttl_seconds: 604800}
 #     http: {allowed_origins: ["https://forge.example.com"]}
 forgeMcp: {}

@@ -27,8 +27,9 @@ from niuu.domain.peer_message import (
 from niuu.ports.cli.transport import TransportCapabilities
 from skuld import peer_inbox
 from skuld.broker import Broker
-from skuld.config import SkuldSettings
+from skuld.config import MeshConfig, SkuldSettings
 from skuld.forge_mcp.host import BrokerForgeMcpHost
+from skuld.mesh_adapter import SkuldMeshAdapter
 from skuld.peer_inbox import (
     PeerInboxEntry,
     PeerMessageRefusedError,
@@ -952,3 +953,66 @@ class TestStartup:
             await asyncio.wait_for(injected.wait(), timeout=5)
         finally:
             await broker.shutdown()
+
+
+class TestMeshEndToEnd:
+    """The sending host and the receiving inbox, joined by a fake mesh: their shapes agree."""
+
+    def _adapter(self, broker: Broker, peer_id: str, mesh=None) -> SkuldMeshAdapter:
+        return SkuldMeshAdapter(
+            participant=SimpleNamespace(peer_id=peer_id, mesh=mesh),
+            config=MeshConfig(enabled=True),
+            session_id=str(broker.session_id),
+            peer_inbox=broker,
+        )
+
+    async def test_a_mesh_send_lands_in_the_peer_inbox_addressed_by_mesh_peer_id(
+        self, tmp_path
+    ) -> None:
+        receiver = _inbox_broker(tmp_path / "receiver")
+        receiver._mesh_adapter = self._adapter(receiver, "receiver-peer")
+
+        class FakeMesh:
+            async def send(self, target, payload, timeout_s=None):
+                assert target == "receiver-peer"
+                return await receiver._mesh_adapter._handle_rpc(payload)
+
+        sender = Broker(
+            SkuldSettings(
+                session={"id": SENDER_ID, "workspace_dir": str(tmp_path / "sender")},
+                transport="subprocess",
+                mesh={"enabled": True},
+                chronicle_watcher_enabled=False,
+            )
+        )
+        sender._mesh_adapter = self._adapter(sender, "sender-peer", mesh=FakeMesh())
+        host = BrokerForgeMcpHost(sender, MagicMock())
+
+        result = await host.send_mesh_message(
+            "receiver-peer",
+            "Is the cluster healthy?",
+            expect_reply=True,
+            request_id="r-1",
+            in_reply_to="",
+        )
+        await _settle()
+
+        held = receiver.received_peer_message(result["message_id"])
+        assert held.sender.id == SENDER_ID
+        assert held.recipient.id == "receiver-peer"
+        assert held.reply == ReplyRoute(ReplyKind.MESH, "sender-peer")
+        assert _sent_texts(receiver) == [render_for_harness(held)]
+
+    async def test_a_mesh_message_for_another_peer_is_refused_back_to_the_sender(
+        self, tmp_path
+    ) -> None:
+        receiver = _inbox_broker(tmp_path / "receiver")
+        receiver._mesh_adapter = self._adapter(receiver, "receiver-peer")
+        stray = _message(recipient=PeerAddress(PeerKind.MESH_PEER, "someone-else"))
+
+        answer = await receiver._mesh_adapter._handle_rpc(
+            {"type": PEER_MESSAGE_FRAME, "envelope": stray.to_wire()}
+        )
+
+        assert answer["status"] == "refused"
+        assert "mesh peer receiver-peer" in answer["error"]

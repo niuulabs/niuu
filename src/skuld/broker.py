@@ -28,7 +28,13 @@ from fastapi import WebSocket, WebSocketDisconnect  # noqa: F401
 from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
 from niuu.domain.logging import LoggingConfig
 from niuu.domain.outcome import parse_outcome_block
-from niuu.domain.peer_message import PEER_MESSAGE_FRAME, PeerMessage, PeerMessageError
+from niuu.domain.peer_message import (
+    PEER_MESSAGE_FRAME,
+    PeerAddress,
+    PeerKind,
+    PeerMessage,
+    PeerMessageError,
+)
 from niuu.domain.presented_files import PRESENT_FILE_RPC_TYPE
 from niuu.domain.text_projection import projection_revision
 from niuu.domain.transcript_reducer import (
@@ -102,6 +108,7 @@ from skuld.forge_mcp.integration import ForgeSessionMixin
 from skuld.history_hydration import fetch_durable_history, merge_history_turns
 from skuld.peer_inbox import PeerInboxMixin
 from skuld.preview import PreviewForwarder, PreviewPortWatcher
+from skuld.room_delivery import RoomDelivery, RoomDeliveryError
 from skuld.service_manager import (  # noqa: F401
     ServiceCreateRequest,
     ServiceManager,
@@ -690,6 +697,7 @@ class Broker(
                 publish_presence_event=self._publish_room_presence_event,
                 report_usage=self._report_usage,
                 deliver_to_session=self._deliver_to_member_session,
+                host_identity=self._host_peer_address,
             )
         self._restored_room_members: dict[str, dict[str, Any]] = {}
 
@@ -1649,20 +1657,60 @@ class Broker(
         )
         return message_id
 
-    async def _deliver_to_member_session(self, session_id: str, content: str) -> bool:
-        """Hand a room delivery to the session a member joined from, through Forge."""
+    def _host_peer_address(self) -> PeerAddress:
+        """This session as a party to a message: its id, name and node."""
+        return PeerAddress(
+            kind=PeerKind.SESSION,
+            id=str(self.session_id),
+            name=self._settings.session.name,
+            node=socket.gethostname(),
+        )
+
+    async def _deliver_to_member_session(self, session_id: str, delivery: RoomDelivery) -> bool:
+        """Hand a room delivery to the session a member joined from, as a peer envelope.
+
+        This session calls Forge with its own session credential, so Forge stamps it
+        ``relayed_by``; the participant who spoke, the room and the reply route travel as
+        the ``peer`` block. A delivery that cannot be made raises: the room's caller learns
+        of it, and it is counted, never logged and dropped.
+        """
         if not self.volundr_api_url:
-            logger.error("Cannot reach session %s: volundr_api_url is not set", session_id)
-            return False
+            raise RoomDeliveryError(
+                f"Cannot reach session {session_id}: volundr_api_url is not set"
+            )
+        token = self._settings.forge_mcp.token
+        if not token:
+            raise RoomDeliveryError(
+                f"Cannot deliver to session {session_id}: this session holds no Forge session "
+                "credential (forge_mcp.token), which Forge needs to stamp it as the room's host. "
+                "Enable forge_mcp.session_tokens on the Forge that launched it"
+            )
         client = await self._get_http_client()
         try:
             response = await client.post(
-                f"{FORGE_SESSIONS_PATH}/{session_id}/messages", json={"content": content}
+                f"{FORGE_SESSIONS_PATH}/{session_id}/messages",
+                json={
+                    "content": delivery.content,
+                    "request_id": delivery.request_id,
+                    "peer": delivery.speech.to_body(),
+                },
+                headers={"Authorization": f"Bearer {token}"},
             )
-            response.raise_for_status()
         except httpx.HTTPError as exc:
-            logger.error("Could not reach session %s through Forge: %s", session_id, exc)
-            return False
+            raise RoomDeliveryError(
+                f"Could not reach session {session_id} through Forge: {exc}"
+            ) from exc
+        if response.status_code >= 400:
+            remedy = (
+                "; this session's credential needs the 'message' grant (forge_mcp.role_grants "
+                "or default_grants) to relay room messages"
+                if response.status_code == 403
+                else ""
+            )
+            raise RoomDeliveryError(
+                f"Forge refused the room message for session {session_id} "
+                f"({response.status_code}): {response.text[:500]}{remedy}"
+            )
         return True
 
     async def _report_peer_help_needed_activity(
@@ -3906,6 +3954,38 @@ class Broker(
         if deliver_to_transport:
             await self._send_explicit_human_message_to_transport(content)
         return msg_id
+
+    async def handle_session_room_message(
+        self, caller_session_id: str, room_id: str, content: str
+    ) -> str:
+        """Record a message a member session says in a room, as said by that session.
+
+        ``caller_session_id`` is the session Forge verified. It is accepted only when a
+        participant seated in ``room_id`` joined from that session; anyone else is refused
+        with the reason. Nothing about the speaker comes from ``content``.
+        """
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled")
+        member = next(
+            (
+                participant
+                for participant in self._room_bridge.participants.values()
+                if participant.session_id == caller_session_id and room_id in participant.room_ids
+            ),
+            None,
+        )
+        if member is None:
+            raise PermissionError(
+                f"Session {caller_session_id} is not a member of room {room_id} on this "
+                "session; ask the room's host to join it first"
+            )
+        return await self.handle_human_room_message(
+            content,
+            source="session",
+            participant_id=member.peer_id,
+            metadata={"speaker_session_id": caller_session_id, "room_id": room_id},
+            deliver_to_transport=True,
+        )
 
     async def handle_directed_room_message(
         self,
