@@ -31,7 +31,7 @@
 # whose tree no PR tested. Set the repository variable DEV_PROMOTION=off to
 # always rebuild.
 #
-# CLI binaries are release-only (release.yaml) — too slow for dev.
+# CLI binaries compile separately in cli-binaries.yaml and do not gate dev releases.
 #
 # The dev prerelease tags (v*-dev.N) are skipped by release.yaml so they
 # never create a production GitHub Release.

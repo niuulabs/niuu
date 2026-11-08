@@ -1,0 +1,47 @@
+name: Niuu binary benchmarks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev, codex/nuitka-binaries]
+    paths:
+      - src/**
+      - migrations/**
+      - vendor/**
+      - web-next/**
+      - pyproject.toml
+      - uv.lock
+      - Makefile
+      - scripts/build_postgres.sh
+      - scripts/postgres_nuitka_plugin.py
+      - scripts/measure_compilation.py
+      - scripts/check_quickstart.py
+      - .github/actions/setup-python-env/**
+      - .github/workflows/*cli*.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-binaries-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-cli-build.yaml
+
+  timings:
+    name: Compilation timing comparison
+    needs: build
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: compilation-*
+          path: compilation-results
+      - name: Compare compilation times
+        run: python3 scripts/measure_compilation.py --summary compilation-results >> "$GITHUB_STEP_SUMMARY"
