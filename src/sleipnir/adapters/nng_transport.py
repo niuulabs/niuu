@@ -51,6 +51,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import suppress
+from urllib.parse import urlsplit
 
 try:
     import pynng
@@ -179,6 +180,7 @@ class NngPublisher(SleipnirPublisher):
         bind_max_retries: int = DEFAULT_BIND_MAX_RETRIES,
         service_id: str | None = None,
         registry: ServiceRegistry | None = None,
+        advertise_host: str | None = None,
     ) -> None:
         _require_pynng()
         self._address = address
@@ -186,21 +188,37 @@ class NngPublisher(SleipnirPublisher):
         self._bind_max_retries = bind_max_retries
         self._service_id = service_id
         self._registry = registry
+        self._advertise_host = advertise_host
         self._socket: pynng.Pub0 | None = None  # type: ignore[name-defined]
+        self._bound_address: str | None = None
 
-    async def start(self) -> None:
-        """Bind the PUB socket, retrying on transient address-in-use errors.
+    @property
+    def bound_address(self) -> str:
+        """The address the PUB socket really listens on (port 0 resolved)."""
+        if self._bound_address is None:
+            raise RuntimeError("NngPublisher is not bound. Call start() or bind() first.")
+        return self._bound_address
 
-        If discovery is configured, registers this publisher in the service
-        registry after the socket is bound.
+    @property
+    def advertised_address(self) -> str:
+        """The address peers on other machines dial: the bound port on ``advertise_host``.
+
+        A loopback or IPC address is advertised as it is bound. A wildcard bind
+        (``0.0.0.0``) has no address of its own, so it needs ``advertise_host``; without it
+        this raises rather than announce an address nobody can reach.
         """
+        return _advertised(self.bound_address, self._advertise_host)
+
+    async def bind(self) -> None:
+        """Bind the PUB socket, retrying on transient address-in-use errors (idempotent)."""
+        if self._socket is not None:
+            return
         socket = pynng.Pub0()
         try:
             for attempt in range(self._bind_max_retries):
                 try:
                     socket.listen(self._address)
                     logger.debug("NngPublisher: bound to %s", self._address)
-                    self._socket = socket
                     break
                 except pynng.AddressInUse:
                     if attempt == self._bind_max_retries - 1:
@@ -215,9 +233,15 @@ class NngPublisher(SleipnirPublisher):
         except Exception:
             socket.close()
             raise
+        self._socket = socket
+        self._bound_address = _resolved_address(self._address, socket)
+
+    async def start(self) -> None:
+        """Bind the PUB socket, then register it in the service registry if one is set."""
+        await self.bind()
         if self._registry is not None and self._service_id is not None:
             await asyncio.get_running_loop().run_in_executor(
-                None, self._registry.register, self._service_id, self._address
+                None, self._registry.register, self._service_id, self.advertised_address
             )
 
     async def stop(self) -> None:
@@ -231,6 +255,7 @@ class NngPublisher(SleipnirPublisher):
             with suppress(Exception):
                 self._socket.close()
             self._socket = None
+            self._bound_address = None
             logger.debug("NngPublisher: closed")
 
     async def __aenter__(self) -> NngPublisher:
@@ -313,8 +338,16 @@ class NngSubscriber(SleipnirSubscriber):
         self._rediscover_task: asyncio.Task[None] | None = None
         self._subscriptions: list[_BaseSubscription] = []
         self._nng_subscribed_topics: set[bytes] = set()
+        # Address -> the dialer that connects to it, so a peer that left can be hung up on.
+        self._dialers: dict[str, pynng.Dialer] = {}  # type: ignore[name-defined]
         self._dialed_addresses: set[str] = set()
+        # This process's own PUB address (set by the transport once it is bound).
+        self._local_address: str | None = None
         self._running = False
+
+    def set_local_address(self, address: str) -> None:
+        """Dial this process's own PUB too, so what it publishes reaches its own handlers."""
+        self._local_address = address
 
     async def start(self) -> None:
         """Dial the SUB socket and start the receive loop.
@@ -331,11 +364,7 @@ class NngSubscriber(SleipnirSubscriber):
         self._socket.reconnect_time_min = self._reconnect_min_ms
         self._socket.reconnect_time_max = self._reconnect_max_ms
 
-        addresses = await self._discover_addresses()
-        for addr in addresses:
-            self._socket.dial(addr, block=False)
-            self._dialed_addresses.add(addr)
-            logger.debug("NngSubscriber: dialing %s", addr)
+        self._sync_dialers(await self._discover_addresses())
 
         if self._connect_settle_ms > 0:
             await asyncio.sleep(self._connect_settle_ms / 1000.0)
@@ -350,27 +379,46 @@ class NngSubscriber(SleipnirSubscriber):
             )
 
     async def _discover_addresses(self) -> list[str]:
-        """Return the list of publisher addresses to dial.
+        """Return the publisher addresses to dial right now.
 
-        Resolution order:
-        1. Service registry (JSON file, if provided)
-        2. Static peer addresses (from discovery, if provided)
-        3. Fallback to *self._address*
+        The union of the service registry (JSON file, if provided), the peer addresses
+        (a list, or a provider called on every pass) and this process's own PUB address.
+        With none of them known, *self._address* is dialed, which is how a lone
+        subscriber of a fixed address works.
         """
+        addresses: list[str] = []
         if self._registry is not None:
             loop = asyncio.get_running_loop()
             entries = await loop.run_in_executor(None, self._registry.list_services)
-            if entries:
-                addresses = [e.socket for e in entries]
-                logger.debug("NngSubscriber: registry: %d publisher(s)", len(addresses))
-                return addresses
+            addresses.extend(e.socket for e in entries)
+        addresses.extend(self._resolve_peer_addresses())
+        if self._local_address is not None:
+            addresses.append(self._local_address)
+        if not addresses:
+            addresses.append(self._address)
+        return list(dict.fromkeys(addresses))
 
-        peers = self._resolve_peer_addresses()
-        if peers:
-            logger.debug("NngSubscriber: peer_addresses: %d pub(s)", len(peers))
-            return peers
+    def _sync_dialers(self, wanted: list[str]) -> None:
+        """Dial the addresses not dialed yet and hang up on the ones no longer wanted."""
+        wanted_set = set(wanted)
+        for addr in wanted:
+            if addr in self._dialers:
+                continue
+            self._dialers[addr] = self._socket.dial(addr, block=False)
+            self._dialed_addresses.add(addr)
+            logger.info("NngSubscriber: dialing %s", addr)
+        for addr in [a for a in self._dialers if a not in wanted_set]:
+            dialer = self._dialers.pop(addr)
+            self._dialed_addresses.discard(addr)
+            with suppress(Exception):
+                dialer.close()
+            logger.info("NngSubscriber: peer left, hung up on %s", addr)
 
-        return [self._address]
+    async def refresh(self) -> None:
+        """Re-read the peers now (a discovery join or leave), instead of at the next pass."""
+        if not self._running or self._socket is None:
+            return
+        self._sync_dialers(await self._discover_addresses())
 
     def _resolve_peer_addresses(self) -> list[str]:
         """Return the configured peer publishers.
@@ -383,9 +431,13 @@ class NngSubscriber(SleipnirSubscriber):
         if callable(self._peer_addresses):
             try:
                 return list(self._peer_addresses())
-            except Exception as exc:
-                logger.debug("NngSubscriber: peer address provider failed: %s", exc)
-                return []
+            except Exception:
+                # Not "nobody is there": the dialed peers stay as they were.
+                logger.exception(
+                    "NngSubscriber: the peer address provider failed; keeping the peers "
+                    "already dialed"
+                )
+                return list(self._dialers)
         return list(self._peer_addresses)
 
     async def _rediscover_loop(self) -> None:
@@ -399,12 +451,7 @@ class NngSubscriber(SleipnirSubscriber):
             if not self._running or self._socket is None:
                 return
             try:
-                addresses = await self._discover_addresses()
-                for addr in addresses:
-                    if addr not in self._dialed_addresses:
-                        self._socket.dial(addr, block=False)
-                        self._dialed_addresses.add(addr)
-                        logger.info("NngSubscriber: discovered new publisher, dialing %s", addr)
+                self._sync_dialers(await self._discover_addresses())
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -425,6 +472,7 @@ class NngSubscriber(SleipnirSubscriber):
             with suppress(Exception):
                 self._socket.close()
             self._socket = None
+        self._dialers.clear()
         self._dialed_addresses.clear()
         logger.debug("NngSubscriber: closed")
 
@@ -530,6 +578,7 @@ class NngTransport(SleipnirPublisher, SleipnirSubscriber):
         registry: ServiceRegistry | None = None,
         rediscover_interval_s: float = DEFAULT_REDISCOVER_INTERVAL_S,
         peer_addresses: list[str] | Callable[[], list[str]] | None = None,
+        advertise_host: str | None = None,
     ) -> None:
         _require_pynng()
         self._publisher = NngPublisher(
@@ -538,6 +587,7 @@ class NngTransport(SleipnirPublisher, SleipnirSubscriber):
             bind_max_retries=bind_max_retries,
             service_id=service_id,
             registry=registry,
+            advertise_host=advertise_host,
         )
         self._subscriber = NngSubscriber(
             address=address,
@@ -551,9 +601,23 @@ class NngTransport(SleipnirPublisher, SleipnirSubscriber):
             peer_addresses=peer_addresses,
         )
 
+    async def bind(self) -> None:
+        """Bind the PUB socket now, so its address can be announced before the mesh starts."""
+        await self._publisher.bind()
+
+    @property
+    def pub_address(self) -> str:
+        """The address other peers dial to hear this process (see ``advertised_address``)."""
+        return self._publisher.advertised_address
+
+    async def refresh_peers(self) -> None:
+        """Dial peers that joined and hang up on peers that left, right now."""
+        await self._subscriber.refresh()
+
     async def start(self) -> None:
         """Bind the PUB socket, then dial the SUB socket."""
         await self._publisher.start()
+        self._subscriber.set_local_address(_dialable(self._publisher.bound_address))
         await self._subscriber.start()
 
     async def stop(self) -> None:
@@ -600,6 +664,48 @@ class NngTransport(SleipnirPublisher, SleipnirSubscriber):
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+
+_WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::", "*"})
+
+
+def _hostport(host: str, port: int) -> str:
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
+def _resolved_address(address: str, socket: object) -> str:
+    """The address *socket* listens on: *address* with a port 0 replaced by the real port."""
+    parts = urlsplit(address)
+    if parts.scheme != "tcp":
+        return address
+    # The address object's ``port`` attribute is in network byte order; its text is not.
+    port = str(socket.listeners[0].local_address).rsplit(":", 1)[1]  # type: ignore[attr-defined]
+    return f"tcp://{_hostport(parts.hostname or '', int(port))}"
+
+
+def _advertised(bound: str, advertise_host: str | None) -> str:
+    """The address to announce for a socket bound at *bound*."""
+    parts = urlsplit(bound)
+    if parts.scheme != "tcp":
+        return bound
+    host = parts.hostname or ""
+    if advertise_host:
+        return f"tcp://{_hostport(advertise_host, parts.port or 0)}"
+    if host in _WILDCARD_HOSTS:
+        raise ValueError(
+            f"the nng PUB socket listens on every interface ({bound}) and has no address of "
+            "its own to announce: set mesh.nng.advertise_host to the host or IP other "
+            "machines reach this one on, or bind a specific address in mesh.nng.pub_sub_address"
+        )
+    return bound
+
+
+def _dialable(bound: str) -> str:
+    """The address this process dials to reach its own PUB (a wildcard is dialed on loopback)."""
+    parts = urlsplit(bound)
+    if parts.scheme == "tcp" and (parts.hostname or "") in _WILDCARD_HOSTS:
+        return f"tcp://127.0.0.1:{parts.port}"
+    return bound
 
 
 def _require_pynng() -> None:

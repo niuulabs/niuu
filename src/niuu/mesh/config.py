@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator
@@ -123,7 +124,10 @@ class MeshNatsConfig(BaseSettings):
         del cls
         if not isinstance(value, str):
             return value
-        return [entry.strip() for entry in value.split(",") if entry.strip()]
+        text = value.strip()
+        if text.startswith("["):  # a list that travelled through an environment variable
+            return json.loads(text)
+        return [entry.strip() for entry in text.split(",") if entry.strip()]
 
 
 class NngMeshConfig(BaseModel):

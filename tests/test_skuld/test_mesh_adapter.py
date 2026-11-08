@@ -819,6 +819,7 @@ class TestBrokerMeshIntegration:
                 "attestation": {"required": False},
                 "peer_id": "test-peer",
                 "transport": "nng",
+                "discovery_adapters": [{"adapter": "registry", "path": str(tmp_path / "p.json")}],
                 "rpc_reply_cache_size": 3,
             },
         )
@@ -826,6 +827,8 @@ class TestBrokerMeshIntegration:
         b._transport = MagicMock()
 
         mock_nng = MagicMock()
+        mock_nng.bind = AsyncMock()
+        mock_nng.pub_address = "tcp://127.0.0.1:7001"
         mock_mesh = MagicMock()
         mock_mesh.start = AsyncMock()
         mock_mesh.stop = AsyncMock()
@@ -833,16 +836,12 @@ class TestBrokerMeshIntegration:
         mock_mesh.unsubscribe = AsyncMock()
 
         with (
-            patch(
-                "niuu.mesh.transport_builder.build_nng_transport",
-                return_value=mock_nng,
-            ),
+            patch("niuu.mesh.transport_builder.build_transport", return_value=mock_nng),
             patch(
                 "niuu.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter",
                 return_value=mock_mesh,
             ) as mock_mesh_cls,
             patch("skuld.broker.build_discovery_adapters", return_value=None),
-            patch("niuu.mesh.cluster.read_cluster_pub_addresses", return_value=[]),
         ):
             await b._start_mesh_adapter()
 
@@ -899,6 +898,7 @@ class TestBrokerMeshIntegration:
                 "enabled": True,
                 "peer_id": "test-peer",
                 "transport": "nng",
+                "discovery_adapters": [{"adapter": "registry", "path": str(tmp_path / "p.json")}],
                 "attestation": {"required": False},
             },
         )
@@ -907,7 +907,7 @@ class TestBrokerMeshIntegration:
 
         with (
             patch(
-                "niuu.mesh.transport_builder.build_nng_transport",
+                "niuu.mesh.transport_builder.build_transport",
                 side_effect=ImportError("nng not available"),
             ),
             patch("skuld.broker.build_discovery_adapters", return_value=None),
@@ -916,6 +916,64 @@ class TestBrokerMeshIntegration:
                 await b._start_mesh_adapter()
 
         assert b._mesh_adapter is None
+
+    @pytest.mark.asyncio
+    async def test_nng_mesh_without_discovery_does_not_run_alone(self, tmp_path):
+        """mesh.enabled on nng with nothing to find peers by is an error, not a mesh of one."""
+        from skuld.broker import Broker
+        from skuld.mesh_adapter import MeshConfigurationError
+
+        settings = SkuldSettings(
+            session={"id": "s1", "workspace_dir": str(tmp_path)},
+            transport="subprocess",
+            mesh={
+                "enabled": True,
+                "peer_id": "test-peer",
+                "transport": "nng",
+                "attestation": {"required": False},
+            },
+        )
+        b = Broker(settings=settings)
+        b._transport = MagicMock()
+
+        with pytest.raises(MeshConfigurationError, match="mesh.discovery_adapters"):
+            await b._start_mesh_adapter()
+
+        assert b._mesh_adapter is None
+        assert b._mesh_nng_transport is None
+
+    def test_discovered_pub_addresses_are_the_peers_that_can_be_dialed(self, tmp_path, caplog):
+        import logging
+
+        from skuld.broker import Broker
+
+        b = Broker(settings=SkuldSettings(session={"id": "s1", "workspace_dir": str(tmp_path)}))
+        assert b._discovered_pub_addresses() == []  # no discovery yet
+
+        b._mesh_discovery = MagicMock()
+        b._mesh_discovery.peers.return_value = {
+            "a": MagicMock(peer_id="a", pub_address="tcp://10.0.0.1:7480"),
+            "b": MagicMock(peer_id="b", pub_address=None),
+        }
+        with caplog.at_level(logging.ERROR, logger="skuld.broker"):
+            assert b._discovered_pub_addresses() == ["tcp://10.0.0.1:7480"]
+        assert any("mesh peer b has no nng PUB address" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_peer_joining_refreshes_the_nng_dialers(self, tmp_path):
+        from skuld.broker import Broker
+
+        b = Broker(settings=SkuldSettings(session={"id": "s1", "workspace_dir": str(tmp_path)}))
+        b._on_mesh_peer_change(MagicMock())  # no nng transport: nothing to refresh
+        transport = MagicMock()
+        transport.refresh_peers = AsyncMock()
+        b._mesh_nng_transport = transport
+
+        b._on_mesh_peer_change(MagicMock())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        transport.refresh_peers.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_start_mesh_adapter_unbuildable_list_entry_fails_closed(self, tmp_path):
@@ -956,6 +1014,7 @@ class TestBrokerMeshIntegration:
                 "enabled": True,
                 "peer_id": "test-peer",
                 "transport": "nng",
+                "discovery_adapters": [{"adapter": "registry", "path": str(tmp_path / "p.json")}],
                 "attestation": {"required": False},
             },
         )
@@ -970,13 +1029,15 @@ class TestBrokerMeshIntegration:
         mock_discovery.watch = AsyncMock()
 
         with (
-            patch("niuu.mesh.transport_builder.build_nng_transport", return_value=MagicMock()),
+            patch(
+                "niuu.mesh.transport_builder.build_transport",
+                return_value=MagicMock(bind=AsyncMock(), pub_address="tcp://127.0.0.1:7001"),
+            ),
             patch(
                 "niuu.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter",
                 return_value=mock_mesh,
             ),
             patch("skuld.broker.build_discovery_adapters", return_value=mock_discovery),
-            patch("niuu.mesh.cluster.read_cluster_pub_addresses", return_value=[]),
         ):
             with pytest.raises(OSError, match="address already in use"):
                 await b._start_mesh_adapter()

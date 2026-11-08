@@ -1,4 +1,5 @@
 {{- $hasFluxController := contains "FluxPodManager" (include "volundr.podManagerAdapter" .) -}}
+{{- $hasDirectK8s := contains "DirectK8sPodManager" (include "volundr.podManagerAdapter" .) -}}
 {{- $hasAgentInjector := or (contains "InfisicalAgent" .Values.secretInjection.adapter) (contains "OpenBaoAgentInjectionAdapter" .Values.secretInjection.adapter) -}}
 {{- if .Values.rbac.create -}}
 apiVersion: rbac.authorization.k8s.io/v1
@@ -33,6 +34,13 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log", "pods/status"]
     verbs: ["get", "list", "watch"]
+  {{- if and $hasDirectK8s (not .Values.rbac.clusterWide) }}
+  # The direct pod manager gives a session whose mesh lists pods a Role (get, list, watch on
+  # pods) and a binding to its ServiceAccount. It may grant only what it holds: pods above.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "create", "patch", "delete"]
+  {{- end }}
   # Access to services for session endpoints
   - apiGroups: [""]
     resources: ["services"]
@@ -112,6 +120,13 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["get", "list", "watch"]
+  {{- end }}
+  {{- if $hasDirectK8s }}
+  # The direct pod manager gives a session whose mesh lists pods a Role and a binding
+  # in the session namespace.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "create", "patch", "delete"]
   {{- end }}
   {{- if contains "K8sStorageAdapter" .Values.storageAdapter.adapter }}
   # Cluster-wide access to PVCs (cross-namespace provisioning)

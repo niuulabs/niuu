@@ -159,3 +159,57 @@ class TestBuildNngTransport:
             call_kwargs = fake_cls.call_args[1]
             # Empty list is normalised to None inside build_nng_transport
             assert call_kwargs["peer_addresses"] is None
+
+
+class TestNngKwargs:
+    """What the nng transport is built with: the address, the peers discovery found, the host."""
+
+    @staticmethod
+    def _settings(**nng):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            mesh=SimpleNamespace(
+                nng=SimpleNamespace(pub_sub_address="tcp://127.0.0.1:0", **nng),
+                discovery_adapters=[{"adapter": "static", "peers": [{"pub_address": "tcp://s:1"}]}],
+                adapters=[],
+                peer_id="p1",
+            )
+        )
+
+    def test_peers_are_the_static_ones_and_the_discovered_ones_without_repeats(self):
+        from niuu.mesh.transport_builder import resolve_transport_kwargs
+
+        kwargs = resolve_transport_kwargs(
+            self._settings(),
+            "nng",
+            service_prefix="skuld",
+            discovered_peers=lambda: ["tcp://d:2", "tcp://s:1"],
+        )
+        assert kwargs["peer_addresses"]() == ["tcp://s:1", "tcp://d:2"]
+        assert kwargs["address"] == "tcp://127.0.0.1:0"
+        assert "advertise_host" not in kwargs
+
+    def test_skuld_settings_for_advertising_and_following_peers_are_passed_on(self):
+        from niuu.mesh.transport_builder import resolve_transport_kwargs
+
+        kwargs = resolve_transport_kwargs(
+            self._settings(advertise_host="10.0.3.4", rediscover_interval_s=2.5),
+            "nng",
+            service_prefix="skuld",
+        )
+        assert kwargs["advertise_host"] == "10.0.3.4"
+        assert kwargs["rediscover_interval_s"] == 2.5
+
+
+def test_nats_servers_survive_an_environment_variable_as_a_list_or_as_text():
+    from niuu.mesh.config import MeshNatsConfig
+
+    assert MeshNatsConfig(servers='["nats://a:4222", "nats://b:4222"]').servers == [
+        "nats://a:4222",
+        "nats://b:4222",
+    ]
+    assert MeshNatsConfig(servers="nats://a:4222, nats://b:4222").servers == [
+        "nats://a:4222",
+        "nats://b:4222",
+    ]

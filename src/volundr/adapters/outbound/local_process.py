@@ -37,7 +37,11 @@ from typing import Any
 import httpx
 
 from volundr.adapters.outbound.contributors.session_mcp import MIMIR_MOUNT_PATH
-from volundr.adapters.outbound.mesh_settings import mesh_environment, parse_mesh_settings
+from volundr.adapters.outbound.mesh_settings import (
+    mesh_environment,
+    mesh_with_defaults,
+    parse_mesh_settings,
+)
 from volundr.domain.models import (
     GitSource,
     LocalMountSource,
@@ -326,7 +330,19 @@ class LocalProcessPodManager(PodManager):
         local sessions run without live preview."""
         self._workspaces_dir = Path(str(workspaces_dir)).expanduser()
         self._preview_router_auth = dict(preview_router_auth or {})
-        self._mesh = parse_mesh_settings(mesh)
+        # Sessions on one machine find each other through one registry file beside the
+        # workspaces; the operator only has to enable the mesh.
+        self._mesh = mesh_with_defaults(
+            parse_mesh_settings(mesh),
+            {
+                "discovery_adapters": [
+                    {
+                        "adapter": "registry",
+                        "path": str(self._workspaces_dir.parent / "mesh" / "peers.json"),
+                    }
+                ]
+            },
+        )
         self._claude_binary = str(claude_binary)
         self._max_concurrent = int(max_concurrent)
         self._stop_timeout = int(stop_timeout)
