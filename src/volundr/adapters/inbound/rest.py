@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from niuu.domain.conversation_timeline import resolve_timeline_turn
+from niuu.domain.guild_membership import GuildMembership
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
 from niuu.domain.models import actor_name
@@ -74,6 +75,7 @@ from volundr.adapters.inbound.auth import extract_principal, require_role
 from volundr.adapters.inbound.conversation_voice import VOICE_DETAIL, voice_page
 from volundr.adapters.inbound.durable_transcripts import DurableTranscripts
 from volundr.adapters.inbound.forge_session_auth import require_bound_session
+from volundr.adapters.inbound.rest_guild import own_instance
 from volundr.adapters.inbound.rest_projects import (
     create_projects_router,
     create_session_projects_router,
@@ -1375,6 +1377,18 @@ class SessionResponse(BaseModel):
         default=None,
         description="Tenant ID for multi-tenant isolation",
     )
+    instance_id: str | None = Field(
+        default=None,
+        description="This Forge node's id in its Guild registry (null when not joined)",
+    )
+    instance_name: str | None = Field(
+        default=None,
+        description="This Forge node's name in its Guild registry",
+    )
+    instance_slug: str | None = Field(
+        default=None,
+        description="This Forge node's slug in its Guild registry",
+    )
     activity_state: str | None = Field(
         default=None,
         description=(
@@ -2071,6 +2085,18 @@ class StatsResponse(BaseModel):
     local_tokens: int = Field(default=0, description="Tokens from local models today (UTC)")
     cloud_tokens: int = Field(default=0, description="Tokens from cloud models today (UTC)")
     cost_today: float = Field(default=0.0, description="Total cloud cost today (UTC) in USD")
+    instance_id: str | None = Field(
+        default=None,
+        description="This Forge node's id in its Guild registry (null when not joined)",
+    )
+    instance_name: str | None = Field(
+        default=None,
+        description="This Forge node's name in its Guild registry",
+    )
+    instance_slug: str | None = Field(
+        default=None,
+        description="This Forge node's slug in its Guild registry",
+    )
     sparklines: dict[str, list[float]] = Field(
         default_factory=dict,
         description=(
@@ -2213,8 +2239,14 @@ def create_router(
     history_max_bytes: int = 256 * 1024,
     session_participant_service: SessionParticipantService,
     presented_file_store: PresentedFileStore | None = None,
+    guild_membership: GuildMembership | None = None,
 ) -> APIRouter:
-    """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
+    """Create FastAPI router with session, stats, token, repo, and SSE endpoints.
+
+    With *guild_membership*, every session and the stats carry this node's
+    ``instance_*`` fields, as the Guild facade puts them on each aggregated item,
+    so a client reading the node directly can tell whose they are.
+    """
     router = APIRouter(prefix=prefix)
     if preview_cache is None:
         preview_cache = PreviewCache(preview_cache_dir, max_edge=preview_default_edge)
@@ -2234,8 +2266,15 @@ def create_router(
             )
         event_stream = SessionEventStream(broadcaster, session_service, stats_service)
 
+    own_instance_fields = (
+        guild_membership.instance.fields()
+        if guild_membership is not None and guild_membership.instance is not None
+        else {}
+    )
+
     def _session_response(session: Session) -> SessionResponse:
-        return SessionResponse.from_session(session, public_host=server_public_host)
+        response = SessionResponse.from_session(session, public_host=server_public_host)
+        return response.model_copy(update=own_instance_fields) if own_instance_fields else response
 
     def _http_proxy_target(url: str) -> tuple[str, dict[str, str]]:
         return _server_side_http_proxy_target(
@@ -3726,12 +3765,23 @@ def create_router(
             )
 
     @router.get("/stats", response_model=StatsResponse, tags=["Models & Stats"])
-    async def get_stats(request: Request) -> StatsResponse:
+    async def get_stats(
+        request: Request,
+        instance_id: str | None = Query(
+            default=None,
+            description=(
+                "Guild instance id, as the Guild facade takes it; must be this node's own "
+                "(another Forge's id is a 404)"
+            ),
+        ),
+    ) -> StatsResponse:
         """Get aggregate statistics over the sessions the caller may list.
 
         Scoped like ``GET /sessions``: the caller's own sessions, or its
         tenant's sessions as a tenant admin.
         """
+        if instance_id is not None:
+            own_instance(guild_membership, instance_id)
         principal = await _optional_principal(request)
         try:
             stats = await forge.get_stats(principal)
@@ -3751,6 +3801,7 @@ def create_router(
             cloud_tokens=stats.cloud_tokens,
             cost_today=float(stats.cost_today),
             sparklines=stats.sparklines or {},
+            **own_instance_fields,
         )
 
     @router.post(

@@ -1010,8 +1010,12 @@ def create_app(
             )
             app.state.mesh_identity = mesh_identity_service
 
+            # A node whose instance is not recorded yet keeps running: only
+            # GET /guild reports it (503), and its items carry null instance fields.
+            guild_membership = settings.guild.membership()
             broadcaster = InMemoryEventBroadcaster(
                 sleipnir_publisher=sleipnir_bus,
+                guild_instance=guild_membership.instance if guild_membership else None,
             )
 
             # Create services with broadcaster for real-time updates
@@ -1399,9 +1403,6 @@ def create_app(
             if moved:
                 logger.info("Push devices: moved %d stored tokens into the credential store", moved)
             mapping_repository = PostgresMappingRepository(pool)
-            # A node whose instance is not recorded yet keeps running: only
-            # GET /guild reports it (503), and its items carry null instance fields.
-            guild_membership = settings.guild.membership()
             notification_feed = _create_notification_service(
                 settings,
                 pool,
@@ -1934,6 +1935,7 @@ def create_app(
                 history_max_bytes=settings.conversation_recent_max_bytes,
                 session_participant_service=session_participant_service,
                 presented_file_store=presented_file_store,
+                guild_membership=guild_membership,
             )
             app.include_router(forge_router)
             app.include_router(

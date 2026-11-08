@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 
+from niuu.domain.guild_membership import GuildInstance
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.domain.models import (
     CommitSummary,
@@ -307,6 +308,20 @@ class TestInMemoryEventBroadcaster:
         assert event.data["repo"] == sample_session.repo
         assert event.data["branch"] == sample_session.branch
         assert event.data["status"] == sample_session.status.value
+
+    @pytest.mark.asyncio
+    async def test_session_event_names_the_guild_instance(self, sample_session: Session):
+        """A node joined to a Guild names itself on session events, as on its responses."""
+        joined = InMemoryEventBroadcaster(
+            guild_instance=GuildInstance(id="70b502d8", name="Noatun", slug="noatun")
+        )
+
+        event = joined.create_session_event(EventType.SESSION_UPDATED, sample_session)
+
+        assert event.data["instance_id"] == "70b502d8"
+        assert event.data["instance_name"] == "Noatun"
+        assert event.data["instance_slug"] == "noatun"
+        assert event.data["id"] == str(sample_session.id)
 
     @pytest.mark.asyncio
     async def test_session_event_carries_the_launch_stages_as_json(
