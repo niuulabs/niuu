@@ -20,14 +20,11 @@ dependencies:
 - name: mimir
   repository: file://../mimir
   version: 0.0.0
-- name: ravn
-  repository: file://../ravn
-  version: 0.0.0-ting.159
 - name: mimir
   repository: file://../mimir
   version: 0.0.0
 - name: mimir
   repository: file://../mimir
   version: 0.0.0
-digest: sha256:a0e9c9c9fa3aceb32fc9031f2e13ebe84312c7ac7400f07f3a5b59da653495b7
-generated: "2026-05-23T09:34:07.064342-04:00"
+digest: sha256:6ff572e2066256c31ef47f5371780e2b4d754eb9437aea5dfac7b991b5e1a59a
+generated: "2026-11-07T19:40:44.941951-05:00"

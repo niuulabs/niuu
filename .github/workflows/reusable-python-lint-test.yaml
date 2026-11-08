@@ -107,7 +107,7 @@ jobs:
           uv run pytest ${{ matrix.pkg.paths }} -v --tb=short \
             -n auto --dist loadfile \
             --override-ini="addopts=" \
-            -m 'not integration and not broker and not kind_integration and not live_cli' \
+            -m 'not integration and not broker and not live_cli' \
             ${{ matrix.pkg.cov }} \
             --cov-report=term-missing \
             --cov-report=xml \
@@ -178,7 +178,7 @@ jobs:
             -n auto --dist loadfile \
             --shard=${{ matrix.shard }}/4 \
             --override-ini="addopts=" \
-            -m 'not integration and not broker and not kind_integration and not live_cli' \
+            -m 'not integration and not broker and not live_cli' \
             --cov=src/audit --cov=src/volundr --cov=src/cli --cov=src/credentials \
             --cov=src/features --cov=src/identity --cov=src/integrations --cov=src/niuu \
             --cov=src/tracker --cov=src/skuld --cov=src/mimir \

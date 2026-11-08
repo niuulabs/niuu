@@ -29,7 +29,7 @@ if [ "$#" -gt 0 ]; then
 fi
 
 # Broker-only filesystem and CLI setup. Explicit commands (including sealed
-# credential enrollment and contained Ravn processes) must remain read-only safe.
+# credential enrollment) must remain read-only safe.
 mkdir -p "$WORKSPACE_DIR"
 
 if [ -n "$ANTHROPIC_API_KEY" ]; then

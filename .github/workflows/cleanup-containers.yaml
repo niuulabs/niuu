@@ -23,7 +23,6 @@ jobs:
     strategy:
       matrix:
         container:
-          - agent
           - skuld
           - openshell
           - devrunner
@@ -80,8 +79,6 @@ jobs:
     strategy:
       matrix:
         chart:
-          - charts/agent
-          - charts/ravn
           - charts/skuld
           - charts/volundr
           - charts/ting

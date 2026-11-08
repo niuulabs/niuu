@@ -110,6 +110,3 @@ message body`). On `SIGTERM` the pod:
 kubelet sends `SIGKILL` mid-stream; the chart fails to render when it does not.
 With `envoy.enabled`, the Envoy container sleeps through both phases so it does
 not drop the connections the gateway is still draining.
-
-Ravn also re-issues a model stream that is cut anyway
-(`llm.gateway_outage_window_seconds`, see `docs/operator/ravn-limits.md`).

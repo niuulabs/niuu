@@ -292,7 +292,7 @@ class FluxPodManager(
         return pod_startup_stages(release, pod, events)
 
     async def _session_pod(self, core, release_name: str):
-        """The newest live pod of the session's Deployment (not its room gateway)."""
+        """The newest live pod of the session's Deployment."""
         pods = await core.list_namespaced_pod(
             self._namespace,
             label_selector=f"app.kubernetes.io/instance={release_name}",

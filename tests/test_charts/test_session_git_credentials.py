@@ -176,7 +176,7 @@ def test_integration_token_survives_clone_for_commit_and_push(
             },
         }
         if backend == "skuld":
-            values["extraContainers"] = [{"name": "ravn-coder", "image": "test"}]
+            values["extraContainers"] = [{"name": "tool-coder", "image": "test"}]
         rendered = run(
             "helm",
             "template",
@@ -199,10 +199,10 @@ def test_integration_token_survives_clone_for_commit_and_push(
             in pod["metadata"]["annotations"]["vault.hashicorp.com/agent-inject-containers"]
         )
         if backend == "skuld":
-            ravn = next(c for c in pod["spec"]["containers"] if c["name"] == "ravn-coder")
-            assert mount in ravn["volumeMounts"]
+            sidecar = next(c for c in pod["spec"]["containers"] if c["name"] == "tool-coder")
+            assert mount in sidecar["volumeMounts"]
             assert (
-                "ravn-coder"
+                "tool-coder"
                 in pod["metadata"]["annotations"]["vault.hashicorp.com/agent-inject-containers"]
             )
         assert "stale-cluster-token" not in json.dumps(pod)

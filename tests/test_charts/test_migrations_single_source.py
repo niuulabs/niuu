@@ -33,7 +33,7 @@ CHARTS = {
 
 # Images that build and install the project wheel; the wheel cannot build
 # without migrations/ in the image.
-WHEEL_IMAGES = ("agent", "niuu", "openshell", "skuld")
+WHEEL_IMAGES = ("niuu", "openshell", "skuld")
 
 
 def _source_files(directory: Path) -> dict[str, str]:

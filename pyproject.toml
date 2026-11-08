@@ -205,7 +205,7 @@ testpaths = ["tests"]
 pythonpath = ["src", "vendor/envoy_authz_protos"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "-v --tb=short -m 'not integration and not broker and not kind_integration and not live_cli'"
+addopts = "-v --tb=short -m 'not integration and not broker and not live_cli'"
 markers = [
     "integration: tests that require a real PostgreSQL database",
     "tmux: tests that drive a real isolated tmux server with the fake Claude CLI",
@@ -214,7 +214,6 @@ markers = [
     "ravn: tests for the Ravn agent module",
     "e2e: end-to-end tests for full agent conversation flows",
     "browser: tests that require a real browser (Playwright + Chromium)",
-    "kind_integration: tests that require a live kind cluster (set KIND_INTEGRATION=1 to enable)",
 ]
 
 [tool.ruff]

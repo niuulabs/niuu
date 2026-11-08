@@ -1103,82 +1103,21 @@ workloadIdentity:
   # Any mapping naming a `verifier:` that has no matching entry here never
   # matches — the exchange fails loud with "Verifier not configured: <name>"
   # rather than silently admitting nobody (niuu.domain.services.workload_identity
-  # .WorkloadIdentityService.exchange). In particular, `residentMapping` below
-  # sets `verifier: "kubernetes"` and needs a corresponding entry, e.g.:
+  # .WorkloadIdentityService.exchange). For example, a mapping with
+  # `verifier: "kubernetes"` needs a corresponding entry:
   #   verifiers:
   #     - name: kubernetes
   #       adapter: "niuu.adapters.workload_identity.jwt.JwtWorkloadIdentityVerifier"
   #       kwargs:
   #         issuer: "https://kubernetes.default.svc"       # cluster-specific
   #         jwks_uri: "https://kubernetes.default.svc/openid/v1/jwks"
-  #         audiences: []  # must match the aud claim residents' SA tokens actually carry
+  #         audiences: []  # must match the aud claim the workload's token carries
   # An operator must supply the cluster's real issuer/jwks_uri/audiences —
-  # this chart cannot guess them, and getting `audiences` wrong (e.g. it must
-  # include the CUSTOM audience the resident's projected serviceAccountToken
-  # volume actually carries — charts/skuld's resident.workloadIdentity.audience,
-  # mounted at /var/run/secrets/niuu-workload in deployment.yaml, not the
-  # cluster's default audience; automountServiceAccountToken is disabled on
-  # that ServiceAccount, so no default-audience token is ever mounted) fails
+  # this chart cannot guess them, and getting `audiences` wrong fails
   # verification the same loud way, not silently.
   verifiers: []
-  # -- Dynamic adapter resolving a per-caller tenant_id for residentMapping
-  # below from resident_runtimes.tenant_id, keyed by the same resident id
-  # owner_id_claim_pattern extracts — WITHOUT this, every resident matched by
-  # residentMapping gets the SAME tenantId (below), which is only correct for
-  # a single-tenant deployment: any other tenant's resident would poll an
-  # empty trigger list and write spend where GET /budget/{id} never sees it.
-  # Point it at the same Postgres this release's own database.existingSecret
-  # already names — resident_runtimes lives in this same database.
-  tenantResolver:
-    adapter: ""
-    # adapter: "volundr.adapters.outbound.resident_tenant_resolver.LazyPostgresResidentTenantResolver"
-    kwargs: {}
-    # kwargs:
-    #   dsn: ""  # prefer secretKwargs below over a plaintext DSN here
-    secretKwargs: []
-    # secretKwargs:
-    #   - kwarg: "dsn"
-    #     secretName: "volundr-postgres-app"
-    #     secretKey: "dsn"
-  # -- Extra mappings appended verbatim (raw niuu WorkloadIdentityMappingConfig
-  # objects — see residentMapping below for the one this chart synthesizes).
+  # -- Mappings (raw niuu WorkloadIdentityMappingConfig objects).
   mappings: []
-  # -- Admits the projected ServiceAccount token every resident pod carries
-  # (see charts/skuld's serviceaccount.yaml + resident's serviceAccountName,
-  # set by volundr.adapters.outbound.flux.FluxPodManager's
-  # resident_platform_base_url/*_enabled kwargs) and derives ravn_id from the
-  # verified subject per-caller — WITHOUT this, every resident matching a
-  # bare "system:serviceaccount:<namespace>:" mapping would share one
-  # owner_id/ravn_id, and GET/POST /api/v1/ravn/budget/* would key rows by
-  # that shared id instead of the resident_runtimes id the web passes.
-  #
-  # Enable residentMapping BEFORE setting podManager.kwargs
-  # .resident_platform_base_url (which starts every managed resident calling
-  # this platform for real). Flip the order and a resident's projected token
-  # only matches whatever's already in workloadIdentity.mappings — a bare
-  # "system:serviceaccount:<ns>:" catch-all, if one exists, admits it with a
-  # SHARED owner_id instead of its own, and budget/trigger rows land under
-  # that shared id until residentMapping is turned on and every resident
-  # cycles onto its own identity.
-  residentMapping:
-    enabled: false
-    name: "ravn-resident"
-    verifier: "kubernetes"
-    # -- Issuer of the resident pods' ServiceAccount tokens (the verifier's
-    # cluster), e.g. "https://kubernetes.default.svc". Required when enabled:
-    # a mapping without an issuer admits no one.
-    issuer: ""
-    # -- Namespace resident pods run in — must match whatever namespace the
-    # ResidentRuntimeController (flux.py) deploys resident HelmReleases into.
-    namespace: ""
-    # -- Used ONLY when tenantResolver.adapter above is unset (the default) —
-    # every resident this mapping admits then gets this ONE tenantId, an
-    # explicit single-tenant-only choice, not a silent multi-tenant guess.
-    # Configure tenantResolver instead for a deployment with more than one
-    # tenant's residents.
-    tenantId: "default"
-    roles:
-      - "volundr:developer"
 
 workflowExecutionCredentials:
   enabled: false

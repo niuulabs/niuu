@@ -1221,7 +1221,7 @@ class TestStartupStages:
         core_api.list_namespaced_pod.return_value = SimpleNamespace(
             items=[
                 mine,
-                # The room gateway pod is a different Deployment of the same release.
+                # A pod of a different Deployment of the same release.
                 _owned_pod(
                     name, "gw", minute=9, template_hash="def", owner_name=f"{name}-gateway-def"
                 ),

@@ -31,7 +31,7 @@
 # whose tree no PR tested. Set the repository variable DEV_PROMOTION=off to
 # always rebuild.
 #
-# CLI/ravn binaries are release-only (release.yaml) — too slow for dev.
+# CLI binaries are release-only (release.yaml) — too slow for dev.
 #
 # The dev prerelease tags (v*-dev.N) are skipped by release.yaml so they
 # never create a production GitHub Release.
@@ -98,7 +98,7 @@ jobs:
         continue-on-error: true
         env:
           IMAGE_BASE: ${{ env.REGISTRY }}/${{ github.repository_owner }}
-          CONTAINERS: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
+          CONTAINERS: '["skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
           MAX_AGE_HOURS: "48"
         run: |
           set -euo pipefail
@@ -278,7 +278,7 @@ jobs:
       attestations: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
+      containers: '["skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
       platforms: '["amd64","arm64"]'
       tag-prefix: ${{ github.sha }}
       manifest-tags: "dev dev-${{ github.sha }}"
@@ -311,7 +311,7 @@ jobs:
       security-events: write
     uses: ./.github/workflows/reusable-container-scan.yaml
     with:
-      containers: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
+      containers: '["skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
       tag: ${{ github.sha }}-amd64
 
   # ---------------------------------------------------------------------------
@@ -353,7 +353,7 @@ jobs:
       - name: Create and push dev-<sha> and dev manifests
         env:
           IMAGE_BASE: ${{ env.REGISTRY }}/${{ github.repository_owner }}
-          CONTAINERS: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
+          CONTAINERS: '["skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -420,7 +420,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        container: [agent, skuld, openshell, devrunner, niuu-web, niuu, gbrain]
+        container: [skuld, openshell, devrunner, niuu-web, niuu, gbrain]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -669,7 +669,7 @@ jobs:
       - name: Tag dev-<sha>, <sha>-<arch> and dev
         env:
           IMAGE_BASE: ${{ env.REGISTRY }}/${{ github.repository_owner }}
-          CONTAINERS: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
+          CONTAINERS: '["skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
           IMAGES: ${{ needs.resolve.outputs.images }}
           SHA: ${{ github.sha }}
         run: |
@@ -703,7 +703,7 @@ jobs:
         continue-on-error: true
         env:
           IMAGE_BASE: ${{ env.REGISTRY }}/${{ github.repository_owner }}
-          CONTAINERS: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
+          CONTAINERS: '["skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
         run: |
           set -euo pipefail
           TREE="$(git rev-parse 'HEAD^{tree}')"
@@ -855,7 +855,7 @@ jobs:
         run: |
           VERSION="${{ needs.tag.outputs.version }}"
 
-          for CHART in agent bifrost ravn skuld volundr ting niuu-shared niuu skuld-planner mimir gbrain; do
+          for CHART in bifrost skuld volundr ting niuu-shared niuu skuld-planner mimir gbrain; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
@@ -866,8 +866,6 @@ jobs:
           helm package charts/mimir -d .helm-packages/
           helm package charts/gbrain -d .helm-packages/
           helm package charts/bifrost -d .helm-packages/
-          helm package charts/agent -d .helm-packages/
-          helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/skuld-planner -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
@@ -888,9 +886,7 @@ jobs:
         run: |
           helm push .helm-packages/mimir-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/gbrain-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/agent-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/bifrost-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-[0-9]*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-planner-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/volundr-*.tgz ${{ env.CHART_REPO }}
@@ -901,7 +897,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # Shared CLI assets — build once, reuse in packaging jobs
   # ---------------------------------------------------------------------------
-  # CLI / ravn binaries (Nuitka + embedded PostgreSQL) are NOT built on dev —
+  # CLI binaries (Nuitka + embedded PostgreSQL) are NOT built on dev —
   # they dominated dev wall-clock (~40 min of matrix builds) and nothing on the
   # dev branch consumes the artifacts. Release builds them (release.yaml).
   # ---------------------------------------------------------------------------

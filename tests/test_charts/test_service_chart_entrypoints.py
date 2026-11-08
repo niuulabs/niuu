@@ -9,14 +9,12 @@ import yaml
 
 CHARTS_DIR = Path(__file__).parent.parent.parent / "charts"
 CHARTS = (
-    "agent",
     "bifrost",
     "guild",
     "mimir",
     "niuu",
     "niuu-shared",
     "observatory",
-    "ravn",
     "skuld",
     "skuld-planner",
     "ting",
@@ -31,7 +29,6 @@ CHARTS = (
         ("guild", ["python", "-m", "guild.main"]),
         ("observatory", ["python", "-m", "observatory.main"]),
         ("bifrost", ["python", "-m", "bifrost"]),
-        ("ravn", ["python", "-m", "ravn.main"]),
     ],
 )
 def test_niuu_image_charts_use_packaged_module_entrypoints(
@@ -85,39 +82,6 @@ def test_mimir_probes_use_constant_time_health_endpoint() -> None:
 
     assert values["startupProbe"]["path"] == "/health"
     assert "/mimir/stats" not in deployment
-
-
-def test_agent_chart_can_install_verified_learned_tool_job_contract() -> None:
-    values = _load_values("agent")
-    network_policy = (
-        CHARTS_DIR / "agent" / "templates" / "learned-tool-networkpolicy.yaml"
-    ).read_text()
-    rbac = (CHARTS_DIR / "agent" / "templates" / "rbac.yaml").read_text()
-    config = (CHARTS_DIR / "agent" / "values.yaml").read_text()
-
-    assert values["learnedToolRunner"]["enabled"] is False
-    assert "@sha256:" in values["learnedToolRunner"]["image"]
-    assert values["learnedToolRunner"]["podStartTimeoutSeconds"] > 0
-    assert values["learnedToolRunner"]["jobTtlSecondsAfterFinished"] >= 0
-    assert "ingress: []" in network_policy
-    assert "egress: []" in network_policy
-    assert "networkpolicies" in rbac
-    # "list" backs the additive-egress check (verify(), and run() of a
-    # tool without network reach): every OTHER NetworkPolicy in the
-    # namespace is enumerated, not only the two verified by name.
-    assert 'verbs: ["get", "list"]' in rbac
-    # The PVC rule this backend used to need was removed once verify()
-    # started declining requirements outright instead of installing them.
-    assert "persistentvolumeclaims" not in rbac
-    assert "learned_tool_execution_backend: k8s_job" in config
-    assert (
-        "job_pod_start_timeout_seconds: {{ .Values.learnedToolRunner.podStartTimeoutSeconds }}"
-        in config
-    )
-    assert (
-        "job_ttl_seconds_after_finished: {{ .Values.learnedToolRunner.jobTtlSecondsAfterFinished }}"
-        in config
-    )
 
 
 @pytest.mark.parametrize("chart", CHARTS)
