@@ -1216,3 +1216,43 @@ class TestForgeSessionCredential:
             pytest.raises(PermissionError),
         ):
             manager._remove_forge_session_dir(str(session.id))
+
+
+class TestMeshSetting:
+    async def test_the_mesh_setting_reaches_the_container(
+        self,
+        client: _Client,
+        workspaces: Path,
+        tmp_path: Path,
+        session: Session,
+        spec: SessionSpec,
+    ) -> None:
+        manager = DockerContainerPodManager(
+            skuld_image="ghcr.io/niuulabs/skuld:test",
+            platform_url="http://niuu:8080/",
+            workspaces_dir=str(workspaces),
+            state_file=str(tmp_path / "forge-state.json"),
+            mesh={"enabled": True, "attestation": {"required": False}},
+        )
+        ws = _workspace(workspaces, session)
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            await manager.start(session, spec)
+        env = client.containers.run_kwargs[0]["environment"]
+        assert env["SKULD__MESH__ENABLED"] == "true"
+        assert env["SKULD__MESH__ATTESTATION__REQUIRED"] == "false"
+        await manager.stop(session)
+
+    async def test_without_a_mesh_setting_the_container_gets_none(
+        self,
+        manager: DockerContainerPodManager,
+        client: _Client,
+        workspaces: Path,
+        session: Session,
+        spec: SessionSpec,
+    ) -> None:
+        ws = _workspace(workspaces, session)
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            await manager.start(session, spec)
+        env = client.containers.run_kwargs[0]["environment"]
+        assert not [key for key in env if key.startswith("SKULD__MESH__")]
+        await manager.stop(session)

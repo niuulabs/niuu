@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import json
-import logging
 
 import pytest
 from pydantic import ValidationError
 
 from cli.commands.platform import _resolve_local_pod_manager_env
 from cli.config import CLISettings
-from volundr.adapters.outbound.local_process import LocalProcessPodManager, _mesh_env
+from volundr.adapters.outbound.local_process import LocalProcessPodManager
+from volundr.adapters.outbound.mesh_settings import (
+    add_mesh_env_to_spec,
+)
+from volundr.adapters.outbound.mesh_settings import (
+    mesh_environment as _mesh_env,
+)
 from volundr.composition_builders import _build_pod_manager
 from volundr.config import Settings
 
@@ -132,18 +137,58 @@ class TestOneDecision:
         manager = _build_pod_manager(self._settings(True), FLUX, {"session_defaults": {"a": 1}})
         assert manager._session_defaults == {"a": 1}  # noqa: SLF001
 
-    def test_a_pod_manager_without_a_place_for_it_is_named_once(self, caplog) -> None:
-        from volundr.adapters.outbound.docker_container import DockerContainerPodManager
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "volundr.adapters.outbound.docker_container.DockerContainerPodManager",
+            "volundr.adapters.outbound.direct_k8s_pod_manager.DirectK8sPodManager",
+            "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager",
+            "volundr.adapters.outbound.vm_pod_manager.VmPodManager",
+            LOCAL,
+        ],
+    )
+    def test_every_pod_manager_that_starts_skuld_carries_the_decision(self, path) -> None:
+        from niuu.utils import import_class
+        from volundr.composition_builders import _apply_mesh_decision
 
-        settings = self._settings(False)
-        with caplog.at_level(logging.WARNING, logger="volundr.composition_builders"):
-            from volundr.composition_builders import _apply_mesh_decision
+        if "openshell" in path:
+            pytest.importorskip("openshell")
+        cls = import_class(path)
+        kwargs: dict = {"mesh": {"realm_id": "r"}}
+        _apply_mesh_decision(cls, kwargs, self._settings(False), covered=False)
+        assert kwargs["mesh"] == {"realm_id": "r", "attestation": {"required": False}}
 
-            _apply_mesh_decision(DockerContainerPodManager, {}, settings, covered=False)
-            _apply_mesh_decision(DockerContainerPodManager, {}, self._settings(True), covered=False)
-            _apply_mesh_decision(DockerContainerPodManager, {}, settings, covered=True)
-        warnings = [r for r in caplog.records if "DockerContainerPodManager" in r.getMessage()]
-        assert len(warnings) == 1
+        untouched: dict = {}
+        _apply_mesh_decision(cls, untouched, self._settings(True), covered=False)
+        assert untouched == {}
+
+        with pytest.raises(ValueError, match="one decision"):
+            _apply_mesh_decision(
+                cls,
+                {"mesh": {"attestation": {"required": True}}},
+                self._settings(False),
+                covered=False,
+            )
+
+    def test_a_pod_manager_that_cannot_carry_it_is_refused_while_signing_is_off(self) -> None:
+        from volundr.composition_builders import _apply_mesh_decision
+
+        class Elsewhere:
+            def __init__(self, **_extra) -> None: ...
+
+        with pytest.raises(ValueError, match="Elsewhere has no setting"):
+            _apply_mesh_decision(Elsewhere, {}, self._settings(False), covered=False)
+        _apply_mesh_decision(Elsewhere, {}, self._settings(True), covered=False)
+        _apply_mesh_decision(Elsewhere, {}, self._settings(False), covered=True)
+
+    def test_the_spec_helper_adds_nothing_without_settings(self) -> None:
+        from volundr.domain.models import SessionSpec
+
+        spec = SessionSpec(values={}, pod_spec=None)
+        add_mesh_env_to_spec(spec, {})
+        assert spec.values == {}
+        add_mesh_env_to_spec(spec, {"attestation": {"required": False}})
+        assert spec.values["env"] == {"SKULD__MESH__ATTESTATION__REQUIRED": "false"}
 
     def test_a_mapping_that_is_not_one_is_refused(self, tmp_path) -> None:
         with pytest.raises(ValueError, match="pod_manager.kwargs.mesh"):

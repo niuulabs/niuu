@@ -2085,3 +2085,17 @@ async def test_a_cold_start_without_a_selector_reserves_with_the_empty_one(setup
     await manager.start(session, SPEC)
 
     assert _ledger(repository)[1].host_selector == HostSelector()
+
+
+async def test_the_mesh_setting_is_put_in_every_sessions_env_before_a_runtime_sees_it() -> None:
+    manager = VmPodManager(
+        profile="p", pool_id="pool", max_machines=1, mesh={"attestation": {"required": False}}
+    )
+    spec = SessionSpec(values={"env": {"A": "1"}}, pod_spec=PodSpecAdditions())
+
+    with pytest.raises(RuntimeError):
+        await manager.start(
+            Session(id=uuid4(), name="s", model="m", owner_id="o", tenant_id="t"), spec
+        )
+
+    assert spec.values["env"] == {"A": "1", "SKULD__MESH__ATTESTATION__REQUIRED": "false"}

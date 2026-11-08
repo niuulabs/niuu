@@ -27,6 +27,7 @@ from volundr.adapters.outbound.local_process import (
     FORGE_MCP_TOKEN_ENV,
     FORGE_MCP_TOKEN_FILE_ENV,
 )
+from volundr.adapters.outbound.mesh_settings import mesh_environment, parse_mesh_settings
 from volundr.domain.models import Session, SessionSpec, SessionStatus
 from volundr.domain.ports import CredentialStorePort, PodManager, PodStartResult
 from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
@@ -204,6 +205,9 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
     Constructor accepts plain kwargs (dynamic adapter pattern).
     """
 
+    #: Takes Skuld's ``mesh`` settings and hands them to every session (``mesh_settings``).
+    carries_mesh_setting = True
+
     def __init__(
         self,
         *,
@@ -229,6 +233,7 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
         codex_auth_adapter: str = "skuld.codex_auth.VolundrCodexAuthProvider",
         codex_auth_kwargs: dict | None = None,
         volundr_api_url: str = "",
+        mesh: dict | str | None = None,
         **_extra: object,
     ):
         """``volundr_api_url`` is where a session pod reaches this Forge (the cluster-side
@@ -243,6 +248,7 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
         self._ingress_backend = ingress_backend
         self._external_url = external_url.rstrip("/")
         self._volundr_api_url = str(volundr_api_url).strip().rstrip("/")
+        self._mesh = parse_mesh_settings(mesh)
         self._skuld_image = skuld_image
         self._reh_image = reh_image
         self._nginx_image = nginx_image
@@ -350,6 +356,9 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
         env.extend(
             {"name": name, "value": value}
             for name, value in self._brokered_credential_environment(spec).items()
+        )
+        env.extend(
+            {"name": name, "value": value} for name, value in mesh_environment(self._mesh).items()
         )
 
         # Handle git config from spec values.

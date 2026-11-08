@@ -965,3 +965,20 @@ class TestForgeSessionCredential:
 
         pod_manager = _build_init_config("cluster")["pod_manager"]
         assert pod_manager["volundr_api_url"] == f"http://{pod_manager['db_host']}:8080"
+
+
+class TestMeshSetting:
+    def test_the_mesh_setting_reaches_the_pod_env(self, sample_session: Session) -> None:
+        manager = DirectK8sPodManager(
+            mesh='{"enabled": true, "attestation": {"required": false}}',
+        )
+        env = manager._build_env(sample_session, make_spec())
+        values = {e["name"]: e["value"] for e in env if "value" in e}
+        assert values["SKULD__MESH__ENABLED"] == "true"
+        assert values["SKULD__MESH__ATTESTATION__REQUIRED"] == "false"
+
+    def test_no_setting_adds_no_variable(
+        self, pod_manager: DirectK8sPodManager, sample_session: Session
+    ) -> None:
+        env = pod_manager._build_env(sample_session, make_spec())
+        assert not [e for e in env if e["name"].startswith("SKULD__MESH__")]

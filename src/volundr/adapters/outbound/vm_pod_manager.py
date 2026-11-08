@@ -10,6 +10,7 @@ from uuid import UUID
 
 from niuu.observability import get_observability
 from niuu.ports.session_proxy import SessionProxyTarget
+from volundr.adapters.outbound.mesh_settings import add_mesh_env_to_spec, parse_mesh_settings
 from volundr.domain.compute import (
     ComputeLease,
     ComputeLeaseBusyError,
@@ -62,6 +63,9 @@ class VmPodManager(PodManager):
     def runtime_backend(self) -> str:
         return "vm"
 
+    #: Takes Skuld's ``mesh`` settings and hands them to every session (``mesh_settings``).
+    carries_mesh_setting = True
+
     def __init__(
         self,
         *,
@@ -78,6 +82,7 @@ class VmPodManager(PodManager):
         runtime_wait_log_every: int = 10,
         runtime_wait_surface_after: int = 3,
         placement_lock_wait_seconds: float = 15,
+        mesh: dict | str | None = None,
         **_extra,
     ):
         if not profile or not pool_id or max_machines < 1:
@@ -95,6 +100,7 @@ class VmPodManager(PodManager):
         if min(runtime_wait_log_every, runtime_wait_surface_after) < 1:
             raise ValueError("VM runtime wait reporting counts must be positive")
         self._profile, self._pool_id, self._limit = profile, pool_id, max_machines
+        self._mesh = parse_mesh_settings(mesh)
         self._origin = (public_origin or f"http://{server_public_host}:{server_port}").rstrip("/")
         self._provisioning_timeout = provisioning_timeout_seconds
         self._cleanup_timeout = cleanup_timeout_seconds
@@ -613,6 +619,8 @@ class VmPodManager(PodManager):
         self._set_stage(session_id, key, label, StartupStageState.ACTIVE)
 
     async def start(self, session: Session, spec: SessionSpec) -> PodStartResult:
+        # Every runtime builds the session's environment from the spec's `env`.
+        add_mesh_env_to_spec(spec, self._mesh)
         service, repository, legacy_runtime = self._configured()
         async with self._locks.setdefault(session.id, asyncio.Lock()):
             self._begin_progress(session.id)
