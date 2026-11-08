@@ -16,7 +16,7 @@ def main() -> None:
     from cli.app import build_app
 
     app = build_app()
-    app()
+    app(prog_name="niuu")
 
 
 if __name__ == "__main__":

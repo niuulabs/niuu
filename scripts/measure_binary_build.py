@@ -65,6 +65,8 @@ def measure_startup(binary: Path, output: Path) -> None:
         env = dict(os.environ)
         env["NIUU_CONFIG"] = str(Path(directory) / "config.yaml")
         env["PATH"] = "/usr/bin:/bin"
+        env["NO_COLOR"] = "1"
+        env["TERM"] = "dumb"
         cache = Path(env.get("PYAPP_INSTALL_DIR_NIUU", str(Path(directory) / "runtime")))
         if cache.exists():
             raise ValueError(f"First-start measurement requires an empty cache: {cache}")
@@ -84,13 +86,16 @@ def measure_startup(binary: Path, output: Path) -> None:
             if not result.stdout.startswith("niuu "):
                 raise RuntimeError(f"Unexpected binary identity: {result.stdout}")
         for command in (["platform", "--help"], ["platform", "up", "--help"]):
-            subprocess.run(
+            result = subprocess.run(
                 [str(binary.resolve()), *command],
                 env=env,
                 cwd=directory,
-                stdout=subprocess.DEVNULL,
+                text=True,
+                capture_output=True,
                 check=True,
             )
+            if "Usage: niuu " not in result.stdout:
+                raise RuntimeError(f"Subcommand help lost the niuu entry point: {result.stdout}")
     record.update(
         first_start_seconds=elapsed[0],
         warm_start_seconds=elapsed[1:],

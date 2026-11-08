@@ -48,7 +48,8 @@ def test_startup_uses_one_fresh_cache_and_forwards_subcommands(tmp_path, monkeyp
         assert not Path(kwargs["env"]["NIUU_CONFIG"]).exists()
         cache.mkdir(exist_ok=True)
         commands.append(command[1:])
-        return subprocess.CompletedProcess(command, 0, stdout="niuu 0.1.0\n")
+        text = "niuu 0.1.0\n" if command[1:] == ["--version"] else "Usage: niuu platform [OPTIONS]"
+        return subprocess.CompletedProcess(command, 0, stdout=text)
 
     monkeypatch.setattr(measurement.subprocess, "run", run)
     measurement.measure_startup(binary, output)
