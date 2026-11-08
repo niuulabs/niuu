@@ -23,7 +23,6 @@ class PlatformVerifier(Protocol):
 
     def accept(self, event: SleipnirEvent) -> SleipnirEvent | None:
         """The event as published, or ``None`` (logged and counted) when it is not genuine."""
-        ...
 
 
 DirectedSend = Callable[[str, str, dict[str, Any]], Awaitable[str]]

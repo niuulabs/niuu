@@ -20,7 +20,6 @@ when an event is accepted, so consumers see the payload that was published.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -35,8 +34,6 @@ from niuu.mesh.attestation import (
     MeshSigner,
 )
 from sleipnir.domain.events import SleipnirEvent
-
-logger = logging.getLogger(__name__)
 
 #: Payload key carrying the attestation of a platform event.
 ATTESTATION_KEY = "_attestation"
