@@ -1804,6 +1804,25 @@ class SessionService:
             return True
         return self._forge_session_projection is not None
 
+    def _delivers_forge_session_to(self, session: Session) -> bool:
+        """Whether the pod manager that runs *session* hands its broker the credential.
+
+        A placement manager runs a session on the local manager or on a compute pool, and
+        only the one that runs it matters: a pool with no runtime configured must not
+        stop a local session from getting its credential.
+        """
+        if self._forge_session_tokens is None:
+            return False
+        if self._pod_manager_delivers_to(session):
+            return True
+        return self._forge_session_projection is not None
+
+    def _pod_manager_delivers_to(self, session: Session) -> bool:
+        per_session = getattr(self._pod_manager, "delivers_forge_session_token_for", None)
+        if per_session is not None:
+            return bool(per_session(session))
+        return bool(getattr(self._pod_manager, "delivers_forge_session_token", False))
+
     async def issue_forge_session(self, session_id: UUID) -> IssuedForgeSessionToken | None:
         """Mint a credential for the session's current launch without starting a new one.
 
@@ -1832,7 +1851,7 @@ class SessionService:
         credential = self._mint_forge_session(session)
         if credential is None:
             return None
-        if getattr(self._pod_manager, "delivers_forge_session_token", False):
+        if self._pod_manager_delivers_to(session):
             return credential
         projected = await self._forge_session_projection.project(
             session_id=session.id,
@@ -1847,7 +1866,7 @@ class SessionService:
 
     def _mint_forge_session(self, session: Session) -> IssuedForgeSessionToken | None:
         """Mint this launch's scoped credential, when a broker can receive one."""
-        if not self.delivers_forge_session:
+        if not self._delivers_forge_session_to(session):
             return None
         launch_id = launch_id_of(session.workload_config)
         if launch_id is None:
