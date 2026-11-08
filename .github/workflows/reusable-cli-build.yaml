@@ -60,7 +60,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: cli-web-dist
+          overwrite: true
           path: src/cli/web/dist
+          if-no-files-found: error
 
   # ---------------------------------------------------------------------------
   # CLI binaries
@@ -117,7 +119,7 @@ jobs:
 
       - name: Restore PostgreSQL bundle cache
         id: pg-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4
         with:
           path: build/pginstall
           key: pginstall-v2-${{ matrix.runner }}-${{ matrix.arch }}-${{ hashFiles('src/niuu/pg_versions.py', 'scripts/build_postgres.sh') }}
@@ -151,6 +153,13 @@ jobs:
           PGVECTOR_VERSION: ${{ steps.pg-versions.outputs.pgvector_version }}
           INSTALL_PREFIX: build/pginstall
         run: scripts/build_postgres.sh
+
+      - name: Save PostgreSQL bundle before compilation
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4
+        with:
+          path: build/pginstall
+          key: ${{ steps.pg-cache.outputs.cache-primary-key }}
 
       - name: Install compiler cache
         shell: bash
@@ -239,6 +248,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: compilation-${{ matrix.os }}-${{ matrix.arch }}
+          overwrite: true
           path: |
             dist/timings/
             dist/toolchain.txt
@@ -257,10 +267,13 @@ jobs:
           echo "$GITHUB_WORKSPACE/containers/volundr/npm-tools/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Verify quick start against the compiled binary
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: uv run python scripts/check_quickstart.py --niuu dist/niuu-${{ matrix.os }}-${{ matrix.arch }}
 
       - name: Verify live quick-start inference when credentials are configured
         env:
+          TMPDIR: ${{ runner.temp }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.NIUU_QUICKSTART_CLAUDE_TOKEN }}
         shell: bash
         run: |
@@ -272,10 +285,22 @@ jobs:
             echo "Live inference NOT TESTED: configure NIUU_QUICKSTART_CLAUDE_TOKEN to enable it. Runtime startup and shutdown were tested separately." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Retain quick-start platform logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: quickstart-${{ matrix.os }}-${{ matrix.arch }}
+          overwrite: true
+          path: ${{ runner.temp }}/niuu-quickstart-*/platform.log
+          if-no-files-found: warn
+
       - name: Upload artifact
+        if: always() && steps.compile.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: niuu-${{ matrix.os }}-${{ matrix.arch }}
+          overwrite: true
+          compression-level: 0
           path: dist/niuu-${{ matrix.os }}-${{ matrix.arch }}
           if-no-files-found: error
 

@@ -62,6 +62,8 @@ INCLUDE_PACKAGES = [
 # Package data to bundle (CSS, SQL, etc.)
 INCLUDE_PACKAGE_DATA = [
     "cli",
+    # Authorization loads its Cedar policy and schema through importlib.resources.
+    "identity",
     "rich",
     "textual",
     # The embedded TUF root.json files sigstore bootstraps its trust root from
@@ -78,6 +80,7 @@ DATA_DIR_MAPPINGS = [
     # Versioned built-in personas and the read-only workflow catalog
     (REPO_ROOT / "src" / "personas" / "builtin", "personas/builtin"),
     (REPO_ROOT / "src" / "ting" / "workflows", "ting/workflows"),
+    (REPO_ROOT / "src" / "ting" / "templates", "ting/templates"),
     (REPO_ROOT / "src" / "ting" / "workflow_templates", "ting/workflow_templates"),
     # The built-in host execution's recipe scripts (builtin_host_catalog)
     (
@@ -155,6 +158,8 @@ def build_command(
         f"--user-package-configuration-file={POSTGRES_PACKAGE_CONFIG}",
         f"--user-plugin={POSTGRES_LAYOUT_PLUGIN}",
         "--noinclude-data-files=niuu/pginstall/bin/*",
+        # Nuitka filters .so data automatically, but not versioned ELF library names.
+        "--noinclude-data-files=niuu/pginstall/lib/*.so.*",
     ]
     cmd.extend(nuitka_toolchain_flags())
 

@@ -18,7 +18,10 @@ the same reusable workflow. These builds do not gate dev container releases.
 The web UI builds once and is downloaded by all four compilation jobs. Each
 binary bundles the existing package/resource selection, including migrations,
 web assets and embedded PostgreSQL with pgvector. The existing quick-start
-test runs against each compiled binary before the binary artifact is uploaded.
+test runs against each compiled binary. Successfully compiled binaries remain
+available as CI artifacts even if a smoke test fails; check the overall job
+result before using them. A failed smoke test blocks release publication.
+`quickstart-<os>-<arch>` artifacts preserve the platform startup logs.
 An optional release secret, `NIUU_QUICKSTART_CLAUDE_TOKEN`, also enables the
 existing live inference check; benchmark runs do not receive that secret.
 These are OS-specific binaries, not a universal executable: external runtimes
@@ -43,8 +46,9 @@ fingerprint, human-readable and machine-readable ccache statistics, and Nuitka's
 XML compilation report. Compilation failures still produce timings and
 diagnostics; a failure during setup has no compilation timing.
 
-To compare cold and warm runs, run the workflow once, then rerun all jobs on the
-same commit after completion. Compare the compilation seconds and ccache
+To compare cold and warm runs, run the workflow once, download its compilation
+diagnostics, then rerun all jobs on the same commit after completion. Reruns
+replace the artifacts under their existing names. Compare the compilation seconds and ccache
 hits/misses. A restored cache alone does not prove useful hits. Run attempts
 have distinct immutable cache keys. A first run may already reuse `dev`'s
 caches; inspect the recorded cache match before calling it cold.
