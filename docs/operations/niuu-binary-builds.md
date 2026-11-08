@@ -6,8 +6,7 @@ command. Niuu remains Python; only the small PyApp launcher is compiled to nativ
 code. The executable embeds Python, locked application dependencies, the Niuu
 wheel, web assets, migrations and PostgreSQL with its extensions.
 
-No Python installation, package installer or network download is needed at
-launch. The first invocation unpacks the embedded Zstandard archive into
+No system Python or package downloads are needed to bootstrap the executable. The first invocation unpacks the embedded Zstandard archive into
 PyApp's per-user installation directory. Subsequent invocations reuse that
 installation. PyApp identifies the embedded distribution by its contents, so a
 changed payload gets a separate installation. User configuration and databases
@@ -102,14 +101,22 @@ logs. Build failures retain their measured elapsed time; setup failures have no
 build measurement. Reruns replace artifacts with the same name, so download
 results first when preserving a before/after comparison.
 
-Local Apple Silicon prototype, using existing web/PostgreSQL assets and a warm
-Rust dependency cache:
+## Verified CI measurements — 8 November 2026
 
-| Packaging | First CLI invocation | Warm CLI median | Platform healthy (new DB) |
-| ---: | ---: | ---: | ---: |
-| 21.01 s | 8.04 s | 0.72 s | 11.61 s |
+[Cold Rust build](https://github.com/niuulabs/niuu/actions/runs/42494519494) and
+[cached Rust build](https://github.com/niuulabs/niuu/actions/runs/42495843093)
+both passed all four targets, including the real quick-start/session checks.
+Every target in the second run restored its Rust dependency cache. PostgreSQL
+rebuilt once in that run because the portable pgvector flags changed its cache key.
 
-These are local observations, not four-platform CI results. First launch still
-pays the one-time extraction cost. The prototype executable was about 274 MB;
-its payload includes the Claude Agent SDK's bundled CLI. Live provider inference
-was not tested.
+| Target | Cold build | Cached build | First CLI | Warm CLI | Platform healthy |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| linux-amd64 | 115.24 s | 31.91 s | 6.70 s | 1.37 s | 8.02 s |
+| linux-arm64 | 84.08 s | 31.21 s | 4.88 s | 1.39 s | 8.51 s |
+| darwin-amd64 | 243.17 s | 139.22 s | 20.22 s | 3.03 s | 25.39 s |
+| darwin-arm64 | 90.96 s | 37.78 s | 7.08 s | 1.01 s | 10.96 s |
+
+Startup values are from the second run; installation caches were initially empty.
+Platform health includes a new database. Compare within a target: runner hardware differs.
+First invocation still pays the one-time extraction cost. The executable includes
+the Claude Agent SDK's bundled CLI. Live provider inference was not tested.
