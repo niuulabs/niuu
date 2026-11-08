@@ -172,6 +172,7 @@ class FakeHost(ForgeMcpHost):
         self.close_error: WorkflowStepCloseError | None = None
         self.mesh = True
         self.mesh_sends: list[dict[str, Any]] = []
+        self.mesh_publishes: list[dict[str, Any]] = []
         self.inbox: dict[str, PeerMessage] = {}
         self.mesh_peers: dict[str, str] = {}
         self.mesh_down = False
@@ -214,6 +215,23 @@ class FakeHost(ForgeMcpHost):
         if self.mesh_send_error is not None:
             raise self.mesh_send_error
         return {"message_id": "mesh-msg-1", "status": "accepted"}
+
+    async def publish_mesh_event(self, topic, content, *, request_id, correlation_id, in_reply_to):
+        self.mesh_publishes.append(
+            {
+                "topic": topic,
+                "content": content,
+                "request_id": request_id,
+                "correlation_id": correlation_id,
+                "in_reply_to": in_reply_to,
+            }
+        )
+        return {
+            "event_id": "evt-1",
+            "topic": topic,
+            "correlation_id": correlation_id or "evt-1",
+            "status": "published",
+        }
 
     async def received_peer_message(self, message_id: str) -> PeerMessage:
         if message_id not in self.inbox:
@@ -267,6 +285,7 @@ class TestToolList:
             "reply",
             "room_post",
             "mesh_send",
+            "mesh_publish",
             "create_session",
             "start_session",
             "stop_session",
@@ -1386,6 +1405,102 @@ class TestMeshSend:
         with pytest.raises(ForgeApiError, match="mesh_send"):
             await bare.send_mesh_message(
                 "p", "x", expect_reply=False, request_id="r", in_reply_to=""
+            )
+
+
+class TestMeshPublish:
+    async def test_it_publishes_through_the_host_with_a_request_id(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        result = await toolbox.call(
+            "mesh_publish",
+            {
+                "topic": " review.requested ",
+                "content": "please review PR 12",
+                "correlation_id": "pr-12",
+                "in_reply_to": "evt-0",
+            },
+        )
+
+        assert not result.is_error
+        published = host.mesh_publishes[0]
+        assert published["topic"] == "review.requested"
+        assert (published["content"], published["correlation_id"]) == (
+            "please review PR 12",
+            "pr-12",
+        )
+        assert published["in_reply_to"] == "evt-0"
+        assert published["request_id"].startswith("fmcp-")
+        assert result.structured["request_id"] == published["request_id"]
+        assert result.structured["event_id"] == "evt-1"
+
+    async def test_it_names_no_recipient_and_takes_no_sender(self) -> None:
+        toolbox, _, host = _toolbox()
+        spec = {tool["name"]: tool for tool in toolbox.list_tools()}["mesh_publish"]
+
+        assert set(spec["inputSchema"]["properties"]) == {
+            "topic",
+            "content",
+            "correlation_id",
+            "in_reply_to",
+            "request_id",
+        }
+        forged = await toolbox.call(
+            "mesh_publish", {"topic": "t", "content": "x", "sender": "the CEO"}
+        )
+        assert forged.is_error and host.mesh_publishes == []
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [{"topic": "  ", "content": "x"}, {"topic": "t", "content": "  "}, {"content": "x"}],
+    )
+    async def test_a_blank_or_missing_argument_is_refused(self, arguments) -> None:
+        toolbox, _, host = _toolbox()
+
+        result = await toolbox.call("mesh_publish", arguments)
+
+        assert result.is_error and host.mesh_publishes == []
+
+    def test_it_is_listed_only_when_the_mesh_is_enabled(self) -> None:
+        toolbox, _, host = _toolbox()
+        assert "mesh_publish" in [tool["name"] for tool in toolbox.list_tools()]
+        host.mesh = False
+        assert "mesh_publish" not in [tool["name"] for tool in toolbox.list_tools()]
+
+    async def test_a_call_without_a_mesh_is_refused_with_the_reason(self) -> None:
+        toolbox, _, host = _toolbox()
+        host.mesh = False
+
+        result = await toolbox.call("mesh_publish", {"topic": "t", "content": "hi"})
+
+        assert result.is_error and "no mesh" in result.text
+        assert host.mesh_publishes == []
+
+    async def test_the_hosts_refusal_reaches_the_agent(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        async def refuse(*_args, **_kwargs):
+            raise ForgeApiError("'t' is not a topic this session declares it publishes", status=403)
+
+        host.publish_mesh_event = refuse  # type: ignore[method-assign]
+
+        result = await toolbox.call("mesh_publish", {"topic": "t", "content": "hi"})
+
+        assert result.is_error and "declares it publishes" in result.text
+
+    async def test_the_default_host_has_no_mesh(self) -> None:
+        class Bare(ForgeMcpHost):
+            session_id = None
+
+            async def environment(self):
+                return {}
+
+            async def notify(self, draft):
+                return {}
+
+        with pytest.raises(ForgeApiError, match="mesh_publish"):
+            await Bare().publish_mesh_event(
+                "t", "x", request_id="r", correlation_id="", in_reply_to=""
             )
 
 

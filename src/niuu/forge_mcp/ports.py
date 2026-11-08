@@ -198,7 +198,7 @@ class ForgeMcpHost(ABC):
         )
 
     def mesh_host(self) -> bool:
-        """Whether this session has the mesh enabled, so ``mesh_send`` is listed."""
+        """Whether this session has the mesh enabled, so the mesh tools are listed."""
         return False
 
     async def mesh_peer_for(self, *, session_id: str | None, name: str | None) -> str | None:
@@ -224,6 +224,24 @@ class ForgeMcpHost(ABC):
         Only a session's own broker has the mesh; other hosts refuse."""
         raise ForgeApiError(
             "mesh_send needs a Forge session's own MCP (the mesh belongs to that session's broker)",
+            status=501,
+        )
+
+    async def publish_mesh_event(
+        self,
+        topic: str,
+        content: str,
+        *,
+        request_id: str,
+        correlation_id: str,
+        in_reply_to: str,
+    ) -> dict[str, Any]:
+        """Publish an event onto the mesh topic, stamped with this session's identity.
+
+        Only a session's own broker has the mesh; other hosts refuse."""
+        raise ForgeApiError(
+            "mesh_publish needs a Forge session's own MCP (the mesh belongs to that session's "
+            "broker)",
             status=501,
         )
 

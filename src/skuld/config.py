@@ -113,6 +113,27 @@ class MeshConfig(BaseModel):
     diff_timeout_s: float = Field(default=10.0)
     consumes_event_types: list[str] = Field(
         default_factory=lambda: ["code.requested"],
+        description=(
+            "Topics this session subscribes to. A pinned persona's declared "
+            "``consumes.event_types`` are subscribed in addition (``skuld.mesh_topics``)."
+        ),
+    )
+    publish_event_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Topics this session's ``mesh_publish`` tool may publish, in addition to the "
+            "ones its pinned persona declares in ``produces``. A topic in neither list is "
+            "refused loudly, so a mistyped topic is never published to nobody."
+        ),
+    )
+    published_event_urgency: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "The attention hint (0.0-1.0) stamped on events the ``mesh_publish`` tool publishes; "
+            "the same as the events the browser publishes. It orders attention, it limits nothing."
+        ),
     )
 
 

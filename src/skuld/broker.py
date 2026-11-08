@@ -106,6 +106,7 @@ from skuld.file_routes import (  # noqa: F401
 )
 from skuld.forge_mcp.integration import ForgeSessionMixin
 from skuld.history_hydration import fetch_durable_history, merge_history_turns
+from skuld.mesh_topics import MeshTopics, mesh_topics
 from skuld.peer_inbox import PEER_STATE_RPC_TYPE, PeerInboxMixin
 from skuld.preview import PreviewForwarder, PreviewPortWatcher
 from skuld.room_delivery import RoomDelivery, RoomDeliveryError
@@ -674,6 +675,7 @@ class Broker(
 
         # Mesh adapter — only active when mesh.enabled is True
         self._mesh_adapter: Any = None
+        self._mesh_topics: MeshTopics | None = None
 
         # Optional mesh-to-collaboration bridge.
         self._collaboration_mesh_bridge: Any = None
@@ -992,11 +994,14 @@ class Broker(
             peer_id=own_peer_id,
         )
 
+        # Who listens is declared: the persona's `consumes` on top of the mesh config.
+        self._mesh_topics = mesh_topics(self._settings)
         self._mesh_adapter = SkuldMeshAdapter(
             participant=participant,
             config=mesh_cfg,
             session_id=self.session_id,
             peer_inbox=self,
+            consumes_event_types=self._mesh_topics.consumes,
             # Flock members share the workspace, not this broker's loopback secret:
             # their present-file comes over the mesh they already speak.
             rpc_handlers={
@@ -1019,8 +1024,8 @@ class Broker(
                     peer_id=self._mesh_adapter.peer_id,
                     persona="Skuld",
                     display_name="Skuld",
-                    subscribes_to=list(mesh_cfg.consumes_event_types),
-                    emits=["code.changed"],
+                    subscribes_to=list(self._mesh_topics.consumes),
+                    emits=["code.changed", *self._mesh_topics.produces],
                     tools=list(mesh_cfg.tools),
                     participant_type="skuld",
                     participant_kind="mesh",
