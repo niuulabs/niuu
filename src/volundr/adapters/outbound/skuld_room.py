@@ -92,12 +92,18 @@ class SkuldRoomAdapter(SessionRoomPort, SessionCommunicationPort):
         for participant in participants:
             if not isinstance(participant, dict):
                 continue
+            participant_type = participant.get("participant_type")
+            if not participant_type:
+                raise ValueError(
+                    f"Room participant {participant.get('peer_id')!r} reported no "
+                    "participant_type; the session's broker is older than this Forge"
+                )
             result.append(
                 RoomParticipantInfo(
                     peer_id=str(participant.get("peer_id") or participant.get("peerId") or ""),
                     persona=str(participant.get("persona") or ""),
                     display_name=str(participant.get("display_name") or ""),
-                    participant_type=str(participant.get("participant_type") or "ravn"),
+                    participant_type=str(participant_type),
                     status=str(participant.get("status") or "idle"),
                 )
             )

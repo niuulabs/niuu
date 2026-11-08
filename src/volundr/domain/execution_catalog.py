@@ -81,6 +81,9 @@ class TrustMode(StrEnum):
     PROVIDER_IDENTITY = "provider_identity"
     SSH_CA = "ssh_ca"
     TOFU = "tofu"
+    # A registered host's own key, received at pairing (SshGuestAccess bootstrap_delivery
+    # registered).
+    REGISTERED_HOST_KEY = "registered_host_key"
 
 
 class AccessTrust(_FrozenModel):

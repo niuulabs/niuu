@@ -137,7 +137,7 @@ fails explicitly until it is committed; it must not disappear after a success AC
 
 Reuse the neutral collaboration envelope in `src/niuu/collaboration/models.py`.
 Ravn already projects HELP_NEEDED and OUTCOME in
-`src/ravn/adapters/collaboration/projection.py`; DECISION/TASK_COMPLETE need explicit
+`src/niuu/mesh/projection.py`; DECISION/TASK_COMPLETE need explicit
 mapping. Preserve source/correlation identifiers. Skuld's current
 `_handle_notification` broadcasts `room_notification` directly, unlike the durable
 `_emit_broker_frame` path. Bridge it through persistence; do not create a second
@@ -149,8 +149,8 @@ for replay/deduplication. Add a typed ForgeKit event and iOS card, preserving un
 events for older clients. Both render the same data in conversation and a dedicated
 feed, with source host/session/project links and expandable details.
 
-Reuse the Skuld Telegram formatter/channel and Ravn projection; current launch
-injection is limited to `ravn_flock`. Generalize its configuration for opted-in
+Reuse the Skuld Telegram formatter/channel and Ravn projection; Forge no longer
+injects channel configuration into any launch. Add its configuration for opted-in
 Forge notifications, with durable outbox retries, deduplication and user
 subscriptions. Do not send external notifications by default. Ting's subscription
 concepts may inform the shared service, but Ting must not import Volundr.

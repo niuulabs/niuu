@@ -11,12 +11,12 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from niuu.adapters.discovery.event_bus import EventBusDiscoveryAdapter
+from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
 from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
+from niuu.mesh.events import MeshEvent, MeshEventType
 from niuu.mesh.identity import MeshIdentity
-from ravn.adapters.discovery.event_bus import EventBusDiscoveryAdapter
-from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
-from ravn.domain.events import RavnEvent, RavnEventType
-from volundr.domain.models import ResidentEngine, ResidentObservedState
+from volundr.domain.models import ResidentObservedState
 from volundr.domain.ports import (
     ResidentChatConnection,
     ResidentRuntimeRepository,
@@ -43,9 +43,6 @@ class _ResidentReaction:
     runner: asyncio.Task[None] | None = None
 
 
-_NATIVE_MESH_ENGINES = frozenset({ResidentEngine.RAVN})
-
-
 @dataclass
 class _ResidentPeer:
     mesh: SleipnirMeshAdapter
@@ -65,14 +62,7 @@ class ResidentFlockAdapter:
         persona_provider: SessionPersonaProvider | None = None,
     ) -> None:
         self._repository = repository
-        # A Ravn resident is its own peer on the flock mesh (its pod runs Ravn's Sleipnir
-        # adapter under the same peer id), so bridging it here would put that peer on the
-        # bus twice. Its session controller serves sessions and chat, not the flock.
-        self._controllers = {
-            controller.engine: controller
-            for controller in session_controllers
-            if controller.engine not in _NATIVE_MESH_ENGINES
-        }
+        self._controllers = {controller.engine: controller for controller in session_controllers}
         self._bus = bus
         self._persona_provider = persona_provider
         self._peers: dict[UUID, _ResidentPeer] = {}
@@ -162,7 +152,7 @@ class ResidentFlockAdapter:
             logger.warning("Resident flock persona not found owner=%s name=%s", owner_id, name)
         return persona
 
-    async def _handle_persona_event(self, runtime_id: UUID, event: RavnEvent) -> None:
+    async def _handle_persona_event(self, runtime_id: UUID, event: MeshEvent) -> None:
         runtime = await self._repository.get(runtime_id)
         if runtime is None or event.source == runtime.flock_peer_id:
             return
@@ -307,8 +297,8 @@ class ResidentFlockAdapter:
         peer = self._peers.get(reaction.runtime_id)
         if peer is None:
             return
-        event = RavnEvent(
-            type=RavnEventType.TASK_STARTED,
+        event = MeshEvent(
+            type=MeshEventType.TASK_STARTED,
             source=runtime.flock_peer_id,
             payload={
                 "task_id": reaction.reaction_id,
@@ -343,12 +333,12 @@ class ResidentFlockAdapter:
         }
         if frame_type == "tool_start":
             payload["input"] = metadata.get("input") or {}
-            event_type = RavnEventType.TOOL_START
+            event_type = MeshEventType.TOOL_START
         else:
             payload["result"] = str(frame.get("data") or "")
             payload["is_error"] = bool(metadata.get("is_error"))
-            event_type = RavnEventType.TOOL_RESULT
-        event = RavnEvent(
+            event_type = MeshEventType.TOOL_RESULT
+        event = MeshEvent(
             type=event_type,
             source=runtime.flock_peer_id,
             payload=payload,
@@ -369,8 +359,8 @@ class ResidentFlockAdapter:
         peer = self._peers.get(reaction.runtime_id)
         if peer is None:
             return
-        error = RavnEvent(
-            type=RavnEventType.ERROR,
+        error = MeshEvent(
+            type=MeshEventType.ERROR,
             source=runtime.flock_peer_id,
             payload={
                 "message": reaction.error,
@@ -395,8 +385,8 @@ class ResidentFlockAdapter:
         if peer is None:
             return
         if reaction.output:
-            response = RavnEvent(
-                type=RavnEventType.RESPONSE,
+            response = MeshEvent(
+                type=MeshEventType.RESPONSE,
                 source=runtime.flock_peer_id,
                 payload={"text": reaction.output, "persona": runtime.persona_name or runtime.name},
                 timestamp=datetime.now(UTC),
@@ -426,8 +416,8 @@ class ResidentFlockAdapter:
         summary = fields.get("summary")
         if isinstance(summary, str) and summary.strip():
             outcome_payload["summary"] = summary.strip()
-        outcome = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        outcome = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source=runtime.flock_peer_id,
             payload=outcome_payload,
             timestamp=datetime.now(UTC),

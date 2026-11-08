@@ -43,6 +43,7 @@ from skuld.control_errors import ControlRecoveryError
 from skuld.delivery_errors import DeliveryNotAcceptedError
 from skuld.session_runtime import write_private_file
 from skuld.transports.claude_env import claude_spawn_env
+from skuld.transports.claude_policy import ClaudeToolPolicy
 from skuld.transports.claude_text_order import preceding_tool_text
 from skuld.transports.mcp_config import build_claude_mcp_config, build_claude_mcp_payload
 from skuld.transports.session_tools import PRESENT_FILE_INSTRUCTION, SessionTools
@@ -124,6 +125,13 @@ TURN_CAP_SUBTYPE = "turn_cap_reached"
 HOOK_BINDING_OPTION = "@skuld_hook_binding"
 #: ``system`` frame subtype recording that a stale tmux session was replaced at start.
 STALE_SESSION_REPLACED_SUBTYPE = "stale_tmux_session_replaced"
+#: ``system`` frame subtype recording that a Claude task-tool hook could not update the plan.
+PLAN_UNAVAILABLE_SUBTYPE = "claude_plan_unavailable"
+
+#: Claude Code's task-list tools (they replaced TodoWrite). Their PostToolUse
+#: ``tool_response`` is the tool's structured output, the only place a new task's id appears.
+_CLAUDE_TASK_TOOLS = frozenset({"TaskCreate", "TaskUpdate", "TaskGet", "TaskList"})
+_CLAUDE_TASK_STATUSES = ("pending", "in_progress", "completed")
 
 _CLAUDE_HOOK_EVENTS = [
     "SessionStart",
@@ -265,6 +273,10 @@ class TmuxCommandError(RuntimeError):
     """Raised when a required tmux command fails."""
 
 
+class ClaudeTaskPayloadError(ValueError):
+    """A Claude task-tool hook does not carry the shape Claude Code's task tools produce."""
+
+
 class TmuxInteractiveTransport(CLITransport):
     """Drive an interactive Claude Code process through tmux."""
 
@@ -298,6 +310,7 @@ class TmuxInteractiveTransport(CLITransport):
         workspace_trust_stable_s: float = 0.5,
         workspace_trust_settle_s: float = 1.0,
         workspace_trust_max_attempts: int = 3,
+        claude_tool_policy: ClaudeToolPolicy | None = None,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
@@ -313,9 +326,13 @@ class TmuxInteractiveTransport(CLITransport):
         )
         self._effort_control_timeout = effort_control_timeout_s
         self._forge_session_id = session_id or "skuld-interactive"
-        self._skip_permissions = skip_permissions
+        self._tool_policy = claude_tool_policy
+        # A policy that decides the permission mode is a boundary the node's own mode and
+        # agent teams must not widen.
+        bounded = claude_tool_policy is not None and claude_tool_policy.sets_permission_mode
+        self._skip_permissions = skip_permissions and not bounded
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
-        self._agent_teams = agent_teams
+        self._agent_teams = agent_teams and not bounded
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
         self._raw_mcp_servers = list(mcp_servers or [])
@@ -472,7 +489,7 @@ class TmuxInteractiveTransport(CLITransport):
         )
 
         # Append the steering/task-tracking guidance to Claude's system prompt (on by default) so a
-        # steerable session keeps a live TodoWrite plan the client can surface + steer against.
+        # steerable session keeps a live task plan the client can surface + steer against.
         self._steering_instructions_enabled = self._bool_env(
             "SKULD__TMUX_STEERING_INSTRUCTIONS", True
         )
@@ -519,6 +536,9 @@ class TmuxInteractiveTransport(CLITransport):
         # PostToolUse / SubagentStop emit the "stopped" agent_update, and lets the
         # Task and Subagent* signals for the same agent merge instead of duplicate.
         self._hook_agents: dict[str, dict[str, Any]] = {}
+        # The main conversation's Claude task list (TaskCreate/TaskUpdate), keyed by Claude's
+        # task id in creation order. Each value is a `plan` task: {content, status, activeForm?}.
+        self._claude_tasks: dict[str, dict[str, str]] = {}
         # Per-subagent token accounting. SubagentStart hands us the subagent's
         # transcript_path; the tracker tails that JSONL incrementally so GET /api/agents can
         # report a live cumulative token total per agent. Deliberately NOT stored on the agent
@@ -1550,6 +1570,8 @@ class TmuxInteractiveTransport(CLITransport):
                 payload,
                 is_error=event_name == "PostToolUseFailure",
             )
+            if event_name == "PostToolUse":
+                await self._surface_plan_from_task_tool(payload)
             if not self._is_child_hook(payload):
                 self._main_hook_tools.discard(self._coerce_str(payload.get("tool_use_id")))
             return True
@@ -2218,7 +2240,11 @@ class TmuxInteractiveTransport(CLITransport):
         return text or "pending"
 
     async def _surface_plan_from_todowrite(self, tool_input: dict[str, Any]) -> None:
-        """Emit Claude's full task list (the TodoWrite plan) as a structured `plan`."""
+        """Emit Claude's full task list (the TodoWrite plan) as a structured `plan`.
+
+        TodoWrite is what Claude Code versions before the task tools offer; newer
+        versions plan with TaskCreate/TaskUpdate (`_surface_plan_from_task_tool`).
+        """
         raw = tool_input.get("todos")
         if not isinstance(raw, list):
             return
@@ -2234,8 +2260,172 @@ class TmuxInteractiveTransport(CLITransport):
             if active_form:
                 task["activeForm"] = active_form
             tasks.append(task)
+        await self._emit_plan(tasks)
+
+    async def _surface_plan_from_task_tool(self, payload: dict[str, Any]) -> None:
+        """Fold one Claude task-tool result into the session's task list; emit it if it changed.
+
+        Claude Code tracks work with TaskCreate/TaskUpdate (one task per call) instead of
+        TodoWrite's full list, so the transport keeps the list itself. A task id appears only in
+        TaskCreate's response, so this reads PostToolUse, where Claude has applied the change.
+        TaskGet/TaskList responses are authoritative and resync the list. A payload without the
+        shape these tools produce is reported, never skipped: the plan would silently go stale.
+        """
+        tool_name = self._coerce_str(payload.get("tool_name"))
+        if tool_name not in _CLAUDE_TASK_TOOLS:
+            return
+        # A separate Claude process (an agent-teams teammate) works its own task list; its ids
+        # would collide with the main list's. In-process subagents share the main list.
+        native = self._coerce_str(payload.get("session_id"))
+        if native and self._claude_native_session_id and native != self._claude_native_session_id:
+            return
+        before = [dict(task) for task in self._claude_tasks.values()]
+        tool_input = payload.get("tool_input")
+        response = payload.get("tool_response")
+        try:
+            match tool_name:
+                case "TaskCreate":
+                    self._apply_task_create(tool_input, response)
+                case "TaskUpdate":
+                    self._apply_task_update(tool_input, response)
+                case "TaskGet":
+                    self._apply_task_get(response)
+                case "TaskList":
+                    self._apply_task_list(response)
+        except ClaudeTaskPayloadError as exc:
+            await self._report_plan_unavailable(tool_name, payload, str(exc))
+            return
+        tasks = [dict(task) for task in self._claude_tasks.values()]
+        if tasks != before:
+            await self._emit_plan(tasks)
+
+    def _apply_task_create(self, tool_input: object, response: object) -> None:
+        created = self._task_field(self._task_mapping(response, "tool_response"), "task", dict)
+        task_id = self._task_field(created, "id", str)
+        subject = self._task_field(created, "subject", str)
+        active_form = self._task_mapping(tool_input, "tool_input").get("activeForm")
+        if active_form is not None and not isinstance(active_form, str):
+            raise ClaudeTaskPayloadError("TaskCreate tool_input.activeForm is not a string")
+        task = {"content": subject, "status": "pending"}
+        if active_form:
+            task["activeForm"] = active_form
+        if task_id in self._claude_tasks:
+            # Ids never repeat within one Claude task list, so a known id is a new list
+            # (a cleared or new conversation): the old plan is gone.
+            self._claude_tasks.clear()
+        self._claude_tasks[task_id] = task
+
+    def _apply_task_update(self, tool_input: object, response: object) -> None:
+        result = self._task_mapping(response, "tool_response")
+        if not self._task_field(result, "success", bool):
+            return  # Claude refused the update (unknown task, blocked completion): no change.
+        task_id = self._task_field(result, "taskId", str)
+        fields = self._task_field(result, "updatedFields", list)
+        if not all(isinstance(field, str) for field in fields):
+            raise ClaudeTaskPayloadError("TaskUpdate tool_response.updatedFields is not strings")
+        if not {"deleted", "subject", "activeForm", "status"} & set(fields):
+            return  # Owner, description, dependencies or metadata: not part of the plan.
+        task = self._claude_tasks.get(task_id)
+        if task is None:
+            raise ClaudeTaskPayloadError(
+                f"TaskUpdate changed task #{task_id}, which this session never saw created; "
+                "the plan resyncs at the agent's next TaskList"
+            )
+        if "deleted" in fields:
+            del self._claude_tasks[task_id]
+            return
+        changes = self._task_mapping(tool_input, "tool_input")
+        updated = dict(task)
+        if "subject" in fields:
+            updated["content"] = self._task_field(changes, "subject", str)
+        if "activeForm" in fields:
+            active_form = changes.get("activeForm")
+            if not isinstance(active_form, str):
+                raise ClaudeTaskPayloadError("TaskUpdate tool_input.activeForm is not a string")
+            if active_form:
+                updated["activeForm"] = active_form
+            else:
+                updated.pop("activeForm", None)
+        if "status" in fields:
+            change = self._task_field(result, "statusChange", dict)
+            updated["status"] = self._task_status(change, "to")
+        self._claude_tasks[task_id] = updated
+
+    def _apply_task_get(self, response: object) -> None:
+        found = self._task_mapping(response, "tool_response")
+        if "task" not in found:
+            raise ClaudeTaskPayloadError("TaskGet tool_response has no task")
+        if found["task"] is None:
+            return  # Claude answered "no such task".
+        task_data = self._task_field(found, "task", dict)
+        task_id = self._task_field(task_data, "id", str)
+        subject = self._task_field(task_data, "subject", str)
+        status = self._task_status(task_data, "status")
+        task = self._claude_tasks.setdefault(task_id, {})
+        task["content"] = subject
+        task["status"] = status
+
+    def _apply_task_list(self, response: object) -> None:
+        listed = self._task_field(self._task_mapping(response, "tool_response"), "tasks", list)
+        tasks: dict[str, dict[str, str]] = {}
+        for item in listed:
+            item_data = self._task_mapping(item, "TaskList task")
+            task_id = self._task_field(item_data, "id", str)
+            task = {
+                "content": self._task_field(item_data, "subject", str),
+                "status": self._task_status(item_data, "status"),
+            }
+            # TaskList omits activeForm; keep the one its create/update carried.
+            active_form = self._claude_tasks.get(task_id, {}).get("activeForm")
+            if active_form:
+                task["activeForm"] = active_form
+            tasks[task_id] = task
+        self._claude_tasks = tasks
+
+    @staticmethod
+    def _task_mapping(value: object, where: str) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ClaudeTaskPayloadError(f"{where} is {type(value).__name__}, not an object")
+        return value
+
+    @staticmethod
+    def _task_field(data: dict[str, Any], key: str, kind: type) -> Any:
+        value = data.get(key)
+        if not isinstance(value, kind) or (kind is str and not value):
+            raise ClaudeTaskPayloadError(f"task field {key!r} is {value!r}, not a {kind.__name__}")
+        return value
+
+    @classmethod
+    def _task_status(cls, data: dict[str, Any], key: str) -> str:
+        status = cls._task_field(data, key, str)
+        if status not in _CLAUDE_TASK_STATUSES:
+            raise ClaudeTaskPayloadError(f"task status {status!r} is not one of the plan statuses")
+        return status
+
+    async def _report_plan_unavailable(
+        self, tool_name: str, payload: dict[str, Any], reason: str
+    ) -> None:
+        """Make a task-tool hook that could not update the plan loud: an error and a frame."""
+        logger.error(
+            "Claude %s hook could not update the session plan: %s. The Forge plan keeps its "
+            "last state; check the Claude Code version's task-tool output.",
+            tool_name,
+            reason,
+        )
+        await self._emit(
+            {
+                "type": "system",
+                "subtype": PLAN_UNAVAILABLE_SUBTYPE,
+                "tool_name": tool_name,
+                "tool_use_id": payload.get("tool_use_id"),
+                "reason": reason,
+                "metadata": {"source": "claude_hook"},
+            }
+        )
+
+    async def _emit_plan(self, tasks: list[dict[str, Any]]) -> None:
         counts = {"total": len(tasks)}
-        for status in ("pending", "in_progress", "completed"):
+        for status in _CLAUDE_TASK_STATUSES:
             counts[status] = sum(1 for t in tasks if t["status"] == status)
         await self._emit(
             {
@@ -3583,6 +3773,8 @@ class TmuxInteractiveTransport(CLITransport):
             cmd.extend(["--resume", self._resume_session_id])
         if self._skip_permissions:
             cmd.extend(["--permission-mode", self._claude_permission_mode])
+        if self._tool_policy is not None:
+            cmd.extend(self._tool_policy.cli_args())
         if self._remote_control:
             rc_name = self._remote_control_name()
             cmd.extend(["--remote-control", rc_name])

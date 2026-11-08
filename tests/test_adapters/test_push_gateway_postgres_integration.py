@@ -161,8 +161,9 @@ async def test_two_accounts_racing_for_one_token_leave_one_row_and_fail_loudly(p
         return_exceptions=True,
     )
 
-    # A registration that lost the race raises (the app registers again); none is lost
-    # silently, and the token is held by one row.
+    # Registrations of one token take turns, so racing installs do not deadlock: each takes
+    # the token over in turn, any that still loses raises (the app registers again), none is
+    # lost silently, and the token is held by one row.
     assert all(
         not isinstance(result, BaseException) or isinstance(result, asyncpg.UniqueViolationError)
         for result in results

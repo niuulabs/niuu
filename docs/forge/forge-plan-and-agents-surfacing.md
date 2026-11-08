@@ -9,7 +9,8 @@
 ## Goal
 
 Let the Forge UI show, at any moment, **(a) Claude's current plan** — the task
-checklist Claude maintains via its `TodoWrite` tool, with each task's status —
+checklist Claude maintains with its task tools (`TaskCreate`/`TaskUpdate`, or
+`TodoWrite` on older Claude Code versions), with each task's status —
 and **(b) the agents/sub-processes running inside the session** — Claude `Task`
 subagents and `--teammate-mode tmux` team panes. Both as structured data (not
 scraped terminal text), live over the session WebSocket and pullable over REST.
@@ -22,13 +23,17 @@ broker's `/api/claude/hooks`). The relevant hooks are **already registered** in
 
 | Signal | Hook | Carries |
 |---|---|---|
-| Plan / tasks | `PreToolUse` with `tool_name="TodoWrite"` | `tool_input.todos: [{content, status, activeForm?}]` — the **full** list each call (TodoWrite replaces the whole list) |
+| Plan / tasks | `PostToolUse` with `tool_name` `TaskCreate` / `TaskUpdate` / `TaskGet` / `TaskList` | One task per call. `tool_response` is the tool's output: TaskCreate `{task: {id, subject}}` (status starts `pending`, `activeForm` comes from `tool_input`), TaskUpdate `{success, taskId, updatedFields, statusChange?: {from, to}}`, TaskGet `{task \| null}`, TaskList `{tasks: [{id, subject, status, owner?, blockedBy}]}` |
+| Plan / tasks (older Claude Code) | `PreToolUse` with `tool_name="TodoWrite"` | `tool_input.todos: [{content, status, activeForm?}]` — the **full** list each call (TodoWrite replaces the whole list) |
 | Subagent start | `PreToolUse` with `tool_name="Task"` | `tool_input: {description, prompt, subagent_type}`, `tool_use_id` |
 | Subagent end | `PostToolUse` with the Task's `tool_use_id` | `tool_response` |
 | Team member | `terminal_pane_opened` / `terminal_pane_closed` | `pane_id`, `window_name`, `current_command`, `active` (already emitted by pane discovery) |
 
-`status` values normalize to `pending | in_progress | completed` (others pass
-through). The Task `tool_use_id` is the subagent's stable id; team agents key on
+TodoWrite `status` values normalize to `pending | in_progress | completed` (others
+pass through). Task-tool statuses must be one of those three; anything else, or a
+`tool_response` without the shape above, is reported as a `system` frame with
+`subtype: "claude_plan_unavailable"` (plus an error log) and leaves the plan as it
+was — never a silently stale plan. The Task `tool_use_id` is the subagent's stable id; team agents key on
 `pane_id`.
 
 ## Event contracts (broker → channels)
@@ -45,7 +50,8 @@ through). The Task `tool_use_id` is the subagent's stable id; team agents key on
   "metadata": {"source": "claude_hook"}
 }
 ```
-Emitted on every `TodoWrite`. The broker keeps the latest as `_current_plan`.
+Emitted on every `TodoWrite`, and on every task-tool call that changes the task
+list. The broker keeps the latest as `_current_plan`.
 
 ### `agent_update` — one running agent's lifecycle
 ```json
@@ -102,6 +108,18 @@ Tests cover: transport emits normalized `plan` / `agent_update`; broker tracks
    each call, so `_current_plan` is simply the latest. *Alt:* maintain a merged
    model keyed by task id — unnecessary given the full-list semantics, and
    `TodoWrite` task ids aren't reliably stable.
+   **Task tools (2026-11):** Claude Code dropped `TodoWrite` for `TaskCreate` /
+   `TaskUpdate`, which change one task per call, so the transport keeps the list
+   (keyed by Claude's task id, in creation order) and still emits the full list.
+   It reads `PostToolUse`, because only TaskCreate's response carries the new id
+   and only TaskUpdate's response says whether Claude applied the change.
+   `TaskGet`/`TaskList` responses are authoritative and resync the list (TaskList
+   omits `activeForm`, so known ones are kept). A TaskCreate returning an id the
+   list already holds means a new list (ids never repeat within one), so the plan
+   restarts. Hooks from another Claude process (an agent-teams teammate, different
+   `session_id`) are ignored: it works its own list. An update for a task the
+   transport never saw created (e.g. a broker restart mid-session) is reported as
+   `claude_plan_unavailable` until the agent's next `TaskList`.
 3. **"Agents" = Task subagents (hooks) ∪ teammate panes (pane events).** These are
    the two real sources a Claude tmux session exposes. **`SubagentStart`/`Stop` are
    now also wired** — Claude's purpose-built subagent-lifecycle hooks. All agent

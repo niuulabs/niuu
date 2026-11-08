@@ -71,6 +71,7 @@ data:
     provisioning:
       timeout_seconds: {{ .Values.provisioning.timeoutSeconds | default 300.0 }}
       initial_delay_seconds: {{ .Values.provisioning.initialDelaySeconds | default 5.0 }}
+      startup_poll_seconds: {{ .Values.provisioning.startupPollSeconds | default 2.0 }}
 
     realm_detail_stream_interval_seconds: {{ .Values.realmDetailStreamIntervalSeconds | default 15.0 }}
 
@@ -184,7 +185,7 @@ data:
     {{- /* These pod managers hand the broker its credential themselves
     (delivers_forge_session_token); every other one needs the projection. */}}
     {{- $selfDelivering := list "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager" "volundr.adapters.outbound.local_process.LocalProcessPodManager" }}
-    {{- if and (not (get $sessionTokens "projection_adapter")) (not (has .Values.podManager.adapter $selfDelivering)) }}
+    {{- if and (not (get $sessionTokens "projection_adapter")) (not (has (include "volundr.podManagerAdapter" .) $selfDelivering)) }}
     {{- fail "presentedFiles.enabled needs sessionCredentialProjection.enabled: session pods must hold their Forge credential to upload presented files" }}
     {{- end }}
     {{- end }}
@@ -192,6 +193,20 @@ data:
 
     forge_mcp: {{ toJson $forgeMcp }}
 
+    {{- if .Values.computeHosts.enabled }}
+    {{- if .Values.compute }}
+    {{- fail "computeHosts and compute both define this Forge's compute pool; remove compute, or set computeHosts.enabled: false" }}
+    {{- end }}
+    pod_manager:
+      adapter: {{ include "volundr.podManagerAdapter" . | quote }}
+      runtime_backend: vm
+      room_role_source: {{ .Values.podManager.roomRoleSource | default "deployment" | quote }}
+      room_role_cache_ttl_seconds: {{ .Values.podManager.roomRoleCacheTtlSeconds | default 5.0 }}
+      kwargs: {{ dict "pool_id" .Values.computeHosts.poolId "max_machines" .Values.computeHosts.maxHosts "profile" .Values.computeHosts.profile "server_port" (.Values.service.targetPort | default 8080) "public_origin" .Values.computeHosts.joinUrl | toJson }}
+      secret_kwargs_env: {}
+
+    compute: {{ include "volundr.computeHosts" . }}
+    {{- else }}
     pod_manager:
       adapter: {{ .Values.podManager.adapter | quote }}
       {{- if .Values.podManager.runtimeBackend }}
@@ -211,6 +226,7 @@ data:
 
     {{- if .Values.compute }}
     compute: {{ .Values.compute | toJson }}
+    {{- end }}
     {{- end }}
 
     codex_credential_broker:
@@ -541,6 +557,17 @@ data:
     {{- end }}
     {{- end }}
 
+    {{- if .Values.sessionPreview.enabled }}
+    {{- if not .Values.workloadIdentity.enabled }}
+    {{- fail "sessionPreview.enabled needs workloadIdentity.enabled: the preview router presents a workload credential to each session's Skuld" }}
+    {{- end }}
+    session_preview:
+      enabled: true
+      domain: {{ include "volundr.sessionPreview.domain" . | quote }}
+      credential_ttl_seconds: {{ .Values.sessionPreview.credentialTtlSeconds }}
+      credential_audience: {{ .Values.sessionPreview.credentialAudience | quote }}
+    {{- end }}
+
     workload_identity:
       enabled: {{ .Values.workloadIdentity.enabled | default false }}
       issuer: {{ .Values.workloadIdentity.issuer | default "" | quote }}
@@ -562,54 +589,12 @@ data:
       verifiers: []
       {{- end }}
       {{- $wiMappings := .Values.workloadIdentity.mappings | default list }}
-      {{- if .Values.workloadIdentity.residentMapping.enabled }}
-      {{- $rm := .Values.workloadIdentity.residentMapping }}
-      {{- $rmNamespace := required "workloadIdentity.residentMapping.namespace is required when workloadIdentity.residentMapping.enabled=true" $rm.namespace }}
-      {{- $rmIssuer := required "workloadIdentity.residentMapping.issuer is required when workloadIdentity.residentMapping.enabled=true" $rm.issuer }}
-      {{/*
-      WorkloadIdentityService.exchange() picks the MOST SPECIFIC matching
-      mapping (an exact subject over any prefix, a longer prefix over a
-      shorter one), so residentMapping's "...resident-" prefix wins over a
-      broader operator catch-all such as "system:serviceaccount:<ns>:".
-      It is still prepended, which keeps the rendered order readable.
-
-      owner_id_claim_pattern is restricted to UUID-shaped resident ids
-      (FluxPodManager names a per-runtime SA "resident-<runtime.id>", a
-      standard UUID) so this broad subject_prefix cannot shadow an existing,
-      non-UUID-named ServiceAccount a different, more specific mapping on
-      workloadIdentity.mappings owns exactly — e.g. valhalla's
-      "resident-muninn" or "resident-ravn" — WorkloadIdentityService._matches
-      treats a pattern non-match as "this mapping does not apply" and falls
-      through to try those mappings instead of raising.
-      */}}
-      {{- $wiMappings = prepend $wiMappings (dict
-            "name" $rm.name
-            "verifier" $rm.verifier
-            "subject_prefix" (printf "system:serviceaccount:%s:resident-" $rmNamespace)
-            "issuer" $rmIssuer
-            "owner_id_claim" "sub"
-            "owner_id_claim_pattern" "^system:serviceaccount:[^:]+:resident-([0-9a-f-]{36})$"
-            "tenant_id" $rm.tenantId
-            "roles" $rm.roles
-          ) }}
-      {{- end }}
       {{- if $wiMappings }}
       mappings:
         {{- toYaml $wiMappings | nindent 8 }}
       {{- else }}
       mappings: []
       {{- end }}
-      tenant_resolver:
-        adapter: {{ .Values.workloadIdentity.tenantResolver.adapter | default "" | quote }}
-        kwargs: {{ .Values.workloadIdentity.tenantResolver.kwargs | default dict | toJson }}
-        {{- if .Values.workloadIdentity.tenantResolver.secretKwargs }}
-        secret_kwargs_env:
-          {{- range .Values.workloadIdentity.tenantResolver.secretKwargs }}
-          {{ .kwarg }}: WORKLOAD_TENANT_RESOLVER_SK_{{ .kwarg | upper }}
-          {{- end }}
-        {{- else }}
-        secret_kwargs_env: {}
-        {{- end }}
 
     workflow_execution_credentials:
       enabled: {{ .Values.workflowExecutionCredentials.enabled | default false }}
@@ -626,6 +611,8 @@ data:
       url: {{ tpl (required "bifrost.url must be the URL of the Bifrost service; Volundr does not host Bifrost" .Values.bifrost.url) . | quote }}
       timeout_seconds: {{ .Values.bifrost.timeoutSeconds | default 10.0 }}
       catalog_refresh_interval_seconds: {{ .Values.bifrost.catalogRefreshIntervalSeconds | default 60.0 }}
+      catalog_retry_initial_seconds: {{ .Values.bifrost.catalogRetryInitialSeconds | default 0.1 }}
+      catalog_retry_max_seconds: {{ .Values.bifrost.catalogRetryMaxSeconds | default 5.0 }}
       auth:
         adapter: {{ .Values.bifrost.auth.adapter | quote }}
         kwargs: {{ .Values.bifrost.auth.kwargs | toJson }}
@@ -723,18 +710,14 @@ data:
           namespace: {{ .Release.Namespace | quote }}
           configmap_name: {{ .Values.personaSource.configmapName | default "ravn-personas" | quote }}
         {{- else if eq $mode "http" }}
-        adapter: "ravn.adapters.personas.http.HttpPersonaAdapter"
+        adapter: "personas.adapters.http.HttpPersonaAdapter"
         kwargs:
           base_url: {{ .Values.personaSource.httpBaseUrl | default "http://volundr:8080" | quote }}
         {{- else }}
-        adapter: "ravn.adapters.personas.loader.FilesystemPersonaAdapter"
+        adapter: "personas.adapters.loader.FilesystemPersonaAdapter"
         kwargs: {}
         {{- end }}
     {{- end }}
-
-    ravn_flock_image: {{ .Values.ravnFlockImage | default "" | quote }}
-    ravn_flock_llm_config: {{ .Values.ravnFlockLlmConfig | default dict | toJson }}
-    ravn_flock_llm_config_by_definition: {{ .Values.ravnFlockLlmConfigByDefinition | default dict | toJson }}
 
     {{- if .Values.sessionContributors }}
     session_contributors:

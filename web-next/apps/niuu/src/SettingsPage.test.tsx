@@ -202,14 +202,16 @@ describe('SettingsPage', () => {
     localStorage.clear();
     routerMocks.params = { providerId: 'session-view', sectionId: 'tabs' };
     wrap(<SettingsPage />, true);
-    const terminal = screen.getByRole('checkbox', { name: 'Terminal' }) as HTMLInputElement;
-    expect(terminal.checked).toBe(false);
+    // The terminal docks under the conversation (⌃`), so it is not a tab to choose.
+    expect(screen.queryByRole('checkbox', { name: 'Terminal' })).not.toBeInTheDocument();
+    const chronicle = screen.getByRole('checkbox', { name: 'Chronicle' }) as HTMLInputElement;
+    expect(chronicle.checked).toBe(false);
     expect((screen.getByRole('checkbox', { name: /Chat/ }) as HTMLInputElement).disabled).toBe(
       true,
     );
-    fireEvent.click(terminal);
-    expect(terminal.checked).toBe(true);
-    expect(localStorage.getItem('niuu.forge.sessionTabs')).toContain('terminal');
+    fireEvent.click(chronicle);
+    expect(chronicle.checked).toBe(true);
+    expect(localStorage.getItem('niuu.forge.sessionTabs')).toContain('chronicles');
     expect(apiMocks.get).not.toHaveBeenCalled();
     expect(apiMocks.patch).not.toHaveBeenCalled();
   });
@@ -318,6 +320,96 @@ describe('SettingsPage', () => {
       expect(apiMocks.patch).toHaveBeenCalledWith('/settings/notifications', { enabled: false });
     });
     expect(await screen.findByText('Saved.')).toBeTruthy();
+  });
+
+  describe('number fields', () => {
+    function installPoolSection(limit: number | null) {
+      const defaults = apiMocks.get.getMockImplementation();
+      apiMocks.get.mockImplementation(async (path: string) => {
+        if (path !== '/settings') return defaults?.(path);
+        return {
+          title: 'Ting',
+          scope: 'service',
+          sections: [
+            {
+              id: 'pool',
+              label: 'Pool',
+              path: '/settings/pool',
+              saveLabel: 'Save pool settings',
+              fields: [
+                { key: 'slots', label: 'Sessions per machine', type: 'number', value: 2 },
+                {
+                  key: 'limit',
+                  label: 'Sessions before replacement',
+                  type: 'number',
+                  value: limit,
+                  nullable: true,
+                  placeholder: 'Unset',
+                },
+              ],
+            },
+          ],
+        };
+      });
+    }
+
+    function open() {
+      routerMocks.params = { providerId: 'ting', sectionId: 'pool' };
+      wrap(<SettingsPage />);
+    }
+
+    it('shows an unset nullable number as an empty field and saves it back as null', async () => {
+      installPoolSection(null);
+      open();
+
+      const limit = (await screen.findByRole('spinbutton', {
+        name: /Sessions before replacement/,
+      })) as HTMLInputElement;
+      expect(limit.value).toBe('');
+      expect(limit.placeholder).toBe('Unset');
+      fireEvent.click(screen.getByRole('button', { name: 'Save pool settings' }));
+
+      await waitFor(() => {
+        expect(apiMocks.patch).toHaveBeenCalledWith('/settings/pool', { slots: 2, limit: null });
+      });
+    });
+
+    it('saves an emptied nullable number as null and a typed one as a number', async () => {
+      installPoolSection(3);
+      open();
+
+      const limit = await screen.findByRole('spinbutton', {
+        name: /Sessions before replacement/,
+      });
+      expect((limit as HTMLInputElement).value).toBe('3');
+      fireEvent.change(limit, { target: { value: '' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save pool settings' }));
+      await waitFor(() => {
+        expect(apiMocks.patch).toHaveBeenLastCalledWith('/settings/pool', {
+          slots: 2,
+          limit: null,
+        });
+      });
+
+      fireEvent.change(limit, { target: { value: '4' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save pool settings' }));
+      await waitFor(() => {
+        expect(apiMocks.patch).toHaveBeenLastCalledWith('/settings/pool', { slots: 2, limit: 4 });
+      });
+    });
+
+    it('still saves an emptied number that is not nullable as 0', async () => {
+      installPoolSection(null);
+      open();
+
+      const slots = await screen.findByRole('spinbutton', { name: /Sessions per machine/ });
+      fireEvent.change(slots, { target: { value: '' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save pool settings' }));
+
+      await waitFor(() => {
+        expect(apiMocks.patch).toHaveBeenCalledWith('/settings/pool', { slots: 0, limit: null });
+      });
+    });
   });
 
   it('shows the server reason when a section save fails', async () => {
@@ -1386,11 +1478,9 @@ describe('SettingsPage', () => {
           theme: 'ice',
           plugins: {
             ting: { enabled: true, order: 1 },
-            ravn: { enabled: true, order: 2 },
           },
           services: {
             ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
-            ravn: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn' },
           },
         }}
       >

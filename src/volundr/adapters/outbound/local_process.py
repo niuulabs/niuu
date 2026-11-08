@@ -22,7 +22,6 @@ import json
 import logging
 import os
 import re
-import secrets
 import shutil
 import signal
 import socket
@@ -37,17 +36,7 @@ from typing import Any
 
 import httpx
 
-from niuu.domain.llm_merge import merge_llm
-from niuu.mesh.ipc import cleanup_skuld_mesh_sockets, skuld_mesh_addresses
-from volundr.adapters.outbound.contributors.ravn_flock import (
-    _MIMIR_MOUNT_PATH as _FLOCK_MIMIR_MOUNT_PATH,
-)
-from volundr.adapters.outbound.contributors.ravn_flock import (
-    _deep_merge_config as _merge_flock_runtime_config,
-)
-from volundr.adapters.outbound.contributors.ravn_flock import (
-    _resolve_mimir_runtime as _resolve_flock_mimir_runtime,
-)
+from volundr.adapters.outbound.contributors.session_mcp import MIMIR_MOUNT_PATH
 from volundr.domain.models import (
     GitSource,
     LocalMountSource,
@@ -57,6 +46,7 @@ from volundr.domain.models import (
 )
 from volundr.domain.ports import PodManager, PodStartResult, SessionCapacity
 from volundr.domain.services.session import SessionCapacityError
+from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +54,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_WORKSPACES_DIR = "~/.niuu/workspaces"
 # Broker-owned present-file staging for local sessions, under the workspaces dir.
 LOCAL_PRESENTED_FILES_DIR = ".forge-presented"
+# Where a local session's ephemeral Mimir mounts live, under its workspace.
+LOCAL_MIMIR_DIR = ".mimir-local"
 DEFAULT_CLAUDE_BINARY = "claude"
 # Capable hosts run many sessions comfortably (each ~0.5 GB); the practical
 # ceiling is the Claude/Codex *subscription* concurrency, not the box. Deployments
@@ -72,62 +64,10 @@ DEFAULT_MAX_CONCURRENT = 16
 DEFAULT_SDK_PORT_START = 9100
 DEFAULT_STOP_TIMEOUT = 10
 DEFAULT_STATE_FILE = "~/.niuu/forge-state.json"
-DEFAULT_FLOCK_BASE_PORT = 7480
-DEFAULT_FLOCK_PORT_SCAN_LIMIT = 1000
 DEFAULT_ALLOWED_MOUNT_PREFIXES: list[str] = []
 
 # Poll interval for wait_for_ready
 READY_POLL_INTERVAL = 0.5
-
-
-def _write_scoped_persona_source(workspace: Path, persona: str, yaml_text: str) -> Path:
-    """Write a persona below the runtime-owned directory without following symlinks."""
-    from ravn.domain.persona_document import validate_persona_identifier
-
-    validate_persona_identifier(persona, field="Workflow persona alias")
-    ravn_dir = workspace / ".ravn"
-    if ravn_dir.is_symlink():
-        raise ValueError(f"Refusing persona materialization through symlink: {ravn_dir}")
-    ravn_dir.mkdir(mode=0o700, exist_ok=True)
-    persona_dir = ravn_dir / "personas"
-    if persona_dir.is_symlink():
-        raise ValueError(f"Refusing persona materialization through symlink: {persona_dir}")
-
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY
-    if hasattr(os, "O_NOFOLLOW"):
-        directory_flags |= os.O_NOFOLLOW
-    ravn_directory_fd = os.open(ravn_dir, directory_flags)
-    try:
-        os.fchmod(ravn_directory_fd, 0o700)
-        with suppress(FileExistsError):
-            os.mkdir("personas", mode=0o700, dir_fd=ravn_directory_fd)
-        directory_fd = os.open("personas", directory_flags, dir_fd=ravn_directory_fd)
-    finally:
-        os.close(ravn_directory_fd)
-    os.fchmod(directory_fd, 0o700)
-    temp_name = f".{persona}.{secrets.token_hex(8)}.tmp"
-    try:
-        file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_NOFOLLOW"):
-            file_flags |= os.O_NOFOLLOW
-        file_fd = os.open(temp_name, file_flags, 0o600, dir_fd=directory_fd)
-        with os.fdopen(file_fd, "w", encoding="utf-8") as destination:
-            destination.write(yaml_text)
-            destination.flush()
-            os.fsync(destination.fileno())
-        os.replace(
-            temp_name,
-            f"{persona}.yaml",
-            src_dir_fd=directory_fd,
-            dst_dir_fd=directory_fd,
-        )
-    except BaseException:
-        with suppress(FileNotFoundError):
-            os.unlink(temp_name, dir_fd=directory_fd)
-        raise
-    finally:
-        os.close(directory_fd)
-    return persona_dir / f"{persona}.yaml"
 
 
 def _public_loopback_host(host: str) -> str:
@@ -155,8 +95,6 @@ class ProcessInfo:
     workspace: str = ""
     state: ProcessState = ProcessState.STARTING
     error: str | None = None
-    flock_dir: str = ""
-    flock_base_port: int | None = None
     managed_by: str = "local_process"
 
     def to_dict(self) -> dict[str, Any]:
@@ -175,21 +113,8 @@ class ProcessInfo:
             workspace=data.get("workspace", data.get("workspace_dir", "")),
             state=ProcessState(data.get("state", data.get("status", "stopped"))),
             error=data.get("error"),
-            flock_dir=data.get("flock_dir", ""),
-            flock_base_port=data.get("flock_base_port"),
             managed_by=data.get("managed_by", "local_process"),
         )
-
-
-@dataclass(frozen=True)
-class FlockPortPlan:
-    """Per-session local mesh ports shared by Skuld and Ravn sidecars."""
-
-    session_base_port: int
-    ravn_base_port: int
-    skuld_pub_port: int
-    skuld_rep_port: int
-    skuld_handshake_port: int
 
 
 class SdkPortAllocator:
@@ -243,7 +168,7 @@ class SdkPortAllocator:
 
     @staticmethod
     def _is_port_free(port: int) -> bool:
-        """Check if a port is free for the local flock bind patterns we use.
+        """Check if a port is free to bind on loopback.
 
         Probe loopback only. On macOS a wildcard listener already blocks a
         loopback bind on the same port, which lets us catch ``*:port``
@@ -288,174 +213,27 @@ def _local_workspace_from_repo(value: str) -> Path | None:
     return Path(value).expanduser()
 
 
-def _stage_personas(node: dict[str, Any]) -> set[str]:
-    personas = {
-        str(persona)
-        for persona in (node.get("personaIds") or [])
-        if isinstance(persona, str) and persona
-    }
-    for member in node.get("stageMembers") or []:
-        if isinstance(member, dict):
-            persona_id = member.get("personaId")
-            if isinstance(persona_id, str) and persona_id:
-                personas.add(persona_id)
-    return personas
-
-
-def _split_workflow_edge_label(label: object) -> tuple[str, str]:
-    if not isinstance(label, str) or "->" not in label:
-        return "", ""
-    left, right = label.split("->", 1)
-    return left.strip(), right.strip()
-
-
-def _dedupe_preserve_order(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values:
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        result.append(value)
-    return result
-
-
-def _workflow_event_metadata(
-    workflow: dict[str, Any] | None,
-    persona: str,
-) -> tuple[list[str], list[str]]:
-    """Infer consumed/emitted event types for a persona from the workflow graph."""
-    if not isinstance(workflow, dict):
-        return [], []
-    graph = workflow.get("graph")
-    if not isinstance(graph, dict):
-        return [], []
-
-    nodes = [node for node in graph.get("nodes", []) if isinstance(node, dict)]
-    edges = [edge for edge in graph.get("edges", []) if isinstance(edge, dict)]
-    persona_node_ids = {str(node.get("id")) for node in nodes if persona in _stage_personas(node)}
-    if not persona_node_ids:
-        return [], []
-
-    member_override_events: list[str] = []
-    for node in nodes:
-        for member in node.get("stageMembers") or []:
-            if not isinstance(member, dict) or member.get("personaId") != persona:
-                continue
-            consumes_event_types = member.get("consumesEventTypes")
-            if not isinstance(consumes_event_types, list):
-                consumes_event_types = member.get("consumes_event_types")
-            if isinstance(consumes_event_types, list):
-                member_override_events.extend(
-                    str(event_type).strip()
-                    for event_type in consumes_event_types
-                    if str(event_type).strip()
-                )
-
-    consumes: list[str] = []
-    emits: list[str] = []
-    has_inbound = False
-
-    for edge in edges:
-        source_event, target_event = _split_workflow_edge_label(edge.get("label"))
-        source_id = str(edge.get("source", ""))
-        target_id = str(edge.get("target", ""))
-
-        if target_id in persona_node_ids and source_event:
-            consumes.append(source_event)
-            has_inbound = True
-
-        if source_id in persona_node_ids and target_event and target_event != "complete":
-            emits.append(target_event)
-
-    if not has_inbound:
-        trigger_events = [
-            str(node.get("dispatchEvent"))
-            for node in nodes
-            if node.get("kind") == "trigger" and node.get("dispatchEvent")
-        ]
-        consumes.extend(trigger_events)
-
-    if member_override_events:
-        consumes = member_override_events
-
-    return _dedupe_preserve_order(consumes), _dedupe_preserve_order(emits)
-
-
-def _normalize_local_mimir_spec(raw: object) -> dict[str, Any]:
-    if not isinstance(raw, dict):
-        return {}
-    normalized: dict[str, Any] = {}
-    if hosted_url := raw.get("hostedUrl"):
-        normalized["hosted_url"] = hosted_url
-    if registry_refs := raw.get("registryRefs"):
-        normalized["registry_refs"] = registry_refs
-    if ephemeral_locals := raw.get("ephemeralLocals"):
-        normalized["ephemeral_locals"] = ephemeral_locals
-    if bindings := raw.get("bindings"):
-        normalized["bindings"] = bindings
-    if instances := raw.get("instances"):
-        normalized["instances"] = instances
-    if write_routing := raw.get("writeRouting"):
-        normalized["write_routing"] = write_routing
-    if default_mounts := raw.get("defaultMounts"):
-        normalized["default_mounts"] = default_mounts
-    return normalized
-
-
-def _localize_mimir_path(path: str, flock_dir: Path) -> str:
+def _localize_mimir_path(path: str, workspace: Path) -> str:
+    """Point a session's ephemeral Mimir mount at a directory in its workspace."""
     trimmed = path.strip()
     if not trimmed:
         return trimmed
-    if trimmed == _FLOCK_MIMIR_MOUNT_PATH:
-        return str(flock_dir / "mimir" / "local")
-    prefix = f"{_FLOCK_MIMIR_MOUNT_PATH.rstrip('/')}/"
+    local_root = workspace / LOCAL_MIMIR_DIR
+    if trimmed == MIMIR_MOUNT_PATH:
+        return str(local_root)
+    prefix = f"{MIMIR_MOUNT_PATH.rstrip('/')}/"
     if trimmed.startswith(prefix):
         suffix = trimmed[len(prefix) :]
-        return str((flock_dir / "mimir" / "local" / suffix).resolve())
+        return str((local_root / suffix).resolve())
     return trimmed
-
-
-def _materialize_local_mimir_config(
-    spec: SessionSpec,
-    flock_dir: Path,
-    *,
-    runtime_flock_dir: Path | None = None,
-) -> dict[str, Any] | None:
-    mimir_cfg = _normalize_local_mimir_spec(spec.values.get("mimir"))
-    if not mimir_cfg:
-        return None
-
-    instances, write_routing = _resolve_flock_mimir_runtime(mimir_cfg)
-    runtime_dir = runtime_flock_dir or flock_dir
-    localized_instances: list[dict[str, Any]] = []
-    for raw_instance in instances:
-        instance = dict(raw_instance)
-        path = instance.get("path")
-        if isinstance(path, str) and path.strip():
-            host_path = _localize_mimir_path(path, flock_dir)
-            runtime_path = _localize_mimir_path(path, runtime_dir)
-            Path(host_path).mkdir(parents=True, exist_ok=True)
-            instance["path"] = runtime_path
-        elif str(instance.get("url") or "").strip():
-            localized_path = flock_dir / "mimir" / "local" / str(instance["name"])
-            localized_path.mkdir(parents=True, exist_ok=True)
-            instance.pop("url", None)
-            instance.pop("auth", None)
-            instance["path"] = str(runtime_dir / "mimir" / "local" / str(instance["name"]))
-        localized_instances.append(instance)
-
-    return {
-        "enabled": True,
-        "instances": localized_instances,
-        "write_routing": write_routing,
-    }
 
 
 #: Broker settings carrying the session credential (skuld ``forge_mcp.token`` /
 #: ``forge_mcp.grants``). Skuld scrubs the token from every agent process it spawns.
 FORGE_MCP_TOKEN_ENV = "SKULD__FORGE_MCP__TOKEN"
 FORGE_MCP_GRANTS_ENV = "SKULD__FORGE_MCP__GRANTS"
+#: The broker setting naming a file that holds the credential (``forge_mcp.token_file``).
+FORGE_MCP_TOKEN_FILE_ENV = "SKULD__FORGE_MCP__TOKEN_FILE"
 
 
 def _apply_forge_session_env(env: dict[str, str], spec: SessionSpec) -> None:
@@ -477,7 +255,6 @@ def _localize_mcp_servers(raw_servers: object, workspace: Path) -> list[dict[str
     if not isinstance(raw_servers, list):
         return []
 
-    flock_dir = workspace / ".flock"
     localized: list[dict[str, Any]] = []
     for raw_server in raw_servers:
         if not isinstance(raw_server, dict):
@@ -494,7 +271,7 @@ def _localize_mcp_servers(raw_servers: object, workspace: Path) -> list[dict[str
                 if arg == "--path" and index + 1 < len(normalized_args):
                     localized_path = _localize_mimir_path(
                         normalized_args[index + 1],
-                        flock_dir,
+                        workspace,
                     )
                     rewritten_args.append(localized_path)
                     index += 2
@@ -534,9 +311,16 @@ class LocalProcessPodManager(PodManager):
         server_public_host: str = "127.0.0.1",
         server_host: str = "127.0.0.1",
         server_port: int = 8080,
+        preview_router_auth: dict | None = None,
         **_extra: object,
     ):
+        """``preview_router_auth`` is the Skuld ``preview.router_auth`` adapter
+        (``{"adapter": ..., "kwargs": {...}}``) for a host with an identity
+        provider; on a host without one, local sessions use
+        ``skuld.preview_adapters.NoRouterAuth``. Unset on an authenticated host,
+        local sessions run without live preview."""
         self._workspaces_dir = Path(str(workspaces_dir)).expanduser()
+        self._preview_router_auth = dict(preview_router_auth or {})
         self._claude_binary = str(claude_binary)
         self._max_concurrent = int(max_concurrent)
         self._stop_timeout = int(stop_timeout)
@@ -551,23 +335,48 @@ class LocalProcessPodManager(PodManager):
         self._allowed_mount_prefixes = allowed_mount_prefixes or DEFAULT_ALLOWED_MOUNT_PREFIXES
 
         self._port_allocator = SdkPortAllocator(start_port=int(sdk_port_start))
-        self._allocated_flock_base_ports: set[int] = set()
         self._processes: dict[str, ProcessInfo] = {}
         self._monitors: dict[str, asyncio.Task] = {}
         if not hasattr(self, "_ready"):
             self._ready: set[str] = set()
         self._broker_startup_failures: dict[str, str] = {}
         self._skuld_registry: object | None = None  # Set via set_skuld_registry()
-        self._persona_registry: object | None = None  # Set via set_persona_registry()
         # Notified (best-effort) when a managed broker process exits, so the
         # SessionService can reconcile the DB row promptly instead of waiting for
         # the periodic sweep. Set via set_death_callback().
         self._death_callback: Callable[[str], Awaitable[None]] | None = None
 
         self._load_state()
-        for info in self._processes.values():
-            if info.state in (ProcessState.STARTING, ProcessState.RUNNING) and info.flock_base_port:
-                self._allocated_flock_base_ports.add(info.flock_base_port)
+
+    def _preview_env(self, session_id: str) -> dict[str, str]:
+        """Skuld live-preview settings for a session on this shared host.
+
+        Only the agent's own processes count as the session's (a laptop listens
+        on plenty of other ports): Skuld's descendants, and processes carrying
+        this session's SKULD__SESSION__ID, which the agent inherits. The router
+        credential check follows the host: none where it has no identity provider.
+        """
+        if getattr(self._skuld_registry, "dev_identity", False):
+            router_auth: dict = {"adapter": "skuld.preview_adapters.NoRouterAuth"}
+        elif self._preview_router_auth:
+            router_auth = self._preview_router_auth
+        else:
+            logger.info(
+                "Live preview is off for local sessions: this host authenticates "
+                "users, so set the pod manager's preview_router_auth "
+                "(skuld.preview_adapters.WorkloadJwtRouterAuth) to turn it on"
+            )
+            return {"SKULD__PREVIEW__ENABLED": "false"}
+        return {
+            "SKULD__PREVIEW__ENABLED": "true",
+            "SKULD__PREVIEW__PORT_SCANNER": json.dumps(
+                {
+                    "adapter": "skuld.preview_adapters.LsofSessionPortScanner",
+                    "kwargs": {"session_id": session_id},
+                }
+            ),
+            "SKULD__PREVIEW__ROUTER_AUTH": json.dumps(router_auth),
+        }
 
     def set_skuld_registry(self, registry: object) -> None:
         """Inject the SkuldPortRegistry for proxy routing."""
@@ -578,10 +387,6 @@ class LocalProcessPodManager(PodManager):
         for session_id, info in self._processes.items():
             if info.state == ProcessState.RUNNING and info.port is not None:
                 register(session_id, info.port)
-
-    def set_persona_registry(self, registry: object) -> None:
-        """Inject the persona registry used to materialize custom flock personas."""
-        self._persona_registry = registry
 
     def set_death_callback(self, callback: Callable[[str], Awaitable[None]]) -> None:
         """Inject an async callback notified when a managed broker process exits.
@@ -628,22 +433,12 @@ class LocalProcessPodManager(PodManager):
 
         workspace = await self._provision_workspace(session, spec)
         port = self._port_allocator.allocate()
-        flock_plan: FlockPortPlan | None = None
-        if spec.pod_spec and spec.pod_spec.extra_containers:
-            persona_count = sum(
-                1
-                for container in spec.pod_spec.extra_containers
-                if container.get("name", "").startswith("ravn-")
-            )
-            if persona_count > 0:
-                flock_plan = self._flock_port_plan(self._pick_flock_base_port(persona_count))
 
         info = ProcessInfo(
             session_id=session_id,
             port=port,
             workspace=str(workspace),
             state=ProcessState.STARTING,
-            flock_base_port=flock_plan.session_base_port if flock_plan is not None else None,
         )
         self._ready.discard(session_id)
         self._broker_startup_failures.pop(session_id, None)
@@ -651,28 +446,10 @@ class LocalProcessPodManager(PodManager):
         self._persist_state()
 
         try:
-            pid = await self._spawn_skuld(
-                session,
-                spec,
-                workspace,
-                port,
-                flock_plan=flock_plan,
-            )
+            pid = await self._spawn_skuld(session, spec, workspace, port)
             info.pid = pid
             info.state = ProcessState.RUNNING
             self._persist_state()
-
-            # Spawn ravn flock sidecars if the contributor produced extra containers
-            if spec.pod_spec and spec.pod_spec.extra_containers and flock_plan is not None:
-                flock_dir = await self._start_flock(
-                    session,
-                    spec,
-                    workspace,
-                    flock_plan,
-                    skuld_port=self._flock_skuld_port(port),
-                )
-                info.flock_dir = str(flock_dir)
-                self._persist_state()
 
             # Register with Skuld port registry for proxy routing
             if self._skuld_registry is not None:
@@ -689,8 +466,6 @@ class LocalProcessPodManager(PodManager):
                 await self._terminate_process(info.pid)
             info.state = ProcessState.FAILED
             self._port_allocator.release(port)
-            if info.flock_base_port is not None:
-                self._allocated_flock_base_ports.discard(info.flock_base_port)
             self._persist_state()
             raise
 
@@ -722,17 +497,11 @@ class LocalProcessPodManager(PodManager):
         if monitor and not monitor.done():
             monitor.cancel()
 
-        # Stop flock sidecars first (they depend on the mesh)
-        if info.flock_dir:
-            await self._stop_flock_runtime(session_id, info.flock_dir)
-
         if info.pid is not None:
             await self._terminate_process(info.pid)
 
         if info.port is not None:
             self._port_allocator.release(info.port)
-        if info.flock_base_port is not None:
-            self._allocated_flock_base_ports.discard(info.flock_base_port)
 
         if self._skuld_registry is not None:
             self._skuld_registry.unregister(session_id)
@@ -841,14 +610,10 @@ class LocalProcessPodManager(PodManager):
         monitor = self._monitors.pop(session_id, None)
         if monitor is not None and monitor is not asyncio.current_task() and not monitor.done():
             monitor.cancel()
-        if info.flock_dir:
-            await self._stop_flock_runtime(session_id, info.flock_dir)
         if info.pid is not None:
             await self._terminate_process(info.pid)
         if info.port is not None:
             self._port_allocator.release(info.port)
-        if info.flock_base_port is not None:
-            self._allocated_flock_base_ports.discard(info.flock_base_port)
         if self._skuld_registry is not None:
             unregister = getattr(self._skuld_registry, "unregister", None)
             if callable(unregister):
@@ -947,6 +712,7 @@ class LocalProcessPodManager(PodManager):
             error_msg = re.sub(r"://[^@]+@", "://***@", error_msg)
             raise RuntimeError(f"Git clone failed: {error_msg}")
 
+        started_from = ""
         if branch:
             checkout_ok = await self._checkout_tracking_branch(repo_dir, branch)
             if not checkout_ok:
@@ -955,6 +721,15 @@ class LocalProcessPodManager(PodManager):
                     fallback_ok = await self._checkout_tracking_branch(repo_dir, fallback_branch)
                     if fallback_ok:
                         await self._create_branch(repo_dir, branch)
+                        started_from = fallback_branch
+        # Record where this branch started, so the session's changes can be shown against it.
+        started_from = started_from or base_branch or await self._remote_head_branch(repo_dir)
+        if started_from:
+            code, _, stderr = await self._run_git(
+                repo_dir, "config", "niuu.baseBranch", started_from
+            )
+            if code != 0:
+                raise RuntimeError(f"Could not record the workspace's base branch: {stderr}")
 
         if repo_url:
             await self._run_git(repo_dir, "remote", "set-url", "origin", repo_url)
@@ -1040,39 +815,6 @@ class LocalProcessPodManager(PodManager):
             for prefix in self._allowed_mount_prefixes
         )
 
-    def _pick_flock_base_port(self, node_count: int) -> int:
-        """Pick a free shared base port for a local flocked session.
-
-        Local mini mode runs one Skuld broker plus ``node_count`` ravn peers.
-        Skuld uses the session base directly, while the generated ravn flock is
-        shifted by one mesh slot so its first persona does not collide with the
-        primary broker.
-        """
-        for offset in range(DEFAULT_FLOCK_PORT_SCAN_LIMIT):
-            base_port = DEFAULT_FLOCK_BASE_PORT + offset
-            if base_port in self._allocated_flock_base_ports:
-                continue
-            required_ports: list[int] = [base_port, base_port + 1, base_port + 100]
-            for index in range(node_count):
-                ravn_index = index + 1
-                required_ports.extend(
-                    [
-                        base_port + ravn_index * 2,
-                        base_port + ravn_index * 2 + 1,
-                        base_port + 100 + ravn_index,
-                        base_port + 200 + ravn_index,
-                    ]
-                )
-
-            if all(SdkPortAllocator._is_port_free(port) for port in required_ports):
-                self._allocated_flock_base_ports.add(base_port)
-                return base_port
-
-        raise RuntimeError(
-            "Could not find a free ravn flock base port "
-            f"after scanning {DEFAULT_FLOCK_PORT_SCAN_LIMIT} candidates"
-        )
-
     @staticmethod
     def _write_claude_md(_workspace: Path, _spec: SessionSpec) -> None:
         """No-op (deactivated in our pipeline).
@@ -1091,65 +833,12 @@ class LocalProcessPodManager(PodManager):
     # Process spawning & monitoring
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _flock_port_plan(base_port: int) -> FlockPortPlan:
-        """Return the shared local mesh port layout for one flocked session."""
-        return FlockPortPlan(
-            session_base_port=base_port,
-            ravn_base_port=base_port + 2,
-            skuld_pub_port=base_port,
-            skuld_rep_port=base_port + 1,
-            skuld_handshake_port=base_port + 100,
-        )
-
-    def _flock_skuld_port(self, allocated_port: int) -> int:
-        """Port flock peers use to reach Skuld in this runtime."""
-        return allocated_port
-
-    def _flock_runtime_workspace(self, session: Session, workspace: Path) -> Path:
-        """Workspace path embedded in configs and passed to runtime commands."""
-        del session
-        return workspace
-
-    def _flock_platform_url(self) -> str:
-        return f"http://{_public_loopback_host(self._server_host)}:{self._server_port}"
-
-    def _flock_mesh_transport(self) -> str:
-        return "ipc"
-
-    def _flock_skuld_addresses(self, flock_dir: Path, flock_plan: FlockPortPlan) -> tuple[str, str]:
-        del flock_plan
-        return skuld_mesh_addresses(flock_dir)
-
-    async def _run_flock_cli(
-        self,
-        session: Session,
-        workspace: Path,
-        arguments: list[str],
-    ) -> None:
-        """Run a flock lifecycle command in the same runtime as its agents."""
-        del session
-        import subprocess as sp
-
-        await asyncio.to_thread(
-            sp.run,
-            [sys.executable, "-m", "ravn", *arguments],
-            check=True,
-            capture_output=True,
-            cwd=str(workspace),
-        )
-
-    async def _stop_flock_runtime(self, session_id: str, flock_dir: str) -> None:
-        del session_id
-        await asyncio.to_thread(self._stop_flock, flock_dir)
-
     async def _spawn_skuld(
         self,
         session: Session,
         spec: SessionSpec,
         workspace: Path,
         port: int,
-        flock_plan: FlockPortPlan | None = None,
     ) -> int:
         """Spawn a Skuld broker subprocess that internally manages Claude.
 
@@ -1167,34 +856,10 @@ class LocalProcessPodManager(PodManager):
         env = self._build_env(spec, workspace)
 
         # Inject pod_spec env vars from session contributors.
-        flock_dir = workspace / ".flock"
         if spec.pod_spec and spec.pod_spec.env:
             for entry in spec.pod_spec.env:
                 if name := entry.get("name"):
                     env[name] = entry.get("value", "")
-
-            # Enable room mode so the web UI shows multi-participant view
-            env["SKULD__ROOM__ENABLED"] = "true"
-
-            # Configure Skuld's static discovery to find ravn flock peers.
-            # The cluster.yaml is written by _start_flock after init.
-            cluster_file = str(flock_dir / "cluster.yaml")
-            env["SKULD__MESH__ADAPTERS"] = json.dumps(
-                [
-                    {
-                        "adapter": "ravn.adapters.discovery.static.StaticDiscoveryAdapter",
-                        "cluster_file": cluster_file,
-                        "poll_interval_s": 5,
-                    }
-                ]
-            )
-
-        if flock_plan is not None:
-            cleanup_skuld_mesh_sockets(flock_dir)
-            skuld_pub, skuld_rep = skuld_mesh_addresses(flock_dir)
-            env["SKULD__MESH__NNG__PUB_SUB_ADDRESS"] = skuld_pub
-            env["SKULD__MESH__NNG__REQ_REP_ADDRESS"] = skuld_rep
-            env["SKULD__MESH__HANDSHAKE_PORT"] = str(flock_plan.skuld_handshake_port)
 
         env["SKULD__SESSION__ID"] = session_id
         env["SKULD__SESSION__NAME"] = session.name
@@ -1212,6 +877,7 @@ class LocalProcessPodManager(PodManager):
         # auth boundary already gates every caller" (skuld.config.WsAuthConfig
         # .room_role_source, default "deployment" — every other backend).
         env["SKULD__WS_AUTH__ROOM_ROLE_SOURCE"] = "proxy"
+        env.update(self._preview_env(session_id))
         model = str(session.model or spec.values.get("model", "") or "").strip()
         env["SKULD__SESSION__MODEL"] = model
         env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)
@@ -1241,8 +907,13 @@ class LocalProcessPodManager(PodManager):
             env["SKULD__SESSION__REASONING_EFFORT"] = str(effort)
         if system_prompt:
             env["SKULD__SESSION__SYSTEM_PROMPT"] = system_prompt
+        # The pinned persona document: Skuld projects it onto the harness on every start.
+        if persona := session_vals.get("persona"):
+            env["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
         if initial_prompt:
             env["SKULD__SESSION__INITIAL_PROMPT"] = initial_prompt
+        if workflow_steps_enabled(spec.values):
+            env[WORKFLOW_STEPS_ENABLED_ENV] = "true"
 
         # Claude transports still need the CLI binary location.
         if env.get("SKULD__CLI_TYPE", "claude") == "claude":
@@ -1278,463 +949,12 @@ class LocalProcessPodManager(PodManager):
         )
         return process.pid
 
-    async def _start_flock(
-        self,
-        session: Session,
-        spec: SessionSpec,
-        workspace: Path,
-        flock_plan: FlockPortPlan,
-        *,
-        skuld_port: int,
-    ) -> Path:
-        """Init and start a ravn flock alongside the Skuld session.
-
-        Extracts persona names from ``spec.pod_spec.extra_containers`` and
-        uses ``ravn flock init/start`` to spawn daemon processes with static
-        discovery.  Skuld is added to the cluster.yaml so ravn peers
-        discover it on the mesh.
-        """
-        import yaml
-
-        flock_dir = workspace / ".flock"
-        runtime_workspace = self._flock_runtime_workspace(session, workspace)
-        runtime_flock_dir = runtime_workspace / ".flock"
-        personas = [
-            c["name"].removeprefix("ravn-")
-            for c in spec.pod_spec.extra_containers
-            if c.get("name", "").startswith("ravn-")
-        ]
-
-        if not personas:
-            return flock_dir
-
-        flock_values = spec.values.get("flock")
-        persona_entries = (
-            list(flock_values.get("personas") or []) if isinstance(flock_values, dict) else []
-        )
-        await self._materialize_flock_personas(
-            session,
-            workspace,
-            personas,
-            persona_entries=persona_entries,
-        )
-
-        # ravn flock init with static discovery (no mDNS). The ravn sidecars
-        # start at index 1 because the primary Skuld broker occupies index 0.
-        ravn_base_port = flock_plan.ravn_base_port
-        await self._run_flock_cli(
-            session,
-            workspace,
-            [
-                "flock",
-                "init",
-                *personas,
-                "--flock-dir",
-                str(runtime_flock_dir),
-                "--discovery",
-                "static",
-                "--mesh-transport",
-                self._flock_mesh_transport(),
-                "--no-http-gateway",
-                "--base-port",
-                str(ravn_base_port),
-                "--responsive",
-                "--force",
-            ],
-        )
-        logger.info(
-            "Flock init: personas=%s dir=%s session_base_port=%d ravn_base_port=%d",
-            personas,
-            flock_dir,
-            flock_plan.session_base_port,
-            ravn_base_port,
-        )
-
-        # Append Skuld as a peer in cluster.yaml so ravn nodes discover it
-        cluster_path = flock_dir / "cluster.yaml"
-        if cluster_path.exists():
-            cluster = yaml.safe_load(cluster_path.read_text())
-            skuld_pub, skuld_rep = self._flock_skuld_addresses(runtime_flock_dir, flock_plan)
-            skuld_peer_id = ""
-            if spec.pod_spec and spec.pod_spec.env:
-                for entry in spec.pod_spec.env:
-                    name = entry.get("name", "")
-                    value = entry.get("value", "")
-                    if name == "SKULD__MESH__PEER_ID":
-                        skuld_peer_id = value
-
-            if skuld_peer_id and skuld_pub:
-                cluster.setdefault("peers", []).append(
-                    {
-                        "peer_id": skuld_peer_id,
-                        "persona": "coder",
-                        "display_name": "skuld",
-                        "pub_address": skuld_pub,
-                        "rep_address": skuld_rep,
-                    }
-                )
-                cluster_path.write_text(yaml.safe_dump(cluster, default_flow_style=False))
-                logger.info("Added Skuld peer to cluster.yaml: %s", skuld_peer_id)
-
-        workflow_cfg = spec.values.get("workflow")
-        if isinstance(workflow_cfg, dict):
-            for persona in personas:
-                node_path = flock_dir / f"node-{persona}.yaml"
-                if not node_path.exists():
-                    continue
-                node_config = yaml.safe_load(node_path.read_text()) or {}
-                node_config["workflow"] = workflow_cfg
-                node_path.write_text(yaml.safe_dump(node_config, default_flow_style=False))
-            logger.info(
-                "Injected workflow graph config into local flock node configs: %s",
-                flock_dir,
-            )
-
-        mimir_runtime_cfg = _materialize_local_mimir_config(
-            spec,
-            flock_dir,
-            runtime_flock_dir=runtime_flock_dir,
-        )
-        if mimir_runtime_cfg is not None:
-            for persona in personas:
-                node_path = flock_dir / f"node-{persona}.yaml"
-                if not node_path.exists():
-                    continue
-                node_config = yaml.safe_load(node_path.read_text()) or {}
-                node_config["mimir"] = mimir_runtime_cfg
-                node_path.write_text(
-                    yaml.safe_dump(node_config, default_flow_style=False),
-                    encoding="utf-8",
-                )
-            logger.info(
-                "Injected Mimir runtime config into local flock node configs: %s",
-                flock_dir,
-            )
-
-        self._apply_local_flock_overrides(
-            spec,
-            flock_dir,
-            personas,
-            workspace=workspace,
-            runtime_workspace=runtime_workspace,
-            skuld_port=skuld_port,
-        )
-
-        # ravn flock start
-        await self._run_flock_cli(
-            session,
-            workspace,
-            [
-                "flock",
-                "start",
-                "--flock-dir",
-                str(runtime_flock_dir),
-            ],
-        )
-        logger.info("Flock started: %s", flock_dir)
-
-        return flock_dir
-
-    async def _materialize_flock_personas(
-        self,
-        session: Session,
-        workspace: Path,
-        personas: list[str],
-        *,
-        persona_entries: list[object] | None = None,
-    ) -> None:
-        """Write owner-scoped persona YAML files into the workspace for flock startup.
-
-        ``ravn flock init`` and the spawned ravn daemons only know how to resolve
-        personas from the filesystem. Custom personas stored in Volundr's registry
-        therefore need to be materialized into ``<workspace>/.ravn/personas`` so
-        both init-time validation and runtime persona loading can find them.
-        """
-        import yaml
-
-        from ravn.domain.persona_document import parse_portable_persona
-
-        registry = self._persona_registry
-        owner_id = session.owner_id
-        if not personas:
-            return
-
-        entries_by_name = {
-            str(entry.get("name")): entry
-            for entry in persona_entries or []
-            if isinstance(entry, dict) and entry.get("name")
-        }
-        persona_dir = workspace / ".ravn" / "personas"
-        written_names: set[str] = set()
-        for persona in personas:
-            entry = entries_by_name.get(persona)
-            raw_document = entry.get("portable_definition") if entry is not None else None
-            if not isinstance(raw_document, dict):
-                continue
-            document = parse_portable_persona(raw_document)
-            definition = dict(document.definition)
-            definition["name"] = persona
-            _write_scoped_persona_source(
-                workspace,
-                persona,
-                yaml.safe_dump(definition, allow_unicode=True, sort_keys=False),
-            )
-            written_names.add(persona)
-
-        if registry is None or not owner_id:
-            if written_names:
-                logger.info(
-                    "Materialized %d pinned persona definition(s) for local flock in %s",
-                    len(written_names),
-                    persona_dir,
-                )
-            return
-
-        get_persona_yaml = getattr(registry, "get_persona_yaml", None)
-        if not callable(get_persona_yaml):
-            return
-
-        written = len(written_names)
-        for persona in personas:
-            if persona in written_names:
-                continue
-            yaml_text = await get_persona_yaml(owner_id, persona)
-            if not yaml_text:
-                continue
-            _write_scoped_persona_source(workspace, persona, yaml_text)
-            written += 1
-
-        if written:
-            logger.info(
-                "Materialized %d persona definition(s) for local flock in %s",
-                written,
-                persona_dir,
-            )
-
-    def _apply_local_flock_overrides(
-        self,
-        spec: SessionSpec,
-        flock_dir: Path,
-        personas: list[str],
-        *,
-        workspace: Path,
-        runtime_workspace: Path | None = None,
-        skuld_port: int,
-    ) -> None:
-        """Apply workload-derived overrides to local flock node and cluster files."""
-        import yaml
-
-        flock_cfg = spec.values.get("flock")
-        if not isinstance(flock_cfg, dict):
-            return
-
-        persona_entries = flock_cfg.get("personas")
-        persona_overrides = {
-            entry["name"]: entry
-            for entry in persona_entries or []
-            if isinstance(entry, dict) and isinstance(entry.get("name"), str)
-        }
-        global_llm = flock_cfg.get("llm_config")
-        if not isinstance(global_llm, dict):
-            global_llm = None
-        global_ravn_config = flock_cfg.get("ravn_config")
-        if not isinstance(global_ravn_config, dict):
-            global_ravn_config = {}
-        raw_daily_budget_usd = flock_cfg.get("daily_budget_usd")
-        try:
-            daily_budget_usd = float(raw_daily_budget_usd)
-        except (TypeError, ValueError):
-            daily_budget_usd = None
-        global_max_tasks = flock_cfg.get("max_concurrent_tasks", DEFAULT_MAX_CONCURRENT)
-        try:
-            global_max_tasks = int(global_max_tasks)
-        except (TypeError, ValueError):
-            global_max_tasks = DEFAULT_MAX_CONCURRENT
-
-        workflow_cfg = spec.values.get("workflow")
-        if not isinstance(workflow_cfg, dict):
-            workflow_cfg = None
-        emitted_workspace = runtime_workspace or workspace
-        mcp_servers = _localize_mcp_servers(spec.values.get("mcpServers"), emitted_workspace)
-        repo_workspace = workspace / "repo"
-        runtime_repo_workspace = emitted_workspace / "repo"
-        workspace_root = (
-            runtime_repo_workspace if (repo_workspace / ".git").exists() else emitted_workspace
-        )
-
-        try:
-            from ravn.adapters.personas.loader import FilesystemPersonaAdapter
-
-            persona_loader = FilesystemPersonaAdapter()
-        except Exception:
-            logger.warning("Failed to load persona adapter for local flock metadata", exc_info=True)
-            persona_loader = None
-
-        for persona in personas:
-            node_path = flock_dir / f"node-{persona}.yaml"
-            if not node_path.exists():
-                continue
-
-            node_config = yaml.safe_load(node_path.read_text()) or {}
-            # `ravn flock init` renders the host operator's own LLM; a Forge
-            # session's nodes use only the LLM the session resolved.
-            node_config.pop("llm", None)
-            node_config = _merge_flock_runtime_config(node_config, global_ravn_config)
-            persona_override = persona_overrides.get(persona, {})
-
-            effective_llm = merge_llm(
-                defaults=None,
-                global_override=global_llm,
-                persona_override=persona_override.get("llm"),
-            )
-            # Same order as pod sidecars: the workload ravn_config lands last.
-            ravn_config_llm = global_ravn_config.get("llm")
-            if isinstance(ravn_config_llm, dict):
-                effective_llm = _merge_flock_runtime_config(effective_llm, ravn_config_llm)
-            if effective_llm:
-                node_config["llm"] = effective_llm
-
-            initiative_cfg = node_config.setdefault("initiative", {})
-            initiative_cfg["max_concurrent_tasks"] = int(
-                persona_override.get("max_concurrent_tasks") or global_max_tasks
-            )
-            if daily_budget_usd and daily_budget_usd > 0:
-                budget_cfg = node_config.setdefault("budget", {})
-                budget_cfg["daily_cap_usd"] = float(daily_budget_usd)
-
-            permission_cfg = node_config.setdefault("permission", {})
-            permission_cfg["workspace_root"] = str(workspace_root)
-
-            skuld_cfg = node_config.setdefault("skuld", {})
-            skuld_cfg["enabled"] = True
-            skuld_cfg["broker_url"] = f"ws://127.0.0.1:{skuld_port}/ws/ravn"
-
-            gateway_cfg = node_config.setdefault("gateway", {})
-            platform_cfg = gateway_cfg.setdefault("platform", {})
-            platform_cfg["enabled"] = True
-            platform_cfg.setdefault("timeout", 30.0)
-            platform_cfg["base_url"] = self._flock_platform_url()
-
-            persona_runtime_overrides: dict[str, Any] = {}
-            system_prompt_extra = persona_override.get("system_prompt_extra")
-            if isinstance(system_prompt_extra, str) and system_prompt_extra.strip():
-                persona_runtime_overrides["system_prompt_extra"] = system_prompt_extra
-
-            iteration_budget = persona_override.get("iteration_budget")
-            if iteration_budget:
-                initiative_cfg["iteration_budget"] = int(iteration_budget)
-                persona_runtime_overrides["iteration_budget"] = int(iteration_budget)
-
-            consumes_event_types = persona_override.get("consumes_event_types")
-            if isinstance(consumes_event_types, list) and consumes_event_types:
-                persona_runtime_overrides["consumes_event_types"] = [
-                    str(event_type) for event_type in consumes_event_types
-                ]
-
-            executor_override = persona_override.get("executor")
-            if isinstance(executor_override, dict) and executor_override:
-                persona_runtime_overrides["executor"] = {
-                    "adapter": str(executor_override.get("adapter") or ""),
-                    "kwargs": (
-                        dict(executor_override.get("kwargs") or {})
-                        if isinstance(executor_override.get("kwargs"), dict)
-                        else {}
-                    ),
-                }
-
-            if persona_runtime_overrides:
-                node_config["persona_overrides"] = persona_runtime_overrides
-            else:
-                node_config.pop("persona_overrides", None)
-
-            if mcp_servers:
-                node_config["mcp_servers"] = mcp_servers
-            else:
-                node_config.pop("mcp_servers", None)
-
-            node_path.write_text(
-                yaml.safe_dump(node_config, default_flow_style=False),
-                encoding="utf-8",
-            )
-
-        cluster_path = flock_dir / "cluster.yaml"
-        if not cluster_path.exists():
-            return
-
-        cluster = yaml.safe_load(cluster_path.read_text()) or {}
-        peers = cluster.get("peers")
-        if not isinstance(peers, list):
-            return
-
-        for peer in peers:
-            if not isinstance(peer, dict):
-                continue
-            persona = peer.get("persona")
-            if not isinstance(persona, str) or persona not in personas:
-                continue
-
-            tools: list[str] = []
-            if persona_loader is not None:
-                try:
-                    persona_config = persona_loader.load(persona)
-                except Exception:
-                    logger.warning(
-                        "Failed loading persona %s for local flock metadata",
-                        persona,
-                        exc_info=True,
-                    )
-                    persona_config = None
-                if persona_config is not None:
-                    tools = list(persona_config.allowed_tools or [])
-
-            consumes, emits = _workflow_event_metadata(workflow_cfg, persona)
-            if tools:
-                peer["capabilities"] = tools
-            if consumes:
-                peer["consumes_event_types"] = consumes
-            if emits:
-                peer["emits_event_types"] = emits
-
-        cluster_path.write_text(
-            yaml.safe_dump(cluster, default_flow_style=False),
-            encoding="utf-8",
-        )
-        logger.info("Applied local flock overrides and peer metadata: %s", flock_dir)
-
-    def _stop_flock(self, flock_dir: str) -> None:
-        """Stop a ravn flock via the CLI."""
-        if not flock_dir:
-            return
-        import subprocess as sp
-
-        flock_path = Path(flock_dir)
-        try:
-            sp.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "ravn",
-                    "flock",
-                    "stop",
-                    "--flock-dir",
-                    flock_dir,
-                ],
-                capture_output=True,
-                timeout=15,
-            )
-            cleanup_skuld_mesh_sockets(flock_path)
-            logger.info("Flock stopped: %s", flock_dir)
-        except Exception:
-            logger.warning("Failed to stop flock at %s", flock_dir, exc_info=True)
-
     def _resolve_skuld_command(self) -> list[str]:
         """Resolve the command to run a Skuld subprocess.
 
         From the compiled binary: reuse the same binary with 'platform skuld'.
         From source: use 'python -m skuld'.
         """
-        import sys
-
         # Check if we're running from a Nuitka-compiled binary.
         if getattr(sys, "frozen", False) or "__compiled__" in globals():
             return [sys.executable, "platform", "skuld"]
@@ -1925,14 +1145,9 @@ class LocalProcessPodManager(PodManager):
 
             info = self._processes.get(session_id)
             if info and info.state == ProcessState.RUNNING:
-                # Stop flock sidecars when Skuld exits
-                if info.flock_dir:
-                    self._stop_flock(info.flock_dir)
                 info.state = ProcessState.STOPPED
                 if info.port is not None:
                     self._port_allocator.release(info.port)
-                if info.flock_base_port is not None:
-                    self._allocated_flock_base_ports.discard(info.flock_base_port)
                 self._persist_state()
                 if self._skuld_registry is not None:
                     unregister = getattr(self._skuld_registry, "unregister", None)
@@ -2118,8 +1333,6 @@ class LocalProcessPodManager(PodManager):
                 info.state = ProcessState.STOPPED
                 if info.port is not None:
                     self._port_allocator.release(info.port)
-                if info.flock_base_port is not None:
-                    self._allocated_flock_base_ports.discard(info.flock_base_port)
                 reaped.append(sid)
         if reaped:
             self._persist_state()

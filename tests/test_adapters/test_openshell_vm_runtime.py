@@ -12,6 +12,7 @@ from niuu.ports.session_proxy import SessionProxyTarget
 from tests.test_adapters.test_openshell_gateway import _import_adapter
 from tests.test_adapters.test_ssh_vm_runtime import setup as ssh_setup  # noqa: F401
 from volundr.domain.compute import MachineBootstrap
+from volundr.domain.services.host_access_key import generate_host_access_key
 
 GATEWAY = """[openshell]
 version=2
@@ -41,8 +42,7 @@ def setup(ssh_setup, monkeypatch):  # noqa: F811
     sys.modules.pop("volundr.adapters.outbound.openshell_vm_runtime", None)
     module = importlib.import_module("volundr.adapters.outbound.openshell_vm_runtime")
     runtime = module.OpenShellVmRuntime(
-        ssh_private_key_file=old._private_key,
-        ssh_public_key_file=old._private_key + ".pub",
+        host_key=generate_host_access_key(),
         data_dir=str(old._data),
         skuld_image="test/openshell:dev",
         gateway_image="test/gateway:version",
@@ -231,7 +231,8 @@ async def test_manager_cache_tracks_endpoint_and_session_binding(setup, monkeypa
         == "/var/lib/niuu/session/workspace"
     )
     assert factory.call_args.kwargs["codex_auth_adapter"] == runtime._codex_auth_adapter
-    await runtime._manager(lease.model_copy(update={"session_id": None}), bootstrap)
+    # A warm machine is probed with its machine record: no session, no secret mounts.
+    await runtime._manager(lease.allocation, bootstrap)
     assert factory.call_count == 2
     manager.close.assert_awaited_once()
     await runtime.close()
@@ -271,8 +272,6 @@ async def test_readiness_checks_skuld_and_unavailable_sandbox(setup, respx_mock)
     assert not await runtime.ready(lease, bootstrap)
     manager._client.get_sandbox.return_value = None
     assert not await runtime.ready(lease, bootstrap)
-    with pytest.raises(ValueError, match="unbound"):
-        await runtime.start(lease.model_copy(update={"session_id": None}), bootstrap)
 
 
 def test_bootstrap_conflicts_and_unsupported_identity_contract_fail_explicitly(setup):

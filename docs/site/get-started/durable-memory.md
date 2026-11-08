@@ -51,6 +51,5 @@ the onboarding note and cite the source. Verify the returned content rather than
 accepting a plausible answer from model memory. This final agent step requires a
 working model and configured tools and is not covered by the source-ingest check.
 
-A warden can maintain knowledge over time once the store has a defined scope.
 See [memory concepts](../concepts/memory-and-knowledge.md) for evidence, page
 structure, and what must be backed up.

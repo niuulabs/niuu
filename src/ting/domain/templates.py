@@ -27,7 +27,6 @@ Supports two template formats:
     base_branch: "{event.base_branch}"
     repos:
       - "{event.repo}"
-    flock_flow: code-review-flow          # optional named flock flow (NIU-644)
     stages:
       - name: parallel-review
         parallel:
@@ -52,7 +51,8 @@ Supports two template formats:
         notify: [slack]
         condition: "stages.test.verdict == pass"
 
-``persona_overrides`` merges onto the matching persona from ``flock_flow``.
+A template used to name a ``flock_flow``, a flock of Ravn personas that ``persona_overrides``
+merged onto. Flocks are gone, so a template that names one is refused when it is loaded.
 The keys ``allowed_tools`` and ``forbidden_tools`` are rejected at parse
 time — they are a security boundary that cannot be overridden at the
 pipeline layer.
@@ -87,7 +87,7 @@ class TemplateRun:
     estimate_hours: float
     prompt: str
     persona: str = ""
-    persona_overrides: dict | None = None  # NIU-644: per-stage flock persona overrides
+    persona_overrides: dict | None = None  # per-stage overrides, checked against the security keys
 
 
 @dataclass(frozen=True)
@@ -113,7 +113,6 @@ class SagaTemplate:
     base_branch: str
     repos: list[str]
     phases: list[TemplatePhase]
-    flock_flow: str | None = None  # NIU-644: named flock flow for all stages in this pipeline
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +305,11 @@ def _validate_template(data: dict) -> None:
     """
     if not data.get("name"):
         raise ValueError("Template is missing required field 'name'")
+    if data.get("flock_flow"):
+        raise ValueError(
+            f"Template {data['name']!r} names flock_flow {data['flock_flow']!r}, but flocks "
+            "no longer exist; remove flock_flow and describe the work as phases and runs"
+        )
 
     has_phases = "phases" in data
     has_stages = "stages" in data
@@ -407,7 +411,6 @@ def load_template(name: str, templates_dir: Path, payload: dict) -> SagaTemplate
         base_branch=data.get("base_branch", "main"),
         repos=data.get("repos", []),
         phases=phases,
-        flock_flow=data.get("flock_flow") or None,
     )
 
 
@@ -435,5 +438,4 @@ def load_template_from_string(yaml_str: str, payload: dict) -> SagaTemplate:
         base_branch=data.get("base_branch", "main"),
         repos=data.get("repos", []),
         phases=phases,
-        flock_flow=data.get("flock_flow") or None,
     )

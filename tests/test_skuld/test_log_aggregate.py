@@ -8,7 +8,9 @@ def _write(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def test_aggregate_workspace_logs_interleaves_skuld_and_flock_participants(tmp_path: Path) -> None:
+def test_aggregate_workspace_logs_interleaves_skuld_and_service_participants(
+    tmp_path: Path,
+) -> None:
     _write(
         tmp_path / ".skuld.log",
         "\n".join(
@@ -19,7 +21,7 @@ def test_aggregate_workspace_logs_interleaves_skuld_and_flock_participants(tmp_p
         ),
     )
     _write(
-        tmp_path / ".flock" / "logs" / "coder.log",
+        tmp_path / ".services" / "logs" / "coder.log",
         "\n".join(
             [
                 (
@@ -35,14 +37,14 @@ def test_aggregate_workspace_logs_interleaves_skuld_and_flock_participants(tmp_p
 
     assert [participant["id"] for participant in payload["available_participants"]] == [
         "skuld",
-        "coder",
+        "service:coder",
     ]
     lines = payload["lines"]
     assert len(lines) == 4
     assert lines[0]["participant"] == "skuld"
     assert lines[1]["participant"] == "skuld"
     assert lines[1]["source"] == "uvicorn"
-    assert lines[2]["participant"] == "coder"
+    assert lines[2]["participant"] == "service:coder"
     assert lines[3]["level"] == "ERROR"
 
 
@@ -52,7 +54,7 @@ def test_aggregate_workspace_logs_filters_by_participant_query_and_level(tmp_pat
         "2026-05-01 15:19:48,121 - skuld.broker - INFO - Starting Skuld broker\n",
     )
     _write(
-        tmp_path / ".flock" / "logs" / "coder.log",
+        tmp_path / ".services" / "logs" / "coder.log",
         "\n".join(
             [
                 (
@@ -71,12 +73,12 @@ def test_aggregate_workspace_logs_filters_by_participant_query_and_level(tmp_pat
         tmp_path,
         lines=10,
         level="ERROR",
-        participants={"coder"},
+        participants={"service:coder"},
         query="retries",
     )
 
     assert payload["total"] == 3
     assert payload["filtered"] == 1
     assert payload["returned"] == 1
-    assert payload["lines"][0]["participant"] == "coder"
+    assert payload["lines"][0]["participant"] == "service:coder"
     assert payload["lines"][0]["message"].endswith("failed after 3 retries")

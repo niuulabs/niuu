@@ -1,1 +1,0 @@
-"""Flock flow provider adapters."""

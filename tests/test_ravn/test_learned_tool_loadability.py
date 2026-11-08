@@ -3,20 +3,18 @@
 The live defect: on a ``k8s_job`` resident, ``capability_list`` advertised
 tools that import the host SDK, ``learned_tool_run`` refused them at load, and
 the resident rediscovered that on every turn while curation counted them kept.
-The loader, the catalog, curation and build_tool must all ask the same
-question; these tests pin that they do and that a refusal is never silent.
+The loader and everything that lists learned tools must ask the same
+question; these tests pin that a refusal is never silent.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from ravn.adapters.tools.capability_catalog import CapabilityListTool
-from ravn.cap_telemetry import degraded_counts, reset_cap_hits
+from niuu.cap_telemetry import degraded_counts, reset_cap_hits
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedTool,
     LearnedToolError,
@@ -179,7 +177,7 @@ class TestResolver:
         (record,) = [r for r in caplog.records if "degraded [learned_tool.refused]" in r.message]
         assert record.levelname == "ERROR"
         assert "uses_host_sdk" in record.message
-        assert "build_tool" in record.message
+        assert "execution backend" in record.message
         reset_cap_hits()
 
     def test_an_unbuildable_backend_stops_construction_with_the_remedy(
@@ -195,41 +193,7 @@ class TestResolver:
             )
 
 
-class TestCatalog:
-    async def test_refused_tools_are_named_apart_from_the_callable_catalog(
-        self, tmp_path: Path
-    ) -> None:
-        _install(tmp_path, "self_contained")
-        _install(tmp_path, "uses_host_sdk", code=_HOST_SDK)
-        resolver = LearnedToolResolver(state_dir=tmp_path, execution_backend="container")
-        catalog = CapabilityListTool(
-            tools_provider=lambda: [],
-            learned_tools_provider=resolver.list_loadable_artifacts,
-            refused_learned_tools=resolver.list_refused,
-        )
-
-        listed = json.loads((await catalog.execute({})).content)
-        detail = json.loads((await catalog.execute({"names": ["uses_host_sdk"]})).content)
-
-        assert [c["name"] for c in listed["capabilities"]] == ["self_contained"]
-        assert listed["unavailable_learned_tools"] == ["uses_host_sdk"]
-        assert "unavailable_matches" not in listed
-        assert detail["capabilities"] == []
-        assert detail["not_found"] == ["uses_host_sdk"]
-        (match,) = detail["unavailable_matches"]
-        assert "ravn.sdk" in match["reason"]
-
-    async def test_nothing_refused_adds_nothing_to_the_payload(self) -> None:
-        catalog = CapabilityListTool(
-            tools_provider=lambda: [],
-            learned_tools_provider=lambda: [],
-            refused_learned_tools=lambda: [],
-        )
-
-        payload = json.loads((await catalog.execute({})).content)
-
-        assert "unavailable_learned_tools" not in payload
-
+class TestRefusedTool:
     def test_a_refused_tool_wraps_its_artifact_and_reason(self) -> None:
         artifact = LearnedToolArtifact(artifact_id="x", manifest=_manifest("x"), tool_code="")
 

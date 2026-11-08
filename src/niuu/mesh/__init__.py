@@ -6,7 +6,14 @@ broker) and Ravn (agent daemon) share a single implementation:
     niuu.mesh                  — transport builders, port allocation helpers
     niuu.mesh.cluster          — cluster.yaml peer address reader
     niuu.mesh.discovery_builder — discovery adapter construction
-    niuu.mesh.identity         — MeshIdentity (shared peer identity model)
+    niuu.mesh.identity         — MeshIdentity, MeshPeer, MeshCandidate (peer models)
+    niuu.mesh.events           — MeshEvent, the mesh envelope
+    niuu.mesh.projection       — MeshEvent to neutral collaboration events
+    niuu.mesh.config           — MeshConfig, DiscoveryConfig, NATS settings
+    niuu.ports.mesh            — MeshPort
+    niuu.ports.discovery       — DiscoveryPort
+    niuu.adapters.mesh         — mesh transport adapters (Sleipnir, webhook, composite)
+    niuu.adapters.discovery    — discovery adapters (mDNS, k8s, static, Sleipnir, event bus)
     niuu.mesh.participant      — MeshParticipant lifecycle wrapper
     niuu.mesh.transport_builder — Sleipnir transport construction
 
@@ -25,8 +32,8 @@ from niuu.utils import import_class
 logger = logging.getLogger("niuu.mesh")
 
 MESH_ALIASES: dict[str, str] = {
-    "sleipnir": "ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter",
-    "webhook": "ravn.adapters.mesh.webhook.WebhookMeshAdapter",
+    "sleipnir": "niuu.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter",
+    "webhook": "niuu.adapters.mesh.webhook.WebhookMeshAdapter",
 }
 
 
@@ -106,7 +113,7 @@ def build_mesh_from_adapters_list(
             "no mesh adapters configured: add an entry to mesh.adapters, or disable the mesh"
         )
 
-    CompositeMeshAdapter = import_class("ravn.adapters.mesh.composite.CompositeMeshAdapter")  # noqa: N806
+    CompositeMeshAdapter = import_class("niuu.adapters.mesh.composite.CompositeMeshAdapter")  # noqa: N806
 
     transports: list[Any] = []
     for index, entry in enumerate(adapters):
@@ -174,7 +181,7 @@ def build_in_process_mesh(
     environment_id: str = "",
 ) -> Any:
     """Build a SleipnirMeshAdapter backed by InProcessBus (local/test mode)."""
-    SleipnirMeshAdapter = import_class("ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter")  # noqa: N806
+    SleipnirMeshAdapter = import_class("niuu.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter")  # noqa: N806
     InProcessBus = import_class("sleipnir.adapters.in_process.InProcessBus")  # noqa: N806
 
     bus = InProcessBus()

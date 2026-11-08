@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -12,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from niuu.domain.guild_membership import GuildInstance, GuildMembership
 from niuu.domain.models import Principal
 from tests.conftest import (
     InMemoryPricingProvider,
@@ -43,6 +45,7 @@ from volundr.domain.models import GitProviderType, GitSource, RepoInfo, Session,
 from volundr.domain.ports import SessionCapacity
 from volundr.domain.services import RepoService, SessionService, StatsService
 from volundr.domain.services.session import SessionAccessDeniedError
+from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
 
 _SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
 
@@ -206,6 +209,60 @@ class TestSessionResponse:
         assert response.pod_name == "volundr-abc123"
         assert session.created_at.isoformat() in response.created_at
 
+    def test_from_session_carries_the_launch_stages(self):
+        """The stages of the latest launch ride on the session, as JSON."""
+        started = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
+        startup = SessionStartup(
+            started_at=started,
+            handed_off_at=started,
+            stages=(
+                StartupStage(
+                    key="schedule",
+                    label="Scheduling",
+                    state=StartupStageState.DONE,
+                    detail="On node hnoss",
+                    started_at=started,
+                    finished_at=started,
+                ),
+                StartupStage(
+                    key="containers",
+                    label="Starting containers",
+                    state=StartupStageState.PENDING,
+                ),
+            ),
+        )
+        session = Session(
+            id=uuid4(),
+            name="Test",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.STARTING,
+            startup=startup,
+        )
+
+        response = SessionResponse.from_session(session)
+
+        assert response.startup == startup
+        body = response.model_dump(mode="json")["startup"]
+        assert body["handed_off_at"] == "2026-11-06T12:00:00Z"
+        assert [(s["key"], s["state"], s["detail"]) for s in body["stages"]] == [
+            ("schedule", "done", "On node hnoss"),
+            ("containers", "pending", None),
+        ]
+
+    def test_from_session_without_a_recorded_launch_has_null_startup(self):
+        session = Session(
+            id=uuid4(),
+            name="Test",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+
+        response = SessionResponse.from_session(session)
+
+        assert response.startup is None
+        assert response.model_dump(mode="json")["startup"] is None
+
     def test_from_session_normalizes_loopback_chat_endpoint(self):
         """Loopback chat endpoints should prefer localhost for browser clients."""
         session = Session(
@@ -330,6 +387,29 @@ class TestCreateSession:
         )
         assert response.status_code == 422
 
+    def test_create_session_refuses_the_removed_ravn_flock_workload(
+        self, client: TestClient, pod_manager: MockPodManager
+    ):
+        """A removed workload type is a 422 naming the replacement, never a plain session."""
+        response = client.post(
+            "/api/v1/forge/sessions",
+            json={
+                "name": "flock",
+                "model": "claude-sonnet-4",
+                "source": {"type": "git", "repo": "https://github.com/org/repo", "branch": "main"},
+                "workload_type": "ravn_flock",
+            },
+        )
+        assert response.status_code == 422
+        assert (
+            "workload type ravn_flock was removed: workflow steps will run on "
+            "harness sessions (NIU-1198)"
+        ) in response.text
+        assert pod_manager.start_calls == []
+        listed = client.get("/api/v1/forge/sessions").json()
+        items = listed if isinstance(listed, list) else listed.get("items", [])
+        assert "flock" not in [s["name"] for s in items]
+
     def test_create_session_missing_field(self, client: TestClient):
         """Returns 422 for missing required field (name)."""
         response = client.post(
@@ -340,6 +420,25 @@ class TestCreateSession:
             },
         )
         assert response.status_code == 422
+
+    async def test_start_refuses_a_stored_ravn_flock_session(
+        self, client: TestClient, service: SessionService, pod_manager: MockPodManager
+    ):
+        session = await service.create_session(
+            "Flock",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        await service._repository.update(session.model_copy(update={"workload_type": "ravn_flock"}))
+
+        response = client.post(f"/api/v1/forge/sessions/{session.id}/start")
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == (
+            "workload type ravn_flock was removed: workflow steps will run on "
+            "harness sessions (NIU-1198)"
+        )
+        assert pod_manager.start_calls == []
 
     @pytest.mark.parametrize(
         ("error", "expected_status", "expected_detail"),
@@ -911,6 +1010,19 @@ class TestSessionMessages:
                 f"/api/v1/forge/sessions/{session.id}/messages",
                 json={"content": "hello from rest"},
             )
+            authed = client.post(
+                f"/api/v1/forge/sessions/{session.id}/messages",
+                json={"content": "hello again"},
+                headers={"Authorization": "Bearer caller-jwt"},
+            )
+
+        # The caller's bearer goes to the broker socket as a header, never in the URL:
+        # Envoy reads no `access_token` parameter, and URLs reach access logs.
+        assert authed.status_code == 202
+        authed_url, authed_kwargs = fake_connect.calls.pop()
+        assert "caller-jwt" not in authed_url
+        assert authed_kwargs["additional_headers"] == {"Authorization": "Bearer caller-jwt"}
+        fake_connect.ws.sent.pop()
 
         # INV-7: no delivery ACK arrives within the grace (recv times out), so the
         # broker has ACCEPTED the message but not yet confirmed it reached the agent.
@@ -1366,13 +1478,13 @@ class TestSessionLogAggregationProxy:
         tmp_path,
     ) -> None:
         workspace = tmp_path / "workspace"
-        flock_logs = workspace / ".flock" / "logs"
-        flock_logs.mkdir(parents=True)
+        service_logs = workspace / ".services" / "logs"
+        service_logs.mkdir(parents=True)
         (workspace / ".skuld.log").write_text(
             "2026-05-01 15:19:48,121 - skuld.broker - INFO - Starting Skuld broker\n",
             encoding="utf-8",
         )
-        (flock_logs / "coder.log").write_text(
+        (service_logs / "coder.log").write_text(
             "2026-05-01 15:19:58,326 ravn.drive_loop ERROR "
             "drive_loop: task failed after 3 retries\n",
             encoding="utf-8",
@@ -1412,9 +1524,9 @@ class TestSessionLogAggregationProxy:
         assert data["session_id"] == str(session.id)
         assert {participant["id"] for participant in data["available_participants"]} == {
             "skuld",
-            "coder",
+            "service:coder",
         }
-        assert [line["participant"] for line in data["lines"]] == ["skuld", "coder"]
+        assert [line["participant"] for line in data["lines"]] == ["skuld", "service:coder"]
 
     @pytest.mark.asyncio
     async def test_get_conversation_falls_back_to_local_workspace_without_archive_service(
@@ -2068,6 +2180,50 @@ class TestHelpRequestProxy:
         assert "not answered" in response.json()["detail"].lower()
 
 
+class TestSessionRuntimes:
+    """Tests for GET /api/v1/forge/session-runtimes."""
+
+    def test_a_host_that_declares_no_runtime_offers_none(self, client: TestClient):
+        response = client.get("/api/v1/forge/session-runtimes")
+        assert response.status_code == 200
+        assert response.json() == {"runtimes": []}
+
+    def test_the_offer_is_the_hosts_runtime_with_grants_and_readiness(
+        self, client: TestClient, pod_manager
+    ):
+        from volundr.domain.session_runtimes import (
+            ReadinessState,
+            RuntimeReadiness,
+            SessionGrant,
+            SessionRuntimeKind,
+            SessionRuntimeOffer,
+        )
+
+        pod_manager.session_runtimes = AsyncMock(
+            return_value=(
+                SessionRuntimeOffer(
+                    runtime=SessionRuntimeKind.OPENSHELL,
+                    grants=(SessionGrant.SUDO,),
+                    readiness=RuntimeReadiness(
+                        state=ReadinessState.FULL, warm=0, remedy="raise the pool"
+                    ),
+                ),
+            )
+        )
+
+        response = client.get("/api/v1/forge/session-runtimes")
+
+        assert response.json() == {
+            "runtimes": [
+                {
+                    "runtime": "openshell",
+                    "grants": ["sudo"],
+                    "readiness": {"state": "full", "warm": 0, "remedy": "raise the pool"},
+                }
+            ]
+        }
+
+
 class TestFeatureFlags:
     """Tests for GET /api/v1/forge/feature-flags."""
 
@@ -2218,6 +2374,82 @@ class TestGetStats:
         assert data["total_sessions"] == 0
         assert data["tokens_today"] == 0
         assert data["cost_today"] == 0.0
+
+
+NOATUN = GuildInstance(id="70b502d8", name="Noatun", slug="noatun")
+
+
+def _node_client(
+    service: SessionService,
+    stats_service: StatsService,
+    membership: GuildMembership | None,
+) -> TestClient:
+    app = FastAPI()
+    app.include_router(
+        create_router(
+            service,
+            stats_service,
+            session_participant_service=make_session_participant_service(service),
+            guild_membership=membership,
+        )
+    )
+    return TestClient(app)
+
+
+class TestNodeInstanceFields:
+    """A node joined to a Guild names itself on its sessions and stats, as the facade does."""
+
+    async def test_sessions_and_stats_carry_the_nodes_instance(
+        self, service: SessionService, stats_service: StatsService
+    ):
+        await service.create_session(
+            "On Noatun",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        membership = GuildMembership(guild_url="https://guild.example", instance=NOATUN)
+        with _node_client(service, stats_service, membership) as client:
+            sessions = client.get("/api/v1/forge/sessions").json()
+            stats = client.get("/api/v1/forge/stats", params={"instance_id": NOATUN.id})
+
+        assert [(s["instance_id"], s["instance_name"], s["instance_slug"]) for s in sessions] == [
+            ("70b502d8", "Noatun", "noatun")
+        ]
+        assert stats.status_code == 200
+        assert stats.json()["instance_id"] == "70b502d8"
+        assert stats.json()["instance_name"] == "Noatun"
+        assert stats.json()["tokens_today"] == 50000
+
+    def test_stats_for_another_forge_is_404(
+        self, service: SessionService, stats_service: StatsService
+    ):
+        membership = GuildMembership(guild_url="https://guild.example", instance=NOATUN)
+        with _node_client(service, stats_service, membership) as client:
+            response = client.get("/api/v1/forge/stats", params={"instance_id": "ymir-id"})
+
+        assert response.status_code == 404
+        assert "not this Forge node (Noatun, 70b502d8)" in response.json()["detail"]
+
+    def test_stats_by_instance_on_an_unjoined_node_is_404(
+        self, service: SessionService, stats_service: StatsService
+    ):
+        with _node_client(service, stats_service, None) as client:
+            by_instance = client.get("/api/v1/forge/stats", params={"instance_id": NOATUN.id})
+            plain = client.get("/api/v1/forge/stats")
+
+        assert by_instance.status_code == 404
+        assert plain.status_code == 200
+        assert plain.json()["instance_id"] is None
+
+    def test_stats_by_instance_before_the_instance_is_recorded_is_503(
+        self, service: SessionService, stats_service: StatsService
+    ):
+        membership = GuildMembership(guild_url="https://guild.example")
+        with _node_client(service, stats_service, membership) as client:
+            response = client.get("/api/v1/forge/stats", params={"instance_id": NOATUN.id})
+
+        assert response.status_code == 503
+        assert "https://guild.example" in response.json()["detail"]
 
 
 class TestListRepos:

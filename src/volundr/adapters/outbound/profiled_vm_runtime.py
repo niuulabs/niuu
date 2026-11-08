@@ -8,12 +8,23 @@ pool and one Forge API/UI lifecycle.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from uuid import UUID
 
+from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.session_proxy import SessionProxyTarget
-from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.compute import ComputeLease, MachineBootstrap, SlotLease
+from volundr.domain.compute_hosts import HostPlatform
+from volundr.domain.guest_credentials import GuestCredentialDelivery
 from volundr.domain.models import Session, SessionSpec
-from volundr.domain.vm_runtime import CredentialAwareVmRuntime, VmRuntime
+from volundr.domain.vm_runtime import (
+    CredentialAwareVmRuntime,
+    CredentialDeliveryVmRuntime,
+    ForgeSessionVmRuntime,
+    StartupReportingVmRuntime,
+    StartupStepReport,
+    VmRuntime,
+)
 
 
 class ProfiledVmRuntime(VmRuntime):
@@ -45,6 +56,44 @@ class ProfiledVmRuntime(VmRuntime):
         if not profile and self._default_profile is not None:
             profile = self._default_profile
         return self._for_profile(profile)
+
+    def _all(self) -> tuple[VmRuntime, ...]:
+        return (self._default, *self._profiles.values())
+
+    @property
+    def requires_root_daemon(self) -> bool:
+        return any(runtime.requires_root_daemon for runtime in self._all())
+
+    @property
+    def host_platforms(self) -> frozenset[HostPlatform]:
+        return frozenset.intersection(*(runtime.host_platforms for runtime in self._all()))
+
+    @property
+    def delivers_forge_session_token(self) -> bool:
+        return all(
+            isinstance(runtime, ForgeSessionVmRuntime) and runtime.delivers_forge_session_token
+            for runtime in self._all()
+        )
+
+    def stage_forge_session(self, session_id: UUID, credential: IssuedForgeSessionToken) -> None:
+        for runtime in self._all():
+            if isinstance(runtime, ForgeSessionVmRuntime):
+                runtime.stage_forge_session(session_id, credential)
+
+    def discard_forge_session(self, session_id: UUID) -> None:
+        for runtime in self._all():
+            if isinstance(runtime, ForgeSessionVmRuntime):
+                runtime.discard_forge_session(session_id)
+
+    def report_startup_to(self, report: StartupStepReport) -> None:
+        for runtime in self._all():
+            if isinstance(runtime, StartupReportingVmRuntime):
+                runtime.report_startup_to(report)
+
+    def configure_credential_delivery(self, delivery: GuestCredentialDelivery) -> None:
+        for runtime in self._all():
+            if isinstance(runtime, CredentialDeliveryVmRuntime):
+                runtime.configure_credential_delivery(delivery)
 
     def configure_credentials(self, credential_store: CredentialStorePort) -> None:
         for runtime in (self._default, *self._profiles.values()):
@@ -93,19 +142,19 @@ class ProfiledVmRuntime(VmRuntime):
     async def warm(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
         await self._for_profile(lease.profile).warm(lease, bootstrap)
 
-    async def prepare(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def prepare(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         await self._for_profile(lease.profile).prepare(lease, bootstrap)
 
-    async def start(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def start(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         await self._for_profile(lease.profile).start(lease, bootstrap)
 
-    async def target(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> SessionProxyTarget:
+    async def target(self, lease: SlotLease, bootstrap: MachineBootstrap) -> SessionProxyTarget:
         return await self._for_profile(lease.profile).target(lease, bootstrap)
 
-    async def ready(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> bool:
+    async def ready(self, lease: SlotLease, bootstrap: MachineBootstrap) -> bool:
         return await self._for_profile(lease.profile).ready(lease, bootstrap)
 
-    async def stop(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         await self._for_profile(lease.profile).stop(lease, bootstrap)
 
     async def close(self) -> None:

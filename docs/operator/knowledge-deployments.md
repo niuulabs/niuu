@@ -8,8 +8,8 @@ Register each platform Mimir service in Guild with its service URL. Root URLs,
 
 Each service exposes the targets configured in its `deployment` adapter. This
 can be one Flux target or `mimir.adapters.deployment_targets.KnowledgeDeploymentTargets`
-combining local and remote targets. Storage class, chart/image versions and
-warden profiles remain configured on the owning service. Guild does not store
+combining local and remote targets. Storage class and chart/image versions
+remain configured on the owning service. Guild does not store
 or copy Kubernetes credentials. Requests reuse the signed-in user's identity
 and the remote service enforces deployment administrator access.
 
@@ -32,8 +32,7 @@ The chart manages the database owner's `BYPASSRLS` attribute, required by gbrain
 schema migrations. The application remains non-superuser; CloudNativePG generates its credential.
 
 Use **Inspect → Update** to move a Flux-managed instance to the chart/image
-versions configured by its deployment target, preserving its database, dream
-settings, and warden configuration.
+versions configured by its deployment target, preserving its database and settings.
 
 Flux deployment targets supply the cluster and stable instance identity to both
 charts. Observatory's existing Kubernetes discovery picks them up when its

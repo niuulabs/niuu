@@ -285,22 +285,20 @@ class TestCreateSagaFromTemplate:
 class TestDispatchServiceBundledTemplates:
     """Smoke-load each bundled template through DispatchService."""
 
-    async def test_ship_template_via_dispatch_service(self):
+    async def test_review_template_via_dispatch_service(self):
         saga_repo = InMemorySagaRepository()
         svc = _make_service(saga_repo=saga_repo)
-        payload = {"repo": "niuulabs/volundr", "branch": "feat/release", "base_branch": "main"}
+        payload = {
+            "repo": "niuulabs/volundr",
+            "pr_number": "7",
+            "branch": "feat/x",
+            "base_branch": "main",
+            "title": "My PR",
+            "author": "bob",
+            "pr_url": "https://github.com/niuulabs/volundr/pull/7",
+        }
 
-        saga_id = await svc.create_saga_from_template("ship", payload, _OWNER, auto_start=False)
-
-        assert saga_id
-        assert len(saga_repo.phases) == 4
-
-    async def test_retro_template_via_dispatch_service(self):
-        saga_repo = InMemorySagaRepository()
-        svc = _make_service(saga_repo=saga_repo)
-        payload = {"week": "2026-W15"}
-
-        saga_id = await svc.create_saga_from_template("retro", payload, _OWNER, auto_start=False)
+        saga_id = await svc.create_saga_from_template("review", payload, _OWNER, auto_start=False)
 
         assert saga_id
         assert len(saga_repo.phases) == 2

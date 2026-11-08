@@ -11,7 +11,6 @@ from typing import Any
 
 import typer
 
-from niuu.cli_api_client import CLIAPIClient
 from niuu.cli_output import print_json, print_success, print_table
 from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin, TUIPageSpec
 from volundr.tui.admin import AdminPage
@@ -90,7 +89,7 @@ class VolundrPlugin(ServicePlugin):
         )
 
     def create_api_client(self) -> Any:
-        return CLIAPIClient(base_url="http://localhost:8080", service_name="Volundr")
+        return self.cli_client("Volundr")
 
     def tui_pages(self) -> Sequence[TUIPageSpec]:
         return [

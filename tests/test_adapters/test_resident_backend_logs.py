@@ -68,11 +68,12 @@ def test_discovery_finds_a_controller_for_every_resident_backend(
     """Guards the test above against passing because it found nothing."""
     names = {cls.__name__ for cls in shipped_controllers}
     assert {
-        "FluxPodManager",
         "OpenShellGatewayPodManager",
-        "HostProcessResidentRuntimeController",
         "LocalContainerResidentRuntimeController",
     } <= names
     # Each controller's backend property is a constant; read it without an instance.
+    # HELMRELEASE and DISCOVERED are enum members with no controller: the Flux
+    # resident controller was removed, and discovered residents are driven by
+    # nothing Forge ships.
     backends = {cls.backend.fget(None) for cls in shipped_controllers}
-    assert set(ResidentBackend) <= backends
+    assert {ResidentBackend.OPENSHELL, ResidentBackend.LOCAL} <= backends

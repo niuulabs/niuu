@@ -6,7 +6,7 @@ import httpx
 from fastapi import HTTPException, Request
 
 from niuu.domain.models import Principal
-from ravn.domain.persona_document import (
+from personas.domain.persona_document import (
     PersonaDocumentError,
     PortablePersonaCollection,
     PortablePersonaSource,

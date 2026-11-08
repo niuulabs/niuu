@@ -9,9 +9,7 @@ import { FIRST_REALM_WALKTHROUGH, useWalkthrough } from '../application/useWalkt
 import { countWords } from '../domain/homeCopy';
 import { groupByProject, projectsWithoutWorkspaces } from '../domain/projects';
 import { REALM_TEMPLATES } from '../domain/templates';
-import { AdoptResidents } from './AdoptResidents';
 import { TemplateIcon } from './icons';
-import { NeedsYouRow } from './NeedsYouRow';
 import { NewProjectDialog } from './NewProjectDialog';
 import { ProjectGroupSection } from './ProjectGroupSection';
 import { SentenceComposer } from './SentenceComposer';
@@ -19,7 +17,7 @@ import { NeedsYouError, TicketReviewRow } from './TicketReviewRow';
 
 export type RealmsHomeView = 'all' | 'needs-you' | 'templates';
 
-/** The panel is a prompt, not the inbox: the rest is one click away. */
+/** The panel is a prompt, not the full list: the rest is one click away. */
 const NEEDS_YOU_PREVIEW = 5;
 
 const BUTTON =
@@ -43,7 +41,7 @@ function TemplatesView() {
           >
             <div className="niuu:flex niuu:flex-col niuu:gap-3">
               <ul className="niuu:m-0 niuu:flex niuu:list-none niuu:flex-col niuu:gap-1 niuu:p-0 niuu:text-xs niuu:text-text-secondary">
-                {template.keepsDoing.map((line) => (
+                {template.covers.map((line) => (
                   <li key={line}>· {line}</li>
                 ))}
               </ul>
@@ -106,17 +104,10 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
     () => projectsWithoutWorkspaces(home.cards, projects.data ?? []),
     [home.cards, projects.data],
   );
-  const cardFor = (environmentId: string) =>
-    home.cards.find((card) => card.resident?.environmentId === environmentId) ?? null;
-  const waiting = home.pendingTotal + home.waitingTickets.length;
-  const needsYouRows = [
-    ...home.waitingTickets.map(({ item, card }) => (
-      <TicketReviewRow key={item.taskId} item={item} workspace={card.realm.name} />
-    )),
-    ...home.pendingReviews.map((item) => (
-      <NeedsYouRow key={item.itemId} item={item} card={cardFor(item.environmentId)} />
-    )),
-  ];
+  const waiting = home.waitingTickets.length;
+  const needsYouRows = home.waitingTickets.map(({ item, card }) => (
+    <TicketReviewRow key={item.taskId} item={item} workspace={card.realm.name} />
+  ));
 
   return (
     <div
@@ -133,12 +124,11 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
               ? 'Projects'
               : home.cards.length === 0
                 ? 'No projects yet. Start with one sentence.'
-                : `${countWords(home.cards.length)} workspace${home.cards.length === 1 ? '' : 's'} across your projects, each kept by a resident.`}
+                : `${countWords(home.cards.length)} workspace${home.cards.length === 1 ? '' : 's'} across your projects.`}
           </h1>
           <p className="niuu:m-0 niuu:text-[15px] niuu:text-text-secondary">
-            A project is what you work on, and its workspaces sit under it. A workspace is one
-            resident and the job you give it: it works its tickets in sessions, watches health and
-            keeps learning. You review what it asks you to.
+            A project is what you work on, and its workspaces sit under it. A workspace is a home
+            for one job: its board, its sessions and its memory. You review what stops at a gate.
           </p>
         </div>
         <div className="niuu:flex niuu:shrink-0 niuu:gap-2">
@@ -163,24 +153,16 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
       ) : view === 'templates' ? (
         <TemplatesView />
       ) : view === 'needs-you' ? (
-        <SectionCard title="Needs you" description="Every open question from every workspace.">
+        <SectionCard
+          title="Needs you"
+          description="Every ticket waiting at a gate in every workspace."
+        >
           <NeedsYouError error={home.needsYouError} />
           {waiting === 0 ? (
-            <EmptyState
-              title="Nothing waiting on you"
-              description="Residents ask here when a grant says so, and tickets stop here at a gate."
-            />
+            <EmptyState title="Nothing waiting on you" description="Tickets stop here at a gate." />
           ) : (
             needsYouRows
           )}
-          {home.pendingReviews.length < home.pendingTotal ? (
-            <p
-              className="niuu:m-0 niuu:pt-3 niuu:text-xs niuu:text-text-muted"
-              data-testid="needs-you-truncated"
-            >
-              Showing the newest {home.pendingReviews.length} of {home.pendingTotal} open reviews.
-            </p>
-          ) : null}
         </SectionCard>
       ) : (
         <>
@@ -225,7 +207,6 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
               ))}
             </div>
           ) : null}
-          <AdoptResidents residents={home.unclaimedResidents} />
           <div className="niuu:grid niuu:flex-1 niuu:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] niuu:gap-4">
             <div
               className="niuu:flex niuu:flex-col niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:pb-1.5 niuu:pt-3.5"
@@ -238,7 +219,7 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
                 <span className="niuu:text-xs niuu:text-text-muted">
                   {waiting} open ·{' '}
                   <Link to="/realms/needs-you" className={LINK}>
-                    inbox
+                    see all
                   </Link>
                 </span>
               </div>
@@ -261,7 +242,6 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
                 </div>
                 <div className="niuu:grid niuu:grid-cols-2 niuu:gap-x-4 niuu:gap-y-3">
                   <Figure value={home.cards.length} label="workspaces" />
-                  <Figure value={home.residentsOnline} label="residents online" />
                   <Figure value={home.sessionsRunning} label="sessions running" />
                   <Figure value={waiting} label="awaiting you" attention={waiting > 0} />
                 </div>
@@ -320,7 +300,7 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
         open={cloneOpen}
         onOpenChange={setCloneOpen}
         title="Clone a workspace"
-        description="Only the blanks change: repository, board, name. Charter, trust, standing jobs and template come from the workspace you pick."
+        description="Only the blanks change: repository, board, name and charter. Trust and template come from the workspace you pick."
       >
         <div className="niuu:flex niuu:flex-col niuu:gap-2" data-testid="clone-picker">
           {home.cards.length === 0 ? (

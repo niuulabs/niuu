@@ -22,7 +22,7 @@ import tarfile
 import tempfile
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -45,13 +45,13 @@ from niuu.domain.services.token_scope import (
     OPENSHELL_RESIDENT_TOKEN_USE,
     OPENSHELL_SESSION_TOKEN_USE,
 )
-from niuu.ports.realm_repository import RealmRepository
 from niuu.ports.session_proxy import SessionProxyTarget
 from niuu.ports.workload_identity import WorkloadTokenIssuer
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
 from volundr.adapters.outbound.k8s_storage_adapter import _storage_bytes
 from volundr.adapters.outbound.local_process import (
     FORGE_MCP_GRANTS_ENV,
+    FORGE_MCP_TOKEN_FILE_ENV,
     LocalProcessPodManager,
 )
 from volundr.adapters.outbound.openshell_contract import (
@@ -87,25 +87,14 @@ from volundr.adapters.outbound.openshell_resident_workspace import (
     workspace_migration_state,
 )
 from volundr.adapters.outbound.resident_container_spec import (
-    RAVN_OPENCLAW_PORT,
-    RAVN_OPENCLAW_TOKEN_ENV,
-    enable_resident_openclaw_shim,
-    realm_charter_page_for,
-    realm_mount_name_for,
-    realm_routing_prefix_for,
-    resident_flock_environment,
-    resident_flock_labels,
-    resident_flock_profile_configured,
-    resident_flock_runtime_config,
-    resident_flock_skuld_config,
-    resident_mesh_pod_metadata,
-    resident_openclaw_shim_enabled,
-)
-from volundr.adapters.outbound.resident_container_spec import (
     image_from_values as _shared_image_from_values,
 )
 from volundr.adapters.outbound.resident_container_spec import (
     resident_attribution_headers as _shared_resident_attribution_headers,
+)
+from volundr.adapters.outbound.resident_container_spec import (
+    resident_flock_environment,
+    resident_flock_labels,
 )
 from volundr.adapters.outbound.resident_container_spec import (
     resident_process_files as _shared_resident_process_files,
@@ -146,8 +135,6 @@ from volundr.domain.ports import (
     PodManager,
     PodStartResult,
     ResidentDeviceApprover,
-    ResidentOpenClawShimHost,
-    ResidentOpenClawTokens,
     ResidentRuntimeController,
     ResidentRuntimeLogReader,
     ResidentRuntimeObservation,
@@ -155,6 +142,8 @@ from volundr.domain.ports import (
     ResidentRuntimeRepository,
     SessionRepository,
 )
+from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
+from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -169,8 +158,8 @@ READY_POLL_INTERVAL = 1.0
 #: wait for its record to go together. The OpenShell Kubernetes driver answers
 #: DeleteSandbox only once the workload Pod has gone (its 30s termination grace
 #: plus one 30s Kubernetes API timeout) and it has confirmed the Sandbox CR is
-#: gone; a flock's peer-workload Pod took about 60s on Noatun, so 30s turned
-#: every first flock delete into a 503.
+#: gone; a sandbox with peer workloads took about 60s on Noatun, so 30s turned
+#: every first such delete into a 503.
 DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS = 120.0
 #: How long a resident's deploy or migration waits for a sandbox it removes to go.
 #: Deleting a resident sandbox (its pod, volumes and gateway records) took over
@@ -192,17 +181,12 @@ SANDBOX_WORKSPACE_CLAIM_ANNOTATION = "volundr.niuu.io/workspace-claim"
 RESIDENT_MIGRATION_SANDBOX_PREFIX = "m-"
 RESIDENT_SANDBOX_PREFIX = "r-"
 RESIDENT_SANDBOX_ID_CHARS = 17
-#: Ravn keeps much of its state under ~/.ravn (memory.db, the drive-loop queue and
-#: cron state, skills), outside RAVN_STATE_DIR. On a persistent workspace that
-#: directory lives on the claim and ~/.ravn links to it.
-RAVN_HOME_STATE_DIR = ".ravn"
-RAVN_PERSISTED_HOME_DIR = ".ravn-home"
 #: Where a resident's own claim is mounted; its workspace path links here.
 #: Outside /sandbox on purpose: as soon as a driver mount sits under /sandbox, the
 #: gateway drops its own /sandbox volume (seeded from the image, and writable
 #: through the pod's fsGroup), and /sandbox is the image's directory, owned by the
 #: image's ``sandbox`` user rather than the UID the gateway runs the sandbox as
-#: (10001). Völundr then cannot write ``/sandbox/.volundr`` or link ``~/.ravn``.
+#: (10001). Völundr then cannot write ``/sandbox/.volundr``.
 RESIDENT_WORKSPACE_VOLUME_PATH = "/resident-workspace"
 RESIDENT_WORKSPACE_VOLUME_NAME = "resident-workspace"
 #: What the workspace path of a claim-backed sandbox can be (_workspace_link_state_script).
@@ -221,6 +205,17 @@ DETACHED_EXEC_TIMEOUT_SECONDS = 10
 WRITE_FILES_TIMEOUT_SECONDS = 30.0
 BOOTSTRAP_GIT_ATTEMPTS = 20
 MAX_SANDBOX_ROUTING_NAME_LENGTH = 19
+
+# The stages of a session's launch, (key, label), in the order start() performs them.
+STAGE_CREDENTIALS = ("credentials", "Resolving credentials")
+STAGE_SANDBOX = ("sandbox", "Creating the sandbox")
+STAGE_RESUME = ("sandbox", "Resuming the sandbox")
+STAGE_READY = ("ready", "Waiting for the sandbox")
+STAGE_FILES = ("files", "Writing session configuration")
+STAGE_WORKSPACE = ("workspace", "Preparing the workspace")
+STAGE_SKULD = ("skuld", "Starting Skuld")
+STAGE_EXPOSE = ("expose", "Exposing the service")
+STAGE_BROKER = ("broker", "Waiting for the broker")
 OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
 GRANT_AUDIENCE_PREFIX = "niuu:credential:"
 PLATFORM_GRANT_AUDIENCE_PREFIX = "niuu:platform:"
@@ -229,7 +224,6 @@ PLATFORM_ACCESS_TOKEN_ENV = "NIUU_VOLUNDR_ACCESS_TOKEN"
 #: a private file (0600) written before the broker starts. A session sandbox has no
 #: /run/secrets. Only the path travels in the broker's env, never the token.
 FORGE_SESSION_TOKEN_FILE = ".volundr/forge-session/token"
-FORGE_MCP_TOKEN_FILE_ENV = "SKULD__FORGE_MCP__TOKEN_FILE"
 DEFAULT_CREDENTIAL_TOKEN_ENDPOINT = (
     "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
 )
@@ -246,6 +240,11 @@ CODEX_ENROLLMENT_AUTH_PATH = f"{CODEX_ENROLLMENT_HOME}/auth.json"
 CODEX_ENROLLMENT_LOG_PATH = "/tmp/niuu-codex-enrollment.log"
 CODEX_ENROLLMENT_PID_PATH = "/tmp/niuu-codex-enrollment.pid"
 CODEX_DEVICE_CODE_PATTERN = re.compile(r"[A-Z0-9]{4,8}(?:-[A-Z0-9]{4,8})+")
+#: The process whose log a resident shows when its record names none, by engine.
+RESIDENT_DEFAULT_PROCESS_NAMES = {
+    ResidentEngine.OPENCLAW: ("openclaw",),
+    ResidentEngine.HERMES: ("hermes",),
+}
 HERMES_API_SERVER_KEY_ENV = "API_SERVER_KEY"
 HERMES_API_SERVER_DEFAULT_PORT = 8642
 HERMES_INTERNAL_SERVICE_URL = "http://hermes-api.internal"
@@ -283,6 +282,9 @@ class OpenShellSandbox:
     #: The image of the sandbox's template and the sandbox's own annotations.
     image: str = ""
     annotations: dict[str, str] | None = None
+    #: The gateway's own explanation while the sandbox is not ready: its Ready
+    #: condition's reason and message. Empty when the gateway gave none.
+    not_ready_reason: str = ""
 
 
 class WorkspaceRepair(Enum):
@@ -1103,7 +1105,6 @@ class OpenShellGatewayPodManager(
     ResidentRuntimeLogReader,
     ResidentRuntimeProxyTargetResolver,
     ResidentDeviceApprover,
-    ResidentOpenClawShimHost,
 ):
     """Kubernetes OpenShell PodManager using OIDC and native gRPC."""
 
@@ -1284,6 +1285,8 @@ class OpenShellGatewayPodManager(
             timeout=command_timeout,
         )
         self._service_urls: dict[str, str] = {}
+        # Session id -> the stages of its current start, as this controller drove them.
+        self._progress: dict[UUID, SessionStartup] = {}
         # Held while a deploy, restart or reconcile owns a resident's processes.
         self._resident_process_locks: dict[str, asyncio.Lock] = {}
         self._resident_forwarders: dict[str, OpenShellTcpForwarder] = {}
@@ -1292,13 +1295,6 @@ class OpenShellGatewayPodManager(
         self._session_repository: SessionRepository | None = None
         self._resident_runtime_repository: ResidentRuntimeRepository | None = None
         self._workload_token_issuer: WorkloadTokenIssuer | None = None
-        self._realm_repository: RealmRepository | None = None
-        # Where each Ravn resident's own OpenClaw shim token is kept, handed over by
-        # the Ravn session controller (set_resident_openclaw_tokens). None: no Ravn
-        # sessions on this backend.
-        self._resident_openclaw_tokens: ResidentOpenClawTokens | None = None
-        # Ravn residents whose shim this Volundr has seen up, or restarted once to start.
-        self._resident_openclaw_checked: set[str] = set()
         # Residents whose sandbox is being recreated on the current image: resident
         # id -> the image it replaces, until the new sandbox is deployed.
         self._resident_upgrades: dict[str, str] = {}
@@ -1316,10 +1312,6 @@ class OpenShellGatewayPodManager(
         # Why a running resident's workspace link could not be repaired: sandbox id ->
         # the error, logged once per error until the repair succeeds.
         self._failed_workspace_repairs: dict[str, str] = {}
-
-    def set_resident_openclaw_tokens(self, tokens: ResidentOpenClawTokens) -> None:
-        """Where each Ravn resident's own shim token is kept (RavnResidentSessionController)."""
-        self._resident_openclaw_tokens = tokens
 
     async def _get_core_api(self) -> Any:
         """CoreV1Api for residents' workspace claims (the gateway can't create volumes)."""
@@ -1365,135 +1357,9 @@ class OpenShellGatewayPodManager(
         }
         return resident_values, claim
 
-    async def resident_openclaw_token(self, runtime: ResidentRuntime) -> str:
-        """The kept token; else the one the resident's Ravn process runs with; else new."""
-        tokens = self._resident_openclaw_tokens
-        if tokens is None:
-            raise RuntimeError("Ravn resident sessions are not wired on openshell")
-        token = await tokens.stored(runtime)
-        if token:
-            return token
-        return await tokens.ensure(runtime, adopt=await self._read_resident_openclaw_token(runtime))
-
-    async def _read_resident_openclaw_token(self, runtime: ResidentRuntime) -> str | None:
-        """Read RAVN_OPENCLAW_TOKEN back from the running Ravn process, if it has one."""
-        sandbox_name = str(runtime.backend_ref.get("name") or "")
-        if not sandbox_name:
-            return None
-        try:
-            exit_code, output = await asyncio.to_thread(
-                self._client.exec_script,
-                sandbox=sandbox_name,
-                script=_resident_process_env_script("ravn", RAVN_OPENCLAW_TOKEN_ENV),
-                env={},
-            )
-        except Exception:
-            logger.debug("Could not read resident %s's shim token", runtime.id, exc_info=True)
-            return None
-        token = output.strip()
-        if exit_code != 0 or not token or any(c.isspace() for c in token):
-            return None
-        return token
-
-    def _resident_openclaw_enabled(
-        self,
-        runtime: ResidentRuntime,
-        values: dict[str, Any],
-    ) -> bool:
-        return resident_openclaw_shim_enabled(
-            runtime,
-            values,
-            tokens_provisioned=self._resident_openclaw_tokens is not None,
-        )
-
-    async def _resident_openclaw_environment(
-        self,
-        runtime: ResidentRuntime,
-        values: dict[str, Any],
-    ) -> dict[str, str]:
-        """The shim's token for the Ravn process; never in the sandbox's own env."""
-        if not self._resident_openclaw_enabled(runtime, values):
-            return {}
-        return {RAVN_OPENCLAW_TOKEN_ENV: await self.resident_openclaw_token(runtime)}
-
-    async def _forget_resident_openclaw_token(self, runtime: ResidentRuntime) -> None:
-        if runtime.engine is ResidentEngine.RAVN and self._resident_openclaw_tokens is not None:
-            await self._resident_openclaw_tokens.forget(runtime)
-
-    async def _start_resident_openclaw_shim(
-        self,
-        runtime: ResidentRuntime,
-        profile: ResidentDeploymentProfile,
-        values: dict[str, Any],
-        sandbox: OpenShellSandbox,
-    ) -> None:
-        """Restart a running Ravn resident once whose processes predate its shim.
-
-        A Ravn resident deployed before Ravn sessions were on by default runs without
-        the shim; restarting its processes (the restart path) starts it with the new
-        ravn.yaml and the resident's own token. Checked until seen up, and restarted at
-        most once per resident per Volundr, so a shim that cannot start never restarts
-        the resident in a loop.
-        """
-        runtime_id = str(runtime.id)
-        if runtime_id in self._resident_openclaw_checked:
-            return
-        if self._resident_process_lock(runtime).locked():
-            return
-        port = _resident_openclaw_port(values)
-        listening = await self._resident_processes_ready(sandbox.name, (), service_port=port)
-        self._resident_openclaw_checked.add(runtime_id)
-        if listening:
-            return
-        logger.info("Restarting resident %s to start its Ravn sessions shim", runtime.id)
-        try:
-            # Its processes only, in place: moving it to another image is
-            # _follow_platform's decision, not this one's.
-            async with self._resident_process_lock(runtime):
-                await self._restart(runtime, profile, follow_platform=False)
-        except Exception:
-            logger.warning(
-                "Could not restart resident %s to start its Ravn sessions shim",
-                runtime.id,
-                exc_info=True,
-            )
-
-    def resident_openclaw_target(
-        self,
-        runtime: ResidentRuntime,
-        port: int,
-    ) -> SessionProxyTarget | None:
-        """The shim's sandbox port over the same native TCP tunnel Hermes residents use."""
-        sandbox_id = str(runtime.backend_ref.get("id") or "")
-        sandbox_name = str(runtime.backend_ref.get("name") or "")
-        if not sandbox_id or not sandbox_name:
-            return None
-        key = _openclaw_forwarder_key(runtime, sandbox_id)
-        forwarder = self._resident_forwarders.get(key)
-        if forwarder is None:
-            # A redeployed resident has a new sandbox: retire the old one's tunnel.
-            for stale in [k for k in self._resident_forwarders if _is_openclaw_key(k, runtime)]:
-                self._resident_forwarders.pop(stale).close()
-            forwarder = self._client.start_tcp_forward(sandbox=sandbox_name, target_port=port)
-            self._resident_forwarders[key] = forwarder
-        return SessionProxyTarget(
-            service_url=f"http://ravn-openclaw.internal:{port}/",
-            connect_host=forwarder.host,
-            connect_port=forwarder.port,
-        )
-
     def set_credential_store(self, store: CredentialStorePort) -> None:
         """Inject credential store for resolving OpenShell launch credentials."""
         self._credential_store = store
-
-    def set_realm_repository(self, repository: RealmRepository) -> None:
-        """Enable resolving a resident's realm slug for its container config.
-
-        Optional: without it, deploying a resident with ``realm_id`` set
-        raises in ``_resolve_realm_slug`` rather than silently deploying with
-        no realm/charter binding.
-        """
-        self._realm_repository = repository
 
     def set_session_repository(self, repository: SessionRepository) -> None:
         """Inject session persistence for sandbox-to-owner grant authorization."""
@@ -1845,7 +1711,89 @@ class OpenShellGatewayPodManager(
             connect_secure=self._gateway_connect_secure,
         )
 
+    @property
+    def reports_startup_stages(self) -> bool:
+        return True
+
+    async def startup_stages(self, session: Session) -> tuple[StartupStage, ...]:
+        """The stages this controller drove the session's current start through.
+
+        Empty after a controller restart: the start is not replayed, so there is
+        nothing this process did to report.
+        """
+        progress = self._progress.get(session.id)
+        return progress.stages if progress is not None else ()
+
+    def _begin_progress(self, session_id: UUID, *, exposes_service: bool) -> None:
+        stages = [
+            STAGE_CREDENTIALS,
+            STAGE_SANDBOX,
+            STAGE_READY,
+            STAGE_FILES,
+            STAGE_WORKSPACE,
+            STAGE_SKULD,
+            *([STAGE_EXPOSE] if exposes_service else []),
+            STAGE_BROKER,
+        ]
+        self._progress[session_id] = SessionStartup(
+            started_at=datetime.now(UTC),
+            stages=tuple(
+                StartupStage(key=key, label=label, state=StartupStageState.PENDING)
+                for key, label in stages
+            ),
+        )
+
+    def _set_stage(
+        self,
+        session_id: UUID,
+        stage: tuple[str, str],
+        state: StartupStageState,
+        detail: str | None = None,
+    ) -> None:
+        progress = self._progress.get(session_id)
+        if progress is None:
+            return
+        key, label = stage
+        now = datetime.now(UTC)
+        current = next((s for s in progress.stages if s.key == key), None)
+        if current is not None and current.state is state and current.detail == detail:
+            return
+        started = current.started_at if current is not None and current.started_at else now
+        self._progress[session_id] = progress.with_stage(
+            StartupStage(
+                key=key,
+                label=label,
+                state=state,
+                detail=detail,
+                started_at=started,
+                finished_at=now if state is StartupStageState.DONE else None,
+            )
+        )
+
+    def _skip_stage(self, session_id: UUID, stage: tuple[str, str]) -> None:
+        """Drop a stage still pending that this start does not go through."""
+        progress = self._progress.get(session_id)
+        if progress is None:
+            return
+        self._progress[session_id] = progress.model_copy(
+            update={
+                "stages": tuple(
+                    s
+                    for s in progress.stages
+                    if s.key != stage[0] or s.state is not StartupStageState.PENDING
+                )
+            }
+        )
+
+    def _stage_is(self, session_id: UUID, stage: tuple[str, str], state: StartupStageState) -> bool:
+        progress = self._progress.get(session_id)
+        if progress is None:
+            return False
+        current = next((s for s in progress.stages if s.key == stage[0]), None)
+        return current is not None and current.state is state
+
     async def start(self, session: Session, spec: SessionSpec) -> PodStartResult:
+        self._begin_progress(session.id, exposes_service=self._exposes_service(session))
         spec = self._with_brokered_credentials(spec)
         check_policy_allows_egress(
             self._network_policies, (spec.values.get("openshell") or {}).get("egress") or []
@@ -1886,6 +1834,7 @@ class OpenShellGatewayPodManager(
             )
         self._warn_unsupported_pod_spec(session, spec)
         try:
+            self._set_stage(session.id, STAGE_CREDENTIALS, StartupStageState.ACTIVE)
             platform_providers = await self._resolve_platform_provider(
                 session, api_urls=_resident_api_urls(spec.values)
             )
@@ -1909,7 +1858,7 @@ class OpenShellGatewayPodManager(
             if workloads:
                 if runtime_processes:
                     raise ValueError(
-                        "OpenShell flock workloads cannot also declare detached processes"
+                        "OpenShell peer workloads cannot also declare detached processes"
                     )
                 if credential_context.process_environment:
                     raise ValueError(
@@ -1930,9 +1879,17 @@ class OpenShellGatewayPodManager(
                 OpenShellProviderGrant(provider_name=name, profile_id=name)
                 for name in provider_names
             )
+            self._set_stage(
+                session.id,
+                STAGE_CREDENTIALS,
+                StartupStageState.DONE,
+                ", ".join(provider_names) or None,
+            )
             if legacy is not None:
+                self._set_stage(session.id, STAGE_RESUME, StartupStageState.ACTIVE)
                 sandbox = await self._resume_legacy_sandbox(sandbox_name)
             else:
+                self._set_stage(session.id, STAGE_SANDBOX, StartupStageState.ACTIVE)
                 sandbox = await asyncio.to_thread(
                     self._client.create_sandbox,
                     name=sandbox_name,
@@ -1946,22 +1903,53 @@ class OpenShellGatewayPodManager(
                     providers=provider_names,
                     policy=self._sandbox_policy,
                 )
-            ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
+            self._set_stage(
+                session.id,
+                STAGE_RESUME if legacy is not None else STAGE_SANDBOX,
+                StartupStageState.DONE,
+                f"{sandbox.name}: {_phase_name(sandbox.phase)}",
+            )
+            self._set_stage(session.id, STAGE_READY, StartupStageState.ACTIVE)
+            ready = await self._wait_for_sandbox_name(
+                sandbox.name,
+                self._ready_timeout,
+                observe=lambda seen: self._set_stage(
+                    session.id, STAGE_READY, StartupStageState.ACTIVE, _sandbox_report(seen)
+                ),
+            )
+            self._set_stage(session.id, STAGE_READY, StartupStageState.DONE, _sandbox_report(ready))
             projected_files = {**credential_context.files, **forge_session_files}
             for process in runtime_processes:
                 projected_files.update(process.files)
             if projected_files:
+                self._set_stage(session.id, STAGE_FILES, StartupStageState.ACTIVE)
                 await asyncio.to_thread(
                     self._client.write_files,
                     sandbox=ready.name,
                     files=projected_files,
                 )
-            await self._bootstrap_workspace(
+                self._set_stage(
+                    session.id,
+                    STAGE_FILES,
+                    StartupStageState.DONE,
+                    f"{len(projected_files)} file(s) written",
+                )
+            else:
+                self._skip_stage(session.id, STAGE_FILES)
+            self._set_stage(session.id, STAGE_WORKSPACE, StartupStageState.ACTIVE)
+            bootstrap_output = await self._bootstrap_workspace(
                 ready.name,
                 session,
                 spec,
                 env,
             )
+            self._set_stage(
+                session.id,
+                STAGE_WORKSPACE,
+                StartupStageState.DONE,
+                _last_line(_redact_secret_url(bootstrap_output)),
+            )
+            self._set_stage(session.id, STAGE_SKULD, StartupStageState.ACTIVE)
             if workload_start_file:
                 # Configuration travels over the file API, outside the bounded
                 # pod driver config. Write the startup marker last.
@@ -1975,6 +1963,12 @@ class OpenShellGatewayPodManager(
                     files={**workload_files, workload_start_file: b"ready"},
                 )
             for process in runtime_processes:
+                self._set_stage(
+                    session.id,
+                    STAGE_SKULD,
+                    StartupStageState.ACTIVE,
+                    f"Starting process {process.name}",
+                )
                 process_exit = await asyncio.to_thread(
                     self._client.exec_detached,
                     sandbox=ready.name,
@@ -1987,6 +1981,7 @@ class OpenShellGatewayPodManager(
                         f"OpenShell runtime process {process.name!r} failed with exit "
                         f"{process_exit}"
                     )
+            self._set_stage(session.id, STAGE_SKULD, StartupStageState.ACTIVE)
             # ExecSandbox env values reject newlines; command arguments are
             # shell-quoted by exec_detached and preserve the original prose.
             session_values = spec.values.get("session", {})
@@ -1998,6 +1993,12 @@ class OpenShellGatewayPodManager(
                 )
                 if session_values.get(key)
             ]
+            if persona := session_values.get("persona"):
+                prompts.append(
+                    "SKULD__SESSION__PERSONA=" + json.dumps(persona, separators=(",", ":"))
+                )
+            if workflow_steps_enabled(spec.values):
+                prompts.append(f"{WORKFLOW_STEPS_ENABLED_ENV}=true")
             command = (
                 ["env", *prompts, *self._sandbox_command] if prompts else self._sandbox_command
             )
@@ -2012,14 +2013,24 @@ class OpenShellGatewayPodManager(
                 raise RuntimeError(
                     f"OpenShell session command bootstrap failed with exit {exit_code}"
                 )
-            if len(sandbox_name) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
+            self._set_stage(
+                session.id,
+                STAGE_SKULD,
+                StartupStageState.DONE,
+                f"Started in {ready.name}",
+            )
+            if not self._exposes_service(session):
                 service_url = "http://skuld.internal"
             else:
+                self._set_stage(session.id, STAGE_EXPOSE, StartupStageState.ACTIVE)
                 service_url = await asyncio.to_thread(
                     self._client.expose_service,
                     sandbox_name=sandbox_name,
                     target_port=self._service_port,
                     service=self._service_name,
+                )
+                self._set_stage(
+                    session.id, STAGE_EXPOSE, StartupStageState.DONE, service_url or None
                 )
             if not service_url and not self._gateway_public_url:
                 raise RuntimeError(
@@ -2037,12 +2048,21 @@ class OpenShellGatewayPodManager(
         if service_url:
             self._service_urls[session_id] = service_url.rstrip("/")
         self._provider_grants[session_id] = grants
+        self._set_stage(session.id, STAGE_BROKER, StartupStageState.ACTIVE)
 
         return PodStartResult(
             chat_endpoint=self._chat_endpoint(session),
             code_endpoint=self._code_endpoint(session),
             pod_name=sandbox_name,
         )
+
+    def _exposes_service(self, session: Session) -> bool:
+        """Whether start asks the gateway to expose the broker's port.
+
+        A sandbox whose name is too long for a routed service is reached through
+        the gateway's own address, so there is no service to expose.
+        """
+        return len(self._sandbox_name(session)) <= MAX_SANDBOX_ROUTING_NAME_LENGTH
 
     async def _resume_legacy_sandbox(self, sandbox_name: str) -> OpenShellSandbox:
         """Start a stopped sandbox that owns its own storage.
@@ -2065,6 +2085,7 @@ class OpenShellGatewayPodManager(
         self, session: Session
     ) -> tuple[str, OpenShellSandbox | None, tuple[OpenShellProviderGrant, ...]]:
         """Close this process's handles on a session's sandbox and find its grants."""
+        self._progress.pop(session.id, None)
         forwarder = self._resident_forwarders.pop(str(session.id), None)
         if forwarder is not None:
             await asyncio.to_thread(forwarder.close)
@@ -2160,7 +2181,16 @@ class OpenShellGatewayPodManager(
         sandbox = await asyncio.to_thread(self._client.get_sandbox, self._sandbox_name(session))
         if sandbox is None:
             return SessionStatus.STOPPED
-        return _status_from_sandbox(sandbox)
+        status = _status_from_sandbox(sandbox)
+        if status is SessionStatus.RUNNING and self._stage_is(
+            session.id, STAGE_BROKER, StartupStageState.ACTIVE
+        ):
+            # Forge keeps the session starting until the gateway reports the sandbox
+            # running, and start() has handed it Skuld by the time this stage is active.
+            self._set_stage(
+                session.id, STAGE_BROKER, StartupStageState.DONE, _sandbox_report(sandbox)
+            )
+        return status
 
     @property
     def backend(self) -> ResidentBackend:
@@ -2173,11 +2203,6 @@ class OpenShellGatewayPodManager(
             or ResidentCapability.RUNTIME_SUSPEND in profile.capabilities
         ):
             return False
-        if profile.engine is ResidentEngine.RAVN:
-            try:
-                return resident_flock_profile_configured(profile, _resident_profile_values(profile))
-            except RuntimeError:
-                return False
         if profile.engine not in {ResidentEngine.OPENCLAW, ResidentEngine.HERMES}:
             return False
         try:
@@ -2348,7 +2373,6 @@ class OpenShellGatewayPodManager(
                 for name in provider_names
             )
             env.update(credential_context.environment)
-            mesh_labels, mesh_annotations = resident_mesh_pod_metadata(runtime)
             if not resumed_deployment:
                 sandbox = await asyncio.to_thread(
                     self._client.create_sandbox,
@@ -2361,9 +2385,6 @@ class OpenShellGatewayPodManager(
                         "volundr.niuu.io/runtime": runtime.engine.value,
                         **resident_flock_labels(runtime, prefix="volundr.niuu.io"),
                     },
-                    # Ravn's Kubernetes discovery reads these from the Pod.
-                    pod_labels=mesh_labels,
-                    pod_annotations=mesh_annotations,
                     annotations={
                         SANDBOX_IMAGE_ANNOTATION: image,
                         **(
@@ -2398,7 +2419,7 @@ class OpenShellGatewayPodManager(
                 await before_start(ready)
             files = {
                 **credential_context.files,
-                **await self._resident_config_files(runtime, values),
+                **self._resident_config_files(runtime, values),
             }
             for process in processes:
                 files.update(_shared_resident_process_files(runtime, process.files))
@@ -2412,10 +2433,8 @@ class OpenShellGatewayPodManager(
                 process_env["OPENCLAW_GATEWAY_TOKEN"] = machine_credential["gateway_token"]
             if runtime.engine is ResidentEngine.HERMES and machine_credential is not None:
                 process_env[HERMES_API_SERVER_KEY_ENV] = machine_credential["api_key"]
-            process_env.update(await self._resident_openclaw_environment(runtime, values))
             if claim is not None:
                 await self._verify_resident_workspace_link(ready)
-                await self._ensure_resident_home_links(runtime, ready)
             if resumed_deployment and not relaunch:
                 await self._launch_missing_resident_processes(ready.name, process_env, processes)
             else:
@@ -2474,7 +2493,6 @@ class OpenShellGatewayPodManager(
                 await self._credential_store.delete(
                     "resident", str(runtime.id), HERMES_CREDENTIAL_NAME
                 )
-            await self._forget_resident_openclaw_token(runtime)
             raise
 
         resolved_service_url = (service_url or self._gateway_public_url).rstrip("/")
@@ -2743,7 +2761,7 @@ class OpenShellGatewayPodManager(
         """
         claims = self._require_workspace_claims()
         runtime_id = str(runtime.id)
-        sources = self._workspace_migration_sources(runtime)
+        sources = self._workspace_migration_sources()
         processes = self._resident_processes(runtime, values)
         service_name, _ = _resident_service(values, self._service_name, self._service_port)
         new_name = self._migration_sandbox_name(runtime, old.name)
@@ -2954,12 +2972,9 @@ class OpenShellGatewayPodManager(
                 lease.mark_lost(f"Could not renew the workspace migration lease: {exc}")
                 return
 
-    def _workspace_migration_sources(self, runtime: ResidentRuntime) -> tuple[tuple[str, str], ...]:
+    def _workspace_migration_sources(self) -> tuple[tuple[str, str], ...]:
         """(directory in the old sandbox, directory on the claim) pairs to copy."""
-        sources = [(self._sandbox_workspace, "")]
-        if runtime.engine is ResidentEngine.RAVN:
-            sources.append((f"{self._sandbox_home}/{RAVN_HOME_STATE_DIR}", RAVN_PERSISTED_HOME_DIR))
-        return tuple(sources)
+        return ((self._sandbox_workspace, ""),)
 
     def _check_workspace_fits(
         self,
@@ -3113,27 +3128,6 @@ class OpenShellGatewayPodManager(
         readback.seek(0)
         return read_workspace_manifest(readback)
 
-    async def _ensure_resident_home_links(
-        self,
-        runtime: ResidentRuntime,
-        sandbox: OpenShellSandbox,
-    ) -> None:
-        """Point ~/.ravn at its directory on the claim before a Ravn resident starts."""
-        if runtime.engine is not ResidentEngine.RAVN:
-            return
-        link = f"{self._sandbox_home}/{RAVN_HOME_STATE_DIR}"
-        target = str(PurePosixPath(self._sandbox_workspace, RAVN_PERSISTED_HOME_DIR))
-        exit_code, output = await asyncio.to_thread(
-            self._client.exec_script,
-            sandbox=sandbox.name,
-            script=_home_link_script(link, target),
-            env={},
-        )
-        if exit_code != 0:
-            raise RuntimeError(
-                f"Could not keep {link} on the workspace volume in {sandbox.name}: {output.strip()}"
-            )
-
     def _resident_sandbox_policy(self, claim: ResidentWorkspaceClaim | None) -> Any:
         """The sandbox policy, with the resident's workspace volume writable."""
         return self._sandbox_policy if claim is None else self._resident_claim_policy
@@ -3257,7 +3251,6 @@ class OpenShellGatewayPodManager(
                 await self._ensure_resident_workspace_link(current)
                 await asyncio.to_thread(self._client.write_files, sandbox=current.name, files=files)
                 await self._verify_resident_workspace_link(current)
-                await self._ensure_resident_home_links(runtime, current)
                 await self._launch_resident_processes(current.name, env, processes)
                 await self._wait_for_resident_processes(
                     current.name, processes, service_port=service_port
@@ -3346,12 +3339,11 @@ class OpenShellGatewayPodManager(
             and runtime.desired_state is ResidentDesiredState.RUNNING
         ):
             return self._going_sandbox_observation(runtime, profile, sandbox.name)
-        if (
-            sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPED
-            and runtime.desired_state is ResidentDesiredState.RUNNING
-        ):
-            # Forge never stops a resident's sandbox, so this one stopped under
-            # it (a node drain leaves it suspended). Later passes see it ready
+        if _sandbox_stopped(sandbox) and runtime.desired_state is ResidentDesiredState.RUNNING:
+            # Forge never stops or suspends a resident's sandbox, so this one
+            # stopped under it (a node drain stops it; `openshell sandbox
+            # suspend` freezes it). Starting discards a suspended sandbox's
+            # memory state and keeps its storage. Later passes see it ready
             # and start its processes.
             sandbox = await self._start_stopped_resident_sandbox(runtime, sandbox)
         if (
@@ -3439,15 +3431,7 @@ class OpenShellGatewayPodManager(
                     values,
                     sandbox,
                     processes,
-                    on_claim=claim is not None and _sandbox_mounts_claim(sandbox, claim),
                 )
-            elif (
-                processes_ready
-                and runtime.backend_ref
-                and runtime.desired_state is ResidentDesiredState.RUNNING
-                and self._resident_openclaw_enabled(runtime, values)
-            ):
-                await self._start_resident_openclaw_shim(runtime, profile, values, sandbox)
         service_url = (
             "" if follow.service_removed else str(runtime.backend_ref.get("service_url") or "")
         )
@@ -3562,10 +3546,10 @@ class OpenShellGatewayPodManager(
         """Move a running resident onto the image this Völundr deploys, once.
 
         A sandbox's image is fixed when it is created, so moving a resident onto a
-        new image (a new Ravn or Skuld) recreates its sandbox: the existing
+        new image (a new runtime version) recreates its sandbox: the existing
         sandbox and service are removed and the resident is reported as owning no
         backend, so the service redeploys it in the background like a resident
-        whose sandbox is gone. Its credentials, shim token and record are kept.
+        whose sandbox is gone. Its credentials and record are kept.
 
         Only a resident whose sandbox keeps its workspace on a claim (``persisted``:
         its own Völundr-managed claim mounted, or the profile's) is moved; any
@@ -3693,7 +3677,7 @@ class OpenShellGatewayPodManager(
         """Remove a resident's sandbox and service so it is deployed anew; keep the rest.
 
         Its provider grants are named for the resident and re-applied by the
-        deployment; its credentials and shim token stay where they are kept.
+        deployment; its credentials stay where they are kept.
         """
         runtime_id = str(runtime.id)
         self._resident_upgrades[runtime_id] = image
@@ -3734,13 +3718,9 @@ class OpenShellGatewayPodManager(
             return await self._start_resident_sandbox(sandbox.name)
 
     async def _close_resident_forwarders(self, runtime: ResidentRuntime) -> None:
-        runtime_id = str(runtime.id)
-        for key in [
-            key
-            for key in self._resident_forwarders
-            if key == runtime_id or _is_openclaw_key(key, runtime)
-        ]:
-            await asyncio.to_thread(self._resident_forwarders.pop(key).close)
+        forwarder = self._resident_forwarders.pop(str(runtime.id), None)
+        if forwarder is not None:
+            await asyncio.to_thread(forwarder.close)
 
     async def _start_missing_resident_processes(
         self,
@@ -3748,8 +3728,6 @@ class OpenShellGatewayPodManager(
         values: dict[str, Any],
         sandbox: OpenShellSandbox,
         processes: Sequence[OpenShellRuntimeProcess],
-        *,
-        on_claim: bool = False,
     ) -> None:
         """Start the processes of a deployed resident that are no longer running.
 
@@ -3765,8 +3743,6 @@ class OpenShellGatewayPodManager(
             try:
                 files, env = await self._resident_launch_inputs(runtime, values, processes)
                 await asyncio.to_thread(self._client.write_files, sandbox=sandbox.name, files=files)
-                if on_claim:
-                    await self._ensure_resident_home_links(runtime, sandbox)
                 await self._launch_missing_resident_processes(sandbox.name, env, processes)
             except Exception:
                 logger.warning(
@@ -3787,14 +3763,13 @@ class OpenShellGatewayPodManager(
         credential_context = await self._resolve_credential_context(
             self._resident_subject(runtime), values
         )
-        files = {**credential_context.files, **await self._resident_config_files(runtime, values)}
+        files = {**credential_context.files, **self._resident_config_files(runtime, values)}
         for process in processes:
             files.update(_shared_resident_process_files(runtime, process.files))
         env = self._resident_environment(runtime, values)
         env.update(resident_flock_environment(runtime))
         env.update(credential_context.environment)
         env.update(credential_context.process_environment)
-        env.update(await self._resident_openclaw_environment(runtime, values))
         if runtime.engine is ResidentEngine.OPENCLAW:
             if self._credential_store is None:
                 raise RuntimeError("OpenClaw residents require the configured credential store")
@@ -3837,8 +3812,9 @@ class OpenShellGatewayPodManager(
             self._client.get_sandbox,
             self._resident_sandbox_name(runtime),
         )
-        if sandbox is not None and sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPED:
-            # A restart also brings back a sandbox that stopped under the resident.
+        if sandbox is not None and _sandbox_stopped(sandbox):
+            # A restart also brings back a sandbox that stopped (or was
+            # suspended) under the resident.
             await self._start_resident_sandbox(sandbox.name)
             sandbox = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
         runtime_id = str(runtime.id)
@@ -3893,8 +3869,6 @@ class OpenShellGatewayPodManager(
         )
         if on_claim:
             await self._verify_resident_workspace_link(sandbox)
-        if claim is not None:
-            await self._ensure_resident_home_links(runtime, sandbox)
         await self._launch_resident_processes(sandbox.name, env, processes)
         service_name, service_port = _resident_service(
             values, self._service_name, self._service_port
@@ -3931,7 +3905,6 @@ class OpenShellGatewayPodManager(
         runtime_id = str(runtime.id)
         self._service_urls.pop(runtime_id, None)
         self._resident_process_locks.pop(runtime_id, None)
-        self._resident_openclaw_checked.discard(runtime_id)
         self._resident_upgrades.pop(runtime_id, None)
         self._failed_resident_upgrades.pop(runtime_id, None)
         self._retrying_resident_upgrades.pop(runtime_id, None)
@@ -3985,7 +3958,6 @@ class OpenShellGatewayPodManager(
             await self._credential_store.delete(
                 "resident", runtime_id, HERMES_LEGACY_CREDENTIAL_NAME
             )
-        await self._forget_resident_openclaw_token(runtime)
         return deleted
 
     async def logs(
@@ -4009,13 +3981,10 @@ class OpenShellGatewayPodManager(
             sources=sources,
             min_level=min_level,
         )
-        configured_names = runtime.backend_ref.get("process_names")
-        if not configured_names and runtime.engine is ResidentEngine.OPENCLAW:
-            configured_names = ("openclaw",)
-        if not configured_names and runtime.engine is ResidentEngine.HERMES:
-            configured_names = ("hermes",)
-        if not configured_names:
-            configured_names = ("skuld", "ravn")
+        configured_names = (
+            runtime.backend_ref.get("process_names")
+            or RESIDENT_DEFAULT_PROCESS_NAMES[runtime.engine]
+        )
         process_names = tuple(
             str(source) for source in configured_names if not sources or str(source) in sources
         )
@@ -4086,38 +4055,14 @@ class OpenShellGatewayPodManager(
     ) -> tuple[OpenShellRuntimeProcess, ...]:
         configured = _runtime_processes_from_values(values)
         openshell = values.get("openshell")
-        replace = isinstance(openshell, dict) and openshell.get("processMode") == "replace"
-        if replace:
-            if not configured:
-                raise RuntimeError("Replacing resident processes requires at least one process")
-            return configured
-        defaults = (
-            OpenShellRuntimeProcess(
-                name="skuld",
-                command=tuple(self._sandbox_command),
-                env={
-                    "NIUU_CONFIG": "/sandbox/.volundr/skuld.yaml",
-                    "SKULD_BOOTSTRAP_FOREGROUND": "true",
-                },
-                files={},
-                log_path="/sandbox/.volundr/skuld.log",
-            ),
-            OpenShellRuntimeProcess(
-                name="ravn",
-                command=(
-                    "sh",
-                    "-lc",
-                    'export RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
-                    "exec /opt/niuu/bin/python -m ravn daemon "
-                    "--config /sandbox/.volundr/ravn.yaml "
-                    f"--persona {shlex.quote(runtime.persona_name or 'product-steward')}",
-                ),
-                env={},
-                files={},
-                log_path="/sandbox/.volundr/ravn.log",
-            ),
-        )
-        return (*defaults, *configured)
+        if not (isinstance(openshell, dict) and openshell.get("processMode") == "replace"):
+            raise RuntimeError(
+                f"Resident {runtime.name} does not declare openshell.processMode: replace; "
+                "OpenShell residents run only the processes their profile declares"
+            )
+        if not configured:
+            raise RuntimeError("Replacing resident processes requires at least one process")
+        return configured
 
     async def _resident_processes_ready(
         self,
@@ -4157,62 +4102,19 @@ class OpenShellGatewayPodManager(
             f"OpenShell resident processes were not ready within {self._ready_timeout}s"
         )
 
-    async def _resident_config_files(
+    def _resident_config_files(
         self,
         runtime: ResidentRuntime,
         values: dict[str, Any],
     ) -> dict[str, bytes]:
-        if runtime.engine is ResidentEngine.HERMES:
-            return {
-                f"{self._sandbox_workspace}/.hermes/config.yaml": yaml.safe_dump(
-                    _resident_hermes_config(runtime, values),
-                    sort_keys=False,
-                ).encode()
-            }
-        if runtime.engine is not ResidentEngine.RAVN:
+        if runtime.engine is not ResidentEngine.HERMES:
             return {}
-        realm_slug = await self._resolve_realm_slug(runtime)
-        ravn_config = _resident_ravn_config(
-            runtime, values, self._service_port, realm_slug, self._volundr_api_url
-        )
-        if self._resident_openclaw_enabled(runtime, values):
-            enable_resident_openclaw_shim(ravn_config, values)
         return {
-            "/sandbox/.volundr/skuld.yaml": yaml.safe_dump(
-                _resident_skuld_config(
-                    runtime,
-                    values,
-                    self._service_port,
-                    self._volundr_api_url,
-                ),
+            f"{self._sandbox_workspace}/.hermes/config.yaml": yaml.safe_dump(
+                _resident_hermes_config(runtime, values),
                 sort_keys=False,
-            ).encode(),
-            "/sandbox/.volundr/ravn.yaml": yaml.safe_dump(ravn_config, sort_keys=False).encode(),
+            ).encode()
         }
-
-    async def _resolve_realm_slug(self, runtime: ResidentRuntime) -> str:
-        """Return the slug of the realm this resident is bound to, or "".
-
-        Mirrors LocalContainerResidentRuntimeController._resolve_realm_slug:
-        a configured realm_id that cannot be resolved is a real
-        misconfiguration and fails loudly rather than deploying with a
-        silently dropped charter/realm binding.
-        """
-        if runtime.realm_id is None:
-            return ""
-        if self._realm_repository is None:
-            raise RuntimeError(
-                f"resident {runtime.name!r} has realm_id={runtime.realm_id} but this "
-                "controller has no realm repository configured; call set_realm_repository "
-                "at composition time."
-            )
-        realm = await self._realm_repository.get_realm(runtime.realm_id)
-        if realm is None:
-            raise RuntimeError(
-                f"resident {runtime.name!r} names realm_id={runtime.realm_id}, but no "
-                "such realm exists; clear the resident's realm binding or restore the realm."
-            )
-        return realm.slug
 
     def _resident_environment(
         self,
@@ -4234,7 +4136,6 @@ class OpenShellGatewayPodManager(
             "SKULD__HOME_DIR": self._sandbox_home,
             "SKULD__HOST": "0.0.0.0",
             "SKULD__PORT": str(self._service_port),
-            "RAVN_STATE_DIR": f"{self._sandbox_workspace}/.ravn",
         }
         if runtime.engine is ResidentEngine.HERMES:
             env["HERMES_HOME"] = f"{self._sandbox_workspace}/.hermes"
@@ -4281,15 +4182,7 @@ class OpenShellGatewayPodManager(
         ]
         endpoints = []
         if service_url:
-            if runtime.engine is ResidentEngine.RAVN:
-                endpoints.append(
-                    ResidentEndpoint(
-                        kind="chat",
-                        protocol="skuld-v1",
-                        url=f"/s/{runtime.id}/session",
-                    )
-                )
-            elif runtime.engine is ResidentEngine.OPENCLAW:
+            if runtime.engine is ResidentEngine.OPENCLAW:
                 endpoints.append(
                     ResidentEndpoint(
                         kind="sessions",
@@ -4786,10 +4679,11 @@ class OpenShellGatewayPodManager(
         session: Session,
         spec: SessionSpec,
         env: dict[str, str],
-    ) -> None:
+    ) -> str:
+        """Prepare the workspace; return what the script reported."""
         script = self._workspace_bootstrap_script(session, spec)
         if not script:
-            return
+            return ""
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
             sandbox=sandbox_name,
@@ -4799,6 +4693,7 @@ class OpenShellGatewayPodManager(
         if exit_code != 0:
             redacted_output = _redact_secret_url(output)
             raise RuntimeError(f"OpenShell workspace bootstrap failed: {redacted_output}")
+        return output
 
     async def wait_for_ready(self, session: Session, timeout: float) -> SessionStatus:
         try:
@@ -4807,11 +4702,19 @@ class OpenShellGatewayPodManager(
             return SessionStatus.FAILED
         return await self.status(session)
 
-    async def _wait_for_sandbox_name(self, name: str, timeout: float) -> OpenShellSandbox:
+    async def _wait_for_sandbox_name(
+        self,
+        name: str,
+        timeout: float,
+        observe: Callable[[OpenShellSandbox], None] | None = None,
+    ) -> OpenShellSandbox:
+        """Wait for the sandbox to run; ``observe`` sees the sandbox at every poll."""
         deadline = time.monotonic() + float(timeout)
         while time.monotonic() < deadline:
             sandbox = await asyncio.to_thread(self._client.get_sandbox, name)
             if sandbox is not None:
+                if observe is not None:
+                    observe(sandbox)
                 status = _status_from_sandbox(sandbox)
                 if status == SessionStatus.RUNNING:
                     return sandbox
@@ -4925,6 +4828,9 @@ git -C "$WORKSPACE" config user.email >/dev/null 2>&1 || \
   git -C "$WORKSPACE" config user.email {shlex.quote(str(git_cfg.get("userEmail") or ""))}
 if git -C "$WORKSPACE" rev-parse --verify HEAD >/dev/null 2>&1; then
   echo "Workspace already contains a git repository, skipping clone"
+  if [ -n "$BASE_BRANCH" ] && ! git -C "$WORKSPACE" config --get niuu.baseBranch >/dev/null; then
+    git -C "$WORKSPACE" config niuu.baseBranch "$BASE_BRANCH"
+  fi
   exit 0
 fi
 attempt=1
@@ -4951,6 +4857,19 @@ else
   if [ -n "$BRANCH" ] && [ "$BRANCH" != "$FALLBACK" ]; then
     git -C "$WORKSPACE" checkout -b "$BRANCH"
   fi
+fi
+# Record where this branch started, so the session's changes can be shown against it.
+RECORDED_BASE="${{FALLBACK:-}}"
+if [ -z "$RECORDED_BASE" ]; then
+  if [ -n "$BASE_BRANCH" ] && \
+    git -C "$WORKSPACE" rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
+    RECORDED_BASE="$BASE_BRANCH"
+  else
+    RECORDED_BASE=$(git -C "$WORKSPACE" remote show origin | sed -n 's/.*HEAD branch: //p')
+  fi
+fi
+if [ -n "$RECORDED_BASE" ]; then
+  git -C "$WORKSPACE" config niuu.baseBranch "$RECORDED_BASE"
 fi
 git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
 echo "Workspace ready at $WORKSPACE"
@@ -5087,90 +5006,6 @@ def _resident_service(
     return _shared_resident_service(values, default_name, default_port)
 
 
-def _resident_skuld_config(
-    runtime: ResidentRuntime,
-    values: dict[str, Any],
-    service_port: int,
-    volundr_api_url: str,
-) -> dict[str, Any]:
-    persona = runtime.persona_name or "product-steward"
-    route_id = runtime.id.hex[:12]
-    ravn_peer = runtime.flock_peer_id or f"flock-{persona}"
-    skuld_peer = f"skuld-{route_id}"
-    broker = values.get("broker") if isinstance(values.get("broker"), dict) else {}
-    session_values = values.get("session") if isinstance(values.get("session"), dict) else {}
-    config: dict[str, Any] = {
-        "session": {
-            "id": str(runtime.id),
-            "name": runtime.name,
-            "model": runtime.model,
-            "reasoning_effort": str(
-                session_values.get("reasoningEffort")
-                or session_values.get("reasoning_effort")
-                or "high"
-            ),
-            "owner_id": runtime.owner_id,
-            "tenant_id": runtime.tenant_id,
-            "workspace_dir": "/sandbox/workspace",
-        },
-        "transport": str(broker.get("transport") or "sdk"),
-        "transport_adapter": str(
-            broker.get("transportAdapter")
-            or broker.get("transport_adapter")
-            or "skuld.transports.codex_ws.CodexWebSocketTransport"
-        ),
-        "cli_type": str(broker.get("cliType") or broker.get("cli_type") or "codex-ws"),
-        "host": "0.0.0.0",
-        "port": service_port,
-        "persistence_mount_path": "/sandbox/workspace",
-        "volundr_api_url": volundr_api_url,
-        "usage_report_path": f"/api/v1/forge/resident-runtimes/{runtime.id}/usage",
-        # A resident is a resident runtime, not a Forge session: Volundr has no
-        # Forge session event log or activity for its id (as in FluxPodManager).
-        "event_log_enabled": False,
-        "activity_reporting_enabled": False,
-        "room": {
-            "enabled": True,
-            "presence_sweep_interval_s": 0,
-            "default_target_peer_id": ravn_peer,
-        },
-        "mesh": {
-            "enabled": True,
-            "transport": "nng",
-            "peer_id": skuld_peer,
-            "nng": {
-                "pub_sub_address": "tcp://0.0.0.0:7480",
-                "req_rep_address": "tcp://0.0.0.0:7481",
-            },
-            "adapters": [
-                {
-                    "adapter": "static",
-                    "poll_interval_s": 0,
-                    "peers": _resident_mesh_peers(skuld_peer, ravn_peer, persona),
-                }
-            ],
-        },
-    }
-    if "skipPermissions" in broker or "skip_permissions" in broker:
-        config["skip_permissions"] = bool(
-            broker.get("skipPermissions", broker.get("skip_permissions"))
-        )
-    approval_policy = broker.get("approvalPolicy", broker.get("approval_policy"))
-    if approval_policy:
-        config["approval_policy"] = str(approval_policy)
-    if broker.get("sandbox"):
-        config["sandbox"] = str(broker["sandbox"])
-    openshell = values.get("openshell")
-    if isinstance(openshell, dict):
-        overlay = openshell.get("skuldConfig") or openshell.get("skuld_config")
-        if overlay is not None and not isinstance(overlay, dict):
-            raise RuntimeError("OpenShell resident skuldConfig must be an object")
-        if isinstance(overlay, dict):
-            _deep_merge(config, overlay)
-    resident_flock_skuld_config(config, runtime, values)
-    return config
-
-
 def _resident_broker_environment(broker: dict[str, Any]) -> dict[str, str]:
     """Translate the shared broker contract for resident child processes."""
     env: dict[str, str] = {}
@@ -5188,195 +5023,6 @@ def _resident_broker_environment(broker: dict[str, Any]) -> dict[str, str]:
         value = broker.get("skipPermissions", broker.get("skip_permissions"))
         env["SKULD__SKIP_PERMISSIONS"] = str(bool(value)).lower()
     return env
-
-
-def _resident_ravn_config(
-    runtime: ResidentRuntime,
-    values: dict[str, Any],
-    service_port: int,
-    realm_slug: str = "",
-    volundr_api_url: str = "",
-) -> dict[str, Any]:
-    persona = runtime.persona_name or "product-steward"
-    route_id = runtime.id.hex[:12]
-    ravn_peer = runtime.flock_peer_id or f"flock-{persona}"
-    skuld_peer = f"skuld-{route_id}"
-    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
-    platform = resident.get("platform") if isinstance(resident.get("platform"), dict) else {}
-    gateway_platform: dict[str, Any] = {
-        "enabled": bool(platform.get("enabled", True)),
-        "base_url": str(platform.get("baseUrl") or platform.get("base_url") or ""),
-        "workflow_aliases": platform.get("workflowAliases")
-        or platform.get("workflow_aliases")
-        or {},
-    }
-    config: dict[str, Any] = {
-        "persona": persona,
-        "mesh": {
-            "enabled": True,
-            "adapter": "nng",
-            "own_peer_id": ravn_peer,
-            "nng": {
-                "pub_sub_address": "tcp://0.0.0.0:7482",
-                "req_rep_address": "tcp://0.0.0.0:7483",
-            },
-            "peers": [{"peer_id": skuld_peer}],
-        },
-        "discovery": {
-            "enabled": True,
-            "adapters": [
-                {
-                    "adapter": "static",
-                    "peers": _resident_mesh_peers(skuld_peer, ravn_peer, persona),
-                    "poll_interval_s": 0,
-                }
-            ],
-        },
-        "cascade": {"enabled": True},
-        "gateway": {
-            "enabled": True,
-            "channels": {"http": {"enabled": True, "host": "0.0.0.0", "port": 7781}},
-            "platform": gateway_platform,
-        },
-        "initiative": {
-            "enabled": True,
-            "max_concurrent_tasks": int(
-                resident.get("maxConcurrentTasks") or resident.get("max_concurrent_tasks") or 4
-            ),
-        },
-        "permission": {"workspace_root": "/sandbox/workspace"},
-        "logging": {"level": "INFO"},
-        "skuld": {
-            "enabled": True,
-            "broker_url": f"ws://127.0.0.1:{service_port}/ws/ravn",
-            "display_name": runtime.name,
-            "reconnect_delay_seconds": int(
-                (resident.get("skuld") or {}).get("reconnectDelaySeconds", 2)
-            ),
-            "max_reconnect_attempts": int(
-                (resident.get("skuld") or {}).get("maxReconnectAttempts", 300)
-            ),
-            "session_ready_timeout_seconds": int(
-                (resident.get("skuld") or {}).get("sessionReadyTimeoutSeconds", 900)
-            ),
-        },
-        "environment": {"resident_name": runtime.name},
-    }
-    llm = dict(resident.get("llm") or {})
-    if runtime.model:
-        llm["model"] = runtime.model
-    if llm:
-        config["llm"] = llm
-    if isinstance(resident.get("wakefulness"), dict):
-        config["wakefulness"] = resident["wakefulness"]
-    if realm_slug:
-        config["environment"]["charter_mimir_page"] = realm_charter_page_for(realm_slug)
-        config["resident_evolution"] = {
-            "realm_slug": realm_slug,
-            "realm_api_base_url": volundr_api_url,
-        }
-    resident_flock_runtime_config(config, runtime, values)
-    if resident.get("dailyBudgetUsd") or resident.get("daily_budget_usd"):
-        config["budget"] = {
-            "daily_cap_usd": float(
-                resident.get("dailyBudgetUsd") or resident.get("daily_budget_usd")
-            )
-        }
-    mimir = _resident_mimir_config(values, realm_slug)
-    if mimir:
-        config["mimir"] = mimir
-    openshell = values.get("openshell")
-    if isinstance(openshell, dict):
-        overlay = openshell.get("ravnConfig") or openshell.get("ravn_config")
-        if overlay is not None and not isinstance(overlay, dict):
-            raise RuntimeError("OpenShell resident ravnConfig must be an object")
-        if isinstance(overlay, dict):
-            _deep_merge(config, overlay)
-    return config
-
-
-def _resident_mesh_peers(
-    skuld_peer: str,
-    ravn_peer: str,
-    persona: str,
-) -> list[dict[str, Any]]:
-    return [
-        {
-            "peer_id": skuld_peer,
-            "persona": "Skuld",
-            "pub_address": "tcp://127.0.0.1:7480",
-            "rep_address": "tcp://127.0.0.1:7481",
-            "handshake_port": 7580,
-            "consumes_event_types": [],
-            "emits_event_types": ["code.changed"],
-        },
-        {
-            "peer_id": ravn_peer,
-            "persona": persona,
-            "pub_address": "tcp://127.0.0.1:7482",
-            "rep_address": "tcp://127.0.0.1:7483",
-            "handshake_port": 7581,
-            "consumes_event_types": [],
-            "emits_event_types": [],
-        },
-    ]
-
-
-def _resident_mimir_config(values: dict[str, Any], realm_slug: str = "") -> dict[str, Any]:
-    raw = values.get("mimir")
-    if not isinstance(raw, dict) or not isinstance(raw.get("instances"), list):
-        return {}
-    instances = []
-    for item in raw["instances"]:
-        if not isinstance(item, dict):
-            continue
-        instance = dict(item)
-        auth = instance.get("auth")
-        if isinstance(auth, dict) and auth.get("type") == "workload":
-            instance["auth"] = {
-                "type": "bearer",
-                "token_env": PLATFORM_ACCESS_TOKEN_ENV,
-            }
-        instances.append(instance)
-    write_default = [
-        str(item.get("name"))
-        for item in instances
-        if item.get("role", "shared") == "local" and item.get("name")
-    ][:1]
-    if not write_default and len(instances) == 1 and instances[0].get("name"):
-        write_default = [str(instances[0]["name"])]
-    mount_name = realm_mount_name_for(realm_slug) if realm_slug else ""
-    write_rules: list[list[Any]] = []
-    if mount_name and any(item.get("name") == mount_name for item in instances):
-        write_rules = [[realm_routing_prefix_for(realm_slug), [mount_name]]]
-        if not write_default:
-            write_default = [mount_name]
-    if not write_default and not write_rules:
-        raise RuntimeError(
-            "Resident Mímir instances are configured but no write target resolves: no "
-            f"instance has role 'local', there is more than one instance, and no mount "
-            f"named {mount_name!r} is present. Configure a 'local' role on one instance "
-            "or tag one mount for this realm, so resident writes have somewhere to go."
-        )
-    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
-    resident_mimir = resident.get("mimir") if isinstance(resident.get("mimir"), dict) else {}
-    source = resident_mimir.get("sourceTrigger") or resident_mimir.get("source_trigger") or {}
-    stale = resident_mimir.get("stalenessTrigger") or resident_mimir.get("staleness_trigger") or {}
-    return {
-        "enabled": True,
-        "instances": instances,
-        "source_trigger": {
-            "enabled": bool(source.get("enabled", False)),
-            "poll_interval_seconds": int(
-                source.get("pollIntervalSeconds") or source.get("poll_interval_seconds") or 60
-            ),
-        },
-        "staleness_trigger": {
-            "enabled": bool(stale.get("enabled", False)),
-            "schedule_hours": int(stale.get("scheduleHours") or stale.get("schedule_hours") or 6),
-        },
-        "write_routing": {"rules": write_rules, "default": write_default},
-    }
 
 
 def _resident_api_urls(values: dict[str, Any]) -> tuple[str, ...]:
@@ -5411,8 +5057,8 @@ def _resident_api_urls(values: dict[str, Any]) -> tuple[str, ...]:
     token_path = (codex_auth.get("kwargs") or {}).get("token_path", "")
     if urlparse(token_path).scheme:
         urls.append(token_path)
-    # Platform origins a flock's personas call with the mediated platform token
-    # (ravn_flock contributor), e.g. the launching Ting on another cluster.
+    # Platform origins a launch names for the mediated platform token, e.g. the
+    # launching Ting on another cluster.
     openshell = values.get("openshell") if isinstance(values.get("openshell"), dict) else {}
     urls.extend(str(url) for url in openshell.get("platformApiUrls") or [] if url)
     return tuple(urls)
@@ -5476,14 +5122,6 @@ def _resident_hermes_config(
             }
         },
     }
-
-
-def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            _deep_merge(base[key], value)
-            continue
-        base[key] = value
 
 
 def _resources_from_values(
@@ -5827,26 +5465,6 @@ def _workspace_link_state_script(link: str, target: str) -> str:
     )
 
 
-def _home_link_script(link: str, target: str) -> str:
-    """Make ``link`` a symlink to ``target`` on the claim; never replace real state."""
-    return (
-        "set -eu\n"
-        f"link={shlex.quote(link)}\n"
-        f"target={shlex.quote(target)}\n"
-        'mkdir -p "$target"\n'
-        'if [ -L "$link" ]; then\n'
-        '  [ "$(readlink "$link")" = "$target" ] && exit 0\n'
-        '  echo "$link links to $(readlink "$link"), not $target" >&2\n'
-        "  exit 1\n"
-        "fi\n"
-        'if [ -e "$link" ]; then\n'
-        '  echo "$link holds state outside the workspace volume; refusing to replace it" >&2\n'
-        "  exit 1\n"
-        "fi\n"
-        'ln -s "$target" "$link"\n'
-    )
-
-
 def _upgrading_observation(target: str, *, waiting_for: str = "") -> ResidentRuntimeObservation:
     """A resident whose sandbox is being recreated on ``target``: no backend, redeploy it."""
     message = f"Recreating the OpenShell sandbox on {target}"
@@ -5894,7 +5512,7 @@ def _resident_state_from_sandbox(
 
 
 def _resident_health_script(
-    process_names: Sequence[str] = ("skuld", "ravn"),
+    process_names: Sequence[str],
     *,
     service_port: int | None = None,
 ) -> str:
@@ -5911,9 +5529,7 @@ def _resident_health_script(
     return "\n".join(lines)
 
 
-def _resident_stop_script(
-    process_names: Sequence[str] = ("skuld", "ravn"),
-) -> str:
+def _resident_stop_script(process_names: Sequence[str]) -> str:
     quoted = " ".join(shlex.quote(name) for name in process_names)
     return f"""\
 set -eu
@@ -5941,32 +5557,6 @@ for name in {quoted}; do
   rm -f "$pid_file"
 done
 """
-
-
-def _resident_openclaw_port(values: dict[str, Any]) -> int:
-    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
-    shim = resident.get("openclaw") if isinstance(resident.get("openclaw"), dict) else {}
-    return int(shim.get("port") or RAVN_OPENCLAW_PORT)
-
-
-def _resident_process_env_script(process_name: str, variable: str) -> str:
-    """Print one variable of a running resident process's environment, if set."""
-    pid_path = shlex.quote(f"/sandbox/.volundr/{process_name}.pid")
-    pattern = shlex.quote(f"s/^{variable}=//p")
-    return (
-        "set -eu\n"
-        f'pid="$(cat {pid_path})"\n'
-        f"tr '\\000' '\\n' < \"/proc/$pid/environ\" | sed -n {pattern}\n"
-    )
-
-
-def _openclaw_forwarder_key(runtime: ResidentRuntime, sandbox_id: str) -> str:
-    """A Ravn resident's shim tunnel to one sandbox, beside its skuld tunnel (its id)."""
-    return f"{runtime.id}:openclaw:{sandbox_id}"
-
-
-def _is_openclaw_key(key: str, runtime: ResidentRuntime) -> bool:
-    return key.startswith(f"{runtime.id}:openclaw:")
 
 
 def _resident_process_log_script(lines: int, sources: Sequence[str]) -> str:
@@ -6498,10 +6088,10 @@ def _credential_file_archives(files: dict[str, bytes]) -> list[tuple[str, bytes]
 
 
 #: Directories Völundr may make symlinks in a resident's sandbox (the workspace,
-#: onto its volume, and ~/.ravn, onto the volume's .ravn-home). A file projection
-#: never carries a directory entry for them: GNU tar replaces a symlink with a
-#: new, empty directory when it extracts a directory entry of that name.
-_LINKED_SANDBOX_DIRECTORIES = frozenset({"/sandbox/workspace", "/sandbox/.ravn"})
+#: onto its volume). A file projection never carries a directory entry for them:
+#: GNU tar replaces a symlink with a new, empty directory when it extracts a
+#: directory entry of that name.
+_LINKED_SANDBOX_DIRECTORIES = frozenset({"/sandbox/workspace"})
 
 
 def _credential_file_archive(
@@ -6628,13 +6218,60 @@ def _sandbox_from_proto(raw: Any) -> OpenShellSandbox:
         providers=tuple(str(name) for name in raw.spec.providers),
         image=str(getattr(template, "image", "") or ""),
         annotations={str(key): str(value) for key, value in metadata.annotations.items()},
+        not_ready_reason=_not_ready_reason(status),
+    )
+
+
+def _not_ready_reason(status: Any) -> str:
+    """The gateway's reason and message from its Ready condition, while it is not ready."""
+    for condition in status.conditions:
+        if condition.type != "Ready" or condition.status == "True":
+            continue
+        return ": ".join(part for part in (condition.reason, condition.message) if part)
+    return ""
+
+
+def _phase_name(phase: int) -> str:
+    """The gateway's name for a sandbox phase, e.g. ``PROVISIONING``."""
+    try:
+        return openshell_pb2.SandboxPhase.Name(phase).removeprefix("SANDBOX_PHASE_")
+    except ValueError:
+        return f"phase {phase}"
+
+
+def _sandbox_report(sandbox: OpenShellSandbox) -> str:
+    """The sandbox's phase with the gateway's reason, as the launch detail."""
+    phase = _phase_name(sandbox.phase)
+    if not sandbox.not_ready_reason:
+        return phase
+    return f"{phase}: {sandbox.not_ready_reason}"
+
+
+def _last_line(output: str) -> str | None:
+    """The last line a script printed; None when it printed nothing."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines else None
+
+
+def _sandbox_stopped(sandbox: OpenShellSandbox) -> bool:
+    """Whether the sandbox runs no workload: stopped, or suspended (OpenShell v0.1.7+).
+
+    A suspended sandbox keeps its frozen memory for ResumeSandbox; StartSandbox
+    discards that state and boots it again on its retained storage.
+    """
+    return sandbox.phase in (
+        openshell_pb2.SANDBOX_PHASE_STOPPED,
+        openshell_pb2.SANDBOX_PHASE_SUSPENDED,
     )
 
 
 def _status_from_sandbox(sandbox: OpenShellSandbox) -> SessionStatus:
-    if sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPED:
+    if _sandbox_stopped(sandbox):
         return SessionStatus.STOPPED
-    if sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPING:
+    if sandbox.phase in (
+        openshell_pb2.SANDBOX_PHASE_STOPPING,
+        openshell_pb2.SANDBOX_PHASE_SUSPENDING,
+    ):
         return SessionStatus.STOPPING
     if sandbox.phase == openshell_pb2.SANDBOX_PHASE_READY or sandbox.ready:
         return SessionStatus.RUNNING

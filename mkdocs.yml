@@ -1,5 +1,5 @@
 site_name: Niuu
-site_description: A place where intelligent systems do real work. Building toward an operating system for agents.
+site_description: A place where intelligent systems do real work. Composable building blocks for agents, workflows and autonomous work, with the tools and models you already use.
 site_url: https://docs.niuu.cloud/
 repo_url: https://github.com/niuulabs/niuu
 repo_name: niuulabs/niuu
@@ -59,7 +59,6 @@ nav:
       - Inspect model routing: get-started/model-routing-step.md
       - Ingest and retrieve knowledge: get-started/durable-memory.md
       - Inspect workflows and runs: get-started/workflows-and-teams-step.md
-      - Direct agents and residents: get-started/direct-and-resident-assistants.md
       - Discovery and topology: get-started/shared-discovery-and-topology.md
       - Build a review for a workflow: get-started/build-a-review.md
   - Understand Niuu:
@@ -85,7 +84,6 @@ nav:
   - Reference:
       - Command-line tools: reference/cli.md
       - Niuu commands: reference/cli-niuu.md
-      - Ravn commands: reference/cli-ravn.md
       - Configuration: reference/configuration.md
       - HTTP API: reference/api.md
       - Session lifecycle API: reference/sessions.md

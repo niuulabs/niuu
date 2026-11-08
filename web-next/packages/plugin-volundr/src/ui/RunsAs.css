@@ -1,0 +1,63 @@
+.vol-runs-as {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.vol-runs-as p.vol-runs-as__line {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+.vol-runs-as__title {
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+.vol-runs-as__grants {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.vol-runs-as__grants legend {
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+.vol-runs-as__grant-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+/* Beats the launch forms' full-width field styles for these checkboxes. */
+.vol-runs-as label.vol-runs-as__grant {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.vol-runs-as .vol-runs-as__grant input[type='checkbox'] {
+  width: auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--color-brand);
+}
+.vol-runs-as small.vol-runs-as__warning {
+  font-size: 12px;
+  color: var(--color-warning);
+}
+.vol-runs-as__readiness {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.vol-runs-as__readiness--full {
+  color: var(--color-warning);
+}

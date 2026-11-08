@@ -28,7 +28,7 @@
   },
   "peerDependencies": {
     "@niuulabs/shell": "workspace:*",
-    "@tanstack/react-query": "^5.104.5",
+    "@tanstack/react-query": "^5.105.3",
     "@tanstack/react-router": "^1.170.46",
     "react": "^19.3.1"
   },
@@ -38,19 +38,19 @@
     "@niuulabs/query": "workspace:*",
     "@niuulabs/shell": "workspace:*",
     "@niuulabs/ui": "workspace:*",
-    "three": "^0.186.1"
+    "three": "^0.187.0"
   },
   "devDependencies": {
     "@niuulabs/design-tokens": "workspace:*",
-    "@tanstack/react-query": "^5.104.5",
+    "@tanstack/react-query": "^5.105.3",
     "@tanstack/react-router": "^1.170.46",
     "@types/react": "^19.3.0",
-    "@types/three": "^0.186.0",
-    "autoprefixer": "^10.6.1",
-    "postcss": "^8.5.31",
+    "@types/three": "^0.187.0",
+    "autoprefixer": "^10.6.2",
+    "postcss": "^8.5.32",
     "postcss-import": "^17.0.1",
     "react": "^19.3.1",
-    "tailwindcss": "^4.3.3",
+    "tailwindcss": "^4.3.4",
     "tsup": "^9.0.0",
     "typescript": "^6.0.3"
   }

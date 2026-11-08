@@ -16,7 +16,7 @@ from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 def _settings() -> SimpleNamespace:
     return SimpleNamespace(
         dispatch=SimpleNamespace(
-            flock=SimpleNamespace(mimir_hosted_url="", mimir_registry_path=""),
+            mimir=SimpleNamespace(hosted_url="", registry_path=""),
         ),
     )
 
@@ -71,7 +71,7 @@ def test_campaign_without_caller_does_not_borrow_volundr_credentials() -> None:
 
 
 def test_gateway_mounts_are_not_batched_together() -> None:
-    from ravn.adapters.mimir.http import HttpMimirAdapter
+    from mimir.adapters.http import HttpMimirAdapter
 
     first = HttpMimirAdapter(base_url="https://knowledge.test/api/v1", mount="first")
     second = HttpMimirAdapter(base_url="https://knowledge.test/api/v1", mount="second")
@@ -84,7 +84,7 @@ def test_unresolved_well_does_not_read_the_hosted_default() -> None:
     import pytest
 
     settings = _settings()
-    settings.dispatch.flock.mimir_hosted_url = "https://wrong-store.test/api/v1"
+    settings.dispatch.mimir.hosted_url = "https://wrong-store.test/api/v1"
     campaign = _campaign()
     campaign.workflow_snapshot["mimir"]["registry_refs"] = [{"mount_name": "mimir-yggdrasil"}]
     with pytest.raises(ValueError, match="no adapter, path or url"):
@@ -122,7 +122,7 @@ def test_scoped_caller_without_ting_mimir_credential_is_refused(service_auth) ->
         )
 
     assert raised.value.status_code == 503
-    assert "dispatch.flock.mimir_service_auth" in raised.value.detail
+    assert "dispatch.mimir.service_auth" in raised.value.detail
 
 
 def test_unscoped_caller_token_is_forwarded_even_with_a_service_credential() -> None:

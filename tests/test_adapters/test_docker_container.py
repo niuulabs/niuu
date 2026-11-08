@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
-import yaml
 
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound import docker_container as dc
@@ -137,10 +137,15 @@ def session() -> Session:
 def spec() -> SessionSpec:
     return SessionSpec(
         values={
-            "session": {"systemPrompt": "be helpful", "initialPrompt": "start"},
+            "session": {
+                "systemPrompt": "be helpful",
+                "initialPrompt": "start",
+                "persona": {"schema_version": 1, "id": "reviewer", "revision": "r1"},
+            },
             "anthropic_api_key": "sk-ant-test",
             "env": {"EXTRA": "1"},
             "broker": {"cliType": "codex"},
+            "workflowSteps": {"enabled": True},
         },
         pod_spec=PodSpecAdditions(env=[{"name": "FROM_POD", "value": "yes"}]),
     )
@@ -158,7 +163,8 @@ def test_entrypoint_explicit_command_does_not_prepare_broker_filesystem(tmp_path
     result = subprocess.run(
         ["/bin/bash", str(entrypoint), "/usr/bin/true"],
         env={
-            "PATH": "/usr/bin:/bin",
+            # The image's Python (with skuld) is on PATH, as in the container.
+            "PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin",
             "HOME": str(tmp_path / "read-only-home"),
             "SESSION_ID": "credential-login",
             "WORKSPACE_DIR": str(inaccessible_workspace),
@@ -216,6 +222,8 @@ class TestStart:
         assert env["SKULD__SESSION__MODEL"] == "claude-sonnet-5"
         assert env["SKULD__SESSION__OWNER_ID"] == "dev-user"
         assert env["SKULD__SESSION__SYSTEM_PROMPT"] == "be helpful"
+        assert json.loads(env["SKULD__SESSION__PERSONA"])["id"] == "reviewer"
+        assert env["SKULD__WORKFLOW_STEPS__ENABLED"] == "true"
         assert env["SKULD__SESSION__INITIAL_PROMPT"] == "start"
         assert env["HOME"] == "/home/skuld"
         assert env["SKULD__PERSISTENCE_MOUNT_PATH"] == "/home/skuld"
@@ -325,74 +333,6 @@ class TestStart:
         assert stale.removed is True
         await manager.stop(session)
 
-    @pytest.mark.asyncio
-    async def test_flock_runs_in_session_container(
-        self,
-        manager: DockerContainerPodManager,
-        client: _Client,
-        workspaces: Path,
-        session: Session,
-    ) -> None:
-        spec = SessionSpec(
-            values={
-                "flock": {
-                    "personas": [{"name": "a"}],
-                    "ravn_config": {
-                        "workflow_execution": {
-                            "enabled": True,
-                            "execution_id": "execution-test",
-                            "base_url": "https://ting.example/api/v1/ting",
-                            "auth_token": "runtime-only-token",
-                        },
-                        "gateway": {
-                            "platform": {
-                                "a2a_trusted_origins": ["https://ting.example"],
-                            }
-                        },
-                    },
-                }
-            },
-            pod_spec=PodSpecAdditions(
-                env=[{"name": "SKULD__MESH__PEER_ID", "value": "skuld-proof"}],
-                volumes=[{"name": "ravn-config-a", "emptyDir": {}}],
-                extra_containers=[{"name": "ravn-a", "image": "x"}],
-            ),
-        )
-        ws = _workspace(workspaces, session)
-        flock_dir = ws / ".flock"
-        flock_dir.mkdir()
-        (flock_dir / "node-a.yaml").write_text("persona: a\n", encoding="utf-8")
-        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
-            await manager.start(session, spec)
-
-        sid = str(session.id)
-        container = client.containers.by_name[manager.container_name(sid)]
-        commands = [call[0] for call in container.exec_calls]
-        assert any("init" in command for command in commands)
-        assert any("start" in command for command in commands)
-        assert all(command[0] == dc._SESSION_SECRET_RUNNER for command in commands)
-        runtime_workspace = f"/volundr/sessions/{sid}/workspace"
-        assert all(call[1].get("workdir") == runtime_workspace for call in container.exec_calls)
-
-        env = client.containers.run_kwargs[0]["environment"]
-        assert env["SKULD__ROOM__ENABLED"] == "true"
-        assert env["SKULD__MESH__NNG__PUB_SUB_ADDRESS"].startswith("ipc:///tmp/niuu-mesh/")
-        discovery = json.loads(env["SKULD__MESH__ADAPTERS"])[0]
-        assert discovery["cluster_file"] == f"{runtime_workspace}/.flock/cluster.yaml"
-        assert "/var/run/docker.sock" not in client.containers.run_kwargs[0]["volumes"]
-        node_config = yaml.safe_load((flock_dir / "node-a.yaml").read_text(encoding="utf-8"))
-        assert node_config["workflow_execution"] == {
-            "enabled": True,
-            "execution_id": "execution-test",
-            "base_url": "https://ting.example/api/v1/ting",
-            "auth_token": "runtime-only-token",
-        }
-        assert node_config["gateway"]["platform"]["base_url"] == "http://niuu:8080"
-        assert node_config["gateway"]["platform"]["a2a_trusted_origins"] == ["https://ting.example"]
-
-        await manager.stop(session)
-        assert any("stop" in command for command, _ in container.exec_calls)
-
 
 class TestBrokeredCodexAuth:
     @pytest.mark.asyncio
@@ -474,15 +414,14 @@ class TestHostPathBinds:
         spec = SessionSpec(values={}, pod_spec=None)
         assert DockerContainerPodManager._host_path_binds(spec) == {}
 
-    def test_ignores_unmounted_generated_flock_volumes(self) -> None:
+    def test_ignores_unmounted_generated_volumes(self) -> None:
         spec = SessionSpec(
             values={},
             pod_spec=PodSpecAdditions(
                 volumes=(
-                    {"name": "ravn-config-a", "emptyDir": {}},
-                    {"name": "ravn-personas", "configMap": {"name": "personas"}},
+                    {"name": "scratch", "emptyDir": {}},
+                    {"name": "settings", "configMap": {"name": "settings"}},
                 ),
-                extra_containers=({"name": "ravn-a", "image": "ravn"},),
             ),
         )
         assert DockerContainerPodManager._host_path_binds(spec) == {}

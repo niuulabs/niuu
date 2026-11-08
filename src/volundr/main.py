@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import logging
 import os
+import urllib.parse
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
@@ -25,6 +26,7 @@ from niuu.adapters.outbound.git_registry import create_provenance_verifier
 from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.build_identity import build_identity
+from niuu.config_models import SessionPreviewConfig
 from niuu.cors import apply_cors_middleware
 from niuu.domain.guild_membership import GuildInstance
 from niuu.domain.services.realm import RealmService
@@ -60,6 +62,7 @@ from volundr.adapters.inbound.rest_audit import (
     create_canonical_audit_router,
 )
 from volundr.adapters.inbound.rest_codex_credentials import create_codex_credentials_router
+from volundr.adapters.inbound.rest_compute_metadata import create_compute_metadata_router
 from volundr.adapters.inbound.rest_credentials import create_canonical_credentials_router
 from volundr.adapters.inbound.rest_events import create_events_router
 from volundr.adapters.inbound.rest_forge_mcp import create_forge_mcp_router
@@ -78,7 +81,11 @@ from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_push import create_push_router
 from volundr.adapters.inbound.rest_resident_a2a import create_resident_a2a_router
 from volundr.adapters.inbound.rest_resident_runtimes import create_resident_runtimes_router
-from volundr.adapters.inbound.rest_resources import create_resources_router
+from volundr.adapters.inbound.rest_resources import (
+    create_forge_cluster_resources_router,
+    create_resources_router,
+)
+from volundr.adapters.inbound.rest_secret_requests import create_secret_requests_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.inbound.rest_session_participants import (
@@ -96,8 +103,10 @@ from volundr.adapters.outbound.config_resident_profiles import (
 from volundr.adapters.outbound.git_registry import create_git_registry
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
-from volundr.adapters.outbound.notification_image_fetcher import SessionLookup
-from volundr.adapters.outbound.odin_review_notification_relay import OdinReviewNotificationRelay
+from volundr.adapters.outbound.notification_image_fetcher import (
+    BrokerTargetLookup,
+    SessionLookup,
+)
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_message_delivery import PostgresMessageDelivery
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
@@ -122,13 +131,11 @@ from volundr.adapters.outbound.postgres_notifications import (
     PostgresNotificationRepository,
     PostgresNotificationRuleRepository,
 )
-from volundr.adapters.outbound.postgres_odin_review_relay import (
-    PostgresOdinReviewRelayStateStore,
-)
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
 from volundr.adapters.outbound.postgres_resident_runtimes import (
     PostgresResidentRuntimeRepository,
 )
+from volundr.adapters.outbound.postgres_secret_requests import PostgresSecretRequestRepository
 from volundr.adapters.outbound.postgres_session_participants import (
     PostgresSessionParticipantRepository,
 )
@@ -140,10 +147,6 @@ from volundr.adapters.outbound.postgres_tokens import PostgresTokenTracker
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.adapters.outbound.resident_flock import ResidentFlockAdapter
-from volundr.adapters.outbound.resident_notification_relay import (
-    RelaySettings,
-    ResidentNotificationRelay,
-)
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.app_shell import build_app_shell
 from volundr.artifact_runtime import (
@@ -165,6 +168,8 @@ from volundr.composition_builders import (  # noqa: F401
     _create_forge_session_projection,
     _create_forge_session_tokens,
     _create_gateway_adapter,
+    _create_host_join_endpoint,
+    _create_host_pairing_signer,
     _create_http_auth_adapter,
     _create_pod_manager,
     _create_resident_controllers,
@@ -208,6 +213,7 @@ from volundr.domain.services.resident_runtime import (
     ResidentRuntimeNotFoundError,
     ResidentRuntimeService,
 )
+from volundr.domain.services.secret_requests import SecretRequestService
 from volundr.domain.services.session_events import SessionEventStream
 from volundr.domain.services.session_participants import SessionParticipantService
 from volundr.domain.services.telegram_ingress import TelegramIngressService
@@ -230,19 +236,30 @@ BROADCAST_INTERVAL = 30
 
 logger = logging.getLogger(__name__)
 
+#: Workload name on the credentials Forge's live-preview router presents to Skuld.
+PREVIEW_ROUTER_WORKLOAD = "forge-preview-router"
 
-# Only "could not reach Bifrost" is retried: in mini mode the catalog is served by
-# this same process and is not listening yet when the lifespan starts. Any other
-# failure (HTTP error, bad payload, bad auth) means a reachable catalog answered
-# wrongly, which is a misconfiguration and must surface instead of being retried.
+
+# "Could not reach Bifrost" is the expected startup state in mini mode: the catalog is
+# served by this same process and is not listening yet when the lifespan starts.
 _BIFROST_NOT_READY_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
 
 
 async def _load_bifrost_catalog(
     pricing_provider: HardcodedPricingProvider,
     bifrost_catalog: HttpBifrostCatalogAdapter,
+    *,
+    retry_initial_seconds: float,
+    retry_max_seconds: float,
 ) -> None:
-    delay_seconds = 0.1
+    """Load the catalog, retrying every failure with capped backoff until it succeeds.
+
+    A failed attempt never replaces the models already loaded, so a refresh that
+    fails keeps serving the last good catalog. Every failure is logged: "not ready"
+    at warning, anything else (HTTP error, bad payload, bad auth) at error with the
+    knobs to fix, because Volundr serves no resident profiles until a load succeeds.
+    """
+    delay_seconds = retry_initial_seconds
     while True:
         try:
             models = await bifrost_catalog.list_models()
@@ -253,12 +270,22 @@ async def _load_bifrost_catalog(
                 exc,
                 delay_seconds,
             )
-            await asyncio.sleep(delay_seconds)
-            delay_seconds = min(delay_seconds * 2, 5.0)
-            continue
-        pricing_provider.replace_models(models)
-        logger.info("Loaded %s model(s) from configured Bifrost catalog", len(models))
-        return
+        except Exception as exc:
+            logger.error(
+                "Bifrost catalog load from %s failed: %s; retrying in %.1fs. Fix the catalog "
+                "at bifrost.url (and bifrost.auth); until a load succeeds Volundr keeps the "
+                "last loaded catalog (none at startup, so no resident profiles resolve)",
+                bifrost_catalog._base_url,  # noqa: SLF001
+                exc,
+                delay_seconds,
+                exc_info=exc,
+            )
+        else:
+            pricing_provider.replace_models(models)
+            logger.info("Loaded %s model(s) from configured Bifrost catalog", len(models))
+            return
+        await asyncio.sleep(delay_seconds)
+        delay_seconds = min(delay_seconds * 2, retry_max_seconds)
 
 
 def _log_bifrost_catalog_task_failure(task: asyncio.Task[None]) -> None:
@@ -269,8 +296,8 @@ def _log_bifrost_catalog_task_failure(task: asyncio.Task[None]) -> None:
     if exc is None:
         return
     logger.error(
-        "Bifrost catalog refresh stopped: %s. Fix the catalog at bifrost.url (and bifrost.auth) "
-        "and restart Volundr; the model catalog will not refresh until then",
+        "Bifrost catalog refresh stopped unexpectedly: %s. Restart Volundr; the model "
+        "catalog will not refresh until then",
         exc,
         exc_info=exc,
     )
@@ -281,36 +308,17 @@ async def _refresh_bifrost_catalog(
     bifrost_catalog: HttpBifrostCatalogAdapter,
     *,
     interval_seconds: float,
+    retry_initial_seconds: float,
+    retry_max_seconds: float,
 ) -> None:
     while True:
-        await _load_bifrost_catalog(pricing_provider, bifrost_catalog)
+        await _load_bifrost_catalog(
+            pricing_provider,
+            bifrost_catalog,
+            retry_initial_seconds=retry_initial_seconds,
+            retry_max_seconds=retry_max_seconds,
+        )
         await asyncio.sleep(interval_seconds)
-
-
-def _create_resident_notification_relay(
-    settings: Settings,
-    repository: Any,
-    session_controllers: list[Any],
-    notification_service: NotificationService | None,
-) -> ResidentNotificationRelay | None:
-    """Follow residents' notification outboxes into the feed (``resident_runtimes.notifications``).
-
-    Off with the feed itself: there is nowhere to record them without it.
-    """
-    config = settings.resident_runtimes.notifications
-    if notification_service is None or not config.enabled:
-        return None
-    return ResidentNotificationRelay(
-        repository,
-        session_controllers,
-        notification_service,
-        RelaySettings(
-            batch_size=config.batch_size,
-            idle_resync_seconds=config.idle_resync_seconds,
-            reconnect_initial_seconds=config.reconnect_initial_seconds,
-            reconnect_max_seconds=config.reconnect_max_seconds,
-        ),
-    )
 
 
 async def _retire_unserved_push_rules(
@@ -333,45 +341,6 @@ async def _retire_unserved_push_rules(
     return retired
 
 
-def _create_odin_review_relay(
-    settings: Settings,
-    pool: Any,
-    notification_service: NotificationService | None,
-) -> OdinReviewNotificationRelay | None:
-    """Follow the ODIN review queue into the feed (``notifications.odin_review_relay``).
-
-    Enabled but unable to run is fatal: the source adapter is built here, so a bad class
-    path or kwargs stops startup with the remedy instead of leaving questions unannounced.
-    """
-    config = settings.notifications.odin_review_relay
-    if not config.enabled:
-        return None
-    if notification_service is None:
-        raise RuntimeError(
-            "notifications.odin_review_relay.enabled records into the notification feed: "
-            "set notifications.enabled: true, or disable the relay"
-        )
-    if not settings.push.enabled:
-        logger.warning(
-            "ODIN review relay is on but push.enabled is false: resident questions reach the "
-            "notification feed and nothing is pushed to a phone"
-        )
-    source = import_class(config.source.adapter)(
-        **resolve_secret_kwargs(config.source.kwargs, config.source.secret_kwargs_env)
-    )
-    # With the Guild push gateway this node has no push sink: the gateway alerts for
-    # each question's notification itself, so no owner needs the sink's rule.
-    pushes_through_sink = settings.push.enabled and not settings.push.gateway.enabled
-    return OdinReviewNotificationRelay(
-        source,
-        PostgresOdinReviewRelayStateStore(pool),
-        notification_service,
-        owner_ids=config.owner_ids,
-        poll_interval_seconds=config.poll_interval_seconds,
-        push_sink=settings.push.attention_sink if pushes_through_sink else None,
-    )
-
-
 def _create_notification_service(
     settings: Settings,
     pool: Any,
@@ -379,6 +348,7 @@ def _create_notification_service(
     broadcaster: InMemoryEventBroadcaster,
     integration_repository: PostgresIntegrationRepository,
     session_lookup: SessionLookup,
+    broker_target: BrokerTargetLookup,
     guild_instance: GuildInstance | None = None,
 ) -> tuple[NotificationService, NotificationImageWorker] | None:
     """Compose the notification feed, rules, outbox and image worker
@@ -400,6 +370,7 @@ def _create_notification_service(
         notifications=repository,
         images=images,
         session_lookup=session_lookup,
+        broker_target=broker_target,
         broadcaster=broadcaster,
         guild_instance=guild_instance,
     )
@@ -618,7 +589,6 @@ async def _reconcile_resident_runtimes_loop(
     *,
     interval_seconds: float,
     flock_adapter: ResidentFlockAdapter | None = None,
-    notification_relay: ResidentNotificationRelay | None = None,
 ) -> None:
     """Converge durable resident records with backend state, starting at once.
 
@@ -637,8 +607,6 @@ async def _reconcile_resident_runtimes_loop(
             await service.reconcile_all()
             if flock_adapter is not None:
                 await flock_adapter.sync()
-            if notification_relay is not None:
-                await notification_relay.sync()
         except asyncio.CancelledError:
             logger.info("Resident runtime reconcile loop cancelled")
             break
@@ -768,6 +736,29 @@ def _build_otel_event_sink(otel_cfg):
     )
 
 
+def _preview_origin_template(
+    standalone: SessionPreviewConfig, *, public_origin: str, embedded: bool
+) -> str:
+    """The origin of one live preview, with ``{port}`` and ``{session_id}`` to fill.
+
+    Standalone, previews are served on the configured preview domain over HTTPS.
+    Embedded in the local host (mini mode), the host serves them on
+    ``*.localhost`` at its own port (niuu ``host.session_preview``).
+    """
+    if not embedded:
+        if not standalone.enabled:
+            return ""
+        return f"https://{{port}}--{{session_id}}.{standalone.domain}"
+    from niuu.config import NiuuSettings
+
+    local = NiuuSettings().host.session_preview
+    if not local.enabled:
+        return ""
+    origin = urllib.parse.urlsplit(public_origin)
+    port = f":{origin.port}" if origin.port else ""
+    return f"{origin.scheme or 'http'}://{{port}}--{{session_id}}.{local.domain}{port}"
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -883,7 +874,7 @@ def create_app(
             pg_event_sink = PostgresEventSink(
                 pool, buffer_size=settings.event_pipeline.postgres_buffer_size
             )
-            from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
+            from personas.adapters.postgres_registry import PostgresPersonaRegistry
 
             persona_registry = PostgresPersonaRegistry(pool)
             app.state.persona_registry = persona_registry
@@ -921,10 +912,6 @@ def create_app(
             skuld_reg = skuld_registry
             if skuld_reg is not None and hasattr(pod_manager, "set_skuld_registry"):
                 pod_manager.set_skuld_registry(skuld_reg)
-            if skuld_reg is not None:
-                for controller in resident_controllers:
-                    if hasattr(controller, "set_skuld_registry"):
-                        controller.set_skuld_registry(skuld_reg)
 
             if skuld_reg is None:
                 # Standalone deployment (K8s / bare uvicorn): no CLI root app
@@ -957,6 +944,8 @@ def create_app(
                     pricing_provider,
                     bifrost_catalog,
                     interval_seconds=settings.bifrost.catalog_refresh_interval_seconds,
+                    retry_initial_seconds=settings.bifrost.catalog_retry_initial_seconds,
+                    retry_max_seconds=settings.bifrost.catalog_retry_max_seconds,
                 )
             )
             bifrost_catalog_task.add_done_callback(_log_bifrost_catalog_task_failure)
@@ -986,8 +975,12 @@ def create_app(
                     logger.exception("Failed to initialise Sleipnir integration")
                     sleipnir_bus = None
 
+            # A node whose instance is not recorded yet keeps running: only
+            # GET /guild reports it (503), and its items carry null instance fields.
+            guild_membership = settings.guild.membership()
             broadcaster = InMemoryEventBroadcaster(
                 sleipnir_publisher=sleipnir_bus,
+                guild_instance=guild_membership.instance if guild_membership else None,
             )
 
             # Create services with broadcaster for real-time updates
@@ -1007,21 +1000,36 @@ def create_app(
             compute_provider = None
             compute_pool = None
             compute_pool_task = None
+            compute_host_service = None
+            compute_hosts_task = None
+            host_join_listener = None
+            host_connect_key_servers = []
             execution_components = None
+            guest_metadata_service = None
             if settings.compute is not None:
                 from volundr.adapters.outbound.postgres_compute_leases import (
                     PostgresComputeLeaseRepository,
                 )
+                from volundr.adapters.outbound.postgres_guest_request_watermarks import (
+                    PostgresGuestRequestWatermarks,
+                )
                 from volundr.compute.main import (
+                    HostKeySource,
                     build_execution_components,
+                    build_guest_credentials,
                     build_provider,
+                    build_registered_hosts,
                     build_runtime,
                     provider_fingerprint,
                 )
                 from volundr.domain.compute import ComputePoolPolicy
                 from volundr.domain.services.compute_leases import ComputeLeaseService
                 from volundr.domain.services.compute_pool import ComputePoolService
-                from volundr.domain.vm_runtime import CredentialAwareVmRuntime
+                from volundr.domain.services.guest_metadata import GuestMetadataService
+                from volundr.domain.vm_runtime import (
+                    CredentialAwareVmRuntime,
+                    CredentialDeliveryVmRuntime,
+                )
 
                 compute = settings.compute
                 if (compute.runtime is None and compute.execution_catalog is None) or not hasattr(
@@ -1033,13 +1041,16 @@ def create_app(
                 if compute.database is not None and compute.database != settings.database:
                     raise ValueError("Forge compute leases must use the Forge database")
                 runtime = None
+                host_keys = HostKeySource(
+                    compute.pool_id, credential_store, PostgresCredentialRefreshLock(pool)
+                )
                 if compute.runtime is not None:
-                    runtime = build_runtime(compute.runtime, importer=import_class)
+                    runtime = await build_runtime(
+                        compute.runtime, importer=import_class, host_keys=host_keys
+                    )
                     compute_resources.push_async_callback(runtime.close)
                     if isinstance(runtime, CredentialAwareVmRuntime):
                         runtime.configure_credentials(credential_store)
-                compute_provider = build_provider(compute)
-                compute_resources.push_async_callback(compute_provider.close)
                 compute_repository = PostgresComputeLeaseRepository(pool)
                 if compute.execution_catalog is not None:
                     if runtime is None:
@@ -1051,7 +1062,7 @@ def create_app(
                                 "Existing legacy allocations require compute.runtime until drained"
                             )
                     execution_components = await build_execution_components(
-                        compute, credential_store
+                        compute, credential_store, host_keys
                     )
                     for access in execution_components.accesses:
                         compute_resources.push_async_callback(access.close)
@@ -1063,6 +1074,16 @@ def create_app(
                         runtime = execution_components.runtimes[
                             execution_components.default_plan.plan_digest
                         ]
+                host_components = (
+                    build_registered_hosts(compute, pool, execution_components)
+                    if compute.hosts is not None
+                    else None
+                )
+                compute_provider = build_provider(
+                    compute,
+                    host_components.provider_ports(compute.pool_id) if host_components else None,
+                )
+                compute_resources.push_async_callback(compute_provider.close)
                 compute_service = ComputeLeaseService(
                     compute_repository,
                     compute_provider,
@@ -1076,6 +1097,76 @@ def create_app(
                     retry_interval_seconds=compute.retry_interval_seconds,
                     retry_max_seconds=compute.retry_max_seconds,
                 )
+
+                async def machine_bootstrap_for(lease_id):
+                    lease = await compute_repository.get(lease_id)
+                    if lease is None or lease.pool_id != compute.pool_id:
+                        return None
+                    return await compute_service.machine_bootstrap_for(lease)
+
+                async def machine_for(lease_id):
+                    lease = await compute_repository.get(lease_id)
+                    if lease is None or lease.pool_id != compute.pool_id:
+                        return None
+                    return lease.machine
+
+                guest_credentials = build_guest_credentials(
+                    compute,
+                    {
+                        "pool_id": compute.pool_id,
+                        "machine_bootstrap_for": machine_bootstrap_for,
+                        "machine_for": machine_for,
+                        "watermarks": PostgresGuestRequestWatermarks(pool),
+                        "machine_provider": compute_provider,
+                    },
+                )
+                for component in (
+                    guest_credentials.service_account_tokens,
+                    guest_credentials.guest_identity,
+                    guest_credentials.delivery,
+                ):
+                    if component is not None:
+                        compute_resources.push_async_callback(component.close)
+                if guest_credentials.delivery is not None:
+                    vm_runtimes = {
+                        id(candidate): candidate
+                        for candidate in (
+                            runtime,
+                            *(
+                                execution_components.runtimes.values()
+                                if execution_components is not None
+                                else ()
+                            ),
+                        )
+                        if candidate is not None
+                    }
+                    for vm_runtime in vm_runtimes.values():
+                        if not isinstance(vm_runtime, CredentialDeliveryVmRuntime):
+                            raise ValueError(
+                                f"compute.credential_delivery is configured but "
+                                f"{type(vm_runtime).__name__} cannot deliver guest credentials"
+                            )
+                        vm_runtime.configure_credential_delivery(guest_credentials.delivery)
+                if guest_credentials.guest_identity is not None:
+                    if guest_credentials.service_account_tokens is None:
+                        raise ValueError(
+                            "compute.guest_identity enables the metadata endpoint, which "
+                            "needs compute.service_account_tokens"
+                        )
+
+                    async def issue_forge_session(session_id):
+                        # session_service is composed below; the endpoint serves only
+                        # after startup completes.
+                        return await session_service.issue_forge_session(session_id)
+
+                    guest_metadata_service = GuestMetadataService(
+                        repository=compute_repository,
+                        compute_service=compute_service,
+                        pool_id=compute.pool_id,
+                        identity=guest_credentials.guest_identity,
+                        service_account_tokens=guest_credentials.service_account_tokens,
+                        issue_forge_session=issue_forge_session,
+                    )
                 pod_manager.configure_compute(
                     compute_service,
                     compute_repository,
@@ -1107,6 +1198,9 @@ def create_app(
                             else pod_manager.profile
                         ),
                         max_machines=compute.max_machines,
+                        slots_per_machine=compute.slots_per_machine,
+                        max_sessions_per_machine=compute.max_sessions_per_machine,
+                        max_machine_age_seconds=compute.max_machine_age_seconds,
                         warm_min=compute.warm_min,
                         reuse_policy=compute.reuse_policy,
                         max_provisioning=compute.max_provisioning,
@@ -1122,6 +1216,48 @@ def create_app(
                     )
                 await compute_pool.validate_policy(await compute_pool.policy())
                 pod_manager.configure_pool(compute_pool)
+                if host_components is not None:
+                    from volundr.compute.main import build_host_connect_key_servers
+                    from volundr.domain.services.compute_hosts import ComputeHostService
+
+                    hosts_config = compute.hosts
+                    join_endpoint = _create_host_join_endpoint(settings)
+                    compute_host_service = ComputeHostService(
+                        pool_id=compute.pool_id,
+                        repository=host_components.repository,
+                        compute_repository=compute_repository,
+                        compute_pool=compute_pool,
+                        connectors=host_components.connectors,
+                        inspector=host_components.inspector,
+                        executions=host_components.executions,
+                        token_issuer=_create_host_pairing_signer(
+                            settings, workload_identity_service
+                        ),
+                        join_url=join_endpoint.url,
+                        join_pin=join_endpoint.tls.pin if join_endpoint.tls else None,
+                        pairing_code_ttl_seconds=hosts_config.pairing_code_ttl_seconds,
+                        check_interval_seconds=hosts_config.check_interval_seconds,
+                        pending_check_interval_seconds=(
+                            hosts_config.pending_check_interval_seconds
+                        ),
+                        reserved_cpu=hosts_config.reserved_cpu,
+                        reserved_memory_mib=hosts_config.reserved_memory_mib,
+                    )
+                    if join_endpoint.tls is not None and hosts_config.join_listener is not None:
+                        from volundr.adapters.inbound.host_join_listener import (
+                            HostJoinListener,
+                            create_host_join_app,
+                        )
+
+                        host_join_listener = HostJoinListener(
+                            create_host_join_app(compute_host_service),
+                            bind_host=hosts_config.join_listener.bind_host,
+                            port=hosts_config.join_listener.port,
+                            tls=join_endpoint.tls,
+                        )
+                    host_connect_key_servers = build_host_connect_key_servers(
+                        host_components.connectors, compute_host_service.endpoint_key
+                    )
             codex_credential_broker = _create_codex_credential_broker(
                 settings,
                 credential_store=credential_store,
@@ -1172,8 +1308,6 @@ def create_app(
                 if sleipnir_bus is not None
                 else None
             )
-            if hasattr(pod_manager, "set_persona_registry"):
-                pod_manager.set_persona_registry(persona_registry)
 
             # Integration registry + repository
             from volundr.domain.services.integration_registry import (
@@ -1228,9 +1362,6 @@ def create_app(
             if moved:
                 logger.info("Push devices: moved %d stored tokens into the credential store", moved)
             mapping_repository = PostgresMappingRepository(pool)
-            # A node whose instance is not recorded yet keeps running: only
-            # GET /guild reports it (503), and its items carry null instance fields.
-            guild_membership = settings.guild.membership()
             notification_feed = _create_notification_service(
                 settings,
                 pool,
@@ -1238,18 +1369,10 @@ def create_app(
                 integration_repository=integration_repo,
                 guild_instance=guild_membership.instance if guild_membership else None,
                 session_lookup=repository.get,
+                broker_target=pod_manager.broker_target,
             )
             notification_service, notification_image_worker = notification_feed or (None, None)
             app.state.notification_service = notification_service
-            resident_notification_relay = _create_resident_notification_relay(
-                settings,
-                resident_runtime_repository,
-                resident_session_controllers,
-                notification_service,
-            )
-            app.state.resident_notification_relay = resident_notification_relay
-            odin_review_relay = _create_odin_review_relay(settings, pool, notification_service)
-            app.state.odin_review_relay = odin_review_relay
             app.state.notification_image_worker = notification_image_worker
             notification_delivery = _create_notification_delivery(
                 settings,
@@ -1369,6 +1492,11 @@ def create_app(
                     settings.presented_files.max_total_bytes
                 )
 
+            secret_request_service = SecretRequestService(
+                PostgresSecretRequestRepository(pool), credential_store
+            )
+            app.state.secret_request_service = secret_request_service
+
             session_service = SessionService(
                 repository,
                 pod_manager,
@@ -1381,6 +1509,7 @@ def create_app(
                 contributors=contributors if contributors else None,
                 provisioning_timeout=settings.provisioning.timeout_seconds,
                 provisioning_initial_delay=settings.provisioning.initial_delay_seconds,
+                startup_poll_seconds=settings.provisioning.startup_poll_seconds,
                 integration_repo=integration_repo,
                 storage=storage_adapter,
                 communication_route_repository=communication_route_repository,
@@ -1396,6 +1525,7 @@ def create_app(
                 audit_repository=PostgresAuditRepository(pool),
                 presented_file_store=presented_file_store,
                 forge_session_projection=_create_forge_session_projection(settings),
+                secret_cleanup=secret_request_service,
             )
             if presented_file_store is not None:
                 require_presented_file_uploads(
@@ -1454,6 +1584,41 @@ def create_app(
                     return await resident_runtime_service.proxy_target(resource_id)
 
                 skuld_reg.set_target_resolver(_resolve_session_proxy_target)
+
+            if skuld_reg is not None and workload_identity_service.enabled:
+                from niuu.domain.models import Principal
+                from niuu.domain.services.token_scope import (
+                    FORGE_SESSION_PREVIEW_SCOPE,
+                    VALKYRIE_BUILD_TOKEN_USE,
+                )
+
+                preview_settings = settings.session_preview
+
+                async def _mint_preview_credential(session_id: str, owner: Principal) -> str:
+                    """The router credential for one live-preview request (niuu.preview_proxy).
+
+                    Bound to the one session and carrying the issuer-only
+                    forge:session:preview scope, which the session's Skuld requires.
+                    """
+                    return workload_identity_service.issue_token(
+                        principal=owner,
+                        workload_subject=PREVIEW_ROUTER_WORKLOAD,
+                        workload_name=PREVIEW_ROUTER_WORKLOAD,
+                        audiences=[preview_settings.credential_audience],
+                        token_use=VALKYRIE_BUILD_TOKEN_USE,
+                        claims={
+                            "scopes": [FORGE_SESSION_PREVIEW_SCOPE],
+                            "session_id": session_id,
+                        },
+                        ttl_seconds=preview_settings.credential_ttl_seconds,
+                    ).token
+
+                skuld_reg.set_preview_credential_issuer(_mint_preview_credential)
+
+            if skuld_registry is None and settings.session_preview.enabled:
+                from niuu.preview_proxy import PreviewRouter
+
+                app.state.preview_router = PreviewRouter(skuld_reg, settings.session_preview)
 
             # Enforce session ownership at the WS proxy (the browser's
             # termination point). The broker's ws_auth is defense-in-depth for
@@ -1728,6 +1893,7 @@ def create_app(
                 history_max_bytes=settings.conversation_recent_max_bytes,
                 session_participant_service=session_participant_service,
                 presented_file_store=presented_file_store,
+                guild_membership=guild_membership,
             )
             app.include_router(forge_router)
             app.include_router(
@@ -1773,6 +1939,19 @@ def create_app(
                     )
                 )
 
+            if guest_metadata_service is not None:
+                app.include_router(create_compute_metadata_router(guest_metadata_service))
+            if compute_host_service is not None:
+                from volundr.adapters.inbound.rest_compute_hosts import (
+                    create_compute_hosts_router,
+                    create_host_join_router,
+                )
+
+                app.include_router(create_compute_hosts_router(compute_host_service, compute_pool))
+                # With Forge's join listener, the host-facing routes are served only there.
+                if host_join_listener is None:
+                    app.include_router(create_host_join_router(compute_host_service))
+
             app.include_router(catalog.router)
 
             # Resource discovery endpoint
@@ -1781,6 +1960,10 @@ def create_app(
                 prefix="/api/v1/volundr",
             )
             app.include_router(resources_router)
+            # The same discovery in the Guild facade's shape, for a UI scoped to this node.
+            app.include_router(
+                create_forge_cluster_resources_router(resource_provider, guild_membership)
+            )
             app.state.resource_provider = resource_provider
 
             # Saved prompts
@@ -1852,12 +2035,6 @@ def create_app(
                     stream_interval_seconds=settings.realm_detail_stream_interval_seconds,
                 )
             )
-            # Let resident deployment controllers resolve a resident's realm slug
-            # (for realm_slug/charter binding in the rendered container config).
-            for controller in resident_controllers:
-                if hasattr(controller, "set_realm_repository"):
-                    controller.set_realm_repository(realm_repository)
-
             git_router = create_git_router(
                 git_workflow_service,
                 prefix="/api/v1/forge",
@@ -2066,6 +2243,11 @@ def create_app(
                     )
                 )
             app.include_router(
+                create_secret_requests_router(
+                    secret_request_service, session_service, prefix="/api/v1/forge"
+                )
+            )
+            app.include_router(
                 create_message_delivery_router(PostgresMessageDelivery(pool), session_service)
             )
             if push_gateway is not None:
@@ -2174,13 +2356,10 @@ def create_app(
                     resident_runtime_service,
                     interval_seconds=settings.resident_runtimes.reconciliation_interval_seconds,
                     flock_adapter=resident_flock_adapter,
-                    notification_relay=resident_notification_relay,
                 )
             )
             if notification_delivery is not None:
                 await notification_delivery.start()
-            if odin_review_relay is not None:
-                await odin_review_relay.start()
             if notification_image_worker is not None:
                 await notification_image_worker.start()
             artifact_hold: ArtifactHold | None = None
@@ -2211,6 +2390,12 @@ def create_app(
 
             if compute_pool is not None:
                 compute_pool_task = asyncio.create_task(compute_pool.run())
+            if host_join_listener is not None:
+                await host_join_listener.start()
+            if compute_host_service is not None:
+                compute_hosts_task = asyncio.create_task(compute_host_service.run())
+            for key_server in host_connect_key_servers:
+                await key_server.start()
             try:
                 yield
             finally:
@@ -2224,12 +2409,17 @@ def create_app(
                 if compute_pool_task is not None:
                     compute_pool_task.cancel()
                     await asyncio.gather(compute_pool_task, return_exceptions=True)
+                if compute_hosts_task is not None:
+                    compute_hosts_task.cancel()
+                    await asyncio.gather(compute_hosts_task, return_exceptions=True)
+                if host_join_listener is not None:
+                    await host_join_listener.stop()
+                for key_server in host_connect_key_servers:
+                    await key_server.stop()
                 if bifrost_catalog_task is not None:
                     bifrost_catalog_task.cancel()
                     await asyncio.gather(bifrost_catalog_task, return_exceptions=True)
                 await telegram_ingress.stop()
-                if odin_review_relay is not None:
-                    await odin_review_relay.stop()
                 if notification_delivery is not None:
                     await notification_delivery.stop()
                 if notification_image_worker is not None:
@@ -2263,8 +2453,6 @@ def create_app(
                     pass
                 if resident_flock_adapter is not None:
                     await resident_flock_adapter.stop()
-                if resident_notification_relay is not None:
-                    await resident_notification_relay.stop()
                 await resident_runtime_service.close()
                 await event_ingestion.close_all()
                 if settings.compute is None and hasattr(pod_manager, "close"):
@@ -2274,6 +2462,9 @@ def create_app(
                         await controller.close()
                 if hasattr(gateway_adapter, "close"):
                     await gateway_adapter.close()
+                preview_router = getattr(app.state, "preview_router", None)
+                if preview_router is not None:
+                    await preview_router.aclose()
                 await git_registry.close()
                 if hasattr(integration_repo, "close"):
                     await integration_repo.close()
@@ -2296,6 +2487,34 @@ def create_app(
     # Verifies forge_session bearers in every identity mode and confines them to
     # their route allow-list (volundr.adapters.inbound.forge_session_auth).
     app.add_middleware(ForgeSessionAuthMiddleware)
+    if skuld_registry is None and settings.session_preview.enabled:
+        # Standalone Forge serves live previews itself (mini mode's root app does
+        # it there). Outermost: an app's traffic meets none of Forge's own
+        # middleware. The router is built in the lifespan, once the session
+        # registry has its ownership guard and credential issuer.
+        from niuu.preview_proxy import PreviewRouterMiddleware
+
+        app.add_middleware(
+            PreviewRouterMiddleware,
+            domain=settings.session_preview.domain,
+            router_provider=lambda: getattr(app.state, "preview_router", None),
+        )
+
+    preview_origin_template = _preview_origin_template(
+        settings.session_preview, public_origin=public_origin, embedded=skuld_registry is not None
+    )
+
+    @app.get("/api/v1/forge/settings/live-preview", tags=["Sessions"])
+    async def live_preview_config() -> dict[str, Any]:
+        """Where a session's live previews open, for the web UI.
+
+        ``origin_template`` holds ``{port}`` and ``{session_id}``; it is empty
+        when this platform serves no live previews.
+        """
+        return {
+            "enabled": bool(preview_origin_template),
+            "origin_template": preview_origin_template,
+        }
 
     @app.get("/health", tags=["Health"])
     @app.get("/api/v1/forge/health", include_in_schema=False)

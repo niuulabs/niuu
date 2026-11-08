@@ -22,6 +22,8 @@ export interface RemoteSettingsField {
   placeholder?: string;
   readOnly?: boolean;
   secret?: boolean;
+  /** A number field that may be left empty, which saves as null (an unset optional limit). */
+  nullable?: boolean;
   options?: RemoteSettingsOption[];
 }
 
@@ -215,14 +217,6 @@ const REMOTE_PROVIDER_DEFS = [
     subtitle: 'model catalog and routing settings',
     scope: 'service' as const,
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'bifrost'),
-  },
-  {
-    id: 'ravn',
-    pluginId: 'ravn',
-    title: 'Agents',
-    subtitle: 'runtime and agent settings',
-    scope: 'service' as const,
-    resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'ravn'),
   },
   {
     id: 'observatory',

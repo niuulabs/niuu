@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -15,7 +16,7 @@ import yaml
 
 from niuu.domain.json_schema import PortableSchemaError, validate_object_instance
 from niuu.domain.workflow_evidence import validate_evidence_gate_nodes
-from ravn.domain.persona_document import PersonaDocumentError, validate_persona_identifier
+from personas.domain.persona_document import PersonaDocumentError, validate_persona_identifier
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import (
     PersonaDependency,
@@ -23,7 +24,18 @@ from ting.domain.models import (
     WorkflowDependency,
     WorkflowScope,
 )
+from ting.domain.step_graph import (
+    EXECUTION_MODES,
+    FLOW_NODE_KINDS,
+    JOIN_MODES,
+    NodeKind,
+    NodeSpec,
+    StepGraph,
+    compile_step_graph,
+    split_edge_label,
+)
 from ting.domain.workflow_board import WorkflowBoardError, parse_workflow_board
+from ting.domain.workflow_steps import ENGINE_EVENT_PREFIX
 
 WORKFLOW_SCHEMA_VERSION = 2
 SUPPORTED_WORKFLOW_SCHEMA_VERSIONS = frozenset({1, 2})
@@ -1333,6 +1345,7 @@ def validate_resolved_workflow_graph(
     schema_version: int,
     persona_dependencies: dict[str, PersonaDependency],
     workflow_dependencies: dict[str, WorkflowDependency],
+    persona_definitions: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
     """Re-run whole-graph validation against a graph with includes resolved.
 
@@ -1345,7 +1358,9 @@ def validate_resolved_workflow_graph(
     what actually runs, not the placeholder that stood in for it. Callers
     with access to a resolver (at minimum, loading the bundled workflow set)
     run this after resolution; it raises exactly like ``load_workflow_document``
-    on the same defects.
+    on the same defects. ``persona_definitions`` (alias to persona document), when
+    the caller has them, also checks the events each stage produces and consumes
+    against the graph's edges (see ``validate_workflow_graph``).
     """
     _validate_graph_structure(graph)
     try:
@@ -1357,6 +1372,7 @@ def validate_resolved_workflow_graph(
     _validate_no_stage_placement(graph)
     load_workflow_placement(graph, schema_version=schema_version)
     _validate_workflow_board(graph)
+    validate_workflow_graph(graph, persona_definitions=persona_definitions)
     referenced_aliases = referenced_persona_aliases(graph)
     missing_aliases = referenced_aliases - set(persona_dependencies)
     if missing_aliases:
@@ -1374,6 +1390,421 @@ def validate_resolved_workflow_graph(
     _validate_include_nodes(
         graph, schema_version=schema_version, dependencies=workflow_dependencies
     )
+
+
+# --- runnable-graph validation (the step engine's contract) -----------------
+
+
+def validate_workflow_graph(
+    graph: dict[str, Any],
+    *,
+    persona_definitions: Mapping[str, Mapping[str, Any]] | None = None,
+) -> None:
+    """Refuse a graph the step engine could not run to an end, naming exactly why.
+
+    Run when a workflow is saved and again when a run launches, on the graph with
+    every ``include`` resolved. It refuses, each with its own message:
+
+    * a node of an unknown kind, and ``cond`` (nothing interprets a conditional
+      branch, so a graph that has one could silently never take it);
+    * a dangling edge endpoint, an edge without ``source_event -> target_event``
+      labels, and event names in the engine's reserved ``engine.`` namespace;
+    * a node a trigger cannot reach, no trigger, no reachable ``end``, a node from
+      which no ``end`` can be reached, and a node with nothing leaving it;
+    * a cycle unless every cycle holds an edge marked ``rework: true`` (and a
+      ``rework`` edge that closes no cycle, a ``maxIterations`` that is not a
+      positive whole number, or a ``maxIterations`` on an edge that is not a rework
+      edge). A rework edge has no round limit unless its author sets
+      ``maxIterations``: a loop ends when its steps decide it is done, or when an
+      operator aborts the run;
+    * a gate that does not declare its approve and request-changes events, or whose
+      events no outgoing edge carries;
+    * a trigger edge that does not leave with the trigger's ``dispatchEvent``;
+    * an end node that declares ``completionRules``, which nothing interprets.
+
+    With ``persona_definitions`` (stage member alias to persona document) it also
+    checks events against the stages' persona contracts: an edge leaving a stage
+    with an event none of its members can produce, an edge delivering an event none
+    of its members consumes, and a member that produces events none of which any
+    outgoing edge carries (a member that can only dead-end; a member that produces
+    nothing is an observer and ends with ``done``).
+
+    It does not require that every verdict a persona *can* give is routed: personas
+    are shared between stages, so a verdict whose event no edge carries is not a
+    graph defect. The engine fails that step loudly instead (see ``step_engine``).
+    """
+    nodes = graph.get("nodes") or []
+    edges = graph.get("edges") or []
+    _validate_node_kinds(nodes)
+    _validate_flow_node_fields(nodes)
+    _validate_edge_fields(nodes, edges)
+    compiled = compile_step_graph(graph, persona_definitions)
+    _validate_no_dead_ends(compiled)
+    _validate_gate_decisions(compiled)
+    _validate_trigger_edges(compiled)
+    _validate_reachability(compiled)
+    _validate_cycles(compiled)
+    if persona_definitions is not None:
+        _validate_stage_events(compiled)
+
+
+def _validate_node_kinds(nodes: list[dict[str, Any]]) -> None:
+    known = ", ".join(sorted(kind.value for kind in NodeKind))
+    for node in nodes:
+        node_id = str(node.get("id") or "").strip()
+        kind = str(node.get("kind") or "").strip()
+        if kind == "cond":
+            raise WorkflowDocumentError(
+                f"Workflow node {node_id!r} is a cond node; cond nodes are not supported: "
+                "nothing interprets a conditional branch. Route on a gate decision or on a "
+                "persona verdict instead"
+            )
+        if kind == "gate" and node.get("mode") == "evidence":
+            raise WorkflowDocumentError(
+                f"Workflow gate {node_id!r} uses mode 'evidence', which the step engine does "
+                "not evaluate: it would wait for a person instead of checking the evidence. "
+                "Make it a person gate, or 'automated_approval' for an agent to answer"
+            )
+        if kind not in {item.value for item in NodeKind}:
+            raise WorkflowDocumentError(
+                f"Workflow node {node_id!r} has unknown kind {kind!r}; the engine runs: {known}"
+            )
+    seen: set[str] = set()
+    for node in nodes:
+        node_id = str(node.get("id") or "").strip()
+        if node_id in seen:
+            raise WorkflowDocumentError(f"Workflow node id {node_id!r} is declared twice")
+        seen.add(node_id)
+
+
+def _validate_flow_node_fields(nodes: list[dict[str, Any]]) -> None:
+    for node in nodes:
+        node_id = str(node.get("id") or "").strip()
+        kind = str(node.get("kind") or "").strip()
+        _validate_node_event_names(node_id, node)
+        deadline = node.get("deadlineSeconds")
+        if deadline is not None and (
+            isinstance(deadline, bool) or not isinstance(deadline, int | float) or deadline <= 0
+        ):
+            raise WorkflowDocumentError(
+                f"Workflow node {node_id!r} deadlineSeconds must be a positive number"
+            )
+        if kind == "end" and "completionRules" in node:
+            raise WorkflowDocumentError(
+                f"Workflow end node {node_id!r} declares completionRules, which nothing "
+                "interprets; an end completes the run on its joinMode and passingVerdicts"
+            )
+        if kind == "trigger" and not str(node.get("dispatchEvent") or "").strip():
+            raise WorkflowDocumentError(
+                f"Workflow trigger {node_id!r} needs a dispatchEvent: the event that starts a run"
+            )
+        if kind == "stage":
+            _validate_stage_fields(node_id, node)
+
+
+def _validate_node_event_names(node_id: str, node: dict[str, Any]) -> None:
+    for field_name in (
+        "dispatchEvent",
+        "completionEvent",
+        "approvalEvent",
+        "changesRequestedEvent",
+        "blockedEvent",
+    ):
+        value = node.get(field_name)
+        if isinstance(value, str) and value.strip().startswith(ENGINE_EVENT_PREFIX):
+            raise WorkflowDocumentError(
+                f"Workflow node {node_id!r} {field_name} {value!r} uses the reserved "
+                f"{ENGINE_EVENT_PREFIX!r} prefix, which the engine records its own events under"
+            )
+
+
+def _validate_stage_fields(node_id: str, node: dict[str, Any]) -> None:
+    members = node.get("stageMembers") or node.get("personaIds") or []
+    if not members:
+        raise WorkflowDocumentError(
+            f"Workflow stage {node_id!r} has no members; it could never activate"
+        )
+    execution_mode = node.get("executionMode")
+    if execution_mode is not None and execution_mode not in EXECUTION_MODES:
+        raise WorkflowDocumentError(
+            f"Workflow stage {node_id!r} executionMode must be one of "
+            + ", ".join(sorted(EXECUTION_MODES))
+        )
+    join_mode = node.get("joinMode")
+    if join_mode is not None and join_mode not in JOIN_MODES:
+        raise WorkflowDocumentError(
+            f"Workflow stage {node_id!r} joinMode must be one of " + ", ".join(sorted(JOIN_MODES))
+        )
+    max_concurrent = node.get("maxConcurrent")
+    if max_concurrent is not None and (type(max_concurrent) is not int or max_concurrent < 1):
+        raise WorkflowDocumentError(
+            f"Workflow stage {node_id!r} maxConcurrent must be a positive integer"
+        )
+    for member in node.get("stageMembers") or []:
+        _validate_stage_member(node_id, member)
+
+
+def _validate_stage_member(node_id: str, member: dict[str, Any]) -> None:
+    alias = member.get("personaId")
+    filters = member.get("eventFilters")
+    if filters is not None and (
+        not isinstance(filters, dict)
+        or any(
+            not isinstance(key, str) or not isinstance(value, str) for key, value in filters.items()
+        )
+    ):
+        raise WorkflowDocumentError(
+            f"Workflow stage {node_id!r} member {alias!r} eventFilters must map names to strings"
+        )
+    consumes = member.get("consumesEventTypes")
+    if consumes is not None and (
+        not isinstance(consumes, list) or any(not isinstance(item, str) for item in consumes)
+    ):
+        raise WorkflowDocumentError(
+            f"Workflow stage {node_id!r} member {alias!r} consumesEventTypes must be a list "
+            "of event types"
+        )
+
+
+def _validate_edge_fields(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> None:
+    node_ids = {str(node.get("id") or "").strip() for node in nodes}
+    seen: set[str] = set()
+    for edge in edges:
+        edge_id = str(edge.get("id") or "").strip()
+        if not edge_id:
+            raise WorkflowDocumentError("Every workflow edge needs an id")
+        if edge_id in seen:
+            raise WorkflowDocumentError(f"Workflow edge id {edge_id!r} is declared twice")
+        seen.add(edge_id)
+        for end_name in ("source", "target"):
+            endpoint = str(edge.get(end_name) or "").strip()
+            if endpoint not in node_ids:
+                raise WorkflowDocumentError(
+                    f"Workflow edge {edge_id!r} {end_name} {endpoint!r} is not a node of the graph"
+                )
+        source_event, target_event = split_edge_label(edge.get("label"))
+        if not source_event or not target_event:
+            raise WorkflowDocumentError(
+                f"Workflow edge {edge_id!r} label must be 'source_event -> target_event'; "
+                f"got {edge.get('label')!r}"
+            )
+        for event_type in (source_event, target_event):
+            if event_type.startswith(ENGINE_EVENT_PREFIX):
+                raise WorkflowDocumentError(
+                    f"Workflow edge {edge_id!r} event {event_type!r} uses the reserved "
+                    f"{ENGINE_EVENT_PREFIX!r} prefix, which the engine records its own events under"
+                )
+        _validate_rework_fields(edge_id, edge)
+
+
+def _validate_rework_fields(edge_id: str, edge: dict[str, Any]) -> None:
+    rework = edge.get("rework")
+    max_iterations = edge.get("maxIterations")
+    if rework is not None and not isinstance(rework, bool):
+        raise WorkflowDocumentError(f"Workflow edge {edge_id!r} rework must be true or false")
+    if rework is True:
+        if max_iterations is not None and (type(max_iterations) is not int or max_iterations < 1):
+            raise WorkflowDocumentError(
+                f"Workflow edge {edge_id!r} maxIterations must be a positive whole number "
+                "of rounds, or left out for no limit"
+            )
+        return
+    if max_iterations is not None:
+        raise WorkflowDocumentError(
+            f"Workflow edge {edge_id!r} sets maxIterations but is not marked rework: true"
+        )
+
+
+def _validate_no_dead_ends(graph: StepGraph) -> None:
+    for node in graph.nodes.values():
+        if node.kind not in FLOW_NODE_KINDS or node.kind in (NodeKind.END, NodeKind.TRIGGER):
+            continue
+        if not graph.outgoing(node.id):
+            raise WorkflowDocumentError(
+                f"Workflow node {node.id!r} is a dead end: no edge leaves it, so a run "
+                "that reaches it can never finish"
+            )
+
+
+def _validate_gate_decisions(graph: StepGraph) -> None:
+    """A gate names its approve and request-changes events, and edges carry both."""
+    for node in graph.nodes.values():
+        if node.kind is not NodeKind.GATE:
+            continue
+        carried = {edge.source_event for edge in graph.outgoing(node.id)}
+        for field_name, event_type in (
+            ("approvalEvent", node.approval_event),
+            ("changesRequestedEvent", node.changes_requested_event),
+        ):
+            if not event_type:
+                raise WorkflowDocumentError(
+                    f"Workflow gate {node.id!r} does not declare {field_name}: name the event "
+                    "its decision produces, or the run cannot tell what the decision means"
+                )
+            if event_type not in carried:
+                raise WorkflowDocumentError(
+                    f"Workflow gate {node.id!r} {field_name} {event_type!r} is carried by no "
+                    "outgoing edge, so that decision would dead-end the run"
+                )
+        stray = sorted(carried - {node.approval_event, node.changes_requested_event})
+        if stray:
+            raise WorkflowDocumentError(
+                f"Workflow gate {node.id!r} has an outgoing edge for {', '.join(stray)}, which is "
+                "neither its approvalEvent nor its changesRequestedEvent: a gate produces only "
+                "its two decisions"
+            )
+
+
+def _validate_trigger_edges(graph: StepGraph) -> None:
+    for node in graph.nodes.values():
+        if node.kind is not NodeKind.TRIGGER:
+            continue
+        outgoing = graph.outgoing(node.id)
+        if not outgoing:
+            raise WorkflowDocumentError(
+                f"Workflow trigger {node.id!r} has no outgoing edge: a run would start and stop"
+            )
+        for edge in outgoing:
+            if edge.source_event != node.dispatch_event:
+                raise WorkflowDocumentError(
+                    f"Workflow edge {edge.id!r} leaves trigger {node.id!r} with event "
+                    f"{edge.source_event!r}, which the trigger does not produce "
+                    f"(its dispatchEvent is {node.dispatch_event!r})"
+                )
+
+
+def _validate_reachability(graph: StepGraph) -> None:
+    flow = {node.id for node in graph.nodes.values() if node.kind in FLOW_NODE_KINDS}
+    triggers = [node.id for node in graph.triggers()]
+    if not triggers:
+        raise WorkflowDocumentError("Workflow graph has no trigger node, so no run can start")
+    forward: dict[str, set[str]] = {}
+    backward: dict[str, set[str]] = {}
+    for edge in graph.edges:
+        forward.setdefault(edge.source, set()).add(edge.target)
+        backward.setdefault(edge.target, set()).add(edge.source)
+    reached = _closure(triggers, forward)
+    unreachable = sorted(flow - reached)
+    if unreachable:
+        raise WorkflowDocumentError(
+            "Workflow node(s) unreachable from a trigger: "
+            + ", ".join(repr(node_id) for node_id in unreachable)
+        )
+    ends = [node.id for node in graph.ends()]
+    if not set(ends) & reached:
+        raise WorkflowDocumentError("Workflow graph has no end node reachable from a trigger")
+    finishing = _closure(ends, backward)
+    stranded = sorted(flow - finishing)
+    if stranded:
+        raise WorkflowDocumentError(
+            "Workflow node(s) from which no end node can be reached: "
+            + ", ".join(repr(node_id) for node_id in stranded)
+        )
+
+
+def _closure(start: list[str], adjacency: dict[str, set[str]]) -> set[str]:
+    seen = set(start)
+    pending = list(start)
+    while pending:
+        for neighbour in adjacency.get(pending.pop(), ()):
+            if neighbour not in seen:
+                seen.add(neighbour)
+                pending.append(neighbour)
+    return seen
+
+
+def _validate_cycles(graph: StepGraph) -> None:
+    """Every cycle must pass through a rework edge, and a rework edge must close a cycle."""
+    forward_only: dict[str, list[str]] = {}
+    everything: dict[str, set[str]] = {}
+    for edge in graph.edges:
+        everything.setdefault(edge.source, set()).add(edge.target)
+        if not edge.rework:
+            forward_only.setdefault(edge.source, []).append(edge.target)
+    cycle = _find_cycle(forward_only)
+    if cycle is not None:
+        raise WorkflowDocumentError(
+            "Workflow graph has a cycle with no rework edge: "
+            + " -> ".join(cycle)
+            + ". Mark the edge that goes back to an earlier step rework: true"
+        )
+    for edge in graph.edges:
+        if edge.rework and edge.source not in _closure([edge.target], everything):
+            raise WorkflowDocumentError(
+                f"Workflow edge {edge.id!r} is marked rework but does not go back to an "
+                f"earlier step: {edge.target!r} never leads back to {edge.source!r}"
+            )
+
+
+def _find_cycle(adjacency: dict[str, list[str]]) -> list[str] | None:
+    """A cycle in the graph as a node path that ends where it began, or ``None``."""
+    done: set[str] = set()
+    for root in sorted(adjacency):
+        if root in done:
+            continue
+        path: list[str] = []
+        on_path: set[str] = set()
+        stack: list[tuple[str, int]] = [(root, 0)]
+        while stack:
+            node_id, index = stack.pop()
+            if index == 0:
+                path.append(node_id)
+                on_path.add(node_id)
+            successors = adjacency.get(node_id, [])
+            if index < len(successors):
+                stack.append((node_id, index + 1))
+                successor = successors[index]
+                if successor in on_path:
+                    return [*path[path.index(successor) :], successor]
+                if successor not in done:
+                    stack.append((successor, 0))
+                continue
+            done.add(node_id)
+            on_path.discard(node_id)
+            path.pop()
+    return None
+
+
+def _validate_stage_events(graph: StepGraph) -> None:
+    """Check the graph's events against the personas that produce and consume them."""
+    for node in graph.nodes.values():
+        if node.kind is NodeKind.STAGE:
+            _validate_stage_node_events(graph, node)
+
+
+def _validate_stage_node_events(graph: StepGraph, node: NodeSpec) -> None:
+    for member in node.members:
+        if member.contract is None:
+            raise WorkflowDocumentError(
+                f"Workflow stage {node.id!r} member {member.alias!r} has no persona definition "
+                "to read its events from"
+            )
+    outgoing = graph.outgoing(node.id)
+    produced = {event for member in node.members for event in member.produced_events}
+    for edge in outgoing:
+        if edge.source_event not in produced:
+            raise WorkflowDocumentError(
+                f"Workflow edge {edge.id!r} leaves stage {node.id!r} with event "
+                f"{edge.source_event!r}, which no member produces (members produce: "
+                f"{', '.join(sorted(produced)) or 'nothing'})"
+            )
+    for edge in graph.incoming(node.id):
+        if not graph.consumers(edge):
+            consumed = sorted({event for member in node.members for event in member.consumes})
+            raise WorkflowDocumentError(
+                f"Workflow edge {edge.id!r} delivers event {edge.target_event!r} to stage "
+                f"{node.id!r}, but no member consumes it (members consume: "
+                f"{', '.join(consumed) or 'nothing'})"
+            )
+    carried = {edge.source_event for edge in outgoing}
+    for member in node.members:
+        # A member that produces nothing is an observer; it ends with ``done``.
+        if member.produced_events and not member.produced_events & carried:
+            raise WorkflowDocumentError(
+                f"Workflow stage {node.id!r} member {member.alias!r} can only dead-end: none of "
+                f"the events it produces ({', '.join(sorted(member.produced_events)) or 'none'}) "
+                "is carried by an outgoing edge"
+            )
 
 
 def _dependency_to_dict(dependency: PersonaDependency) -> dict[str, str]:

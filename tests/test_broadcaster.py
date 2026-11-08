@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 
+from niuu.domain.guild_membership import GuildInstance
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.domain.models import (
     CommitSummary,
@@ -21,6 +22,7 @@ from volundr.domain.models import (
     TimelineEventType,
     TimelineResponse,
 )
+from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
 
 
 @pytest.fixture
@@ -306,6 +308,70 @@ class TestInMemoryEventBroadcaster:
         assert event.data["repo"] == sample_session.repo
         assert event.data["branch"] == sample_session.branch
         assert event.data["status"] == sample_session.status.value
+
+    @pytest.mark.asyncio
+    async def test_session_event_names_the_guild_instance(self, sample_session: Session):
+        """A node joined to a Guild names itself on session events, as on its responses."""
+        joined = InMemoryEventBroadcaster(
+            guild_instance=GuildInstance(id="70b502d8", name="Noatun", slug="noatun")
+        )
+
+        event = joined.create_session_event(EventType.SESSION_UPDATED, sample_session)
+
+        assert event.data["instance_id"] == "70b502d8"
+        assert event.data["instance_name"] == "Noatun"
+        assert event.data["instance_slug"] == "noatun"
+        assert event.data["id"] == str(sample_session.id)
+
+    @pytest.mark.asyncio
+    async def test_session_event_carries_the_launch_stages_as_json(
+        self,
+        broadcaster: InMemoryEventBroadcaster,
+        sample_session: Session,
+    ):
+        """session_updated carries the stages, so a starting session's card moves live."""
+        started = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
+        sample_session.startup = SessionStartup(
+            started_at=started,
+            stages=(
+                StartupStage(
+                    key="schedule",
+                    label="Scheduling",
+                    state=StartupStageState.ACTIVE,
+                    detail="0/3 nodes are available",
+                    started_at=started,
+                ),
+            ),
+        )
+
+        event = broadcaster.create_session_event(EventType.SESSION_UPDATED, sample_session)
+
+        assert event.data["startup"] == {
+            "started_at": "2026-11-06T12:00:00Z",
+            "handed_off_at": None,
+            "stages": [
+                {
+                    "key": "schedule",
+                    "label": "Scheduling",
+                    "state": "active",
+                    "detail": "0/3 nodes are available",
+                    "started_at": "2026-11-06T12:00:00Z",
+                    "finished_at": None,
+                }
+            ],
+            "progress_error": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_session_event_startup_is_null_without_a_recorded_launch(
+        self,
+        broadcaster: InMemoryEventBroadcaster,
+        sample_session: Session,
+    ):
+        event = broadcaster.create_session_event(EventType.SESSION_UPDATED, sample_session)
+
+        assert "startup" in event.data
+        assert event.data["startup"] is None
 
     @pytest.mark.asyncio
     async def test_session_event_carries_needs_attention(

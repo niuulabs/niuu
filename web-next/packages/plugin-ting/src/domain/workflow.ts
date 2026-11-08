@@ -63,10 +63,16 @@ export const workflowStageNodeSchema = z.object({
   stageMembers: z.array(stageMemberSchema).default([]),
   /** Parallel or sequential execution for the stage flock. */
   executionMode: stageExecutionModeSchema.default('parallel'),
-  /** Maximum number of concurrent workers allowed in the stage. */
-  maxConcurrent: z.number().int().positive().default(3),
+  /**
+   * Maximum number of members of a parallel stage running at once. Unset means
+   * no limit: the step engine treats it as unbounded, so the builder never fills
+   * a number the author did not choose.
+   */
+  maxConcurrent: z.number().int().positive().optional(),
   /** How inbound branches join when this stage has fan-in. */
   joinMode: stageJoinModeSchema.default('all'),
+  /** Seconds a step of this stage may stay active before it counts as overdue. */
+  deadlineSeconds: z.number().positive().optional(),
   position: positionSchema,
 });
 export type WorkflowStageNode = z.input<typeof workflowStageNodeSchema>;
@@ -85,13 +91,15 @@ export const workflowGateNodeSchema = z.object({
   artifact: z.object({ kind: z.string().min(1), id: z.string().min(1) }).optional(),
   /** How the runtime surfaces the gate while it is pending. */
   pendingBehavior: gatePendingBehaviorSchema.default('help_needed'),
-  /** Optional explicit approval event type override. */
+  /** The event an approval produces. Required to save: an outgoing edge must carry it. */
   approvalEvent: z.string().default(''),
-  /** Optional explicit changes-requested event type override. */
+  /** The event a request for changes produces. Required to save, like `approvalEvent`. */
   changesRequestedEvent: z.string().default(''),
   /** Optional operator guidance shown with the gate request. */
   instructions: z.string().default(''),
   autoForwardAfter: z.string().default('30m'),
+  /** Seconds an open request of this gate may wait before it counts as overdue. */
+  deadlineSeconds: z.number().positive().optional(),
   position: positionSchema,
 });
 export type WorkflowGateNode = z.input<typeof workflowGateNodeSchema>;
@@ -215,6 +223,8 @@ export const workflowWaitNodeSchema = z.object({
    * here so older or partially-authored documents still parse.
    */
   conditions: z.array(z.string()).optional(),
+  /** Seconds this wait may stay open before it counts as overdue. */
+  deadlineSeconds: z.number().positive().optional(),
   position: positionSchema,
 });
 export type WorkflowWaitNode = z.input<typeof workflowWaitNodeSchema>;
@@ -276,8 +286,19 @@ export const workflowEdgeSchema = z.object({
   source: z.string().min(1),
   /** Target node id. */
   target: z.string().min(1),
-  /** Optional edge label (e.g. "yes" / "no" on cond nodes). */
+  /** The edge's events, as `source_event -> target_event`. */
   label: z.string().optional(),
+  /**
+   * The edge goes back to an earlier step to redo its work. Taking it starts a new
+   * rework generation: steps still open in the old one go stale and the downstream
+   * reviewers run again. Every cycle in a graph needs one.
+   */
+  rework: z.boolean().optional(),
+  /**
+   * An optional limit, set by the workflow's author, on how many times a run may take
+   * this rework edge; the run fails naming the edge past it. Left out, there is no limit.
+   */
+  maxIterations: z.number().int().positive().optional(),
   /** First bezier control point (relative to source). */
   cp1: positionSchema,
   /** Second bezier control point (relative to target). */

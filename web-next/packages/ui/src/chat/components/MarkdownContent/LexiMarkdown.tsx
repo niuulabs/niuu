@@ -12,6 +12,7 @@ import { ConversationLink, ConversationImage } from '../ConversationResources';
 import { OutcomeCard } from '../OutcomeCard';
 import { MarkdownCodeBlock } from './MarkdownCodeBlock';
 import { MermaidDiagram } from './MermaidDiagram';
+import { remarkLinkifyLocalhost } from './remarkLinkifyLocalhost';
 import { remarkLinkifyPaths } from './remarkLinkifyPaths';
 
 const Streaming = createContext(false);
@@ -144,7 +145,14 @@ function remarkCallouts() {
     walk(tree as MdNode);
   };
 }
-const allRemarks = [remarkGfm, remarkMath, remarkLinkifyPaths, remarkCallouts, remarkBreaks];
+const allRemarks = [
+  remarkGfm,
+  remarkMath,
+  remarkLinkifyPaths,
+  remarkLinkifyLocalhost,
+  remarkCallouts,
+  remarkBreaks,
+];
 components.blockquote = ({ children, node }) => (
   <blockquote
     className={`niuu-chat-md-blockquote ${String(node?.properties.className ?? '')}`}

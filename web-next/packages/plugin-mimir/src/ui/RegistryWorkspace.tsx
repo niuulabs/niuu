@@ -18,7 +18,7 @@ export function RegistryWorkspace() {
     views.find((item) => item.path === path) ??
     (/\/(health|lint|doctor)$/.test(path)
       ? views[1]
-      : /\/(analytics|dreams|ravns|wardens)$/.test(path)
+      : /\/analytics$/.test(path)
         ? views[2]
         : views[0])!;
   const Content = view.component;

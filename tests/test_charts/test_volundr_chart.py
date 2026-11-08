@@ -9,7 +9,6 @@ import pytest
 import yaml
 
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "volundr"
-RESIDENT_ISSUER = "https://kubernetes.default.svc"
 BIFROST_URL = ("--set", "bifrost.url=http://bifrost.test")
 #: The smallest cluster setup for durable presented files: the quota, session
 #: credentials, and their projection into session pods.
@@ -490,10 +489,6 @@ class TestRbacTemplate:
         flux_api_group = "helm.toolkit.fluxcd.io"
         assert f'apiGroups: ["{flux_api_group}"]' in template_yaml
 
-    def test_flux_controller_can_observe_resident_deployments(self, template_yaml):
-        assert 'apiGroups: ["apps"]' in template_yaml
-        assert 'resources: ["deployments"]' in template_yaml
-
     def test_has_cluster_wide_conditional(self, template_yaml):
         """Test template has cluster-wide conditional."""
         assert ".Values.rbac.clusterWide" in template_yaml
@@ -556,6 +551,70 @@ class TestRbacTemplate:
         )
 
         assert self._secret_verbs(role) == [["get", "list", "watch"]]
+
+    @staticmethod
+    def _namespaced_role(*overrides: str) -> dict:
+        documents = TestRbacTemplate._render_rbac("--set", "rbac.clusterWide=false", *overrides)
+        assert not [doc for doc in documents if doc.get("kind") == "ClusterRole"]
+        return next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "Role" and doc["metadata"]["name"] == "test-volundr"
+        )
+
+    @staticmethod
+    def _verbs_for(document: dict, resource: str) -> list[list[str]]:
+        return [rule["verbs"] for rule in document["rules"] if resource in rule["resources"]]
+
+    def test_namespaced_role_grants_openbao_session_resources(self):
+        """OpenBao injection creates a ServiceAccount and an agent ConfigMap per
+        session; a namespaced release must be allowed to write both."""
+        role = self._namespaced_role(
+            "--set",
+            "secretInjection.adapter="
+            "volundr.adapters.outbound.openbao_secret_injection.OpenBaoAgentInjectionAdapter",
+        )
+
+        writes = ["get", "list", "watch", "create", "update", "patch", "delete"]
+        assert self._verbs_for(role, "serviceaccounts") == [writes]
+        assert self._verbs_for(role, "configmaps") == [writes]
+
+    def test_namespaced_role_grants_infisical_configmaps_only(self):
+        role = self._namespaced_role(
+            "--set",
+            "secretInjection.adapter="
+            "volundr.adapters.outbound.infisical_secret_injection.InfisicalAgentInjectionAdapter",
+        )
+
+        assert self._verbs_for(role, "serviceaccounts") == []
+        assert self._verbs_for(role, "configmaps") == [
+            ["get", "list", "watch", "create", "update", "patch", "delete"]
+        ]
+
+    def test_namespaced_role_reads_only_without_agent_injection(self):
+        role = self._namespaced_role()
+
+        assert self._verbs_for(role, "serviceaccounts") == []
+        assert self._verbs_for(role, "configmaps") == [["get", "list", "watch"]]
+
+    def test_cluster_wide_openbao_keeps_writes_on_the_cluster_role(self):
+        documents = self._render_rbac(
+            "--set",
+            "secretInjection.adapter="
+            "volundr.adapters.outbound.openbao_secret_injection.OpenBaoAgentInjectionAdapter",
+        )
+        role = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "Role" and doc["metadata"]["name"] == "test-volundr"
+        )
+        cluster_role = next(doc for doc in documents if doc.get("kind") == "ClusterRole")
+
+        assert self._verbs_for(role, "serviceaccounts") == []
+        assert self._verbs_for(role, "configmaps") == [["get", "list", "watch"]]
+        assert self._verbs_for(cluster_role, "serviceaccounts") == [
+            ["get", "list", "watch", "create", "update", "patch", "delete"]
+        ]
 
 
 class TestConfigMapTemplate:
@@ -758,62 +817,6 @@ class TestConfigMapTemplate:
         assert parsed.dispatcher.max_attempts == 5
         assert parsed.dispatcher.default_rate_limit is None
         assert parsed.sinks[0]["secret_kwargs_env"] == {"secret": "FORGE_OPS_WEBHOOK_SECRET"}
-
-    def test_odin_review_relay_renders_into_config(self):
-        from volundr.config import NotificationsConfig, Settings
-
-        relay = {
-            "enabled": True,
-            "owner_ids": ["jozef"],
-            "poll_interval_seconds": 20,
-            "source": {
-                "kwargs": {
-                    "base_url": "https://ravn.example",
-                    "auth_adapter": (
-                        "niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter"
-                    ),
-                    "auth_kwargs": {
-                        "exchange_url": "https://forge.example/api/v1/tokens/workload/exchange",
-                        "token_file": "/var/run/secrets/niuu-workload/token",
-                        "audiences": ["niuu-ravn"],
-                    },
-                }
-            },
-        }
-        result = subprocess.run(
-            [
-                "helm",
-                "template",
-                "test",
-                str(CHART_DIR),
-                *BIFROST_URL,
-                "--set",
-                "push.enabled=true",
-                "--set-json",
-                f"notifications={json.dumps({'odin_review_relay': relay})}",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        configmap = next(
-            doc
-            for doc in yaml.safe_load_all(result.stdout)
-            if doc
-            and doc.get("kind") == "ConfigMap"
-            and doc.get("metadata", {}).get("name") == "test-volundr"
-        )
-        config = yaml.safe_load(configmap["data"]["config.yaml"])
-
-        rendered = config["notifications"]["odin_review_relay"]
-        assert rendered == relay
-        parsed = NotificationsConfig.model_validate(config["notifications"]).odin_review_relay
-        assert parsed.enabled and parsed.owner_ids == ["jozef"]
-        assert parsed.source.kwargs["auth_kwargs"]["audiences"] == ["niuu-ravn"]
-        settings = Settings(push=config["push"], notifications=config["notifications"])
-        assert settings.push.enabled and settings.notifications.odin_review_relay.enabled
-        # the push sink the Needs-input rule delivers through is added next to it
-        assert [sink["name"] for sink in config["notifications"]["sinks"]] == ["push"]
 
     def test_push_renders_with_the_sink_the_needs_input_push_needs(self):
         from volundr.config import Settings
@@ -1214,16 +1217,16 @@ class TestConfigMapTemplate:
                 "--set",
                 (
                     "residentRuntimeSessionControllers[0].adapter="
-                    "volundr.adapters.outbound.ravn_gateway.RavnResidentSessionController"
+                    "volundr.adapters.outbound.hermes_gateway.HermesResidentSessionController"
                 ),
                 "--set",
-                "residentRuntimeSessionControllers[0].runtimeBackend=helmrelease",
+                "residentRuntimeSessionControllers[0].runtimeBackend=openshell",
                 "--set",
                 "residentRuntimeSessionControllers[0].secretKwargs[0].kwarg=gateway_token",
                 "--set",
                 (
                     "residentRuntimeSessionControllers[0].secretKwargs[0].secretName="
-                    "volundr-ravn-openclaw"
+                    "volundr-hermes-gateway"
                 ),
                 "--set",
                 "residentRuntimeSessionControllers[0].secretKwargs[0].secretKey=token",
@@ -1251,7 +1254,7 @@ class TestConfigMapTemplate:
             for item in container.get("env", [])
         }
         assert env[env_name]["valueFrom"]["secretKeyRef"] == {
-            "name": "volundr-ravn-openclaw",
+            "name": "volundr-hermes-gateway",
             "key": "token",
         }
 
@@ -1264,46 +1267,6 @@ class TestConfigMapTemplate:
             text=True,
         )
         return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
-
-    def test_ravn_sessions_grant_secret_writes_only_in_the_residents_namespace(self):
-        documents = self._rbac(
-            "--set",
-            "podManager.adapter=volundr.adapters.outbound.flux.FluxPodManager",
-            "--set",
-            "podManager.kwargs.namespace=skuld",
-            "--set",
-            "rbac.clusterWide=true",
-            "--set",
-            (
-                "residentRuntimeSessionControllers[0].adapter="
-                "volundr.adapters.outbound.ravn_gateway.RavnResidentSessionController"
-            ),
-            "--set",
-            "residentRuntimeSessionControllers[0].runtimeBackend=helmrelease",
-        )
-        role = next(
-            doc
-            for doc in documents
-            if doc["kind"] == "Role" and doc["metadata"]["name"] == "test-volundr-resident-openclaw"
-        )
-        assert role["metadata"]["namespace"] == "skuld"
-        assert role["rules"] == [
-            {
-                "apiGroups": [""],
-                "resources": ["secrets"],
-                "verbs": ["get", "create", "patch", "delete"],
-            }
-        ]
-        binding = next(
-            doc
-            for doc in documents
-            if doc["kind"] == "RoleBinding"
-            and doc["metadata"]["name"] == "test-volundr-resident-openclaw"
-        )
-        assert binding["metadata"]["namespace"] == "skuld"
-        assert binding["roleRef"]["name"] == "test-volundr-resident-openclaw"
-        cluster_role = next(doc for doc in documents if doc["kind"] == "ClusterRole")
-        assert all("secrets" not in rule["resources"] for rule in cluster_role["rules"])
 
     def test_cluster_wide_flux_may_read_session_pod_events(self):
         """status_detail reads the pods' Warning events. valhalla runs
@@ -1323,57 +1286,6 @@ class TestConfigMapTemplate:
             "resources": ["events"],
             "verbs": ["get", "list", "watch"],
         } in cluster_role["rules"]
-
-    @pytest.mark.parametrize(
-        "controller",
-        [
-            (
-                "podManager.adapter=volundr.adapters.outbound.flux.FluxPodManager",
-                "podManager.kwargs.namespace=skuld",
-            ),
-            (
-                "podManager.adapter=volundr.adapters.outbound.direct_k8s_pod_manager.DirectK8sPodManager",
-                "residentRuntimeControllers[0].adapter="
-                "volundr.adapters.outbound.flux.FluxPodManager",
-                "residentRuntimeControllers[0].kwargs.namespace=skuld",
-            ),
-        ],
-    )
-    def test_flux_residents_can_always_read_their_pod_logs(self, controller):
-        """No per-cluster grant: the role follows from the Flux controller alone."""
-        overrides = [arg for value in controller for arg in ("--set", value)]
-        documents = self._rbac(
-            "--namespace", "volundr", "--set", "rbac.clusterWide=true", *overrides
-        )
-        role = next(
-            doc
-            for doc in documents
-            if doc["kind"] == "Role" and doc["metadata"]["name"] == "test-volundr-resident-logs"
-        )
-        assert role["metadata"]["namespace"] == "skuld"
-        assert role["rules"] == [
-            {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list"]},
-            {"apiGroups": [""], "resources": ["pods/log"], "verbs": ["get"]},
-        ]
-        binding = next(
-            doc
-            for doc in documents
-            if doc["kind"] == "RoleBinding"
-            and doc["metadata"]["name"] == "test-volundr-resident-logs"
-        )
-        assert binding["metadata"]["namespace"] == "skuld"
-        assert binding["roleRef"]["name"] == "test-volundr-resident-logs"
-        assert binding["subjects"] == [
-            {"kind": "ServiceAccount", "name": "test-volundr", "namespace": "volundr"}
-        ]
-
-    def test_no_resident_logs_role_without_a_flux_controller(self):
-        documents = self._rbac(
-            "--set",
-            "podManager.adapter=volundr.adapters.outbound.direct_k8s_pod_manager.DirectK8sPodManager",
-        )
-        names = {doc["metadata"]["name"] for doc in documents}
-        assert "test-volundr-resident-logs" not in names
 
     _OPENSHELL = "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager"
 
@@ -1425,8 +1337,10 @@ class TestConfigMapTemplate:
         ]
         kwargs = self._configmap_kwargs(documents, ("pod_manager", "kwargs"))
         assert kwargs["resident_workspace_namespace"] == "openshell-sandboxes"
-        assert kwargs["resident_workspace_size"] == "2Gi"
-        assert kwargs["resident_workspace_migration_max_size"] == "1Gi"
+        # Size, storage class, access mode and the migration cap are the gateway's own
+        # defaults unless an operator sets them: the chart renders none for a Flux default.
+        assert "resident_workspace_size" not in kwargs
+        assert "resident_workspace_migration_max_size" not in kwargs
 
     def test_openshell_resident_controller_uses_its_own_workspace_namespace(self):
         documents = self._rbac(
@@ -1475,81 +1389,25 @@ class TestConfigMapTemplate:
         kwargs = self._configmap_kwargs(documents, ("pod_manager", "kwargs"))
         assert "resident_workspace_namespace" not in kwargs
 
-    def test_no_resident_secret_role_without_ravn_sessions(self):
-        documents = self._rbac(
-            "--set",
-            "podManager.adapter=volundr.adapters.outbound.flux.FluxPodManager",
-            "--set",
-            "ravnResidentSessions.enabled=false",
-        )
-        names = {doc["metadata"]["name"] for doc in documents}
-        assert "test-volundr-resident-openclaw" not in names
-
-    def test_default_ravn_sessions_grant_secret_writes_in_the_residents_namespace(self):
+    def test_flux_renders_no_resident_roles(self):
+        """The Flux resident controller is gone: no shim-token Secret or resident-logs grant."""
         documents = self._rbac(
             "--set",
             "podManager.adapter=volundr.adapters.outbound.flux.FluxPodManager",
             "--set",
             "podManager.kwargs.namespace=skuld",
         )
-        role = next(
-            doc
-            for doc in documents
-            if doc["kind"] == "Role" and doc["metadata"]["name"] == "test-volundr-resident-openclaw"
-        )
-        assert role["metadata"]["namespace"] == "skuld"
+        names = {doc["metadata"]["name"] for doc in documents}
+        assert "test-volundr-resident-openclaw" not in names
+        assert "test-volundr-resident-logs" not in names
 
-
-class TestRavnResidentSessions:
-    """Ravn residents' sessions are on by default; the master token needs no cluster setup."""
-
-    @staticmethod
-    def _render(*overrides: str) -> list[dict]:
-        result = subprocess.run(
-            [
-                "helm",
-                "template",
-                "test",
-                str(CHART_DIR),
-                *BIFROST_URL,
-                "--namespace",
-                "volundr",
-                *overrides,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
-
-    @staticmethod
-    def _env(documents: list[dict]) -> dict[str, dict]:
-        deployment = next(
-            doc
-            for doc in documents
-            if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "test-volundr"
-        )
-        container = deployment["spec"]["template"]["spec"]["containers"][0]
-        return {item["name"]: item for item in container.get("env", [])}
-
-    def test_on_by_default_without_any_master_secret(self):
-        """Each resident's token is its own, in Volundr's credential store: no Secret here."""
-        documents = self._render()
-        env = self._env(documents)
-        assert env["RESIDENT_RUNTIMES__RAVN_SESSIONS_ENABLED"]["value"] == "true"
-        assert not [name for name in env if "RAVN_GATEWAY_TOKEN" in name]
-        assert not [
-            doc
-            for doc in documents
-            if doc["kind"] == "Secret" and "ravn" in doc["metadata"]["name"]
-        ]
+    def test_ravn_resident_sessions_value_is_gone(self):
         values = yaml.safe_load((CHART_DIR / "values.yaml").read_text())
-        assert values["ravnResidentSessions"] == {"enabled": True}
-
-    def test_switched_off(self):
-        documents = self._render("--set", "ravnResidentSessions.enabled=false")
-        env = self._env(documents)
-        assert env["RESIDENT_RUNTIMES__RAVN_SESSIONS_ENABLED"]["value"] == "false"
+        assert "ravnResidentSessions" not in values
+        deployment = next(doc for doc in self._rbac() if doc["kind"] == "Deployment")
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        names = {item["name"] for item in container.get("env", [])}
+        assert "RESIDENT_RUNTIMES__RAVN_SESSIONS_ENABLED" not in names
 
 
 class TestPreviewCacheStorage:
@@ -1852,6 +1710,33 @@ class TestPodManagerRoomRoleSource:
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestProvisioningStartupPoll:
+    """provisioning.startup_poll_seconds — how often a starting session's launch
+    stages are read from its runtime backend."""
+
+    def test_defaults_to_the_values_file_and_is_declared_there(self):
+        values = yaml.safe_load((CHART_DIR / "values.yaml").read_text())
+        provisioning = _rendered_configmap()["provisioning"]
+
+        assert values["provisioning"]["startupPollSeconds"] == 2.0
+        assert provisioning["startup_poll_seconds"] == 2.0
+        assert provisioning["timeout_seconds"] == 300.0
+        assert provisioning["initial_delay_seconds"] == 5.0
+
+    def test_renders_a_custom_interval(self):
+        config = _rendered_configmap("--set", "provisioning.startupPollSeconds=0.5")
+
+        assert config["provisioning"]["startup_poll_seconds"] == 0.5
+
+    def test_config_parses_as_settings(self):
+        from volundr.config import ProvisioningConfig
+
+        config = _rendered_configmap("--set", "provisioning.startupPollSeconds=7")
+
+        assert ProvisioningConfig(**config["provisioning"]).startup_poll_seconds == 7
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 def test_forge_envoy_authorization_route_for_room_role_endpoint_is_valid():
     """Without this route, Forge's own ext_authz sidecar denies the scoped
     workload token before it ever reaches the FastAPI-level scope check —
@@ -1896,243 +1781,6 @@ def test_forge_envoy_authorization_admits_a_residents_ring_before_the_forge_pref
         r for r in config.routes if "POST" in r.methods and r.matches("/api/v1/forge/push/call")
     )
     assert matched.required_scope == "forge:push:call"
-
-
-class TestResidentWorkloadIdentityMapping:
-    """workloadIdentity.residentMapping — admits resident ServiceAccounts and
-    derives ravn_id per-caller from the verified subject, instead of every
-    resident matching one static, shared owner_id."""
-
-    @staticmethod
-    def _config(*extra_args: str) -> dict:
-        result = subprocess.run(
-            [
-                "helm",
-                "template",
-                "test",
-                str(CHART_DIR),
-                *BIFROST_URL,
-                "--set",
-                f"workloadIdentity.residentMapping.issuer={RESIDENT_ISSUER}",
-                *extra_args,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
-        configmap = next(
-            doc
-            for doc in documents
-            if doc.get("kind") == "ConfigMap"
-            and doc.get("metadata", {}).get("name") == "test-volundr"
-        )
-        return yaml.safe_load(configmap["data"]["config.yaml"])
-
-    def test_disabled_by_default_renders_no_resident_mapping(self):
-        config = self._config()
-        assert config["workload_identity"]["mappings"] == []
-
-    def test_enabled_renders_a_subject_prefix_scoped_mapping(self):
-        config = self._config(
-            "--set",
-            "workloadIdentity.residentMapping.enabled=true",
-            "--set",
-            "workloadIdentity.residentMapping.namespace=residents",
-        )
-        mappings = config["workload_identity"]["mappings"]
-        assert len(mappings) == 1
-        mapping = mappings[0]
-        assert mapping["subject_prefix"] == "system:serviceaccount:residents:resident-"
-        assert mapping["owner_id_claim"] == "sub"
-        assert (
-            mapping["owner_id_claim_pattern"]
-            == "^system:serviceaccount:[^:]+:resident-([0-9a-f-]{36})$"
-        )
-        assert mapping["tenant_id"] == "default"
-        assert mapping["issuer"] == RESIDENT_ISSUER
-
-    def test_enabled_without_namespace_fails_the_render(self):
-        result = subprocess.run(
-            [
-                "helm",
-                "template",
-                "test",
-                str(CHART_DIR),
-                *BIFROST_URL,
-                "--set",
-                "workloadIdentity.residentMapping.enabled=true",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode != 0
-        assert "workloadIdentity.residentMapping.namespace is required" in result.stderr
-
-    def test_enabled_without_issuer_fails_the_render(self):
-        """A mapping without an issuer admits no one, so the chart refuses to render one."""
-        result = subprocess.run(
-            [
-                "helm",
-                "template",
-                "test",
-                str(CHART_DIR),
-                *BIFROST_URL,
-                "--set",
-                "workloadIdentity.residentMapping.enabled=true",
-                "--set",
-                "workloadIdentity.residentMapping.namespace=residents",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode != 0
-        assert "workloadIdentity.residentMapping.issuer is required" in result.stderr
-
-    def test_operator_supplied_mappings_are_preserved_alongside_the_resident_one(self):
-        config = self._config(
-            "--set",
-            "workloadIdentity.residentMapping.enabled=true",
-            "--set",
-            "workloadIdentity.residentMapping.namespace=residents",
-            "--set",
-            "workloadIdentity.mappings[0].name=other-mapping",
-            "--set",
-            "workloadIdentity.mappings[0].owner_id=fixed-owner",
-        )
-        mappings = config["workload_identity"]["mappings"]
-        names = {m["name"] for m in mappings}
-        assert names == {"other-mapping", "ravn-resident"}
-
-    def test_resident_mapping_is_tried_before_operator_mappings(self):
-        """residentMapping renders first. WorkloadIdentityService.exchange()
-        picks the most specific match rather than the first, so the order no
-        longer decides who wins, but a stable order keeps the config readable."""
-        config = self._config(
-            "--set",
-            "workloadIdentity.residentMapping.enabled=true",
-            "--set",
-            "workloadIdentity.residentMapping.namespace=residents",
-            "--set",
-            "workloadIdentity.mappings[0].name=catch-all",
-            "--set",
-            "workloadIdentity.mappings[0].owner_id=shared-owner",
-        )
-        mappings = config["workload_identity"]["mappings"]
-        assert mappings[0]["name"] == "ravn-resident"
-        assert mappings[1]["name"] == "catch-all"
-
-    def test_owner_id_pattern_extracts_only_the_runtime_uuid(self):
-        """Regression: the subject a resident pod's projected token carries
-        is system:serviceaccount:<namespace>:resident-<uuid> — the pattern
-        must capture just the uuid, not the whole subject or the namespace."""
-        import re
-
-        config = self._config(
-            "--set",
-            "workloadIdentity.residentMapping.enabled=true",
-            "--set",
-            "workloadIdentity.residentMapping.namespace=residents",
-        )
-        pattern = config["workload_identity"]["mappings"][0]["owner_id_claim_pattern"]
-        subject = "system:serviceaccount:residents:resident-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-        match = re.match(pattern, subject)
-        assert match is not None
-        assert match.group(1) == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-
-    def test_owner_id_pattern_does_not_match_a_non_uuid_resident_name(self):
-        """A non-UUID-named ServiceAccount (e.g. valhalla's Fleet-managed
-        "resident-muninn" or "resident-ravn", shared by several releases and
-        never created by FluxPodManager's per-runtime naming) must not match
-        this broad prefix mapping's owner_id_claim_pattern — that would let
-        it shadow the specific mapping that actually owns that name. See
-        WorkloadIdentityService._matches, which treats a pattern non-match as
-        "this mapping does not apply" and falls through instead of raising."""
-        import re
-
-        config = self._config(
-            "--set",
-            "workloadIdentity.residentMapping.enabled=true",
-            "--set",
-            "workloadIdentity.residentMapping.namespace=valhalla",
-        )
-        pattern = config["workload_identity"]["mappings"][0]["owner_id_claim_pattern"]
-        subject = "system:serviceaccount:valhalla:resident-muninn"
-        assert re.fullmatch(pattern, subject) is None
-
-
-class TestWorkloadIdentityTenantResolver:
-    """workloadIdentity.tenantResolver — derives a resident's real tenant_id
-    from resident_runtimes.tenant_id instead of residentMapping's one
-    static, shared tenantId."""
-
-    @staticmethod
-    def _config(*extra_args: str) -> dict:
-        result = subprocess.run(
-            ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *extra_args],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
-        configmap = next(
-            doc
-            for doc in documents
-            if doc.get("kind") == "ConfigMap"
-            and doc.get("metadata", {}).get("name") == "test-volundr"
-        )
-        return yaml.safe_load(configmap["data"]["config.yaml"])
-
-    def test_disabled_by_default(self):
-        config = self._config()
-        resolver = config["workload_identity"]["tenant_resolver"]
-        assert resolver["adapter"] == ""
-        assert resolver["secret_kwargs_env"] == {}
-
-    def test_configured_adapter_and_secret_kwargs_render(self):
-        config = self._config(
-            "--set",
-            "workloadIdentity.tenantResolver.adapter="
-            "volundr.adapters.outbound.resident_tenant_resolver."
-            "LazyPostgresResidentTenantResolver",
-            "--set",
-            "workloadIdentity.tenantResolver.secretKwargs[0].kwarg=dsn",
-            "--set",
-            "workloadIdentity.tenantResolver.secretKwargs[0].secretName=volundr-postgres-app",
-            "--set",
-            "workloadIdentity.tenantResolver.secretKwargs[0].secretKey=dsn",
-        )
-        resolver = config["workload_identity"]["tenant_resolver"]
-        assert resolver["adapter"] == (
-            "volundr.adapters.outbound.resident_tenant_resolver.LazyPostgresResidentTenantResolver"
-        )
-        assert resolver["secret_kwargs_env"] == {"dsn": "WORKLOAD_TENANT_RESOLVER_SK_DSN"}
-
-    def test_secret_kwargs_env_var_is_sourced_from_the_named_secret(self):
-        docs_result = subprocess.run(
-            [
-                "helm",
-                "template",
-                "test",
-                str(CHART_DIR),
-                *BIFROST_URL,
-                "--set",
-                "workloadIdentity.tenantResolver.secretKwargs[0].kwarg=dsn",
-                "--set",
-                "workloadIdentity.tenantResolver.secretKwargs[0].secretName=volundr-postgres-app",
-                "--set",
-                "workloadIdentity.tenantResolver.secretKwargs[0].secretKey=dsn",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        documents = [doc for doc in yaml.safe_load_all(docs_result.stdout) if doc]
-        deployment = next(doc for doc in documents if doc.get("kind") == "Deployment")
-        container = deployment["spec"]["template"]["spec"]["containers"][0]
-        env = {item["name"]: item for item in container["env"]}
-        secret_ref = env["WORKLOAD_TENANT_RESOLVER_SK_DSN"]["valueFrom"]["secretKeyRef"]
-        assert secret_ref == {"name": "volundr-postgres-app", "key": "dsn"}
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
@@ -2224,10 +1872,10 @@ class TestStorageContributorHomePlacement:
             "--set",
             "storage.home.accessMode=ReadWriteOnce",
             "--set",
-            "storage.home.excludeWorkloadTypes={ravn_flock}",
+            "storage.home.excludeWorkloadTypes={batch}",
         )
         assert kwargs["home_colocate"] is True
-        assert kwargs["home_excluded_workload_types"] == ["ravn_flock"]
+        assert kwargs["home_excluded_workload_types"] == ["batch"]
 
 
 def _rendered_volundr_deployment(*extra_args: str) -> dict:
@@ -2289,20 +1937,6 @@ class TestZeroDowntimeRollout:
         )["spec"]["template"]["spec"]
         assert "affinity" not in pod
         assert all("lifecycle" not in c for c in pod["containers"])
-
-
-@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
-class TestRavnFlockLlmConfigByDefinition:
-    def test_defaults_to_no_per_definition_default(self):
-        assert _rendered_configmap()["ravn_flock_llm_config_by_definition"] == {}
-
-    def test_renders_a_per_definition_flock_model(self):
-        config = _rendered_configmap(
-            "--set", "ravnFlockLlmConfigByDefinition.skuldCodex.model=gpt-5.6-terra"
-        )
-        assert config["ravn_flock_llm_config_by_definition"] == {
-            "skuldCodex": {"model": "gpt-5.6-terra"}
-        }
 
 
 def _rendered_documents(*extra_args: str) -> list[dict]:
@@ -2449,3 +2083,315 @@ class TestPresentedFilesOnACluster:
     def test_read_write_once_is_accepted_with_colocated_pods(self):
         args = (*PRESENTED_FILES_ON, "--set", "presentedFiles.persistence.accessMode=ReadWriteOnce")
         assert _rendered_configmap(*args)["presented_files"]["enabled"] is True
+
+
+GUEST_METADATA_ON = ("--set", "guestMetadata.enabled=true")
+
+
+def _gateway_http(config: dict) -> dict:
+    return config["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
+        "typed_config"
+    ]
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestGuestMetadataEndpoint:
+    """VM guests authenticate to the metadata endpoint themselves (host-key signature or
+    SPIFFE JWT-SVID), so the gateway must pass exactly that route and Forge must be able
+    to request the ServiceAccount tokens it hands out."""
+
+    @staticmethod
+    def _gateway(*overrides: str) -> dict:
+        from tests.test_charts.test_cedar_authz import envoy_config, render_cedar
+
+        values = {"guestMetadata.enabled": "true", "podManager.kwargs.namespace": "vm-sessions"}
+        values.update(dict(item.split("=", 1) for item in overrides))
+        return envoy_config(render_cedar(**values))
+
+    def test_off_by_default_no_bypass_and_no_role(self):
+        names = {doc["metadata"]["name"] for doc in _rendered_documents()}
+        assert "test-volundr-guest-metadata" not in names
+
+    def test_regex_is_exactly_the_endpoint_path(self):
+        from volundr.domain.guest_credentials import METADATA_CREDENTIALS_PATH
+
+        http = _gateway_http(self._gateway())
+        jwt_filter = next(f for f in http["http_filters"] if f["name"].endswith("jwt_authn"))
+        bypasses = [
+            rule["match"]
+            for rule in jwt_filter["typed_config"]["rules"]
+            if "safe_regex" in rule["match"]
+        ]
+        assert bypasses == [
+            {
+                "safe_regex": {"google_re2": {}, "regex": f"^{METADATA_CREDENTIALS_PATH}$"},
+                "headers": [{"name": ":method", "exact_match": "POST"}],
+            }
+        ]
+        # Exactly that route: no prefix match covers it or its siblings.
+        assert not any(
+            "prefix" in rule["match"]
+            and rule["match"]["prefix"] != "/"
+            and METADATA_CREDENTIALS_PATH.startswith(rule["match"]["prefix"])
+            for rule in jwt_filter["typed_config"]["rules"]
+        )
+
+    def test_cedar_admission_is_skipped_for_the_same_route_only(self):
+        http = _gateway_http(self._gateway())
+        routes = http["route_config"]["virtual_hosts"][0]["routes"]
+        skipped = [
+            route["match"]
+            for route in routes
+            if route.get("typed_per_filter_config", {})
+            .get("envoy.filters.http.ext_authz", {})
+            .get("disabled")
+            and "safe_regex" in route["match"]
+        ]
+        assert [match["safe_regex"]["regex"] for match in skipped] == [
+            "^/api/v1/internal/compute/metadata/credentials$"
+        ]
+        assert skipped[0]["headers"] == [{"name": ":method", "exact_match": "POST"}]
+
+    def test_without_the_switch_the_gateway_has_no_such_bypass(self):
+        from tests.test_charts.test_cedar_authz import envoy_config, render_cedar
+
+        http = _gateway_http(envoy_config(render_cedar()))
+        assert "safe_regex" not in json.dumps(http["route_config"])
+        jwt_filter = next(f for f in http["http_filters"] if f["name"].endswith("jwt_authn"))
+        assert "safe_regex" not in json.dumps(jwt_filter)
+
+    def test_ssh_push_gets_the_token_role_without_the_gateway_bypass(self):
+        docs = _rendered_documents(
+            "--set",
+            "guestMetadata.issueServiceAccountTokens=true",
+            "--set",
+            "podManager.kwargs.namespace=vm",
+        )
+        names = {(d["kind"], d["metadata"]["name"]) for d in docs}
+        assert ("Role", "test-volundr-guest-metadata") in names
+        from tests.test_charts.test_cedar_authz import envoy_config, render_cedar
+
+        gateway = envoy_config(render_cedar(**{"guestMetadata.issueServiceAccountTokens": "true"}))
+        assert "/compute/metadata/" not in json.dumps(gateway)
+
+    def test_spiffe_registration_grants_only_cluster_static_entries(self):
+        assert not any(
+            d["metadata"]["name"].endswith("-guest-spiffe") for d in _rendered_documents()
+        )
+        docs = _rendered_documents("--set", "guestMetadata.spiffeRegistration=true")
+        role = next(
+            d
+            for d in docs
+            if d["kind"] == "ClusterRole" and d["metadata"]["name"].endswith("-guest-spiffe")
+        )
+        assert role["rules"] == [
+            {
+                "apiGroups": ["spire.spiffe.io"],
+                "resources": ["clusterstaticentries"],
+                "verbs": ["get", "create", "update", "delete"],
+            }
+        ]
+        binding = next(
+            d
+            for d in docs
+            if d["kind"] == "ClusterRoleBinding" and d["metadata"]["name"].endswith("-guest-spiffe")
+        )
+        assert binding["roleRef"]["name"] == role["metadata"]["name"]
+
+    def test_forge_may_only_create_tokens_in_the_session_namespace(self):
+        docs = _rendered_documents(*GUEST_METADATA_ON, "--set", "podManager.kwargs.namespace=vm")
+        role = next(
+            d
+            for d in docs
+            if d["kind"] == "Role" and d["metadata"]["name"].endswith("-guest-metadata")
+        )
+        assert role["metadata"]["namespace"] == "vm"
+        assert role["rules"] == [
+            {"apiGroups": [""], "resources": ["serviceaccounts/token"], "verbs": ["create"]}
+        ]
+        binding = next(
+            d
+            for d in docs
+            if d["kind"] == "RoleBinding" and d["metadata"]["name"].endswith("-guest-metadata")
+        )
+        assert binding["metadata"]["namespace"] == "vm"
+        assert binding["roleRef"]["name"] == role["metadata"]["name"]
+
+    def test_the_namespace_can_be_named_explicitly_and_defaults_to_the_release(self):
+        explicit = _rendered_documents(
+            *GUEST_METADATA_ON,
+            "--set",
+            "guestMetadata.serviceAccountNamespace=vm-accounts",
+            "--set",
+            "podManager.kwargs.namespace=vm",
+        )
+        role = next(d for d in explicit if d["metadata"]["name"].endswith("-guest-metadata"))
+        assert role["metadata"]["namespace"] == "vm-accounts"
+        default = _rendered_documents(
+            *GUEST_METADATA_ON, "--set", "podManager.kwargs.namespace=null", "--namespace", "forge"
+        )
+        role = next(
+            d
+            for d in default
+            if d["kind"] == "Role" and d["metadata"]["name"].endswith("-guest-metadata")
+        )
+        assert role["metadata"]["namespace"] == "forge"
+
+    def test_no_role_without_rbac(self):
+        docs = _rendered_documents(*GUEST_METADATA_ON, "--set", "rbac.create=false")
+        assert not any(d["metadata"]["name"].endswith("-guest-metadata") for d in docs)
+
+
+class TestComputeHosts:
+    """computeHosts: a pool of registered hosts is one switch and the Forge's URL."""
+
+    ON = (
+        "--set",
+        "computeHosts.enabled=true",
+        "--set",
+        "computeHosts.joinUrl=https://forge-hosts.example",
+        "--set",
+        "image.tag=dev-abc123@sha256:" + "0" * 64,
+    )
+
+    @staticmethod
+    def _render(*extra: str, check: bool = True) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *extra],
+            check=check,
+            capture_output=True,
+            text=True,
+        )
+
+    def _config(self, *extra: str) -> dict:
+        documents = [doc for doc in yaml.safe_load_all(self._render(*extra).stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        return yaml.safe_load(configmap["data"]["config.yaml"])
+
+    def test_renders_the_pool_forge_validates(self):
+        from volundr.compute.config import ComputeConfig
+
+        config = self._config(*self.ON)
+        compute = ComputeConfig.model_validate(config["compute"])
+        assert compute.provider.adapter.endswith("RegisteredHostMachineProvider")
+        assert compute.execution_catalog is not None
+        assert compute.execution_catalog.adapter.endswith("BuiltinHostCatalog")
+        assert compute.reuse_policy == "reuse"
+        assert compute.hosts is not None
+        assert compute.hosts.join_url == "https://forge-hosts.example"
+        assert compute.session_images is not None
+        # The release's own images, from its image tag without the digest.
+        assert compute.session_images.linux == "ghcr.io/niuulabs/openshell:dev-abc123"
+        assert compute.session_images.darwin == "ghcr.io/niuulabs/skuld-darwin:dev-abc123"
+        assert config["pod_manager"]["adapter"].endswith("VmPodManager")
+        assert config["pod_manager"]["runtime_backend"] == "vm"
+        assert config["pod_manager"]["kwargs"]["pool_id"] == compute.pool_id
+        # Without guestMetadata there is no credential delivery to configure.
+        assert compute.credential_delivery is None
+
+    def test_the_catalog_it_renders_resolves(self, tmp_path):
+        from niuu.utils import import_class
+        from volundr.compute.config import ComputeConfig
+        from volundr.domain.services.execution_catalog import ExecutionPlanResolver
+
+        compute = ComputeConfig.model_validate(self._config(*self.ON)["compute"])
+        catalog_config = compute.execution_catalog
+        kwargs = {**catalog_config.kwargs, "data_dir": str(tmp_path)}
+        catalog = import_class(catalog_config.adapter)(**kwargs)
+        default, _ = ExecutionPlanResolver(catalog).resolve_all()
+        assert default.pool_id == compute.pool_id
+        assert default.provider_binding == compute.provider_binding
+
+    def test_guest_metadata_adds_the_credential_delivery(self):
+        config = self._config(*self.ON, "--set", "guestMetadata.enabled=true")
+        compute = config["compute"]
+        assert compute["credential_delivery"]["kwargs"]["metadata_url"] == (
+            "https://forge-hosts.example"
+        )
+        assert compute["guest_identity"]["kwargs"] == {"key_source": "registered"}
+        assert compute["service_account_tokens"]["kwargs"]["namespace"]
+
+    def test_platform_port_is_envoys_when_envoy_runs(self):
+        plain = self._config(*self.ON)["compute"]["execution_catalog"]["kwargs"]
+        assert plain["platform_port"] == 8080
+        envoy = self._config(*self.ON, "--set", "envoy.enabled=true", "--set", "envoy.port=8443")
+        assert envoy["compute"]["execution_catalog"]["kwargs"]["platform_port"] == 8443
+
+    def test_session_images_can_be_set(self):
+        config = self._config(
+            *self.ON,
+            "--set",
+            "computeHosts.platforms={linux}",
+            "--set",
+            "computeHosts.sessionImages.linux=registry.example/skuld:1",
+        )
+        assert config["compute"]["session_images"] == {
+            "linux": "registry.example/skuld:1",
+            "darwin": "",
+            "native": [],
+        }
+
+    def test_native_images_default_to_the_secret_injection_agent(self):
+        # Session images, outside the catalog: bumping the agent keeps the hosts' revision.
+        agent = "quay.io/openbao/openbao@sha256:" + "1" * 64
+        config = self._config(
+            *self.ON, "--set", f"secretInjection.kwargs.guest_agent_image={agent}"
+        )
+        assert config["compute"]["session_images"]["native"] == [agent]
+        assert "native_images" not in config["compute"]["execution_catalog"]["kwargs"]
+
+    @pytest.mark.parametrize(
+        ("extra", "message"),
+        [
+            (("--set", "computeHosts.joinUrl="), "computeHosts.joinUrl"),
+            (("--set", "image.tag="), "image.tag"),
+            (("--set", "storage.sessions.enabled=false"), "storage.sessions"),
+            (
+                ("--set", "compute.pool_id=vms", "--set", "compute.max_machines=1"),
+                "both define this Forge's compute pool",
+            ),
+        ],
+    )
+    def test_refuses_what_it_cannot_honour(self, extra, message):
+        result = self._render(*self.ON, *extra, check=False)
+        assert result.returncode != 0
+        assert message in result.stderr
+
+    def test_off_leaves_pod_manager_and_compute_alone(self):
+        config = self._config()
+        assert "compute" not in config
+        assert config["pod_manager"]["adapter"].endswith("FluxPodManager")
+
+    def test_rbac_follows_the_effective_pod_manager(self):
+        documents = [doc for doc in yaml.safe_load_all(self._render(*self.ON).stdout) if doc]
+        names = {doc["metadata"]["name"] for doc in documents if doc.get("kind") == "Role"}
+        flux = [
+            doc
+            for doc in documents
+            if doc.get("kind") in {"Role", "ClusterRole"}
+            and any("helmreleases" in rule.get("resources", []) for rule in doc.get("rules", []))
+        ]
+        assert not flux, names
+
+
+def test_forge_keeps_its_private_files_private_across_restarts():
+    """A recursive fsGroup change on every start would make Forge's 0600 keys 0660."""
+    result = subprocess.run(
+        ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    deployment = next(
+        doc
+        for doc in yaml.safe_load_all(result.stdout)
+        if doc and doc.get("kind") == "Deployment" and doc["metadata"]["name"] == "test-volundr"
+    )
+    assert deployment["spec"]["template"]["spec"]["securityContext"]["fsGroupChangePolicy"] == (
+        "OnRootMismatch"
+    )

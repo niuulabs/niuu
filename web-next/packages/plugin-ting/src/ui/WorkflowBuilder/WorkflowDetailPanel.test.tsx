@@ -342,6 +342,34 @@ describe('WorkflowDetailPanel', () => {
     expect(screen.getByDisplayValue('Plan work')).toBeDisabled();
   });
 
+  it('shows an unset maxConcurrent as an empty field meaning no limit', () => {
+    const { maxConcurrent: _unset, ...unlimitedStage } = STAGE_NODE;
+    renderPanel(unlimitedStage);
+
+    const input = screen.getByPlaceholderText('No limit');
+    expect(input).toHaveValue(null);
+  });
+
+  it('clears maxConcurrent to undefined, never 0 or 1', () => {
+    const { props } = renderPanel(STAGE_NODE);
+
+    fireEvent.change(screen.getByPlaceholderText('No limit'), { target: { value: '' } });
+
+    expect(props.onUpdateNode).toHaveBeenCalledTimes(1);
+    expect(props.onUpdateNode).toHaveBeenCalledWith('stage-1', { maxConcurrent: undefined });
+  });
+
+  it('ignores a maxConcurrent that is not a positive whole number', () => {
+    const { props } = renderPanel(STAGE_NODE);
+    const input = screen.getByPlaceholderText('No limit');
+
+    fireEvent.change(input, { target: { value: '0' } });
+    fireEvent.change(input, { target: { value: '-2' } });
+    fireEvent.change(input, { target: { value: '1.5' } });
+
+    expect(props.onUpdateNode).not.toHaveBeenCalled();
+  });
+
   it('updates stage configuration and validation details', () => {
     const { props } = renderPanel(STAGE_NODE);
 
@@ -353,8 +381,8 @@ describe('WorkflowDetailPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'sequential' }));
     expect(props.onUpdateNode).toHaveBeenCalledWith('stage-1', { executionMode: 'sequential' });
 
-    fireEvent.change(screen.getByDisplayValue('3'), { target: { value: '0' } });
-    expect(props.onUpdateNode).toHaveBeenCalledWith('stage-1', { maxConcurrent: 1 });
+    fireEvent.change(screen.getByDisplayValue('3'), { target: { value: '5' } });
+    expect(props.onUpdateNode).toHaveBeenCalledWith('stage-1', { maxConcurrent: 5 });
 
     fireEvent.click(screen.getByRole('button', { name: 'validate' }));
     expect(screen.getByText('missing_model')).toBeInTheDocument();
@@ -980,8 +1008,9 @@ describe('WorkflowDetailPanel', () => {
     expect(screen.getByText('No validation issues on this node.')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'config' }));
-    fireEvent.change(screen.getByDisplayValue('3'), { target: { value: '' } });
-    expect(props.onUpdateNode).toHaveBeenCalledWith('stage-empty', { maxConcurrent: 1 });
+    expect(screen.getByPlaceholderText('No limit')).toHaveValue(null);
+    fireEvent.change(screen.getByPlaceholderText('No limit'), { target: { value: '2' } });
+    expect(props.onUpdateNode).toHaveBeenCalledWith('stage-empty', { maxConcurrent: 2 });
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete node' }));
     expect(props.onDeleteNode).toHaveBeenCalledWith('stage-empty');

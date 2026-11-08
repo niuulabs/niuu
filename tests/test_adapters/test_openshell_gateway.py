@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import importlib
 import io
@@ -20,7 +21,6 @@ from uuid import uuid4
 
 import jwt
 import pytest
-import yaml
 
 from niuu.ports.workload_identity import IssuedWorkloadToken
 from volundr.adapters.outbound.hermes_gateway import (
@@ -109,6 +109,31 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
     openshell_pb2_mod.SANDBOX_PHASE_DELETING = 4
     openshell_pb2_mod.SANDBOX_PHASE_STOPPED = 5
     openshell_pb2_mod.SANDBOX_PHASE_STOPPING = 6
+    openshell_pb2_mod.SANDBOX_PHASE_SUSPENDING = 11
+    openshell_pb2_mod.SANDBOX_PHASE_SUSPENDED = 12
+
+    class SandboxPhase:
+        """The generated enum's name lookup, as the protobuf runtime provides it."""
+
+        _names = {
+            0: "SANDBOX_PHASE_UNSPECIFIED",
+            1: "SANDBOX_PHASE_PROVISIONING",
+            2: "SANDBOX_PHASE_READY",
+            3: "SANDBOX_PHASE_ERROR",
+            4: "SANDBOX_PHASE_DELETING",
+            5: "SANDBOX_PHASE_STOPPED",
+            6: "SANDBOX_PHASE_STOPPING",
+            11: "SANDBOX_PHASE_SUSPENDING",
+            12: "SANDBOX_PHASE_SUSPENDED",
+        }
+
+        @classmethod
+        def Name(cls, number: int) -> str:  # noqa: N802 - protobuf compatibility shim.
+            if number not in cls._names:
+                raise ValueError(f"Enum SandboxPhase has no name defined for value {number!r}")
+            return cls._names[number]
+
+    openshell_pb2_mod.SandboxPhase = SandboxPhase
     openshell_pb2_mod.DELETION_OUTCOME_UNSPECIFIED = 0
     openshell_pb2_mod.DELETION_OUTCOME_COMPLETED = 1
     openshell_pb2_mod.DELETION_OUTCOME_ACCEPTED = 2
@@ -361,8 +386,8 @@ class _FakeOpenShellGatewayClient:
                     level="OCSF",
                     source="sandbox",
                     target="ocsf",
-                    message="PROC:LAUNCH ravn",
-                    fields={"process": "ravn"},
+                    message="PROC:LAUNCH openclaw",
+                    fields={"process": "openclaw"},
                 )
             ],
             buffer_total=1,
@@ -669,8 +694,8 @@ def _resident_runtime() -> ResidentRuntime:
         persona_name="product-steward",
         model="gpt-5.6-sol",
         backend=ResidentBackend.OPENSHELL,
-        engine=ResidentEngine.RAVN,
-        profile_id="ravn-openshell",
+        engine=ResidentEngine.OPENCLAW,
+        profile_id="nemoclaw-openshell",
         capabilities=[
             ResidentCapability.CHAT,
             ResidentCapability.RUNTIME_RESTART,
@@ -682,10 +707,10 @@ def _resident_runtime() -> ResidentRuntime:
 
 def _resident_profile() -> ResidentDeploymentProfile:
     return ResidentDeploymentProfile(
-        id="ravn-openshell",
-        display_name="Resident Ravn on OpenShell",
+        id="nemoclaw-openshell",
+        display_name="NemoClaw on OpenShell",
         backend=ResidentBackend.OPENSHELL,
-        engine=ResidentEngine.RAVN,
+        engine=ResidentEngine.OPENCLAW,
         capabilities=[
             ResidentCapability.CHAT,
             ResidentCapability.RUNTIME_RESTART,
@@ -706,101 +731,40 @@ def _resident_profile() -> ResidentDeploymentProfile:
                     "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
                     "skipPermissions": True,
                 },
-                "session": {"reasoningEffort": "high"},
-                "openshell": {},
                 "resident": {
-                    "dailyBudgetUsd": "100.0",
                     "platform": {
                         "enabled": True,
                         "baseUrl": "https://yggdrasil.example.test",
-                        "workflowAliases": {"planning": {"name": "Saga Planning"}},
                     },
-                    "llm": {
-                        "provider": {
-                            "adapter": "ravn.adapters.llm.bifrost.BifrostAdapter",
-                            "kwargs": {"base_url": "http://bifrost.example.test"},
-                        }
-                    },
-                    "wakefulness": {"enabled": True},
                 },
-                "mimir": {
-                    "instances": [
+                "openshell": {
+                    "processMode": "replace",
+                    "service": {"name": "openclaw", "port": 18789},
+                    "processes": [
                         {
-                            "name": "mimir-yggdrasil",
-                            "role": "shared",
-                            "url": "https://mimir.example.test/api/v1",
-                            "auth": {"type": "workload", "audiences": ["mimir"]},
+                            "name": "openclaw",
+                            "command": ["openclaw", "gateway", "run"],
+                            "logPath": "/sandbox/.volundr/openclaw.log",
                         }
-                    ]
+                    ],
                 },
             }
         },
     )
 
 
-def test_resident_ravn_config_uses_profile_selected_flock_transport(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    flock_id = uuid4()
-    member_id = uuid4()
-    runtime = _resident_runtime().model_copy(
-        update={
-            "flock_id": flock_id,
-            "flock_member_id": member_id,
-            "flock_role": "coordinator",
-            "flock_peer_id": f"ravn-{member_id}",
-            "capabilities": [*_resident_runtime().capabilities, ResidentCapability.FLOCK],
+def _openclaw_credential_store() -> _FakeCredentialStore:
+    """A credential store that already holds a resident's OpenClaw machine identity."""
+    return _FakeCredentialStore(
+        {
+            "openclaw-gateway": {
+                "gateway_token": "gateway-token",
+                "device_id": "device-1",
+                "public_key": "public-key",
+                "private_key_pem": "private-key",
+            }
         }
     )
-    values = _resident_profile().deployment["values"]
-    values["resident"]["flock"] = {
-        "mesh": {
-            "adapters": [{"adapter": "sleipnir", "transport": "nats"}],
-            "nats": {
-                "servers": ["tls://nats.example.test:4222"],
-                "user_env": "RAVN_NATS_USER",
-                "password_env": "RAVN_NATS_PASSWORD",
-                "tls_ca_pem": "-----BEGIN CERTIFICATE-----\nproof\n-----END CERTIFICATE-----\n",
-            },
-        },
-        "discovery": {
-            "adapters": [{"adapter": "event_bus", "transport": "nats"}],
-        },
-    }
-    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
-    missing_transport = _resident_profile().model_copy(
-        update={"capabilities": [*_resident_profile().capabilities, ResidentCapability.FLOCK]}
-    )
-    configured = missing_transport.model_copy(update={"deployment": {"values": values}})
-
-    config = adapter._resident_ravn_config(runtime, values, 9200)
-    skuld_config = adapter._resident_skuld_config(
-        runtime,
-        values,
-        9200,
-        "https://volundr.example.test",
-    )
-
-    assert manager.supports(missing_transport) is False
-    assert manager.supports(configured) is True
-    assert config["mesh"]["own_peer_id"] == f"ravn-{member_id}"
-    assert config["mesh"]["adapters"] == [{"adapter": "sleipnir", "transport": "nats"}]
-    assert config["mesh"]["nats"]["user_env"] == "RAVN_NATS_USER"
-    assert config["mesh"]["nats"]["tls_ca_pem"].startswith("-----BEGIN CERTIFICATE-----")
-    assert config["discovery"]["realm_id"] == str(flock_id)
-    assert config["discovery"]["adapters"][-1] == {
-        "adapter": "event_bus",
-        "transport": "nats",
-    }
-    assert skuld_config["mesh"]["realm_id"] == str(flock_id)
-    assert skuld_config["mesh"]["adapters"] == [{"adapter": "sleipnir", "transport": "nats"}]
-    assert skuld_config["mesh"]["discovery_adapters"][-1] == {
-        "adapter": "event_bus",
-        "transport": "nats",
-    }
-    assert skuld_config["mesh"]["nats"]["user_env"] == "RAVN_NATS_USER"
-    assert "max_participants" not in skuld_config["room"]
 
 
 def _hermes_runtime() -> ResidentRuntime:
@@ -900,6 +864,30 @@ def test_native_lifecycle_calls_authenticated_gateway(monkeypatch, method, rpc):
     assert getattr(client, method)("forge").id == "id"
     assert call.call_args.args[0].name == "forge"
     assert ("authorization", "Bearer test-token") in call.call_args.kwargs["metadata"]
+
+
+@pytest.mark.parametrize(
+    "phase,expected",
+    [
+        ("SANDBOX_PHASE_SUSPENDING", SessionStatus.STOPPING),
+        ("SANDBOX_PHASE_SUSPENDED", SessionStatus.STOPPED),
+        ("SANDBOX_PHASE_STOPPING", SessionStatus.STOPPING),
+        ("SANDBOX_PHASE_STOPPED", SessionStatus.STOPPED),
+    ],
+)
+def test_session_status_reports_a_suspended_sandbox_as_down(
+    monkeypatch, phase: str, expected: SessionStatus
+):
+    """OpenShell v0.1.7 can suspend a sandbox; it runs no workload, so it is not provisioning."""
+    adapter = _import_adapter(monkeypatch)
+    sandbox = adapter.OpenShellSandbox(
+        id="sandbox-id",
+        name="session",
+        phase=getattr(adapter.openshell_pb2, phase),
+    )
+
+    assert adapter._status_from_sandbox(sandbox) is expected
+    assert adapter._phase_name(sandbox.phase) == phase.removeprefix("SANDBOX_PHASE_")
 
 
 @pytest.mark.asyncio
@@ -1026,10 +1014,16 @@ async def test_start_uses_gateway_client_without_host_cli(
     monkeypatch.setenv("OPENAI_API_KEY", "sk-real-from-volundr-env")
     session = _session()
     client = _FakeOpenShellGatewayClient(adapter)
+    persona = {"schema_version": 1, "id": "reviewer", "revision": "r1", "definition": {}}
     spec = SessionSpec(
         values={
             "broker": {"cliType": "codex", "approvalPolicy": "on-request"},
-            "session": {"initialPrompt": initial_prompt, "systemPrompt": initial_prompt},
+            "session": {
+                "initialPrompt": initial_prompt,
+                "systemPrompt": initial_prompt,
+                **({"persona": persona} if initial_prompt else {}),
+            },
+            **({"workflowSteps": {"enabled": True}} if initial_prompt else {}),
             "env": {"CUSTOM_ENV": "yes"},
             "resources": {
                 "requests": {"cpu": "500m", "memory": "1Gi"},
@@ -1101,6 +1095,8 @@ async def test_start_uses_gateway_client_without_host_cli(
                     "env",
                     f"SKULD__SESSION__INITIAL_PROMPT={initial_prompt}",
                     f"SKULD__SESSION__SYSTEM_PROMPT={initial_prompt}",
+                    "SKULD__SESSION__PERSONA=" + json.dumps(persona, separators=(",", ":")),
+                    "SKULD__WORKFLOW_STEPS__ENABLED=true",
                     "skuld",
                     "serve",
                 ]
@@ -1153,9 +1149,7 @@ def test_openclaw_profile_requires_complete_process_and_service_plan(
         }
     )
     assert manager.supports(complete) is True
-    assert adapter._resident_platform_binaries(
-        _resident_runtime().model_copy(update={"engine": ResidentEngine.OPENCLAW})
-    ) == ("/usr/bin/node",)
+    assert adapter._resident_platform_binaries(_resident_runtime()) == ("/usr/bin/node",)
 
 
 def test_hermes_profile_requires_complete_replace_process_and_service_plan(
@@ -1306,95 +1300,6 @@ async def test_hermes_rollback_and_delete_cleanup_machine_credential(
 
 
 @pytest.mark.asyncio
-async def test_resolve_realm_slug_is_empty_without_realm_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
-    assert await manager._resolve_realm_slug(_resident_runtime()) == ""
-
-
-@pytest.mark.asyncio
-async def test_resolve_realm_slug_requires_a_configured_repository(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
-    runtime = _resident_runtime().model_copy(update={"realm_id": uuid4()})
-    with pytest.raises(RuntimeError, match="no realm repository configured"):
-        await manager._resolve_realm_slug(runtime)
-
-
-@pytest.mark.asyncio
-async def test_resolve_realm_slug_returns_the_bound_realms_slug(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
-    realm_id = uuid4()
-
-    class _FakeRealm:
-        slug = "workshop"
-
-    class _FakeRealmRepository:
-        async def get_realm(self, realm_ref):
-            return _FakeRealm() if realm_ref == realm_id else None
-
-    manager.set_realm_repository(_FakeRealmRepository())
-    runtime = _resident_runtime().model_copy(update={"realm_id": realm_id})
-    assert await manager._resolve_realm_slug(runtime) == "workshop"
-
-
-def test_resident_mimir_config_preserves_local_role_default(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    values = {
-        "mimir": {
-            "instances": [
-                {"name": "hub-a", "role": "local"},
-                {"name": "hub-b", "role": "shared"},
-            ]
-        }
-    }
-    config = adapter._resident_mimir_config(values, "workshop")
-    assert config["write_routing"] == {"rules": [], "default": ["hub-a"]}
-
-
-def test_resident_mimir_config_routes_to_the_realm_mount_when_present(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    values = {
-        "mimir": {
-            "instances": [
-                {"name": "hub-a", "role": "shared"},
-                {"name": "realm-workshop", "role": "shared"},
-            ]
-        }
-    }
-    config = adapter._resident_mimir_config(values, "workshop")
-    assert config["write_routing"]["default"] == ["realm-workshop"]
-    assert config["write_routing"]["rules"] == [["realms/workshop/", ["realm-workshop"]]]
-
-
-def test_resident_mimir_config_raises_when_no_write_target_resolves(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    values = {
-        "mimir": {
-            "instances": [
-                {"name": "hub-a", "role": "shared"},
-                {"name": "hub-b", "role": "shared"},
-            ]
-        }
-    }
-    with pytest.raises(RuntimeError, match="no write target resolves"):
-        adapter._resident_mimir_config(values, "workshop")
-
-
-@pytest.mark.asyncio
 async def test_hermes_logs_default_to_hermes_process_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1434,7 +1339,7 @@ def test_dynamic_provider_accepts_configured_tcp_route(
 
     profile = adapter._provider_profile(
         profile_id="resident-nats",
-        env_name="RAVN_NATS_PASSWORD",
+        env_name="NATS_PASSWORD",
         token_endpoint="https://volundr.example.test/token",
         target_config={
             "endpoints": [
@@ -1488,14 +1393,19 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     expected_name = f"r-{runtime.id.hex[:17]}"
     assert observation.backend_ref["name"] == expected_name
     assert len(expected_name) == adapter.MAX_SANDBOX_ROUTING_NAME_LENGTH
-    assert observation.endpoints[0].url == f"/s/{runtime.id}/session"
+    assert observation.endpoints[0].protocol == "openclaw-gateway-v4"
+    assert observation.endpoints[0].url == (
+        f"/api/v1/forge/resident-runtimes/{runtime.id}/sessions"
+    )
     assert client.created is not None
     assert client.created["image"] == ("ghcr.io/niuulabs/openshell:niu-1099-openshell-resident")
     assert client.created["labels"] == {
         "app.kubernetes.io/managed-by": "volundr",
         "volundr.niuu.io/resident": str(runtime.id),
-        "volundr.niuu.io/runtime": "ravn",
+        "volundr.niuu.io/runtime": "openclaw",
     }
+    assert "pod_labels" not in client.created
+    assert "pod_annotations" not in client.created
     assert len(client.provider_grants) == 1
     assert all(
         grant["config"]["volundr_subject_kind"] == "resident"
@@ -1504,33 +1414,23 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     )
     assert len(client.written_files) == 1
     projected = client.written_files[0]["files"]
-    assert "/sandbox/.volundr/skuld.yaml" in projected
-    assert "/sandbox/.volundr/ravn.yaml" in projected
     assert _codex_auth_document().encode() not in projected.values()
-    ravn_config = projected["/sandbox/.volundr/ravn.yaml"].decode()
-    skuld_config = projected["/sandbox/.volundr/skuld.yaml"].decode()
-    assert "gpt-5.6-sol" in ravn_config
-    assert "mimir-yggdrasil" in ravn_config
-    assert "token_env: NIUU_VOLUNDR_ACCESS_TOKEN" in ravn_config
-    assert "Saga Planning" in ravn_config
-    assert "skip_permissions: true" in skuld_config
-    assert "event_log_enabled: false" in skuld_config
-    assert "activity_reporting_enabled: false" in skuld_config
     assert [process["pid_path"] for process in client.execs] == [
-        "/sandbox/.volundr/skuld.pid",
-        "/sandbox/.volundr/ravn.pid",
+        "/sandbox/.volundr/openclaw.pid",
     ]
-    assert client.execs[0]["env"]["SKULD_BOOTSTRAP_FOREGROUND"] == "true"
-    assert client.execs[0]["env"]["NIUU_CONFIG"] == "/sandbox/.volundr/skuld.yaml"
+    machine_token = store.values["openclaw-gateway"]["gateway_token"]
+    assert "OPENCLAW_GATEWAY_TOKEN" not in client.created["env"]
+    assert client.execs[0]["env"]["OPENCLAW_GATEWAY_TOKEN"] == machine_token
+    assert client.execs[0]["env"]["OPENCLAW_STATE_DIR"] == "/sandbox/workspace/.openclaw"
     assert client.execs[0]["env"]["SKULD__CODEX_AUTH__ADAPTER"] == (
         "skuld.codex_auth.VolundrCodexAuthProvider"
     )
     assert client.execs[0]["env"]["SKULD__CODEX_AUTH__KWARGS"] == "{}"
     assert "SKULD_CONFIG" not in client.execs[0]["env"]
-    assert client.execs[1]["env"]["SKULD__TRANSPORT_ADAPTER"] == (
+    assert client.execs[0]["env"]["SKULD__TRANSPORT_ADAPTER"] == (
         "skuld.transports.codex_ws.CodexWebSocketTransport"
     )
-    assert client.execs[1]["env"]["SKULD__SKIP_PERMISSIONS"] == "true"
+    assert client.execs[0]["env"]["SKULD__SKIP_PERMISSIONS"] == "true"
 
 
 @pytest.mark.asyncio
@@ -1542,7 +1442,7 @@ async def test_resident_deploy_resumes_owned_sandbox_and_launches_missing_proces
     profile = _resident_profile()
     client = _FakeOpenShellGatewayClient(adapter)
     client.sandbox_labels = {"volundr.niuu.io/resident": str(runtime.id)}
-    health_results = iter((0, 1, 0))
+    health_results = iter((1, 0))
 
     def exec_script(**kwargs):
         client.bootstrap_execs.append(kwargs)
@@ -1555,16 +1455,16 @@ async def test_resident_deploy_resumes_owned_sandbox_and_launches_missing_proces
         workload_audiences=["volundr-api", "mimir", "guild"],
         ready_timeout=0.1,
     )
-    manager.set_credential_store(
-        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
-    )
+    store = _openclaw_credential_store()
+    store.values["codex-credentials"] = {"auth.json": _codex_auth_document()}
+    manager.set_credential_store(store)
     manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
 
     observation = await manager.deploy(runtime, profile)
 
     assert observation.observed_state is ResidentObservedState.ACTIVE
     assert client.created is None
-    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/ravn.pid"]
+    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/openclaw.pid"]
 
 
 def _store_locked_error(adapter):
@@ -1763,11 +1663,13 @@ async def test_resident_reconcile_recovers_missing_service_endpoint(
 
     assert client.exposed == {
         "sandbox_name": "resident-existing",
-        "target_port": 9200,
-        "service": "skuld",
+        "target_port": 18789,
+        "service": "openclaw",
     }
     assert observation.backend_ref["service_url"] == client.service_url
-    assert observation.endpoints[0].url == f"/s/{runtime.id}/session"
+    assert observation.endpoints[0].url == (
+        f"/api/v1/forge/resident-runtimes/{runtime.id}/sessions"
+    )
 
 
 @pytest.mark.asyncio
@@ -1820,9 +1722,9 @@ def _deployed_resident_manager(adapter, client, runtime):
         volundr_api_url="https://volundr.example.test",
         workload_audiences=["volundr-api", "mimir", "guild"],
     )
-    manager.set_credential_store(
-        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
-    )
+    store = _openclaw_credential_store()
+    store.values["codex-credentials"] = {"auth.json": _codex_auth_document()}
+    manager.set_credential_store(store)
     manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
     return manager
 
@@ -1845,12 +1747,12 @@ def _deployed_resident(runtime):
 async def test_resident_reconcile_starts_processes_that_stopped_after_deployment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A fresh Volundr starts the skuld an interrupted deployment left stopped."""
+    """A fresh Volundr starts the process an interrupted deployment left stopped."""
     adapter = _import_adapter(monkeypatch)
     runtime = _deployed_resident(_resident_runtime())
     client = _FakeOpenShellGatewayClient(adapter)
-    # All processes healthy? no. skuld running? no. ravn running? yes.
-    health_results = iter((1, 1, 0))
+    # All processes healthy? no. openclaw running? no.
+    health_results = iter((1, 1))
 
     def exec_script(**kwargs):
         client.bootstrap_execs.append(kwargs)
@@ -1861,8 +1763,8 @@ async def test_resident_reconcile_starts_processes_that_stopped_after_deployment
 
     observation = await manager.reconcile(runtime, _resident_profile())
 
-    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/skuld.pid"]
-    assert "/sandbox/.volundr/skuld.yaml" in client.written_files[0]["files"]
+    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/openclaw.pid"]
+    assert client.execs[0]["env"]["OPENCLAW_GATEWAY_TOKEN"] == "gateway-token"
     assert client.created is None
     assert client.deleted == []
     assert observation.observed_state is ResidentObservedState.DEPLOYING
@@ -1905,14 +1807,14 @@ async def test_resident_reconcile_reports_processes_when_they_cannot_be_started(
     assert observation.conditions[1].reason == "Unavailable"
 
 
-def _drain_sandbox(adapter, client) -> None:
-    """Leave the sandbox as a node drain does: stopped until the gateway starts it."""
+def _drain_sandbox(adapter, client, phase: str = "SANDBOX_PHASE_STOPPED") -> None:
+    """Leave the sandbox as a node drain (or a suspend) does: down until the gateway starts it."""
     running = client.get_sandbox
 
     def stopped(name: str):
         return replace(
             running(name),
-            phase=adapter.openshell_pb2.SANDBOX_PHASE_STOPPED,
+            phase=getattr(adapter.openshell_pb2, phase),
             ready=False,
         )
 
@@ -1929,16 +1831,18 @@ def _drain_sandbox(adapter, client) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stopped_phase", ["SANDBOX_PHASE_STOPPED", "SANDBOX_PHASE_SUSPENDED"])
 async def test_resident_reconcile_starts_a_sandbox_that_stopped_under_it(
     monkeypatch: pytest.MonkeyPatch,
+    stopped_phase: str,
 ) -> None:
-    """A drained resident comes back on its own sandbox, then gets its processes."""
+    """A drained or suspended resident comes back on its own sandbox, then gets its processes."""
     adapter = _import_adapter(monkeypatch)
     runtime = _deployed_resident(_resident_runtime())
     client = _FakeOpenShellGatewayClient(adapter)
     client.exec_script = lambda **_kwargs: (1, "")
     manager = _deployed_resident_manager(adapter, client, runtime)
-    _drain_sandbox(adapter, client)
+    _drain_sandbox(adapter, client, stopped_phase)
     sandbox_name = runtime.backend_ref["name"]
 
     observation = await manager.reconcile(runtime, _resident_profile())
@@ -1953,10 +1857,7 @@ async def test_resident_reconcile_starts_a_sandbox_that_stopped_under_it(
     await manager.reconcile(runtime, _resident_profile())
 
     client.start_sandbox.assert_called_once()
-    assert [process["pid_path"] for process in client.execs] == [
-        "/sandbox/.volundr/skuld.pid",
-        "/sandbox/.volundr/ravn.pid",
-    ]
+    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/openclaw.pid"]
 
 
 @pytest.mark.asyncio
@@ -2034,7 +1935,7 @@ async def test_resident_materializes_raw_protocol_credential_from_openbao(
     values["openshell"]["credentialMappings"] = [
         {
             "credentialName": "nats-flock-noatun",
-            "envMappings": {"RAVN_NATS_PASSWORD": "password"},
+            "envMappings": {"NATS_PASSWORD": "password"},
             "materializeEnvironment": True,
             "provider": {
                 "endpoints": [
@@ -2064,8 +1965,8 @@ async def test_resident_materializes_raw_protocol_credential_from_openbao(
     await manager.deploy(runtime, profile)
 
     assert client.created is not None
-    assert "RAVN_NATS_PASSWORD" not in client.created["env"]
-    assert client.execs[1]["env"]["RAVN_NATS_PASSWORD"] == "nats-from-openbao"
+    assert "NATS_PASSWORD" not in client.created["env"]
+    assert client.execs[0]["env"]["NATS_PASSWORD"] == "nats-from-openbao"
     # The value is materialized by Völundr, so the provider carries only the
     # raw-protocol endpoint policy: OpenShell rejects a token grant on a
     # tls: skip endpoint.
@@ -2080,7 +1981,7 @@ async def test_resident_materializes_raw_protocol_credential_from_openbao(
 
     await manager.restart(runtime, profile)
 
-    assert client.execs[-1]["env"]["RAVN_NATS_PASSWORD"] == "nats-from-openbao"
+    assert client.execs[-1]["env"]["NATS_PASSWORD"] == "nats-from-openbao"
 
 
 @pytest.mark.parametrize(
@@ -2138,32 +2039,28 @@ async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
     client = _FakeOpenShellGatewayClient(adapter)
     client.created = {"providers": ()}
     manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
-    manager.set_credential_store(
-        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
-    )
+    store = _openclaw_credential_store()
+    store.values["codex-credentials"] = {"auth.json": _codex_auth_document()}
+    manager.set_credential_store(store)
     profile = _resident_profile()
     values = profile.deployment["values"]
     values["env"] = {"RESIDENT_MODE": "active"}
-    values["openshell"]["processes"] = [
+    values["openshell"]["processes"].append(
         {
             "name": "sidecar",
             "command": ["sleep", "3600"],
             "logPath": "/sandbox/.volundr/sidecar.log",
         }
-    ]
+    )
 
     observation = await manager.restart(runtime, profile)
 
     assert observation.observed_state is ResidentObservedState.ACTIVE
     assert client.deleted == []
     assert client.bootstrap_execs[0]["script"] == adapter._resident_stop_script(
-        ("skuld", "ravn", "sidecar")
+        ("openclaw", "sidecar")
     )
     assert len(client.written_files) == 1
-    assert set(client.written_files[0]["files"]) == {
-        "/sandbox/.volundr/ravn.yaml",
-        "/sandbox/.volundr/skuld.yaml",
-    }
     assert client.execs[-1]["env"]["SKULD__CODEX_AUTH__ADAPTER"] == (
         "skuld.codex_auth.VolundrCodexAuthProvider"
     )
@@ -2174,8 +2071,7 @@ async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
     )
     assert client.execs[-1]["env"]["SKULD__SKIP_PERMISSIONS"] == "true"
     assert [process["pid_path"] for process in client.execs] == [
-        "/sandbox/.volundr/skuld.pid",
-        "/sandbox/.volundr/ravn.pid",
+        "/sandbox/.volundr/openclaw.pid",
         "/sandbox/.volundr/sidecar.pid",
     ]
 
@@ -2185,11 +2081,11 @@ def test_resident_process_lifecycle_uses_in_sandbox_process_identity(
 ) -> None:
     adapter = _import_adapter(monkeypatch)
 
-    health = adapter._resident_health_script()
-    stop = adapter._resident_stop_script()
+    health = adapter._resident_health_script(("openclaw", "sidecar"))
+    stop = adapter._resident_stop_script(("openclaw", "sidecar"))
 
-    assert "/sandbox/.volundr/skuld.pid" in health
-    assert "/sandbox/.volundr/ravn.pid" in health
+    assert "/sandbox/.volundr/openclaw.pid" in health
+    assert "/sandbox/.volundr/sidecar.pid" in health
     assert 'kill -0 "$(cat ' in health
     assert 'kill -9 "$(cat "$pid_file")"' in stop
 
@@ -2333,7 +2229,7 @@ async def test_resident_logs_use_native_gateway_log_buffer(
     )
 
     assert page.buffer_total == 1
-    assert page.entries[0].message == "PROC:LAUNCH ravn"
+    assert page.entries[0].message == "PROC:LAUNCH openclaw"
 
 
 @pytest.mark.asyncio
@@ -2348,7 +2244,7 @@ async def test_resident_logs_merge_process_files_through_gateway_exec(
         0,
         "\n".join(
             (
-                "__VOLUNDR_LOG_SOURCE__=ravn",
+                "__VOLUNDR_LOG_SOURCE__=openclaw",
                 '{"time":"2026-07-11T10:00:00Z","level":"INFO","message":"turn started"}',
                 '{"time":"2026-07-11T10:00:01Z","level":"ERROR","message":"turn failed"}',
             )
@@ -2359,13 +2255,13 @@ async def test_resident_logs_merge_process_files_through_gateway_exec(
     page = await manager.logs(
         runtime,
         lines=50,
-        sources=("ravn",),
+        sources=("openclaw",),
         min_level="ERROR",
     )
 
     assert [(entry.source, entry.level, entry.message) for entry in page.entries] == [
-        ("sandbox", "OCSF", "PROC:LAUNCH ravn"),
-        ("ravn", "ERROR", "turn failed"),
+        ("sandbox", "OCSF", "PROC:LAUNCH openclaw"),
+        ("openclaw", "ERROR", "turn failed"),
     ]
 
 
@@ -2402,10 +2298,10 @@ def test_l4_credentials_require_explicit_opt_in(monkeypatch):
         "endpoints": [{"host": "10.191.72.34", "port": 4222, "tls": "skip"}],
         "binaries": ["/opt/niuu/bin/python"],
     }
-    target = adapter._provider_target("RAVN_NATS_PASSWORD", config)
+    target = adapter._provider_target("NATS_PASSWORD", config)
     assert target["endpoints"][0].allow_uninspected_credentials is False
     config["endpoints"][0]["allow_uninspected_credentials"] = True
-    target = adapter._provider_target("RAVN_NATS_PASSWORD", config)
+    target = adapter._provider_target("NATS_PASSWORD", config)
     assert target["endpoints"][0].allow_uninspected_credentials is True
 
 
@@ -4232,249 +4128,66 @@ def _openshell_resident_manager(monkeypatch: pytest.MonkeyPatch):
         workload_audiences=["volundr-api", "mimir", "guild"],
         ready_timeout=0.1,
     )
-    manager.set_credential_store(
-        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
-    )
+    store = _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
+    manager.set_credential_store(store)
     manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
-    return adapter, client, manager
-
-
-def _bind_ravn_sessions(manager, store=None):
-    """Wire the Ravn session controller as composition does; returns its store."""
-    from niuu.adapters.memory_credential_store import MemoryCredentialStore
-    from volundr.adapters.outbound.ravn_gateway import RavnResidentSessionController
-
-    store = store or MemoryCredentialStore()
-    RavnResidentSessionController(manager, store)
-    return store
-
-
-async def _kept_shim_token(store, runtime) -> str | None:
-    kept = await store.get_value("resident", str(runtime.id), "ravn-openclaw")
-    return kept["token"] if kept else None
+    return adapter, client, manager, store
 
 
 @pytest.mark.asyncio
-async def test_ravn_resident_runs_its_openclaw_shim_with_its_own_token(
+async def test_a_resident_profile_that_does_not_replace_the_processes_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _, client, manager = _openshell_resident_manager(monkeypatch)
-    store = _bind_ravn_sessions(manager)
-    runtime = _resident_runtime()
-
-    await manager.deploy(runtime, _resident_profile())
-
-    ravn_config = yaml.safe_load(
-        client.written_files[0]["files"]["/sandbox/.volundr/ravn.yaml"].decode()
-    )
-    assert ravn_config["gateway"]["channels"]["openclaw"] == {
-        "enabled": True,
-        "host": "0.0.0.0",
-        "port": 18790,
-        "token_env": "RAVN_OPENCLAW_TOKEN",
-        "agent_id": "main",
-        "max_live_sessions": 64,
-        "store_path": "/sandbox/workspace/.ravn/openclaw/state.db",
-    }
-    token = await _kept_shim_token(store, runtime)
-    assert token and len(token) >= 32
-    assert {process["env"]["RAVN_OPENCLAW_TOKEN"] for process in client.execs} == {token}
-    # The token reaches the processes only: never the sandbox's own environment.
-    assert "RAVN_OPENCLAW_TOKEN" not in client.created["env"]
-
-
-@pytest.mark.asyncio
-async def test_ravn_resident_has_no_shim_without_ravn_sessions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _, client, manager = _openshell_resident_manager(monkeypatch)
-
-    await manager.deploy(_resident_runtime(), _resident_profile())
-
-    ravn_config = yaml.safe_load(
-        client.written_files[0]["files"]["/sandbox/.volundr/ravn.yaml"].decode()
-    )
-    assert "openclaw" not in ravn_config["gateway"]["channels"]
-    assert all("RAVN_OPENCLAW_TOKEN" not in process["env"] for process in client.execs)
-
-
-@pytest.mark.asyncio
-async def test_a_profile_asking_for_the_shim_without_ravn_sessions_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _, _, manager = _openshell_resident_manager(monkeypatch)
+    """OpenShell runs only the processes a profile declares; there is no default process."""
+    _, client, manager, _ = _openshell_resident_manager(monkeypatch)
     profile = _resident_profile()
-    profile.deployment["values"]["resident"]["openclaw"] = {"enabled": True}
+    del profile.deployment["values"]["openshell"]["processMode"]
 
-    with pytest.raises(ValueError, match="enables resident.openclaw"):
+    assert manager.supports(profile) is False
+    with pytest.raises(RuntimeError, match="does not support resident profile"):
         await manager.deploy(_resident_runtime(), profile)
-
-
-@pytest.mark.asyncio
-async def test_restarting_missing_processes_keeps_the_shim_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The kept token survives a Volundr restart: relaunched processes get the same one."""
-    _, _, manager = _openshell_resident_manager(monkeypatch)
-    store = _bind_ravn_sessions(manager)
-    runtime = _resident_runtime()
-    first = await manager.resident_openclaw_token(runtime)
-    _bind_ravn_sessions(manager, store)  # a restarted Volundr, same credential store
-    values = manager._with_brokered_credential_values(
-        dict(_resident_profile().deployment["values"])
-    )
-
-    _, env = await manager._resident_launch_inputs(
-        runtime, values, manager._resident_processes(runtime, values)
-    )
-
-    assert env["RAVN_OPENCLAW_TOKEN"] == first
-
-
-@pytest.mark.asyncio
-async def test_a_running_ravn_process_keeps_its_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Migration: the token the Ravn process was started with is read back and adopted."""
-    adapter = _import_adapter(monkeypatch)
-    runtime = _deployed_resident(_resident_runtime())
-    client = _FakeOpenShellGatewayClient(adapter)
-    scripts: list[str] = []
-
-    def exec_script(**kwargs):
-        scripts.append(kwargs["script"])
-        return 0, "running-process-token\n"
-
-    client.exec_script = exec_script
-    manager = _deployed_resident_manager(adapter, client, runtime)
-    store = _bind_ravn_sessions(manager)
-
-    assert await manager.resident_openclaw_token(runtime) == "running-process-token"
-    assert await _kept_shim_token(store, runtime) == "running-process-token"
-    assert "/sandbox/.volundr/ravn.pid" in scripts[0] and "RAVN_OPENCLAW_TOKEN" in scripts[0]
-    # Kept from now on: never read back again.
-    assert await manager.resident_openclaw_token(runtime) == "running-process-token"
-    assert len(scripts) == 1
-
-
-@pytest.mark.asyncio
-async def test_a_ravn_process_without_a_token_gets_a_new_one(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    runtime = _deployed_resident(_resident_runtime())
-    client = _FakeOpenShellGatewayClient(adapter)
-    client.exec_script = lambda **_kwargs: (0, "")
-    manager = _deployed_resident_manager(adapter, client, runtime)
-    store = _bind_ravn_sessions(manager)
-
-    token = await manager.resident_openclaw_token(runtime)
-
-    assert token and token == await _kept_shim_token(store, runtime)
-
-
-@pytest.mark.asyncio
-async def test_reconcile_restarts_a_ravn_resident_once_to_start_its_shim(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A resident deployed before Ravn sessions were on runs without the shim."""
-    adapter = _import_adapter(monkeypatch)
-    runtime = _deployed_resident(_resident_runtime())
-    client = _FakeOpenShellGatewayClient(adapter)
-    client.sandbox_exists = True
-    scripts: list[str] = []
-
-    def exec_script(**kwargs):
-        script = kwargs["script"]
-        scripts.append(script)
-        if ":4966" in script and "kill -0" not in script:  # the shim port 18790, in hex
-            return 1, ""  # not listening
-        if "/proc/$pid/environ" in script:
-            return 0, ""  # started without a token
-        return 0, ""
-
-    client.exec_script = exec_script
-    manager = _deployed_resident_manager(adapter, client, runtime)
-    store = _bind_ravn_sessions(manager)
-
-    await manager.reconcile(runtime, _resident_profile())
-
-    token = await _kept_shim_token(store, runtime)
-    assert token
-    assert {process["env"]["RAVN_OPENCLAW_TOKEN"] for process in client.execs} == {token}
-    ravn_yaml = yaml.safe_load(
-        client.written_files[-1]["files"]["/sandbox/.volundr/ravn.yaml"].decode()
-    )
-    assert ravn_yaml["gateway"]["channels"]["openclaw"]["port"] == 18790
-
-    # Never again from this Volundr, so a shim that cannot start never loops.
-    launched = len(client.execs)
-    await manager.reconcile(runtime, _resident_profile())
-    assert len(client.execs) == launched
-
-
-@pytest.mark.asyncio
-async def test_reconcile_leaves_a_ravn_resident_whose_shim_is_up(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    runtime = _deployed_resident(_resident_runtime())
-    client = _FakeOpenShellGatewayClient(adapter)
-    client.sandbox_exists = True
-    client.exec_script = lambda **_kwargs: (0, "")
-    manager = _deployed_resident_manager(adapter, client, runtime)
-    _bind_ravn_sessions(manager)
-
-    await manager.reconcile(runtime, _resident_profile())
-    await manager.reconcile(runtime, _resident_profile())
+    with pytest.raises(RuntimeError, match="does not declare openshell.processMode: replace"):
+        manager._resident_processes(_resident_runtime(), profile.deployment["values"])
 
     assert client.execs == []
-    assert client.written_files == []
 
 
 @pytest.mark.asyncio
-async def test_deleting_a_ravn_resident_forgets_its_token(
+async def test_a_flock_member_resident_carries_its_flock_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _, _, manager = _openshell_resident_manager(monkeypatch)
-    store = _bind_ravn_sessions(manager)
-    runtime = _resident_runtime()
-    await manager.deploy(runtime, _resident_profile())
-    assert await _kept_shim_token(store, runtime)
-
-    await manager.delete(runtime)
-
-    assert await _kept_shim_token(store, runtime) is None
-
-
-@pytest.mark.asyncio
-async def test_ravn_sessions_reach_the_shim_over_the_native_tcp_tunnel(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The path Hermes residents already use, on the shim's own port."""
-    _, client, manager = _openshell_resident_manager(monkeypatch)
-    runtime = _resident_runtime()
-    assert manager.resident_openclaw_target(runtime, 18790) is None
-
-    runtime = runtime.model_copy(update={"backend_ref": {"id": "sandbox-id", "name": "r-resident"}})
-    target = manager.resident_openclaw_target(runtime, 18790)
-    again = manager.resident_openclaw_target(runtime, 18790)
-
-    assert target is not None and again is not None
-    assert (target.connect_host, target.connect_port) == ("127.0.0.1", 43210)
-    assert target.service_url == "http://ravn-openclaw.internal:18790/"
-    # The gateway resolves the forward by name; the id tells a new sandbox apart.
-    assert client.forwarded == [{"sandbox": "r-resident", "target_port": 18790}]
-
-    redeployed = runtime.model_copy(
-        update={"backend_ref": {"id": "sandbox-2", "name": "r-resident"}}
+    _, client, manager, _ = _openshell_resident_manager(monkeypatch)
+    flock_id = uuid4()
+    member_id = uuid4()
+    runtime = _resident_runtime().model_copy(
+        update={
+            "flock_id": flock_id,
+            "flock_member_id": member_id,
+            "flock_role": "coordinator",
+            "flock_peer_id": f"peer-{member_id}",
+            "capabilities": [*_resident_runtime().capabilities, ResidentCapability.FLOCK],
+        }
     )
-    manager.resident_openclaw_target(redeployed, 18790)
-    assert client.closed_forwarders == [{"sandbox": "r-resident", "target_port": 18790}]
-    assert len(client.forwarded) == 2
 
-    await manager.delete(redeployed)
-    assert client.closed_forwarders.count({"sandbox": "r-resident", "target_port": 18790}) == 2
+    await manager.deploy(runtime, _resident_profile())
+
+    assert client.created["labels"] == {
+        "app.kubernetes.io/managed-by": "volundr",
+        "volundr.niuu.io/resident": str(runtime.id),
+        "volundr.niuu.io/runtime": "openclaw",
+        "volundr.niuu.io/flock-id": str(flock_id),
+        "volundr.niuu.io/flock-member-id": str(member_id),
+        "volundr.niuu.io/flock-role": "coordinator",
+        "volundr.niuu.io/flock-peer-id": f"peer-{member_id}",
+    }
+    expected = {
+        "NIUU_FLOCK_ID": str(flock_id),
+        "NIUU_FLOCK_MEMBER_ID": str(member_id),
+        "NIUU_FLOCK_ROLE": "coordinator",
+        "NIUU_FLOCK_PEER_ID": f"peer-{member_id}",
+    }
+    assert expected.items() <= client.created["env"].items()
+    assert expected.items() <= client.execs[0]["env"].items()
 
 
 _CURRENT_SANDBOX_IMAGE = "ghcr.io/niuulabs/openshell:niu-1099-openshell-resident"
@@ -4495,16 +4208,14 @@ def _persisted_profile(tag: str = "niu-1099-openshell-resident") -> ResidentDepl
 
 
 async def _resident_on_old_image(monkeypatch: pytest.MonkeyPatch):
-    """A deployed Ravn resident whose sandbox an older Völundr created, with its token."""
+    """A deployed resident whose sandbox an older Völundr created, with its machine identity."""
     adapter = _import_adapter(monkeypatch)
     runtime = _deployed_resident(_resident_runtime())
     client = _FakeOpenShellGatewayClient(adapter)
     client.sandbox_image = _OLD_SANDBOX_IMAGE
     client.exec_script = lambda **_kwargs: (0, "")
     manager = _deployed_resident_manager(adapter, client, runtime)
-    store = _bind_ravn_sessions(manager)
-    await store.store("resident", str(runtime.id), "ravn-openclaw", "generic", {"token": "kept"})
-    return adapter, runtime, client, manager, store
+    return adapter, runtime, client, manager, manager._credential_store
 
 
 def _redeploying(runtime: ResidentRuntime, state=ResidentObservedState.PENDING) -> ResidentRuntime:
@@ -4546,9 +4257,11 @@ async def test_reconcile_recreates_a_persisted_residents_sandbox_on_the_current_
     }
     assert deployed.observed_state is ResidentObservedState.ACTIVE
     assert deployed.backend_ref["image"] == _CURRENT_SANDBOX_IMAGE
-    # Same resident, same shim token: its channels keep working.
-    assert await _kept_shim_token(store, runtime) == "kept"
-    assert {process["env"]["RAVN_OPENCLAW_TOKEN"] for process in client.execs} == {"kept"}
+    # Same resident, same machine identity: its sessions keep working.
+    assert store.values["openclaw-gateway"]["gateway_token"] == "gateway-token"
+    assert {process["env"]["OPENCLAW_GATEWAY_TOKEN"] for process in client.execs} == {
+        "gateway-token"
+    }
 
     # Once: the new sandbox runs the current image.
     upgraded = runtime.model_copy(update={"backend_ref": deployed.backend_ref})
@@ -4600,15 +4313,15 @@ async def test_restart_of_an_unpersisted_resident_restarts_in_place_and_never_re
     assert client.created is None
     # The processes restarted in the existing sandbox, as before.
     assert [process["pid_path"] for process in client.execs] == [
-        "/sandbox/.volundr/skuld.pid",
-        "/sandbox/.volundr/ravn.pid",
+        "/sandbox/.volundr/openclaw.pid",
     ] * 2
     assert {process["sandbox"] for process in client.execs} == {runtime.backend_ref["name"]}
     for restarted in (observation, again):
         assert restarted.observed_state is ResidentObservedState.ACTIVE
         assert restarted.backend_ref["image"] == _OLD_SANDBOX_IMAGE
         _assert_held(restarted.conditions[-1])
-    assert await _kept_shim_token(store, runtime) == "kept"
+    assert store.deletes == []
+    assert store.values["openclaw-gateway"]["gateway_token"] == "gateway-token"
 
 
 @pytest.mark.asyncio
@@ -4623,7 +4336,7 @@ async def test_restart_moves_a_persisted_resident_onto_the_current_image(
     assert client.created["image"] == _CURRENT_SANDBOX_IMAGE
     assert observation.backend_ref["image"] == _CURRENT_SANDBOX_IMAGE
     assert all(condition.type != "PlatformUpgrade" for condition in observation.conditions)
-    assert await _kept_shim_token(store, runtime) == "kept"
+    assert store.values["openclaw-gateway"]["gateway_token"] == "gateway-token"
 
 
 @pytest.mark.asyncio
@@ -4637,29 +4350,25 @@ async def test_restart_on_the_current_image_restarts_processes_in_place(
 
     assert client.deleted == []
     assert client.created is None
-    assert [process["pid_path"] for process in client.execs] == [
-        "/sandbox/.volundr/skuld.pid",
-        "/sandbox/.volundr/ravn.pid",
-    ]
+    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/openclaw.pid"]
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stopped_phase", ["SANDBOX_PHASE_STOPPED", "SANDBOX_PHASE_SUSPENDED"])
 async def test_restart_brings_back_a_sandbox_that_stopped_under_the_resident(
     monkeypatch: pytest.MonkeyPatch,
+    stopped_phase: str,
 ) -> None:
     adapter, runtime, client, manager, _ = await _resident_on_old_image(monkeypatch)
     client.sandbox_image = _CURRENT_SANDBOX_IMAGE
-    _drain_sandbox(adapter, client)
+    _drain_sandbox(adapter, client, stopped_phase)
 
     await manager.restart(runtime, _resident_profile())
 
     client.start_sandbox.assert_called_once_with(runtime.backend_ref["name"])
     assert client.deleted == []
     assert client.created is None
-    assert [process["pid_path"] for process in client.execs] == [
-        "/sandbox/.volundr/skuld.pid",
-        "/sandbox/.volundr/ravn.pid",
-    ]
+    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/openclaw.pid"]
 
 
 @pytest.mark.asyncio
@@ -4688,8 +4397,9 @@ async def test_a_failed_upgrade_is_reported_without_redeploying_in_a_loop(
     with pytest.raises(RuntimeError, match="image pull failed"):
         await manager.deploy(_redeploying(runtime), profile)
 
-    # A failed upgrade keeps the resident's identity: its token is still kept.
-    assert await _kept_shim_token(store, runtime) == "kept"
+    # A failed upgrade keeps the resident's identity: its machine credential is still kept.
+    assert store.deletes == []
+    assert store.values["openclaw-gateway"]["gateway_token"] == "gateway-token"
     failed = _redeploying(runtime, ResidentObservedState.FAILED)
     for _ in range(2):
         observation = await manager.reconcile(failed, profile)
@@ -4773,3 +4483,336 @@ async def test_the_held_reason_reaches_the_resident_api(
             "No persistent workspace; the sandbox image can't change without losing /sandbox."
         )
         assert body["backendRef"]["image"] == _OLD_SANDBOX_IMAGE
+
+
+# --- Launch stages --------------------------------------------------------
+
+
+async def _stage_rows(manager, session) -> list[tuple[str, str, str, str | None]]:
+    return [
+        (s.key, s.label, s.state.value, s.detail) for s in await manager.startup_stages(session)
+    ]
+
+
+def _not_ready(adapter, client, reason: str, phase: str = "PROVISIONING"):
+    """Make the fake gateway report a sandbox that is not ready, with its own reason."""
+    original = client.get_sandbox
+    pb2 = adapter.openshell_pb2
+
+    def get_sandbox(name: str):
+        sandbox = original(name)
+        if sandbox is None or name in client.deleted:
+            return sandbox
+        return replace(
+            sandbox,
+            phase=getattr(pb2, f"SANDBOX_PHASE_{phase}"),
+            ready=False,
+            not_ready_reason=reason,
+        )
+
+    client.get_sandbox = get_sandbox
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_start_reports_each_step_it_performs(monkeypatch: pytest.MonkeyPatch):
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    loop = asyncio.get_running_loop()
+    during_create: list[list[tuple[str, str, str, str | None]]] = []
+    create = client.create_sandbox
+
+    def create_and_look(**kwargs):
+        during_create.append(
+            asyncio.run_coroutine_threadsafe(_stage_rows(manager, session), loop).result()
+        )
+        return create(**kwargs)
+
+    client.create_sandbox = create_and_look
+
+    assert manager.reports_startup_stages is True
+    assert await manager.startup_stages(session) == ()
+    before = datetime.now(UTC)
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    after = datetime.now(UTC)
+
+    name = f"forge-{session.id.hex[:13]}"
+    # Mid-launch, the steps still to come are named but have not begun.
+    assert during_create == [
+        [
+            ("credentials", "Resolving credentials", "done", None),
+            ("sandbox", "Creating the sandbox", "active", None),
+            ("ready", "Waiting for the sandbox", "pending", None),
+            ("files", "Writing session configuration", "pending", None),
+            ("workspace", "Preparing the workspace", "pending", None),
+            ("skuld", "Starting Skuld", "pending", None),
+            ("expose", "Exposing the service", "pending", None),
+            ("broker", "Waiting for the broker", "pending", None),
+        ]
+    ]
+    # A start with nothing to write never goes through the files step.
+    assert await _stage_rows(manager, session) == [
+        ("credentials", "Resolving credentials", "done", None),
+        ("sandbox", "Creating the sandbox", "done", f"{name}: PROVISIONING"),
+        ("ready", "Waiting for the sandbox", "done", "READY"),
+        ("workspace", "Preparing the workspace", "done", "Workspace ready"),
+        ("skuld", "Starting Skuld", "done", f"Started in {name}"),
+        ("expose", "Exposing the service", "done", client.service_url),
+        ("broker", "Waiting for the broker", "active", None),
+    ]
+    stages = await manager.startup_stages(session)
+    for stage in stages:
+        assert before <= stage.started_at <= after
+    for earlier, later in zip(stages, stages[1:], strict=False):
+        assert earlier.finished_at <= later.started_at, "stages run one after another"
+
+    # Forge sees the session running when the gateway says so; that ends the last stage.
+    assert await manager.status(session) is SessionStatus.RUNNING
+    assert (await _stage_rows(manager, session))[-1] == (
+        "broker",
+        "Waiting for the broker",
+        "done",
+        "READY",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_status_read_before_the_broker_is_started_does_not_finish_its_stage(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    loop = asyncio.get_running_loop()
+    seen: list[SessionStatus] = []
+    exec_detached = client.exec_detached
+
+    def exec_and_read_status(**kwargs):
+        seen.append(asyncio.run_coroutine_threadsafe(manager.status(session), loop).result())
+        return exec_detached(**kwargs)
+
+    client.exec_detached = exec_and_read_status
+
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    assert seen == [SessionStatus.RUNNING], "the gateway already said the sandbox runs"
+    rows = await _stage_rows(manager, session)
+    assert rows[-1] == ("broker", "Waiting for the broker", "active", None)
+
+
+@pytest.mark.asyncio
+async def test_a_start_that_writes_session_files_reports_that_step_before_the_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from niuu.forge_mcp.models import ForgeMcpGrant
+    from tests.support.forge_session import token_service
+
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+    spec.forge_session = token_service().mint(
+        session_id=session.id,
+        session_name=session.name,
+        owner_id="owner-1",
+        tenant_id=None,
+        grants=(ForgeMcpGrant.MESSAGE,),
+        launch_id="launch-1",
+    )
+
+    await manager.start(session, spec)
+
+    rows = await _stage_rows(manager, session)
+    assert [row[0] for row in rows] == [
+        "credentials",
+        "sandbox",
+        "ready",
+        "files",
+        "workspace",
+        "skuld",
+        "expose",
+        "broker",
+    ]
+    assert ("files", "Writing session configuration", "done", "1 file(s) written") in rows
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_sandbox_reports_resuming_and_never_creating(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    session = _session().with_pod_name("legacy")
+    from unittest.mock import Mock
+
+    resumed = replace(
+        client.get_sandbox("legacy"),
+        phase=adapter.openshell_pb2.SANDBOX_PHASE_PROVISIONING,
+        ready=False,
+    )
+    client.start_sandbox = Mock(return_value=resumed)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    rows = await _stage_rows(manager, session)
+    assert ("sandbox", "Resuming the sandbox", "done", "legacy: PROVISIONING") in rows
+    assert not [row for row in rows if row[1] == "Creating the sandbox"]
+    assert [row[0] for row in rows] == [
+        "credentials",
+        "sandbox",
+        "ready",
+        "workspace",
+        "skuld",
+        "expose",
+        "broker",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_with_a_long_name_has_no_service_to_expose(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    session = _session().with_pod_name("forge-a-sandbox-with-a-long-name")
+    spec = SessionSpec(
+        values={"persistence": {"existingClaim": "workspace", "mountPath": "/sandbox/workspace"}},
+        pod_spec=PodSpecAdditions(),
+    )
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client, ready_timeout=0.1, gateway_public_url="http://gateway.example"
+    )
+
+    await manager.start(session, spec)
+
+    assert client.exposed is None
+    assert "expose" not in [row[0] for row in await _stage_rows(manager, session)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("phase", "error"),
+    [("PROVISIONING", TimeoutError), ("ERROR", RuntimeError)],
+)
+async def test_a_sandbox_that_never_becomes_ready_leaves_the_gateways_reason_on_the_wait(
+    monkeypatch: pytest.MonkeyPatch, phase: str, error: type[Exception]
+):
+    adapter = _import_adapter(monkeypatch)
+    monkeypatch.setattr(adapter, "READY_POLL_INTERVAL", 0.01)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    reason = "Unschedulable: 0/3 nodes are available"
+    _not_ready(adapter, client, reason, phase)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+
+    with pytest.raises(error):
+        await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    name = f"forge-{session.id.hex[:13]}"
+    # The wait is still the active stage with what the gateway last said; marking
+    # the session failed, and with what error, is the recorder's job.
+    assert await _stage_rows(manager, session) == [
+        ("credentials", "Resolving credentials", "done", None),
+        ("sandbox", "Creating the sandbox", "done", f"{name}: PROVISIONING"),
+        ("ready", "Waiting for the sandbox", "active", f"{phase}: {reason}"),
+        ("files", "Writing session configuration", "pending", None),
+        ("workspace", "Preparing the workspace", "pending", None),
+        ("skuld", "Starting Skuld", "pending", None),
+        ("expose", "Exposing the service", "pending", None),
+        ("broker", "Waiting for the broker", "pending", None),
+    ]
+    assert client.deleted == [name], "the failed launch is still rolled back"
+
+
+@pytest.mark.asyncio
+async def test_stop_and_destroy_forget_the_launch(monkeypatch: pytest.MonkeyPatch):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    stopped, destroyed = _session(), _session()
+    spec = SessionSpec(
+        values={"persistence": {"existingClaim": "workspace", "mountPath": "/sandbox/workspace"}},
+        pod_spec=PodSpecAdditions(),
+    )
+    for session in (stopped, destroyed):
+        await manager.start(session, spec)
+        assert await manager.startup_stages(session)
+
+    await manager.stop(stopped)
+    await manager.destroy(destroyed)
+
+    assert await manager.startup_stages(stopped) == ()
+    assert await manager.startup_stages(destroyed) == ()
+
+
+@pytest.mark.asyncio
+async def test_a_second_start_replaces_the_previous_launch(monkeypatch: pytest.MonkeyPatch):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    session = _session()
+    spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+    await manager.start(session, spec)
+    first = await manager.startup_stages(session)
+    await manager.status(session)
+
+    await manager.start(session, spec)
+
+    second = await manager.startup_stages(session)
+    assert [s.key for s in second] == [s.key for s in first]
+    assert second[-1].state.value == "active", "the new launch has not been read as running yet"
+    assert second[0].started_at >= first[-1].started_at
+
+
+def test_the_sandbox_carries_the_gateways_reason_while_it_is_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _import_adapter(monkeypatch)
+
+    def raw(conditions: list[types.SimpleNamespace]):
+        return types.SimpleNamespace(
+            metadata=types.SimpleNamespace(
+                id="sandbox-id", name="forge-1", labels={}, annotations={}
+            ),
+            status=types.SimpleNamespace(phase=1, conditions=conditions),
+            spec=types.SimpleNamespace(providers=[], template=None),
+        )
+
+    def condition(kind: str, status: str, reason: str, message: str):
+        return types.SimpleNamespace(type=kind, status=status, reason=reason, message=message)
+
+    waiting = adapter._sandbox_from_proto(
+        raw(
+            [
+                condition("Scheduled", "True", "Scheduled", "assigned"),
+                condition("Ready", "False", "DependenciesNotReady", "Pod is Pending"),
+            ]
+        )
+    )
+    assert waiting.not_ready_reason == "DependenciesNotReady: Pod is Pending"
+    assert adapter._sandbox_report(waiting) == "PROVISIONING: DependenciesNotReady: Pod is Pending"
+
+    only_message = adapter._sandbox_from_proto(raw([condition("Ready", "False", "", "Starting")]))
+    assert only_message.not_ready_reason == "Starting"
+
+    ready = adapter._sandbox_from_proto(raw([condition("Ready", "True", "AllGood", "up")]))
+    assert ready.not_ready_reason == ""
+    assert adapter._sandbox_report(ready) == "PROVISIONING"
+
+    silent = adapter._sandbox_from_proto(raw([]))
+    assert silent.not_ready_reason == ""
+
+
+def test_a_phase_the_gateway_has_no_name_for_is_reported_by_its_number(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _import_adapter(monkeypatch)
+
+    assert adapter._phase_name(adapter.openshell_pb2.SANDBOX_PHASE_READY) == "READY"
+    assert adapter._phase_name(99) == "phase 99"
+    assert adapter._last_line("one\n\nWorkspace ready\n  \n") == "Workspace ready"
+    assert adapter._last_line("") is None

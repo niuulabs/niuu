@@ -1,5 +1,5 @@
 # Apply after real Envoy issuer, audiences, HTTPS JWKS, and session ownership values.
-# Loopback CLI/Ravn peers are permitted; proxied/browser peers cannot use this bypass.
+# Loopback CLI peers are permitted; proxied/browser peers cannot use this bypass.
 wsAuth:
   enforce_ownership: true
   allow_loopback: true

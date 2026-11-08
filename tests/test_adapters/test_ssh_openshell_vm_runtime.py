@@ -7,18 +7,20 @@ import re
 import subprocess
 import sys
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
+import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from volundr.adapters.outbound import ssh_openshell_vm_runtime as module
 from volundr.domain.compute import BootstrapFile, MachineBootstrap
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
+from volundr.domain.services.host_access_key import generate_host_access_key
 
 
 def test_sandbox_name_is_deterministic_and_within_openshell_limit():
@@ -48,8 +50,7 @@ def test_session_bootstrap_adapts_paths_policy_and_platform_without_installing(t
         )
     )
     runtime = module.SshOpenShellVmRuntime(
-        ssh_private_key_file=str(private),
-        ssh_public_key_file=str(public),
+        host_key=generate_host_access_key(),
         data_dir=str(tmp_path / "runtime"),
         skuld_image="test/skuld@sha256:" + "a" * 64,
         sandbox_platform_url="https://platform.test/",
@@ -118,9 +119,8 @@ def test_installer_validates_artifacts_after_default_gateway_start_failure():
     assert "subprocess.run(['sh',str(installer)],check=False" in script
     assert "missing=[name for name in ('openshell','openshell-gateway')" in script
     assert "OpenShell installer did not install:" in script
-    assert "GatewayPorts clientspecified" in script
-    assert "run('sudo','-n','sshd','-t')" in script
-    assert "run('sudo','-n','systemctl','restart','ssh')" in script
+    # The Forge tunnel stays on loopback: sandboxes reach it as host.openshell.internal.
+    assert "GatewayPorts" not in script
     # Gateway config schema 2, with the driver config the bind mounts need.
     assert "version = 2" in script and "version = 1" not in script
     assert 'compute_driver = "podman"' in script and "compute_drivers" not in script
@@ -143,14 +143,25 @@ def test_installer_validates_artifacts_after_default_gateway_start_failure():
     assert "dockerd-rootless-setuptool.sh" not in script
     assert "run('systemctl','--user','restart','openshell-gateway')" in script
     assert "raise RuntimeError('OpenShell gateway did not become ready')" in script
+    # The host user is the sandbox user, and the CLI is registered with the
+    # regenerated certificates; readiness lists sandboxes, as status passes unregistered.
+    assert 'userns = "keep-id:uid={sandbox_uid},gid={sandbox_gid}"' in script
+    assert "stage='gateway-register'" in script
+    assert (
+        "run('openshell','gateway','add','https://127.0.0.1:17670','--local','--name','openshell')"
+        in script
+    )
+    assert "['openshell','sandbox','list']" in script
+    assert "['openshell','status']" not in script
 
 
 def test_start_script_reports_only_allowlisted_stage_name():
     assert "NIIU_OPEN_SHELL_STAGE:'+stage" in module._START_OPENSHELL
     assert "stage='sandbox-create'" in module._START_OPENSHELL
     assert "f'{os.getuid()}:{os.getgid()}'" in module._START_OPENSHELL
-    assert "'podman','unshare','chown','-R',sandbox_owner" in module._START_OPENSHELL
-    assert module._START_OPENSHELL.index("stage='uid-map'") < module._START_OPENSHELL.index(
+    # keep-id makes this user the sandbox user: nothing is re-owned through podman.
+    assert "unshare" not in module._START_OPENSHELL
+    assert module._START_OPENSHELL.index("stage='ownership'") < module._START_OPENSHELL.index(
         "existing=subprocess.run"
     )
     assert "'/proc/{daemon_pid}/{kind}_map'" not in module._START_OPENSHELL
@@ -160,14 +171,18 @@ def test_start_script_reports_only_allowlisted_stage_name():
     assert "NIIU_OPEN_SHELL_DETAIL:" in module._START_OPENSHELL
     assert "stage='secret-staging'" in module._START_OPENSHELL
     assert "'-m','0640','-o',str(os.getuid())" in module._START_OPENSHELL
-    assert "'podman','unshare','chown',sandbox_owner,str(staged)" in module._START_OPENSHELL
+    # Staged secrets live on tmpfs, outside the archived session directory.
+    assert "secret_root=pathlib.Path('/run/niuu/openshell-secrets')" in module._START_OPENSHELL
+    assert "for mount in p.get('volume_mounts',[]):" in module._START_OPENSHELL
     assert "json.dumps({'podman':{'mounts':mounts}})" in module._START_OPENSHELL
     assert "args.extend(['--provider',provider])" in module._START_OPENSHELL
     assert "p.get('policy_content')" in module._START_OPENSHELL
     assert "runtime_policy.unlink(missing_ok=True)" in module._START_OPENSHELL
-    assert "'--from',p['image'],'--no-tty','--no-auto-providers'" in module._START_OPENSHELL
+    # Without --detach the CLI attaches to `sleep infinity` and never returns.
+    assert (
+        "'--from',p['image'],'--no-tty','--no-auto-providers','--detach'" in module._START_OPENSHELL
+    )
     assert "args.extend(['--','sleep','infinity'])" in module._START_OPENSHELL
-    assert "'--detach'" not in module._START_OPENSHELL
     assert "'--no-credential-warnings'" not in module._START_OPENSHELL
     assert "stage='workload-start'" in module._START_OPENSHELL
     assert "'openshell','sandbox','exec','--name',name,'--no-tty','--'" in (module._START_OPENSHELL)
@@ -182,7 +197,7 @@ def test_start_script_reports_only_allowlisted_stage_name():
     )
 
 
-def test_start_script_remaps_mounts_before_restarting_existing_sandbox(tmp_path: Path):
+def test_start_script_reowns_mounts_before_restarting_existing_sandbox(tmp_path: Path):
     root = tmp_path / "session"
     (root / "workspace").mkdir(parents=True)
     (root / "home").mkdir()
@@ -204,8 +219,8 @@ def test_start_script_remaps_mounts_before_restarting_existing_sandbox(tmp_path:
         path.chmod(0o755)
     payload = {
         "sandbox_name": "sandbox",
-        "sandbox_uid": 998,
-        "sandbox_gid": 998,
+        "repo": "",
+        "branch": "",
         "secret_mounts": [],
         "sandbox_command": ["run-skuld"],
         "workload_unit": "skuld.service",
@@ -226,14 +241,10 @@ def test_start_script_remaps_mounts_before_restarting_existing_sandbox(tmp_path:
     normalize = next(
         index for index, call in enumerate(recorded) if call.startswith("sudo -n chown -R ")
     )
-    remap = next(
-        index
-        for index, call in enumerate(recorded)
-        if call.startswith("podman unshare chown -R 998:998 ")
-    )
     lookup = recorded.index("openshell sandbox get sandbox")
     restart = recorded.index("openshell sandbox start sandbox")
-    assert normalize < remap < lookup < restart
+    assert normalize < lookup < restart
+    assert not any(call.startswith("podman ") for call in recorded)
     assert "'--credential',provider['credential_env']" in module._CONFIGURE_PROVIDERS
     assert "provider['credential_value']=''" in module._CONFIGURE_PROVIDERS
     assert "'openshell','provider','delete',provider" in module._STOP_OPENSHELL
@@ -279,6 +290,7 @@ def test_stop_script_accepts_failed_delete_after_authoritative_absence(tmp_path:
         "exit 0\n"
     )
     (binary / "systemctl").write_text("#!/bin/sh\nexit 0\n")
+    (binary / "sudo").write_text("#!/bin/sh\nexit 0\n")
     for executable in binary.iterdir():
         executable.chmod(0o755)
 
@@ -324,6 +336,7 @@ def test_stop_script_reports_allowlisted_reason_when_sandbox_remains(tmp_path: P
         "exit 0\n"
     )
     (binary / "systemctl").write_text("#!/bin/sh\nexit 0\n")
+    (binary / "sudo").write_text("#!/bin/sh\nexit 0\n")
     for executable in binary.iterdir():
         executable.chmod(0o755)
 
@@ -373,6 +386,7 @@ def test_stop_script_rejects_malformed_inventory_as_absence(tmp_path: Path):
         "exit 0\n"
     )
     (binary / "systemctl").write_text("#!/bin/sh\nexit 0\n")
+    (binary / "sudo").write_text("#!/bin/sh\nexit 0\n")
     for executable in binary.iterdir():
         executable.chmod(0o755)
 
@@ -425,6 +439,7 @@ def test_stop_script_rejects_inventory_transport_failure_before_provider_cleanup
         "sys.exit(0)\n"
     )
     (binary / "systemctl").write_text("#!/bin/sh\nexit 0\n")
+    (binary / "sudo").write_text("#!/bin/sh\nexit 0\n")
     for executable in binary.iterdir():
         executable.chmod(0o755)
 
@@ -481,6 +496,7 @@ def test_stop_script_checks_later_inventory_pages_before_provider_cleanup(tmp_pa
         "sys.exit(0)\n"
     )
     (binary / "systemctl").write_text("#!/bin/sh\nexit 0\n")
+    (binary / "sudo").write_text("#!/bin/sh\nexit 0\n")
     for executable in binary.iterdir():
         executable.chmod(0o755)
 
@@ -518,6 +534,15 @@ def _bare_runtime():
     runtime._openshell_version = module.DEFAULT_OPENSHELL_VERSION
     runtime._openshell_install_sha256 = module.DEFAULT_OPENSHELL_INSTALL_SHA256
     runtime._sandbox_inventory_page_size = module.DEFAULT_SANDBOX_INVENTORY_PAGE_SIZE
+    runtime._sandbox_uid = 998
+    runtime._sandbox_gid = 998
+    runtime._image = "test/openshell@sha256:" + "b" * 64
+    runtime._host_image = ""
+    runtime._native_credential_providers = True
+    runtime._credential_delivery = None
+    runtime._report_startup = None
+    runtime._stop_timeout = 30
+    runtime._image_path_links = {PurePosixPath("/var/run"): PurePosixPath("/run")}
     return runtime
 
 
@@ -723,7 +748,7 @@ async def test_ensure_openshell_uses_pinned_ssh_command():
     assert argv[:2] == ["ssh", "pinned-host"]
     assert argv[2].startswith("python3 -c ")
     assert argv[2].endswith(
-        f" {module.DEFAULT_OPENSHELL_VERSION} {module.DEFAULT_OPENSHELL_INSTALL_SHA256}"
+        f" {module.DEFAULT_OPENSHELL_VERSION} {module.DEFAULT_OPENSHELL_INSTALL_SHA256} 998 998"
     )
     assert runtime._run.await_args.kwargs == {
         "safe_error_prefix": "NIIU_OPEN_SHELL_STAGE:",
@@ -739,7 +764,7 @@ async def test_prepared_host_path_verifies_without_embedded_installation():
     await runtime._ensure_openshell(object(), object())
 
     command = runtime._execute_remote.await_args.args[2]
-    pin = (module.DEFAULT_OPENSHELL_VERSION, module.DEFAULT_OPENSHELL_INSTALL_SHA256)
+    pin = (module.DEFAULT_OPENSHELL_VERSION, module.DEFAULT_OPENSHELL_INSTALL_SHA256, "998", "998")
     assert command == runtime._user_python(module._VERIFY_OPENSHELL, *pin)
     assert command != runtime._user_python(module._INSTALL_OPENSHELL, *pin)
 
@@ -766,10 +791,11 @@ async def test_remote_execution_uses_injected_guest_access_port():
     )
 
 
-async def test_prepared_openshell_warm_verifies_then_pulls_runtime_image():
+async def test_prepared_openshell_warm_verifies_pulls_and_primes_both_images():
     runtime = _bare_runtime()
     runtime._host_prepared = True
-    runtime._image = "test/skuld@sha256:" + "a" * 64
+    runtime._image = "test/openshell@sha256:" + "a" * 64
+    runtime._host_image = "test/skuld@sha256:" + "c" * 64
     runtime._guest_access = AsyncMock()
     runtime._guest_access.execute.return_value = SimpleNamespace(exit_code=0)
     runtime._execute_remote = AsyncMock(return_value=0)
@@ -778,14 +804,20 @@ async def test_prepared_openshell_warm_verifies_then_pulls_runtime_image():
     await runtime.warm(lease, bootstrap)
 
     assert runtime._guest_access.execute.await_args_list[0].args == (lease, bootstrap, "true")
-    assert runtime._execute_remote.await_args.args[2] == runtime._user_python(
-        module._VERIFY_OPENSHELL,
-        module.DEFAULT_OPENSHELL_VERSION,
-        module.DEFAULT_OPENSHELL_INSTALL_SHA256,
-    )
-    assert runtime._guest_access.execute.await_args_list[1].args[2] == (
-        "podman pull " + runtime._image
-    )
+    commands = [call.args[2] for call in runtime._execute_remote.await_args_list]
+    assert commands == [
+        runtime._user_python(
+            module._VERIFY_OPENSHELL,
+            module.DEFAULT_OPENSHELL_VERSION,
+            module.DEFAULT_OPENSHELL_INSTALL_SHA256,
+            "998",
+            "998",
+        ),
+        "podman pull -q " + runtime._image,
+        # The sandbox user's layer copy, which a first sandbox create cannot wait for.
+        "podman run --rm --userns keep-id:uid=998,gid=998 --entrypoint true " + runtime._image,
+        "sudo -n docker pull " + runtime._host_image,
+    ]
 
 
 def _runtime_bootstrap() -> MachineBootstrap:
@@ -801,6 +833,7 @@ def _runtime_bootstrap() -> MachineBootstrap:
                         "branch": "",
                         "secret_mounts": [],
                         "openshell_credential_mappings": [],
+                        "policy_content": "version: 1\n",
                     }
                 ),
             ),
@@ -959,6 +992,7 @@ def test_stop_waits_for_authoritative_absence_before_provider_cleanup(tmp_path: 
         "if args[:2]==['provider','get']: sys.exit(1)\n"
     )
     (binary / "systemctl").write_text("#!/bin/sh\nexit 0\n")
+    (binary / "sudo").write_text("#!/bin/sh\nexit 0\n")
     for executable in binary.iterdir():
         executable.chmod(0o755)
     result = subprocess.run(
@@ -1061,7 +1095,7 @@ def _run_version_check(tmp_path: Path, banner: str) -> subprocess.CompletedProce
     for executable in binary.iterdir():
         executable.chmod(0o755)
     return subprocess.run(
-        [sys.executable, "-c", module._VERIFY_OPENSHELL, "v0.1.6-pre.5", "unused"],
+        [sys.executable, "-c", module._VERIFY_OPENSHELL, "v0.1.6-pre.5", "unused", "998", "998"],
         capture_output=True,
         text=True,
         check=False,
@@ -1104,6 +1138,7 @@ def test_stop_script_rejects_an_inventory_that_repeats_its_page_token(tmp_path: 
         "sys.exit(0)\n"
     )
     (binary / "systemctl").write_text("#!/bin/sh\nexit 0\n")
+    (binary / "sudo").write_text("#!/bin/sh\nexit 0\n")
     for executable in binary.iterdir():
         executable.chmod(0o755)
 
@@ -1125,6 +1160,11 @@ def test_stop_script_rejects_an_inventory_that_repeats_its_page_token(tmp_path: 
         ({"openshell_version": ""}, "Pin the guest's OpenShell"),
         ({"openshell_install_sha256": ""}, "Pin the guest's OpenShell"),
         ({"sandbox_inventory_page_size": 0}, "sandbox_inventory_page_size must be positive"),
+        ({"policy": ""}, "OpenShell sandboxes need a policy"),
+        (
+            {"host_prepared": True, "host_image": "test/skuld:dev"},
+            "digest-pinned host_image",
+        ),
     ],
 )
 def test_runtime_requires_a_pinned_openshell_release(tmp_path: Path, override, message):
@@ -1145,9 +1185,279 @@ def test_runtime_requires_a_pinned_openshell_release(tmp_path: Path, override, m
     )
     with pytest.raises(ValueError, match=message):
         module.SshOpenShellVmRuntime(
-            ssh_private_key_file=str(private),
-            ssh_public_key_file=str(public),
+            host_key=generate_host_access_key(),
             data_dir=str(tmp_path / "runtime"),
             skuld_image="test/skuld@sha256:" + "a" * 64,
-            **override,
+            **{"policy": "version: 1\n", **override},
         )
+
+
+def test_policy_names_the_mounted_guest_directories_it_does_not_cover():
+    policy = (
+        "version: 1\n"
+        "filesystem_policy:\n"
+        "  read_only: [/etc]\n"
+        "  read_write: [/run/secrets, /sandbox]\n"
+    )
+
+    adjusted = yaml.safe_load(
+        module._policy_with_mounts(
+            policy,
+            [
+                {"target": "/run/secrets/niuu-workload", "readonly": True},
+                {"target": "/run/niuu/forge-session", "readonly": True},
+                {"target": "/var/cache/session", "readonly": False},
+                {"target": "/etc/niuu/agent", "readonly": True},
+            ],
+        )
+    )
+
+    # Covered paths are left alone; Landlock would hide the rest from Skuld.
+    assert adjusted["filesystem_policy"] == {
+        "read_only": ["/etc", "/run/niuu/forge-session"],
+        "read_write": ["/run/secrets", "/sandbox", "/var/cache/session"],
+    }
+    assert module._policy_with_mounts(policy, []) == policy
+
+
+def test_policy_with_mounts_refuses_a_malformed_filesystem_policy():
+    with pytest.raises(ValueError, match="filesystem_policy.read_only must be a list"):
+        module._policy_with_mounts(
+            "filesystem_policy: {read_only: /etc}\n",
+            [{"target": "/run/x", "readonly": True}],
+        )
+
+
+def _keyed_runtime(tmp_path: Path, **kwargs) -> module.SshOpenShellVmRuntime:
+    return module.SshOpenShellVmRuntime(
+        host_key=generate_host_access_key(),
+        data_dir=str(tmp_path / "runtime"),
+        skuld_image="test/openshell@sha256:" + "a" * 64,
+        policy="version: 1\nnetwork_policies: {}\n",
+        host_prepared=True,
+        **kwargs,
+    )
+
+
+def test_vm_contract_sessions_carry_no_native_provider_mappings(tmp_path: Path):
+    runtime = _keyed_runtime(tmp_path, native_credential_providers=False)
+    session = Session(name="test", owner_id="owner", tenant_id="tenant", source=GitSource())
+    values = {
+        "openshell": {
+            "credentialMappings": [
+                {"credentialName": "claude", "fileMappings": {"/run/secrets/x": "token"}}
+            ]
+        }
+    }
+
+    bootstrap = runtime.bootstrap(
+        session, SessionSpec(values=values, pod_spec=PodSpecAdditions()), MachineBootstrap()
+    )
+
+    payload = json.loads(
+        next(item.content for item in bootstrap.files if item.path == module._LAUNCH)
+    )
+    # The same credentials arrive as rendered files; no provider duplicates them.
+    assert payload["openshell_credential_mappings"] == []
+
+
+def test_host_credential_agents_need_the_host_image(tmp_path: Path):
+    runtime = _keyed_runtime(tmp_path)
+
+    with pytest.raises(ValueError, match="set the runtime's host_image"):
+        runtime._delivery_image()
+    assert (
+        _keyed_runtime(tmp_path, host_image="test/skuld@sha256:" + "c" * 64)._delivery_image()
+        == "test/skuld@sha256:" + "c" * 64
+    )
+
+
+def _agent_bootstrap() -> MachineBootstrap:
+    launch = json.loads(_runtime_bootstrap().files[0].content)
+    launch.update(
+        {
+            "init_containers": [{"name": "niuu-guest-agent-init"}],
+            "sidecars": [{"name": "niuu-guest-agent"}],
+            "directories": [{"path": "/run/niuu/session/tokens/workload", "mode": "0755"}],
+            "service_account": "skuld-session",
+            "token_volumes": [],
+            "forge_session": True,
+            "forge_session_directory": "/etc/niuu/forge-session",
+            "forge_session_file": "token",
+            "volume_mounts": [
+                {
+                    "source": "/run/niuu/session/tokens/workload",
+                    "target": "/var/run/secrets/niuu-workload",
+                    "readonly": True,
+                },
+                {
+                    "source": "/etc/niuu/forge-session",
+                    "target": "/var/run/niuu/forge-session",
+                    "readonly": True,
+                },
+            ],
+        }
+    )
+    return MachineBootstrap(files=(BootstrapFile(path=module._LAUNCH, content=json.dumps(launch)),))
+
+
+async def test_start_runs_credential_agents_in_docker_then_mounts_them_into_the_sandbox(
+    tmp_path: Path,
+):
+    runtime = _bare_runtime()
+    runtime._data = tmp_path
+    runtime._broker_port = 8081
+    runtime._sandbox_command = ("run-skuld",)
+    runtime._archive_excludes = ()
+    runtime._execute_remote = AsyncMock(return_value=0)
+    runtime.target = AsyncMock()
+    steps = []
+    runtime._report_startup = lambda session_id, key, label: steps.append(key)
+    delivery = AsyncMock()
+
+    async def start(lease, bootstrap, plan, launch, files):
+        launch["forge_session_grants"] = ["forge:notify"]
+
+    delivery.start.side_effect = start
+    runtime._credential_delivery = delivery
+    lease = SimpleNamespace(id=uuid4(), session_id=uuid4(), owner_id="owner")
+
+    await runtime.start(lease, _agent_bootstrap())
+
+    plan = delivery.start.await_args.args[2]
+    assert plan.forge_session and plan.service_account == "skuld-session"
+    commands = [call.args[2] for call in runtime._execute_remote.await_args_list]
+    assert commands[2] == runtime._python(module._START)
+    agents = json.loads(runtime._execute_remote.await_args_list[2].kwargs["data"])
+    # The Docker program runs only the agents; Skuld goes to the sandbox.
+    assert agents["containers_only"] is True
+    assert agents["allocation_id"] == str(lease.id)
+    assert commands[3] == runtime._user_python(module._START_OPENSHELL)
+    sandbox = json.loads(runtime._execute_remote.await_args_list[3].kwargs["data"])
+    assert sandbox["volume_mounts"] == [
+        {
+            "source": "/run/niuu/session/tokens/workload",
+            "target": "/run/secrets/niuu-workload",
+            "readonly": True,
+        },
+        {
+            "source": "/etc/niuu/forge-session",
+            "target": "/run/niuu/forge-session",
+            "readonly": True,
+        },
+    ]
+    assert sandbox["environment"][module.FORGE_MCP_GRANTS_ENV] == "forge:notify"
+    filesystem = yaml.safe_load(sandbox["policy_content"])["filesystem_policy"]
+    assert filesystem["read_only"] == ["/run/secrets/niuu-workload", "/run/niuu/forge-session"]
+    assert steps == [
+        "guest_files",
+        "guest_tunnel",
+        "guest_credentials",
+        "guest_agents",
+        "guest_skuld",
+    ]
+
+
+async def test_start_refuses_a_credential_plan_without_delivery(tmp_path: Path):
+    runtime = _bare_runtime()
+    runtime._data = tmp_path
+    runtime._archive_excludes = ()
+    runtime._execute_remote = AsyncMock(return_value=0)
+    runtime.target = AsyncMock()
+    lease = SimpleNamespace(id=uuid4(), session_id=uuid4(), owner_id="owner")
+
+    with pytest.raises(ValueError, match="configure compute.credential_delivery"):
+        await runtime.start(lease, _agent_bootstrap())
+
+
+async def test_stop_stops_the_host_agents_and_their_delivery(tmp_path: Path):
+    runtime = _bare_runtime()
+    runtime._data = tmp_path
+    runtime._sandbox_delete_timing = (120, 2, 30)
+    runtime._broker_port = 8081
+    runtime._archive_excludes = ()
+    runtime._close_tunnel = AsyncMock()
+    runtime._credential_delivery = AsyncMock()
+    runtime._execute_remote = AsyncMock(return_value=0)
+    lease = SimpleNamespace(id=uuid4(), session_id=uuid4())
+    bootstrap = _agent_bootstrap()
+
+    await runtime.stop(lease, bootstrap)
+
+    commands = [call.args[2] for call in runtime._execute_remote.await_args_list]
+    assert commands[1] == runtime._python(module._STOP, str(lease.id), "30")
+    runtime._credential_delivery.stop.assert_awaited_once_with(lease, bootstrap)
+    runtime._close_tunnel.assert_awaited_once_with(str(lease.id))
+
+
+def _run_verify(tmp_path: Path, gateway: str, *, listed: bool) -> subprocess.CompletedProcess:
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    (binary / "openshell").write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = --version ]; then echo "openshell 0.1.6"; exit 0; fi\n'
+        f'if [ "$1 $2" = "sandbox list" ]; then exit {0 if listed else 1}; fi\n'
+        "exit 0\n"
+    )
+    for name in ("openshell-gateway", "podman"):
+        (binary / name).write_text("#!/bin/sh\necho 5.8.8\nexit 0\n")
+    for executable in binary.iterdir():
+        executable.chmod(0o755)
+    home = tmp_path / "home"
+    (home / ".config/openshell").mkdir(parents=True)
+    (home / ".config/openshell/gateway.toml").write_text(gateway)
+    socket = tmp_path / "podman.sock"
+    socket.write_text("")
+    script = module._VERIFY_OPENSHELL.replace(
+        "pathlib.Path(f'/run/user/{os.getuid()}/podman/podman.sock')",
+        f"pathlib.Path({str(socket)!r})",
+    )
+    return subprocess.run(
+        [sys.executable, "-c", script, "v0.1.6", "unused", "998", "998"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "HOME": str(home), "PATH": f"{binary}:/usr/bin:/bin"},
+    )
+
+
+_PREPARED_GATEWAY = """
+[openshell.drivers.podman]
+enable_bind_mounts = true
+allow_driver_config = true
+userns = "keep-id:uid=998,gid=998"
+
+[openshell.drivers.podman.resource_admission]
+enabled = false
+"""
+
+
+def test_prepared_gateway_passes_with_keep_id_and_a_registered_cli(tmp_path: Path):
+    result = _run_verify(tmp_path, _PREPARED_GATEWAY, listed=True)
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("gateway", "listed", "message"),
+    [
+        (
+            _PREPARED_GATEWAY.replace('userns = "keep-id:uid=998,gid=998"\n', ""),
+            True,
+            "userns = 'keep-id:uid=998,gid=998'",
+        ),
+        (
+            _PREPARED_GATEWAY.replace("enabled = false", "enabled = true"),
+            True,
+            "resource_admission] enabled = false",
+        ),
+        (_PREPARED_GATEWAY, False, "not registered or not reachable"),
+    ],
+)
+def test_prepared_gateway_without_what_start_relies_on_is_refused(
+    tmp_path: Path, gateway: str, listed: bool, message: str
+):
+    result = _run_verify(tmp_path, gateway, listed=listed)
+
+    assert result.returncode != 0
+    assert message in result.stderr

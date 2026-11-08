@@ -34,7 +34,7 @@ jobs:
       publish: ${{ steps.registry.outputs.publish }}
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
 
@@ -76,7 +76,7 @@ jobs:
               return any(regex.search(path) for path in changed)
 
           all_containers = [
-              "agent", "skuld", "openshell", "devrunner", "niuu-web", "niuu", "gbrain"
+              "skuld", "openshell", "devrunner", "niuu-web", "niuu", "gbrain"
           ]
 
           if full_tier:
@@ -93,7 +93,6 @@ jobs:
               web_changed = matches(r"^web-next/")
               helm_changed = matches(r"^charts/")
               container_triggers = {
-                  "agent": r"^containers/(agent|python-security)/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "skuld": r"^containers/skuld/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "openshell": r"^containers/(openshell|python-security)/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "devrunner": r"^containers/(devrunner|python-security)/",
@@ -190,7 +189,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
 
@@ -230,7 +229,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
 
@@ -274,7 +273,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
 
@@ -341,14 +340,14 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 9
 
@@ -432,7 +431,7 @@ jobs:
 
       - name: Install Playwright browsers
         working-directory: ${{ runner.temp }}/consumer-app
-        run: npx playwright install --with-deps chromium webkit
+        run: npx playwright install --with-deps chromium
 
       - name: Run consumer Playwright tests
         working-directory: ${{ runner.temp }}/consumer-app
@@ -475,7 +474,7 @@ jobs:
       IMAGE_TAG: pr-${{ github.event.number }}-amd64
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
 
@@ -496,7 +495,7 @@ jobs:
       # spent deleting the cluster the discarded runner takes with it (that
       # step now looks for the action's default cluster name, finds none).
       - name: Install kind and kubectl
-        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
         with:
           install_only: true
           ignore_failed_clean: true
@@ -760,7 +759,7 @@ jobs:
       attestations: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["agent","openshell","devrunner","niuu-web","gbrain"]'
+      containers: '["openshell","devrunner","niuu-web","gbrain"]'
       platforms: '["amd64"]'
       publish-manifests: false
       push: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
@@ -810,7 +809,7 @@ jobs:
       packages: write
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
 
@@ -829,7 +828,7 @@ jobs:
         run: |
           VERSION="0.0.0-pr.${{ github.event.number }}"
 
-          for CHART in agent bifrost ravn skuld volundr ting niuu-shared niuu; do
+          for CHART in bifrost skuld volundr ting niuu-shared niuu; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
@@ -837,8 +836,6 @@ jobs:
       - name: Package Helm charts
         run: |
           helm package charts/bifrost -d .helm-packages/
-          helm package charts/agent -d .helm-packages/
-          helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
           helm package charts/ting -d .helm-packages/
@@ -858,9 +855,7 @@ jobs:
       - name: Push Helm charts to OCI registry
         if: needs.changes.outputs.publish == 'true'
         run: |
-          helm push .helm-packages/agent-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/bifrost-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
-          helm push .helm-packages/ravn-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/skuld-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/volundr-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/ting-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
@@ -894,7 +889,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
 
@@ -903,17 +898,12 @@ jobs:
       - name: Dependency review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v4
         with:
-          # GHSA-v2v4-37r5-5v8g, GHSA-rxp7-6hxx-x8q5: the pinned bootstrap npm
-          # (11.21.1) bundles ip-address 10.7.2 through its internal socks chain,
-          # which no lockfile or override reaches. The images replace that copy
-          # with the locked 10.7.4 at build time (containers/node/npm-bootstrap/
-          # replace-nested.sh, which fails the build if the swap goes stale).
           # GHSA-rrmf-rvhw-rf47: low-severity torch.jit.script memory corruption with
           # NO patched release (<= 2.12.0 covers every published torch); torch arrives
           # via the optional mimir embeddings extra and jit.script is never invoked on
           # untrusted input (inference only). Remove once upstream ships a fix.
           # Keep dependency review strict elsewhere while allowing these upstream-only cases.
-          allow-ghsas: GHSA-v2v4-37r5-5v8g, GHSA-rxp7-6hxx-x8q5, GHSA-rrmf-rvhw-rf47
+          allow-ghsas: GHSA-rrmf-rvhw-rf47
 
   # ---------------------------------------------------------------------------
   # CI gate — the one check a ruleset on dev requires. Runs even when an
@@ -956,7 +946,7 @@ jobs:
       packages: write
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
 

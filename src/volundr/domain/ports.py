@@ -24,7 +24,6 @@ from credentials.ports import (  # noqa: F401
 from identity.models import Resource  # noqa: F401
 from identity.ports import AuthorizationPort, TenantRepository, UserRepository  # noqa: F401
 from niuu.domain.outcome import OutcomeField
-from niuu.domain.resident_notifications import ResidentNotificationEntry
 from niuu.ports.credentials import CredentialStorePort  # noqa: F401
 from niuu.ports.git import (
     GitAuthError,  # noqa: F401
@@ -101,6 +100,8 @@ from volundr.domain.push import PushTokenKind
 from volundr.domain.session_changes import SessionChanges
 from volundr.domain.session_participants import ParticipantRole, SessionParticipant
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
+from volundr.domain.session_runtimes import SessionRuntimeOffer
+from volundr.domain.session_startup import SessionStartup, StartupStage
 
 __all__ = [
     "AuthorizationPort",
@@ -183,6 +184,15 @@ class SessionRepository(ABC):
 
         Returns the stored session, or ``None`` when it no longer exists. The
         running launch's credential is unchanged; the next start mints from these.
+        """
+
+    @abstractmethod
+    async def update_startup(self, session_id: UUID, startup: SessionStartup) -> Session | None:
+        """Replace only the session's launch stages.
+
+        The startup recorder is the column's only writer; ordinary updates never
+        write it, so a lifecycle update with a stale copy cannot lose a stage.
+        Returns the stored session, or ``None`` when it no longer exists.
         """
 
     @abstractmethod
@@ -576,6 +586,14 @@ class PodManager(ABC):
         """
         return await self.capacity()
 
+    async def session_runtimes(self) -> tuple[SessionRuntimeOffer, ...]:
+        """What this host runs every session as: at most one offer.
+
+        A host runs exactly one runtime, so sessions never choose; empty means
+        this pod manager does not declare what its sessions run in.
+        """
+        return ()
+
     @property
     def delivers_forge_session_token(self) -> bool:
         """Whether ``start`` hands ``spec.forge_session`` to the broker privately.
@@ -588,6 +606,15 @@ class PodManager(ABC):
 
     def initial_chat_endpoint(self, session: Session) -> str | None:
         """Return the deterministic chat endpoint before pods are ready, if known."""
+        return None
+
+    async def broker_target(self, session: Session) -> SessionProxyTarget | None:
+        """Where Forge itself reaches the session's broker HTTP API.
+
+        None means at the session's chat endpoint. A manager whose chat endpoint
+        is Forge's own session proxy returns the target that proxy dials, and
+        raises ``ValueError`` while the session has no reachable broker.
+        """
         return None
 
     def initial_code_endpoint(self, session: Session) -> str | None:
@@ -637,6 +664,42 @@ class PodManager(ABC):
 
     async def status_detail(self, session: Session) -> str | None:
         """Return a safe, non-terminal detail for the current runtime status."""
+        return None
+
+    # --- Launch progress -------------------------------------------------
+    #
+    # Any backend can show people what a starting session waits on. Forge's
+    # SessionStartupRecorder calls ``startup_stages`` every
+    # ``provisioning.startup_poll_seconds`` while a session is starting and
+    # persists the merged result on ``sessions.startup`` (REST, the session
+    # stream, the Guild facade). A backend opts in by returning True from
+    # ``reports_startup_stages`` and implementing ``startup_stages``; one that
+    # does not shows a single "Starting the runtime" stage. Rules:
+    #
+    # - Return the whole launch every time, oldest stage first, with stable
+    #   ``key``s. Earlier views are merged by key; a stage keeps its earliest
+    #   start, and a new stage that begins ends every earlier active one.
+    # - Only real backend state: a condition or event with its own timestamp,
+    #   or the time this controller performed the step. Never a timer, an
+    #   estimate or a percentage. ``detail`` is the backend's own words.
+    # - Stages still to come may be returned as PENDING (no ``started_at``).
+    # - Running ends every open stage and a failure marks the active one with
+    #   ``session.error``; backends never report those terminal verdicts.
+    # - Raise when the backend cannot be read: the recorder logs it at error,
+    #   counts it and shows it on the record as ``progress_error``.
+
+    @property
+    def reports_startup_stages(self) -> bool:
+        """Whether ``startup_stages`` reports this backend's launch stages."""
+        return False
+
+    async def startup_stages(self, session: Session) -> tuple[StartupStage, ...] | None:
+        """The current launch's stages as this backend knows them now, in order.
+
+        Called only after Forge handed the launch to ``start``. None means this
+        backend does not report its stages; an empty tuple means nothing has
+        happened yet for this launch.
+        """
         return None
 
     @abstractmethod
@@ -931,6 +994,29 @@ class ResidentRuntimeController(ABC):
     def supports(self, profile: ResidentDeploymentProfile) -> bool:
         """Return whether this controller implements the complete profile."""
 
+    def planned_backend_ref(self, runtime: ResidentRuntime) -> dict[str, Any]:
+        """The backend reference a deploy will create for ``runtime``, before it exists.
+
+        The deploy runs in the background, so the create response carries this: the
+        platform records the resident's workload delegation from it at create. A
+        controller whose reference is only known once its backend creates it has none.
+        """
+        return {}
+
+    async def bind_integrations(
+        self,
+        owner_id: str,
+        profile: ResidentDeploymentProfile,
+    ) -> dict[str, str]:
+        """Bind each integration the profile's declared credentials name to an owner credential.
+
+        Called at create, inside the owner's request, because reading the owner's
+        connections may need their bearer; the result (``{slug: credential name}``) is
+        persisted on the resident and every later render reuses it. Declared but
+        unbindable raises. A controller that injects no declared credentials binds none.
+        """
+        return {}
+
     @abstractmethod
     async def deploy(
         self,
@@ -1003,89 +1089,6 @@ class ResidentRuntimeProxyTargetResolver(ABC):
         """Resolve the backend service reached by the shared session proxy."""
 
 
-class ResidentOpenClawTokens(ABC):
-    """Each Ravn resident's own OpenClaw shim token, kept per resident.
-
-    No cluster-wide master: a resident's token is its own, generated once (or adopted
-    from the resident's running workload) and removed with the resident.
-    """
-
-    @abstractmethod
-    async def stored(self, runtime: ResidentRuntime) -> str | None:
-        """The resident's kept token; None before it has one."""
-
-    @abstractmethod
-    async def ensure(self, runtime: ResidentRuntime, *, adopt: str | None = None) -> str:
-        """The kept token; else keep ``adopt`` (the one the resident runs with) or a new one."""
-
-    @abstractmethod
-    async def forget(self, runtime: ResidentRuntime) -> None:
-        """Remove the resident's token (the resident is gone)."""
-
-
-class ResidentOpenClawShimHost(ABC):
-    """Optional backend port: the backend runs a Ravn resident's OpenClaw shim.
-
-    A Ravn resident's sessions ("channels") are served by Ravn's OpenClaw-protocol
-    shim inside the resident's own workload. A backend that implements this port
-    starts the shim with the resident's own token and routes Völundr to its port,
-    so Völundr wires Ravn sessions on it by default
-    (``RavnResidentSessionController``).
-    """
-
-    @abstractmethod
-    def set_resident_openclaw_tokens(self, tokens: ResidentOpenClawTokens) -> None:
-        """Where each Ravn resident's own shim token is kept."""
-
-    @abstractmethod
-    async def resident_openclaw_token(self, runtime: ResidentRuntime) -> str:
-        """The token the resident's shim checks.
-
-        The kept one; else the one the resident's running workload already has
-        (adopted, so a running resident keeps its sessions); else a new one.
-        """
-
-    @abstractmethod
-    def resident_openclaw_target(
-        self,
-        runtime: ResidentRuntime,
-        port: int,
-    ) -> SessionProxyTarget | None:
-        """Route to the resident's shim on ``port``; None before the backend reports it."""
-
-
-@dataclass(frozen=True)
-class DiscoveredResident:
-    """A resident running outside the Forge, as its discovery source describes it.
-
-    ``key`` is the resident's own name elsewhere (e.g. its catalog id); the Forge's
-    record of it has the id ``niuu.domain.discovered_residents.discovered_resident_id``
-    derives from the key.
-    """
-
-    key: str
-    name: str
-    owner_id: str
-    tenant_id: str
-    profile_id: str
-    persona_name: str = ""
-    model: str = ""
-
-
-class ResidentDiscoverySource(ABC):
-    """Optional backend port: the backend discovers its residents instead of deploying them.
-
-    The Forge keeps a record for each discovered resident (so its sessions, chat and
-    notifications run through the same controllers as a deployed resident's), adds
-    records for new ones and removes the records of residents no longer discovered.
-    Its profiles are never offered for deployment.
-    """
-
-    @abstractmethod
-    async def discovered_residents(self) -> list[DiscoveredResident]:
-        """Every resident the backend currently knows; raises when it cannot tell."""
-
-
 class ResidentDeviceApprover(ABC):
     """Optional runtime capability for approving resident engine devices."""
 
@@ -1145,18 +1148,9 @@ class ResidentSessionController(ABC):
         """The backend whose residents this controller drives; None drives any backend.
 
         A controller bound to one runtime controller names its backend, so one
-        engine can have a controller per backend (Ravn on Flux and on OpenShell).
+        engine can have a controller per backend (OpenClaw on the local and OpenShell backends).
         """
         return None
-
-    def provides_sessions(self, profile: ResidentDeploymentProfile) -> bool:
-        """Whether residents of ``profile`` get sessions from this controller.
-
-        The resident session capabilities (session.list/create/delete) follow from
-        this; a controller whose engine can switch its session API off per profile
-        says so here.
-        """
-        return True
 
     @abstractmethod
     async def list_sessions(self, runtime: ResidentRuntime) -> list[ResidentSession]:
@@ -1183,50 +1177,6 @@ class ResidentSessionController(ABC):
         session_id: UUID,
     ) -> ResidentChatConnection:
         """Open a normalized shared-chat connection."""
-
-
-class ResidentNotificationsUnavailableError(RuntimeError):
-    """The resident serves no notification outbox (an older engine, or switched off)."""
-
-
-class ResidentNotificationStream(ABC):
-    """An open read of one resident's notification outbox (see
-    :mod:`niuu.domain.resident_notifications`)."""
-
-    @abstractmethod
-    async def pending(self, *, limit: int) -> list[ResidentNotificationEntry]:
-        """The oldest entries not acknowledged yet, in the resident's write order."""
-
-    @abstractmethod
-    async def acknowledge(self, *, through_seq: int) -> None:
-        """Everything up to ``through_seq`` is recorded; the resident may drop it."""
-
-    @abstractmethod
-    async def wait_for_more(self, *, timeout: float) -> None:
-        """Return when the resident reports new entries, or after ``timeout`` seconds.
-
-        Raises when the connection to the resident ends.
-        """
-
-    @abstractmethod
-    def resident_session_id(self, channel: str | None) -> UUID | None:
-        """The resident session an entry's ``channel`` names; ``None`` is the main room."""
-
-    @abstractmethod
-    async def close(self) -> None:
-        """Close the read."""
-
-
-class ResidentNotificationSource(ABC):
-    """A resident session controller that can also read its residents' notifications."""
-
-    @abstractmethod
-    async def open_notifications(self, runtime: ResidentRuntime) -> ResidentNotificationStream:
-        """Open the resident's notification outbox.
-
-        Raises :class:`ResidentNotificationsUnavailableError` when the resident
-        serves none.
-        """
 
 
 class ResidentRuntimeRepository(ABC):
@@ -1842,6 +1792,31 @@ class SecretInjectionPort(ABC):
         """Whether this adapter continuously projects OAuth engine access tokens."""
         return False
 
+    @property
+    def supports_guest_agents(self) -> bool:
+        """Whether this adapter can run its own agent containers on a VM guest.
+
+        Kubernetes sessions get their secrets from an in-cluster injector; a VM has none,
+        so an adapter that renders secrets with an agent describes that agent as
+        containers the VM runtime runs (``guest_agent_pod_spec_additions``).
+        """
+        return False
+
+    async def guest_agent_pod_spec_additions(
+        self,
+        user_id: str,
+        session_id: str,
+        credential_mappings: list[CredentialMapping],
+    ) -> PodSpecAdditions:
+        """Return explicit init/sidecar containers and volumes that render the secrets.
+
+        Used instead of ``pod_spec_additions`` for VM sessions, where no injector
+        mutates the pod.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot run secret injection agents on a VM guest"
+        )
+
     @abstractmethod
     async def pod_spec_additions(
         self,
@@ -2025,6 +2000,11 @@ if TYPE_CHECKING:
 class SessionExecutionResolver(Protocol):
     """Resolve and verify an operator-approved execution choice before contribution."""
 
+    def runs_on_compute(self, session: Session) -> bool:
+        """Whether ``session`` runs in the compute pool, so its stop and delete must be
+        confirmed. False only for a session a placement keeps off the pool."""
+        ...
+
     async def has_legacy_allocation(self, session: Session) -> bool: ...
 
     async def resolve_execution(self, session: Session) -> ResolvedExecutionPlan | None: ...
@@ -2061,13 +2041,19 @@ class SessionContext:
 
 @dataclass(frozen=True)
 class SessionPersona:
-    """Runtime persona fields Forge can apply without owning Ravn storage."""
+    """Runtime persona fields Forge can apply without owning Ravn storage.
+
+    ``document`` is the pinned portable persona (``schema_version``, ``id``, ``revision``,
+    ``definition``): the source content the session plays, which Skuld projects onto its
+    harness. It is empty only for a caller that never launches a session with it.
+    """
 
     name: str
     system_prompt: str
     consumes_event_types: tuple[str, ...] = ()
     produces_event_type: str = ""
     produces_schema: dict[str, OutcomeField] = field(default_factory=dict)
+    document: dict[str, Any] = field(default_factory=dict)
 
 
 class SessionPersonaProvider(ABC):

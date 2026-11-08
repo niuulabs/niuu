@@ -3,32 +3,32 @@ id: 3c217e0a-1ff0-56d6-ba27-54cd43bff8e6
 name: Tool & Skill Builder
 description: Resident capability workflow that designs, implements, reviews, canaries, and publishes a
   missing Valkyrie/Ravn tool or skill.
-version: 1.0.7
+version: 1.0.9
 persona_dependencies:
   capability-publisher:
     id: capability-publisher
-    revision: content-5b66a780dc6c71f9
-    digest: sha256:5b66a780dc6c71f9f05789b1f077cf8d19bd44a3cf5990a16762f50a1516a7e9
+    revision: content-4375bd525964e63c
+    digest: sha256:4375bd525964e63c9f7834d9d2872d8808c1ad19133a290598e415b76fc2dded
     path: personas/capability-publisher.yaml
   coder:
     id: coder
-    revision: content-f32c566d84bbb188
-    digest: sha256:f32c566d84bbb18825d4743eafa5b34d3a536be1d4678945c2581070903451d1
+    revision: content-6137847046c82615
+    digest: sha256:6137847046c82615d9bdac877ae09158b99c8f8fa911eb5b186e4e5d27086231
     path: personas/coder.yaml
   reviewer:
     id: reviewer
-    revision: content-15cb459d3cdecf21
-    digest: sha256:15cb459d3cdecf210f15b2f3dbbd731d016e038704bf6e53ee7df8033806a9f5
+    revision: content-4a234835de48b091
+    digest: sha256:4a234835de48b091473706c0200ee61c57ebc972329af80a1736b543b7bdb7dd
     path: personas/reviewer.yaml
   security-auditor:
     id: security-auditor
-    revision: content-ce41b76f3a14e0ff
-    digest: sha256:ce41b76f3a14e0ff9134b689c15d80ebf0aa2c8bc6d3809a88f22b3a302ba70a
+    revision: content-ffa64a8273719b89
+    digest: sha256:ffa64a8273719b89d20ae3e8ee12afd9e682308251c06ecb02a292d8b01a7b19
     path: personas/security-auditor.yaml
   specification-framer:
     id: specification-framer
-    revision: content-c20e530892975444
-    digest: sha256:c20e53089297544484de20521210dd323d11b757a811ecdfb2c9bfc4c58f088e
+    revision: content-9536c710d0ee55ba
+    digest: sha256:9536c710d0ee55ba04f603543b0feb10aa2f726f95bd9d59d183356dfebf0019
     path: personas/specification-framer.yaml
 graph:
   tags:
@@ -177,10 +177,12 @@ graph:
     source: capability-review
     target: capability-build
     label: review.changes_requested -> review.changes_requested
+    rework: true
   - id: edge-capability-security-to-build
     source: capability-review
     target: capability-build
     label: security.changes_requested -> security.changes_requested
+    rework: true
   - id: edge-capability-review-to-publish
     source: capability-review
     target: capability-publish

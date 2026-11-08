@@ -9,10 +9,10 @@ hide:
 home:
   title: NIUU — A place where intelligent systems do real work
   nav:
+    - label: Building blocks
+      href: "#blocks"
     - label: At work
       href: "#at-work"
-    - label: The system
-      href: "#system"
     - label: Use cases
       href: "#use-cases"
     - label: Get started
@@ -29,48 +29,120 @@ home:
       - intelligent systems
       - do real work.
     body: >-
-      NIUU is the operating environment for autonomous work. Agents collaborate
-      with each other and with people, build on what they learn, and evolve
-      together.
+      Bring the models, agent harnesses and tools you already use. NIUU gives you
+      the building blocks to run them together, from one agent to many that
+      collaborate with people, learn and evolve.
     actions:
-      - label: See NIUU at work
+      - label: See the building blocks
         arrow: →
         style: primary
-        href: "#at-work"
+        href: "#blocks"
       - label: Get started
         arrow: →
         style: secondary
         href: "#start"
     trust: Open source under Apache-2.0. Self-hosted, with your choice of models.
+  blocks:
+    label: Why NIUU
+    title:
+      - Great tools.
+      - Hard to make work together.
+    body: There are hundreds of models, agent harnesses, memory systems and runtimes, and many are excellent at what they do. The hard part is making them work together, and keeping that working as better ones arrive.
+    subtitle: Your tools. Your models. Your environment.
+    intro: NIUU provides the building blocks. Each is useful on its own and has its own API. Use one, bring your own, or combine them all.
+    pieces:
+      - id: harnesses
+        name: Harnesses
+        line: Bring the agents you already use.
+        uses: Claude Code, Codex, OpenCode, Pi, Grok Build, Muse, DeepSeek Harness, OpenClaw, Hermes, NemoClaw
+        products: Forge · Agents
+        doc: concepts/agents-and-personas/
+      - id: sessions
+        name: Sessions
+        line: Any harness, live in one place. Watch it work, step in, and pick up where it left off.
+        uses: Chat, Terminal, Files and diffs, Chronicle, Resume, Browser or Telegram
+        products: Forge
+        doc: concepts/sessions-and-workspaces/
+      - id: memory
+        name: Memory
+        line: Shared knowledge that keeps its evidence.
+        uses: Shared and private memory, Evidence, Search
+        products: Memory
+        doc: concepts/memory-and-knowledge/
+      - id: runtimes
+        name: Runtimes
+        line: Run wherever you have compute.
+        uses: Local processes, Docker, Kubernetes, VMs, OpenShell sandboxes, Bare metal
+        products: Forge · Platform
+        doc: operations/kubernetes-deployment/
+      - id: models
+        name: Models
+        line: Route by cost, latency or failover, with budgets and rules.
+        uses: Anthropic, OpenAI, any OpenAI-compatible endpoint, Ollama
+        products: AI models
+        doc: concepts/model-routing/
+      - id: collaboration
+        name: Collaboration
+        line: Agents delegate, review and commission work. People join when needed.
+        uses: Rooms, Agent mesh, A2A, Telegram, Review inbox
+        products: Agents
+        doc: concepts/workflows-and-teams/
+      - id: workspaces
+        name: Workspaces
+        line: Ongoing work gets a home, with jobs that run on a schedule or when something happens.
+        uses: Charter, Trust, Budget, Activity log, Scheduled and event jobs
+        products: Workspaces
+        doc: concepts/agents-and-personas/#mandates-and-environments
+      - id: observability
+        name: Observability
+        line: Telemetry, traces and a live map of everything connected.
+        uses: OpenTelemetry, Session traces, Live map, Audit log
+        products: Observatory
+        doc: get-started/shared-discovery-and-topology/
+      - id: workflows
+        name: Workflows
+        line: Graphs with stages, parallel branches, gates and checks.
+        uses: Stages, Parallel branches, Gates, Waits on checks, Boards
+        products: Work
+        doc: concepts/workflows-and-teams/
+      - id: residents
+        name: Residents
+        line: Persistent agents that look after a workspace. They react, learn and commission the tools they lack.
+        uses: Mandates, Triggers, Inbox, Learning, Tool building
+        products: Agents · Workspaces
+        doc: concepts/agents-and-personas/#direct-agents-and-residents
+      - id: security
+        name: Security & governance
+        line: Identity, isolation, access control and organizations.
+        uses: Any OIDC provider, Policies, Scoped credentials, Sandboxes, Vault or OpenBao
+        products: Platform
+        doc: operations/security-and-permissions/
+    assemble:
+      title: Assemble what you need.
+      body: Start with one block and add more as your needs grow. These are configurations of the same blocks, not separate products.
+      configs:
+        - id: day-1
+          name: Day 1
+          line: The agent harness you already use, live on your own machine, with memory that carries from one session to the next.
+          blocks: harnesses sessions memory runtimes
+        - id: day-2
+          name: Day 2
+          line: Work spreads across machines and models, agents work together, ongoing work gets a home with its own jobs, and you can see all of it.
+          blocks: harnesses sessions memory runtimes models collaboration workspaces observability
+        - id: day-3
+          name: Day 3
+          line: Residents look after the work, processes run with stages and gates, under the security and governance an organization needs.
+          blocks: harnesses sessions memory runtimes models collaboration workspaces observability workflows residents security
+      swap: Blocks talk over APIs, and many load their adapters from configuration, so you can replace or extend one without rebuilding the rest.
+      plugins: Missing an integration? NIUU is an extensible platform with a plugin architecture. Bring your own tools and integrations.
   gallery:
     title:
-      - One agent is a starting point.
-      - Not the limit.
+      - Combine them,
+      - and see what becomes possible.
     chapters:
-      - id: session
-        step: Agent
-        label: Sessions and execution
-        title: It starts with one agent.
-        body: You steer every turn. The session holds its chat, diffs, files and trace.
-        link:
-          label: Sessions and workspaces
-          doc: concepts/sessions-and-workspaces/
-        views:
-          - name: Session
-            image: session
-            width: 1600
-            height: 1120
-            caption: Inside one session.
-            alt: A session chat where an agent reproduces a failing export, fixes it and points to the diff for review
-          - name: Running now
-            image: forge
-            width: 2000
-            height: 1135
-            caption: Forge runs agents on the machine that suits the job.
-            alt: The Forge overview with active pods, tokens and cost, a list of in-flight sessions and the load on each host
       - id: process
         step: Workflows
-        label: Workflows and graphs
+        label: Workflows · Harnesses · Models
         title: Work becomes a process.
         body: The path is fixed in advance, with stages, reviews and gates. Agents do the work inside it, across models and harnesses. Your graph becomes the board.
         body_more: This is one example. Build your own workflows, and create personas with their own tools to do the work.
@@ -105,7 +177,7 @@ home:
             alt: A ticket at Code review, with its pull request and buttons to request changes or approve and move to Merging
       - id: together
         step: Collaboration
-        label: Multi-agent collaboration
+        label: Collaboration · Workflows
         title: Work becomes collaborative.
         body: Agents work autonomously. They hand work on, review it and send it back, and you're only asked when you're needed.
         link:
@@ -134,8 +206,8 @@ home:
             caption: Every ticket in motion gets a coordinator that stays until it closes.
             alt: A ticket panel open beside the board, where a coordinator reports that a change waits at Code review and answers a question about it
       - id: continuity
-        step: Continuity
-        label: Memory and residents
+        step: Memory
+        label: Memory · Workspaces
         title: Work doesn't start over.
         body: A model changes. A person steps away. The work is still there, and further along.
         link:
@@ -168,7 +240,7 @@ home:
             alt: The Workspaces home with three Workspaces, each kept by a resident, and a list of decisions that need you
       - id: autonomy
         step: Autonomy
-        label: Autonomy
+        label: Residents · Collaboration · Workflows
         title: A resident commissions the work it needs.
         body: Reusing the same workflows and tooling a person can.
         link:
@@ -198,79 +270,12 @@ home:
             alt: The Resident console, with a roster of residents and Sigrun's report, reading Simpler now, 2 duplicate tools retired
       - id: scale
         step: Scale
-        label: Distributed execution
-        title: One machine becomes many.
-        body: Run NIUU on a workstation, a DGX Spark or a whole cluster, then register it in Platform. Sessions and workflows can target it by tag.
-        link:
-          label: Platform and topology
-          doc: get-started/shared-discovery-and-topology/
-        views:
-          - name: Your hosts
-            image: platform
-            width: 2000
-            height: 1203
-            caption: Every host in one place, with its health and tags.
-            alt: The Platform page listing Forge hosts for this machine, a GPU workstation, a DGX Spark and a cluster, each healthy and tagged
-          - name: Add a host
-            image: register
-            width: 2000
-            height: 1203
-            caption: Add a host with an address and tags.
-            alt: The Register a new instance dialog with a name, an endpoint URL, a plaintext option, a TLS fingerprint and tags
-      - id: environment-step
-        step: Environment
-        label: Multi-tenancy, governance and observability
+        label: Runtimes · Security & governance · Observability
         title: Work becomes an environment.
-        body: Teams, tenants, models and machines, in one system you can see.
+        body: Run on a workstation, a DGX Spark or a whole cluster. Organizations share one installation, each seeing what it owns, and you can follow any session down to a single tool call.
         link:
           label: How it fits together
           doc: concepts/platform-model/
-        map:
-          title: Six parts of one system.
-          tenants:
-            - Organization A
-            - Organization B
-            - Organization C
-          boundary: Each organization sees what it owns.
-          workspaces:
-            name: Workspaces
-            doc: concepts/sessions-and-workspaces/
-          agents:
-            name: Agents
-            doc: concepts/agents-and-personas/
-          memory:
-            name: Memory
-            doc: concepts/memory-and-knowledge/
-          forge:
-            name: Forge
-            line: Runs agents and workflows on any connected host
-            doc: concepts/sessions-and-workspaces/
-          platform:
-            name: Platform
-            line: One sign-in, shared policy and model limits per organization
-            doc: concepts/platform-model/
-          observatory:
-            name: Observatory
-            line: Everything you connect on one live map, filtered by organization
-            doc: get-started/shared-discovery-and-topology/
-          hosts_label: Runs on
-          hosts:
-            - name: This machine
-              line: Local process
-            - name: Workstation
-              line: Docker
-            - name: DGX Spark
-              line: Docker
-            - name: Cluster
-              line: A pod per session
-            - name: Sandbox
-              line: OpenShell
-          models_label: Models
-          models:
-            - Anthropic
-            - OpenAI
-            - DeepSeek
-            - Local models
         views:
           - name: Live map
             image: observatory
@@ -284,34 +289,18 @@ home:
             height: 1063
             caption: Every turn, tool call and gate on one timeline.
             alt: The Telemetry tab of a session, with a timeline of turns, tool calls, a reviewer and a human gate
-        areas_label: In place today
-        areas:
-          - title: Teams
-            body: Everyone signs in with a role. Residents and shared Memory stay with the organization.
-            doc: reference/identity/
-          - title: Multi-tenancy
-            body: Several organizations on one installation, with model use capped per organization.
-            doc: operations/security-and-permissions/
-          - title: Scaling
-            body: A pod per session on Kubernetes, services that can autoscale, several clusters as one environment.
-            doc: operations/kubernetes-deployment/
-          - title: Security
-            body: Any OIDC provider, policies, scoped short-lived credentials and OpenShell sandboxes. Larger deployments add Vault or OpenBao, and SPIFFE identities through SPIRE.
-            doc: operations/security-and-permissions/
-  environment:
-    built:
-      title: We extend the best tools. We don't rebuild them.
-      body: Keep your agents, models, tracker and infrastructure. NIUU builds on them.
-      body_more: Missing an integration? NIUU is an extensible platform with a plugin architecture. Bring your own tools and integrations.
-      groups:
-        - name: Agent harnesses
-          entries: Claude Code, OpenAI Codex, OpenCode, Pi, OpenClaw, Hermes, NemoClaw, xAI Grok Build, Meta Muse Code, DeepSeek Harness
-        - name: Models
-          entries: Anthropic, OpenAI, DeepSeek, xAI, Meta, Ollama and OpenAI-compatible endpoints
-        - name: Connects to
-          entries: GitHub, GitLab, Linear, Jira, Telegram, MCP, A2A, any OIDC provider, any OpenTelemetry backend
-        - name: Runs on
-          entries: Local processes, Docker, OpenShell, VMs, bare metal, DGX Spark, Kubernetes
+          - name: Your hosts
+            image: platform
+            width: 2000
+            height: 1203
+            caption: Every host in one place, with its health and tags.
+            alt: The Platform page listing Forge hosts for this machine, a GPU workstation, a DGX Spark and a cluster, each healthy and tagged
+          - name: Add a host
+            image: register
+            width: 2000
+            height: 1203
+            caption: Add a host with an address and tags.
+            alt: The Register a new instance dialog with a name, an endpoint URL, a plaintext option, a TLS fingerprint and tags
   use_cases:
     label: Use cases
     title: Not just for code.

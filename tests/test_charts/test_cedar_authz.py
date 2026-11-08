@@ -319,23 +319,6 @@ def test_ambiguous_route_templates_rejected(path, prefix):
         GatewayRoute(path=path, path_template=True, prefix=prefix, methods=["POST"])
 
 
-def test_ravn_explicit_no_auth_profile():
-    chart = CHART.parent / "ravn"
-    docs = list(
-        yaml.safe_load_all(
-            subprocess.check_output(
-                ["helm", "template", "test", str(chart), "-f", str(chart / "values-no-auth.yaml")]
-            )
-        )
-    )
-    config = next(
-        yaml.safe_load(d["data"]["config.yaml"])
-        for d in docs
-        if d and d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
-    )
-    assert config["api_auth"]["adapter"].endswith("AllowAllHeaderAuthenticationAdapter")
-
-
 def test_skuld_secure_profile_has_private_backends_and_verified_jwks():
     chart = CHART.parent / "skuld"
     command = ["helm", "template", "test", str(chart), "-f", str(chart / "values-auth.yaml")]

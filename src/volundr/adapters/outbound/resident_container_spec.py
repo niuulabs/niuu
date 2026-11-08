@@ -4,34 +4,20 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
 from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from typing import Any
 
 import yaml
 
-from volundr.domain.models import (
-    ResidentCapability,
-    ResidentDeploymentProfile,
-    ResidentEngine,
-    ResidentRuntime,
-)
+from volundr.domain.models import ResidentEngine, ResidentRuntime
 
 PLATFORM_ACCESS_TOKEN_ENV = "NIUU_VOLUNDR_ACCESS_TOKEN"
 HERMES_API_SERVER_KEY_ENV = "API_SERVER_KEY"
 HERMES_API_SERVER_DEFAULT_PORT = 8642
 SANDBOX_HOME = "/sandbox"
 SANDBOX_WORKSPACE = "/sandbox/workspace"
-RESIDENT_SKULD_CONFIG = "/sandbox/.volundr/skuld.yaml"
-RESIDENT_RAVN_CONFIG = "/sandbox/.volundr/ravn.yaml"
-DEFAULT_RESIDENT_PERSONA = "product-steward"
 PROCESS_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-#: Ravn's OpenClaw-protocol shim: a Ravn resident's sessions ("channels").
-RAVN_OPENCLAW_PORT = 18790
-RAVN_OPENCLAW_TOKEN_ENV = "RAVN_OPENCLAW_TOKEN"
-RAVN_OPENCLAW_STORE_PATH = f"{SANDBOX_WORKSPACE}/.ravn/openclaw/state.db"
-RAVN_OPENCLAW_MAX_SESSIONS = 64
 
 
 @dataclass(frozen=True)
@@ -86,112 +72,6 @@ def resident_flock_environment(runtime: ResidentRuntime) -> dict[str, str]:
     if runtime.flock_peer_id:
         environment["NIUU_FLOCK_PEER_ID"] = runtime.flock_peer_id
     return environment
-
-
-def resident_mesh_pod_metadata(runtime: ResidentRuntime) -> tuple[dict[str, str], dict[str, str]]:
-    """Return labels and annotations consumed by Ravn Kubernetes discovery."""
-    if runtime.flock_id is None or not runtime.flock_peer_id:
-        return {}, {}
-    return (
-        {
-            "ravn.niuu.world/realm": str(runtime.flock_id),
-            "ravn.niuu.world/role": "agent",
-        },
-        {
-            "ravn.niuu.world/peer-id": runtime.flock_peer_id,
-            "ravn.niuu.world/persona": runtime.persona_name or runtime.name,
-            "ravn.niuu.world/capabilities": ",".join(
-                capability.value for capability in runtime.capabilities
-            ),
-            "ravn.niuu.world/permission-mode": "permissive",
-        },
-    )
-
-
-def resident_flock_runtime_config(
-    config: dict[str, Any],
-    runtime: ResidentRuntime,
-    values: dict[str, Any],
-) -> None:
-    """Apply the profile-selected mesh and discovery adapters for a flock member."""
-    if runtime.flock_id is None:
-        return
-    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
-    flock = resident.get("flock") if isinstance(resident.get("flock"), dict) else {}
-    mesh_options = flock.get("mesh") if isinstance(flock.get("mesh"), dict) else {}
-    mesh_adapters = mesh_options.get("adapters")
-    if isinstance(mesh_adapters, list) and mesh_adapters:
-        config["mesh"]["adapters"] = list(mesh_adapters)
-        config["mesh"].pop("adapter", None)
-    nats = mesh_options.get("nats")
-    if isinstance(nats, dict) and nats:
-        config["mesh"]["nats"] = nats
-    config["mesh"]["own_peer_id"] = runtime.flock_peer_id
-
-    discovery_options = flock.get("discovery") if isinstance(flock.get("discovery"), dict) else {}
-    discovery_adapters = discovery_options.get("adapters")
-    if isinstance(discovery_adapters, list):
-        config["discovery"]["adapters"].extend(discovery_adapters)
-    config["discovery"]["realm_id"] = str(runtime.flock_id)
-
-
-def resident_flock_skuld_config(
-    config: dict[str, Any],
-    runtime: ResidentRuntime,
-    values: dict[str, Any],
-) -> None:
-    """Apply the profile-selected flock transport to the resident room broker."""
-    if runtime.flock_id is None:
-        return
-    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
-    flock = resident.get("flock") if isinstance(resident.get("flock"), dict) else {}
-    mesh_options = flock.get("mesh") if isinstance(flock.get("mesh"), dict) else {}
-    discovery = flock.get("discovery") if isinstance(flock.get("discovery"), dict) else {}
-    mesh = config["mesh"]
-    local_discovery = list(mesh.get("discovery_adapters") or mesh.get("adapters") or [])
-    adapters = mesh_options.get("adapters")
-    if isinstance(adapters, list) and adapters:
-        mesh["adapters"] = list(adapters)
-        mesh["discovery_adapters"] = [
-            *local_discovery,
-            *list(discovery.get("adapters") or []),
-        ]
-    nats = mesh_options.get("nats")
-    if isinstance(nats, dict) and nats:
-        mesh["nats"] = nats
-    mesh["realm_id"] = str(runtime.flock_id)
-
-
-def resident_flock_profile_configured(
-    profile: ResidentDeploymentProfile,
-    values: dict[str, Any],
-) -> bool:
-    """Return whether a native Ravn flock profile selects mesh and discovery adapters."""
-    if (
-        ResidentCapability.FLOCK not in profile.capabilities
-        or profile.engine is not ResidentEngine.RAVN
-    ):
-        return True
-    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
-    flock = resident.get("flock") if isinstance(resident.get("flock"), dict) else {}
-    mesh = flock.get("mesh") if isinstance(flock.get("mesh"), dict) else {}
-    discovery = flock.get("discovery") if isinstance(flock.get("discovery"), dict) else {}
-    return bool(mesh.get("adapters")) and bool(discovery.get("adapters"))
-
-
-def realm_charter_page_for(realm_slug: str) -> str:
-    """Mímir page path holding a realm's charter (mirrors web-next's charterPagePathFor)."""
-    return f"realms/{realm_slug}/charter.md"
-
-
-def realm_mount_name_for(realm_slug: str) -> str:
-    """Mímir mount name carrying a realm's memory (mirrors web-next's mountNameFor)."""
-    return f"realm-{realm_slug}"
-
-
-def realm_routing_prefix_for(realm_slug: str) -> str:
-    """Mímir write-routing prefix for a realm (mirrors web-next's routingPrefixFor)."""
-    return f"realms/{realm_slug}/"
 
 
 def resident_profile_values(profile_id: str, deployment: dict[str, Any]) -> dict[str, Any]:
@@ -344,9 +224,6 @@ def materialize_resident_container(
     default_image: str,
     default_service_name: str,
     default_service_port: int,
-    volundr_api_url: str,
-    sandbox_command: tuple[str, ...],
-    realm_slug: str = "",
 ) -> ResidentContainerSpec:
     image = image_from_values(values, default=default_image)
     if not image:
@@ -356,9 +233,6 @@ def materialize_resident_container(
         values,
         default_service_name=default_service_name,
         default_service_port=default_service_port,
-        volundr_api_url=volundr_api_url,
-        sandbox_command=sandbox_command,
-        realm_slug=realm_slug,
     )
     return replace(spec, image=image)
 
@@ -369,14 +243,10 @@ def materialize_resident_runtime(
     *,
     default_service_name: str,
     default_service_port: int,
-    volundr_api_url: str,
-    sandbox_command: tuple[str, ...],
-    realm_slug: str = "",
 ) -> ResidentContainerSpec:
     """Materialize processes, files and environment without selecting an image.
 
-    Paths are expressed in the ``/sandbox`` namespace; runtimes that do not
-    use an image (host processes) translate them to their own storage.
+    Paths are expressed in the ``/sandbox`` namespace.
     """
     service_name, service_port = resident_service(
         values,
@@ -384,16 +254,9 @@ def materialize_resident_runtime(
         default_service_port,
     )
     environment = _resident_environment(runtime, values, service_port)
-    configured = runtime_processes_from_values(values)
-    replace = resident_runtime_section(values).get("processMode") == "replace"
-    if replace:
-        if not configured:
-            raise RuntimeError("Replacing resident processes requires at least one process")
-        processes = configured
-    elif runtime.engine is ResidentEngine.RAVN:
-        processes = (*_ravn_processes(runtime, sandbox_command), *configured)
-    else:
-        processes = configured
+    processes = runtime_processes_from_values(values)
+    if resident_runtime_section(values).get("processMode") == "replace" and not processes:
+        raise RuntimeError("Replacing resident processes requires at least one process")
     if not processes:
         raise RuntimeError(f"Resident engine {runtime.engine.value!r} requires a process")
 
@@ -401,15 +264,6 @@ def materialize_resident_runtime(
     if runtime.engine is ResidentEngine.HERMES:
         files[f"{SANDBOX_WORKSPACE}/.hermes/config.yaml"] = yaml.safe_dump(
             _resident_hermes_config(runtime, values, service_port),
-            sort_keys=False,
-        ).encode()
-    elif runtime.engine is ResidentEngine.RAVN:
-        files[RESIDENT_SKULD_CONFIG] = yaml.safe_dump(
-            _resident_skuld_config(runtime, values, service_port, volundr_api_url),
-            sort_keys=False,
-        ).encode()
-        files[RESIDENT_RAVN_CONFIG] = yaml.safe_dump(
-            _resident_ravn_config(runtime, values, service_port, realm_slug, volundr_api_url),
             sort_keys=False,
         ).encode()
     for process in processes:
@@ -421,40 +275,6 @@ def materialize_resident_runtime(
         environment=environment,
         files=files,
         processes=processes,
-    )
-
-
-def resident_ravn_daemon_arguments(runtime: ResidentRuntime, config_path: str) -> tuple[str, ...]:
-    """Arguments after ``ravn`` that start one resident's Ravn daemon."""
-    persona = runtime.persona_name or DEFAULT_RESIDENT_PERSONA
-    return ("daemon", "--config", config_path, "--persona", persona)
-
-
-def _ravn_processes(
-    runtime: ResidentRuntime,
-    sandbox_command: tuple[str, ...],
-) -> tuple[ResidentContainerProcess, ...]:
-    daemon = shlex.join(resident_ravn_daemon_arguments(runtime, RESIDENT_RAVN_CONFIG))
-    return (
-        ResidentContainerProcess(
-            name="skuld",
-            command=sandbox_command,
-            env={"NIUU_CONFIG": RESIDENT_SKULD_CONFIG},
-            files={},
-            log_path=resident_process_log_path("skuld"),
-        ),
-        ResidentContainerProcess(
-            name="ravn",
-            command=(
-                "sh",
-                "-lc",
-                'export RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
-                f"exec /opt/niuu/bin/python -m ravn {daemon}",
-            ),
-            env={},
-            files={},
-            log_path=resident_process_log_path("ravn"),
-        ),
     )
 
 
@@ -476,7 +296,6 @@ def _resident_environment(
         "SKULD__PERSISTENCE_MOUNT_PATH": SANDBOX_WORKSPACE,
         "SKULD__HOST": "0.0.0.0",
         "SKULD__PORT": str(service_port),
-        "RAVN_STATE_DIR": f"{SANDBOX_WORKSPACE}/.ravn",
     }
     if runtime.engine is ResidentEngine.HERMES:
         env["HERMES_HOME"] = f"{SANDBOX_WORKSPACE}/.hermes"
@@ -505,210 +324,6 @@ def _resident_broker_environment(broker: dict[str, Any]) -> dict[str, str]:
         value = broker.get("skipPermissions", broker.get("skip_permissions"))
         env["SKULD__SKIP_PERMISSIONS"] = str(bool(value)).lower()
     return env
-
-
-def _resident_skuld_config(
-    runtime: ResidentRuntime,
-    values: dict[str, Any],
-    service_port: int,
-    volundr_api_url: str,
-) -> dict[str, Any]:
-    persona = runtime.persona_name or DEFAULT_RESIDENT_PERSONA
-    route_id = runtime.id.hex[:12]
-    ravn_peer = runtime.flock_peer_id or f"flock-{persona}"
-    broker = values.get("broker") if isinstance(values.get("broker"), dict) else {}
-    session_values = values.get("session") if isinstance(values.get("session"), dict) else {}
-    config = {
-        "session": {
-            "id": str(runtime.id),
-            "name": runtime.name,
-            "model": runtime.model,
-            "reasoning_effort": str(
-                session_values.get("reasoningEffort")
-                or session_values.get("reasoning_effort")
-                or "high"
-            ),
-            "owner_id": runtime.owner_id,
-            "tenant_id": runtime.tenant_id,
-            "workspace_dir": SANDBOX_WORKSPACE,
-        },
-        "transport": str(broker.get("transport") or "sdk"),
-        "transport_adapter": str(
-            broker.get("transportAdapter")
-            or broker.get("transport_adapter")
-            or "skuld.transports.codex_ws.CodexWebSocketTransport"
-        ),
-        "cli_type": str(broker.get("cliType") or broker.get("cli_type") or "codex-ws"),
-        "host": "0.0.0.0",
-        "port": service_port,
-        "persistence_mount_path": SANDBOX_WORKSPACE,
-        "volundr_api_url": volundr_api_url,
-        "usage_report_path": f"/api/v1/forge/resident-runtimes/{runtime.id}/usage",
-        "room": {
-            "enabled": True,
-            "presence_sweep_interval_s": 0,
-            "default_target_peer_id": ravn_peer,
-        },
-        "mesh": {
-            "enabled": True,
-            "transport": "nng",
-            "peer_id": f"skuld-{route_id}",
-            "nng": {
-                "pub_sub_address": "tcp://0.0.0.0:7480",
-                "req_rep_address": "tcp://0.0.0.0:7481",
-            },
-            "adapters": [],
-        },
-    }
-    resident_flock_skuld_config(config, runtime, values)
-    return config
-
-
-def _resident_mimir_write_routing(
-    realm_mimir: dict[str, Any],
-    mimir_instances: list[Any],
-    realm_slug: str,
-) -> dict[str, Any]:
-    """Resolve where a resident's Mímir writes land — never silently nowhere.
-
-    The profile's own ``write_routing`` (operator-configured, e.g. the normal
-    hub-Mímir case where no mount is named ``realm-<slug>``) is always kept.
-    When a mount named after this realm is also present, its rule is added
-    ahead of the profile's rules and it becomes the default only if the
-    profile did not already configure one. If no default and no rules
-    resolve at all, the resident would write to nowhere without error
-    (CompositeMimirAdapter.upsert_page silently no-ops on an empty target
-    list) — that is a fatal misconfiguration, not something to render quietly.
-    """
-    profile_routing = (
-        realm_mimir.get("writeRouting") if isinstance(realm_mimir.get("writeRouting"), dict) else {}
-    )
-    rules = list(profile_routing.get("rules") or [])
-    default = list(profile_routing.get("default") or [])
-
-    mount_name = realm_mount_name_for(realm_slug) if realm_slug else ""
-    has_realm_mount = bool(mount_name) and any(
-        isinstance(inst, dict) and inst.get("name") == mount_name for inst in mimir_instances
-    )
-    if has_realm_mount:
-        rules = [[realm_routing_prefix_for(realm_slug), [mount_name]], *rules]
-        if not default:
-            default = [mount_name]
-
-    if not default and not rules:
-        raise RuntimeError(
-            "Resident Mímir instances are configured but no write target resolves: "
-            f"no mount named {mount_name!r} is present and the profile's "
-            "resident.mimir.writeRouting.default is empty. Configure a default write "
-            "mount, or a write_routing rule, so resident writes have somewhere to go."
-        )
-    return {"rules": rules, "default": default}
-
-
-def _resident_ravn_config(
-    runtime: ResidentRuntime,
-    values: dict[str, Any],
-    service_port: int,
-    realm_slug: str = "",
-    volundr_api_url: str = "",
-) -> dict[str, Any]:
-    persona = runtime.persona_name or DEFAULT_RESIDENT_PERSONA
-    route_id = runtime.id.hex[:12]
-    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
-    platform = resident.get("platform") if isinstance(resident.get("platform"), dict) else {}
-    llm = dict(resident.get("llm") or {})
-    if runtime.model:
-        llm["model"] = runtime.model
-    config: dict[str, Any] = {
-        "persona": persona,
-        "mesh": {
-            "enabled": True,
-            "adapter": "nng",
-            "own_peer_id": f"flock-{persona}",
-            "nng": {
-                "pub_sub_address": "tcp://0.0.0.0:7482",
-                "req_rep_address": "tcp://0.0.0.0:7483",
-            },
-            "peers": [{"peer_id": f"skuld-{route_id}"}],
-        },
-        "discovery": {"enabled": True, "adapters": []},
-        "cascade": {"enabled": True},
-        "gateway": {
-            "enabled": True,
-            "channels": {
-                "http": {
-                    "enabled": True,
-                    "host": "0.0.0.0",
-                    "port": 7781,
-                    "resident_hud_enabled": bool(
-                        resident.get("hudEnabled") or resident.get("hud_enabled") or False
-                    ),
-                }
-            },
-            "platform": {
-                "enabled": bool(platform.get("enabled", True)),
-                "base_url": str(platform.get("baseUrl") or platform.get("base_url") or ""),
-                "workflow_aliases": platform.get("workflowAliases")
-                or platform.get("workflow_aliases")
-                or {},
-            },
-        },
-        "initiative": {
-            "enabled": True,
-            "max_concurrent_tasks": int(
-                resident.get("maxConcurrentTasks") or resident.get("max_concurrent_tasks") or 4
-            ),
-        },
-        "permission": {"workspace_root": SANDBOX_WORKSPACE},
-        "logging": {"level": "INFO"},
-        "skuld": {
-            "enabled": True,
-            "broker_url": f"ws://127.0.0.1:{service_port}/ws/ravn",
-            "display_name": runtime.name,
-            "reconnect_delay_seconds": int(
-                (resident.get("skuld") or {}).get("reconnectDelaySeconds", 2)
-            ),
-            "max_reconnect_attempts": int(
-                (resident.get("skuld") or {}).get("maxReconnectAttempts", 300)
-            ),
-            "session_ready_timeout_seconds": int(
-                (resident.get("skuld") or {}).get("sessionReadyTimeoutSeconds", 900)
-            ),
-        },
-        "environment": {"resident_name": runtime.name},
-    }
-    if isinstance(resident.get("personaSource"), dict):
-        config["persona_source"] = resident["personaSource"]
-    if llm:
-        config["llm"] = llm
-    if isinstance(resident.get("wakefulness"), dict):
-        config["wakefulness"] = resident["wakefulness"]
-    stewardship_interval = resident.get("stewardshipIntervalSeconds") or resident.get(
-        "stewardship_interval_seconds"
-    )
-    if stewardship_interval:
-        config["resident_state"] = {"stewardship_interval_seconds": float(stewardship_interval)}
-    if realm_slug:
-        config["environment"]["charter_mimir_page"] = realm_charter_page_for(realm_slug)
-        config["resident_evolution"] = {
-            "realm_slug": realm_slug,
-            "realm_api_base_url": volundr_api_url,
-        }
-    realm_mimir = resident.get("mimir") if isinstance(resident.get("mimir"), dict) else {}
-    mimir_instances = realm_mimir.get("instances")
-    if isinstance(mimir_instances, list) and mimir_instances:
-        config["mimir"] = {
-            "enabled": True,
-            "instances": mimir_instances,
-            "write_routing": _resident_mimir_write_routing(
-                realm_mimir, mimir_instances, realm_slug
-            ),
-        }
-    signal_sources = resident.get("signalSources") or resident.get("signal_sources")
-    if isinstance(signal_sources, list) and signal_sources:
-        config["environment"]["signal_sources"] = signal_sources
-    resident_flock_runtime_config(config, runtime, values)
-    return config
 
 
 def _resident_hermes_config(
@@ -775,55 +390,4 @@ def _string_dict(value: object) -> dict[str, str]:
         str(key): str(item)
         for key, item in value.items()
         if key and item and "\x00" not in str(key) and "\x00" not in str(item)
-    }
-
-
-def resident_openclaw_shim_enabled(
-    runtime: ResidentRuntime,
-    values: dict[str, Any],
-    *,
-    tokens_provisioned: bool,
-) -> bool:
-    """Whether a Ravn resident runs its OpenClaw shim (its sessions, "channels").
-
-    On by default wherever Völundr keeps the residents' shim tokens (a Ravn
-    session controller drives the backend); a profile's
-    ``resident.openclaw.enabled`` decides explicitly. A profile that asks for the
-    shim where no token is provisioned cannot get one: that is fatal, not off.
-    """
-    if runtime.engine is not ResidentEngine.RAVN:
-        return False
-    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
-    shim = resident.get("openclaw") if isinstance(resident.get("openclaw"), dict) else {}
-    explicit = shim.get("enabled")
-    if explicit is None:
-        return tokens_provisioned
-    if explicit and not tokens_provisioned:
-        raise ValueError(
-            f"Resident profile {runtime.profile_id} enables resident.openclaw, but no "
-            "RavnResidentSessionController provides its token on this backend; enable "
-            "resident_runtimes.ravn_sessions_enabled (charts/volundr ravnResidentSessions) "
-            "or disable resident.openclaw"
-        )
-    return bool(explicit)
-
-
-def enable_resident_openclaw_shim(config: dict[str, Any], values: dict[str, Any]) -> None:
-    """Add the OpenClaw shim channel to a resident's Ravn config.
-
-    The same channel charts/skuld's ravn-configmap renders for Flux residents:
-    agent_id "main" is the session-key grammar the session controller addresses
-    (agent:main:niuu-<uuid>); the token comes from ``RAVN_OPENCLAW_TOKEN``.
-    """
-    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
-    shim = resident.get("openclaw") if isinstance(resident.get("openclaw"), dict) else {}
-    channels = config.setdefault("gateway", {}).setdefault("channels", {})
-    channels["openclaw"] = {
-        "enabled": True,
-        "host": "0.0.0.0",
-        "port": int(shim.get("port") or RAVN_OPENCLAW_PORT),
-        "token_env": RAVN_OPENCLAW_TOKEN_ENV,
-        "agent_id": "main",
-        "max_live_sessions": int(shim.get("maxSessions") or RAVN_OPENCLAW_MAX_SESSIONS),
-        "store_path": str(shim.get("storePath") or RAVN_OPENCLAW_STORE_PATH),
     }

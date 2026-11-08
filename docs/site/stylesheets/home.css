@@ -62,6 +62,49 @@ html:has(.niuu-home) { scroll-behavior:smooth }
 .niuu-home .section-lead h2 { margin-bottom:0 }
 .niuu-home .section-lead p { max-width:440px;margin:0 }
 
+/* The building blocks: why NIUU, the blocks themselves, and assembling a subset.
+   Blocks sit in a grid joined by thin continuity lines, so none reads as a layer
+   another depends on. */
+.niuu-home .blocks-section { position:relative;overflow:hidden;isolation:isolate;background:#0b1a25;box-shadow:0 0 0 100vmax #0b1a25;clip-path:inset(0 -100vmax);border-top:1px solid #1e3342 }
+.niuu-home .blocks-section > .wave { top:-40px;right:-12%;width:70%;height:560px;opacity:.32 }
+.niuu-home .blocks-lead { display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:8%;align-items:end }
+.niuu-home .blocks-lead h2 { margin-bottom:0 }
+.niuu-home .blocks-lead .lede { margin:0 }
+.niuu-home .blocks-intro { margin-top:clamp(64px,7vw,104px);max-width:760px }
+.niuu-home .blocks-intro h3 { font:300 clamp(30px,3.2vw,50px)/1.12 'Inter Display',Inter,sans-serif;letter-spacing:-.038em;margin:0 }
+.niuu-home .blocks-intro p { font-size:17px;line-height:1.75;color:#c6d8e1;margin:16px 0 0 }
+.niuu-home .assemble { display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px 40px;align-items:end;margin-top:clamp(48px,5vw,72px);padding-top:28px;border-top:1px solid #2b4351 }
+.niuu-home .assemble-head h3 { font-size:20px;font-weight:450;letter-spacing:-.02em;margin:0 }
+.niuu-home .assemble-head p { font-size:15px;line-height:1.65;color:#a8bbc6;margin:6px 0 0;max-width:620px }
+.niuu-home .configs { display:flex;flex-wrap:wrap;gap:8px }
+.niuu-home .configs button { border:1px solid #3a5a6d;border-radius:999px;background:transparent;color:#c6d8e1;padding:9px 16px;font-size:13.5px;transition:border-color .2s,background .2s,color .2s }
+.niuu-home .configs button:hover { border-color:#7fa9bd }
+.niuu-home .configs button[aria-pressed="true"] { background:var(--signal);border-color:var(--signal);color:#041923 }
+.niuu-home .config-line { grid-column:1 / -1;font-size:15px;color:var(--mist);margin:0;min-height:1.6em }
+.niuu-home .blockmap { margin-top:32px }
+.niuu-home .blocks { --gap:28px;list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--gap) }
+.niuu-home .block { position:relative;transition:opacity .35s ease }
+.niuu-home .block a { display:flex;flex-direction:column;height:100%;padding:20px 20px 18px;border:1px solid #2f4b5c;border-radius:10px;background:#0f2230;transition:border-color .2s,background .2s }
+.niuu-home .block a:hover { border-color:#7fa9bd }
+.niuu-home .block-name { font:400 19px/1.25 'Inter Display',Inter,sans-serif;letter-spacing:-.02em;color:var(--mist) }
+.niuu-home .block-line { font-size:14px;line-height:1.55;color:#b7c9d2;margin-top:6px }
+.niuu-home .block-uses { font-size:13px;line-height:1.6;color:#8fb6c6;margin-top:12px }
+.niuu-home .block-products { margin-top:auto;padding-top:14px;font-size:12.5px;line-height:1.4;color:#8ba3b0 }
+.niuu-home .block-products:before { content:'In ';color:#6f8a98 }
+/* Continuity lines between neighbours: right to the next column, down to the next row. */
+.niuu-home .block:before, .niuu-home .block:after { content:'';position:absolute;background:#3f6276;pointer-events:none }
+.niuu-home .block:before { top:50%;right:calc(var(--gap) * -1);width:var(--gap);height:1px }
+.niuu-home .block:after { left:50%;bottom:calc(var(--gap) * -1);width:1px;height:var(--gap) }
+.niuu-home .block:nth-child(4n):before, .niuu-home .block:last-child:before { display:none }
+.niuu-home .block:nth-child(n+8):after { display:none }
+.niuu-home .blockmap.configured .block:not(.on) { opacity:.3 }
+.niuu-home .blockmap.configured .block.on a { border-color:#86d0e899;background:#13293a }
+.niuu-home .blockmap.configured .block.on .block-name { color:var(--strong) }
+.niuu-home .blockmap.configured .block.on:before, .niuu-home .blockmap.configured .block.on:after { background:linear-gradient(90deg,#86d0e8b3,#86d0e840) }
+.niuu-home .blockmap.configured .block.on:after { background:linear-gradient(180deg,#86d0e8b3,#86d0e840) }
+.niuu-home .blocks-foot { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8%;margin-top:36px }
+.niuu-home .blocks-foot p { font-size:14px;line-height:1.7;color:#a8bbc6;margin:0 }
+
 /* The gallery: one agent to a whole environment, the centre of the page.
    Each step has one dominant screen, and the ground lifts a shade as the story grows. */
 .niuu-home .gallery { padding:clamp(96px,10vw,148px) 0 0;border-top:1px solid #1e3342;background:var(--ink);box-shadow:0 0 0 100vmax var(--ink);overflow:clip }
@@ -161,46 +204,8 @@ html:has(.niuu-home) { scroll-behavior:smooth }
 .niuu-home .act.environment { --ground:#132a3a;position:relative;overflow:hidden;isolation:isolate }
 .niuu-home .environment > .wave { top:-60px;right:-8%;width:78%;height:640px;opacity:.42 }
 .niuu-home .gallery .environment .act-head h3 { font-size:clamp(40px,5.2vw,84px);letter-spacing:-.046em }
-.niuu-home .env { margin-top:clamp(56px,6vw,84px);scroll-margin-top:64px }
-.niuu-home .env-title { display:flex;justify-content:space-between;align-items:baseline;gap:32px;margin-bottom:22px }
-.niuu-home .env-title h4 { font:300 clamp(24px,2.1vw,32px)/1.2 'Inter Display',Inter,sans-serif;letter-spacing:-.03em;margin:0 }
-.niuu-home .env-title p { font-size:14px;color:#c6d8e1;margin:0 }
-.niuu-home .env-grid { display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,206px);border:1px solid #3a5a6d;border-radius:12px;background:#0c1c28f2;box-shadow:0 24px 70px #02080d66 }
-.niuu-home .env-main { padding:26px;min-width:0 }
-.niuu-home .env-tenants { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px }
-.niuu-home .tenant { border:1px dashed #5a7f92;border-radius:8px;padding:14px 16px 16px;background:#102433 }
-.niuu-home .tenant-parts { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px }
-.niuu-home .env-part { display:block;min-width:0;transition:color .2s }
-.niuu-home .env-part .glyph { display:block;color:#8acfe2;margin-bottom:6px }
-.niuu-home .env-part strong { display:block;font-size:14px;font-weight:500;color:var(--mist) }
-.niuu-home .env-part small { display:block;font-size:13px;line-height:1.45;color:#a8bbc6;margin-top:3px }
-.niuu-home .env-part:hover strong { color:var(--strong) }
-.niuu-home .env-links { display:flex;justify-content:space-evenly;height:32px }
-.niuu-home .env-links span { position:relative;width:1px;background:#35566a;overflow:hidden }
-.niuu-home .env-links span:after { content:'';position:absolute;left:0;top:-14px;width:1px;height:14px;background:var(--strong);animation:niuu-flow 3.4s linear infinite }
-.niuu-home .env-links span:nth-child(2n):after { animation-delay:1.1s }
-.niuu-home .env-links span:nth-child(3n):after { animation-delay:2.2s }
-@keyframes niuu-flow { from { transform:translateY(0) } to { transform:translateY(60px) } }
-.niuu-home .env-bands { border:1px solid #4a6a7c;border-radius:8px;background:#17303f }
-.niuu-home .env-bands .env-part { display:grid;grid-template-columns:20px 92px minmax(0,1fr);gap:0 12px;align-items:center;padding:13px 18px }
-.niuu-home .env-bands .env-part + .env-part { border-top:1px solid #35566a }
-.niuu-home .env-bands .glyph { margin:0 }
-.niuu-home .env-bands small { margin:0 }
-.niuu-home .env-base { display:grid;grid-template-columns:minmax(0,3fr) minmax(0,1fr);gap:24px }
-.niuu-home .env-hosts { list-style:none;margin:10px 0 0;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px }
-.niuu-home .env-hosts li { border:1px solid #2b4351;border-radius:8px;padding:10px 12px }
-.niuu-home .env-hosts strong { display:block;font-size:13.5px;font-weight:500;color:var(--mist);white-space:nowrap }
-.niuu-home .env-hosts small { display:block;font-size:12.5px;color:#a8bbc6 }
-.niuu-home .env-models { list-style:none;margin:10px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13.5px;color:#d3e1e8 }
-.niuu-home .env-side { border-left:1px solid #2b4351;padding:26px 22px;display:flex;align-items:center;background:#102433;border-radius:0 12px 12px 0 }
 .niuu-home .env-show { margin-top:clamp(56px,6vw,84px) }
 .niuu-home .env-show .thumbs { margin-top:24px }
-.niuu-home .areas { margin-top:clamp(64px,7vw,96px) }
-.niuu-home .areas .cases { margin-top:18px }
-.niuu-home .areas .case { border-top-color:#4a6a7c }
-.niuu-home .areas h4 { font-size:16px;font-weight:500;margin:0 0 6px;transition:color .2s }
-.niuu-home .areas .case:hover h4 { color:var(--strong) }
-.niuu-home .areas .case p { color:#b7c9d2 }
 
 /* Install tabs. */
 .niuu-home .view-tabs { display:flex;flex-wrap:wrap;gap:6px 28px;margin:0;border-bottom:1px solid #2b4351 }
@@ -215,14 +220,6 @@ html:has(.niuu-home) { scroll-behavior:smooth }
 .niuu-home .enlarge img { width:100%;height:auto }
 .niuu-home .enlarge button { position:sticky;top:10px;float:right;margin:10px 10px -46px 0;z-index:1;border:1px solid #3a5565;border-radius:6px;background:#0a1823;color:#c6d8e1;padding:7px 11px;font-size:12px }
 
-/* What NIUU builds on. */
-.niuu-home .built { display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr);gap:8% }
-.niuu-home .section .built h2 { font-size:clamp(28px,2.8vw,42px);line-height:1.16;letter-spacing:-.032em;margin:0 0 14px }
-.niuu-home .built p { font-size:15px;line-height:1.75;color:#a8bbc6;margin:0 0 12px }
-.niuu-home .support { margin:0;border-top:1px solid #2b4351 }
-.niuu-home .support div { display:grid;grid-template-columns:150px minmax(0,1fr);gap:20px;padding:13px 0;border-bottom:1px solid #223846 }
-.niuu-home .support dt { font-size:14px;color:#a8bbc6 }
-.niuu-home .support dd { margin:0;font-size:14px;line-height:1.6;color:#e8f3f6 }
 
 
 /* Use cases. */
@@ -287,13 +284,23 @@ html:has(.niuu-home) { scroll-behavior:smooth }
   .niuu-home .evolution:before { display:none }
   .niuu-home .evolution li { padding-top:0 }
   .niuu-home .evolution li:before { display:none }
-  .niuu-home .env-tenants { grid-template-columns:repeat(3,minmax(0,1fr));gap:12px }
-  .niuu-home .tenant-parts { grid-template-columns:minmax(0,1fr) }
-  .niuu-home .env-base { grid-template-columns:minmax(0,1fr) }
-  .niuu-home .env-hosts { grid-template-columns:repeat(3,minmax(0,1fr)) }
   .niuu-home .cases.four { grid-template-columns:repeat(2,minmax(0,1fr)) }
 }
+@media (max-width:1100px) {
+  .niuu-home .blocks { grid-template-columns:repeat(2,minmax(0,1fr)) }
+  .niuu-home .block:nth-child(4n):before { display:block }
+  .niuu-home .block:nth-child(2n):before, .niuu-home .block:last-child:before { display:none }
+  .niuu-home .block:nth-child(n+8):after { display:block }
+  .niuu-home .block:nth-child(n+10):after { display:none }
+}
 @media (max-width:780px) {
+  .niuu-home .blocks-lead, .niuu-home .assemble, .niuu-home .blocks-foot { grid-template-columns:minmax(0,1fr);gap:16px }
+  .niuu-home .blocks-section > .wave { width:150%;right:-50%;opacity:.22 }
+  .niuu-home .blocks { grid-template-columns:minmax(0,1fr);--gap:18px }
+  .niuu-home .block:before { display:none !important }
+  .niuu-home .block:nth-child(n):after { display:block }
+  .niuu-home .block:last-child:after { display:none }
+  .niuu-home .block a { padding:16px }
   .niuu-home .site-head { height:76px }
   .niuu-home .brand .word { width:130px }
   .niuu-home .brand .orb { width:45px;height:45px }
@@ -303,7 +310,6 @@ html:has(.niuu-home) { scroll-behavior:smooth }
   .niuu-home .hero p { max-width:450px }
   .niuu-home .wave { width:165%;right:-65%;top:170px;opacity:.55 }
   .niuu-home .hero:after { background:linear-gradient(90deg,#071019 0%,#071019da 49%,#07101944 85%) }
-  .niuu-home .built, .niuu-home .start { grid-template-columns:minmax(0,1fr);gap:32px }
   .niuu-home .flow { display:none }
   .niuu-home .stage .show-main { margin-left:0;margin-right:0 }
   .niuu-home .stage .view figcaption, .niuu-home .stage .view:not(.flowing) { padding:0 }
@@ -311,15 +317,6 @@ html:has(.niuu-home) { scroll-behavior:smooth }
   .niuu-home .stage .flowing .shot-frame img { border-radius:7px }
   .niuu-home .shot-frame:after { display:none }
   .niuu-home .environment > .wave { width:150%;right:-50%;opacity:.3 }
-  .niuu-home .env-title { display:block }
-  .niuu-home .env-title p { margin-top:6px }
-  .niuu-home .env-grid { grid-template-columns:minmax(0,1fr) }
-  .niuu-home .env-main { padding:16px }
-  .niuu-home .env-tenants { grid-template-columns:minmax(0,1fr) }
-  .niuu-home .tenant-parts { grid-template-columns:repeat(3,minmax(0,1fr)) }
-  .niuu-home .env-bands .env-part { grid-template-columns:20px minmax(0,1fr);padding:12px 14px }
-  .niuu-home .env-bands small { grid-column:2 }
-  .niuu-home .env-side { border-left:0;border-top:1px solid #2b4351;border-radius:0 0 12px 12px;padding:16px }
   .niuu-home .cases { grid-template-columns:repeat(2,minmax(0,1fr)) }
 }
 @media (max-width:520px) {
@@ -327,18 +324,15 @@ html:has(.niuu-home) { scroll-behavior:smooth }
   .niuu-home .hero p { font-size:15px }
   .niuu-home .hero-cta { flex-wrap:wrap }
   .niuu-home .site-link { display:none }
-  .niuu-home .support div { grid-template-columns:minmax(0,1fr);gap:2px }
   .niuu-home .btn { width:100% }
   .niuu-home .cases, .niuu-home .cases.four { grid-template-columns:minmax(0,1fr) }
-  .niuu-home .env-hosts { grid-template-columns:repeat(2,minmax(0,1fr)) }
-  .niuu-home .env-hosts li:last-child { grid-column:span 2 }
   .niuu-home .evolution { grid-template-columns:minmax(0,1fr);gap:18px }
 }
 @media (prefers-reduced-motion:reduce) {
   html:has(.niuu-home) { scroll-behavior:auto }
   .niuu-home .view { animation:none }
   .niuu-home .steps ol:after { transition:none }
+  .niuu-home .block { transition:none }
   .niuu-home .flow-motion { display:none }
   .niuu-home .flow-still { display:inline }
-  .niuu-home .env-links span:after { animation:none;display:none }
 }

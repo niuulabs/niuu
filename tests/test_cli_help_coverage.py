@@ -2,8 +2,8 @@
 
 An option with no help renders as a blank cell in the generated reference
 (``docs/site/reference/``) and as a bare flag in ``--help``, which is how 21
-undocumented flags on ``niuu platform up`` went unnoticed. This guards both
-CLIs so the gap cannot reappear silently.
+undocumented flags on ``niuu platform up`` went unnoticed. This guards the
+CLI so the gap cannot reappear silently.
 
 Options marked ``hidden=True`` are exempt: they are internal plumbing passed
 by a caller, and neither ``--help`` nor the reference shows them.
@@ -14,17 +14,12 @@ from __future__ import annotations
 import os
 from typing import Any
 
-import pytest
 from typer.main import get_command
 
 os.environ.setdefault("NO_COLOR", "1")
 
 
-def _load(which: str) -> Any:
-    if which == "ravn":
-        from ravn.cli.commands import app
-
-        return get_command(app)
+def _load() -> Any:
     from cli.app import build_app
 
     return get_command(build_app())
@@ -51,15 +46,13 @@ def _undocumented(command: Any, path: list[str]) -> list[str]:
     return found
 
 
-@pytest.mark.parametrize("cli", ["niuu", "ravn"])
-def test_every_visible_option_has_help(cli: str) -> None:
-    undocumented = _undocumented(_load(cli), [cli])
+def test_every_visible_option_has_help() -> None:
+    undocumented = _undocumented(_load(), ["niuu"])
 
     assert not undocumented, "Options missing help text:\n  " + "\n  ".join(undocumented)
 
 
-@pytest.mark.parametrize("cli", ["niuu", "ravn"])
-def test_every_command_has_a_summary(cli: str) -> None:
+def test_every_command_has_a_summary() -> None:
     """A command with no docstring gets a blank description in the reference."""
 
     def _walk(command: Any, path: list[str]) -> list[str]:
@@ -73,4 +66,4 @@ def test_every_command_has_a_summary(cli: str) -> None:
             missing.extend(_walk(subcommands[name], [*path, name]))
         return missing
 
-    assert not _walk(_load(cli), [cli]), "Commands missing a summary."
+    assert not _walk(_load(), ["niuu"]), "Commands missing a summary."

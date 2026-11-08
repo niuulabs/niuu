@@ -5,16 +5,14 @@ from __future__ import annotations
 import json
 from contextlib import nullcontext
 from dataclasses import replace
-from pathlib import Path
 from unittest.mock import MagicMock
 
-import httpx
 import pytest
 
+from niuu.adapters.outbound.http_json_client import HttpResponse
 from ravn.adapters.tool_build import (
     A2AToolBuildBackend,
     ForgeSessionToolBuildBackend,
-    HttpResponse,
 )
 from ravn.adapters.tool_build._contract import (
     build_prompts,
@@ -23,15 +21,9 @@ from ravn.adapters.tool_build._contract import (
     poll_until,
 )
 from ravn.adapters.tool_build.forge_session import _decode_canonical_body
-from ravn.adapters.tool_build.http import (
-    HttpxJsonClient,
-    client_from_workload_identity,
-    normalize_http_origin,
-)
 from ravn.ports.tool_build_backend import (
     ToolBuildError,
     ToolBuildInputRequiredError,
-    ToolBuildPendingError,
     ToolBuildRequest,
     ToolBuildTaskEndedError,
 )
@@ -383,158 +375,6 @@ async def test_forge_empty_chronicle_has_no_contract() -> None:
         await backend.build(_request())
 
 
-def test_client_from_workload_identity_exchanges_projected_token(tmp_path: Path) -> None:
-    token_file = tmp_path / "token"
-    token_file.write_text("projected-proof", encoding="utf-8")
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url == "https://forge.example/api/v1/tokens/workload/exchange"
-        assert json.loads(request.content) == {
-            "token": "projected-proof",
-            "audiences": ["forge"],
-        }
-        return httpx.Response(200, json={"token": "workload-jwt", "expires_in": 300})
-
-    client = client_from_workload_identity(
-        base_url="https://forge.example",
-        workload_token_file=str(token_file),
-        workload_audiences=["forge"],
-        transport=httpx.MockTransport(handler),
-    )
-
-    assert client._headers()["Authorization"] == "Bearer workload-jwt"
-
-
-async def test_http_client_refreshes_rejected_workload_identity_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class RefreshableAuth:
-        def __init__(self) -> None:
-            self.token = "expired"
-            self.invalidations = 0
-
-        def headers(self) -> dict[str, str]:
-            return {"Authorization": f"Bearer {self.token}"}
-
-        def invalidate(self) -> bool:
-            self.invalidations += 1
-            self.token = "fresh"
-            return True
-
-    class FakeAsyncClient:
-        def __init__(self, **_kwargs: object) -> None:
-            self.authorizations: list[str] = []
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args: object) -> None:
-            return None
-
-        async def get(self, _url: str, *, headers: dict[str, str]) -> httpx.Response:
-            authorization = headers["Authorization"]
-            self.authorizations.append(authorization)
-            status = 401 if authorization == "Bearer expired" else 200
-            return httpx.Response(status, json={"ok": status == 200})
-
-    created: list[FakeAsyncClient] = []
-
-    def build_client(**kwargs: object) -> FakeAsyncClient:
-        client = FakeAsyncClient(**kwargs)
-        created.append(client)
-        return client
-
-    monkeypatch.setattr(httpx, "AsyncClient", build_client)
-    auth = RefreshableAuth()
-    client = HttpxJsonClient(auth=auth, allowed_origins=["https://forge.example"])
-
-    response = await client.get("https://forge.example/api/v1/forge/sessions")
-
-    assert response.status_code == 200
-    assert auth.invalidations == 1
-    assert created[0].authorizations == ["Bearer expired", "Bearer fresh"]
-
-
-async def test_http_client_per_call_bearer_bypasses_base_auth_resolution(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FailingBaseAuth:
-        def headers(self) -> dict[str, str]:
-            raise AssertionError("base workload identity must not be resolved")
-
-    class FakeAsyncClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args: object) -> None:
-            return None
-
-        async def post(
-            self,
-            _url: str,
-            *,
-            headers: dict[str, str],
-            json: dict,
-        ) -> httpx.Response:
-            assert headers["Authorization"] == "Bearer owner-operation-token"
-            assert json == {"jsonrpc": "2.0"}
-            return httpx.Response(200, json={"ok": True})
-
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeAsyncClient())
-    client = HttpxJsonClient(
-        auth=FailingBaseAuth(),  # type: ignore[arg-type]
-        allowed_origins=["http://ravn-child:8080"],
-    )
-
-    response = await client.post(
-        "http://ravn-child:8080/a2a",
-        {"jsonrpc": "2.0"},
-        headers={"Authorization": "Bearer owner-operation-token"},
-    )
-
-    assert response.status_code == 200
-
-
-def test_client_external_token_env_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("EXTERNAL_TOOL_BUILD_TOKEN", "external-123")
-
-    client = client_from_workload_identity(
-        base_url="https://forge.example",
-        external_token_env="EXTERNAL_TOOL_BUILD_TOKEN",
-    )
-
-    assert client._headers()["Authorization"] == "Bearer external-123"
-
-
-def test_authenticated_http_client_is_bound_to_configured_origins(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("EXTERNAL_TOOL_BUILD_TOKEN", "external-123")
-    client = client_from_workload_identity(
-        base_url="https://forge.example/api",
-        external_token_env="EXTERNAL_TOOL_BUILD_TOKEN",
-        allowed_origins=["https://forge.example", "https://peer.example:443/a2a"],
-    )
-
-    client._assert_allowed_origin("https://forge.example/launch")
-    client._assert_allowed_origin("https://peer.example/task")
-    with pytest.raises(ValueError, match="untrusted origin"):
-        client._assert_allowed_origin("https://attacker.example/collect")
-    with pytest.raises(ValueError, match="absolute http"):
-        client._assert_allowed_origin("file:///tmp/token")
-
-
-@pytest.mark.parametrize(
-    ("url", "expected"),
-    [
-        ("https://[2001:db8::1]/a2a", "https://[2001:db8::1]"),
-        ("https://[2001:db8::1]:8443/a2a", "https://[2001:db8::1]:8443"),
-    ],
-)
-def test_http_origin_normalization_preserves_ipv6_authority(url: str, expected: str) -> None:
-    assert normalize_http_origin(url) == expected
-
-
 # ---------------------------------------------------------------------------
 # canonical-artifact decode helpers
 # ---------------------------------------------------------------------------
@@ -712,111 +552,6 @@ async def test_a2a_backend_builds_from_inline_canonical_artifact() -> None:
         "status_message": "",
         "source_tool": "build_tool",
     }
-
-
-async def test_a2a_backend_suspends_for_push_and_resumes_with_one_get() -> None:
-    artifacts = [
-        {
-            "artifactId": "research/campaigns/task-1/learned_tool.json",
-            "parts": [{"filename": "learned_tool.json", "text": _BUILT_CONTRACT}],
-        }
-    ]
-    client = _FakeHttpClient(
-        {
-            ("GET", "/.well-known/agent-card.json"): [
-                HttpResponse(200, _a2a_card(push_notifications=True))
-            ],
-            ("POST", "/api/v1/ting/a2a"): [
-                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
-                _rpc_result({"taskId": "task-1", "id": "push-1"}),
-                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=artifacts)),
-            ],
-        }
-    )
-    backend = _a2a_backend(
-        client,
-        workflow_id="wf-1",
-        push_callback_url="https://ivaldi.example/a2a/push",
-    )
-
-    with pytest.raises(ToolBuildPendingError) as raised:
-        await backend.build(_request())
-
-    assert raised.value.push_registered is True
-    assert raised.value.continuation == {
-        "task_id": "task-1",
-        "input_kind": "pending",
-        "round": 0,
-        "exchanges": [],
-        "push_registered": True,
-    }
-    assert [body["method"] for body in client.post_bodies] == [
-        "SendMessage",
-        "CreateTaskPushNotificationConfig",
-    ]
-    registration = client.post_bodies[1]["params"]
-    assert registration["taskId"] == "task-1"
-    assert registration["url"] == "https://ivaldi.example/a2a/push"
-    assert registration["authentication"] == {"scheme": "Bearer"}
-    assert "token" not in registration
-
-    result = await backend.build(replace(_request(), continuation=raised.value.continuation))
-
-    assert result.manifest["name"] == "mimir_metric_window"
-    assert [body["method"] for body in client.post_bodies] == [
-        "SendMessage",
-        "CreateTaskPushNotificationConfig",
-        "GetTask",
-    ]
-
-
-async def test_a2a_backend_refuses_push_callback_against_card_without_push() -> None:
-    client = _FakeHttpClient(
-        {
-            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
-            ("POST", "/api/v1/ting/a2a"): [
-                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
-            ],
-        }
-    )
-    backend = _a2a_backend(
-        client,
-        workflow_id="wf-1",
-        push_callback_url="https://ivaldi.example/a2a/push",
-    )
-
-    with pytest.raises(ToolBuildError, match="does not advertise push notifications"):
-        await backend.build(_request())
-
-    assert [body["method"] for body in client.post_bodies] == ["SendMessage"]
-
-
-async def test_a2a_backend_raises_when_push_registration_fails() -> None:
-    client = _FakeHttpClient(
-        {
-            ("GET", "/.well-known/agent-card.json"): [
-                HttpResponse(200, _a2a_card(push_notifications=True))
-            ],
-            ("POST", "/api/v1/ting/a2a"): [
-                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
-                HttpResponse(403, {"detail": "forbidden"}),
-            ],
-        }
-    )
-    backend = _a2a_backend(
-        client,
-        workflow_id="wf-1",
-        push_callback_url="https://ivaldi.example/a2a/push",
-    )
-
-    with pytest.raises(ToolBuildError, match="HTTP 403"):
-        await backend.build(_request())
-
-    # No in-turn polling after a failed registration.
-    assert [body["method"] for body in client.post_bodies] == [
-        "SendMessage",
-        "CreateTaskPushNotificationConfig",
-    ]
 
 
 async def test_a2a_backend_closes_local_tracking_when_polling_is_exhausted() -> None:

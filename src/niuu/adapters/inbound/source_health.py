@@ -1,12 +1,10 @@
 """Shared additive reporting of fan-out source failures.
 
-Merged list endpoints (Guild's Forge/Ravn aggregate routers, Ravn's own
-resident directory) must not silently drop a source's contribution when it
-fails — an unreachable instance, or a broken discovery adapter, must not
-look identical to one that simply has nothing to report. This module is the
-one place that shape lives, in a package neutral to all of its callers
-(niuu's Guild routers *and* ravn's own API), so every aggregate reports
-failures the same way: additively, via the ``X-Niuu-Source-Failures``
+Merged list endpoints (Guild's Forge aggregate routers) must not silently
+drop a source's contribution when it fails — an unreachable instance, or a
+broken discovery adapter, must not look identical to one that simply has
+nothing to report. This module is the one place that shape lives, so every
+aggregate reports failures the same way: additively, via the ``X-Niuu-Source-Failures``
 response header, mirroring ``TopologySourceHealth``
 (``niuu/domain/services/observatory_topology.py``). See
 ``.claude/rules/no-fallbacks.md``.

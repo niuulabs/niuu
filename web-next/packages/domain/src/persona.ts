@@ -185,7 +185,7 @@ export type FanInStrategy = z.infer<typeof fanInStrategySchema>;
  * fan-in strategy, and Mímir write-routing.
  *
  * **Canonical owner:** `plugin-ravn` (source of truth lives in
- * `volundr/src/ravn/personas/*.yaml`).
+ * `src/personas/builtin/*.yaml`).
  *
  * **Consumed by:**
  * - `plugin-ting` — workflow DAG nodes reference personas by name; dispatch

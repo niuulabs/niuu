@@ -122,7 +122,7 @@ def create_resident_runtimes_router(
     *,
     a2a_public_base_url: str = "",
 ) -> APIRouter:
-    """Create target-local resident runtime routes for Ravn and Guild.
+    """Create target-local resident runtime routes.
 
     With ``a2a_public_base_url`` set, every A2A-capable resident also lists its
     Agent Card and A2A endpoint (``rest_resident_a2a``) among its endpoints.

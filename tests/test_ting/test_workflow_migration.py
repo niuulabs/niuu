@@ -8,22 +8,25 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
-from ravn.domain.persona_document import (
+from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.domain.persona_document import (
     PersonaDependency,
     PersonaDocumentError,
     PortablePersonaCollection,
     PortablePersonaDefinition,
     persona_revision_for_definition,
 )
+from ting import system_workflows
 from ting.adapters.filesystem_workflows import FilesystemWorkflowRepository
+from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.services.workflow_migration import (
     WorkflowMigrationReport,
     migrate_workflow_catalog,
+    workflow_catalog_migration_is_current,
 )
 from ting.migrate_workflows import _registry_source_for_workflow
-from ting.system_workflows import load_system_workflows
+from ting.system_workflows import RETIRED_SYSTEM_WORKFLOW_IDS, load_system_workflows
 
 
 class _Source:
@@ -80,6 +83,7 @@ async def test_workflow_migration_dry_run_apply_and_idempotent_rerun(tmp_path) -
         target=target,
         persona_source_for_workflow=_resolver(personas),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
     )
     assert dry_run.can_apply is True
     assert dry_run.create_count == 1
@@ -90,6 +94,7 @@ async def test_workflow_migration_dry_run_apply_and_idempotent_rerun(tmp_path) -
         target=target,
         persona_source_for_workflow=_resolver(personas),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
         apply=True,
     )
     assert applied.applied is True
@@ -112,6 +117,7 @@ async def test_workflow_migration_dry_run_apply_and_idempotent_rerun(tmp_path) -
         target=target,
         persona_source_for_workflow=_resolver(personas),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
         apply=True,
     )
     assert rerun.applied is True
@@ -128,6 +134,7 @@ async def test_workflow_migration_reports_missing_persona_without_writing(tmp_pa
         target=target,
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
         apply=True,
     )
 
@@ -146,6 +153,7 @@ async def test_migrated_workflow_delete_records_explicit_tombstone(tmp_path) -> 
         target=target,
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
         apply=True,
     )
 
@@ -170,6 +178,7 @@ async def test_divergent_bundled_row_requires_explicit_same_id_replacement(tmp_p
         target=target,
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
     )
     assert preview.can_apply is False
     assert "diverges" in preview.errors[0]
@@ -179,6 +188,7 @@ async def test_divergent_bundled_row_requires_explicit_same_id_replacement(tmp_p
         target=target,
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
         apply=True,
         replace_divergent_bundled=True,
     )
@@ -194,6 +204,7 @@ async def test_divergent_bundled_row_requires_explicit_same_id_replacement(tmp_p
         target=target,
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
         apply=True,
         replace_divergent_bundled=True,
     )
@@ -229,6 +240,7 @@ async def test_bundled_superseded_row_is_skipped_without_error_or_flag(tmp_path)
         target=target,
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
         apply=True,
     )
 
@@ -270,6 +282,7 @@ async def test_bundled_row_newer_than_package_is_an_error_not_superseded(tmp_pat
         target=target,
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
     )
 
     assert report.can_apply is False
@@ -298,6 +311,7 @@ async def test_startup_guard_accepts_catalog_with_a_superseded_bundled_row(tmp_p
         target=target,
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
         apply=True,
     )
 
@@ -328,6 +342,7 @@ async def test_bundled_uuid_with_user_ownership_is_not_silently_skipped(tmp_path
         target=FilesystemWorkflowRepository(str(tmp_path)),
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
     )
 
     assert report.can_apply is False
@@ -366,6 +381,7 @@ async def test_workflow_migration_resolves_personas_in_each_owner_scope(tmp_path
         target=target,
         persona_source_for_workflow=source_for_workflow,
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
         apply=True,
     )
 
@@ -407,6 +423,7 @@ async def test_workflow_migration_rejects_matching_revision_with_wrong_digest(
         target=FilesystemWorkflowRepository(str(tmp_path)),
         persona_source_for_workflow=_resolver(personas),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
     )
 
     assert report.can_apply is False
@@ -423,6 +440,7 @@ async def test_workflow_migration_reports_invalid_resolved_source(tmp_path) -> N
         target=FilesystemWorkflowRepository(str(tmp_path)),
         persona_source_for_workflow=invalid_source,
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
     )
 
     assert report.can_apply is False
@@ -465,6 +483,7 @@ def test_migration_report_to_dict() -> None:
         "referenced_count": 1,
         "bundled_matches": 1,
         "bundled_superseded": 2,
+        "bundled_retired": 0,
         "create_count": 1,
         "unchanged_count": 0,
         "errors": ["boom"],
@@ -482,6 +501,7 @@ async def test_workflow_migration_reports_reference_to_missing_workflow_row(tmp_
         target=FilesystemWorkflowRepository(str(tmp_path)),
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
     )
 
     assert report.can_apply is False
@@ -498,6 +518,7 @@ async def test_workflow_migration_counts_exact_bundled_match(tmp_path) -> None:
         target=FilesystemWorkflowRepository(str(tmp_path)),
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=frozenset(),
     )
 
     assert report.can_apply is True
@@ -531,6 +552,7 @@ async def test_workflow_migration_raises_when_referenced_identity_is_lost(tmp_pa
             target=_EmptyTarget(),
             persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
             bundled_workflows=[packaged],
+            retired_bundled_ids=frozenset(),
             apply=True,
         )
 
@@ -565,6 +587,7 @@ async def test_workflow_migration_raises_when_save_does_not_verify(tmp_path) -> 
             target=_CorruptingTarget(),
             persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
             bundled_workflows=[],
+            retired_bundled_ids=frozenset(),
             apply=True,
         )
 
@@ -587,6 +610,7 @@ async def test_workflow_migration_rejects_divergent_bundled_replacement_over_exi
         target=target,
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=[packaged],
+        retired_bundled_ids=frozenset(),
         apply=True,
         replace_divergent_bundled=True,
     )
@@ -603,6 +627,7 @@ async def test_workflow_migration_rejects_divergent_bundled_replacement_over_exi
         target=target,
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=[packaged],
+        retired_bundled_ids=frozenset(),
         replace_divergent_bundled=True,
     )
 
@@ -621,6 +646,7 @@ async def test_workflow_migration_rejects_non_bundled_workflow_with_conflicting_
         target=target,
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=[],
+        retired_bundled_ids=frozenset(),
         apply=True,
     )
 
@@ -630,6 +656,7 @@ async def test_workflow_migration_rejects_non_bundled_workflow_with_conflicting_
         target=target,
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=[],
+        retired_bundled_ids=frozenset(),
     )
 
     assert report.can_apply is False
@@ -645,6 +672,7 @@ async def test_workflow_migration_reports_invalid_graph_shape(tmp_path) -> None:
         target=FilesystemWorkflowRepository(str(tmp_path)),
         persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
         bundled_workflows=[],
+        retired_bundled_ids=frozenset(),
     )
 
     assert report.can_apply is False
@@ -675,9 +703,156 @@ async def test_workflow_migration_upgrades_content_matched_legacy_revision(tmp_p
         target=FilesystemWorkflowRepository(str(tmp_path)),
         persona_source_for_workflow=_resolver(collection),
         bundled_workflows=[],
+        retired_bundled_ids=frozenset(),
         apply=True,
     )
 
     assert report.applied is True
     assert report.errors == ()
     assert report.create_count == 1
+
+
+@pytest.mark.asyncio
+async def test_migration_skips_a_retired_bundled_row_and_its_references(tmp_path) -> None:
+    """A package-seeded row whose id the package retired is not copied.
+
+    A saga or execution that still names it does not fail verification: the
+    workflow is gone by decision, not lost by the migration.
+    """
+    retired = replace(
+        _workflow(),
+        id=UUID("29393e53-5a29-5f37-aa87-1171aaf20726"),
+        origin="bundled",
+        source="postgres",
+    )
+    target = FilesystemWorkflowRepository(str(tmp_path))
+
+    report = await migrate_workflow_catalog(
+        source=_Source([retired], {retired.id}),
+        target=target,
+        persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
+        bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=RETIRED_SYSTEM_WORKFLOW_IDS,
+        apply=True,
+    )
+
+    assert report.applied is True
+    assert report.bundled_retired == 1
+    assert report.create_count == 0
+    assert await target.get_workflow(retired.id) is None
+    marker = target.read_migration_marker()
+    assert marker is not None
+    assert marker["bundled_retired"] == 1
+    assert marker["inventory_ids"] == [str(retired.id)]
+
+
+@pytest.mark.asyncio
+async def test_migration_copies_an_authored_row_that_reuses_a_retired_id(tmp_path) -> None:
+    """Only package-seeded rows are retired; an operator's own row is kept."""
+    authored = replace(
+        _workflow(),
+        id=next(iter(RETIRED_SYSTEM_WORKFLOW_IDS)),
+        origin="authored",
+    )
+    target = FilesystemWorkflowRepository(str(tmp_path))
+
+    report = await migrate_workflow_catalog(
+        source=_Source([authored]),
+        target=target,
+        persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
+        bundled_workflows=load_system_workflows(),
+        retired_bundled_ids=RETIRED_SYSTEM_WORKFLOW_IDS,
+        apply=True,
+    )
+
+    assert report.bundled_retired == 0
+    assert report.create_count == 1
+    assert await target.get_workflow(authored.id) is not None
+
+
+class _MarkerCatalog:
+    def __init__(self, marker: dict, stored: set[UUID]) -> None:
+        self._marker = marker
+        self._stored = stored
+
+    def read_migration_marker(self) -> dict:
+        return self._marker
+
+    async def get_workflow(self, workflow_id: UUID) -> object | None:
+        return object() if workflow_id in self._stored else None
+
+
+@pytest.mark.asyncio
+async def test_guard_stops_expecting_a_bundled_id_the_package_retired() -> None:
+    """A catalog migrated while a bundled workflow still shipped stays current.
+
+    The bundled id was in the inventory but served from the package, never
+    stored, so once the package drops it the catalog no longer has it.
+    """
+    retired_id = UUID("29393e53-5a29-5f37-aa87-1171aaf20726")
+    kept_id = uuid4()
+    updated_at = datetime(2026, 9, 25, 22, 31, 37, tzinfo=UTC)
+    catalog = _MarkerCatalog(
+        {
+            "source_count": 2,
+            "source_max_updated_at": updated_at.isoformat(),
+            "inventory_ids": [str(retired_id), str(kept_id)],
+            "deleted_ids": [],
+        },
+        {kept_id},
+    )
+
+    assert not await workflow_catalog_migration_is_current(
+        catalog,
+        legacy_count=2,
+        legacy_max_updated_at=updated_at,
+        retired_bundled_ids=frozenset(),
+    )
+    assert await workflow_catalog_migration_is_current(
+        catalog,
+        legacy_count=2,
+        legacy_max_updated_at=updated_at,
+        retired_bundled_ids={retired_id},
+    )
+
+
+@pytest.mark.asyncio
+async def test_guard_still_requires_every_other_inventory_id() -> None:
+    """Retiring one id does not excuse a stored workflow that went missing."""
+    retired_id = UUID("29393e53-5a29-5f37-aa87-1171aaf20726")
+    lost_id = uuid4()
+    updated_at = datetime(2026, 9, 25, tzinfo=UTC)
+    catalog = _MarkerCatalog(
+        {
+            "source_count": 2,
+            "source_max_updated_at": updated_at.isoformat(),
+            "inventory_ids": [str(retired_id), str(lost_id)],
+            "deleted_ids": [],
+        },
+        set(),
+    )
+
+    assert not await workflow_catalog_migration_is_current(
+        catalog,
+        legacy_count=2,
+        legacy_max_updated_at=updated_at,
+        retired_bundled_ids={retired_id},
+    )
+
+
+def test_retired_system_workflow_ids_are_not_packaged() -> None:
+    packaged = {workflow.id for workflow in load_system_workflows()}
+
+    assert not packaged & RETIRED_SYSTEM_WORKFLOW_IDS
+
+
+def test_loading_a_packaged_workflow_with_a_retired_id_raises(monkeypatch) -> None:
+    packaged = load_system_workflows()[0]
+    monkeypatch.setattr(
+        system_workflows,
+        "RETIRED_SYSTEM_WORKFLOW_IDS",
+        frozenset({packaged.id}),
+    )
+
+    with pytest.raises(WorkflowDocumentError, match="retired system workflow id"):
+        load_system_workflows()

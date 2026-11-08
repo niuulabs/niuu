@@ -2,31 +2,18 @@ import { useEffect, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { IMimirService } from '@niuulabs/plugin-mimir';
-import type { IBudgetStream } from '@niuulabs/plugin-ravn';
 import { useReviews, useSagas, type ITrackerBrowserService } from '@niuulabs/plugin-ting';
-import type {
-  IRealmGovernanceService,
-  IValkyrieService,
-  RealmSummary,
-} from '@niuulabs/plugin-valkyrie';
+import type { RealmSummary } from '../domain/governance';
+import { buildRealmView, waitingOnBoard, workProjectForBoard } from '../domain/join';
+import { mountNameFor } from '../domain/realm';
+import type { IRealmGovernanceService } from '../ports';
 import {
   REALMS_QUERY_KEY,
+  REALM_GOVERNANCE_SERVICE_KEY,
   useRealmTrustGrants,
   useRealms,
-  useReviewList,
-  useValkyrieDashboard,
-} from '@niuulabs/plugin-valkyrie';
-import {
-  buildRealmView,
-  residentForRealm,
-  residentMemory,
-  reviewsForRealm,
-  sessionsForRealm,
-  waitingOnBoard,
-  workProjectForBoard,
-} from '../domain/join';
-import { mountNameFor } from '../domain/realm';
-import { useRavens, useVolundrSessions } from './useRealmsHome';
+} from './useRealmGovernance';
+import { useVolundrSessions } from './useRealmsHome';
 
 /** Everything the realm page shows, joined by the naming conventions. */
 export function useRealmView(slug: string) {
@@ -37,52 +24,27 @@ export function useRealmView(slug: string) {
     [realms.data, slug],
   );
   const hasRealm = realm !== null;
-  const dashboard = useValkyrieDashboard();
-  const ravens = useRavens();
-  const valkyrieRealms = useService<IRealmGovernanceService>('valkyrie.realms');
+  const governance = useService<IRealmGovernanceService>(REALM_GOVERNANCE_SERVICE_KEY);
   const grants = useRealmTrustGrants(slug, realm !== null);
 
   useEffect(() => {
     if (!hasRealm) return;
-    return valkyrieRealms.subscribeRealmDetail(slug, (detail) => {
+    return governance.subscribeRealmDetail(slug, (detail) => {
       queryClient.setQueryData<RealmSummary[]>(REALMS_QUERY_KEY, (current) =>
         current?.map((entry) => (entry.slug === slug ? detail.realm : entry)),
       );
       queryClient.setQueryData([...REALMS_QUERY_KEY, slug, 'trust-grants'], detail.trust_grants);
     });
-  }, [hasRealm, queryClient, slug, valkyrieRealms]);
+  }, [hasRealm, queryClient, slug, governance]);
 
-  const reviews = useReviewList({});
   const sessions = useVolundrSessions();
-  const valkyrie = useService<IValkyrieService>('valkyrie');
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
-  const budget = useService<IBudgetStream>('ravn.budget');
   const mimir = useService<IMimirService>('mimir');
 
   const view = useMemo(
-    () =>
-      realm
-        ? buildRealmView({
-            realm,
-            dashboard: dashboard.data,
-            ravens: ravens.data,
-            grants: grants.data,
-            reviews: reviews.data,
-            sessions: sessions.data,
-          })
-        : null,
-    [dashboard.data, grants.data, ravens.data, realm, reviews.data, sessions.data],
+    () => (realm ? buildRealmView({ realm, grants: grants.data }) : null),
+    [grants.data, realm],
   );
-
-  const resident = residentForRealm(dashboard.data, slug);
-  const environmentId = resident?.environmentId ?? null;
-
-  const decisions = useQuery({
-    queryKey: ['valkyrie', 'decisions', environmentId],
-    queryFn: () => valkyrie.listDecisions({ environmentId: environmentId ?? undefined, limit: 30 }),
-    enabled: environmentId !== null,
-    refetchInterval: 15_000,
-  });
 
   // With two tracker connections a project id alone is ambiguous, so name the connection.
   const sagas = useSagas();
@@ -106,44 +68,27 @@ export function useRealmView(slug: string) {
     refetchInterval: 60_000,
   });
 
-  const ravnId = view?.ravnId ?? null;
-  const budgetState = useQuery({
-    queryKey: ['ravn', 'budget', ravnId],
-    queryFn: () => budget.getBudget(ravnId as string),
-    enabled: ravnId !== null,
-  });
-
-  // An adopted resident keeps its own memory; only a created workspace has a mount of its own.
+  // Only a workspace created with the recipe has a memory mount of its own.
   const mountName = view && !view.adopted ? mountNameFor(slug) : null;
   const mounts = useQuery({
     queryKey: ['mimir', 'mounts'],
     queryFn: () => mimir.mounts.listMounts(),
   });
   const mount = mounts.data?.find((entry) => entry.name === mountName) ?? null;
-  // A workspace made around a running resident opens the memory that resident reports.
-  const ownMemory = view?.adopted ? residentMemory(resident, mounts.data) : [];
 
   return {
     realm,
     view,
-    resident,
-    environment: dashboard.data?.environments.find((entry) => entry.id === environmentId) ?? null,
     allSessions: sessions.data,
-    realmSessions: sessionsForRealm(sessions.data, slug),
-    realmReviews: reviewsForRealm(reviews.data, resident),
     waitingTickets: waitingOnBoard(
       workReviews.data?.items,
       workProjectForBoard(sagas.data, boardId)?.id,
     ),
-    decisions: decisions.data?.items ?? [],
     intake: intake.data ?? [],
     findings: findings.data ?? [],
     ticketsError: intake.error ?? findings.error ?? null,
-    budget: budgetState.data ?? null,
-    budgetError: budgetState.error,
     mount,
     mountName,
-    residentMemory: ownMemory,
     isLoading: realms.isLoading,
     notFound: !realms.isLoading && realms.data !== undefined && realm === null,
     error: realms.error ?? grants.error ?? null,

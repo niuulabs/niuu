@@ -56,7 +56,6 @@ const TYPE_PRIORITY: Record<string, number> = {
   bifrost: 6,
   volundr: 7,
   ravn_long: 8,
-  warden: 8,
   ravn_run: 9,
   run: 10,
   trigger: 11,

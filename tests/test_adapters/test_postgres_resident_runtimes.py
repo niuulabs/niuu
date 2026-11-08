@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock
@@ -35,13 +36,14 @@ def _runtime() -> ResidentRuntime:
         persona_name="product-steward",
         model="gpt-5.6",
         backend=ResidentBackend.OPENSHELL,
-        engine=ResidentEngine.RAVN,
-        profile_id="ravn-openshell",
+        engine=ResidentEngine.OPENCLAW,
+        profile_id="openclaw-openshell",
         flock_id=flock_id,
         flock_member_id=member_id,
         flock_role="coordinator",
-        flock_peer_id=f"ravn-{member_id}",
+        flock_peer_id=f"openclaw-{member_id}",
         realm_id=uuid4(),
+        integration_bindings={"xai": "xai-key"},
         desired_state=ResidentDesiredState.RUNNING,
         observed_state=ResidentObservedState.ACTIVE,
         backend_ref={"kind": "Sandbox", "name": "muninn"},
@@ -69,6 +71,7 @@ def _row(runtime: ResidentRuntime) -> dict:
         "flock_role": runtime.flock_role,
         "flock_peer_id": runtime.flock_peer_id,
         "realm_id": runtime.realm_id,
+        "integration_bindings": json.dumps(runtime.integration_bindings),
         "desired_state": runtime.desired_state.value,
         "observed_state": runtime.observed_state.value,
         "backend_ref": runtime.backend_ref,
@@ -98,11 +101,13 @@ async def test_create_and_update_persist_full_runtime_contract() -> None:
     assert runtime.flock_id in create_args
     assert runtime.flock_peer_id in create_args
     assert runtime.realm_id in create_args
+    assert '{"xai": "xai-key"}' in create_args
     update_args = pool.execute.await_args_list[1].args
     assert "UPDATE resident_runtimes" in update_args[0]
     assert runtime.observed_state.value in update_args
     assert runtime.flock_member_id in update_args
     assert runtime.realm_id in update_args
+    assert '{"xai": "xai-key"}' in update_args
 
 
 async def test_get_and_scoped_list_map_json_and_enums() -> None:

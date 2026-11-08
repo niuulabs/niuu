@@ -1,6 +1,3 @@
-{{- include "skuld.roomGatewayValidate" . -}}
-{{- $room := include "skuld.roomGatewayEnabled" . -}}
-{{- $upstream := ternary "local_broker" "local_nginx" (not (empty $room)) -}}
 {{- if include "skuld.authEnforced" . }}
 {{- if not (and .Values.envoy.jwt.enabled .Values.envoy.jwt.issuer .Values.envoy.jwt.audiences .Values.envoy.jwt.keycloakTls (hasPrefix "https://" .Values.envoy.jwt.jwksUri)) }}
 {{- fail "Enforced Skuld sidecar requires a JWT issuer, audiences and verified HTTPS JWKS" }}
@@ -40,12 +37,12 @@ data:
                         - name: backend
                           domains: ["*"]
                           routes:
-                            {{- if and .Values.wsAuth.enforce_ownership (not $room) }}
+                            {{- if .Values.wsAuth.enforce_ownership }}
                             {{- range list "/health" "/ready" }}
                             - match:
                                 path: {{ . | quote }}
                               route:
-                                cluster: {{ $upstream }}
+                                cluster: local_nginx
                               typed_per_filter_config:
                                 envoy.filters.http.ext_authz:
                                   "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
@@ -58,16 +55,26 @@ data:
                                     string_match:
                                       exact: OPTIONS
                               route:
-                                cluster: {{ $upstream }}
+                                cluster: local_nginx
                               typed_per_filter_config:
                                 envoy.filters.http.ext_authz:
                                   "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
                                   disabled: true
                             {{- end }}
+                            {{- if .Values.preview.enabled }}
+                            # Live preview: an app's responses and hot-reload
+                            # sockets stream for as long as the browser holds them.
+                            - match:
+                                prefix: "/preview/"
+                              route:
+                                cluster: local_nginx
+                                timeout: 0s
+                                idle_timeout: {{ .Values.preview.streamIdleTimeout }}
+                            {{- end }}
                             - match:
                                 prefix: "/"
                               route:
-                                cluster: {{ $upstream }}
+                                cluster: local_nginx
                                 timeout: {{ .Values.envoy.upstreamTimeout }}
                     http_filters:
                       {{- if .Values.envoy.jwt.enabled }}
@@ -95,80 +102,28 @@ data:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
                           providers:
                             keycloak:
-                              issuer: {{ .Values.envoy.jwt.issuer | quote }}
-                              {{- if .Values.envoy.jwt.audiences }}
-                              audiences:
-                                {{- range .Values.envoy.jwt.audiences }}
-                                - {{ . | quote }}
-                                {{- end }}
-                              {{- end }}
-                              from_headers:
-                                - name: Authorization
-                                  value_prefix: "Bearer "
-                              from_params:
-                                - token
-                                - access_token
-                              remote_jwks:
-                                http_uri:
-                                  uri: {{ .Values.envoy.jwt.jwksUri | quote }}
-                                  cluster: keycloak
-                                  timeout: {{ .Values.envoy.jwt.jwksTimeout }}
-                                cache_duration:
-                                  seconds: {{ .Values.envoy.jwt.jwksCacheDurationSeconds }}
-                              forward: true
-                              payload_in_metadata: jwt_payload
-                              claim_to_headers:
-                                - header_name: {{ .Values.envoy.headerNames.userId }}
-                                  claim_name: sub
-                                - header_name: {{ .Values.envoy.headerNames.email }}
-                                  claim_name: email
-                                - header_name: {{ .Values.envoy.headerNames.tenant }}
-                                  claim_name: {{ .Values.envoy.jwt.tenantClaim }}
-                                - header_name: {{ .Values.envoy.headerNames.roles }}
-                                  claim_name: {{ .Values.envoy.jwt.rolesClaim }}
-                                {{- range .Values.envoy.jwt.extraClaimHeaders }}
-                                - header_name: {{ .headerName | quote }}
-                                  claim_name: {{ .claimName | quote }}
-                                {{- end }}
+                              {{- include "skuld.envoy.keycloakJwtProvider" (dict "root" . "params" true) | nindent 30 }}
                             {{- if .Values.envoy.jwt.workload.enabled }}
                             workload:
-                              issuer: {{ .Values.envoy.jwt.workload.issuer | quote }}
-                              {{- if .Values.envoy.jwt.workload.audiences }}
-                              audiences:
-                                {{- range .Values.envoy.jwt.workload.audiences }}
-                                - {{ . | quote }}
-                                {{- end }}
-                              {{- end }}
-                              from_headers:
-                                - name: Authorization
-                                  value_prefix: "Bearer "
-                              from_params:
-                                - token
-                              remote_jwks:
-                                http_uri:
-                                  uri: {{ .Values.envoy.jwt.workload.jwksUri | quote }}
-                                  cluster: workload_jwks
-                                  timeout: {{ .Values.envoy.jwt.workload.jwksTimeout | default "5s" }}
-                                cache_duration:
-                                  seconds: {{ .Values.envoy.jwt.workload.jwksCacheDurationSeconds | default 300 }}
-                              forward: true
-                              payload_in_metadata: jwt_payload
-                              claim_to_headers:
-                                - header_name: {{ .Values.envoy.headerNames.userId }}
-                                  claim_name: sub
-                                - header_name: {{ .Values.envoy.headerNames.email }}
-                                  claim_name: email
-                                - header_name: {{ .Values.envoy.headerNames.tenant }}
-                                  claim_name: {{ .Values.envoy.jwt.workload.tenantClaim | default "tenant_id" }}
-                                - header_name: {{ .Values.envoy.headerNames.roles }}
-                                  claim_name: {{ .Values.envoy.jwt.workload.rolesClaim | default "resource_access.volundr-api.roles" }}
-                                {{- range .Values.envoy.jwt.workload.extraClaimHeaders }}
-                                - header_name: {{ .headerName | quote }}
-                                  claim_name: {{ .claimName | quote }}
-                                {{- end }}
+                              {{- include "skuld.envoy.workloadJwtProvider" (dict "root" . "params" true) | nindent 30 }}
+                            {{- end }}
+                            {{- if .Values.preview.enabled }}
+                            {{- if not .Values.envoy.jwt.workload.enabled }}
+                            {{- fail "preview.enabled with envoy.jwt.enabled needs envoy.jwt.workload.enabled: Envoy verifies the router's workload credential on /preview/" }}
+                            {{- end }}
+                            workload_preview:
+                              {{- include "skuld.envoy.workloadJwtProvider" (dict "root" . "params" false) | nindent 30 }}
                             {{- end }}
                           rules:
-                            {{- if not $room }}
+                            {{- if .Values.preview.enabled }}
+                            # Live preview, first: the router's credential comes from
+                            # Authorization only, never the app's own ?token= (see
+                            # _envoy_jwt.tpl).
+                            - match:
+                                prefix: "/preview/"
+                              requires:
+                                provider_name: workload_preview
+                            {{- end }}
                             - match:
                                 path: /health
                             - match:
@@ -178,7 +133,6 @@ data:
                                 headers:
                                   - name: ":method"
                                     exact_match: "OPTIONS"
-                            {{- end }}
                             - match:
                                 prefix: "/"
                               requires:
@@ -233,22 +187,6 @@ data:
                           address: 127.0.0.1
                           port_value: {{ .Values.envoy.authorization.port }}
         {{- end }}
-        {{- if $room }}
-        # Room gateway: no nginx. Envoy fronts the loopback-only broker directly.
-        - name: local_broker
-          connect_timeout: {{ .Values.envoy.connectTimeout }}
-          type: STATIC
-          lb_policy: ROUND_ROBIN
-          load_assignment:
-            cluster_name: local_broker
-            endpoints:
-              - lb_endpoints:
-                  - endpoint:
-                      address:
-                        socket_address:
-                          address: 127.0.0.1
-                          port_value: 8081
-        {{- else }}
         - name: local_nginx
           connect_timeout: {{ .Values.envoy.connectTimeout }}
           type: STATIC
@@ -262,7 +200,6 @@ data:
                         socket_address:
                           address: 127.0.0.1
                           port_value: {{ .Values.service.port | default 8080 }}
-        {{- end }}
         {{- if .Values.envoy.jwt.enabled }}
         - name: keycloak
           connect_timeout: {{ .Values.envoy.connectTimeout }}

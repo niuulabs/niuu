@@ -21,6 +21,7 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from niuu.config_models import SessionPreviewConfig
 from niuu.domain.models import InstanceKind, InstanceVisibility
 
 
@@ -277,13 +278,6 @@ def _default_instance_catalog() -> list[InstanceCatalogEntryConfig]:
             detail="dispatch ravens",
         ),
         InstanceCatalogEntryConfig(
-            kind=InstanceKind.RAVN,
-            label="Ravn",
-            rune="ᚱ",
-            summary="agent runtime",
-            detail="runs ravens and wardens",
-        ),
-        InstanceCatalogEntryConfig(
             kind=InstanceKind.OBSERVATORY,
             label="Observatory",
             rune="◉",
@@ -518,6 +512,14 @@ class NiuuHostConfig(BaseSettings):
         default=5432,
         validation_alias=AliasChoices("external_database_port", "DATABASE__PORT"),
     )
+    session_preview: SessionPreviewConfig = Field(
+        default_factory=lambda: SessionPreviewConfig(enabled=True, domain="localhost"),
+        description=(
+            "Live preview on the local host: <port>--<session-id>.localhost:<host port> "
+            "opens a session's port. Browsers resolve every *.localhost name to "
+            "loopback, so this needs no DNS, certificate or sign-in."
+        ),
+    )
     session_proxy_role_check_interval_seconds: float = Field(
         default=5.0,
         gt=0,
@@ -597,7 +599,7 @@ class HostIdentityConfig(BaseModel):
 
     Used by the session proxy (``niuu.session_proxy``) to resolve a verified
     caller identity for WS/HTTP attach — a header-only slot (no user
-    provisioning), the same shape as Ravn's own ``RAVN_API_AUTH``. Set from
+    provisioning), the same shape as Ting's own ``AUTH`` slot. Set from
     ``host_auth.mode`` (``cli.config.AuthConfig``) via the ``HOST_IDENTITY__*``
     env vars — a distinct name from ``IDENTITY__*`` deliberately, so this
     slot can never collide with Völundr/Identity's own ``IDENTITY__ADAPTER``

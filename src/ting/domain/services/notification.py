@@ -19,6 +19,7 @@ from niuu.ports.notification_channel import (
     NotificationUrgency,
 )
 from niuu.ports.notifications import NotificationDeliveryError
+from ting.domain.workflow_steps import NOTIFY_STEP_FLAGGED
 from ting.ports.event_bus import EventBusPort, TingEvent
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,15 @@ _STATUS_NOTIFICATION_MAP: dict[str, dict[str, Any]] = {
         "body_template": "Run {tracker_id} has been merged.",
         "urgency": NotificationUrgency.LOW,
     },
+}
+
+#: How a stuck-step flag reads in a notification: "step X is {label} since ...".
+_STEP_FLAG_LABELS = {
+    "overdue": "overdue",
+    "not_started": "not started",
+    "undelivered": "undelivered to its session",
+    "unclosed": "unclosed (a turn ended without closing it)",
+    "session_gone": "without its session",
 }
 
 # ---------------------------------------------------------------------------
@@ -172,6 +182,8 @@ class NotificationService:
 
     async def _map_event(self, event: TingEvent) -> Notification | None:
         """Convert a TingEvent into a Notification, or None if unmapped."""
+        if event.event == NOTIFY_STEP_FLAGGED:
+            return self._map_workflow_step_flagged(event.data)
         match event.event:
             case "run.state_changed":
                 return self._map_run_state_changed(event)
@@ -306,12 +318,55 @@ class NotificationService:
             event_type="phase.unlocked",
         )
 
+    def _map_workflow_step_flagged(self, data: dict[str, Any]) -> Notification | None:
+        """Map a workflow.step_flagged event: an open step of a run is stuck."""
+        owner_id = str(data.get("owner_id") or "").strip()
+        if not owner_id:
+            return None
+        kind = str(data.get("kind") or "")
+        label = _STEP_FLAG_LABELS.get(kind, kind)
+        run = str(data.get("run_name") or data.get("run_slug") or data.get("run_id") or "")
+        step = str(data.get("node_id") or "")
+        member = str(data.get("member") or "")
+        who = f"{step} ({member})" if member else step
+        ui_url = _ui_url(str(data.get("ui_path") or ""), self._public_origin)
+
+        lines = [
+            f'Run "{run}": step {who} is {label} since {data.get("since", "")}.',
+            str(data.get("detail") or ""),
+            str(data.get("next") or ""),
+        ]
+        if ui_url:
+            lines.append(f"Run: {ui_url}")
+        body = "\n".join(line for line in lines if line)
+
+        metadata = {
+            "run_id": str(data.get("run_id") or ""),
+            "run_slug": str(data.get("run_slug") or ""),
+            "activation_id": str(data.get("activation_id") or ""),
+            "node_id": step,
+            "member": member,
+            "flag": kind,
+            "since": str(data.get("since") or ""),
+        }
+        if ui_url:
+            metadata["ui_url"] = ui_url
+
+        return Notification(
+            title="Workflow step is stuck",
+            body=body,
+            urgency=NotificationUrgency.HIGH,
+            owner_id=owner_id,
+            event_type=NOTIFY_STEP_FLAGGED,
+            metadata=metadata,
+        )
+
     def _map_run_feedback_requested(self, data: dict[str, Any]) -> Notification | None:
         owner_id = str(data.get("owner_id") or "").strip()
         if not owner_id:
             return None
         run_name = str(data.get("run_name") or data.get("tracker_id") or data.get("run_id") or "")
-        summary = str(data.get("summary") or "A council member needs your feedback.")
+        summary = str(data.get("summary") or "An agent needs your feedback.")
         reason = str(data.get("reason") or "").strip()
         ui_path = str(data.get("ui_path") or "").strip()
         ui_url = _ui_url(ui_path, self._public_origin)

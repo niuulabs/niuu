@@ -1,4 +1,4 @@
-"""Volundr-hosted Ravn persona registry routes."""
+"""Forge-hosted persona registry routes."""
 
 from __future__ import annotations
 
@@ -8,13 +8,14 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from pydantic import BaseModel, Field
 
 from niuu.domain.models import Principal
-from ravn.adapters.personas.postgres_registry import PersonaView, PostgresPersonaRegistry
-from ravn.domain.persona_document import PersonaDocumentError
+from personas.adapters.postgres_registry import PersonaView, PostgresPersonaRegistry
+from personas.domain.persona_document import PersonaDocumentError
+from personas.domain.tool_vocabulary import PersonaToolError, validate_tool_names
 from volundr.adapters.inbound.auth import extract_principal, get_current_user
 from volundr.domain.models import User
 
 _NAME_PATTERN = r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$"
-_VALID_FAN_IN_STRATEGIES = {
+VALID_FAN_IN_STRATEGIES = {
     "all_must_pass",
     "any_passes",
     "quorum",
@@ -22,6 +23,26 @@ _VALID_FAN_IN_STRATEGIES = {
     "first_wins",
     "weighted_score",
 }
+
+
+def _tool_vocabulary_errors(allowed_tools: list[str], forbidden_tools: list[str]) -> list[str]:
+    """Why a tool list is not in the neutral vocabulary; the message lists the valid set."""
+    errors: list[str] = []
+    for field, tools in (("allowed_tools", allowed_tools), ("forbidden_tools", forbidden_tools)):
+        try:
+            validate_tool_names(field, list(tools))
+        except PersonaToolError as exc:
+            errors.append(str(exc))
+    return errors
+
+
+def _require_tool_vocabulary(data: Any) -> None:
+    errors = _tool_vocabulary_errors(data.allowed_tools, data.forbidden_tools)
+    if errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="; ".join(errors),
+        )
 
 
 class ErrorResponse(BaseModel):
@@ -147,7 +168,6 @@ class PersonaCreateRequest(BaseModel):
             "allowed_tools": list(self.allowed_tools),
             "forbidden_tools": list(self.forbidden_tools),
             "permission_mode": self.permission_mode,
-            "executor": None,
             "iteration_budget": self.iteration_budget,
             "llm_primary_alias": "",
             "llm_thinking_enabled": self.llm_thinking_enabled,
@@ -207,14 +227,14 @@ def create_ravn_personas_router(registry: PostgresPersonaRegistry | None = None)
         include_in_schema=False,
     )
     async def validate_persona(data: PersonaCreateRequest) -> PersonaValidateResponse:
-        errors: list[str] = []
+        errors = _tool_vocabulary_errors(data.allowed_tools, data.forbidden_tools)
         overlap = sorted(set(data.allowed_tools) & set(data.forbidden_tools))
         if overlap:
             errors.append(f"allowed_tools and forbidden_tools overlap: {', '.join(overlap)}")
-        if data.fan_in_strategy and data.fan_in_strategy not in _VALID_FAN_IN_STRATEGIES:
+        if data.fan_in_strategy and data.fan_in_strategy not in VALID_FAN_IN_STRATEGIES:
             errors.append(
                 f"Invalid fan_in_strategy '{data.fan_in_strategy}'. "
-                f"Must be one of: {', '.join(sorted(_VALID_FAN_IN_STRATEGIES))}"
+                f"Must be one of: {', '.join(sorted(VALID_FAN_IN_STRATEGIES))}"
             )
         return PersonaValidateResponse(valid=not errors, errors=errors)
 
@@ -360,6 +380,7 @@ def create_ravn_personas_router(registry: PostgresPersonaRegistry | None = None)
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Persona already exists as built-in: {data.name}",
             )
+        _require_tool_vocabulary(data)
         await persona_registry.save_persona(principal.user_id, data.to_payload())
         saved = await persona_registry.get_persona(principal.user_id, data.name)
         assert saved is not None
@@ -390,6 +411,7 @@ def create_ravn_personas_router(registry: PostgresPersonaRegistry | None = None)
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Persona not found: {name}",
             )
+        _require_tool_vocabulary(data)
         await persona_registry.save_persona(principal.user_id, data.to_payload(name=name))
         saved = await persona_registry.get_persona(principal.user_id, name)
         assert saved is not None
@@ -467,6 +489,14 @@ def create_ravn_personas_router(registry: PostgresPersonaRegistry | None = None)
 
         payload = dict(source_view.payload)
         payload["name"] = body.new_name
+        tool_errors = _tool_vocabulary_errors(
+            list(payload["allowed_tools"]), list(payload["forbidden_tools"])
+        )
+        if tool_errors:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="; ".join(tool_errors),
+            )
         await persona_registry.save_persona(principal.user_id, payload)
         saved = await persona_registry.get_persona(principal.user_id, body.new_name)
         assert saved is not None

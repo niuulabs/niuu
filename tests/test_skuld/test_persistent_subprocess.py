@@ -299,7 +299,7 @@ def test_seeded_resume_id_makes_first_spawn_resume() -> None:
     """An imported session id is passed as ``--resume`` on the very first spawn."""
     transport = PersistentSubprocessTransport(
         "/tmp",
-        system_prompt="ignored when resuming",
+        system_prompt="sent again when resuming",
         resume_session_id="2e877b9f-4b8a-4d46-8f00-03f6163addd5",
     )
 
@@ -307,7 +307,8 @@ def test_seeded_resume_id_makes_first_spawn_resume() -> None:
 
     resume_index = cmd.index("--resume")
     assert cmd[resume_index + 1] == "2e877b9f-4b8a-4d46-8f00-03f6163addd5"
-    assert "--append-system-prompt" not in cmd
+    # Appended prompts do not persist across invocations: a resume resends them.
+    assert cmd[cmd.index("--append-system-prompt") + 1] == "sent again when resuming"
     assert transport.session_id == "2e877b9f-4b8a-4d46-8f00-03f6163addd5"
 
 

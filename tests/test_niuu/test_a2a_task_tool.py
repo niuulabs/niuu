@@ -1,0 +1,565 @@
+from __future__ import annotations
+
+import json
+from contextlib import nullcontext
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+
+from niuu.adapters.a2a_task import A2ATaskTool
+from niuu.adapters.outbound.http_json_client import HttpResponse
+from niuu.cap_telemetry import cap_hit_counts
+from niuu.domain.agent_directory import (
+    AgentDirectoryEntry,
+    AgentDirectoryPage,
+    AgentInterface,
+    AgentProvenance,
+    AgentSkill,
+)
+
+
+def _agent() -> AgentDirectoryEntry:
+    return AgentDirectoryEntry(
+        id="agent-aggregate-1",
+        canonicalId="signed:card-hash:keys:key",
+        sourceAgentId="builder-1",
+        sourceInstanceId="observatory-a",
+        clusterId="cluster-a",
+        topologyNodeId="runtime:builder-1",
+        name="Builder",
+        description="Builds and reviews changes.",
+        kind="workflow-session",
+        cardUrl="https://peer.example/card",
+        cardVersion="1.0",
+        cardHash="card-hash",
+        signatureVerified=True,
+        skillIds=["review"],
+        skills=[
+            AgentSkill(
+                id="review",
+                name="Review change",
+                description="Review a proposed change.",
+                tags=["review"],
+            )
+        ],
+        supportedInterfaces=[
+            AgentInterface(
+                url="https://peer.example/a2a",
+                protocolBinding="JSONRPC",
+                protocolVersion="1.0",
+            )
+        ],
+        observedStatus="healthy",
+        lastSeen="2026-07-20T12:00:00Z",
+        visibility="tenant",
+        provenance=[
+            AgentProvenance(
+                sourceAgentId="builder-1",
+                sourceInstanceId="observatory-a",
+                clusterId="cluster-a",
+                topologyNodeId="runtime:builder-1",
+            )
+        ],
+    )
+
+
+class _Directory:
+    def __init__(self, agent: AgentDirectoryEntry | None = None) -> None:
+        self.agent = agent
+        self.lookups: list[str] = []
+
+    async def list_agents(self) -> AgentDirectoryPage:
+        return AgentDirectoryPage(items=[self.agent] if self.agent else [])
+
+    async def get_agent(self, agent_id: str) -> AgentDirectoryEntry | None:
+        self.lookups.append(agent_id)
+        return self.agent if self.agent and self.agent.id == agent_id else None
+
+
+class _Client:
+    def __init__(self, results: list[dict[str, Any]]) -> None:
+        self.results = list(results)
+        self.posts: list[tuple[str, dict[str, Any], dict[str, str]]] = []
+
+    async def get(self, url: str, *, headers: dict[str, str] | None = None) -> HttpResponse:
+        raise AssertionError("A2ATaskTool must use the validated directory, not refetch cards")
+
+    async def post(
+        self,
+        url: str,
+        json_body: dict[str, Any],
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> HttpResponse:
+        self.posts.append((url, json_body, dict(headers or {})))
+        return HttpResponse(200, {"jsonrpc": "2.0", "result": self.results.pop(0)})
+
+
+@pytest.mark.asyncio
+async def test_a2a_task_refuses_to_answer_a_gate_when_gate_decisions_are_off() -> None:
+    client = _Client([])
+    tool = A2ATaskTool(agent_directory=_Directory(_agent()), client=client, gate_decisions=False)
+
+    result = await tool.execute(
+        {
+            "operation": "reply",
+            "agent_id": _agent().id,
+            "task_id": "task-1",
+            "metadata": {"gateId": "gate-1", "gateDecision": "approve"},
+        }
+    )
+
+    assert result.is_error
+    assert "Review tab" in result.content
+    assert client.posts == []
+
+
+@pytest.mark.asyncio
+async def test_a2a_task_uses_ledger_message_ids_for_start_and_reply() -> None:
+    client = _Client(
+        [
+            {"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}},
+            {"task": {"id": "task-1", "status": {"state": "TASK_STATE_WORKING"}}},
+        ]
+    )
+    tool = A2ATaskTool(agent_directory=_Directory(_agent()), client=client)
+
+    await tool.execute_persisted_start(
+        {
+            "operation": "start",
+            "agent_id": _agent().id,
+            "skill_id": "review",
+            "prompt": "Review the change.",
+        },
+        message_id="intent-message-1",
+        auth_token="owner-token",
+    )
+    await tool.execute_persisted_reply(
+        {
+            "operation": "reply",
+            "agent_id": _agent().id,
+            "task_id": "task-1",
+            "answer": "Use the existing interface.",
+        },
+        message_id="reply-message-1",
+        auth_token="owner-token",
+    )
+
+    assert client.posts[0][1]["params"]["message"]["messageId"] == "intent-message-1"
+    assert client.posts[1][1]["params"]["message"]["messageId"] == "reply-message-1"
+    assert client.posts[0][2]["Authorization"] == "Bearer owner-token"
+    assert client.posts[1][2]["Authorization"] == "Bearer owner-token"
+
+
+@pytest.mark.asyncio
+async def test_persisted_task_operation_returns_exact_unbounded_delivery_result() -> None:
+    delivery_result = {
+        "candidateSha": "a" * 40,
+        "reviewReceipts": [{"summary": "x" * 8_000}],
+    }
+    client = _Client(
+        [
+            {
+                "id": "task-1",
+                "status": {"state": "TASK_STATE_COMPLETED"},
+                "metadata": {"deliveryResult": delivery_result},
+            }
+        ]
+    )
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=client,
+        result_max_chars=1_000,
+    )
+
+    task = await tool.execute_persisted_task_operation(
+        {"operation": "get", "agent_id": _agent().id, "task_id": "task-1"}
+    )
+
+    assert task["metadata"]["deliveryResult"] == delivery_result
+    assert len(task["metadata"]["deliveryResult"]["reviewReceipts"][0]["summary"]) == 8_000
+
+
+@pytest.mark.asyncio
+async def test_a2a_task_find_uses_durable_registry_without_peer_lookup() -> None:
+    queries: list[dict[str, object]] = []
+
+    async def _find(**kwargs) -> list[dict[str, object]]:
+        queries.append(kwargs)
+        return [
+            {
+                "task_id": "task-remembered",
+                "agent_id": "agent-aggregate-1",
+                "state": "TASK_STATE_WORKING",
+            }
+        ]
+
+    directory = _Directory(_agent())
+    tool = A2ATaskTool(
+        agent_directory=directory,
+        client=_Client([]),
+        activity_finder=_find,
+    )
+
+    result = await tool.execute({"operation": "find", "query": "remembered", "active_only": True})
+
+    assert not result.is_error
+    assert json.loads(result.content)["tasks"][0]["task_id"] == "task-remembered"
+    assert queries == [{"query": "remembered", "active_only": True, "limit": 10}]
+    assert directory.lookups == []
+
+
+@pytest.mark.asyncio
+async def test_find_stays_inside_the_result_budget_and_says_what_it_left_out() -> None:
+    async def _find(**_kwargs) -> list[dict[str, object]]:
+        return [
+            {"task_id": f"task-{index}", "agent_id": "agent-1", "prompt": "x" * 300}
+            for index in range(20)
+        ]
+
+    before = cap_hit_counts().get("gateway.platform.a2a_result_max_chars", 0)
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=_Client([]),
+        activity_finder=_find,
+        result_max_chars=2_000,
+    )
+
+    result = await tool.execute({"operation": "find", "limit": 20})
+
+    assert len(result.content) <= 2_000
+    tasks = json.loads(result.content)["tasks"]
+    assert tasks[0]["task_id"] == "task-0"
+    assert tasks[-1] == {"truncated": "additional tasks omitted"}
+    assert cap_hit_counts()["gateway.platform.a2a_result_max_chars"] == before + 1
+
+
+@pytest.mark.asyncio
+async def test_find_keeps_the_identifiers_of_a_handle_too_big_to_show() -> None:
+    async def _find(**_kwargs) -> list[dict[str, object]]:
+        return [
+            {
+                "task_id": "task-1",
+                "agent_id": "agent-1",
+                "state": "TASK_STATE_WORKING",
+                "status_message": "x" * 5_000,
+            }
+        ]
+
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=_Client([]),
+        activity_finder=_find,
+        result_max_chars=3_000,
+    )
+
+    result = await tool.execute({"operation": "find"})
+
+    handle = json.loads(result.content)["tasks"][0]
+    assert handle["task_id"] == "task-1"
+    assert handle["agent_id"] == "agent-1"
+    assert handle["state"] == "TASK_STATE_WORKING"
+    assert len(result.content) <= 3_000
+
+
+@pytest.mark.asyncio
+async def test_a2a_task_preserves_task_state_questions_artifacts_and_provenance() -> None:
+    activities: list[dict[str, object]] = []
+
+    async def _capture(activity: dict[str, object]) -> None:
+        activities.append(activity)
+
+    client = _Client(
+        [
+            {"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}},
+            {
+                "id": "task-1",
+                "status": {"state": "TASK_STATE_INPUT_REQUIRED"},
+                "metadata": {"pendingQuestions": [{"question": "Which branch?"}]},
+                "artifacts": [{"artifactId": "draft", "parts": [{"text": "draft"}]}],
+            },
+            {"task": {"id": "task-1", "status": {"state": "TASK_STATE_WORKING"}}},
+            {"id": "task-1", "status": {"state": "TASK_STATE_CANCELED"}},
+        ]
+    )
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=client,
+        activity_emitter=_capture,
+    )
+
+    started = json.loads(
+        (
+            await tool.execute(
+                {
+                    "operation": "start",
+                    "agent_id": "agent-aggregate-1",
+                    "skill_id": "review",
+                    "prompt": "Review the change.",
+                }
+            )
+        ).content
+    )
+    inspected = json.loads(
+        (
+            await tool.execute(
+                {"operation": "get", "agent_id": started["agent_id"], "task_id": "task-1"}
+            )
+        ).content
+    )
+    replied = json.loads(
+        (
+            await tool.execute(
+                {
+                    "operation": "reply",
+                    "agent_id": started["agent_id"],
+                    "task_id": "task-1",
+                    "answer": "Use codex/resident-judgment-loop.",
+                    "metadata": {"requestId": "question-1"},
+                }
+            )
+        ).content
+    )
+    canceled = json.loads(
+        (
+            await tool.execute(
+                {"operation": "cancel", "agent_id": started["agent_id"], "task_id": "task-1"}
+            )
+        ).content
+    )
+
+    assert started["task_id"] == "task-1"
+    assert started["provenance"]["card_hash"] == "card-hash"
+    assert inspected["input_required"] is True
+    assert inspected["pending_questions"] == [{"question": "Which branch?"}]
+    assert inspected["artifacts"][0]["artifactId"] == "draft"
+    assert replied["state"] == "TASK_STATE_WORKING"
+    assert canceled["state"] == "TASK_STATE_CANCELED"
+    assert [body["method"] for _, body, _ in client.posts] == [
+        "SendMessage",
+        "GetTask",
+        "SendMessage",
+        "CancelTask",
+    ]
+    start_message = client.posts[0][1]["params"]["message"]
+    assert start_message["metadata"] == {"skillId": "review"}
+    reply_message = client.posts[2][1]["params"]["message"]
+    assert reply_message["taskId"] == "task-1"
+    assert reply_message["metadata"] == {"requestId": "question-1"}
+    assert all(url == "https://peer.example/a2a" for url, _, _ in client.posts)
+    assert [activity["state"] for activity in activities] == [
+        "TASK_STATE_SUBMITTED",
+        "TASK_STATE_INPUT_REQUIRED",
+        "TASK_STATE_WORKING",
+        "TASK_STATE_CANCELED",
+    ]
+    assert activities[0]["source_tool"] == "a2a_task"
+    assert activities[1]["question"] == "Which branch?"
+
+
+@pytest.mark.asyncio
+async def test_a2a_task_propagates_active_trace_in_message_metadata(monkeypatch) -> None:
+    client = _Client([{"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}}])
+    telemetry = MagicMock()
+    telemetry.inject.return_value = {
+        "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+    }
+    telemetry.span.side_effect = lambda *_args, **_kwargs: nullcontext(MagicMock())
+    monkeypatch.setattr(
+        "niuu.adapters.a2a_task.get_observability",
+        lambda: telemetry,
+    )
+    tool = A2ATaskTool(agent_directory=_Directory(_agent()), client=client)
+
+    result = await tool.execute(
+        {
+            "operation": "start",
+            "agent_id": _agent().id,
+            "skill_id": "review",
+            "prompt": "Review the change.",
+        }
+    )
+
+    assert not result.is_error
+    metadata = client.posts[0][1]["params"]["message"]["metadata"]
+    assert metadata["traceContext"] == telemetry.inject.return_value
+
+
+@pytest.mark.asyncio
+async def test_a2a_task_injects_configured_default_connection() -> None:
+    client = _Client([{"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}}])
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=client,
+        default_connection_id="Noatun",
+    )
+
+    result = await tool.execute(
+        {
+            "operation": "start",
+            "agent_id": _agent().id,
+            "skill_id": "review",
+            "prompt": "Review the change.",
+        }
+    )
+
+    assert not result.is_error
+    assert client.posts[0][1]["params"]["message"]["metadata"]["connectionId"] == "Noatun"
+
+
+@pytest.mark.asyncio
+async def test_a2a_task_rejects_unknown_agent_and_unpublished_skill() -> None:
+    unknown = A2ATaskTool(agent_directory=_Directory(), client=_Client([]))
+    missing_agent = await unknown.execute(
+        {"operation": "get", "agent_id": "hidden", "task_id": "task-1"}
+    )
+    assert missing_agent.is_error
+    assert "not visible" in missing_agent.content
+
+    client = _Client([])
+    tool = A2ATaskTool(agent_directory=_Directory(_agent()), client=client)
+    missing_skill = await tool.execute(
+        {
+            "operation": "start",
+            "agent_id": "agent-aggregate-1",
+            "skill_id": "deploy",
+            "prompt": "Deploy it.",
+        }
+    )
+    assert missing_skill.is_error
+    assert "does not publish skill" in missing_skill.content
+    assert client.posts == []
+
+
+@pytest.mark.asyncio
+async def test_a2a_task_rejects_cross_origin_and_untrusted_peer_endpoints() -> None:
+    cross_origin = _agent().model_copy(deep=True)
+    cross_origin.supported_interfaces[0].url = "https://attacker.example/a2a"
+    client = _Client([])
+    tool = A2ATaskTool(
+        agent_directory=_Directory(cross_origin),
+        client=client,
+        trusted_origins=["https://peer.example"],
+    )
+
+    result = await tool.execute(
+        {"operation": "get", "agent_id": cross_origin.id, "task_id": "task-1"}
+    )
+
+    assert result.is_error
+    assert "must share its Agent Card origin" in result.content
+    assert client.posts == []
+
+    untrusted = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=client,
+        trusted_origins=["https://platform.example"],
+    )
+    result = await untrusted.execute(
+        {"operation": "get", "agent_id": _agent().id, "task_id": "task-1"}
+    )
+    assert result.is_error
+    assert "uses untrusted origin https://peer.example" in result.content
+    assert client.posts == []
+
+
+@pytest.mark.asyncio
+async def test_a2a_task_bounds_outbound_messages_and_model_facing_results() -> None:
+    client = _Client(
+        [
+            {
+                "id": "task-large",
+                "status": {"state": "TASK_STATE_COMPLETED"},
+                "artifacts": [
+                    {
+                        "artifactId": "large-artifact",
+                        "parts": [{"text": "result " * 10_000}],
+                    }
+                ],
+            }
+        ]
+    )
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=client,
+        trusted_origins=["https://peer.example"],
+        message_max_chars=1_000,
+        result_max_chars=1_000,
+    )
+
+    oversized = await tool.execute(
+        {
+            "operation": "start",
+            "agent_id": _agent().id,
+            "skill_id": "review",
+            "prompt": "x" * 1_001,
+        }
+    )
+    assert oversized.is_error
+    assert "prompt exceeds a2a message limit" in oversized.content
+    assert client.posts == []
+
+    bounded = await tool.execute(
+        {"operation": "get", "agent_id": _agent().id, "task_id": "task-large"}
+    )
+    payload = json.loads(bounded.content)
+    assert len(bounded.content) <= 1_000
+    assert payload["task_id"] == "task-large"
+    assert payload["state"] == "TASK_STATE_COMPLETED"
+    assert payload["artifacts"][0]["artifactId"] == "large-artifact"
+
+    client.results.append(
+        {
+            "id": "peer-task-" + "x" * 10_000,
+            "status": {"state": "TASK_STATE_WORKING"},
+        }
+    )
+    malformed = await tool.execute(
+        {"operation": "get", "agent_id": _agent().id, "task_id": "requested-task"}
+    )
+    malformed_payload = json.loads(malformed.content)
+    assert len(malformed.content) <= 1_000
+    assert malformed_payload["truncated"].startswith("peer identifiers")
+
+
+@pytest.mark.asyncio
+async def test_start_with_context_id_continues_the_peer_conversation() -> None:
+    client = _Client(
+        [
+            {
+                "task": {
+                    "id": "channel-1:4:abc",
+                    "contextId": "channel-1",
+                    "status": {"state": "TASK_STATE_COMPLETED"},
+                    "artifacts": [{"artifactId": "reply", "parts": [{"text": "Agreed."}]}],
+                }
+            },
+            {"task": {"id": "channel-2:0:def", "status": {"state": "TASK_STATE_WORKING"}}},
+        ]
+    )
+    tool = A2ATaskTool(agent_directory=_Directory(_agent()), client=client)
+
+    continued = await tool.execute(
+        {
+            "operation": "start",
+            "agent_id": _agent().id,
+            "skill_id": "review",
+            "prompt": "And the tests?",
+            "context_id": "channel-1",
+        }
+    )
+    await tool.execute(
+        {
+            "operation": "start",
+            "agent_id": _agent().id,
+            "skill_id": "review",
+            "prompt": "New topic.",
+        }
+    )
+
+    payload = json.loads(continued.content)
+    assert payload["context_id"] == "channel-1"
+    assert payload["artifacts"][0]["parts"][0]["text"] == "Agreed."
+    assert client.posts[0][1]["params"]["message"]["contextId"] == "channel-1"
+    assert "contextId" not in client.posts[1][1]["params"]["message"]

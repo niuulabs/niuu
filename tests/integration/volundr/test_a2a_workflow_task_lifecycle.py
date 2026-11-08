@@ -1,10 +1,11 @@
 """Production-adapter A2A workflow task lifecycle integration coverage.
 
 This test deliberately crosses Ting's JSON-RPC adapter, its PostgreSQL
-workflow/campaign/reservation repositories, and VolundrHTTPAdapter over a
-real loopback HTTP connection.  The Volundr fixture persists the launched
-session with its production session repository, so CancelTask verifies the
-same session through both services rather than through a recording port.
+workflow/campaign/reservation repositories, the PostgreSQL step ledger, the step
+engine and Ting's Forge session adapter. Forge itself is a recording fake behind
+the connection factory: it takes the step-host session and the step activation
+(the contract Forge and Skuld implement) and records what it was asked, so the
+test proves a real launch, GetTask and CancelTask without a Skuld to close steps.
 """
 
 from __future__ import annotations
@@ -13,30 +14,38 @@ import base64
 import json
 import logging
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from identity.adapters.authorization import AllowAllAuthorizationAdapter
+from niuu.adapters.outbound.http_json_client import HttpxJsonClient
+from personas.domain.persona import PersonaConfig, PersonaProduces
+from personas.domain.persona_document import portable_persona_from_config
 from ravn.adapters.tool_build.a2a import A2AToolBuildBackend
-from ravn.adapters.tool_build.http import HttpxJsonClient
 from ravn.ports.tool_build_backend import ToolBuildError, ToolBuildRequest
 from tests.integration.helpers.sse import start_server
+from tests.test_ting.test_a2a_tasks import RecordingVolundrFactory, RecordingVolundrPort
+from ting.adapters.campaign_step_definitions import CampaignStepRunDefinitions
+from ting.adapters.forge_step_sessions import ForgeStepSessions
 from ting.adapters.postgres_a2a_launches import PostgresA2ALaunchReservationRepository
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
+from ting.adapters.postgres_workflow_steps import PostgresWorkflowStepRepository
 from ting.adapters.postgres_workflows import PostgresWorkflowRepository
-from ting.adapters.volundr_factory import LocalVolundrAdapterFactory
 from ting.api.a2a import create_a2a_router, resolve_a2a_launch_repo
 from ting.api.a2a_card import create_agent_card_router, resolve_card_workflow_repo
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.workflows import resolve_workflow_repo
 from ting.config import A2AConfig, AuthConfig, Settings
-from ting.domain.models import WorkflowDefinition, WorkflowScope
-from volundr.adapters.outbound.postgres import PostgresSessionRepository
-from volundr.domain.models import SessionStatus
+from ting.domain.models import WorkflowCampaignStatus, WorkflowDefinition, WorkflowScope
+from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
+from ting.domain.services.workflow_runs import WorkflowRuns
+from ting.domain.services.workflow_step_engine import WorkflowStepEngine
+from ting.domain.step_engine import EngineSettings
+from ting.domain.workflow_snapshot import pin_workflow_personas
 
 _A2A_PATH = "/api/v1/ting/a2a"
 
@@ -46,9 +55,30 @@ pytestmark = [
 ]
 
 
+class _PinnedPersonas:
+    """The authoritative persona source of the test workflow: one persona, one verdict."""
+
+    def __init__(self) -> None:
+        self.config = PersonaConfig(
+            name="tool-smith",
+            system_prompt_template="Build the tool.",
+            produces=PersonaProduces(event_type_map={"built": "tool.built"}),
+        )
+
+    def load_portable(self, persona_id: str, revision: str):  # noqa: ANN201
+        current = self.load_current_portable(persona_id)
+        return current if current is not None and current.revision == revision else None
+
+    def load_current_portable(self, persona_id: str):  # noqa: ANN201
+        if persona_id != self.config.name:
+            return None
+        return portable_persona_from_config(self.config)
+
+
 def _workflow() -> WorkflowDefinition:
+    """trigger -> build (tool-smith) -> end: it stays active until the member closes its step."""
     now = datetime.now(UTC)
-    return WorkflowDefinition(
+    workflow = WorkflowDefinition(
         id=uuid4(),
         name="a2a-lifecycle",
         description="Launches an isolated A2A integration task.",
@@ -58,18 +88,73 @@ def _workflow() -> WorkflowDefinition:
         graph={
             "tags": ["a2a", "integration"],
             "nodes": [
+                {"id": "start", "kind": "trigger", "dispatchEvent": "task.requested"},
                 {
                     "id": "stage-1",
                     "kind": "stage",
                     "label": "Lifecycle",
-                    "stageMembers": [{"personaId": "tool-smith", "model": "gpt-5.5"}],
-                }
+                    "stageMembers": [
+                        {
+                            "personaId": "tool-smith",
+                            "model": "gpt-5.5",
+                            "consumesEventTypes": ["task.requested"],
+                        }
+                    ],
+                },
+                {"id": "done", "kind": "end", "completionEvent": "task.completed"},
             ],
-            "edges": [],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": "start",
+                    "target": "stage-1",
+                    "label": "task.requested -> task.requested",
+                },
+                {
+                    "id": "e2",
+                    "source": "stage-1",
+                    "target": "done",
+                    "label": "tool.built -> tool.built",
+                },
+            ],
         },
         created_at=now,
         updated_at=now,
     )
+    return pin_workflow_personas(workflow, _PinnedPersonas())
+
+
+class _NullEventBus:
+    async def emit(self, event) -> None:
+        return None
+
+
+def _step_engine(pool, campaign_repo, factory) -> WorkflowRuns:
+    """The production step engine over the PostgreSQL ledger and Ting's Forge session adapter."""
+    steps = PostgresWorkflowStepRepository(pool)
+
+    async def launched(run_id) -> bool:
+        return (await steps.load(run_id)).launched
+
+    projector = WorkflowCampaignProjector(
+        repo=campaign_repo, event_bus=_NullEventBus(), run_launched=launched
+    )
+    runs = WorkflowRuns(
+        engine=WorkflowStepEngine(
+            repository=steps,
+            sessions=ForgeStepSessions(
+                volundr_factory=factory, campaigns=campaign_repo, default_model="gpt-5.5"
+            ),
+            definitions=CampaignStepRunDefinitions(campaign_repo),
+            settings=EngineSettings(step_deadline_seconds=600.0),
+        ),
+        steps=steps,
+        campaigns=campaign_repo,
+        sink=projector,
+        volundr_factory=factory,
+    )
+    projector.bind_runs(runs)
+    return runs
 
 
 def _headers() -> dict[str, str]:
@@ -91,22 +176,13 @@ async def _stop_server(server) -> None:
     server.should_exit = True
 
 
-async def test_a2a_task_lifecycle_uses_postgres_and_volundr_http(
+async def test_a2a_task_lifecycle_runs_on_the_step_engine_over_postgres(
     txn_pool,
-    volundr_app: FastAPI,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """One persisted A2A task supports SendMessage, GetTask, and CancelTask."""
-
-    # Ting's production launch code asks its target for enabled integrations
-    # before it creates the session.  The session fixture intentionally mounts
-    # only Forge's session router, so provide the empty production response
-    # shape while leaving session create/get/stop on Volundr's real REST router.
-    @volundr_app.get("/api/v1/integrations")
-    async def integrations() -> list[dict[str, str]]:
-        return []
-
-    volundr_server, volundr_url = await start_server(volundr_app)
+    forge = RecordingVolundrPort()
+    factory = RecordingVolundrFactory([forge])
     workflow_repo = PostgresWorkflowRepository(txn_pool)
     campaign_repo = PostgresWorkflowCampaignRepository(txn_pool)
     launch_repo = PostgresA2ALaunchReservationRepository(txn_pool)
@@ -115,109 +191,98 @@ async def test_a2a_task_lifecycle_uses_postgres_and_volundr_http(
     ting_app = FastAPI()
     ting_app.state.authorization = AllowAllAuthorizationAdapter()
     ting_app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=True))
+    ting_app.state.workflow_runs = _step_engine(txn_pool, campaign_repo, factory)
     ting_app.include_router(create_a2a_router())
     ting_app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
     ting_app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
     ting_app.dependency_overrides[resolve_a2a_launch_repo] = lambda: launch_repo
-    ting_app.dependency_overrides[resolve_volundr_factory] = lambda: LocalVolundrAdapterFactory(
-        volundr_url
-    )
+    ting_app.dependency_overrides[resolve_volundr_factory] = lambda: factory
     caplog.set_level(logging.INFO, logger="ting.api.a2a")
 
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=ting_app),
-            base_url="http://ting.integration.test",
-        ) as client:
-            sent = await client.post(
-                _A2A_PATH,
-                headers=_headers(),
-                json=_request(
-                    "SendMessage",
-                    {
-                        "message": {
-                            "messageId": f"a2a-integration-{uuid4()}",
-                            "role": "ROLE_USER",
-                            "parts": [{"text": "Launch then cancel this A2A integration task."}],
-                            "metadata": {"skillId": str(workflow.id), "model": "gpt-5.5"},
-                        }
-                    },
-                ),
-            )
-            assert sent.status_code == 200, sent.text
-            task_id = sent.json()["result"]["task"]["id"]
-            session_id = sent.json()["result"]["task"]["metadata"]["sessionId"]
-
-            fetched = await client.post(
-                _A2A_PATH,
-                headers=_headers(),
-                json=_request("GetTask", {"id": task_id}),
-            )
-            assert fetched.status_code == 200, fetched.text
-            assert fetched.json()["result"]["id"] == task_id
-            assert fetched.json()["result"]["metadata"]["sessionId"] == session_id
-
-            canceled = await client.post(
-                _A2A_PATH,
-                headers=_headers(),
-                json=_request("CancelTask", {"id": task_id}),
-            )
-            assert canceled.status_code == 200, canceled.text
-            assert canceled.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
-
-        campaign = await campaign_repo.get_campaign_by_slug(
-            task_id,
-            owner_id="a2a-integration-user",
+    async with AsyncClient(
+        transport=ASGITransport(app=ting_app),
+        base_url="http://ting.integration.test",
+    ) as client:
+        sent = await client.post(
+            _A2A_PATH,
+            headers=_headers(),
+            json=_request(
+                "SendMessage",
+                {
+                    "message": {
+                        "messageId": f"a2a-integration-{uuid4()}",
+                        "role": "ROLE_USER",
+                        "parts": [{"text": "Launch then cancel this A2A integration task."}],
+                        "metadata": {"skillId": str(workflow.id), "model": "gpt-5.5"},
+                    }
+                },
+            ),
         )
-        assert campaign is not None
-        assert campaign.metadata["a2a_canceled"] is True
-        assert campaign.session_id == session_id
+        assert sent.status_code == 200, sent.text
+        task = sent.json()["result"]["task"]
+        # The run started: its first step is active on the member's session.
+        assert task["status"]["state"] == "TASK_STATE_WORKING"
 
-        lifecycle_logs = [
-            record.getMessage()
-            for record in caplog.records
-            if "A2A JSON-RPC" in record.getMessage()
-        ]
-        assert lifecycle_logs == [
-            (
-                "A2A JSON-RPC SendMessage finished outcome=ok "
-                f"task_id={task_id} workflow_id={workflow.id}"
-            ),
-            (
-                "A2A JSON-RPC GetTask finished outcome=ok "
-                f"task_id={task_id} workflow_id={workflow.id}"
-            ),
-            (
-                "A2A JSON-RPC CancelTask finished outcome=ok "
-                f"task_id={task_id} workflow_id={workflow.id}"
-            ),
-        ]
+        campaigns = await campaign_repo.list_campaigns(owner_id="a2a-integration-user")
+        assert len(campaigns) == 1
+        campaign = campaigns[0]
+        assert campaign.slug == task["id"]
+        assert campaign.status is WorkflowCampaignStatus.RUNNING
+        assert campaign.active_stage_id == "stage-1"
+        assert campaign.session_id == ""
 
-        session = await PostgresSessionRepository(txn_pool).get(UUID(session_id))
-        assert session is not None
-        assert session.status is SessionStatus.STOPPED
-    finally:
-        await _stop_server(volundr_server)
+        ledger = await PostgresWorkflowStepRepository(txn_pool).load(campaign.id)
+        assert ledger.launched
+        [step] = [item for item in ledger.steps if item.member == "tool-smith"]
+        assert step.state.value == "active"
+        assert step.session_id == "session-1"
+
+        assert [request.member for request in forge.step_session_requests] == ["tool-smith"]
+        assert forge.step_session_requests[0].persona_definition["id"] == "tool-smith"
+        [(session_id, activation)] = forge.delivered_steps
+        assert session_id == "session-1"
+        assert activation["activation_id"] == str(step.id)
+        assert activation["valid_verdicts"] == ["built"]
+        assert "Launch then cancel this A2A integration task." in activation["instructions"]
+
+        fetched = await client.post(
+            _A2A_PATH, headers=_headers(), json=_request("GetTask", {"id": task["id"]})
+        )
+        assert fetched.json()["result"]["id"] == task["id"]
+        assert fetched.json()["result"]["status"]["state"] == "TASK_STATE_WORKING"
+
+        canceled = await client.post(
+            _A2A_PATH, headers=_headers(), json=_request("CancelTask", {"id": task["id"]})
+        )
+        assert canceled.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
+        # Canceling the run stopped its sessions.
+        assert forge.stopped == ["session-1"]
+
+    stored = await campaign_repo.get_campaign(campaign.id)
+    assert stored is not None
+    assert stored.status is WorkflowCampaignStatus.FAILED
+    assert stored.metadata["a2a_canceled"] is True
+    ledger = await PostgresWorkflowStepRepository(txn_pool).load(campaign.id)
+    assert "engine.run.canceled" in [event.event_type for event in ledger.events]
+    assert any(
+        "A2A JSON-RPC SendMessage finished outcome=ok" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 async def test_ravn_a2a_tool_build_backend_commissions_real_workflow_task(
     txn_pool,
-    volundr_app: FastAPI,
 ) -> None:
     """The concrete Ravn client launches a persisted Ting A2A build task.
 
     The backend crosses real loopback HTTP to Ting's card and JSON-RPC
-    endpoints.  Ting then persists the campaign and launches its session over
-    its normal HTTP adapter to Volundr.  The workflow deliberately stays
-    active, so the backend's bounded polling fails loudly rather than
+    endpoints.  Ting then persists the campaign, starts the run on the step
+    engine and hands the first step to its member's session.  The member never
+    closes it, so the backend's bounded polling fails loudly rather than
     inventing a completed artifact.
     """
-
-    @volundr_app.get("/api/v1/integrations")
-    async def integrations() -> list[dict[str, str]]:
-        return []
-
-    volundr_server, volundr_url = await start_server(volundr_app)
+    forge = RecordingVolundrPort()
+    factory = RecordingVolundrFactory([forge])
     workflow_repo = PostgresWorkflowRepository(txn_pool)
     campaign_repo = PostgresWorkflowCampaignRepository(txn_pool)
     launch_repo = PostgresA2ALaunchReservationRepository(txn_pool)
@@ -234,15 +299,14 @@ async def test_ravn_a2a_tool_build_backend_commissions_real_workflow_task(
         ),
         a2a=A2AConfig(),
     )
+    ting_app.state.workflow_runs = _step_engine(txn_pool, campaign_repo, factory)
     ting_app.include_router(create_a2a_router())
     ting_app.include_router(create_agent_card_router(ting_app.state.settings.a2a))
     ting_app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
     ting_app.dependency_overrides[resolve_card_workflow_repo] = lambda: workflow_repo
     ting_app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
     ting_app.dependency_overrides[resolve_a2a_launch_repo] = lambda: launch_repo
-    ting_app.dependency_overrides[resolve_volundr_factory] = lambda: LocalVolundrAdapterFactory(
-        volundr_url
-    )
+    ting_app.dependency_overrides[resolve_volundr_factory] = lambda: factory
     ting_server, ting_url = await start_server(ting_app)
 
     backend = A2AToolBuildBackend(
@@ -270,10 +334,9 @@ async def test_ravn_a2a_tool_build_backend_commissions_real_workflow_task(
         campaign = campaigns[0]
         assert campaign.workflow_id == workflow.id
         assert campaign.metadata["surface"] == "a2a"
-        assert campaign.metadata["prompt"]
-        session = await PostgresSessionRepository(txn_pool).get(UUID(campaign.session_id))
-        assert session is not None
-        assert session.status is not SessionStatus.STOPPED
+        assert campaign.status is WorkflowCampaignStatus.RUNNING
+        assert campaign.session_id == ""
+        assert [request.member for request in forge.step_session_requests] == ["tool-smith"]
+        assert len(forge.delivered_steps) == 1
     finally:
         await _stop_server(ting_server)
-        await _stop_server(volundr_server)

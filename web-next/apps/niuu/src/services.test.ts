@@ -47,18 +47,7 @@ const tingMocks = vi.hoisted(() => ({
 
 const ravnMocks = vi.hoisted(() => ({
   createMockPersonaStore: vi.fn(() => ({})),
-  createMockRavenStream: vi.fn(() => ({})),
-  createMockSessionStream: vi.fn(() => ({})),
-  createMockTriggerStore: vi.fn(() => ({})),
-  createMockBudgetStream: vi.fn(() => ({})),
-  createMockWardenStore: vi.fn(() => ({})),
   buildRavnPersonaAdapter: vi.fn(() => ({})),
-  buildRavnRavenAdapter: vi.fn(() => ({})),
-  buildRavnResidentControlAdapter: vi.fn(() => ({})),
-  buildRavnSessionAdapter: vi.fn(() => ({})),
-  buildRavnTriggerAdapter: vi.fn(() => ({})),
-  buildRavnBudgetAdapter: vi.fn(() => ({})),
-  buildRavnWardenAdapter: vi.fn(() => ({})),
 }));
 
 const observatoryMocks = vi.hoisted(() => ({
@@ -76,18 +65,13 @@ const observatoryMocks = vi.hoisted(() => ({
   })),
 }));
 
-const valkyrieMocks = vi.hoisted(() => ({
-  createMockValkyrieService: vi.fn(() => ({ kind: 'mock-valkyrie' })),
-  createMockOdinReviewService: vi.fn(() => ({ kind: 'mock-valkyrie-reviews' })),
-  createMockRealmGovernanceService: vi.fn(() => ({ kind: 'mock-valkyrie-realms' })),
-  createMockValkyrieSkillsService: vi.fn(() => ({ kind: 'mock-valkyrie-skills' })),
-  buildValkyrieHttpAdapter: vi.fn((client) => ({ kind: 'valkyrie', client })),
-  buildOdinReviewHttpAdapter: vi.fn((client) => ({ kind: 'valkyrie-reviews', client })),
-  buildValkyrieSkillsHttpAdapter: vi.fn((client) => ({ kind: 'valkyrie-skills', client })),
-  buildRealmGovernanceHttpAdapter: vi.fn((realmsClient, workflowsClient) => ({
-    kind: 'valkyrie-realms',
+const realmsMocks = vi.hoisted(() => ({
+  REALM_GOVERNANCE_SERVICE_KEY: 'realms.governance',
+  createMockRealmGovernanceService: vi.fn(() => ({ kind: 'mock-realms' })),
+  buildRealmGovernanceHttpAdapter: vi.fn((realmsClient, realmsStreamBase) => ({
+    kind: 'realms',
     realmsClient,
-    workflowsClient,
+    realmsStreamBase,
   })),
 }));
 
@@ -140,7 +124,7 @@ vi.mock('@niuulabs/plugin-setup', () => ({
   buildSetupHttpAdapter: vi.fn(() => ({})),
 }));
 vi.mock('@niuulabs/plugin-observatory', () => observatoryMocks);
-vi.mock('@niuulabs/plugin-valkyrie', () => valkyrieMocks);
+vi.mock('@niuulabs/plugin-realms', () => realmsMocks);
 vi.mock('@niuulabs/plugin-volundr', () => volundrMocks);
 
 import {
@@ -399,19 +383,6 @@ describe('resolveSettingsServiceBase', () => {
     ).toBe('http://localhost:8080/api/v1/ting');
   });
 
-  it('resolves ravn settings from the grouped ravn base', () => {
-    expect(
-      resolveSettingsServiceBase(
-        {
-          services: {
-            ravn: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn' },
-          },
-        } as any,
-        'ravn',
-      ),
-    ).toBe('http://localhost:8080/api/v1/ravn');
-  });
-
   it('resolves bifrost settings from the grouped bifrost base', () => {
     expect(
       resolveSettingsServiceBase(
@@ -511,6 +482,46 @@ describe('buildServices live base selection', () => {
     );
   });
 
+  it('sends compute host reads and changes to the Forge that owns the hosts', async () => {
+    const forge = {
+      getComputeHosts: vi.fn(async () => null),
+      getComputeHostTagSets: vi.fn(async () => [['gpu']]),
+      createPairingCode: vi.fn(async () => ({ id: 'c-1' })),
+      revokePairingCode: vi.fn(async () => undefined),
+      updateComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      drainComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      resumeComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      reprepareComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      checkComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      removeComputeHost: vi.fn(async () => ({ removed: true, hostCleanupCommand: null })),
+    };
+    volundrMocks.createMockVolundrService.mockImplementationOnce(() => forge as never);
+    const volundr = buildServices({ demoMode: true, services: {} } as any).volundr as any;
+    const request = { execution: 'host@1', connector: 'direct-ssh', tags: [], slots: null };
+
+    await volundr.getComputeHosts('ymir');
+    await volundr.getComputeHostTagSets('ymir');
+    await volundr.createPairingCode('ymir', request);
+    await volundr.revokePairingCode('ymir', 'c-1');
+    await volundr.updateComputeHost('ymir', 'h-1', { tags: ['gpu'] });
+    await volundr.drainComputeHost('ymir', 'h-1', true);
+    await volundr.resumeComputeHost('ymir', 'h-1');
+    await volundr.reprepareComputeHost('ymir', 'h-1');
+    await volundr.checkComputeHost('ymir', 'h-1');
+    await volundr.removeComputeHost('ymir', 'h-1');
+
+    expect(forge.getComputeHosts).toHaveBeenCalledWith('ymir');
+    expect(forge.getComputeHostTagSets).toHaveBeenCalledWith('ymir');
+    expect(forge.createPairingCode).toHaveBeenCalledWith('ymir', request);
+    expect(forge.revokePairingCode).toHaveBeenCalledWith('ymir', 'c-1');
+    expect(forge.updateComputeHost).toHaveBeenCalledWith('ymir', 'h-1', { tags: ['gpu'] });
+    expect(forge.drainComputeHost).toHaveBeenCalledWith('ymir', 'h-1', true);
+    expect(forge.resumeComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
+    expect(forge.reprepareComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
+    expect(forge.checkComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
+    expect(forge.removeComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
+  });
+
   it('serves the observatory agent directory from the mock in demo mode', () => {
     const services = buildServices({ demoMode: true, services: {} } as any);
 
@@ -587,6 +598,31 @@ describe('buildServices live base selection', () => {
       expect.objectContaining({
         niuuBasePath: 'http://localhost:8080/api/v1/niuu',
       }),
+    );
+  });
+
+  it('passes the configured Forge scope to the Forge runtime adapter only', () => {
+    buildServices({
+      demoMode: true,
+      services: {
+        forge: {
+          mode: 'http',
+          baseUrl: 'https://niuu.noatun.example/api/v1/forge',
+          scope: 'node',
+        },
+        volundr: { mode: 'http', baseUrl: 'https://niuu.noatun.example/api/v1/volundr' },
+      },
+    } as any);
+
+    expect(volundrMocks.buildVolundrHttpAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({ basePath: 'https://niuu.noatun.example/api/v1/forge' }),
+      undefined,
+      expect.objectContaining({ forgeScope: 'node' }),
+    );
+    expect(volundrMocks.buildVolundrHttpAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({ basePath: 'https://niuu.noatun.example/api/v1/volundr' }),
+      undefined,
+      expect.not.objectContaining({ forgeScope: 'node' }),
     );
   });
 
@@ -708,7 +744,6 @@ describe('buildServiceBackendStatus', () => {
         'forge.metrics': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge/metrics' },
         'forge.pty': { mode: 'ws', wsUrl: 'ws://localhost:8080/api/v1/forge/pty/{sessionId}' },
         observatory: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/observatory' },
-        ravn: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn' },
       },
     } as any);
 
@@ -748,12 +783,6 @@ describe('buildServiceBackendStatus', () => {
       transport: 'http',
       target: 'http://localhost:8080/api/v1',
       source: 'shared-api',
-    });
-    expect(status['ravn.wardens']).toEqual({
-      mode: 'live',
-      transport: 'http',
-      target: 'http://localhost:8080/api/v1/ravn',
-      source: 'ravn',
     });
   });
 
@@ -836,11 +865,6 @@ describe('buildServiceBackendStatus', () => {
     const status = buildServiceBackendStatus({
       services: {
         'ravn.personas': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/personas' },
-        'ravn.ravens': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/ravens' },
-        'ravn.sessions': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/sessions' },
-        'ravn.triggers': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/triggers' },
-        'ravn.budget': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/budget' },
-        'ravn.wardens': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/wardens' },
       },
     } as any);
 
@@ -849,36 +873,6 @@ describe('buildServiceBackendStatus', () => {
       transport: 'http',
       target: 'http://localhost:8080/api/v1',
       source: 'ravn.personas',
-    });
-    expect(status['ravn.ravens']).toEqual({
-      mode: 'live',
-      transport: 'http',
-      target: 'http://localhost:8080/api/v1/ravn',
-      source: 'ravn.ravens',
-    });
-    expect(status['ravn.sessions']).toEqual({
-      mode: 'live',
-      transport: 'http',
-      target: 'http://localhost:8080/api/v1/ravn',
-      source: 'ravn.sessions',
-    });
-    expect(status['ravn.triggers']).toEqual({
-      mode: 'live',
-      transport: 'http',
-      target: 'http://localhost:8080/api/v1/ravn',
-      source: 'ravn.triggers',
-    });
-    expect(status['ravn.budget']).toEqual({
-      mode: 'live',
-      transport: 'http',
-      target: 'http://localhost:8080/api/v1/ravn',
-      source: 'ravn.budget',
-    });
-    expect(status['ravn.wardens']).toEqual({
-      mode: 'live',
-      transport: 'http',
-      target: 'http://localhost:8080/api/v1/ravn',
-      source: 'ravn.wardens',
     });
   });
 
@@ -1139,6 +1133,53 @@ describe('buildServices', () => {
     );
   });
 
+  it('reads and changes session read state on the Forge host and carries it into the list', async () => {
+    const services = buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+      },
+    } as any);
+    const forgeVolundr = volundrMocks.buildVolundrHttpAdapter.mock.results[0]?.value;
+    const readState = {
+      isUnread: true,
+      latestOutputSeq: 14,
+      readThroughSeq: 9,
+      revision: 3,
+    };
+    forgeVolundr.getSessionReadState = vi.fn().mockResolvedValue(readState);
+    forgeVolundr.changeSessionReadState = vi.fn().mockResolvedValue({ ...readState, revision: 4 });
+    const volundr = services.volundr as any;
+
+    await expect(volundr.getSessionReadState('s1', { instanceId: 'thor' })).resolves.toBe(
+      readState,
+    );
+    expect(forgeVolundr.getSessionReadState).toHaveBeenCalledWith('s1', { instanceId: 'thor' });
+    const change = { state: 'read', expectedRevision: 3, throughSeq: 14 };
+    await expect(volundr.changeSessionReadState('s1', change)).resolves.toMatchObject({
+      revision: 4,
+    });
+    expect(forgeVolundr.changeSessionReadState).toHaveBeenCalledWith('s1', change, undefined);
+
+    forgeVolundr.getSession.mockResolvedValue({
+      id: 's1',
+      name: 'alpha',
+      status: 'running',
+      source: { type: 'git', repo: 'r', branch: 'main' },
+      readState,
+      shortDescription: 'Tests next',
+      workedSeconds24h: 120,
+    });
+    await expect((services.sessionStore as any).getSession('s1')).resolves.toMatchObject({
+      readState,
+      shortDescription: 'Tests next',
+      workedSeconds24h: 120,
+    });
+  });
+
   it('prefers an explicit filesystem base over the derived Volundr route', () => {
     const services = buildServices({
       demoMode: true,
@@ -1156,42 +1197,18 @@ describe('buildServices', () => {
     expect((services.filesystem as any).kind).toBe('filesystem');
   });
 
-  it('prefers explicit Ravn domain configs over the shared ravn base', () => {
+  it('prefers the explicit Ravn persona config over the shared API base', () => {
     buildServices({
       demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
-        ravn: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn' },
         'ravn.personas': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/personas' },
-        'ravn.sessions': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/sessions' },
-        'ravn.ravens': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/ravens' },
-        'ravn.triggers': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/triggers' },
-        'ravn.budget': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/budget' },
-        'ravn.wardens': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/wardens' },
       },
     } as any);
 
     expect(ravnMocks.buildRavnPersonaAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1',
-    });
-    expect(ravnMocks.buildRavnSessionAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/ravn',
-    });
-    expect(ravnMocks.buildRavnRavenAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/ravn',
-    });
-    expect(ravnMocks.buildRavnResidentControlAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/ravn',
-    });
-    expect(ravnMocks.buildRavnTriggerAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/ravn',
-    });
-    expect(ravnMocks.buildRavnBudgetAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/ravn',
-    });
-    expect(ravnMocks.buildRavnWardenAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/ravn',
     });
   });
 
@@ -1911,7 +1928,7 @@ describe('buildServices', () => {
       expect.objectContaining({
         id: 'sess-starting',
         state: 'provisioning',
-        bootProgress: 0.25,
+        startup: null,
         clusterId: 'tenant-a',
         ravnId: 'tenant-a',
       }),
@@ -2105,7 +2122,7 @@ describe('buildServices', () => {
     );
   });
 
-  it('registers Valkyrie mock services by default', () => {
+  it('registers the realm governance mock by default', () => {
     const services = buildServices({
       demoMode: true,
       theme: 'ice',
@@ -2113,13 +2130,10 @@ describe('buildServices', () => {
       services: {},
     } as any);
 
-    expect(services.valkyrie).toEqual({ kind: 'mock-valkyrie' });
-    expect(services['valkyrie.reviews']).toEqual({ kind: 'mock-valkyrie-reviews' });
-    expect(services['valkyrie.realms']).toEqual({ kind: 'mock-valkyrie-realms' });
-    expect(services['valkyrie.skills']).toEqual({ kind: 'mock-valkyrie-skills' });
+    expect(services['realms.governance']).toEqual({ kind: 'mock-realms' });
   });
 
-  it('wires realm governance to the shared API and Ting workflow bases', () => {
+  it('wires realm governance to the shared API base', () => {
     const services = buildServices({
       demoMode: true,
       theme: 'ice',
@@ -2129,15 +2143,14 @@ describe('buildServices', () => {
       },
     } as any);
 
-    expect(valkyrieMocks.buildRealmGovernanceHttpAdapter).toHaveBeenCalledWith(
+    expect(realmsMocks.buildRealmGovernanceHttpAdapter).toHaveBeenCalledWith(
       { basePath: 'http://localhost:8080/api/v1' },
-      { basePath: 'http://localhost:8080/api/v1/ting' },
       'http://localhost:8080/api/v1',
     );
-    expect(services['valkyrie.realms']).toMatchObject({ kind: 'valkyrie-realms' });
+    expect(services['realms.governance']).toMatchObject({ kind: 'realms' });
   });
 
-  it('keeps realm governance mocked without a Ting workflow base', () => {
+  it('derives the realm governance base from the Forge base when Work is not wired', () => {
     const services = buildServices({
       demoMode: true,
       theme: 'ice',
@@ -2147,71 +2160,10 @@ describe('buildServices', () => {
       },
     } as any);
 
-    expect(services['valkyrie.realms']).toEqual({ kind: 'mock-valkyrie-realms' });
-  });
-
-  it('lets a grouped Valkyrie base drive dashboard, review, and skills adapters', () => {
-    buildServices({
-      demoMode: true,
-      theme: 'ice',
-      plugins: {},
-      services: {
-        valkyrie: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/valkyrie' },
-      },
-    } as any);
-
-    expect(queryMocks.createApiClient).toHaveBeenCalledWith(
-      'http://localhost:8080/api/v1/ravn/valkyrie',
-    );
-    expect(valkyrieMocks.buildValkyrieHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/ravn/valkyrie',
+    expect(services['realms.governance']).toMatchObject({
+      kind: 'realms',
+      realmsStreamBase: 'http://localhost:8080/api/v1',
     });
-    // The review queue lives beside the dashboard API under /ravn/odin.
-    expect(queryMocks.createApiClient).toHaveBeenCalledWith(
-      'http://localhost:8080/api/v1/ravn/odin',
-    );
-    // Learned skills ride the same dashboard base (`<valkyrieBase>/skills`).
-    expect(valkyrieMocks.buildValkyrieSkillsHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/ravn/valkyrie',
-    });
-  });
-
-  it('prefers an explicit Valkyrie skills override over the grouped base', () => {
-    buildServices({
-      demoMode: true,
-      theme: 'ice',
-      plugins: {},
-      services: {
-        valkyrie: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/valkyrie' },
-        'valkyrie.skills': {
-          mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/ravn/valkyrie-custom',
-        },
-      },
-    } as any);
-
-    expect(valkyrieMocks.buildValkyrieSkillsHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/ravn/valkyrie-custom',
-    });
-  });
-
-  it('prefers explicit Valkyrie review queue overrides over the grouped base', () => {
-    buildServices({
-      demoMode: true,
-      theme: 'ice',
-      plugins: {},
-      services: {
-        valkyrie: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/valkyrie' },
-        'valkyrie.reviews': {
-          mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/ravn/odin-custom',
-        },
-      },
-    } as any);
-
-    expect(queryMocks.createApiClient).toHaveBeenCalledWith(
-      'http://localhost:8080/api/v1/ravn/odin-custom',
-    );
   });
 });
 

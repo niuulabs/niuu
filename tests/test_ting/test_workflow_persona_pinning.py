@@ -4,8 +4,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from ravn.adapters.personas.loader import PersonaConfig
-from ravn.domain.persona_document import portable_persona_from_config
+from personas.domain.persona import PersonaConfig
+from personas.domain.persona_document import portable_persona_from_config
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_snapshot import (
     build_workflow_snapshot,

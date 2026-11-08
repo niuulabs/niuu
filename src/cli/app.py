@@ -17,9 +17,12 @@ New command tree (NIU-405):
   Identity:
     login / logout / whoami
 
+  Compute hosts:
+    remote  join|hosts|slots|leave  — join machines to a Forge over your own SSH
+
   Configuration:
     config  show|set
-    context list|use|add|delete
+    context list|use|add|delete     — named Niuu hosts; every command uses the active one
 
   Other:
     tui
@@ -38,6 +41,7 @@ import typer
 from cli.config import CLISettings
 from cli.registry import PluginRegistry
 from cli.services.manager import ServiceManager
+from niuu.ports.plugin import CLITarget
 
 
 class _SortedGroup(typer.core.TyperGroup):
@@ -228,7 +232,7 @@ def build_app(
             "",
             "--issuer",
             "-i",
-            help="OIDC issuer URL.",
+            help="OIDC issuer URL (default: the active context's issuer).",
             envvar="NIUU_OIDC_ISSUER",
         ),
         client_id: str = typer.Option(
@@ -239,8 +243,19 @@ def build_app(
         ),
     ) -> None:
         """Authenticate with the Niuu platform."""
+        from cli.context import ContextError, active
+
         if not issuer:
-            typer.echo("Error: --issuer is required (or set NIUU_OIDC_ISSUER).")
+            try:
+                issuer = active(settings).issuer
+            except ContextError as exc:
+                typer.echo(f"Error: {exc}")
+                raise typer.Exit(1) from None
+        if not issuer:
+            typer.echo(
+                "Error: --issuer is required (or set NIUU_OIDC_ISSUER, or the context's "
+                "issuer with `niuu context add <name> <url> --issuer <url>`)."
+            )
             raise typer.Exit(1)
         import asyncio
 
@@ -249,7 +264,7 @@ def build_app(
         oidc = OIDCClient(issuer=issuer, client_id=client_id)
         typer.echo("Opening browser for authentication...")
         try:
-            tokens = asyncio.get_event_loop().run_until_complete(oidc.login())
+            tokens = asyncio.run(oidc.login())
             typer.echo(f"Authenticated successfully (token type: {tokens.token_type}).")
         except Exception as exc:
             typer.echo(f"Authentication failed: {exc}")
@@ -362,12 +377,29 @@ def build_app(
 
     app.add_typer(create_guild_commands(settings), name="guild")
 
+    from cli.commands.remote import create_remote_commands
+
+    app.add_typer(create_remote_commands(settings), name="remote")
+
     platform_app = create_platform_commands(registry, settings, manager)
     app.add_typer(platform_app, name="platform")
     _register_lifecycle_aliases(app, platform_app, settings)
 
-    # Plugin workflow commands (top-level, registered by each plugin)
+    # Plugin workflow commands (top-level, registered by each plugin). Each one talks
+    # to the active context, resolved when its command runs.
+    def _cli_target() -> CLITarget:
+        from cli.context import ContextError, active, login_for
+
+        try:
+            context = active(settings)
+            tokens = login_for(context)
+        except ContextError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(1) from None
+        return CLITarget(base_url=context.url, auth_token=tokens.access_token if tokens else None)
+
     for name, plugin in sorted(registry.plugins.items()):
+        plugin.set_cli_target(_cli_target)
         try:
             plugin.register_commands(app)
         except Exception:

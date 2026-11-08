@@ -1,7 +1,7 @@
 """No chart may write a request's query string to an access log.
 
 Browsers cannot set an Authorization header on a WebSocket, so external web
-clients open Forge/Ravn sockets with ``?token=<JWT>`` or ``?access_token=``.
+clients open Forge sockets with ``?token=<JWT>`` or ``?access_token=``.
 Any sidecar that logs the full request target therefore logs live bearer
 tokens. Every Envoy access log must log the path without its query, and every
 nginx access log must use a format built from ``$uri`` rather than

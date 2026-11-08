@@ -502,36 +502,32 @@ async def test_http_resolver_rejects_invalid_or_credential_bearing_cards() -> No
 
 @pytest.mark.asyncio
 async def test_resident_with_agent_card_is_listed_to_its_owner_as_resident() -> None:
-    from observatory.entity_discovery import RavnResidentsDiscoveryAdapter
-
     card_url = (
         "https://guild.test/api/v1/forge/resident-runtimes/r1/a2a/.well-known/agent-card.json"
     )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json=[
-                {
-                    "id": "r1",
-                    "resident_name": "Muninn",
-                    "status": "active",
-                    "owner_id": "user-a",
-                    "tenant_id": "tenant-a",
-                    "a2a_card_url": card_url,
-                }
-            ],
+    entities = [
+        DiscoveredEntity(
+            id="resident:valhalla:r1",
+            kind="ravn_long",
+            name="Muninn",
+            realm="niuu",
+            cluster="valhalla",
+            namespace="",
+            source_adapter="test",
+            status="healthy",
+            endpoints={"a2aCard": card_url},
+            metadata={
+                "agentKind": "resident",
+                "visibility": "user",
+                "ownerId": "user-a",
+                "tenantId": "tenant-a",
+            },
         )
-
-    discovered = await RavnResidentsDiscoveryAdapter(
-        base_url="http://ravn.test",
-        cluster="valhalla",
-        transport=httpx.MockTransport(handler),
-    ).discover()
+    ]
     resolver = _StubCardResolver(
         {card_url: _resolved_card("Muninn", skill="product-steward", tag="resident", card_hash="h")}
     )
-    service = _service(discovered.entities, resolver)
+    service = _service(entities, resolver)
 
     owner_page = await service.list_agents(_principal("user-a"), headers={})
     other_page = await service.list_agents(_principal("user-b"), headers={})

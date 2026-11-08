@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 import pwd
 import re
@@ -19,9 +20,17 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from niuu.ports.session_proxy import SessionProxyTarget
-from volundr.domain.compute import BootstrapFile, ComputeLease, MachineBootstrap
+from volundr.domain.compute import AllocationRef, BootstrapFile, MachineBootstrap
+from volundr.domain.execution_catalog import TrustMode
 from volundr.domain.guest_access import GuestAccess, GuestCommandResult
+from volundr.domain.services.host_access_key import HostAccessKey
 from volundr.domain.vm_runtime import VmRuntimeStageError, VmRuntimeUnavailableError
+
+logger = logging.getLogger(__name__)
+
+#: Where Forge keeps its own host-access key under ``data_dir`` when none is configured.
+HOST_ACCESS_KEY_DIR = "host-access"
+HOST_ACCESS_KEY_NAME = "id_ed25519"
 
 HOST_KEY_PATH = "/etc/niuu/ssh_host_ed25519_key"
 HOST_KEY_CONFIG_PATH = "/etc/ssh/sshd_config.d/10-niuu-host-key.conf"
@@ -91,14 +100,33 @@ state_path.unlink(missing_ok=True)
 """
 
 
+#: How each trust mode gets the machine's host key to Forge (``bootstrap_delivery``).
+_TRUST_DELIVERY = {
+    TrustMode.PROVIDER_IDENTITY: "provider",
+    TrustMode.TOFU: "ssh",
+    # The machine generated its own key and the provider vouches for its public half
+    # (``Machine.host_public_key``): a registered host's key from its pairing.
+    TrustMode.REGISTERED_HOST_KEY: "registered",
+}
+
+
+def _replace_file(path: Path, content: str, *, mode: int) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.unlink(missing_ok=True)
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    with os.fdopen(fd, "w") as stream:
+        stream.write(content)
+    os.chmod(temporary, mode)
+    os.replace(temporary, path)
+
+
 class SshGuestAccess(GuestAccess):
     """OpenSSH control with allocation-scoped host identity pins."""
 
     def __init__(
         self,
         *,
-        ssh_private_key_file: str,
-        ssh_public_key_file: str,
+        host_key: HostAccessKey,
         data_dir: str,
         ssh_user: str = "ubuntu",
         ssh_port: int = 22,
@@ -114,19 +142,20 @@ class SshGuestAccess(GuestAccess):
             raise ValueError("SSH port must be between 1 and 65535")
         if min(connect_timeout_seconds, command_timeout_seconds, poll_interval_seconds) <= 0:
             raise ValueError("SSH timeouts must be positive")
-        if bootstrap_delivery not in {"provider", "ssh"}:
-            raise ValueError("bootstrap_delivery must be 'provider' or 'ssh'")
+        if bootstrap_delivery not in {"provider", "ssh", "registered"}:
+            raise ValueError("bootstrap_delivery must be 'provider', 'ssh' or 'registered'")
         if any(
             not command or any(not str(argument) for argument in command)
             for command in machine_commands
         ):
             raise ValueError("VM machine commands must contain non-empty arguments")
 
-        self._private_key = str(Path(ssh_private_key_file).expanduser().resolve(strict=True))
-        self._public_key = Path(ssh_public_key_file).expanduser().read_text().strip()
-        serialization.load_ssh_public_key(self._public_key.encode())
         self._data = Path(data_dir).expanduser().resolve()
         self._data.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # OpenSSH reads the key from a file: the store's key, written for it on every start.
+        self._private_key = str(self._key_file(host_key))
+        self._public_key = host_key.public_key
+        logger.info("Forge host access: SSH key %s from the credential store", host_key.fingerprint)
         self._ssh_user = ssh_user
         self._ssh_port = ssh_port
         self._connect_timeout = connect_timeout_seconds
@@ -140,6 +169,20 @@ class SshGuestAccess(GuestAccess):
         self._tunnels: dict[str, tuple[asyncio.subprocess.Process, int, str]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
+    def _key_file(self, host_key: HostAccessKey) -> Path:
+        """The pair where ``ssh -i`` reads it: each file replaced whole, the private one 0600.
+
+        ``ssh`` offers the public half from ``<key>.pub`` when that file exists, so it is
+        written too: a ``.pub`` left from another key would be offered and refused.
+        """
+        directory = self._data / HOST_ACCESS_KEY_DIR
+        directory.mkdir(mode=0o700, exist_ok=True)
+        directory.chmod(0o700)
+        path = directory / HOST_ACCESS_KEY_NAME
+        _replace_file(path, host_key.private_key, mode=0o600)
+        _replace_file(path.with_name(f"{path.name}.pub"), f"{host_key.public_key}\n", mode=0o644)
+        return path
+
     @property
     def principal(self) -> str:
         return self._ssh_user
@@ -152,13 +195,13 @@ class SshGuestAccess(GuestAccess):
             )
         if kwargs:
             raise ValueError("SSH trust configuration contains unsupported parameters")
-        deliveries = {"provider_identity": "provider", "tofu": "ssh"}
-        if mode == "ssh_ca":
-            raise ValueError("SSH CA trust is not implemented by SshGuestAccess")
         try:
-            delivery = deliveries[mode]
-        except KeyError as exc:
+            trust = TrustMode(mode)
+        except ValueError as exc:
             raise ValueError(f"Unsupported SSH trust mode {mode!r}") from exc
+        if trust is TrustMode.SSH_CA:
+            raise ValueError("SSH CA trust is not implemented by SshGuestAccess")
+        delivery = _TRUST_DELIVERY[trust]
         if delivery != self._bootstrap_delivery:
             raise ValueError(
                 f"SSH trust mode {mode!r} conflicts with bootstrap_delivery "
@@ -229,6 +272,10 @@ class SshGuestAccess(GuestAccess):
         defaults = defaults.model_copy(
             update={"commands": (*defaults.commands, *self._machine_commands)}
         )
+        if self._bootstrap_delivery == "registered":
+            # The host made its own key at join and Forge's key was installed then; nothing
+            # here may replace either, so the bootstrap carries neither.
+            return defaults
         if self._bootstrap_delivery == "ssh":
             return defaults.model_copy(
                 update={"ssh_authorized_keys": (*defaults.ssh_authorized_keys, self._public_key)},
@@ -261,14 +308,22 @@ class SshGuestAccess(GuestAccess):
             ssh_authorized_keys=(*defaults.ssh_authorized_keys, self._public_key),
         )
 
-    def command_argv(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> list[str]:
+    def command_argv(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> list[str]:
         if not lease.machine or not lease.machine.addresses:
             raise RuntimeError("VM has no observed network address")
         alias = self._host_alias(lease)
         directory = self._allocation_directory(lease)
         directory.mkdir(mode=0o700, exist_ok=True, parents=True)
         known = directory / "known_hosts"
-        if self._bootstrap_delivery == "provider":
+        if self._bootstrap_delivery == "registered":
+            public = lease.machine.host_public_key
+            if not public:
+                raise VmRuntimeUnavailableError(
+                    "Registered host carries no host key; its provider must report the key "
+                    "registered at pairing"
+                )
+            known.write_text(f"{alias} {public.strip()}\n")
+        elif self._bootstrap_delivery == "provider":
             public = next(
                 item.content for item in bootstrap.files if item.path == HOST_KEY_PATH + ".pub"
             )
@@ -279,14 +334,26 @@ class SshGuestAccess(GuestAccess):
             )
         return self._base_ssh(lease, strict="yes")
 
-    def bootstrap_argv(self, lease: ComputeLease) -> list[str]:
+    def bootstrap_argv(self, lease: AllocationRef) -> list[str]:
+        if self._bootstrap_delivery == "registered":
+            raise VmRuntimeUnavailableError(
+                "A registered host is never trusted on first use; it is pinned to its key"
+            )
         return self._base_ssh(lease, strict="accept-new")
 
-    def _base_ssh(self, lease: ComputeLease, *, strict: str) -> list[str]:
+    def _base_ssh(self, lease: AllocationRef, *, strict: str) -> list[str]:
         if not lease.machine or not lease.machine.addresses:
             raise RuntimeError("VM has no observed network address")
         directory = self._allocation_directory(lease)
         directory.mkdir(mode=0o700, exist_ok=True, parents=True)
+        machine = lease.machine
+        # A connector may carry the bytes (a tunnel, a relay): the machine record says how to
+        # dial; the SSH session inside stays authenticated end to end either way.
+        proxy = (
+            ["-o", f"ProxyCommand={shlex.join(machine.ssh_proxy_command)}"]
+            if machine.ssh_proxy_command
+            else []
+        )
         return [
             "ssh",
             "-F",
@@ -294,7 +361,8 @@ class SshGuestAccess(GuestAccess):
             "-i",
             self._private_key,
             "-p",
-            str(self._ssh_port),
+            str(machine.ssh_port or self._ssh_port),
+            *proxy,
             "-o",
             "BatchMode=yes",
             "-o",
@@ -316,14 +384,17 @@ class SshGuestAccess(GuestAccess):
             f"{self._ssh_user}@{lease.machine.addresses[0]}",
         ]
 
-    async def ensure(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def ensure(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
+        if self._bootstrap_delivery == "registered":
+            await self._deliver_bootstrap_over_ssh(lease, bootstrap)
+            return
         if self._bootstrap_delivery == "provider":
             await self.execute(lease, bootstrap, "sudo -n cloud-init status --wait")
             return
         await self._deliver_bootstrap_over_ssh(lease, bootstrap)
 
     async def _deliver_bootstrap_over_ssh(
-        self, lease: ComputeLease, bootstrap: MachineBootstrap
+        self, lease: AllocationRef, bootstrap: MachineBootstrap
     ) -> None:
         serialized = bootstrap.model_dump(mode="json")
         payload = {
@@ -347,7 +418,7 @@ class SshGuestAccess(GuestAccess):
 
     async def execute(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         command: str,
         *,
@@ -460,7 +531,7 @@ class SshGuestAccess(GuestAccess):
 
     async def open_tunnel(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         *,
         remote_port: int,
@@ -468,8 +539,10 @@ class SshGuestAccess(GuestAccess):
         reverse_port: int,
         controller_host: str,
         controller_port: int,
+        remote_host: str = "127.0.0.1",
+        key: str | None = None,
     ) -> SessionProxyTarget:
-        key = str(lease.id)
+        key = key or str(lease.id)
         async with self._locks.setdefault(key, asyncio.Lock()):
             current = self._tunnels.get(key)
             address = (
@@ -490,7 +563,7 @@ class SshGuestAccess(GuestAccess):
             options = [
                 "-N",
                 "-L",
-                f"127.0.0.1:{port}:127.0.0.1:{remote_port}",
+                f"127.0.0.1:{port}:{remote_host}:{remote_port}",
                 "-R",
                 f"{reverse_bind_host}:{reverse_port}:{controller_host}:{controller_port}",
             ]
@@ -528,27 +601,35 @@ class SshGuestAccess(GuestAccess):
         for key in list(self._tunnels):
             await self.close_tunnel(key)
 
-    def bootstrap_verified_marker(self, lease: ComputeLease) -> Path:
+    def bootstrap_verified_marker(self, lease: AllocationRef) -> Path:
         directory = self._allocation_directory(lease)
         directory.mkdir(mode=0o700, exist_ok=True, parents=True)
         return directory / "bootstrap.verified"
 
-    def _allocation_directory(self, lease: ComputeLease) -> Path:
+    def _allocation_directory(self, lease: AllocationRef) -> Path:
         return self._data / str(lease.id)
 
-    def _has_host_pin(self, lease: ComputeLease) -> bool:
+    def _has_host_pin(self, lease: AllocationRef) -> bool:
+        if self._bootstrap_delivery == "registered":
+            return True  # pinned from the machine record on every connection
         known = self._allocation_directory(lease) / "known_hosts"
         return known.is_file() and bool(known.read_text().strip())
 
     @staticmethod
-    def _host_alias(lease: ComputeLease) -> str:
+    def _host_alias(lease: AllocationRef) -> str:
         return "niuu-" + str(lease.id)
 
     @staticmethod
-    def python_command(program: str, *args: str, principal: str = "root") -> str:
+    def python_command(
+        program: str,
+        *args: str,
+        principal: str = "root",
+        interpreter: tuple[str, ...] = ("python3",),
+    ) -> str:
+        """``program`` as one shell command; ``interpreter`` is the Python argv to run it."""
         encoded = base64.b64encode(program.encode()).decode()
         code = f"import base64;exec(base64.b64decode({encoded!r}))"
-        command = ["python3", "-c", code, *args]
+        command = [*interpreter, "-c", code, *args]
         if principal == "root":
             command[:0] = ["sudo", "-n"]
         return shlex.join(command)

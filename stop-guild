@@ -89,6 +89,5 @@ stop_repo_port_listener 8080 "listener :8080"
 stop_repo_port_listener 8181 "listener :8181"
 stop_repo_port_listener 8282 "listener :8282"
 stop_repo_process_pattern "${ROOT_DIR}/.venv/bin/python3 -m skuld" "repo skuld"
-stop_repo_process_pattern "${ROOT_DIR}/.venv/bin/python3 -m ravn daemon" "repo ravn"
 
 echo "Stopped."

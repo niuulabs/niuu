@@ -43,6 +43,8 @@ vi.mock('@niuulabs/query', async () => {
 
 import { __testables, buildVolundrFileSystemHttpAdapter, buildVolundrHttpAdapter } from './http';
 import type { IVolundrService } from '../ports/IVolundrService';
+import { SessionForkError, SessionReadStateConflictError } from '../domain/session';
+import { ApiClientError } from '@niuulabs/query';
 
 function makeClient() {
   return {
@@ -66,6 +68,66 @@ it('renames through the Forge PUT contract and normalizes the returned session',
   });
   expect(client.patch).not.toHaveBeenCalled();
   expect(updated).toMatchObject({ id: 'sess-1', name: 'review-renamed', status: 'running' });
+});
+
+it('forks a session through its chronicle on its own host, then names and starts the child', async () => {
+  const client = makeClient();
+  const service = buildVolundrHttpAdapter(client);
+  client.get.mockImplementation(async (endpoint: string) =>
+    endpoint.startsWith('/sessions/parent/chronicle')
+      ? { id: 'chron-1' }
+      : { id: 'parent', name: 'demo', status: 'running', instance_id: 'thor' },
+  );
+  await service.getSession('parent', { instanceId: 'thor' });
+  client.post.mockImplementation(async (endpoint: string) =>
+    endpoint.startsWith('/chronicles/')
+      ? { id: 'child', name: 'demo (reforged)', status: 'created' }
+      : undefined,
+  );
+  client.put.mockResolvedValue({ id: 'child', name: 'demo-side', status: 'created' });
+
+  const child = await service.forkSession('parent', 'demo-side');
+
+  expect(client.get).toHaveBeenCalledWith('/sessions/parent/chronicle?instance_id=thor');
+  expect(client.post).toHaveBeenNthCalledWith(1, '/chronicles/chron-1/reforge?instance_id=thor');
+  expect(client.put).toHaveBeenCalledWith('/sessions/child?instance_id=thor', {
+    name: 'demo-side',
+  });
+  expect(client.post).toHaveBeenNthCalledWith(2, '/sessions/child/start?instance_id=thor');
+  expect(child).toMatchObject({ id: 'child', name: 'demo-side', instanceId: 'thor' });
+});
+
+it('names the child it created when naming or starting it fails', async () => {
+  const client = makeClient();
+  const service = buildVolundrHttpAdapter(client);
+  client.get.mockResolvedValue({ id: 'chron-1' });
+  client.post.mockImplementation(async (endpoint: string) => {
+    if (endpoint.startsWith('/chronicles/'))
+      return { id: 'child', name: 'demo', status: 'created' };
+    throw new ApiClientError('API request failed: 409', 409, 'No free session slot');
+  });
+  client.put.mockResolvedValue({ id: 'child', name: 'demo-side', status: 'created' });
+
+  const failure = await service.forkSession('parent', 'demo-side').catch((error) => error);
+  expect(failure).toBeInstanceOf(SessionForkError);
+  expect(failure).toMatchObject({ childId: 'child' });
+  expect(failure.message).toContain('could not start it: No free session slot');
+
+  client.put.mockRejectedValue(new Error('name taken'));
+  const unnamed = await service.forkSession('parent', 'demo-side').catch((error) => error);
+  expect(unnamed.message).toContain('could not name it: name taken');
+  client.put.mockRejectedValue('odd');
+  const odd = await service.forkSession('parent', 'demo-side').catch((error) => error);
+  expect(odd.message).toContain('could not name it: odd');
+});
+
+it('refuses a fork outright when the session has no chronicle', async () => {
+  const client = makeClient();
+  client.get.mockRejectedValue(new ApiClientError('API request failed: 404', 404, 'No chronicle'));
+  await expect(buildVolundrHttpAdapter(client).forkSession('parent', 'x-side')).rejects.toThrow(
+    'API request failed: 404',
+  );
+  expect(client.post).not.toHaveBeenCalled();
 });
 
 it('assigns a project from a different host while keeping the session owner selector', async () => {
@@ -357,6 +419,63 @@ describe('__testables', () => {
     });
     expect(session.archivedAt).toBeUndefined();
     expect(session.trackerIssue).toBeUndefined();
+    expect(session.startup).toBeNull();
+
+    expect(
+      normalizeSession({
+        id: 'sess-2',
+        name: 'booting',
+        source: { type: 'git', repo: 'r', branch: 'main' },
+        status: 'provisioning',
+        model: 'sonnet',
+        startup: {
+          started_at: '2026-11-06T12:00:00Z',
+          progress_error: 'events forbidden',
+          stages: [
+            {
+              key: 'schedule',
+              label: 'Scheduling',
+              state: 'done',
+              detail: 'On node valhalla-w-07',
+              started_at: '2026-11-06T12:00:01Z',
+              finished_at: '2026-11-06T12:00:02Z',
+            },
+            { key: 'containers', label: 'Starting containers', state: 'pending' },
+          ],
+        },
+      } as any).startup,
+    ).toEqual({
+      startedAt: '2026-11-06T12:00:00Z',
+      progressError: 'events forbidden',
+      stages: [
+        {
+          key: 'schedule',
+          label: 'Scheduling',
+          state: 'done',
+          detail: 'On node valhalla-w-07',
+          startedAt: '2026-11-06T12:00:01Z',
+          finishedAt: '2026-11-06T12:00:02Z',
+        },
+        {
+          key: 'containers',
+          label: 'Starting containers',
+          state: 'pending',
+          detail: null,
+          startedAt: null,
+          finishedAt: null,
+        },
+      ],
+    });
+    expect(
+      normalizeSession({
+        id: 'sess-3',
+        name: 'old',
+        source: { type: 'git', repo: 'r', branch: 'main' },
+        status: 'running',
+        model: 'sonnet',
+        startup: { started_at: '2026-11-06T12:00:00Z' },
+      } as any).startup,
+    ).toEqual({ startedAt: '2026-11-06T12:00:00Z', stages: [], progressError: null });
 
     expect(
       normalizeTarget({
@@ -1000,6 +1119,28 @@ describe('buildVolundrHttpAdapter', () => {
     expect(history.turns[0]?.visibility).toBe('internal');
   });
 
+  it('getConversationTurn calls GET /sessions/:id/conversation/turns/:turnId', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      turn: { id: 'turn/7', role: 'assistant', content: 'the reply', created_at: '2026-11-05' },
+      index: 41,
+      total_turns: 90,
+    });
+
+    const turn = await buildVolundrHttpAdapter(client).getConversationTurn('sess-1', 'turn/7');
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/sess-1/conversation/turns/turn%2F7');
+    expect(turn).toMatchObject({ id: 'turn/7', role: 'assistant', content: 'the reply' });
+  });
+
+  it('getConversationTurn fails when Forge returns no turn', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({ index: null, total_turns: 0 });
+    await expect(
+      buildVolundrHttpAdapter(client).getConversationTurn('sess-1', 'gone'),
+    ).rejects.toThrow('Forge returned no turn for gone');
+  });
+
   it('getWorkflowGates calls GET /sessions/:id/workflow/gates', async () => {
     const client = makeClient();
     client.get.mockResolvedValueOnce({
@@ -1340,6 +1481,81 @@ describe('buildVolundrHttpAdapter', () => {
       miniMode: true,
     });
     expect(client.get).toHaveBeenCalledWith('/feature-flags?instance_id=host%2Fa');
+  });
+
+  it('getLivePreviewConfig reads where previews open from Forge settings', async () => {
+    const client = makeClient();
+    vi.mocked(client.get).mockResolvedValue({
+      enabled: true,
+      origin_template: 'https://{port}--{session_id}.preview.niuu.world',
+    });
+    expect(await buildVolundrHttpAdapter(client).getLivePreviewConfig()).toEqual({
+      enabled: true,
+      originTemplate: 'https://{port}--{session_id}.preview.niuu.world',
+    });
+    expect(client.get).toHaveBeenCalledWith('/settings/live-preview');
+  });
+
+  it('getLivePreviewConfig asks the Forge host that runs the session', async () => {
+    const client = makeClient();
+    vi.mocked(client.get).mockResolvedValue({ enabled: false, origin_template: '' });
+    expect(await buildVolundrHttpAdapter(client).getLivePreviewConfig('host/a')).toEqual({
+      enabled: false,
+      originTemplate: '',
+    });
+    expect(client.get).toHaveBeenCalledWith('/settings/live-preview?instance_id=host%2Fa');
+  });
+
+  it('getSessionRuntimes reads what the host runs every session as', async () => {
+    const client = makeClient();
+    vi.mocked(client.get).mockResolvedValue({
+      runtimes: [
+        {
+          runtime: 'openshell',
+          grants: ['sudo'],
+          readiness: { state: 'boot', warm: 0, remedy: null },
+        },
+      ],
+    });
+    expect(await buildVolundrHttpAdapter(client).getSessionRuntimes('host/a')).toEqual([
+      {
+        runtime: 'openshell',
+        grants: ['sudo'],
+        readiness: { state: 'boot', warm: 0, remedy: null },
+      },
+    ]);
+    expect(client.get).toHaveBeenCalledWith('/session-runtimes?instance_id=host%2Fa');
+  });
+
+  it('getSessionRuntimes refuses an answer that lists no runtimes', async () => {
+    const client = makeClient();
+    vi.mocked(client.get).mockResolvedValue([]);
+    await expect(buildVolundrHttpAdapter(client).getSessionRuntimes('vms')).rejects.toThrow(
+      'Invalid session runtimes from vms',
+    );
+  });
+
+  it('getSessionRuntimes refuses a host that offers more than one runtime', async () => {
+    const client = makeClient();
+    const offer = {
+      runtime: 'container',
+      grants: [],
+      readiness: { state: 'warm', warm: 1, remedy: null },
+    };
+    vi.mocked(client.get).mockResolvedValue({ runtimes: [offer, { ...offer, runtime: 'host' }] });
+    await expect(buildVolundrHttpAdapter(client).getSessionRuntimes('vms')).rejects.toThrow(
+      'vms offered 2 session runtimes; a host runs exactly one',
+    );
+    await expect(buildVolundrHttpAdapter(client).getSessionRuntimes()).rejects.toThrow(
+      'The default host offered 2 session runtimes',
+    );
+  });
+
+  it('getSessionRuntimes asks the default host without an instance', async () => {
+    const client = makeClient();
+    vi.mocked(client.get).mockResolvedValue({ runtimes: [] });
+    expect(await buildVolundrHttpAdapter(client).getSessionRuntimes()).toEqual([]);
+    expect(client.get).toHaveBeenCalledWith('/session-runtimes');
   });
 
   it('getCredentials forwards the optional secret type and applies the fallback type', async () => {
@@ -1696,6 +1912,97 @@ describe('buildVolundrHttpAdapter', () => {
     );
   });
 
+  describe('node scope', () => {
+    const REGISTRY = [
+      {
+        id: 'inst-valhalla',
+        name: 'Valhalla',
+        slug: 'valhalla',
+        baseUrl: 'https://volundr.valhalla.asgard.niuu.world',
+        visibility: 'system',
+        enabled: true,
+        isDefault: true,
+        tags: ['valhalla', 'gpu'],
+      },
+      {
+        id: 'inst-noatun',
+        name: 'Noatun',
+        slug: 'noatun',
+        baseUrl: 'https://niuu.noatun.asgard.niuu.world',
+        visibility: 'system',
+        enabled: true,
+        isDefault: false,
+        tags: ['noatun', 'cpu'],
+      },
+    ];
+    const NOATUN_MEMBERSHIP = {
+      guild_url: 'https://yggdrasil.niuu.world',
+      instance_id: 'inst-noatun',
+      instance_name: 'Noatun',
+      instance_slug: 'noatun',
+    };
+
+    function nodeAdapter(membership: typeof NOATUN_MEMBERSHIP) {
+      const client = makeClientWithBase('https://niuu.noatun.asgard.niuu.world/api/v1/forge');
+      client.get.mockImplementation(async (endpoint: string) =>
+        endpoint === '/guild' ? membership : [],
+      );
+      const svc = buildVolundrHttpAdapter(client, undefined, {
+        niuuBasePath: 'https://yggdrasil.niuu.world/api/v1/niuu',
+        forgeScope: 'node',
+      });
+      const niuuClient = getDerivedClient('https://yggdrasil.niuu.world/api/v1/niuu')!;
+      niuuClient.get.mockResolvedValue(REGISTRY);
+      return { client, svc };
+    }
+
+    it('lists only the Forge node it is served from, as the registry describes it', async () => {
+      const { client, svc } = nodeAdapter(NOATUN_MEMBERSHIP);
+
+      const targets = await svc.getTargets();
+
+      expect(client.get).toHaveBeenCalledWith('/guild');
+      expect(targets).toEqual([
+        expect.objectContaining({
+          id: 'inst-noatun',
+          name: 'Noatun',
+          baseUrl: 'https://niuu.noatun.asgard.niuu.world',
+          tags: ['noatun', 'cpu'],
+        }),
+      ]);
+    });
+
+    it('fails when the Guild registry does not list the node as an enabled Forge', async () => {
+      const { svc } = nodeAdapter({ ...NOATUN_MEMBERSHIP, instance_id: 'inst-gone' });
+
+      await expect(svc.getTargets()).rejects.toThrow(
+        'This Forge node is Noatun (inst-gone) in the Guild at https://yggdrasil.niuu.world, ' +
+          'but that Guild lists no enabled Forge with this id.',
+      );
+    });
+
+    it('fails when the node cannot say which Forge it is', async () => {
+      const { client, svc } = nodeAdapter(NOATUN_MEMBERSHIP);
+      client.get.mockRejectedValue(new Error('This Forge node is not joined to a Guild'));
+
+      await expect(svc.getTargets()).rejects.toThrow('This Forge node is not joined to a Guild');
+    });
+
+    it('lists every registered Forge in guild scope without asking the node', async () => {
+      const client = makeClientWithBase('https://yggdrasil.niuu.world/api/v1/forge');
+      const svc = buildVolundrHttpAdapter(client, undefined, {
+        niuuBasePath: 'https://yggdrasil.niuu.world/api/v1/niuu',
+        forgeScope: 'guild',
+      });
+      getDerivedClient('https://yggdrasil.niuu.world/api/v1/niuu')!.get.mockResolvedValue(REGISTRY);
+
+      const targets = await svc.getTargets();
+
+      expect(client.get).not.toHaveBeenCalledWith('/guild');
+      expect(targets.map((target) => target.id)).toEqual(['inst-valhalla', 'inst-noatun']);
+    });
+  });
+
   it('startSession calls POST /sessions', async () => {
     const client = makeClient();
     const config = {
@@ -1711,26 +2018,6 @@ describe('buildVolundrHttpAdapter', () => {
       terminal_restricted: false,
       instance_id: null,
       workload_config: {},
-    });
-  });
-
-  it('startSession launches a ravn flock when asked', async () => {
-    const client = makeClient();
-    await buildVolundrHttpAdapter(client).startSession({
-      name: 'scout',
-      source: { type: 'git', repo: '', branch: 'main' },
-      model: 'claude-fable-5',
-      workloadType: 'ravn_flock',
-      workloadConfig: { personas: ['research-analyst'] },
-    });
-    expect(client.post).toHaveBeenCalledWith('/sessions', {
-      name: 'scout',
-      source: { type: 'git', repo: '', branch: 'main' },
-      model: 'claude-fable-5',
-      terminal_restricted: false,
-      instance_id: null,
-      workload_type: 'ravn_flock',
-      workload_config: { personas: ['research-analyst'] },
     });
   });
 
@@ -1829,11 +2116,54 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.patch).toHaveBeenCalledWith('/sessions/s1/restore', undefined);
   });
 
-  it('sendMessage calls POST /sessions/:id/messages', async () => {
+  it('sendMessage posts to /sessions/:id/messages and reads a 200 as delivered', async () => {
     const client = makeClient();
-    await buildVolundrHttpAdapter(client).sendMessage('s1', 'hello');
+    client.post.mockResolvedValue({
+      status: 'delivered',
+      session_id: 's1',
+      request_id: 'req-1',
+      delivery: 'delivered',
+    });
+    const delivery = await buildVolundrHttpAdapter(client).sendMessage('s1', 'hello');
     expect(client.post).toHaveBeenCalledWith('/sessions/s1/messages', { content: 'hello' });
+    expect(delivery).toEqual({ status: 'delivered', requestId: 'req-1', sessionId: 's1' });
   });
+
+  it('sendMessage reads a 202 as pending, never as delivered', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      status: 'pending',
+      session_id: 's1',
+      request_id: 'req-2',
+      delivery: 'pending',
+    });
+    const delivery = await buildVolundrHttpAdapter(client).sendMessage('s1', 'hello');
+    expect(delivery.status).toBe('pending');
+    expect(delivery.requestId).toBe('req-2');
+  });
+
+  it('sendMessage lets a refusal carry Forge detail to the caller', async () => {
+    const client = makeClient();
+    const refusal = Object.assign(new Error('API request failed: 404'), {
+      status: 404,
+      detail: 'Session s1 has no active endpoint',
+    });
+    client.post.mockRejectedValue(refusal);
+    await expect(buildVolundrHttpAdapter(client).sendMessage('s1', 'hello')).rejects.toMatchObject({
+      detail: 'Session s1 has no active endpoint',
+    });
+  });
+
+  it.each([[{}], [{ status: 'unconfirmed', request_id: 'r' }], [{ status: 'delivered' }]])(
+    'sendMessage refuses a body that does not say delivered or pending (%j)',
+    async (body) => {
+      const client = makeClient();
+      client.post.mockResolvedValue(body);
+      await expect(buildVolundrHttpAdapter(client).sendMessage('s1', 'hello')).rejects.toThrow(
+        /Forge/,
+      );
+    },
+  );
 
   it('getMessages uses conversation history and normalizes turns', async () => {
     const client = makeClient();
@@ -2911,6 +3241,22 @@ describe('Forge project grouping contract', () => {
     expect(client.patch).toHaveBeenLastCalledWith('/projects/lexi', { repo_url: '', revision: 4 });
   });
 
+  it('sends a description, a status and a checkout folder as the project’s own fields', async () => {
+    const client = makeClient();
+    client.patch.mockResolvedValue({ id: 'lexi' });
+    const service = buildVolundrHttpAdapter(client);
+    await service.updateProject(
+      { id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active', revision: 4 },
+      { description: 'Chat', status: 'archived', workspace_path: '/work/lexi' },
+    );
+    expect(client.patch).toHaveBeenCalledWith('/projects/lexi', {
+      description: 'Chat',
+      status: 'archived',
+      workspace_path: '/work/lexi',
+      revision: 4,
+    });
+  });
+
   it('loads projects from Forge and preserves coordination and parent references on sessions', async () => {
     const client = makeClient();
     const project = { id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' };
@@ -2928,6 +3274,7 @@ describe('Forge project grouping contract', () => {
         project_id: 'lexi',
         role: 'worker',
         parent: { instance_id: 'thor', session_id: 'coordinator' },
+        objective: 'Remove retired models',
         labels: ['work-project:p1'],
       },
     });
@@ -2935,6 +3282,7 @@ describe('Forge project grouping contract', () => {
       projectId: 'lexi',
       role: 'worker',
       parent: { instanceId: 'thor', sessionId: 'coordinator' },
+      objective: 'Remove retired models',
       labels: ['work-project:p1'],
     });
     client.get.mockRejectedValue(new Error('host offline'));
@@ -3135,7 +3483,10 @@ describe('shared Forge stream listeners', () => {
       expect(seen.at(-1)?.[0]?.readState).toEqual({
         isUnread: false,
         latestOutputSeq: 9,
+        latestOutputTurnId: null,
+        latestOutputAt: null,
         readThroughSeq: 9,
+        manuallyUnread: false,
         revision: 2,
       }),
     );
@@ -3143,5 +3494,246 @@ describe('shared Forge stream listeners', () => {
       String(endpoint).startsWith('/sessions/'),
     );
     expect(sessionReads).toHaveLength(1);
+  });
+});
+
+describe('session read state', () => {
+  const payload = {
+    is_unread: true,
+    latest_output_seq: 14,
+    latest_output_turn_id: 'turn-9',
+    latest_output_at: '2026-11-05T10:00:00Z',
+    read_through_seq: 9,
+    manually_unread: false,
+    revision: 3,
+  };
+  const row = {
+    id: 'sess-1',
+    name: 'alpha',
+    status: 'running',
+    model: 'opus',
+    instance_id: 'thor',
+  };
+
+  it('reads the state of a session on its own host', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(payload);
+    const state = await buildVolundrHttpAdapter(client).getSessionReadState('sess-1', {
+      instanceId: 'thor',
+    });
+    expect(client.get).toHaveBeenCalledWith('/sessions/sess-1/read-state?instance_id=thor', {
+      signal: undefined,
+    });
+    expect(state).toEqual({
+      isUnread: true,
+      latestOutputSeq: 14,
+      latestOutputTurnId: 'turn-9',
+      latestOutputAt: '2026-11-05T10:00:00Z',
+      readThroughSeq: 9,
+      manuallyUnread: false,
+      revision: 3,
+    });
+  });
+
+  it('sends the revision and the output seen, and publishes the new state to subscribers', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([row]);
+    client.patch.mockResolvedValue({
+      ...payload,
+      is_unread: false,
+      read_through_seq: 14,
+      revision: 4,
+    });
+    const svc = buildVolundrHttpAdapter(client, vi.fn(() => ({ close: vi.fn() })) as never);
+    await svc.getSessions();
+    const seen: Array<Array<{ readState?: { isUnread: boolean; revision: number } }>> = [];
+    svc.subscribe((sessions) => seen.push(sessions), { hydrate: false });
+
+    const next = await svc.changeSessionReadState('sess-1', {
+      state: 'read',
+      expectedRevision: 3,
+      throughSeq: 14,
+    });
+
+    expect(client.patch).toHaveBeenCalledWith('/sessions/sess-1/read-state?instance_id=thor', {
+      state: 'read',
+      expected_revision: 3,
+      through_seq: 14,
+    });
+    expect(next).toMatchObject({ isUnread: false, readThroughSeq: 14, revision: 4 });
+    expect(seen.at(-1)?.[0]?.readState).toMatchObject({ isUnread: false, revision: 4 });
+  });
+
+  it('turns a 409 into a conflict the caller must look at', async () => {
+    const client = makeClient();
+    client.patch.mockRejectedValue(new ApiClientError('Conflict', 409, 'Read state changed'));
+    const change = buildVolundrHttpAdapter(client).changeSessionReadState('sess-1', {
+      state: 'unread',
+      expectedRevision: 1,
+      throughSeq: 2,
+    });
+    await expect(change).rejects.toBeInstanceOf(SessionReadStateConflictError);
+    await expect(change).rejects.toThrow('Read state changed');
+  });
+
+  it('does not disguise any other failure as a conflict', async () => {
+    const client = makeClient();
+    client.patch.mockRejectedValue(new ApiClientError('Forbidden', 403, 'Access denied'));
+    await expect(
+      buildVolundrHttpAdapter(client).changeSessionReadState('sess-1', {
+        state: 'read',
+        expectedRevision: 0,
+        throughSeq: 0,
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('maps the agent summary and the 24-hour work total from the list', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      { ...row, short_description: 'Tests next', worked_seconds_24h: 3600, read_state: payload },
+      { id: 'sess-2', name: 'beta', status: 'running', model: 'opus', worked_seconds_24h: null },
+    ]);
+    const [first, second] = await buildVolundrHttpAdapter(client).getSessions();
+    expect(first).toMatchObject({
+      shortDescription: 'Tests next',
+      workedSeconds24h: 3600,
+      readState: { isUnread: true, latestOutputTurnId: 'turn-9' },
+    });
+    expect(second).not.toHaveProperty('workedSeconds24h');
+    expect(second).not.toHaveProperty('shortDescription');
+  });
+
+  it('keeps the caller-specific fields when a stream event omits them', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([{ ...row, worked_seconds_24h: 600, read_state: payload }]);
+    let streamOptions: { onEvent?: (event: { event?: string; data: string }) => void } = {};
+    const svc = buildVolundrHttpAdapter(
+      client,
+      vi.fn((_url: string, next: typeof streamOptions) => {
+        streamOptions = next;
+        return { close: vi.fn() };
+      }) as never,
+    );
+    await svc.getSessions();
+    const seen: Array<Array<Record<string, unknown>>> = [];
+    svc.subscribe((sessions) => seen.push(sessions as never), { hydrate: false });
+
+    streamOptions.onEvent?.({
+      event: 'session_updated',
+      data: JSON.stringify({ ...row, name: 'renamed' }),
+    });
+
+    expect(seen.at(-1)?.[0]).toMatchObject({
+      name: 'renamed',
+      workedSeconds24h: 600,
+      readState: { isUnread: true, revision: 3 },
+    });
+  });
+
+  it('sends only the Forge tool grants that were asked for', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({ id: 'sess-9', name: 'n', status: 'starting', model: 'm' });
+    const svc = buildVolundrHttpAdapter(client);
+    const base = {
+      name: 'n',
+      model: 'm',
+      source: { type: 'git' as const, repo: 'r', branch: 'main' },
+    };
+    await svc.startSession({ ...base, forgeMcp: { grants: ['message', 'lifecycle'] } });
+    expect(client.post.mock.calls.at(-1)?.[1]).toMatchObject({
+      forge_mcp: { grants: ['message', 'lifecycle'] },
+    });
+    await svc.startSession({ ...base, forgeMcp: { grants: [] } });
+    expect(client.post.mock.calls.at(-1)?.[1]).not.toHaveProperty('forge_mcp');
+    await svc.startSession(base);
+    expect(client.post.mock.calls.at(-1)?.[1]).not.toHaveProperty('forge_mcp');
+  });
+});
+
+describe('secret requests', () => {
+  const payload = {
+    id: 'r 1',
+    session_id: 'sess-1',
+    name: 'GITLAB_TOKEN',
+    purpose: 'Push the branch',
+    target: 'gitlab.niuu.world',
+    status: 'fulfilled',
+    keep: 'saved',
+    credential_name: 'gitlab-token',
+    created_at: '2026-11-06T10:00:00Z',
+    resolved_at: '2026-11-06T10:01:00Z',
+    delivered_at: null,
+  };
+
+  it('reads a request from the session secret-requests route', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(payload);
+    const request = await buildVolundrHttpAdapter(client).getSecretRequest('sess-1', 'r 1');
+    expect(client.get).toHaveBeenCalledWith('/sessions/sess-1/secret-requests/r%201');
+    expect(request).toEqual({
+      id: 'r 1',
+      sessionId: 'sess-1',
+      name: 'GITLAB_TOKEN',
+      purpose: 'Push the branch',
+      target: 'gitlab.niuu.world',
+      status: 'fulfilled',
+      keep: 'saved',
+      credentialName: 'gitlab-token',
+    });
+  });
+
+  it('posts only the value and keep choice to fulfill and returns no value', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({ ...payload, keep: 'session', credential_name: null });
+    const request = await buildVolundrHttpAdapter(client).fulfillSecretRequest('sess-1', 'r-1', {
+      value: 'glpat-123',
+      keep: 'session',
+    });
+    expect(client.post).toHaveBeenCalledExactlyOnceWith(
+      '/sessions/sess-1/secret-requests/r-1/fulfill',
+      { value: 'glpat-123', keep: 'session' },
+    );
+    expect(request).toMatchObject({ status: 'fulfilled', keep: 'session', credentialName: null });
+    expect(JSON.stringify(request)).not.toContain('glpat-123');
+  });
+
+  it('posts a decline with no body', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      ...payload,
+      status: 'declined',
+      keep: null,
+      target: undefined,
+    });
+    const request = await buildVolundrHttpAdapter(client).declineSecretRequest('sess-1', 'r-1');
+    expect(client.post).toHaveBeenCalledExactlyOnceWith(
+      '/sessions/sess-1/secret-requests/r-1/decline',
+    );
+    expect(request).toMatchObject({ status: 'declined', keep: null, target: null });
+  });
+
+  it('lets a Forge error reach the caller', async () => {
+    const client = makeClient();
+    client.post.mockRejectedValue(new Error('409 already fulfilled'));
+    await expect(
+      buildVolundrHttpAdapter(client).fulfillSecretRequest('sess-1', 'r-1', {
+        value: 'v',
+        keep: 'saved',
+      }),
+    ).rejects.toThrow('409 already fulfilled');
+  });
+
+  it('refuses a status or keep choice it does not know', async () => {
+    const client = makeClient();
+    const adapter = buildVolundrHttpAdapter(client);
+    client.get.mockResolvedValueOnce({ ...payload, status: 'mystery' });
+    await expect(adapter.getSecretRequest('sess-1', 'r-1')).rejects.toThrow(
+      'unknown secret request status: mystery',
+    );
+    client.get.mockResolvedValueOnce({ ...payload, keep: 'forever' });
+    await expect(adapter.getSecretRequest('sess-1', 'r-1')).rejects.toThrow(
+      'unknown secret keep choice: forever',
+    );
   });
 });

@@ -51,7 +51,7 @@ jobs:
     strategy:
       matrix:
         platform: [amd64, arm64]
-        container: [agent, skuld, openshell, devrunner, niuu-web, niuu]
+        container: [skuld, openshell, devrunner, niuu-web, niuu]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -98,7 +98,7 @@ jobs:
       packages: write
     strategy:
       matrix:
-        container: [agent, skuld, openshell, devrunner, niuu-web, niuu]
+        container: [skuld, openshell, devrunner, niuu-web, niuu]
     steps:
       - name: Log in to Container Registry
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4

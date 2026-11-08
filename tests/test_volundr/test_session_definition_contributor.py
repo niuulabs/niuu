@@ -1,12 +1,17 @@
 """Tests for SessionDefinitionContributor."""
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from niuu.config_models import SessionDefinitionConfig, default_session_definitions
 from volundr.adapters.outbound.contributors.session_def import (
     SessionDefinitionContributor,
 )
 from volundr.domain.ports import SessionContext
+
+CHART_VALUES = Path(__file__).resolve().parents[2] / "charts" / "volundr" / "values.yaml"
 
 
 def _mock_session():
@@ -227,3 +232,80 @@ class TestDefaultSessionDefinitions:
         result = await contributor.contribute(_mock_session(), context)
         assert result.values["broker"]["cliType"] == "claude"
         assert result.values["model"] == "claude-opus-5-5"
+
+
+_POD_STORAGE = {
+    "persistence": {"mountPath": "/volundr/sessions"},
+    "homeVolume": {"enabled": True, "mountPath": "/volundr/home"},
+}
+
+
+def _storage_definition(**storage: dict) -> dict[str, SessionDefinitionConfig]:
+    return {
+        "skuldClaude": SessionDefinitionConfig(
+            enabled=True,
+            display_name="Claude Code",
+            defaults={"broker": {"cliType": "claude"}, **storage},
+        )
+    }
+
+
+class TestVmPodStorageDefaults:
+    """VM runtimes own guest-local storage; definition pod storage must not reach them."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "context",
+        [SessionContext(runtime_backend="vm"), SessionContext(storage_backend="vm")],
+    )
+    async def test_vm_session_drops_pod_storage_defaults(self, context):
+        contributor = SessionDefinitionContributor(
+            definitions=_storage_definition(**_POD_STORAGE), default_definition="skuldClaude"
+        )
+
+        result = await contributor.contribute(_mock_session(), context)
+
+        assert result.values == {"broker": {"cliType": "claude"}}
+
+    @pytest.mark.asyncio
+    async def test_kubernetes_session_keeps_pod_storage_defaults(self):
+        contributor = SessionDefinitionContributor(
+            definitions=_storage_definition(**_POD_STORAGE), default_definition="skuldClaude"
+        )
+
+        result = await contributor.contribute(
+            _mock_session(), SessionContext(runtime_backend="kubernetes")
+        )
+
+        assert result.values["persistence"] == _POD_STORAGE["persistence"]
+        assert result.values["homeVolume"] == _POD_STORAGE["homeVolume"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["persistence", "homeVolume"])
+    async def test_vm_session_refuses_a_definition_claim(self, field):
+        contributor = SessionDefinitionContributor(
+            definitions=_storage_definition(**{field: {"existingClaim": "shared-data"}}),
+            default_definition="skuldClaude",
+        )
+
+        with pytest.raises(ValueError, match=rf"{field}\.existingClaim"):
+            await contributor.contribute(_mock_session(), SessionContext(runtime_backend="vm"))
+
+    @pytest.mark.asyncio
+    async def test_chart_session_definitions_pass_the_vm_runtime_storage_check(self):
+        """Every built-in chart definition reaches a VM session without the values
+        SshContainerVmRuntime refuses as configured storage."""
+        values = yaml.safe_load((CHART_VALUES).read_text())
+        definitions = {
+            key: SessionDefinitionConfig(enabled=True, defaults=entry.get("defaults", {}))
+            for key, entry in values["sessionDefinitions"].items()
+        }
+        assert any("homeVolume" in d.defaults for d in definitions.values())
+        contributor = SessionDefinitionContributor(definitions=definitions)
+
+        for key in definitions:
+            result = await contributor.contribute(
+                _mock_session(), SessionContext(definition=key, runtime_backend="vm")
+            )
+            refused = [name for name in ("homeVolume", "persistence") if result.values.get(name)]
+            assert refused == [], key

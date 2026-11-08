@@ -7,17 +7,14 @@ auto-continue and future consumers without an HTTP request context.
 from __future__ import annotations
 
 import asyncio
-import copy
-import hashlib
 import inspect
-import json
 import logging
 import random
 import re
 import string
 import uuid
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,19 +24,9 @@ try:
 except ImportError:
     _catalog_saga_completed = None  # type: ignore[assignment]
 
-from mimir.connections import normalize_mimir_workload_config, resolve_mimir_registry_refs
-from niuu.config_models import default_session_definitions
-from niuu.domain.model_runtime import (
-    is_self_hosted_model,
-    session_definition_for_model,
-    transport_adapter_for_session_definition,
-    validate_session_definition_for_models,
-)
 from niuu.domain.models import Principal
-from niuu.domain.tags import matches_tags
-from ravn.domain.persona_document import PortablePersonaSource
-from ting.config import DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS
-from ting.domain.flock_merge import build_flock_workload_config
+from niuu.domain.tags import matches_tags, residual_selector, satisfiable, validate_match
+from personas.domain.persona_document import PortablePersonaSource
 from ting.domain.models import (
     DispatcherState,
     Phase,
@@ -50,29 +37,30 @@ from ting.domain.models import (
     SagaStatus,
     TrackerIssue,
     TrackerProject,
+    WorkflowCampaign,
+    WorkflowCampaignStatus,
     WorkflowScope,
 )
 from ting.domain.templates import BUNDLED_TEMPLATES_DIR, TemplatePhase, load_template
+from ting.domain.ticket_coordinator import TICKET_METADATA_KEY, ticket_metadata, ticket_of
 from ting.domain.tracker_routing import select_tracker_for_saga
 from ting.domain.utils import _slugify
-from ting.domain.workflow_snapshot import (
-    workflow_mimir_from_snapshot,
-    workflow_name_from_snapshot,
-    workflow_personas_from_snapshot,
-    workflow_runtime_personas_from_snapshot,
-    workflow_stage_models_from_snapshot,
-)
+from ting.domain.workflow_snapshot import workflow_name_from_snapshot
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.event_bus import EventBusPort, TingEvent
-from ting.ports.flock_flow import FlockFlowProvider
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.tracker import TrackerFactory, TrackerPort
-from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort
+from ting.ports.volundr import (
+    HostTagSetsUnreadableError,
+    SpawnRequest,
+    VolundrFactory,
+    VolundrPort,
+)
+from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
+from ting.ports.workflow_runs import WorkflowRunLauncher
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_WORKFLOW_SESSION_DEFINITION = "skuldCodex"
 
 
 # ---------------------------------------------------------------------------
@@ -83,17 +71,14 @@ _READY_STATUSES = {"todo", "backlog", "triage"}
 _READY_STATUS_TYPES = {"unstarted"}
 _ACTIVE_SESSION_STATUSES = {"running", "starting", "creating"}
 _COMPLETED_LINEAR_STATES = {"completed", "cancelled"}
-_CLI_TRANSPORT_EXECUTOR = "ravn.adapters.executors.cli.CliTransportExecutor"
-# CLI transports that call their vendor's API unless pointed at the session's
-# model gateway, which is then how they serve a self-hosted model. OpenCode and
-# PI reach such a model through their own provider configuration instead.
-_MODEL_GATEWAY_TRANSPORTS = frozenset(
-    {
-        "skuld.transports.sdk.SDKTransport",
-        "skuld.transports.tmux_interactive.TmuxInteractiveTransport",
-        "skuld.transports.codex_ws.CodexWebSocketTransport",
-    }
-)
+#: Campaign metadata key that marks a run the dispatcher started for a saga item.
+DISPATCH_RUN_KEY = "dispatch_run"
+#: Surface recorded on the campaign of a dispatched workflow run.
+DISPATCH_SURFACE = "ting.dispatch"
+
+
+class WorkflowRunsNotConfiguredError(RuntimeError):
+    """A saga item runs a workflow but the dispatcher has nothing to start a run with."""
 
 
 def _sanitize_log(value: object) -> str:
@@ -106,187 +91,6 @@ def _supports_keyword_arg(method: object, keyword: str) -> bool:
         return keyword in inspect.signature(method).parameters
     except (TypeError, ValueError):
         return False
-
-
-def _workflow_persona_model_conflicts(
-    workflow_snapshot: dict[str, Any] | None,
-) -> dict[str, set[str]]:
-    if not isinstance(workflow_snapshot, dict):
-        return {}
-
-    graph = workflow_snapshot.get("graph")
-    if not isinstance(graph, dict):
-        return {}
-
-    persona_models: dict[str, set[str]] = defaultdict(set)
-    for node in list(graph.get("nodes") or []):
-        if not isinstance(node, dict) or str(node.get("kind") or "") != "stage":
-            continue
-        for member in list(node.get("stageMembers") or []):
-            if not isinstance(member, dict):
-                continue
-            persona_id = str(member.get("personaId") or "").strip()
-            model = str(member.get("model") or "").strip()
-            if persona_id and model:
-                persona_models[persona_id].add(model)
-
-    return {name: models for name, models in persona_models.items() if len(models) > 1}
-
-
-def _cli_executor(
-    transport_adapter: str,
-    model: str,
-    *,
-    workflow_cli_turn_timeout_seconds: float,
-    configured_models: list[Any] | None,
-) -> dict[str, Any]:
-    """The executor that runs a persona's turns on its session's CLI transport."""
-    executor_kwargs: dict[str, Any] = {"transport_adapter": transport_adapter}
-    if transport_adapter == "skuld.transports.sdk.SDKTransport":
-        executor_kwargs["transport_kwargs"] = {"turn_timeout_s": workflow_cli_turn_timeout_seconds}
-    elif transport_adapter == "skuld.transports.codex_ws.CodexWebSocketTransport":
-        executor_kwargs["transport_kwargs"] = {"skip_permissions": True}
-    if transport_adapter in _MODEL_GATEWAY_TRANSPORTS and is_self_hosted_model(
-        model, configured_models=configured_models
-    ):
-        # Only the persona can say its model is self-hosted: the
-        # session carries the gateway address whatever its personas
-        # run, and a cloud persona must keep its vendor's API.
-        executor_kwargs["model_gateway"] = True
-    return {"adapter": _CLI_TRANSPORT_EXECUTOR, "kwargs": executor_kwargs}
-
-
-def persona_on_model(
-    persona: dict[str, Any],
-    model: str,
-    *,
-    session_definitions: dict[str, Any],
-    workflow_cli_turn_timeout_seconds: float,
-    configured_models: list[Any] | None = None,
-) -> tuple[dict[str, Any], str | None]:
-    """Run a persona on a model, as a workflow stage does; return it and its session definition."""
-    definition, runtime_error = session_definition_for_model(
-        model,
-        session_definitions=session_definitions,
-        configured_models=configured_models,
-    )
-    if runtime_error:
-        raise ValueError(
-            f"Persona '{persona.get('name', 'unknown')}' model '{model}': {runtime_error}"
-        )
-    runtime_persona = {**persona, "llm": {**(persona.get("llm") or {}), "model": model}}
-    transport_adapter = transport_adapter_for_session_definition(
-        definition,
-        session_definitions=session_definitions,
-    )
-    if transport_adapter:
-        runtime_persona["executor"] = _cli_executor(
-            transport_adapter,
-            model,
-            workflow_cli_turn_timeout_seconds=workflow_cli_turn_timeout_seconds,
-            configured_models=configured_models,
-        )
-    return runtime_persona, definition
-
-
-def _resolve_workflow_execution(
-    workflow_snapshot: dict[str, Any] | None,
-    *,
-    fallback_model: str,
-    requested_definition: str | None,
-    session_definitions: dict[str, Any],
-    workflow_cli_turn_timeout_seconds: float,
-    configured_models: list[Any] | None = None,
-) -> tuple[str, str | None, list[dict[str, Any]]]:
-    if not workflow_snapshot:
-        return fallback_model, requested_definition, []
-
-    stage_models = workflow_stage_models_from_snapshot(workflow_snapshot)
-    if not stage_models:
-        raise ValueError("Workflow stages must declare an explicit model for each persona.")
-
-    conflicts = _workflow_persona_model_conflicts(workflow_snapshot)
-    if conflicts:
-        formatted = ", ".join(
-            f"{persona}=[{', '.join(sorted(models))}]"
-            for persona, models in sorted(conflicts.items())
-        )
-        raise ValueError(
-            "Workflow assigns multiple models to the same persona, "
-            f"which is unsupported: {formatted}"
-        )
-    requested_definition_error = validate_session_definition_for_models(
-        requested_definition,
-        stage_models,
-        session_definitions=session_definitions,
-        configured_models=configured_models,
-    )
-    if requested_definition and requested_definition_error:
-        logger.warning(
-            "Ignoring incompatible workflow session definition %s: %s",
-            _sanitize_log(requested_definition),
-            _sanitize_log(requested_definition_error),
-        )
-        requested_definition = None
-    personas: list[dict[str, Any]] = []
-    resolved_definitions: set[str] = set()
-    requested_transport_adapter = (
-        transport_adapter_for_session_definition(
-            requested_definition,
-            session_definitions=session_definitions,
-        )
-        if requested_definition
-        else None
-    )
-    for persona in workflow_runtime_personas_from_snapshot(workflow_snapshot):
-        if not isinstance(persona, dict):
-            continue
-        runtime_persona = dict(persona)
-        model = str(runtime_persona.pop("model", "")).strip()
-        if model:
-            llm = dict(runtime_persona.get("llm") or {})
-            llm["model"] = model
-            runtime_persona["llm"] = llm
-            resolved_definition = requested_definition
-            transport_adapter = requested_transport_adapter
-            if not resolved_definition:
-                resolved_definition, runtime_error = session_definition_for_model(
-                    model,
-                    session_definitions=session_definitions,
-                    configured_models=configured_models,
-                )
-                if runtime_error:
-                    raise ValueError(
-                        f"Persona '{runtime_persona.get('name', 'unknown')}' model '{model}': "
-                        f"{runtime_error}"
-                    )
-                transport_adapter = transport_adapter_for_session_definition(
-                    resolved_definition,
-                    session_definitions=session_definitions,
-                )
-            if resolved_definition:
-                resolved_definitions.add(resolved_definition)
-            if transport_adapter:
-                runtime_persona["executor"] = _cli_executor(
-                    transport_adapter,
-                    model,
-                    workflow_cli_turn_timeout_seconds=workflow_cli_turn_timeout_seconds,
-                    configured_models=configured_models,
-                )
-        personas.append(runtime_persona)
-
-    if len(resolved_definitions) == 1:
-        session_definition = next(iter(resolved_definitions))
-    else:
-        if requested_definition and resolved_definitions:
-            logger.warning(
-                "Ignoring requested session definition %s; workflow stages resolved to %s",
-                _sanitize_log(requested_definition),
-                ", ".join(_sanitize_log(definition) for definition in sorted(resolved_definitions)),
-            )
-        session_definition = None
-
-    return stage_models[0], session_definition, personas
 
 
 @dataclass(frozen=True)
@@ -327,6 +131,9 @@ class DispatchResult:
     session_name: str
     status: str
     cluster_name: str = ""
+    #: The campaign of the workflow run an item started; a run has no single session.
+    campaign_id: str = ""
+    campaign_slug: str = ""
 
 
 @dataclass(frozen=True)
@@ -410,96 +217,107 @@ def build_prompt(
     return "\n".join(parts)
 
 
-def build_flock_prompt(
-    issue: TrackerIssue,
-    repo: str,
-    feature_branch: str,
-    mimir_hosted_url: str = "",
-    workflow_snapshot: dict[str, Any] | None = None,
-) -> str:
-    """Build the initiative context for a flock session.
-
-    In flock mode we inject only the tracker ticket content here. Workflow
-    structure, persona prompts, repository bindings, and Mimir resources are
-    already conveyed structurally in the workload config and persona setup.
-    """
-    del repo, feature_branch, mimir_hosted_url, workflow_snapshot
-    parts = [
-        f"# Run: {issue.identifier} — {issue.title}",
-        "",
-        issue.description or "",
-    ]
-    return "\n".join(parts)
-
-
-def _format_persona_label(persona: dict) -> str:
-    """Return a log-friendly label for one persona dict.
-
-    Examples:
-      ``coordinator`` → ``coordinator(inherit)``
-      ``reviewer`` with ``llm.primary_alias=powerful, thinking_enabled=True``
-        → ``reviewer(powerful/thinking)``
-      ``security-auditor`` with ``llm.primary_alias=balanced``
-        → ``security-auditor(balanced)``
-    """
-    name = persona.get("name", "?")
-    llm = persona.get("llm", {})
-    alias = llm.get("primary_alias", "")
-    thinking = llm.get("thinking_enabled", False)
-    if not alias:
-        return f"{name}(inherit)"
-    suffix = "/thinking" if thinking else ""
-    return f"{name}({alias}{suffix})"
-
-
-def _snapshot_hash(personas: list[dict]) -> str:
-    """Return a short hash of the persona snapshot for log correlation."""
-    raw = json.dumps(personas, sort_keys=True, default=str)
-    return hashlib.sha256(raw.encode()).hexdigest()[:8]
-
-
-def _promote_default_ting_run_personas(personas: list[dict]) -> list[dict]:
-    """Prefer an explicit run completion authority for Ting's default flock path.
-
-    Ting's historical default was ``coordinator`` + ``reviewer``. For run
-    dispatches we want the completion-authority contract to be intentional, so
-    the legacy default pair is upgraded in-memory to ``run-executor`` +
-    ``reviewer`` unless the caller explicitly chose another flow/composition.
-    """
-    names = [str(persona.get("name") or "") for persona in personas]
-    if names != ["coordinator", "reviewer"]:
-        return personas
-
-    upgraded = copy.deepcopy(personas)
-    upgraded[0]["name"] = "run-executor"
-    return upgraded
-
-
 class TargetSelectionError(Exception):
     """Raised when no available Volundr backend satisfies the requested target."""
 
 
-def select_adapter_by_tags(
+class HostTagsUnreadableError(TargetSelectionError):
+    """No target matched, and some targets' host tags could not be read.
+
+    Distinct from a plain miss: the unreadable targets may have the host the selector
+    needs, so the message names each of them and why it could not be read.
+    """
+
+
+HOST_SELECTOR_KEY = "host_selector"
+
+
+def _adapter_tags(adapter: VolundrPort) -> list[str]:
+    return getattr(adapter, "tags", []) or []
+
+
+async def _adapters_serving_tags(
+    adapters: list[VolundrPort],
+    tags: list[str] | tuple[str, ...],
+    match: str,
+    *,
+    auth_token: str | None,
+    principal: Principal | None,
+) -> tuple[list[VolundrPort], dict[str, str]]:
+    """Adapters whose tags, alone or with ONE of their host tag sets, satisfy the selector.
+
+    Only an adapter whose own tags fall short is asked for its host tag sets. The second
+    result maps the name of an adapter whose host tags could not be read to the reason:
+    it is neither eligible nor dropped without a trace.
+    """
+    to_read = [a for a in adapters if not matches_tags(_adapter_tags(a), tags, match)]
+    unreadable: dict[str, str] = {}
+    serving = {id(a) for a in adapters} - {id(a) for a in to_read}
+
+    async def read_one(adapter: VolundrPort) -> None:
+        try:
+            tag_sets = await adapter.host_tag_sets(auth_token=auth_token, principal=principal)
+        except HostTagSetsUnreadableError as exc:
+            unreadable[adapter.name or adapter.target_id] = str(exc)
+            return
+        if satisfiable(_adapter_tags(adapter), tag_sets, tags, match):
+            serving.add(id(adapter))
+
+    await asyncio.gather(*(read_one(a) for a in to_read))
+    return [a for a in adapters if id(a) in serving], unreadable
+
+
+async def select_adapter_by_tags(
     adapters: list[VolundrPort],
     tags: list[str] | tuple[str, ...] = (),
     match: str = "all",
     *,
     connection_id: str | None = None,
+    auth_token: str | None = None,
+    principal: Principal | None = None,
 ) -> VolundrPort:
     """Place new work uniformly across eligible targets, or honor an explicit pin.
 
-    ``match="all"`` requires every tag; ``match="any"`` requires one.
+    ``match="all"`` requires every tag; ``match="any"`` requires one. A target is
+    eligible when its own tags satisfy the selector, or when its own tags together with
+    ONE of its host tag sets do (``niuu.domain.tags.satisfiable``); the tag sets of
+    different hosts are never combined. A target whose host tags cannot be read is not
+    eligible, is logged, and, when nothing else is, is named in the raised error.
     Selection never retries another target after a failure.
     """
-    eligible = [
-        adapter
-        for adapter in adapters
-        if not tags or matches_tags(getattr(adapter, "tags", []) or [], tags, match)
-    ]
+    if tags:
+        try:
+            validate_match(match)
+        except ValueError as exc:
+            raise TargetSelectionError(str(exc)) from exc
+    candidates = adapters
     if connection_id:
-        for adapter in eligible:
-            if connection_id in {adapter.target_id, adapter.name}:
-                return adapter
+        candidates = [a for a in adapters if connection_id in {a.target_id, a.name}]
+    unreadable: dict[str, str] = {}
+    eligible = candidates
+    if tags:
+        eligible, unreadable = await _adapters_serving_tags(
+            candidates, tags, match, auth_token=auth_token, principal=principal
+        )
+    if unreadable:
+        logger.error(
+            "Host tags of %d Volundr target(s) could not be read for selector %s (match=%s) "
+            "and they were not considered: %s",
+            len(unreadable),
+            sorted(set(tags)),
+            match,
+            unreadable,
+        )
+    if not eligible and unreadable:
+        named = "; ".join(f"{name} ({reason})" for name, reason in sorted(unreadable.items()))
+        raise HostTagsUnreadableError(
+            f"No Volundr backend matches tags {sorted(set(tags))} (match={match}) by its own "
+            f"tags, and the host tags of these targets could not be read, so they cannot be "
+            f"ruled out: {named}"
+        )
+    if connection_id:
+        if eligible:
+            return eligible[0]
         raise TargetSelectionError(f"Volundr target not found or ineligible: {connection_id}")
     if not eligible:
         raise TargetSelectionError(
@@ -507,6 +325,61 @@ def select_adapter_by_tags(
         )
     # ponytail: uniform placement; use capacity-aware scheduling when targets expose capacity.
     return random.choice(eligible)
+
+
+def host_selector_for(
+    adapter: VolundrPort,
+    tags: list[str] | tuple[str, ...],
+    match: str = "all",
+) -> dict[str, Any] | None:
+    """What the chosen target's Forge must still satisfy with a host, or ``None``.
+
+    The value for ``workload_config.host_selector``: the selector minus what the
+    target's own tags already cover (``niuu.domain.tags.residual_selector``).
+    """
+    if not tags:
+        return None
+    residual = residual_selector(_adapter_tags(adapter), tags, match)
+    if residual is None:
+        return None
+    residual_tags, residual_match = residual
+    return {"tags": list(residual_tags), "match": residual_match}
+
+
+def host_selector_config(
+    adapter: VolundrPort,
+    tags: list[str] | tuple[str, ...],
+    match: str = "all",
+) -> dict[str, Any]:
+    """``{"host_selector": ...}`` to merge into a ``workload_config``, or ``{}`` for none."""
+    selector = host_selector_for(adapter, tags, match)
+    if selector is None:
+        return {}
+    return {HOST_SELECTOR_KEY: selector}
+
+
+def with_host_selector(
+    request: SpawnRequest,
+    adapter: VolundrPort,
+    tags: list[str] | tuple[str, ...],
+    match: str = "all",
+) -> SpawnRequest:
+    """The spawn request carrying the chosen target's residual host selector, if any.
+
+    A request that already names its own ``host_selector`` while the placement also
+    carries target tags is ambiguous and refused, never merged.
+    """
+    selector = host_selector_for(adapter, tags, match)
+    if selector is None:
+        return request
+    if HOST_SELECTOR_KEY in request.workload_config:
+        raise TargetSelectionError(
+            f"The session already sets workload_config.{HOST_SELECTOR_KEY} and its placement "
+            f"names target tags {sorted(set(tags))}; set only one of them"
+        )
+    return replace(
+        request, workload_config={**request.workload_config, HOST_SELECTOR_KEY: selector}
+    )
 
 
 def base_branch_for_repo(saga: Saga, repo: str) -> str:
@@ -521,13 +394,7 @@ def base_branch_for_repo(saga: Saga, repo: str) -> str:
 
 @dataclass
 class DispatchConfig:
-    """Dispatch-related config values needed by the service.
-
-    When *live_flock* is provided, flock fields are read from the live
-    settings object so that in-memory API changes take effect immediately.
-    When tests construct a ``DispatchConfig`` directly with ``flock_enabled``
-    etc., those values are used as-is (no live reference needed).
-    """
+    """Dispatch-related config values needed by the service."""
 
     default_system_prompt: str = ""
     default_model: str = "claude-sonnet-4-6"
@@ -535,46 +402,6 @@ class DispatchConfig:
     dispatch_prompt_template: str = ""
     max_cached_issues: int = 10_000
     templates_dir: Path = BUNDLED_TEMPLATES_DIR
-    flock_enabled: bool = False
-    flock_default_personas: list[dict] = field(
-        default_factory=lambda: [
-            {"name": "coordinator"},
-            {"name": "coder"},
-            {"name": "reviewer"},
-        ]
-    )
-    flock_default_workflow_name: str = ""
-    flock_mimir_hosted_url: str = ""
-    flock_mimir_registry_path: str = "~/.ravn/mimir/.mimir-registry.json"
-    flock_sleipnir_publish_urls: list[str] = field(default_factory=list)
-    flock_llm_config: dict = field(default_factory=dict)
-    flock_daily_budget_usd: float = 25.0
-    live_flock: object | None = field(default=None, repr=False)
-    session_definitions: dict[str, Any] = field(default_factory=default_session_definitions)
-    configured_models: list[Any] = field(default_factory=list)
-    workflow_cli_turn_timeout_seconds: float = DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS
-
-    def __getattribute__(self, name: str) -> object:
-        live = super().__getattribute__("live_flock")
-        if live is None:
-            return super().__getattribute__(name)
-        if name == "flock_enabled":
-            return live.enabled  # type: ignore[union-attr]
-        if name == "flock_default_personas":
-            return [p.to_dict() for p in live.default_personas]  # type: ignore[union-attr]
-        if name == "flock_default_workflow_name":
-            return live.default_workflow_name  # type: ignore[union-attr]
-        if name == "flock_mimir_hosted_url":
-            return live.mimir_hosted_url  # type: ignore[union-attr]
-        if name == "flock_mimir_registry_path":
-            return live.mimir_registry_path  # type: ignore[union-attr]
-        if name == "flock_sleipnir_publish_urls":
-            return list(live.sleipnir_publish_urls)  # type: ignore[union-attr]
-        if name == "flock_llm_config":
-            return dict(live.llm_config)  # type: ignore[union-attr]
-        if name == "flock_daily_budget_usd":
-            return float(live.daily_budget_usd)  # type: ignore[union-attr]
-        return super().__getattribute__(name)
 
 
 class DispatchService:
@@ -593,9 +420,10 @@ class DispatchService:
         config: DispatchConfig,
         sleipnir_publisher: object | None = None,
         event_bus: EventBusPort | None = None,
-        flow_provider: FlockFlowProvider | None = None,
         workflow_repo: WorkflowRepository | None = None,
         persona_source: PortablePersonaSource | None = None,
+        workflow_runs: WorkflowRunLauncher | None = None,
+        campaign_repo: WorkflowCampaignRepository | None = None,
     ) -> None:
         self._tracker_factory = tracker_factory
         self._volundr_factory = volundr_factory
@@ -605,9 +433,21 @@ class DispatchService:
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._sleipnir_publisher = sleipnir_publisher
         self._event_bus = event_bus
-        self._flow_provider = flow_provider
         self._workflow_repo = workflow_repo
         self._persona_source = persona_source
+        self._workflow_runs = workflow_runs
+        self._campaign_repo = campaign_repo
+
+    def bind_workflow_runs(
+        self, workflow_runs: WorkflowRunLauncher, campaign_repo: WorkflowCampaignRepository
+    ) -> None:
+        """Give the service the means to start a workflow run for a saga item.
+
+        The run service is built after the dispatcher at the composition root, which
+        has no hard dependency on it until a workflow-carrying item is dispatched.
+        """
+        self._workflow_runs = workflow_runs
+        self._campaign_repo = campaign_repo
 
     async def _dispatch_capacity_snapshot(
         self,
@@ -749,9 +589,14 @@ class DispatchService:
         system_prompt: str = "",
         connection_id: str | None = None,
         session_definition: str | None = None,
-        persona_overrides: list[dict] | None = None,
     ) -> list[DispatchResult]:
-        """Spawn Volundr sessions for the given items."""
+        """Start the given items: a Volundr session each, or a workflow run for an item whose
+        saga (or request) names a workflow.
+
+        :raises WorkflowRunsNotConfiguredError: When an item runs a workflow and this service
+            has no run launcher or campaign repository. Raised before anything starts, so a
+            refused batch has no side effects.
+        """
         await self._dispatcher_repo.get_or_create(owner_id)
 
         effective_model = model or self._config.default_model
@@ -787,8 +632,22 @@ class DispatchService:
         saga_map = {str(s.id): s for s in sagas}
         issue_cache = await self._build_issue_cache(adapters, sagas, self._config.max_cached_issues)
 
+        snapshots: dict[int, tuple[dict[str, Any] | None, str | None]] = {}
+        for index, item in enumerate(items):
+            known_saga = saga_map.get(item.saga_id)
+            if known_saga is None:
+                continue
+            snapshots[index] = await self._resolve_workflow_snapshot(item, known_saga)
+            if snapshots[index][0] and (self._workflow_runs is None or self._campaign_repo is None):
+                raise WorkflowRunsNotConfiguredError(
+                    f"Issue {_sanitize_log(item.issue_id)} runs saga "
+                    f"{_sanitize_log(known_saga.slug)}'s workflow, but this dispatcher has no "
+                    "workflow run launcher and campaign repository; build DispatchService "
+                    "with workflow_runs= and campaign_repo="
+                )
+
         results: list[DispatchResult] = []
-        for item in items:
+        for index, item in enumerate(items):
             saga = saga_map.get(item.saga_id)
             if saga is None:
                 logger.warning("Saga not found: %s", item.saga_id)
@@ -804,11 +663,13 @@ class DispatchService:
             if not target_connection and not item.target_tags:
                 target_connection = saga.instance_id
             try:
-                target_volundr = select_adapter_by_tags(
+                target_volundr = await select_adapter_by_tags(
                     all_volundr,
                     item.target_tags,
                     item.target_match,
                     connection_id=target_connection,
+                    auth_token=auth_token,
+                    principal=principal,
                 )
             except TargetSelectionError as exc:
                 logger.warning("Target selection failed for issue %s: %s", item.issue_id, exc)
@@ -831,7 +692,7 @@ class DispatchService:
                     principal=principal,
                 )
                 integration_ids_by_target[integration_cache_key] = integration_ids
-            workflow_snapshot, workflow_error = await self._resolve_workflow_snapshot(item, saga)
+            workflow_snapshot, workflow_error = snapshots[index]
             if workflow_error:
                 logger.warning(
                     "Workflow resolution failed for issue %s: %s",
@@ -848,23 +709,38 @@ class DispatchService:
                 )
                 continue
 
-            result = await self._spawn_single(
-                target_volundr=target_volundr,
-                item=item,
-                saga=saga,
-                issue=issue,
-                adapter=select_tracker_for_saga(adapters, saga),
-                effective_model=effective_model,
-                effective_prompt=effective_prompt,
-                integration_ids=integration_ids,
-                session_definition=item.session_definition or effective_session_definition,
-                auth_token=auth_token,
-                principal=principal,
-                owner_id=owner_id,
-                persona_overrides=persona_overrides,
-                workflow_snapshot=workflow_snapshot,
+            tracker = select_tracker_for_saga(adapters, saga)
+            if workflow_snapshot:
+                results.append(
+                    await self._launch_workflow_run(
+                        target_volundr=target_volundr,
+                        item=item,
+                        saga=saga,
+                        issue=issue,
+                        adapter=tracker,
+                        effective_model=effective_model,
+                        workflow_snapshot=workflow_snapshot,
+                        principal=principal,
+                        owner_id=owner_id,
+                    )
+                )
+                continue
+            results.append(
+                await self._spawn_single(
+                    target_volundr=target_volundr,
+                    item=item,
+                    saga=saga,
+                    issue=issue,
+                    adapter=tracker,
+                    effective_model=effective_model,
+                    effective_prompt=effective_prompt,
+                    integration_ids=integration_ids,
+                    session_definition=item.session_definition or effective_session_definition,
+                    auth_token=auth_token,
+                    principal=principal,
+                    owner_id=owner_id,
+                )
             )
-            results.append(result)
 
         return results
 
@@ -993,13 +869,6 @@ class DispatchService:
         """
         template = load_template(template_name, self._config.templates_dir, payload)
 
-        if template.flock_flow and self._flow_provider is not None:
-            if self._flow_provider.get(template.flock_flow) is None:
-                raise ValueError(
-                    f"flock_flow '{template.flock_flow}' not found — "
-                    "register the flow before referencing it in a pipeline"
-                )
-
         now = datetime.now(UTC)
         saga_id = uuid.uuid4()
         slug = _slugify(template.name)[:60]
@@ -1091,7 +960,6 @@ class DispatchService:
                 first_runs,
                 first_tpl,
                 owner_id,
-                flock_flow_name=template.flock_flow or "",
             )
 
         return str(saga_id)
@@ -1103,15 +971,8 @@ class DispatchService:
         runs: list[Run],
         tpl_phase: TemplatePhase,
         owner_id: str,
-        flock_flow_name: str = "",
     ) -> None:
-        """Spawn Volundr sessions for all runs in a template phase.
-
-        When *flock_flow_name* is provided and a matching flow is registered,
-        each run is dispatched as a flock session with the flow's personas.
-        Per-run ``persona_overrides`` from the template YAML are merged onto
-        the matching flow persona before dispatch.
-        """
+        """Spawn one plain Volundr session for each run in a template phase."""
         all_volundr = await self._volundr_factory.for_owner(owner_id)
         if not all_volundr:
             logger.error(
@@ -1176,7 +1037,7 @@ class DispatchService:
                     phase.name,
                 )
                 continue
-            volundr = select_adapter_by_tags(
+            volundr = await select_adapter_by_tags(
                 all_volundr,
                 saga.target_tags,
                 saga.target_match,
@@ -1188,16 +1049,6 @@ class DispatchService:
                 )
             integration_ids = integration_ids_by_target[id(volundr)]
             session_name = re.sub(r"[^a-z0-9]+", "-", run.name.lower()).strip("-")[:48]
-            workload_config = build_flock_workload_config(
-                flock_flow_name,
-                tpl_run,
-                self._flow_provider,
-                tpl_run.prompt,
-            )
-            if workload_config and workload_config.get("mimir"):
-                workload_config["mimir"] = resolve_mimir_registry_refs(
-                    workload_config["mimir"], registry_path=self._config.flock_mimir_registry_path
-                )
             request = SpawnRequest(
                 name=session_name,
                 repo=repo,
@@ -1210,9 +1061,8 @@ class DispatchService:
                 initial_prompt=tpl_run.prompt,
                 profile=tpl_run.persona or None,
                 integration_ids=integration_ids,
-                workload_type="ravn_flock" if workload_config else "default",
-                workload_config=workload_config or {},
             )
+            request = with_host_selector(request, volundr, saga.target_tags, saga.target_match)
             try:
                 session = await volundr.spawn_session(request=request)
                 updated = Run(
@@ -1236,12 +1086,10 @@ class DispatchService:
                 )
                 await self._saga_repo.save_run(updated)
                 logger.info(
-                    "DispatchService: dispatched template run %s → session %s"
-                    " (persona=%s, flock=%s)",
+                    "DispatchService: dispatched template run %s → session %s (persona=%s)",
                     run.name,
                     session.id,
                     tpl_run.persona or "(none)",
-                    flock_flow_name or "(none)",
                 )
             except Exception:
                 logger.exception(
@@ -1405,173 +1253,24 @@ class DispatchService:
         effective_prompt: str,
         integration_ids: list[str],
         session_definition: str | None = None,
-        flock_flow: str = "",
-        persona_overrides: list[dict] | None = None,
-        workflow_snapshot: dict[str, Any] | None = None,
     ) -> SpawnRequest:
-        """Build a SpawnRequest — flock or solo — based on config.
-
-        When *flock_flow* names a registered flow, the flow is resolved via the
-        ``FlockFlowProvider`` and **snapshotted** inline into the workload config.
-        Per-dispatch *persona_overrides* take precedence over flow-level overrides
-        which in turn take precedence over persona defaults.
-        """
-        session_name = issue.identifier.lower()
-        workflow_personas = workflow_personas_from_snapshot(workflow_snapshot)
-        use_workflow_flock = bool(workflow_snapshot and workflow_personas)
-        resolved_effective_model = effective_model
-        resolved_session_definition = session_definition
-
-        if not self._config.flock_enabled and not use_workflow_flock:
-            return SpawnRequest(
-                name=session_name,
-                repo=item.repo,
-                branch=saga.feature_branch,
-                base_branch=base_branch_for_repo(saga, item.repo),
-                model=resolved_effective_model,
-                tracker_issue_id=issue.identifier,
-                tracker_issue_url=issue.url,
-                system_prompt=effective_prompt,
-                initial_prompt=build_prompt(
-                    issue,
-                    item.repo,
-                    saga.feature_branch,
-                    template=self._config.dispatch_prompt_template,
-                ),
-                definition=resolved_session_definition,
-                workload_config={"workflow": workflow_snapshot} if workflow_snapshot else {},
-                integration_ids=integration_ids,
-            )
-
-        # Resolve personas — flow snapshot takes precedence over config defaults
-        personas = copy.deepcopy(self._config.flock_default_personas)
-        flow_name_for_log = ""
-        mimir_url = self._config.flock_mimir_hosted_url
-        mimir_registry_path = self._config.flock_mimir_registry_path
-        sleipnir_urls = list(self._config.flock_sleipnir_publish_urls)
-        mimir_cfg = normalize_mimir_workload_config(hosted_url=mimir_url)
-        mesh_transport = "nng"
-
-        if use_workflow_flock:
-            workflow_definition = session_definition
-            if validate_session_definition_for_models(
-                workflow_definition,
-                workflow_stage_models_from_snapshot(workflow_snapshot),
-                session_definitions=self._config.session_definitions,
-                configured_models=self._config.configured_models,
-            ):
-                workflow_definition = None
-            workflow_definition = workflow_definition or _DEFAULT_WORKFLOW_SESSION_DEFINITION
-            (
-                resolved_effective_model,
-                resolved_session_definition,
-                workflow_persona_overrides,
-            ) = _resolve_workflow_execution(
-                workflow_snapshot,
-                fallback_model=effective_model,
-                requested_definition=workflow_definition,
-                session_definitions=self._config.session_definitions,
-                workflow_cli_turn_timeout_seconds=self._config.workflow_cli_turn_timeout_seconds,
-                configured_models=self._config.configured_models,
-            )
-            personas = copy.deepcopy(workflow_persona_overrides)
-            flow_name_for_log = str(workflow_snapshot.get("name") or "")
-            mimir_cfg = resolve_mimir_registry_refs(
-                normalize_mimir_workload_config(workflow_mimir_from_snapshot(workflow_snapshot)),
-                registry_path=mimir_registry_path,
-            )
-        else:
-            flow = (
-                self._flow_provider.get(flock_flow) if flock_flow and self._flow_provider else None
-            )
-            if flow is None and flock_flow:
-                logger.warning("Flock flow '%s' not found, using default personas", flock_flow)
-            if flow is not None:
-                flow_name_for_log = flow.name
-                personas = [p.to_dict() for p in flow.personas]
-                mimir_url = flow.mimir_hosted_url or mimir_url
-                mimir_cfg = resolve_mimir_registry_refs(
-                    normalize_mimir_workload_config(flow.mimir, hosted_url=mimir_url),
-                    registry_path=mimir_registry_path,
-                )
-                mesh_transport = flow.mesh_transport or mesh_transport
-                if flow.sleipnir_publish_urls:
-                    sleipnir_urls = list(flow.sleipnir_publish_urls)
-            else:
-                personas = _promote_default_ting_run_personas(personas)
-
-        # Apply per-dispatch persona overrides (precedence: dispatch > flow > defaults)
-        if persona_overrides:
-            override_map = {o["name"]: o for o in persona_overrides}
-            merged: list[dict] = []
-            for p in personas:
-                name = p.get("name", p) if isinstance(p, dict) else p
-                if name in override_map:
-                    base = dict(p) if isinstance(p, dict) else {"name": p}
-                    base.update(override_map.pop(name))
-                    merged.append(base)
-                else:
-                    merged.append(p if isinstance(p, dict) else {"name": p})
-            # Append any overrides that aren't already in the list
-            for remaining in override_map.values():
-                merged.append(remaining)
-            personas = merged
-
-        # Snapshot hash for log correlation
-        snapshot_hash = _snapshot_hash(personas)
-        if flow_name_for_log:
-            logger.info(
-                "flock dispatch session=%s flow=%s snapshot=%s personas=[%s]",
-                _sanitize_log(session_name),
-                _sanitize_log(flow_name_for_log),
-                _sanitize_log(snapshot_hash),
-                ", ".join(_sanitize_log(_format_persona_label(p)) for p in personas),
-            )
-        else:
-            logger.info(
-                "flock dispatch session=%s personas=[%s]",
-                _sanitize_log(session_name),
-                ", ".join(_sanitize_log(_format_persona_label(p)) for p in personas),
-            )
-
-        initiative_context = build_flock_prompt(
-            issue,
-            item.repo,
-            saga.feature_branch,
-            mimir_hosted_url=mimir_url,
-            workflow_snapshot=workflow_snapshot,
-        )
-        workload_config: dict = {
-            "personas": personas,
-            "initiative_context": initiative_context,
-            "mesh_transport": mesh_transport,
-        }
-        if self._config.flock_daily_budget_usd > 0:
-            workload_config["daily_budget_usd"] = self._config.flock_daily_budget_usd
-        if workflow_snapshot:
-            workload_config["workflow"] = workflow_snapshot
-        if sleipnir_urls:
-            workload_config["sleipnir_publish_urls"] = sleipnir_urls
-        if mimir_cfg:
-            workload_config["mimir"] = mimir_cfg
-        if mimir_url:
-            workload_config["mimir_hosted_url"] = mimir_url
-        if self._config.flock_llm_config:
-            workload_config["llm_config"] = self._config.flock_llm_config
-
+        """Build the SpawnRequest for one plain Forge session working on *issue*."""
         return SpawnRequest(
-            name=session_name,
+            name=issue.identifier.lower(),
             repo=item.repo,
             branch=saga.feature_branch,
             base_branch=base_branch_for_repo(saga, item.repo),
-            model=resolved_effective_model,
+            model=effective_model,
             tracker_issue_id=issue.identifier,
             tracker_issue_url=issue.url,
             system_prompt=effective_prompt,
-            initial_prompt=workload_config["initiative_context"],
-            definition=resolved_session_definition,
-            workload_type="ravn_flock",
-            workload_config=workload_config,
+            initial_prompt=build_prompt(
+                issue,
+                item.repo,
+                saga.feature_branch,
+                template=self._config.dispatch_prompt_template,
+            ),
+            definition=session_definition,
             integration_ids=integration_ids,
         )
 
@@ -1590,8 +1289,6 @@ class DispatchService:
         auth_token: str | None,
         principal: Principal | None,
         owner_id: str,
-        persona_overrides: list[dict] | None = None,
-        workflow_snapshot: dict[str, Any] | None = None,
     ) -> DispatchResult:
         """Spawn a single session and update run progress."""
         try:
@@ -1603,8 +1300,9 @@ class DispatchService:
                 effective_prompt=effective_prompt,
                 integration_ids=integration_ids,
                 session_definition=session_definition,
-                persona_overrides=persona_overrides,
-                workflow_snapshot=workflow_snapshot,
+            )
+            request = with_host_selector(
+                request, target_volundr, item.target_tags, item.target_match
             )
             spawn_kwargs: dict[str, Any] = {
                 "request": request,
@@ -1684,15 +1382,255 @@ class DispatchService:
                 status="failed",
             )
 
+    async def _launch_workflow_run(
+        self,
+        *,
+        target_volundr: VolundrPort,
+        item: DispatchItem,
+        saga: Saga,
+        issue: TrackerIssue,
+        adapter: TrackerPort,
+        effective_model: str,
+        workflow_snapshot: dict[str, Any],
+        principal: Principal | None,
+        owner_id: str,
+    ) -> DispatchResult:
+        """Start the ticket's workflow run on the step engine and record the dispatch.
+
+        A workflow run has one session per stage member and none that is the ticket's, so
+        the tracker run is marked RUNNING without a session. The run's campaign carries
+        the ticket and ``DISPATCH_RUN_KEY``; when the campaign ends,
+        :meth:`settle_workflow_run` moves the tracker run with it.
+        """
+        launcher = self._workflow_runs
+        campaigns = self._campaign_repo
+        if launcher is None or campaigns is None:
+            raise WorkflowRunsNotConfiguredError("dispatcher has no workflow run launcher")
+        campaign: WorkflowCampaign | None = None
+        try:
+            prompt = build_prompt(
+                issue,
+                item.repo,
+                saga.feature_branch,
+                template=self._config.dispatch_prompt_template,
+            )
+            base_branch = base_branch_for_repo(saga, item.repo)
+            now = datetime.now(UTC)
+            campaign_id = uuid.uuid4()
+            campaign = WorkflowCampaign(
+                id=campaign_id,
+                tenant_id=principal.tenant_id if principal is not None else saga.tenant_id,
+                slug=f"{_slugify(issue.identifier)}-{campaign_id.hex[:12]}",
+                name=f"{issue.identifier} {issue.title}".strip(),
+                owner_id=owner_id,
+                workflow_id=saga.workflow_id or uuid.UUID(int=0),
+                workflow_version=str(workflow_snapshot.get("version") or ""),
+                workflow_name=str(workflow_snapshot.get("name") or ""),
+                workflow_snapshot=workflow_snapshot,
+                session_id="",
+                session_name="",
+                status=WorkflowCampaignStatus.PENDING,
+                active_stage_id=None,
+                stage_state=[],
+                metadata={
+                    "surface": DISPATCH_SURFACE,
+                    DISPATCH_RUN_KEY: True,
+                    TICKET_METADATA_KEY: ticket_metadata(
+                        saga_id=saga.id,
+                        issue_id=issue.id,
+                        identifier=issue.identifier,
+                        title=issue.title,
+                    ),
+                    "prompt": prompt,
+                    "repo": item.repo,
+                    "branch": saga.feature_branch,
+                    "base_branch": base_branch,
+                    "model": effective_model,
+                },
+                created_at=now,
+                updated_at=now,
+                last_activity_at=now,
+                connection_id=getattr(target_volundr, "target_id", None) or None,
+            )
+            saved = await campaigns.save_campaign(campaign)
+            await launcher.launch(
+                saved,
+                {
+                    "prompt": prompt,
+                    "repo": item.repo,
+                    "branch": saga.feature_branch,
+                    "base_branch": base_branch,
+                    "issue": {
+                        "id": issue.id,
+                        "identifier": issue.identifier,
+                        "title": issue.title,
+                        "description": issue.description or "",
+                        "url": issue.url,
+                    },
+                },
+            )
+            await self._record_workflow_run_started(
+                adapter=adapter,
+                saga=saga,
+                issue=issue,
+                principal=principal,
+                owner_id=owner_id,
+            )
+            return DispatchResult(
+                issue_id=item.issue_id,
+                session_id="",
+                session_name=saved.slug,
+                status="spawned",
+                cluster_name=getattr(target_volundr, "name", "") or "",
+                campaign_id=str(saved.id),
+                campaign_slug=saved.slug,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to start the workflow run for %s: %s", issue.identifier, exc, exc_info=True
+            )
+            if campaign is not None:
+                await self._fail_unstarted(campaigns, campaign, str(exc))
+            return DispatchResult(
+                issue_id=item.issue_id,
+                session_id="",
+                session_name="",
+                status="failed",
+            )
+
+    @staticmethod
+    async def _fail_unstarted(
+        campaigns: WorkflowCampaignRepository, campaign: WorkflowCampaign, reason: str
+    ) -> None:
+        """A campaign whose run did not start fails with the reason; it is never left pending."""
+        try:
+            await campaigns.save_campaign(
+                replace(
+                    campaign,
+                    status=WorkflowCampaignStatus.FAILED,
+                    metadata={**campaign.metadata, "failure_error": reason},
+                    updated_at=datetime.now(UTC),
+                )
+            )
+        except Exception:
+            logger.error(
+                "Workflow run %s did not start and its campaign could not be failed",
+                campaign.slug,
+                exc_info=True,
+            )
+
+    async def _record_workflow_run_started(
+        self,
+        *,
+        adapter: TrackerPort,
+        saga: Saga,
+        issue: TrackerIssue,
+        principal: Principal | None,
+        owner_id: str,
+    ) -> None:
+        """Mark the ticket's tracker run RUNNING and tell the event bus."""
+        progress_scope = {}
+        if _supports_keyword_arg(adapter.update_run_progress, "tenant_id"):
+            progress_scope["tenant_id"] = principal.tenant_id if principal is not None else ""
+        await adapter.update_run_progress(
+            issue.id,
+            status=RunStatus.RUNNING,
+            owner_id=owner_id,
+            **progress_scope,
+            phase_tracker_id=issue.milestone_id,
+            saga_tracker_id=saga.tracker_id,
+        )
+        try:
+            await adapter.update_run_state(issue.id, RunStatus.RUNNING)
+        except Exception:
+            logger.error(
+                "FAILED: %s.update_run_state for %s",
+                type(adapter).__name__,
+                issue.id,
+                exc_info=True,
+            )
+        await self._emit_run_state(owner_id, issue, "RUNNING", session_id="")
+
+    async def settle_workflow_run(self, campaign: WorkflowCampaign) -> None:
+        """Move the tracker run of a dispatched workflow run when its campaign ends.
+
+        A merged run frees its slot and lets the saga's next issues dispatch; a failed
+        one is marked failed with the run's reason. A campaign the dispatcher did not
+        start, or one that has not ended, is not this service's.
+        """
+        if not campaign.metadata.get(DISPATCH_RUN_KEY):
+            return
+        if campaign.status not in {WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED}:
+            return
+        ticket = ticket_of(campaign.metadata)
+        if ticket is None:
+            raise ValueError(f"dispatched run {campaign.slug} records no ticket")
+        saga = await self._saga_repo.get_saga(uuid.UUID(ticket[0]), owner_id=campaign.owner_id)
+        if saga is None:
+            raise LookupError(f"saga {ticket[0]} of dispatched run {campaign.slug} is gone")
+        tracker = select_tracker_for_saga(
+            await self._tracker_factory.for_owner(campaign.owner_id), saga
+        )
+        completed = campaign.status == WorkflowCampaignStatus.COMPLETED
+        status = RunStatus.MERGED if completed else RunStatus.FAILED
+        await tracker.update_run_progress(
+            ticket[1],
+            status=status,
+            reason=None if completed else str(campaign.metadata.get("failure_error") or ""),
+        )
+        try:
+            await tracker.update_run_state(ticket[1], status)
+        except Exception:
+            logger.error(
+                "FAILED: %s.update_run_state for %s",
+                type(tracker).__name__,
+                ticket[1],
+                exc_info=True,
+            )
+        issue = TrackerIssue(
+            id=ticket[1],
+            identifier=str(campaign.metadata[TICKET_METADATA_KEY].get("identifier") or ""),
+            title=str(campaign.metadata[TICKET_METADATA_KEY].get("title") or ""),
+            description="",
+            status="",
+            status_type="",
+        )
+        await self._emit_run_state(campaign.owner_id, issue, status.value.upper(), session_id="")
+        if completed:
+            await self.try_auto_continue(
+                campaign.owner_id,
+                saga.tracker_id,
+                tracker_connection_id=saga.tracker_connection_id or None,
+            )
+
+    async def _emit_run_state(
+        self, owner_id: str, issue: TrackerIssue, status: str, *, session_id: str
+    ) -> None:
+        if self._event_bus is None:
+            return
+        await self._event_bus.emit(
+            TingEvent(
+                event="run.state_changed",
+                owner_id=owner_id,
+                data={
+                    "session_id": session_id,
+                    "owner_id": owner_id,
+                    "tracker_id": issue.identifier,
+                    "url": issue.url,
+                    "status": status,
+                    "pr_id": None,
+                    "pr_url": None,
+                },
+            )
+        )
+
     async def _resolve_workflow_snapshot(
         self,
         item: DispatchItem,
         saga: Saga,
     ) -> tuple[dict[str, Any] | None, str | None]:
         if item.workflow_id is None:
-            if saga.workflow_snapshot is not None:
-                return saga.workflow_snapshot, None
-            return await self._resolve_default_workflow_snapshot(saga)
+            return saga.workflow_snapshot, None
 
         if self._workflow_repo is None:
             return None, "workflow repository not configured"
@@ -1713,38 +1651,4 @@ class DispatchService:
             snapshot = build_workflow_snapshot(workflow, persona_source=self._persona_source)
         except ValueError as exc:
             return None, str(exc)
-        return snapshot, None
-
-    async def _resolve_default_workflow_snapshot(
-        self,
-        saga: Saga,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        workflow_name = str(self._config.flock_default_workflow_name or "").strip()
-        if not workflow_name or self._workflow_repo is None:
-            return None, None
-
-        workflows = await self._workflow_repo.list_workflows(
-            owner_id=saga.owner_id,
-            scope=WorkflowScope.SYSTEM,
-        )
-        workflow = next(
-            (candidate for candidate in workflows if candidate.name == workflow_name),
-            None,
-        )
-        if workflow is None:
-            return None, None
-
-        from ting.domain.workflow_snapshot import build_workflow_snapshot  # noqa: PLC0415
-
-        try:
-            snapshot = build_workflow_snapshot(workflow, persona_source=self._persona_source)
-        except ValueError as exc:
-            return None, str(exc)
-        await self._saga_repo.update_saga_workflow(
-            saga.id,
-            workflow_id=workflow.id,
-            workflow_version=workflow.version,
-            workflow_snapshot=snapshot,
-            owner_id=saga.owner_id,
-        )
         return snapshot, None

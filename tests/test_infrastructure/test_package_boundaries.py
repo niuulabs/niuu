@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
@@ -49,6 +50,100 @@ def test_niuu_does_not_import_feature_packages() -> None:
         for path, imported in _external_package_imports("niuu")
         if imported in {"ting", "volundr"}
     }
+
+    assert actual == set()
+
+
+#: Every module and subpackage of ``ravn`` that a dotted path can name.  Wire names
+#: that merely start with ``ravn.`` (``ravn.mesh.*`` event types, ``ravn.memory.*``
+#: metrics, ``ravn.niuu.world/*`` labels) are not modules and are not listed.
+_RAVN_MODULES = (
+    "adapters",
+    "agent",
+    "api",
+    "budget",
+    "build",
+    "cap_telemetry",
+    "cli",
+    "compression",
+    "config",
+    "context",
+    "domain",
+    "drive_loop",
+    "dynamic_adapters",
+    "harness_telemetry",
+    "huddle_archiver",
+    "main",
+    "plugin",
+    "ports",
+    "prompt_builder",
+    "registry",
+    "resident_text",
+    "session_join",
+    "skills",
+    "static",
+    "tool_observability",
+    "tui",
+    "valkyrie_evolution",
+    "web",
+    "workflow_kickoff",
+    "workflow_runtime",
+)
+_RAVN_MODULE_PATH = re.compile(rf"(?<![\w.])ravn\.(?:{'|'.join(_RAVN_MODULES)})\b")
+
+
+def test_niuu_does_not_import_ravn() -> None:
+    actual = {path for path, imported in _external_package_imports("niuu") if imported == "ravn"}
+
+    assert actual == set()
+
+
+def _ravn_module_strings(package: str) -> set[str]:
+    """Locations in *package* of a string constant that names a ``ravn`` module."""
+    package_root = SRC_ROOT / package
+    violations: set[str] = set()
+
+    for path in package_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if _RAVN_MODULE_PATH.search(node.value):
+                violations.add(f"{path.relative_to(package_root).as_posix()}:{node.lineno}")
+
+    return violations
+
+
+def test_niuu_does_not_name_ravn_modules_in_strings() -> None:
+    """Dynamic-adapter paths, ``import_class`` arguments and docstrings are covered.
+
+    A dotted-path string is an import the AST walk above cannot see; niuu reaching
+    into ``ravn`` through one is the same dependency.
+    """
+    assert _ravn_module_strings("niuu") == set()
+
+
+def test_personas_does_not_import_ravn() -> None:
+    actual = {
+        path for path, imported in _external_package_imports("personas") if imported == "ravn"
+    }
+
+    assert actual == set()
+
+
+def test_personas_does_not_name_ravn_modules_in_strings() -> None:
+    """Personas are neutral: a dotted-path string into ``ravn`` is the same dependency."""
+    assert _ravn_module_strings("personas") == set()
+
+
+def test_mimir_does_not_import_ravn() -> None:
+    actual = {path for path, imported in _external_package_imports("mimir") if imported == "ravn"}
+
+    assert actual == set()
+
+
+def test_tracker_does_not_import_ravn() -> None:
+    actual = {path for path, imported in _external_package_imports("tracker") if imported == "ravn"}
 
     assert actual == set()
 
@@ -155,7 +250,7 @@ def test_scoped_api_and_adapters_have_no_behavioral_environment_reads() -> None:
         "volundr/adapters/inbound/rest.py",
         "volundr/adapters/outbound/local_process.py",
         "volundr/adapters/outbound/openshell_gateway.py",
-        "ravn/adapters/mimir/http.py",
+        "mimir/adapters/http.py",
     )
     forbidden = ("os.environ.get", "os.getenv", "os.environ[")
     violations = {

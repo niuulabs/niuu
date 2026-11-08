@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import json
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -220,26 +221,32 @@ def endpoint_module(tmp_path, monkeypatch):
     return module
 
 
+def _git(cwd, *args):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
 @pytest.mark.parametrize("base", ["last-commit", "default-branch"])
-async def test_diff_file_counts_include_binary_and_unicode_paths(
-    endpoint_module, monkeypatch, base
-):
-    proc = SimpleNamespace(
-        returncode=0,
-        communicate=AsyncMock(
-            return_value=("2\t3\tsrc/α.py\n-\t-\timage.png\ninvalid\n".encode(), b"")
-        ),
-    )
-    spawn = AsyncMock(return_value=proc)
-    monkeypatch.setattr(endpoint_module.asyncio, "create_subprocess_exec", spawn)
+async def test_diff_file_counts_include_binary_and_unicode_paths(tmp_path, endpoint_module, base):
+    _git(tmp_path, "init", "-b", "dev")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _git(tmp_path, "config", "user.name", "Test")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "α.py").write_text("a\nb\nc\n")
+    (tmp_path / "image.png").write_bytes(b"\x89PNG\x00one")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "base")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/dev", "HEAD")
+    _git(tmp_path, "config", "niuu.baseBranch", "dev")
+    (tmp_path / "src" / "α.py").write_text("A\nB\nc\n")
+    (tmp_path / "image.png").write_bytes(b"\x89PNG\x00two")
+
     result = await endpoint_module.get_diff_files(base)
-    assert result == {
-        "files": [
-            {"path": "src/α.py", "status": "mod", "ins": 2, "del": 3},
-            {"path": "image.png", "status": "mod", "ins": 0, "del": 0},
-        ]
-    }
-    assert spawn.call_args.args[2] == ("HEAD" if base == "last-commit" else "main...HEAD")
+
+    # The Unicode path arrives unquoted, and a binary file counts no lines.
+    assert sorted(result["files"], key=lambda f: f["path"]) == [
+        {"path": "image.png", "status": "mod", "ins": 0, "del": 0},
+        {"path": "src/α.py", "status": "mod", "ins": 2, "del": 2},
+    ]
 
 
 @pytest.mark.parametrize("failure,status", [("base", 400), ("timeout", 504), ("git", 502)])
@@ -426,153 +433,6 @@ async def test_aggregate_log_memory_fallback_filters_without_losing_peer_logs(
     assert result["total"] == 4
     assert result["available_participants"][0]["id"] == "skuld"
     assert result["session_id"] == endpoint_module.broker.session_id
-
-
-@pytest.mark.parametrize("decision", [" APPROVE ", "changes_requested"])
-@pytest.mark.parametrize("notes", ["", "  fix recovery  "])
-async def test_human_review_gate_resolves_once_and_publishes_correlated_outcome(
-    tmp_path, decision, notes
-):
-    from skuld.broker import WorkflowGateState
-
-    b = _broker(tmp_path, api_url="")
-    b._mesh_adapter = SimpleNamespace(publish=AsyncMock())
-    b.handle_human_room_message = AsyncMock()
-    b._finish_trace_span = AsyncMock()
-    b._workflow_gate_states["gate"] = WorkflowGateState(
-        id="gate",
-        node_id="review",
-        activation_id="activation",
-        label="Review",
-        condition="",
-        status="pending",
-        mode="human_approval",
-        pending_behavior="help_needed",
-        instructions="",
-        auto_forward_after="30m",
-        requested_at="now",
-        updated_at="now",
-        triggered_by_event_type="review.done",
-        approval_event_type="review.approved",
-        changes_requested_event_type="review.changes",
-    )
-    result = await b.resolve_workflow_gate("gate", decision, notes=notes, source="ios")
-    assert result["decision"] == decision.strip().upper()
-    assert result["notes"] == notes.strip()
-    event, topic = b._mesh_adapter.publish.call_args.args
-    assert event.correlation_id == "activation"
-    assert topic == ("review.approved" if decision.strip() == "APPROVE" else "review.changes")
-    assert event.payload["fields"]["approved"] == (decision.strip() == "APPROVE")
-    assert b.handle_human_room_message.call_args.kwargs["deliver_to_transport"] is False
-    with pytest.raises(ValueError, match="already resolved"):
-        await b.resolve_workflow_gate("gate", "APPROVE")
-    b._mesh_adapter.publish.assert_awaited_once()
-
-
-@pytest.mark.parametrize(
-    "fault,error", [("missing", LookupError), ("decision", ValueError), ("mesh", RuntimeError)]
-)
-async def test_invalid_review_gate_resolution_never_publishes(tmp_path, fault, error):
-    b = _broker(tmp_path, api_url="")
-    if fault != "missing":
-        b._workflow_gate_states["gate"] = SimpleNamespace(status="pending", mode="human_approval")
-    with pytest.raises(error):
-        await b.resolve_workflow_gate("gate", "garbage" if fault == "decision" else "APPROVE")
-    assert not b._event_log_buffer
-
-
-@pytest.mark.parametrize(
-    "outcome,passed",
-    [
-        ({"valid": False}, False),
-        ({"verdict": "rejected"}, False),
-        ({"verdict": "approved"}, True),
-        ({"fields": {"approved": False}}, False),
-        ({"fields": {"approved": True}}, True),
-        ({"fields": {"tests_passing": False}}, False),
-        ({"tests_passing": False}, False),
-        ({}, True),
-    ],
-)
-def test_workflow_terminal_gating_never_turns_failed_check_into_approval(outcome, passed):
-    from skuld.workflow_runtime import _workflow_join_satisfied, _workflow_outcome_passed
-
-    assert _workflow_outcome_passed(outcome) is passed
-    assert _workflow_join_satisfied("merge", [outcome, {"verdict": "approved"}]) is passed
-    assert _workflow_join_satisfied("any", [outcome, {"verdict": "approved"}])
-    assert not _workflow_join_satisfied("all", [])
-
-
-def test_developer_terminal_requires_its_explicit_verdict() -> None:
-    from skuld.workflow_runtime import _workflow_join_satisfied, _workflow_outcome_passed
-
-    required = frozenset({"publish"})
-    assert _workflow_outcome_passed(
-        {"valid": True, "verdict": "publish"}, passing_verdicts=required
-    )
-    assert not _workflow_outcome_passed({}, passing_verdicts=required)
-    assert not _workflow_outcome_passed(
-        {"valid": True, "verdict": "approved"}, passing_verdicts=required
-    )
-    assert not _workflow_join_satisfied("all", [{"valid": True}], passing_verdicts=required)
-
-
-def test_workflow_merged_outcome_keeps_all_evidence_and_strictest_scope():
-    from skuld.broker import _merge_workflow_terminal_outcomes
-
-    result = _merge_workflow_terminal_outcomes(
-        [
-            {
-                "persona": "reviewer",
-                "summary": "code read",
-                "files_changed": [" a.py ", "a.py", None, ""],
-                "tests_passing": True,
-                "scope_adherence": 0.9,
-            },
-            {
-                "event_type": "test.done",
-                "summary": "test failed",
-                "files_changed": ["b.py"],
-                "tests_passing": False,
-                "scope_adherence": 0.5,
-            },
-            {"summary": "manual review"},
-            {},
-        ]
-    )
-    assert result["files_changed"] == ["a.py", "b.py"]
-    assert result["tests_passing"] is False
-    assert result["scope_adherence"] == 0.5
-    assert (
-        result["summary"] == "reviewer: code read | test.done: test failed | outcome: manual review"
-    )
-    assert len(result["checks"]) == 4
-    assert _merge_workflow_terminal_outcomes([])["summary"] == "Workflow checks passed"
-
-
-def test_workflow_terminal_preserves_only_explicit_child_result_object():
-    from skuld.broker import _merge_workflow_terminal_outcomes
-
-    result = _merge_workflow_terminal_outcomes(
-        [
-            {
-                "persona": "developer-coordinator",
-                "fields": {
-                    "result": {
-                        "attemptId": "attempt-1",
-                        "candidateSha": "a" * 40,
-                    },
-                    "untrustedExtra": "discarded",
-                },
-            }
-        ]
-    )
-
-    assert result["result"] == {
-        "attemptId": "attempt-1",
-        "candidateSha": "a" * 40,
-    }
-    assert "untrustedExtra" not in result
 
 
 @pytest.mark.parametrize("terminal", ["response", "error", "task_complete"])

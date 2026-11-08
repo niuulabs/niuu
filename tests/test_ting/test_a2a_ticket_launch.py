@@ -127,7 +127,7 @@ def test_a_workflow_not_on_the_board_is_refused_and_says_what_to_do(
     _refused(body, "Ticket Planning Flow, Reviewed Delivery Flow")
     _refused(body, "Start the workflow your brief names")
     assert not board.campaigns._campaigns
-    assert not board.forge.spawned
+    assert not board.forge.step_session_requests
     assert "refused a ticket launch (not_on_board)" in caplog.text
 
 
@@ -178,7 +178,7 @@ def test_a_second_run_alongside_an_active_one_is_refused(
     body = board.launch(DELIVERY)
 
     _refused(body, "already has run a2a-ticket in progress")
-    assert not board.forge.spawned
+    assert not board.forge.step_session_requests
     assert "refused a ticket launch (active_run)" in caplog.text
 
 

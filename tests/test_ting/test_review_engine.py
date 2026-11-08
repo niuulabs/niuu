@@ -22,7 +22,6 @@ from ting.domain.models import (
     Phase,
     PhaseStatus,
     PRStatus,
-    RavnOutcome,
     Run,
     RunStatus,
     Saga,
@@ -393,21 +392,6 @@ def _make_engine(
     return engine, r, e, v
 
 
-def _authoritative_approval(**overrides: object) -> RavnOutcome:
-    defaults: dict = {
-        "verdict": "approve",
-        "tests_passing": True,
-        "scope_adherence": 1.0,
-        "pr_url": "https://github.com/org/repo/pull/42",
-        "files_changed": ["src/main.py"],
-        "summary": "done",
-        "authoritative": True,
-        "checks": [{"node": "verify", "verdict": "pass"}],
-    }
-    defaults.update(overrides)
-    return RavnOutcome(**defaults)
-
-
 async def _drain(q) -> list[TingEvent]:
     events = []
     while not q.empty():
@@ -464,154 +448,6 @@ class TestEvaluateEscalates:
 
         with pytest.raises(ValueError, match="not in REVIEW"):
             await engine.evaluate(run.tracker_id, OWNER_ID)
-
-
-# ---------------------------------------------------------------------------
-# Tests: handle_ravn_outcome — the workflow verdict is the machine verdict
-# ---------------------------------------------------------------------------
-
-
-class TestHandleRavnOutcome:
-    @pytest.mark.asyncio
-    async def test_authoritative_approval_merges(self) -> None:
-        engine, repo, bus, volundr = _make_engine()
-        run = _make_run()
-        repo.runs[run.tracker_id] = run
-        repo.saga = _make_saga()
-
-        q = bus.subscribe()
-        decision = await engine.handle_ravn_outcome(
-            run.tracker_id, OWNER_ID, _authoritative_approval()
-        )
-
-        assert decision.action == "auto_approved"
-        assert repo.runs[run.tracker_id].status == RunStatus.MERGED
-        assert repo.closed_runs == [run.tracker_id]
-        assert volundr.stopped_sessions == ["session-1"]
-        events = await _drain(q)
-        state_events = [e for e in events if e.event == "run.state_changed"]
-        assert state_events[0].data["action"] == "auto_approved"
-
-    @pytest.mark.asyncio
-    async def test_running_run_transitions_through_review(self) -> None:
-        engine, repo, _, _ = _make_engine()
-        run = _make_run(status=RunStatus.RUNNING)
-        repo.runs[run.tracker_id] = run
-        repo.saga = _make_saga()
-
-        decision = await engine.handle_ravn_outcome(
-            run.tracker_id, OWNER_ID, _authoritative_approval()
-        )
-
-        assert decision.action == "auto_approved"
-        assert repo.runs[run.tracker_id].status == RunStatus.MERGED
-
-    @pytest.mark.asyncio
-    async def test_non_authoritative_approval_escalates(self) -> None:
-        """An approve without workflow authority is an opinion, not a verdict."""
-        engine, repo, _, _ = _make_engine()
-        run = _make_run()
-        repo.runs[run.tracker_id] = run
-
-        decision = await engine.handle_ravn_outcome(
-            run.tracker_id,
-            OWNER_ID,
-            _authoritative_approval(authoritative=False),
-        )
-
-        assert decision.action == "escalated"
-        assert repo.runs[run.tracker_id].status == RunStatus.ESCALATED
-
-    @pytest.mark.asyncio
-    async def test_approval_with_failing_check_escalates(self) -> None:
-        engine, repo, _, _ = _make_engine()
-        run = _make_run()
-        repo.runs[run.tracker_id] = run
-
-        decision = await engine.handle_ravn_outcome(
-            run.tracker_id,
-            OWNER_ID,
-            _authoritative_approval(checks=[{"node": "verify", "verdict": "fail"}]),
-        )
-
-        assert decision.action == "escalated"
-
-    @pytest.mark.asyncio
-    async def test_retry_verdict_redispatches_with_feedback(self) -> None:
-        engine, repo, _, volundr = _make_engine()
-        run = _make_run()
-        repo.runs[run.tracker_id] = run
-
-        decision = await engine.handle_ravn_outcome(
-            run.tracker_id,
-            OWNER_ID,
-            _authoritative_approval(verdict="retry", authoritative=False, checks=[]),
-        )
-
-        assert decision.action == "retried"
-        updated = repo.runs[run.tracker_id]
-        assert updated.status == RunStatus.PENDING
-        assert updated.retry_count == 1
-        # Failure context reaches the session before the reset.
-        assert len(volundr.messages) == 1
-        assert volundr.messages[0][0] == "session-1"
-
-    @pytest.mark.asyncio
-    async def test_retry_verdict_with_retries_exhausted_fails(self) -> None:
-        engine, repo, _, volundr = _make_engine(config=ReviewConfig(max_retries=1))
-        run = _make_run(retry_count=1)
-        repo.runs[run.tracker_id] = run
-
-        decision = await engine.handle_ravn_outcome(
-            run.tracker_id,
-            OWNER_ID,
-            _authoritative_approval(verdict="retry", authoritative=False, checks=[]),
-        )
-
-        assert decision.action == "failed"
-        assert repo.runs[run.tracker_id].status == RunStatus.FAILED
-        assert volundr.stopped_sessions == ["session-1"]
-
-    @pytest.mark.asyncio
-    async def test_escalate_verdict_escalates(self) -> None:
-        engine, repo, _, _ = _make_engine()
-        run = _make_run()
-        repo.runs[run.tracker_id] = run
-
-        decision = await engine.handle_ravn_outcome(
-            run.tracker_id,
-            OWNER_ID,
-            _authoritative_approval(verdict="escalate", authoritative=False, checks=[]),
-        )
-
-        assert decision.action == "escalated"
-
-    @pytest.mark.asyncio
-    async def test_unknown_verdict_escalates(self) -> None:
-        engine, repo, _, _ = _make_engine()
-        run = _make_run()
-        repo.runs[run.tracker_id] = run
-
-        decision = await engine.handle_ravn_outcome(
-            run.tracker_id,
-            OWNER_ID,
-            _authoritative_approval(verdict="celebrate", authoritative=False, checks=[]),
-        )
-
-        assert decision.action == "escalated"
-        assert "celebrate" in decision.reason
-
-    @pytest.mark.asyncio
-    async def test_terminal_run_is_skipped(self) -> None:
-        engine, repo, _, _ = _make_engine()
-        run = _make_run(status=RunStatus.MERGED)
-        repo.runs[run.tracker_id] = run
-
-        decision = await engine.handle_ravn_outcome(
-            run.tracker_id, OWNER_ID, _authoritative_approval()
-        )
-
-        assert decision.action == "skipped"
 
 
 # ---------------------------------------------------------------------------
@@ -707,11 +543,9 @@ class TestPhaseGate:
         await saga_repo.save_phase(phase2)
 
         q = bus.subscribe()
-        result = await engine.handle_ravn_outcome(
-            run.tracker_id, OWNER_ID, _authoritative_approval()
-        )
+        unlocked = await engine.handle_workflow_completion(run.tracker_id, OWNER_ID)
 
-        assert result.phase_gate_unlocked is True
+        assert unlocked is True
 
         # Verify next phase was unlocked by tracker_id (string)
         assert len(repo.phase_status_updates) == 1
@@ -724,11 +558,6 @@ class TestPhaseGate:
         assert phase_events[0].data["phase_id"] == phase2.tracker_id
         assert phase_events[0].data["owner_id"] == OWNER_ID
         assert phase_events[0].data["saga_id"] == repo.saga.tracker_id
-
-        # Also verify run.state_changed includes saga_tracker_id
-        state_events = [e for e in events if e.event == "run.state_changed"]
-        assert len(state_events) == 1
-        assert state_events[0].data["saga_tracker_id"] == repo.saga.tracker_id
 
         persisted_phase1 = await saga_repo.get_phase(phase1.id)
         persisted_phase2 = await saga_repo.get_phase(phase2.id)
@@ -747,11 +576,9 @@ class TestPhaseGate:
         repo.phase = _make_phase()
         repo._all_merged = False
 
-        result = await engine.handle_ravn_outcome(
-            run.tracker_id, OWNER_ID, _authoritative_approval()
-        )
+        unlocked = await engine.handle_workflow_completion(run.tracker_id, OWNER_ID)
 
-        assert result.phase_gate_unlocked is False
+        assert unlocked is False
         assert len(repo.phase_status_updates) == 0
 
     @pytest.mark.asyncio
@@ -769,11 +596,9 @@ class TestPhaseGate:
         await saga_repo.save_saga(repo.saga)
         await saga_repo.save_phase(repo.phase)
 
-        result = await engine.handle_ravn_outcome(
-            run.tracker_id, OWNER_ID, _authoritative_approval()
-        )
+        unlocked = await engine.handle_workflow_completion(run.tracker_id, OWNER_ID)
 
-        assert result.phase_gate_unlocked is True
+        assert unlocked is True
         assert len(repo.phase_status_updates) == 0
         persisted_phase = await saga_repo.get_phase(repo.phase.id)
         persisted_saga = await saga_repo.get_saga(repo.saga.id)
@@ -874,20 +699,3 @@ class TestReviewConfig:
     def test_custom_config(self) -> None:
         cfg = ReviewConfig(max_retries=5)
         assert cfg.max_retries == 5
-
-
-async def test_review_feedback_and_stop_follow_nonprimary_session_owner():
-    engine, _, _, primary = _make_engine()
-    primary.get_session = AsyncMock(return_value=None)
-    owner = StubVolundr()
-    engine._volundr_factory = SimpleNamespace(for_owner=AsyncMock(return_value=[primary, owner]))
-
-    await engine._send_retry_feedback(_make_run(), "owner", "tests failed")
-    await engine._stop_session("owner", "session-1")
-
-    assert primary.messages == []
-    assert primary.stopped_sessions == []
-    assert owner.messages == [
-        ("session-1", "Review failed: tests failed. Please fix and push again.")
-    ]
-    assert owner.stopped_sessions == ["session-1"]

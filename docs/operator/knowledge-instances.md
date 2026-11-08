@@ -17,8 +17,7 @@ identity determines which tenant's mount can be opened.
 
 Mimir instances inherit the deployment host's Envoy JWT profile. Their API and
 MCP endpoints enforce the instance tenant, and a NetworkPolicy admits only the
-Envoy port. Health probes remain available. An attached warden uses the instance's
-own data volume.
+Envoy port. Health probes remain available.
 
 gbrain deployments enable `connection.enabled`. At startup, gbrain creates a
 native `read,write` token, retains it on the instance volume, and publishes it

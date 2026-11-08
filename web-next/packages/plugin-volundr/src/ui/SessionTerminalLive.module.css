@@ -1,3 +1,152 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--color-code-surface, var(--color-bg-primary));
+}
+
+/* One quiet bar, as Lexi's terminal dock: the terminals, a new shell, then the dock's tools. */
+.header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-primary);
+  font-size: 12.5px;
+}
+
+.tabs {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+}
+
+.tabWrap {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text-muted);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--color-text-primary);
+}
+
+.tab[aria-selected='true'] {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.viewOnly {
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, var(--state-warn) 50%, transparent);
+  border-radius: 4px;
+  color: var(--state-warn);
+  font-size: 10px;
+}
+
+.tool,
+.tabClose,
+.textTool {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  height: 26px;
+  min-width: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.textTool {
+  display: inline-flex;
+  gap: 5px;
+  padding: 0 8px;
+}
+
+.tabClose {
+  height: 20px;
+  min-width: 20px;
+  color: var(--color-text-muted);
+}
+
+.tool:hover,
+.tabClose:hover,
+.textTool:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.tool svg,
+.textTool svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tabClose svg {
+  width: 12px;
+  height: 12px;
+}
+
+.status {
+  padding: 0 6px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.notice {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  padding: 16px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.notice > div {
+  max-width: 520px;
+  color: var(--color-text-secondary);
+  line-height: 1.55;
+  text-align: center;
+}
+
+.notice b {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--color-text-primary);
+  font-size: 14px;
+}
+
+.notice code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 .terminalArea {
   flex: 1;
   min-height: 0;

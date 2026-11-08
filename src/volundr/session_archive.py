@@ -609,21 +609,6 @@ def _workspace_log_sources(workspace: Path) -> list[tuple[Path, Path]]:
     if os.path.isfile(skuld_path):
         sources.append((Path(skuld_path), Path("skuld.log")))
 
-    flock_path = os.path.realpath(os.path.join(workspace_path, ".flock", "logs"))
-    if flock_path == workspace_path:
-        flock_path = workspace_path
-    elif not flock_path.startswith(workspace_prefix):
-        raise ArchivePathError("Flock log path escapes workspace")
-    if os.path.isdir(flock_path):
-        for candidate in sorted(Path(flock_path).glob("*.log")):
-            path = os.path.realpath(os.path.abspath(os.fspath(candidate)), strict=True)
-            flock_prefix = flock_path.rstrip(os.sep) + os.sep
-            if path == flock_path:
-                path = flock_path
-            elif not path.startswith(flock_prefix):
-                raise ArchivePathError(f"Flock log escapes log directory: {candidate}")
-            sources.append((Path(path), Path("flock") / candidate.name))
-
     service_path = os.path.realpath(os.path.join(workspace_path, ".services", "logs"))
     if service_path == workspace_path:
         service_path = workspace_path

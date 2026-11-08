@@ -62,10 +62,16 @@ updates:
       # npm 12 blocks dependency lifecycle scripts required by the runtime CLIs.
       - dependency-name: "npm"
         update-types: ["version-update:semver-major"]
-      # These direct undici pins only exist for replace-nested.sh, which copies
-      # them over a bundled copy: they must stay on the major the bundling
-      # package declares (npm's node-gyp ^6, pi-coding-agent's 8.x).
-      - dependency-name: "undici"
+      # npm-bootstrap pins glob, minimatch and path-scurry only for
+      # replace-nested.sh, which copies them over the copies npm bundles. Each
+      # must stay on the major npm's bundle was smoke-tested with (glob 14
+      # needs minimatch ^11 and path-scurry ^3): a major is a deliberate change
+      # to the bundle, not a routine bump. Drop them once npm bundles glob 14.
+      - dependency-name: "glob"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "minimatch"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "path-scurry"
         update-types: ["version-update:semver-major"]
 
   - package-ecosystem: docker
@@ -74,7 +80,6 @@ updates:
       - /containers/openshell
       - /containers/gbrain
       - /containers/vscode-reh
-      - /containers/agent
       - /containers/skuld
       - /containers/devrunner
       - /containers/niuu-web

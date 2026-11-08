@@ -1,7 +1,6 @@
 """Shared Anthropic-compatible Messages API call helper.
 
-Used by BifrostAdapter and RavnDispatcher to avoid duplicating HTTP
-infrastructure for the same /v1/messages endpoint.
+Used by BifrostAdapter for the /v1/messages endpoint.
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ async def anthropic_messages_call(
     model: str,
     max_tokens: int,
     messages: list[dict[str, Any]],
-    system: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """POST to the Anthropic-compatible /v1/messages endpoint.
 
@@ -41,8 +39,6 @@ async def anthropic_messages_call(
         "max_tokens": max_tokens,
         "messages": messages,
     }
-    if system:
-        payload["system"] = system
 
     t0 = time.monotonic()
     resp = await client.post(f"{base_url}/v1/messages", headers=headers, json=payload)

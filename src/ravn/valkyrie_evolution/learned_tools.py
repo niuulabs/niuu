@@ -18,9 +18,10 @@ from typing import Any, Protocol
 
 from packaging.requirements import InvalidRequirement, Requirement
 
-from ravn.cap_telemetry import record_degraded
-from ravn.domain.models import ToolResult
-from ravn.ports.tool import ToolPort
+from niuu.cap_telemetry import record_degraded
+from niuu.domain.tool import ToolResult
+from niuu.ports.tool import ToolPort
+from ravn.valkyrie_evolution.docker_shell import DockerPersistentShell, DockerShellConfig
 from ravn.valkyrie_evolution.models import (
     LearnedToolArtifact,
     LearnedToolManifest,
@@ -1168,7 +1169,7 @@ class ForgeSandboxLearnedToolRunner:
         *,
         workspace_root: str | Path,
         shell: Any | None = None,
-        docker_config: Any | None = None,
+        docker_config: DockerShellConfig | None = None,
         runs_dir: str | Path | None = None,
     ) -> None:
         self._workspace_root = Path(workspace_root).resolve()
@@ -1340,8 +1341,6 @@ class ForgeSandboxLearnedToolRunner:
         mode = NETWORK_ALLOWED_DOCKER_NETWORK if network_allowed else NETWORK_DENIED_DOCKER_NETWORK
         shell = self._shells.get(mode)
         if shell is None:
-            from ravn.adapters.tools.terminal_docker import DockerPersistentShell  # noqa: PLC0415
-
             shell = DockerPersistentShell(
                 config=self._network_scoped_config(mode),
                 workspace_root=self._workspace_root,
@@ -1354,15 +1353,9 @@ class ForgeSandboxLearnedToolRunner:
             network_allowed=network_allowed,
         )
 
-    def _network_scoped_config(self, network_mode: str) -> Any:
-        from ravn.config import DockerTerminalConfig  # noqa: PLC0415
-
-        base = self._docker_config or DockerTerminalConfig(image=DEFAULT_FORGE_SANDBOX_IMAGE)
-        if hasattr(base, "model_copy"):
-            return base.model_copy(update={"network": network_mode})
-        # A config object we cannot re-scope is used as-is; the resulting
-        # shell's actual network mode drives the enforcement marker honestly.
-        return base
+    def _network_scoped_config(self, network_mode: str) -> DockerShellConfig:
+        base = self._docker_config or DockerShellConfig(image=DEFAULT_FORGE_SANDBOX_IMAGE)
+        return replace(base, network=network_mode)
 
     async def _ensure_sandbox_venv(
         self,
@@ -1471,7 +1464,7 @@ def require_backend_support(
 
     The one rule for "this execution backend cannot load this tool". Every
     consumer asks here: :class:`LearnedTool` at load, the resolver when it
-    decides what the catalog may advertise, the curation pass, and build_tool
+    decides what the catalog may advertise, and the capability matcher
     when it decides whether an installed tool already serves a request. A
     second copy of the rule is how the catalog came to advertise tools that
     ``learned_tool_run`` refused.
@@ -1534,7 +1527,7 @@ def require_verified_artifact(artifact: LearnedToolArtifact) -> None:
     if verification is None:
         raise LearnedToolUnloadableError(
             f"learned tool {name!r} has no verification record and will not be run. "
-            f"Rebuild it with build_tool, which verifies before installing."
+            f"Reinstall it through a verified build."
         )
     if not isinstance(verification, dict) or verification.get("ok") is not True:
         detail = ""
@@ -2103,7 +2096,7 @@ class LearnedToolInventory:
     refused: list[RefusedLearnedTool]
 
 
-#: ``ravn.cap_telemetry`` path a refused learned tool is reported under, so it
+#: ``niuu.cap_telemetry`` path a refused learned tool is reported under, so it
 #: shows on the resident health snapshot as ``degraded.learned_tool.refused``.
 DEGRADED_PATH_LEARNED_TOOL_REFUSED = "learned_tool.refused"
 
@@ -2213,8 +2206,7 @@ class LearnedToolResolver:
                 raise LearnedToolError(
                     f"learned tool {name!r} is not installed; only archived versions of it "
                     "exist. Use the installed tool that serves the same capability "
-                    "(capability_list), or ask build_tool for this capability, which "
-                    "restores it when it is still the right tool"
+                    "(capability_list)"
                 )
             raise LearnedToolError(f"no learned tool named {name!r} is installed")
         artifact = read_learned_tool_artifact(artifact_path)
@@ -2252,7 +2244,7 @@ class LearnedToolResolver:
 
         A refused tool is reported, not dropped: each is an error log and a
         count on ``degraded.learned_tool.refused`` the first time this process
-        sees it, and the curation pass retires it so ``build_tool`` repairs it.
+        sees it.
         """
         loadable: list[LearnedToolArtifact] = []
         refused: list[RefusedLearnedTool] = []
@@ -2283,10 +2275,9 @@ class LearnedToolResolver:
                 DEGRADED_PATH_LEARNED_TOOL_REFUSED,
                 f"learned tool {entry.name!r} is installed but the "
                 f"{self._execution_backend or 'local'!r} execution backend refuses to load it, "
-                f"so it is not offered and cannot run: {entry.reason}. Repair it with "
-                "build_tool (replace=true) so it is rebuilt to load here; with "
-                "resident_evolution.tool_curation.enabled the next consolidation dream "
-                "retires it as unrunnable, and build_tool then restores and repairs it.",
+                f"so it is not offered and cannot run: {entry.reason}. Rebuild it so it "
+                "loads on this backend, or change "
+                "resident_evolution.learned_tool_execution_backend.",
             )
 
     def _require_installed(self, artifact: LearnedToolArtifact) -> Path:

@@ -66,15 +66,23 @@ class TestBuildCommandDataDirs:
             == "cli/migrations/ting/"
         )
 
-    def test_ravn_personas_and_ting_workflows_are_bundled(self) -> None:
+    def test_personas_and_ting_workflows_are_bundled(self) -> None:
         mappings = {src.as_posix(): dest for src, dest in DATA_DIR_MAPPINGS}
 
-        assert mappings[next(src for src in mappings if src.endswith("src/ravn/personas"))] == (
-            "ravn/personas"
+        assert mappings[next(src for src in mappings if src.endswith("src/personas/builtin"))] == (
+            "personas/builtin"
         )
         assert mappings[next(src for src in mappings if src.endswith("src/ting/workflows"))] == (
             "ting/workflows"
         )
+
+    def test_host_recipe_scripts_are_bundled_where_the_built_in_catalog_reads_them(self) -> None:
+        from volundr.adapters.outbound.builtin_host_catalog import RECIPES
+
+        mappings = {src: dest for src, dest in DATA_DIR_MAPPINGS}
+
+        assert mappings[RECIPES] == "volundr/adapters/outbound/host_recipes"
+        assert (RECIPES / "install-nix.sh").is_file()
 
     def test_skips_empty_data_dirs(self) -> None:
         with patch.object(Path, "is_dir", return_value=False):

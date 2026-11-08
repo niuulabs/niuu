@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createCallLog, fakeRealmService, fakeVolundr } from '../testing/fakes';
-import { createSeedRealms } from '@niuulabs/plugin-valkyrie';
+import { createSeedRealms } from '../adapters/mock';
 import { renderRealms } from '../testing/renderRealms';
 
 async function open(log = createCallLog()) {
@@ -10,7 +10,7 @@ async function open(log = createCallLog()) {
   const realms = fakeRealmService(log, createSeedRealms());
   const view = renderRealms(
     '/realms/host-jozef?tab=connections',
-    { 'valkyrie.realms': realms, volundr: fakeVolundr(log) },
+    { 'realms.governance': realms, volundr: fakeVolundr(log) },
     log,
   );
   await screen.findByTestId('realm-connections');
@@ -87,7 +87,7 @@ describe('ConnectionsPanel', () => {
     renderRealms(
       '/realms/valhalla?tab=connections',
       {
-        'valkyrie.realms': realms,
+        'realms.governance': realms,
         ting: {
           getSagas: async () => [listed],
           getSaga: async () => ({

@@ -294,37 +294,16 @@ class WorkloadIdentityMappingConfig(BaseModel):
         default="",
         description=(
             "Fixed user id used as the exchanged token subject and session owner. "
-            "Ignored when owner_id_claim is set."
-        ),
-    )
-    owner_id_claim: str = Field(
-        default="",
-        description=(
-            "When set, derive owner_id per-caller from this claim on the verified "
-            "workload proof (dot notation supported) instead of the fixed owner_id "
-            "above — e.g. 'sub' to give each distinct ServiceAccount its own "
-            "identity, so callers sharing one mapping are not conflated into one "
-            "principal. A workload proof missing this claim is rejected, not "
-            "silently mapped to a default."
-        ),
-    )
-    owner_id_claim_pattern: str = Field(
-        default="",
-        description=(
-            "Optional regex with one capture group applied to the owner_id_claim "
-            "value, e.g. '^system:serviceaccount:[^:]+:resident-(.+)$' to pull the "
-            "resident id out of a Kubernetes ServiceAccount subject. Unset uses the "
-            "whole claim value verbatim; a claim value that fails to match a "
-            "configured pattern is rejected, not passed through unstripped."
+            "Unused when owner_from is set."
         ),
     )
     owner_from: str = Field(
         default="",
         description=(
-            "Where the owner comes from. Empty: owner_id or owner_id_claim. 'delegation': "
+            "Where the owner comes from. Empty: owner_id. 'delegation': "
             "the caller is admitted only while an active workload delegation names its "
             "verifier and subject, and its token speaks for that record's owner and tenant "
-            "with the workload as actor (owner_id, owner_id_claim and tenant_id are unused)."
+            "with the workload as actor (owner_id and tenant_id are unused)."
         ),
     )
     tenant_id: str = Field(default="default", description="Tenant/org id for isolation.")
@@ -369,58 +348,6 @@ class WorkloadIdentityMappingConfig(BaseModel):
             )
         return self
 
-    @model_validator(mode="after")
-    def _validate_owner_id_claim_pattern(self) -> WorkloadIdentityMappingConfig:
-        """A bad pattern here was a 500 at exchange time, not a config-load
-        error — every real caller through this mapping would fail the same
-        way, discoverable only by trying it. Fail at load time instead."""
-        pattern = self.owner_id_claim_pattern.strip()
-        if not pattern:
-            return self
-        if not self.owner_id_claim.strip():
-            raise ValueError(
-                "owner_id_claim_pattern requires owner_id_claim to also be set — a "
-                "pattern with no claim to apply it to can never be reached"
-            )
-        try:
-            compiled = re.compile(pattern)
-        except re.error as exc:
-            raise ValueError(f"owner_id_claim_pattern {pattern!r} does not compile: {exc}") from exc
-        if compiled.groups != 1:
-            raise ValueError(
-                f"owner_id_claim_pattern {pattern!r} must have exactly one capture "
-                f"group, found {compiled.groups}"
-            )
-        return self
-
-
-class WorkloadIdentityTenantResolverConfig(BaseModel):
-    """Dynamic adapter resolving a per-caller tenant_id for a mapping that
-    also derives owner_id per-caller (``owner_id_claim`` set).
-
-    Every deployed resident's own tenant_id lives in ONE durable record
-    (Völundr's ``resident_runtimes`` table) — a mapping's own static
-    ``tenant_id`` is a single fixed guess that is wrong for any tenant other
-    than the one it names. When this is configured, a mapping using
-    ``owner_id_claim`` derives its tenant from here instead, keyed by the
-    same resolved owner_id (see ``niuu.ports.owner_tenant_resolver
-    .OwnerTenantResolverPort``); the mapping's own ``tenant_id`` is unused
-    for that mapping in that case. Left unset (the default), every mapping
-    falls back to its own static ``tenant_id`` — an explicit,
-    single-tenant-only mode, not a silent guess.
-    """
-
-    adapter: str = Field(
-        default="",
-        description=(
-            "Fully-qualified OwnerTenantResolverPort adapter class path. Empty "
-            "means no resolver is configured — every mapping uses its own static "
-            "tenant_id."
-        ),
-    )
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
-
 
 class WorkloadIdentityConfig(BaseModel):
     """Short-lived workload token exchange configuration."""
@@ -446,9 +373,6 @@ class WorkloadIdentityConfig(BaseModel):
     )
     verifiers: list[WorkloadIdentityVerifierConfig] = Field(default_factory=list)
     mappings: list[WorkloadIdentityMappingConfig] = Field(default_factory=list)
-    tenant_resolver: WorkloadIdentityTenantResolverConfig = Field(
-        default_factory=WorkloadIdentityTenantResolverConfig
-    )
 
 
 class GuildMembershipConfig(BaseModel):
@@ -503,3 +427,62 @@ class GuildMembershipConfig(BaseModel):
             else None
         )
         return GuildMembership(guild_url=self.url, instance=instance)
+
+
+class SessionPreviewConfig(BaseModel):
+    """Live preview: one origin per port a Forge session listens on.
+
+    A preview is served at ``<port>--<session-id>.<domain>`` (``niuu.preview_proxy``).
+    The domain needs a wildcard DNS record and certificate, and sign-in on it
+    (an OIDC gateway policy); mini mode uses ``localhost``, which browsers resolve
+    to loopback for every subdomain with no DNS at all.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Serve live previews of session ports on the preview domain.",
+    )
+    domain: str = Field(
+        default="",
+        description=(
+            "Preview domain: <port>--<session-id>.<domain> opens that session's port. "
+            "Required when enabled."
+        ),
+    )
+    upstream_connect_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Seconds to wait for the session's Skuld to accept a connection. Only "
+            "connecting is bounded: an app's own response or WebSocket may stream "
+            "for as long as the browser keeps it open."
+        ),
+    )
+    credential_ttl_seconds: int = Field(
+        default=60,
+        ge=10,
+        le=900,
+        description=(
+            "Lifetime of the router credential minted for each forwarded request. "
+            "Skuld checks it when the request (or WebSocket) arrives, so it only "
+            "needs to outlive one hop."
+        ),
+    )
+    credential_audience: str = Field(
+        default="volundr-api",
+        description=(
+            "Audience of the router credential; one the session's Skuld (and its "
+            "pod's Envoy workload provider) accepts."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _domain_when_enabled(self) -> SessionPreviewConfig:
+        self.domain = self.domain.strip().strip(".").lower()
+        if self.enabled and not self.domain:
+            raise ValueError(
+                "session_preview.enabled is true but session_preview.domain is empty: set "
+                "the preview domain (e.g. preview.example.com), or disable live preview"
+            )
+        return self

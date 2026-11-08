@@ -8,8 +8,8 @@ from uuid import uuid4
 import pytest
 import yaml
 
-from ravn.adapters.personas.loader import PersonaConfig
-from ravn.domain.persona_document import portable_persona_from_config
+from personas.domain.persona import PersonaConfig
+from personas.domain.persona_document import portable_persona_from_config
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import (

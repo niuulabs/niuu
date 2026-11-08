@@ -5,7 +5,6 @@ from volundr.log_aggregate import aggregate_workspace_logs
 
 def test_aggregate_workspace_logs_parses_multiple_sources_and_filters(tmp_path):
     workspace = tmp_path / "workspace"
-    (workspace / ".flock" / "logs").mkdir(parents=True, exist_ok=True)
     (workspace / ".services" / "logs").mkdir(parents=True, exist_ok=True)
 
     (workspace / ".skuld.log").write_text(
@@ -17,10 +16,6 @@ def test_aggregate_workspace_logs_parses_multiple_sources_and_filters(tmp_path):
             ]
         )
         + "\n",
-        encoding="utf-8",
-    )
-    (workspace / ".flock" / "logs" / "worker-a.log").write_text(
-        "2026-01-01 12:00:01 ravn WARNING flock warning\n",
         encoding="utf-8",
     )
     (workspace / ".services" / "logs" / "api.log").write_text(
@@ -36,12 +31,11 @@ def test_aggregate_workspace_logs_parses_multiple_sources_and_filters(tmp_path):
         query="line",
     )
 
-    assert payload["total"] == 5
+    assert payload["total"] == 4
     assert payload["filtered"] == 2
     assert payload["returned"] == 2
     assert {item["id"] for item in payload["available_participants"]} == {
         "skuld",
-        "worker-a",
         "service:api",
     }
     assert [line["message"] for line in payload["lines"]] == [

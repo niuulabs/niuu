@@ -40,16 +40,14 @@ describe('mimirPlugin', () => {
     expect(mimirPlugin.tabs?.map((t) => t.path)).toEqual(['/mimir', '/mimir/registry']);
   });
 
-  it('keeps /mimir/read and the registry/ravns/health/lint/doctor/dreams/analytics routes live with their real components', () => {
+  it('keeps /mimir/read and the registry/health/lint/doctor/analytics routes live with their real components', () => {
     const paths = routesOf().map((r) => r.options.path);
     for (const kept of [
       '/mimir/read',
       '/mimir/registry',
-      '/mimir/ravns',
       '/mimir/health',
       '/mimir/lint',
       '/mimir/doctor',
-      '/mimir/dreams',
       '/mimir/analytics',
     ]) {
       expect(paths, `missing ${kept}`).toContain(kept);

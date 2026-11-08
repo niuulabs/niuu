@@ -12,6 +12,7 @@ import { compactSourceParts, looksLikeRepoLabel } from './sessions/sessionLabels
 import type { Cluster, ClusterKind } from '../domain/cluster';
 import type { Session, SessionState } from '../domain/session';
 
+import { SessionStartupHeadline } from './SessionStartupProgress';
 import './ForgePage.css';
 
 const INFLIGHT_STATES: SessionState[] = [
@@ -307,7 +308,15 @@ function InflightRow({
           </>
         ) : (
           <div className="vol-forge__booting-copy">
-            {previewLabel(session.preview) ?? 'bootstrapping pod…'}
+            {session.startup ? (
+              <SessionStartupHeadline
+                startup={session.startup}
+                status={session.state}
+                error={session.error}
+              />
+            ) : (
+              (previewLabel(session.preview) ?? 'Starting…')
+            )}
           </div>
         )}
       </div>
@@ -332,16 +341,6 @@ function InflightRow({
           />
         ) : null}
       </div>
-
-      {isBooting ? (
-        <div className="vol-forge__boot-progress">
-          <div
-            className="vol-forge__boot-progress-fill"
-            style={{ width: `${Math.round((session.bootProgress ?? 0.08) * 100)}%` }}
-            data-testid="boot-progress-bar"
-          />
-        </div>
-      ) : null}
     </button>
   );
 }

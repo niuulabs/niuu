@@ -11,7 +11,14 @@ import yaml
 
 from volundr.compute import main as cli
 from volundr.compute.config import ComputeConfig
-from volundr.domain.compute import ComputeLease, LeaseState, Machine, MachineState
+from volundr.domain.compute import (
+    ComputeLease,
+    ComputeSlot,
+    LeaseState,
+    Machine,
+    MachineState,
+    SlotLease,
+)
 
 
 @pytest.fixture
@@ -46,13 +53,11 @@ def config():
 
 @pytest.fixture
 def lease():
+    """The machine a proof claims."""
     allocation_id = uuid4()
     return ComputeLease(
         id=allocation_id,
         pool_id="test-pool",
-        session_id=uuid4(),
-        tenant_id="tenant",
-        owner_id="owner",
         profile="small",
         request_fingerprint="test",
         state=LeaseState.READY,
@@ -65,15 +70,39 @@ def lease():
     )
 
 
-async def prove(config, lease, service, repository):
+@pytest.fixture
+def binding(lease):
+    return ComputeSlot(
+        id=uuid4(),
+        allocation_id=lease.id,
+        slot=0,
+        pool_id="test-pool",
+        session_id=uuid4(),
+        tenant_id="tenant",
+        owner_id="owner",
+    )
+
+
+@pytest.fixture
+def claim(lease, binding):
+    return SlotLease(allocation=lease, binding=binding)
+
+
+def claimed(claim, **machine_update):
+    return SlotLease(
+        allocation=claim.allocation.model_copy(update=machine_update), binding=claim.binding
+    )
+
+
+async def prove(config, claim, service, repository):
     await cli.prove(
         service,
         repository,
         config,
-        profile=lease.profile,
-        session_id=lease.session_id,
-        owner_id=lease.owner_id,
-        tenant_id=lease.tenant_id,
+        profile=claim.profile,
+        session_id=claim.session_id,
+        owner_id=claim.owner_id,
+        tenant_id=claim.tenant_id,
     )
 
 
@@ -81,15 +110,15 @@ def events(capsys):
     return [json.loads(line)["event"] for line in capsys.readouterr().out.splitlines()]
 
 
-async def test_proof_waits_for_guest_address_and_confirmed_cleanup(config, lease, capsys):
+async def test_proof_waits_for_guest_address_and_confirmed_cleanup(config, lease, claim, capsys):
     service, repository = AsyncMock(), AsyncMock()
-    repository.list.return_value = []
-    service.acquire.return_value = lease.model_copy(
-        update={"machine": lease.machine.model_copy(update={"addresses": ()})}
+    repository.list_slots.return_value = []
+    service.acquire.return_value = claimed(
+        claim, machine=lease.machine.model_copy(update={"addresses": ()})
     )
     service.release.return_value = lease.model_copy(update={"state": LeaseState.DRAINING})
     service.reconcile.side_effect = [lease, lease.model_copy(update={"state": LeaseState.RELEASED})]
-    await prove(config, lease, service, repository)
+    await prove(config, claim, service, repository)
     assert events(capsys) == [
         "proof_started",
         "allocation_created",
@@ -102,20 +131,27 @@ async def test_proof_waits_for_guest_address_and_confirmed_cleanup(config, lease
     assert service.reconcile.await_count == 2
 
 
-async def test_proof_never_touches_existing_claim(config, lease, capsys):
+async def test_proof_never_touches_existing_claim(config, claim, capsys):
     service, repository = AsyncMock(), AsyncMock()
-    repository.list.return_value = [lease]
+    # Even a session whose binding already ended is not a new session.
+    ended = claim.binding.model_copy(update={"state": "released"})
+    repository.list_slots.return_value = [ended]
     with pytest.raises(ValueError, match="existing claim"):
-        await prove(config, lease, service, repository)
+        await prove(config, claim, service, repository)
+    repository.list_slots.assert_awaited_once_with("test-pool", live_only=False)
     service.acquire.assert_not_awaited()
     service.release.assert_not_awaited()
     assert events(capsys) == []
 
 
 @pytest.mark.parametrize("failure", ["provider", "timeout", "capacity"])
-async def test_acquire_failure_recovers_own_claim_for_cleanup(config, lease, capsys, failure):
+async def test_acquire_failure_recovers_own_claim_for_cleanup(
+    config, lease, claim, capsys, failure
+):
     service, repository = AsyncMock(), AsyncMock()
-    repository.list.side_effect = [[], [] if failure == "capacity" else [lease]]
+    # The first read is the existing-claim check; the second finds the claim after the failure.
+    repository.list_slots.side_effect = [[], [] if failure == "capacity" else [claim.binding]]
+    repository.get.return_value = lease
     service.release.return_value = lease.model_copy(update={"state": LeaseState.RELEASED})
 
     async def acquire(**kwargs):
@@ -125,7 +161,7 @@ async def test_acquire_failure_recovers_own_claim_for_cleanup(config, lease, cap
 
     service.acquire.side_effect = acquire
     with pytest.raises((RuntimeError, TimeoutError)):
-        await prove(config, lease, service, repository)
+        await prove(config, claim, service, repository)
     if failure == "capacity":
         service.release.assert_not_awaited()
     else:
@@ -134,25 +170,25 @@ async def test_acquire_failure_recovers_own_claim_for_cleanup(config, lease, cap
 
 
 @pytest.mark.parametrize("failure", ["failed", "no-address", "cleanup"])
-async def test_unready_or_uncleaned_vm_never_reports_success(config, lease, capsys, failure):
+async def test_unready_or_uncleaned_vm_never_reports_success(config, lease, claim, capsys, failure):
     service, repository = AsyncMock(), AsyncMock()
-    repository.list.return_value = []
-    service.acquire.return_value = lease
+    repository.list_slots.return_value = []
+    service.acquire.return_value = claim
     service.release.return_value = lease.model_copy(update={"state": LeaseState.RELEASED})
     if failure == "failed":
-        service.acquire.return_value = lease.model_copy(update={"state": LeaseState.FAILED})
+        service.acquire.return_value = claimed(claim, state=LeaseState.FAILED)
     if failure == "no-address":
         pending = lease.model_copy(
             update={"machine": lease.machine.model_copy(update={"addresses": ()})}
         )
-        service.acquire.return_value = pending
+        service.acquire.return_value = claimed(claim, machine=pending.machine)
         service.reconcile.return_value = pending
     if failure == "cleanup":
         draining = lease.model_copy(update={"state": LeaseState.DRAINING})
         service.release.return_value = draining
         service.reconcile.return_value = draining
     with pytest.raises((RuntimeError, TimeoutError)):
-        await prove(config, lease, service, repository)
+        await prove(config, claim, service, repository)
     result = events(capsys)
     assert "proof_passed" not in result
     assert ("cleanup_verified" in result) == (failure != "cleanup")
@@ -226,12 +262,15 @@ async def test_run_validates_external_modules_before_provider_construction(
 
 
 @pytest.mark.parametrize("command", ["inventory", "leases", "release", "reconcile", "prove"])
-async def test_commands_close_provider(config, lease, tmp_path, monkeypatch, capsys, command):
+async def test_commands_close_provider(
+    config, lease, claim, tmp_path, monkeypatch, capsys, command
+):
     path = tmp_path / "compute.yaml"
     path.write_text(yaml.safe_dump(config.model_dump()))
     provider, repository, service = AsyncMock(), AsyncMock(), AsyncMock()
     provider.list.return_value = [lease.machine]
     repository.list.return_value = [lease]
+    repository.list_slots.return_value = [claim.binding]
     service.release.return_value = service.reconcile.return_value = lease
     monkeypatch.setattr(cli, "build_provider", lambda config: provider)
     monkeypatch.setattr(cli, "PostgresComputeLeaseRepository", lambda pool: repository)
@@ -247,10 +286,10 @@ async def test_commands_close_provider(config, lease, tmp_path, monkeypatch, cap
             config=path,
             command=command,
             lease_id=lease.id,
-            session_id=lease.session_id,
+            session_id=claim.session_id,
             profile=lease.profile,
-            tenant_id=lease.tenant_id,
-            owner_id=lease.owner_id,
+            tenant_id=claim.tenant_id,
+            owner_id=claim.owner_id,
         )
     )
     provider.close.assert_awaited_once()
@@ -258,7 +297,14 @@ async def test_commands_close_provider(config, lease, tmp_path, monkeypatch, cap
         proof.assert_awaited_once()
         return
     expected = "lease" if command in {"release", "reconcile"} else command
-    assert events(capsys) == [expected]
+    printed = capsys.readouterr().out.splitlines()
+    assert [json.loads(line)["event"] for line in printed] == [expected]
+    if command == "leases":
+        emitted = json.loads(printed[0])
+        assert [item["id"] for item in emitted["leases"]] == [str(lease.id)]
+        # The sessions live in the slot ledger, so the listing carries it too.
+        assert [item["session_id"] for item in emitted["slots"]] == [str(claim.session_id)]
+        repository.list_slots.assert_awaited_once_with("test-pool", live_only=False)
 
 
 def test_cli_assigns_new_proof_session_id(monkeypatch):
@@ -290,6 +336,7 @@ def test_provider_native_auth_requires_no_http_auth_adapter(config, monkeypatch)
     from volundr.domain.compute import MachineProvider
 
     provider = MagicMock(spec=MachineProvider)
+    provider.fixed_inventory = False
     factory = MagicMock(return_value=provider)
     importer = MagicMock(return_value=factory)
     monkeypatch.setattr(cli, "import_class", importer)

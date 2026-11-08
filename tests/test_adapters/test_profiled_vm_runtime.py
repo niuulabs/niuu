@@ -4,7 +4,8 @@ import pytest
 
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.profiled_vm_runtime import ProfiledVmRuntime
-from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.compute import ComputeLease, ComputeSlot, MachineBootstrap, SlotLease
+from volundr.domain.compute_hosts import HostPlatform
 from volundr.domain.models import PodSpecAdditions, Session, SessionSpec
 from volundr.domain.vm_runtime import VmRuntime
 
@@ -71,21 +72,30 @@ async def test_routes_session_and_lease_operations_by_profile():
         workload_config={"compute_profile": "openshell"},
     )
     spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
-    lease = ComputeLease(
+    machine = ComputeLease(
         id=uuid4(),
         pool_id="pool",
-        session_id=session.id,
-        tenant_id="tenant",
-        owner_id="owner",
         profile="openshell",
         request_fingerprint="fingerprint",
+    )
+    lease = SlotLease(
+        allocation=machine,
+        binding=ComputeSlot(
+            id=uuid4(),
+            allocation_id=machine.id,
+            slot=0,
+            pool_id="pool",
+            session_id=session.id,
+            tenant_id="tenant",
+            owner_id="owner",
+        ),
     )
     bootstrap = MachineBootstrap()
 
     runtime.machine_bootstrap(bootstrap)
     runtime.session_bootstrap(session, spec, bootstrap)
     runtime.bootstrap(session, spec, bootstrap)
-    await runtime.warm(lease, bootstrap)
+    await runtime.warm(machine, bootstrap)
     await runtime.prepare(lease, bootstrap)
     await runtime.start(lease, bootstrap)
     assert (await runtime.target(lease, bootstrap)).connect_host == "openshell"
@@ -134,6 +144,27 @@ def test_rejects_non_runtime_instance():
         ProfiledVmRuntime(default=RecordingRuntime(name="docker"), profiles={"bad": object()})
 
 
+class ReportingRecordingRuntime(RecordingRuntime):
+    def report_startup_to(self, report):
+        self.calls.append(("report_startup_to", report))
+
+
+def test_forwards_the_startup_reporter_to_every_runtime_that_reports():
+    direct = ReportingRecordingRuntime(name="docker")
+    openshell = ReportingRecordingRuntime(name="openshell")
+    silent = RecordingRuntime(name="plain")
+    runtime = ProfiledVmRuntime(default=direct, profiles={"openshell": openshell, "plain": silent})
+
+    def report(session_id, key, label):
+        return None
+
+    runtime.report_startup_to(report)
+
+    assert direct.calls == [("report_startup_to", report)]
+    assert openshell.calls == [("report_startup_to", report)]
+    assert silent.calls == []
+
+
 def test_forwards_credential_store_to_profile_runtimes():
     runtime = ProfiledVmRuntime(
         default=RecordingRuntime(name="docker"),
@@ -147,3 +178,62 @@ def test_forwards_credential_store_to_profile_runtimes():
         [("configure_credentials", store)],
         [("configure_credentials", store)],
     ]
+
+
+class RootDaemonRuntime(RecordingRuntime):
+    @property
+    def requires_root_daemon(self):
+        return True
+
+
+def test_a_runtime_needs_no_root_daemon_and_sets_no_slot_limits_unless_it_says_so():
+    runtime = RecordingRuntime(name="host")
+
+    assert runtime.requires_root_daemon is False
+    assert runtime.slot_limits is None
+
+
+@pytest.mark.parametrize(
+    "default_needs,profile_needs,expected",
+    [
+        (False, False, False),
+        (False, True, True),
+        (True, False, True),
+        (True, True, True),
+    ],
+)
+def test_a_profiled_runtime_needs_a_root_daemon_when_any_of_its_runtimes_does(
+    default_needs, profile_needs, expected
+):
+    default = (RootDaemonRuntime if default_needs else RecordingRuntime)(name="default")
+    profiled = (RootDaemonRuntime if profile_needs else RecordingRuntime)(name="profiled")
+    runtime = ProfiledVmRuntime(default=default, profiles={"other": profiled})
+
+    assert runtime.requires_root_daemon is expected
+
+
+def test_a_profiled_runtime_without_profiles_follows_its_default():
+    assert ProfiledVmRuntime(default=RootDaemonRuntime(name="d"), profiles={}).requires_root_daemon
+    assert not ProfiledVmRuntime(
+        default=RecordingRuntime(name="d"), profiles={}
+    ).requires_root_daemon
+
+
+class MacRuntime(RecordingRuntime):
+    @property
+    def host_platforms(self):
+        return frozenset(HostPlatform)
+
+
+def test_a_runtime_runs_on_linux_hosts_unless_it_says_more():
+    assert RecordingRuntime(name="host").host_platforms == {HostPlatform.LINUX}
+
+
+def test_a_profiled_runtime_runs_only_where_all_of_its_runtimes_do():
+    mac = ProfiledVmRuntime(default=MacRuntime(name="d"), profiles={"m": MacRuntime(name="m")})
+    mixed = ProfiledVmRuntime(
+        default=MacRuntime(name="d"), profiles={"l": RecordingRuntime(name="l")}
+    )
+
+    assert mac.host_platforms == {HostPlatform.LINUX, HostPlatform.DARWIN}
+    assert mixed.host_platforms == {HostPlatform.LINUX}

@@ -43,6 +43,7 @@ from niuu.config_models import (
     DatabaseConfig,
     GuildMembershipConfig,
     SessionDefinitionConfig,
+    SessionPreviewConfig,
     WorkloadIdentityConfig,
     default_session_definitions,
 )
@@ -61,7 +62,7 @@ from niuu.domain.presented_files import (
 )
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.forge_mcp.models import ForgeMcpGrant
-from ravn.config import LLMConfig, PersonaSourceConfig
+from personas.config import PersonaSourceConfig
 from skuld.tool_result_preview import PREVIEW_EDGE_LIMIT, PREVIEW_MAX_EDGE, PREVIEW_MIN_EDGE
 from volundr.compute.config import ComputeConfig
 from volundr.domain.mcp_hosts import normalize_internal_host_pattern
@@ -72,6 +73,7 @@ from volundr.domain.models import (
     ResidentCapability,
     ResidentEngine,
     SecretType,
+    require_workload_type_available,
 )
 from volundr.domain.notifications import (
     INTEGRATION_SINK,
@@ -236,6 +238,14 @@ class ProvisioningConfig(BaseModel):
         default=5.0,
         description="Initial delay before starting readiness polls in seconds.",
     )
+    startup_poll_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        description=(
+            "How often Forge reads a starting session's launch stages from its runtime "
+            "backend (pod conditions and events, VM state) while the session starts."
+        ),
+    )
 
 
 def _default_auto_approval_allowlist() -> list[str]:
@@ -392,6 +402,10 @@ def _default_credential_enrollment_runner() -> DynamicAdapterConfig:
     )
 
 
+#: Engine value of the removed Ravn resident runtime, named only to refuse it.
+REMOVED_RAVN_RESIDENT_ENGINE = "ravn"
+
+
 class ResidentProfileConfig(BaseModel):
     """One operator-approved resident backend and engine combination."""
 
@@ -420,6 +434,17 @@ class ResidentProfileConfig(BaseModel):
         description="Backend-owned deployment input, never exposed through the profile API.",
     )
 
+    @field_validator("engine", mode="before")
+    @classmethod
+    def _refuse_removed_engines(cls, value: Any) -> Any:
+        """Name the remedy for a profile still configured with a removed engine."""
+        if str(value).strip().lower() == REMOVED_RAVN_RESIDENT_ENGINE:
+            raise ValueError(
+                "the ravn resident engine was removed; set this profile's engine to openclaw "
+                "or hermes, or delete the profile (charts/volundr residentRuntimeProfiles)"
+            )
+        return value
+
 
 class ResidentSessionControllerConfig(BaseModel):
     """One dynamically configured resident engine protocol adapter."""
@@ -429,43 +454,6 @@ class ResidentSessionControllerConfig(BaseModel):
     optional: bool = False
     kwargs: dict[str, Any] = Field(default_factory=dict)
     secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
-
-
-class ResidentNotificationRelayConfig(BaseModel):
-    """Residents' notifications into the Forge feed (``ResidentNotificationRelay``).
-
-    Forge follows each active resident's notification outbox over the resident's
-    OpenClaw shim, with the per-resident token it drives the resident's channels
-    with, and records what the resident queued (questions it waits on, their
-    answers, its agent's own notifications). Needs ``notifications.enabled``.
-    """
-
-    enabled: bool = Field(
-        default=True,
-        description="Follow residents' notification outboxes into the notification feed.",
-    )
-    batch_size: int = Field(
-        default=100, ge=1, le=200, description="Most outbox entries read per pull."
-    )
-    idle_resync_seconds: float = Field(
-        default=60.0,
-        gt=0,
-        description=(
-            "Pull again after this long without a change event, so a missed event "
-            "delays an entry by at most this much."
-        ),
-    )
-    reconnect_initial_seconds: float = Field(
-        default=5.0, gt=0, description="First wait before reconnecting to a resident."
-    )
-    reconnect_max_seconds: float = Field(
-        default=300.0,
-        gt=0,
-        description=(
-            "Longest wait between reconnects (doubling from reconnect_initial_seconds), "
-            "and how often a resident that serves no outbox is checked again."
-        ),
-    )
 
 
 class ResidentRuntimesConfig(BaseModel):
@@ -491,23 +479,10 @@ class ResidentRuntimesConfig(BaseModel):
         description="Dynamically configured resident engine protocol adapters.",
     )
     profiles: list[ResidentProfileConfig] = Field(default_factory=list)
-    ravn_sessions_enabled: bool = Field(
-        default=True,
-        description=(
-            'Ravn residents\' sessions ("channels") by default: Volundr drives them '
-            "(RavnResidentSessionController) on every resident backend that hosts the Ravn "
-            "OpenClaw shim, except a backend session_controllers already names a Ravn "
-            "controller for. Each resident's shim token is its own, kept in the "
-            "credential store. charts/volundr sets it from ravnResidentSessions.enabled."
-        ),
-    )
     reconciliation_interval_seconds: float = Field(
         default=10.0,
         gt=0,
         description="Interval between resident backend reconciliation passes.",
-    )
-    notifications: ResidentNotificationRelayConfig = Field(
-        default_factory=ResidentNotificationRelayConfig
     )
     a2a_public_base_url: str = Field(
         default="",
@@ -614,6 +589,11 @@ class LaunchSpecConfig(BaseModel):
     setup_scripts: list[str] = Field(default_factory=list)
     workspace_layout: dict[str, Any] = Field(default_factory=dict)
     cli_tool: str = ""
+
+    @field_validator("workload_type")
+    @classmethod
+    def _workload_type_still_exists(cls, value: str) -> str:
+        return require_workload_type_available(value)
 
 
 def _default_launch_specs() -> list[LaunchSpecConfig]:
@@ -1449,89 +1429,6 @@ class NotificationDispatcherConfig(BaseModel):
         return self
 
 
-class OdinReviewRelaySourceConfig(BaseModel):
-    """The adapter that reads the ODIN review queue (dynamic adapter + kwargs)."""
-
-    adapter: str = Field(
-        default="volundr.adapters.outbound.http_odin_review_source.HttpOdinReviewSource",
-        description="Fully-qualified OdinReviewSource class path.",
-    )
-    kwargs: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Adapter constructor kwargs. HttpOdinReviewSource needs base_url (the origin "
-            "serving /api/v1/ravn/odin/reviews) and, in a cluster, an auth_adapter + "
-            "auth_kwargs (e.g. WorkloadIdentityBearerTokenAuthAdapter)."
-        ),
-    )
-    secret_kwargs_env: dict[str, str] = Field(
-        default_factory=dict,
-        description="Mapping of kwarg names to env var names holding secret values.",
-    )
-
-
-class OdinReviewRelayConfig(BaseModel):
-    """Resident questions waiting in the ODIN review queue, as notifications.
-
-    With ``enabled``, Forge follows the queue (``niuu-ravn``'s review API) and records
-    one notification per pending ``answer_operator_question`` item for each of
-    ``owner_ids``; the owner's "Needs-input pushes" rule then pushes it to their phone
-    (needs ``push.enabled``). Questions already waiting when an owner is first followed
-    are recorded for the feed without a push, announced by one digest push.
-
-    Example YAML::
-
-        notifications:
-          odin_review_relay:
-            enabled: true
-            owner_ids: ["jozef@example.com"]
-            poll_interval_seconds: 30
-            source:
-              kwargs:
-                base_url: "https://yggdrasil.niuu.world"
-                auth_adapter: >-
-                  niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter
-                auth_kwargs:
-                  exchange_url: "https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange"
-                  audiences: ["niuu-ravn"]
-    """
-
-    enabled: bool = Field(
-        default=False,
-        description="Follow the ODIN review queue and notify owners of resident questions.",
-    )
-    owner_ids: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Forge user ids (the notification owner_id, i.e. the token's sub) whose feed "
-            "receives the questions. Required when enabled."
-        ),
-    )
-    poll_interval_seconds: float = Field(
-        default=30.0,
-        gt=0,
-        description=(
-            "Seconds between reads of the review queue; a new question reaches the feed at "
-            "most this late. The queue exposes no change stream, so this is the polling bound."
-        ),
-    )
-    source: OdinReviewRelaySourceConfig = Field(default_factory=OdinReviewRelaySourceConfig)
-
-    @model_validator(mode="after")
-    def _valid(self) -> "OdinReviewRelayConfig":
-        if not self.enabled:
-            return self
-        owners = [owner.strip() for owner in self.owner_ids]
-        if not owners or not all(owners):
-            raise ValueError(
-                "notifications.odin_review_relay.owner_ids must list at least one non-empty "
-                "Forge user id when the relay is enabled (or set enabled: false)"
-            )
-        if len(set(owners)) != len(owners):
-            raise ValueError("notifications.odin_review_relay.owner_ids must not repeat an owner")
-        return self
-
-
 class NotificationImagesConfig(BaseModel):
     """Copying images attached to notifications (``image`` on notify / submit).
 
@@ -1728,7 +1625,6 @@ class NotificationsConfig(BaseModel):
         description="Project notifications and serve the notification API.",
     )
     reply_ready: NotificationReplyReadyConfig = Field(default_factory=NotificationReplyReadyConfig)
-    odin_review_relay: OdinReviewRelayConfig = Field(default_factory=OdinReviewRelayConfig)
     default_page_size: int = Field(default=50, ge=1, description="Feed page size default.")
     max_page_size: int = Field(default=200, ge=1, description="Largest feed page allowed.")
     stale_after_seconds: int = Field(
@@ -1797,11 +1693,6 @@ class NotificationsConfig(BaseModel):
     def _valid(self) -> "NotificationsConfig":
         if self.default_page_size > self.max_page_size:
             raise ValueError("notifications.default_page_size must not exceed max_page_size")
-        if self.odin_review_relay.enabled and not self.enabled:
-            raise ValueError(
-                "notifications.odin_review_relay.enabled records into the notification feed: "
-                "set notifications.enabled: true, or disable the relay"
-            )
         names: set[str] = set()
         for sink in self.sinks:
             name, adapter = sink.get("name"), sink.get("adapter")
@@ -3248,6 +3139,20 @@ class VolundrBifrostConfig(BifrostConfig):
         gt=0,
         description="Interval between successful Bifrost catalog refreshes.",
     )
+    catalog_retry_initial_seconds: float = Field(
+        default=0.1,
+        gt=0,
+        description=(
+            "First delay before retrying a failed Bifrost catalog load. Every failure is "
+            "retried (doubling up to catalog_retry_max_seconds) and logged; the last good "
+            "catalog stays in use meanwhile."
+        ),
+    )
+    catalog_retry_max_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description="Longest delay between retries of a failed Bifrost catalog load.",
+    )
     session_gateway_url: str = Field(
         default="",
         description=(
@@ -3546,24 +3451,6 @@ class Settings(BaseSettings):
             "handshake that fetches a pinned instance's live certificate."
         ),
     )
-    guild_workload_delegation_url: str = Field(
-        default="",
-        description=(
-            "Platform URL serving /api/v1/tokens/workload/delegations (niuu-shared, e.g. "
-            "https://yggdrasil.niuu.world). When set, the Guild records the delegation that "
-            "lets a resident's own ServiceAccount act for the person deploying it, and "
-            "revokes it when the resident is deleted, for instances whose config names a "
-            "workload_verifier. Empty: no delegation is recorded."
-        ),
-    )
-    guild_owner_probe_timeout_seconds: float = Field(
-        default=15.0,
-        gt=0,
-        description=(
-            "Timeout for the Ravn resident/session proxy's owner-probe HTTP GET "
-            "(niuu.adapters.inbound.rest_ravn) and its TLS-pin handshake."
-        ),
-    )
     guild_transport_trusted_plaintext_host_suffixes: list[str] = Field(
         default_factory=lambda: [".svc.cluster.local", ".svc"],
         description=(
@@ -3733,6 +3620,14 @@ class Settings(BaseSettings):
     linear: LinearConfig = Field(default_factory=LinearConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
+    session_preview: SessionPreviewConfig = Field(
+        default_factory=SessionPreviewConfig,
+        description=(
+            "Live preview served by this Forge (standalone deployments). In mini mode "
+            "the local host serves previews (niuu host.session_preview) and only the "
+            "credential settings here apply."
+        ),
+    )
     guild: GuildMembershipConfig = Field(
         default_factory=GuildMembershipConfig,
         description=(
@@ -3758,39 +3653,6 @@ class Settings(BaseSettings):
     external_sessions: ExternalSessionsConfig = Field(default_factory=ExternalSessionsConfig)
     telegram_ingress: TelegramIngressConfig = Field(default_factory=TelegramIngressConfig)
     session_contributors: list[SessionContributorConfig] = Field(default_factory=list)
-    ravn_flock_image: str = Field(
-        default="",
-        description=(
-            "Optional image used for auto-wired regular Ravn flock containers. "
-            "When empty, the contributor's built-in default is used."
-        ),
-    )
-    ravn_flock_init_writer_image: str = Field(
-        default="",
-        description=(
-            "Optional image used by Ravn flock init containers that write per-persona "
-            "config files. When empty, the contributor's built-in default is used."
-        ),
-    )
-    ravn_flock_llm_config: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Default LLM for the Ravn nodes of flock sessions, in Ravn's `llm:` shape "
-            "(model, max_tokens, timeout, provider). It is the base layer: "
-            "workload_config.llm_config and per-persona llm overrides are merged over "
-            "it. When empty, every flock session must name its own model or its "
-            "launch fails."
-        ),
-    )
-    ravn_flock_llm_config_by_definition: dict[str, dict[str, Any]] = Field(
-        default_factory=dict,
-        description=(
-            "Per session definition, LLM settings merged over ravn_flock_llm_config for "
-            "flocks launched on that definition, e.g. {skuldCodex: {model: gpt-5.6-terra}}. "
-            "Under OpenShell a flock's Ravns run on its session definition's CLI runtime, "
-            "so one Forge-wide model cannot serve both a Claude and a Codex flock."
-        ),
-    )
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
         default_factory=default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",
@@ -3811,23 +3673,6 @@ class Settings(BaseSettings):
     )
     ravn: RavnConfig = Field(default_factory=RavnConfig)
     observatory: ObservatoryConfig = Field(default_factory=ObservatoryConfig)
-
-    @field_validator("ravn_flock_llm_config")
-    @classmethod
-    def _validate_ravn_flock_llm_config(cls, value: dict[str, Any]) -> dict[str, Any]:
-        """Reject a flock LLM default Ravn could not load, at startup, not per node."""
-        if value:
-            LLMConfig.model_validate(value)
-        return value
-
-    @field_validator("ravn_flock_llm_config_by_definition")
-    @classmethod
-    def _validate_ravn_flock_llm_config_by_definition(
-        cls, value: dict[str, dict[str, Any]]
-    ) -> dict[str, dict[str, Any]]:
-        for llm in value.values():
-            LLMConfig.model_validate(llm)
-        return value
 
     @model_validator(mode="after")
     def _needs_input_push_has_its_sink(self) -> "Settings":
@@ -3877,14 +3722,6 @@ class Settings(BaseSettings):
     def _merge_built_in_session_definitions(self) -> "Settings":
         """Keep built-in session definitions unless config explicitly overrides them."""
         self.session_definitions = merge_session_definitions(self.session_definitions)
-        unknown = sorted(
-            set(self.ravn_flock_llm_config_by_definition) - set(self.session_definitions)
-        )
-        if unknown:
-            raise ValueError(
-                f"ravn_flock_llm_config_by_definition names unknown session definition(s) "
-                f"{', '.join(unknown)}; known: {', '.join(sorted(self.session_definitions))}"
-            )
         return self
 
     @classmethod

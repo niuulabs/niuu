@@ -20,7 +20,7 @@ test('loads repository metadata first, then selected branches with visible progr
   await page.route('**/config.json', async (route) => {
     const response = await route.fetch();
     const config = await response.json();
-    for (const id of ['ting', 'ravn', 'mimir', 'observatory', 'valkyrie'])
+    for (const id of ['ting', 'ravn', 'mimir', 'observatory'])
       config.plugins[id] = { enabled: false };
     config.services['niuu.repos'] = { mode: 'http', baseUrl: '/api/v1/niuu' };
     config.services.setup = { mode: 'http', baseUrl: '/api/v1/setup' };

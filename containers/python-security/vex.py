@@ -1,4 +1,4 @@
-"""Create digest-scoped fixed statements only from verified image backports."""
+"""Create digest-scoped statements only from verified image backports and mitigations."""
 
 import json
 import re
@@ -17,12 +17,16 @@ def document(image: str, evidence: dict, scan: dict, manifest: dict) -> dict:
         evidence["files"] != expected
         or evidence["python_version"] != manifest["python_version"]
         or evidence["cves"] != manifest["cves"]
+        or evidence["mitigations"] != [item["cve"] for item in manifest["mitigations"]]
         or evidence["image"] != image
         or evidence["patches"] != [item["commit"] for item in manifest["patches"]]
         or evidence["upstream_fixes"]
         != {item["cve"]: item["sha256"] for item in manifest["upstream_fixes"]}
     ):
         raise ValueError("Runtime backport evidence does not match the reviewed manifest")
+    for item in manifest["mitigations"]:
+        if item["file"] not in manifest["files"]:
+            raise ValueError(f"Mitigation names an unverified module: {item['file']}")
     if image not in scan["source"]["target"]["repoDigests"]:
         raise ValueError("Grype scanned a different image from the verified runtime")
     product = (
@@ -41,10 +45,31 @@ def document(image: str, evidence: dict, scan: dict, manifest: dict) -> dict:
         "version ranges do not credit yet; the fixed module's SHA-256 hash and regression "
         "verified inside this exact image. See the retained python-security evidence."
     )
-    claims = [(cve, backport_notes) for cve in manifest["cves"]] + [
-        (item["cve"], upstream_notes) for item in manifest["upstream_fixes"]
+    mitigation_notes = (
+        "Mitigated, not fixed: the vulnerable compiled code is still present. The module "
+        "carrying the guard has its SHA-256 hash and regressions verified inside this exact "
+        "image. See the retained python-security evidence and raw Grype report."
+    )
+    claims = [
+        (cve, {"status": "fixed", "status_notes": backport_notes}) for cve in manifest["cves"]
     ]
-    for cve, notes in claims:
+    claims += [
+        (item["cve"], {"status": "fixed", "status_notes": upstream_notes})
+        for item in manifest["upstream_fixes"]
+    ]
+    claims += [
+        (
+            item["cve"],
+            {
+                "status": "not_affected",
+                "justification": item["justification"],
+                "impact_statement": item["impact_statement"],
+                "status_notes": mitigation_notes,
+            },
+        )
+        for item in manifest["mitigations"]
+    ]
+    for cve, assertion in claims:
         purls = set()
         for match in scan["matches"]:
             artifact = match["artifact"]
@@ -87,8 +112,7 @@ def document(image: str, evidence: dict, scan: dict, manifest: dict) -> dict:
                             "subcomponents": [{"@id": purl} for purl in sorted(purls)],
                         }
                     ],
-                    "status": "fixed",
-                    "status_notes": notes,
+                    **assertion,
                     "timestamp": timestamp,
                 }
             )

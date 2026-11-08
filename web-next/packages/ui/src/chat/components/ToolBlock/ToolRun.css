@@ -1,0 +1,176 @@
+/* ── Tool run row (a burst of tool calls) ───────────────── */
+
+.niuu-chat-toolrun {
+  width: 100%;
+}
+
+.niuu-chat-toolrun-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-bg-secondary) 55%, transparent);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+
+.niuu-chat-toolrun-row:hover {
+  border-color: var(--color-border);
+}
+
+.niuu-chat-toolrun-row:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+.niuu-chat-toolrun--live .niuu-chat-toolrun-row {
+  border-color: color-mix(in srgb, var(--color-brand) 30%, transparent);
+}
+
+.niuu-chat-toolrun-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.niuu-chat-toolrun-chips {
+  display: flex;
+  gap: var(--space-1);
+  flex: none;
+}
+
+.niuu-chat-toolrun-chip {
+  display: grid;
+  place-items: center;
+  min-width: var(--space-5);
+  height: var(--space-5);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+}
+
+.niuu-chat-toolrun-chip--more {
+  padding: 0 var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.niuu-chat-toolrun-chip-icon {
+  width: var(--space-3);
+  height: var(--space-3);
+}
+
+.niuu-chat-toolrun-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.niuu-chat-toolrun-summary b {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-toolrun-sep {
+  color: var(--color-text-faint);
+}
+
+.niuu-chat-toolrun-subject {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.niuu-chat-toolrun-diff {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.niuu-chat-toolrun-diff-add {
+  color: var(--state-ok);
+}
+
+.niuu-chat-toolrun-diff-del {
+  color: var(--color-critical-fg);
+}
+
+.niuu-chat-toolrun-state {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--color-text-muted);
+}
+
+.niuu-chat-toolrun-state[data-state='running'] {
+  color: var(--color-brand);
+}
+
+.niuu-chat-toolrun-state[data-state='failed'] {
+  color: var(--state-warn);
+}
+
+.niuu-chat-toolrun-glyph,
+.niuu-chat-toolrun-spinner,
+.niuu-chat-toolrun-chevron {
+  width: var(--space-4);
+  height: var(--space-4);
+  flex: none;
+}
+
+.niuu-chat-toolrun-chevron {
+  color: var(--color-text-faint);
+}
+
+.niuu-chat-toolrun-spinner {
+  animation: niuu-chat-toolrun-spin 0.9s linear infinite;
+}
+
+@keyframes niuu-chat-toolrun-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.niuu-chat-toolrun-ticker {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding-left: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--brand-300);
+}
+
+.niuu-chat-toolrun-ticker span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "Every call" mode and the detail sheet list ToolBlocks. */
+.niuu-chat-toolrun-cards,
+.niuu-chat-toolrun-drawer-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .niuu-chat-toolrun-spinner {
+    animation: none;
+  }
+  .niuu-chat-toolrun-row {
+    transition: none;
+  }
+}

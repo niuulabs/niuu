@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from ravn.domain.persona_document import PortablePersonaDefinition, portable_persona_yaml
+from personas.domain.persona_document import PortablePersonaDefinition, portable_persona_yaml
 from tests.test_ting.test_workflows_api import (
     InMemoryWorkflowRepository,
     _headers,
@@ -38,7 +38,7 @@ def persona():
         definition={
             "name": "reviewer",
             "system_prompt_template": "Review carefully.\nKeep evidence.\n",
-            "allowed_tools": ["read"],
+            "allowed_tools": ["file_read"],
             "produces": {"event_type": "review.completed"},
         },
     )
@@ -59,14 +59,35 @@ def workflow(persona):
         updated_at=now,
         graph={
             "nodes": [
+                {"id": "start", "kind": "trigger", "dispatchEvent": "review.requested"},
                 {
                     "id": "review",
                     "kind": "stage",
                     "label": "Review",
-                    "stageMembers": [{"personaId": "reviewer", "budget": 5}],
-                }
+                    "stageMembers": [
+                        {
+                            "personaId": "reviewer",
+                            "budget": 5,
+                            "consumesEventTypes": ["review.requested"],
+                        }
+                    ],
+                },
+                {"id": "done", "kind": "end"},
             ],
-            "edges": [],
+            "edges": [
+                {
+                    "id": "start-to-review",
+                    "source": "start",
+                    "target": "review",
+                    "label": "review.requested -> review.requested",
+                },
+                {
+                    "id": "review-to-done",
+                    "source": "review",
+                    "target": "done",
+                    "label": "review.completed -> review.completed",
+                },
+            ],
             "artifactPaths": ["reviews/{slug}/result.md"],
             "extension": {"preserved": True},
         },
@@ -512,11 +533,32 @@ def test_create_pins_user_custom_persona_from_owner_registry(persona):
         json={
             "name": "Private review",
             "nodes": [
+                {"id": "start", "kind": "trigger", "dispatchEvent": "review.requested"},
                 {
                     "id": "review",
                     "kind": "stage",
-                    "stageMembers": [{"personaId": "my-private-reviewer"}],
-                }
+                    "stageMembers": [
+                        {
+                            "personaId": "my-private-reviewer",
+                            "consumesEventTypes": ["review.requested"],
+                        }
+                    ],
+                },
+                {"id": "done", "kind": "end"},
+            ],
+            "edges": [
+                {
+                    "id": "start-to-review",
+                    "source": "start",
+                    "target": "review",
+                    "label": "review.requested -> review.requested",
+                },
+                {
+                    "id": "review-to-done",
+                    "source": "review",
+                    "target": "done",
+                    "label": "review.completed -> review.completed",
+                },
             ],
         },
     )

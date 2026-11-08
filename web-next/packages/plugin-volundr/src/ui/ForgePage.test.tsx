@@ -144,10 +144,10 @@ describe('ForgePage', () => {
     const failed: Session = {
       ...base!,
       id: 'sess-failed',
-      name: 'flock-mismatch-guard',
+      name: 'provider-mismatch-guard',
       state: 'failed',
       events: [],
-      error: 'ravn_flock: skuldCodex does not accept provider anthropic',
+      error: 'skuldCodex does not accept provider anthropic',
     };
     wrap(createMockVolundrService(), createMockClusterAdapter(), {
       ...store,
@@ -155,7 +155,7 @@ describe('ForgePage', () => {
     });
 
     const strip = await screen.findByTestId('error-strip');
-    expect(within(strip).getByText('flock-mismatch-guard')).toBeInTheDocument();
+    expect(within(strip).getByText('provider-mismatch-guard')).toBeInTheDocument();
     expect(within(strip).getByTestId('error-reason')).toHaveTextContent(
       'skuldCodex does not accept provider anthropic',
     );
@@ -175,7 +175,7 @@ describe('ForgePage', () => {
   // NIU-725 — new visual features
   // ──────────────────────────────────────────────
 
-  it('renders boot progress bar on booting pods', async () => {
+  it('shows the launch stage a booting pod is on', async () => {
     const bootingSession: Session = {
       id: 'boot-sess',
       ravnId: 'r-boot',
@@ -184,7 +184,20 @@ describe('ForgePage', () => {
       clusterId: 'cl-eitri',
       state: 'provisioning',
       startedAt: new Date(Date.now() - 30_000).toISOString(),
-      bootProgress: 0.6,
+      startup: {
+        startedAt: new Date(Date.now() - 30_000).toISOString(),
+        progressError: null,
+        stages: [
+          {
+            key: 'containers',
+            label: 'Starting containers',
+            state: 'active',
+            detail: 'Pulling image "ghcr.io/niuulabs/skuld:dev"',
+            startedAt: new Date(Date.now() - 6_000).toISOString(),
+            finishedAt: null,
+          },
+        ],
+      },
       connectionType: 'cli',
       resources: {
         cpuRequest: 1,
@@ -210,10 +223,12 @@ describe('ForgePage', () => {
     };
 
     wrap(createMockVolundrService(), createMockClusterAdapter(), overriddenStore);
-    await waitFor(() => expect(screen.getByTestId('boot-progress-bar')).toBeInTheDocument());
-
-    const bar = screen.getByTestId('boot-progress-bar');
-    expect(bar.style.width).toBe('60%');
+    await waitFor(() =>
+      expect(screen.getByTestId('session-startup-headline')).toHaveTextContent(
+        'Starting containers · Pulling image "ghcr.io/niuulabs/skuld:dev"',
+      ),
+    );
+    expect(screen.queryByTestId('boot-progress-bar')).not.toBeInTheDocument();
   });
 
   it('renders connection type badge on pod cards', async () => {

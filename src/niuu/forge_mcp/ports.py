@@ -7,6 +7,7 @@ from typing import Any
 
 from niuu.domain.artifact_reports import ArtifactReport
 from niuu.domain.notifications import NotificationDraft
+from niuu.domain.workflow_step import WorkflowStepCloseArgs
 from niuu.forge_mcp.models import ForgeApiError
 
 
@@ -78,6 +79,25 @@ class ForgeClient(ABC):
     ) -> dict[str, Any]:
         """``PUT /sessions/{id}/description``: sent keys replace, ``None`` clears."""
 
+    @abstractmethod
+    async def create_secret_request(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /sessions/{id}/secret-requests``: ``{name, purpose, target?}``.
+
+        Idempotent per (session, name) while a request is open: Forge returns that
+        request instead of a second one."""
+
+    @abstractmethod
+    async def get_secret_request(self, session_id: str, request_id: str) -> dict[str, Any]:
+        """``GET /sessions/{id}/secret-requests/{request_id}``; never carries the value."""
+
+    @abstractmethod
+    async def claim_secret_request(self, session_id: str, request_id: str) -> dict[str, Any]:
+        """``POST .../{request_id}/claim``: ``{name, value}``, once, after the user fulfilled it."""
+
+    @abstractmethod
+    async def cancel_secret_request(self, session_id: str, request_id: str) -> dict[str, Any]:
+        """``POST .../{request_id}/cancel``: withdraw a pending or fulfilled request."""
+
 
 class ForgeMcpHost(ABC):
     """The caller's own context: who is asking, and how its notifications are recorded."""
@@ -104,36 +124,31 @@ class ForgeMcpHost(ABC):
             status=501,
         )
 
+    async def request_secret(self, name: str, purpose: str, target: str | None) -> dict[str, Any]:
+        """Ask the user for a secret and return ``{status: "ready", name, path}``.
 
-class ForgeMcpFlock(ABC):
-    """A Ravn flock the caller brokers. Transport only: its members do the work.
+        The value lands in a private file in the caller's session and is never part of the
+        result. Only a session's own broker can: it owns the chat card and the file. Other
+        hosts refuse."""
+        raise ForgeApiError(
+            "request_secret needs a Forge session's own MCP (it asks in that session's chat "
+            "and writes the value into that session's runtime)",
+            status=501,
+        )
 
-    Every outcome an implementation returns must be one a member published on
-    the mesh, attributed to the member it arrived from. Implementations raise
-    :class:`niuu.forge_mcp.models.FlockError` when a hand-off is refused.
-    """
+    def workflow_step_host(self) -> bool:
+        """Whether this session hosts workflow steps, so ``workflow_step_close`` is listed."""
+        return False
 
-    @property
-    @abstractmethod
-    def max_wait_s(self) -> float:
-        """Longest one :meth:`activity` call may wait."""
+    async def close_workflow_step(self, args: WorkflowStepCloseArgs) -> dict[str, Any]:
+        """Check ``args`` against the open step, record the close and report it.
 
-    @abstractmethod
-    async def members(self) -> list[dict[str, Any]]:
-        """The flock's Ravns: ``peer_id``, ``persona`` and live ``status`` each."""
+        With no open step, or for another activation, it raises and records nothing.
 
-    @abstractmethod
-    async def delegate(self, peer_id: str, content: str) -> dict[str, Any]:
-        """Hand ``content`` to one member as its next task over the mesh.
-
-        Returns ``{message_id, peer_id, persona, cursor}``; ``cursor`` marks the
-        activity log position before the hand-off, for :meth:`activity`.
-        """
-
-    @abstractmethod
-    async def activity(self, *, after: int, peer_id: str, wait_s: float) -> dict[str, Any]:
-        """``{cursor, activity}``: outcomes and failures members published after ``after``.
-
-        Waits up to ``wait_s`` for the first one; an empty ``activity`` means
-        none arrived in that time.
-        """
+        Raises :class:`niuu.domain.workflow_step.WorkflowStepCloseError` with the exact reason
+        when the close is not allowed; nothing is recorded then. Only a session's own broker
+        hosts steps; other hosts refuse."""
+        raise ForgeApiError(
+            "workflow_step_close needs a Forge session's own MCP (it closes that session's step)",
+            status=501,
+        )

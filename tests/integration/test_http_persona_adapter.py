@@ -28,9 +28,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-from ravn.adapters.personas.http import HttpPersonaAdapter
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter, PersonaConfig
-from ravn.api.personas import create_personas_router
+from personas.adapters.http import HttpPersonaAdapter
+from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.api.personas import create_personas_router
+from personas.domain.persona import PersonaConfig
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -130,7 +131,7 @@ def test_round_trip_load(personas_app: FastAPI) -> None:
                 "name": "integ-coder",
                 "system_prompt_template": "You are an integration test coder.",
                 "permission_mode": "workspace-write",
-                "allowed_tools": ["file", "git"],
+                "allowed_tools": ["file_read", "git"],
                 "iteration_budget": 30,
             },
         )
@@ -142,7 +143,7 @@ def test_round_trip_load(personas_app: FastAPI) -> None:
         assert config.name == "integ-coder"
         assert config.system_prompt_template == "You are an integration test coder."
         assert config.permission_mode == "workspace-write"
-        assert config.allowed_tools == ["file", "git"]
+        assert config.allowed_tools == ["file_read", "git"]
         assert config.iteration_budget == 30
 
 

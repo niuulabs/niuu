@@ -1,5 +1,4 @@
 from dataclasses import replace
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -7,9 +6,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from niuu.adapters.evidence_signing import RsaEvidenceAuthenticator
 from niuu.domain.delivery import ReviewReceipt, evidence_payload
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
-from skuld.broker import Broker
-from skuld.config import SkuldSettings
+from personas.adapters.loader import FilesystemPersonaAdapter
 from tests.test_ting.test_delivery_execution import MemoryRepository, _execution
 from ting.delivery.integration_reviews import TrustedIntegrationReviewProjector
 from ting.domain.workflow_execution import ExecutionState, WorkflowExecutionError
@@ -192,83 +189,13 @@ async def test_integration_projector_requires_literal_validation_before_signing(
     assert repository.execution.integration_review_receipt is None
 
 
-@pytest.mark.asyncio
-async def test_real_integration_persona_contract_projects_exact_allocation_id(tmp_path) -> None:
+def test_real_integration_persona_contract_names_the_exact_allocation_id() -> None:
     persona = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
         "developer-integration-verifier"
     )
     assert persona is not None
     assert "attempt_id" in persona.produces.schema
     assert "integration allocation ID" in persona.produces.schema["attempt_id"].description
-
-    repository, _, projector, event = _context()
-    broker = Broker(
-        settings=SkuldSettings(
-            session={"id": event.session_id, "workspace_dir": str(tmp_path)},
-            room={"enabled": True},
-            workflow={
-                "graph": {
-                    "reviewAttestation": {
-                        "version": 1,
-                        "scope": "integration",
-                        "eventType": "developer.integration.reviewed",
-                        "roles": {"integration": "developer-integration-verifier"},
-                    },
-                    "nodes": [
-                        {
-                            "kind": "stage",
-                            "joinMode": "all",
-                            "stageMembers": [{"personaId": "developer-integration-verifier"}],
-                        }
-                    ],
-                }
-            },
-        )
-    )
-    broker._room_bridge = MagicMock()
-    broker._room_bridge.participants = {
-        "integration-review-peer": MagicMock(persona="developer-integration-verifier")
-    }
-    broker._emit_pipeline_event = AsyncMock()
-    broker._maybe_activate_workflow_gate = AsyncMock()
-    broker._maybe_emit_workflow_terminal_outcome = AsyncMock()
-    broker._report_activity_state = AsyncMock()
-
-    await broker._emit_peer_outcome_pipeline_event(
-        "integration-review-peer",
-        {
-            "metadata": {
-                "event_type": "developer.integration.reviewed",
-                "task_id": "integration-review-event-1",
-            },
-            "data": {
-                "event_type": "developer.integration.reviewed",
-                "valid": True,
-                "fields": {
-                    "attempt_id": "integration-attempt-1",
-                    "candidate_sha": "b" * 40,
-                    "candidate_tree": "c" * 40,
-                    "plan_revision": "plan-7",
-                    "verdict": "pass",
-                    "requirement_coverage": [],
-                    "findings": [],
-                    "summary": "Integrated candidate is acceptable",
-                },
-            },
-        },
-    )
-
-    live = broker._report_activity_state.await_args.kwargs["extra_metadata"]
-    assert live["attested_review"]["attemptId"] == "integration-attempt-1"
-    projected = ActivityEvent(
-        session_id=event.session_id,
-        state="active",
-        metadata=live,
-        owner_id=repository.execution.owner_id,
-    )
-    assert await projector.handle_activity(projected, repository.execution.owner_id)
-    receipt = ReviewReceipt.model_validate(repository.execution.integration_review_receipt)
-    assert receipt.attempt_id == "integration-attempt-1"
 
 
 @pytest.mark.asyncio

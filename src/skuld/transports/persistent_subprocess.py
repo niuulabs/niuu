@@ -47,6 +47,7 @@ from skuld.claude_permission import (
 )
 from skuld.slash_commands import build_slash_command_catalog, compose_slash_command_text
 from skuld.transports.claude_env import claude_spawn_env
+from skuld.transports.claude_policy import ClaudeToolPolicy
 from skuld.transports.mcp_config import (
     build_claude_mcp_config,
     require_connected_mcp_servers,
@@ -110,6 +111,7 @@ class PersistentSubprocessTransport(CLITransport):
         model_gateway_token: str = "",
         read_only_mcp_only: bool = False,
         allowed_mcp_tools: list[str] | None = None,
+        claude_tool_policy: ClaudeToolPolicy | None = None,
     ) -> None:
         super().__init__()
         self._model_gateway_url = model_gateway_url
@@ -119,12 +121,16 @@ class PersistentSubprocessTransport(CLITransport):
         self._model = model
         self._read_only_mcp_only = read_only_mcp_only
         self._allowed_mcp_tools = list(allowed_mcp_tools or [])
-        self._skip_permissions = skip_permissions and not read_only_mcp_only
+        self._tool_policy = claude_tool_policy
+        bounded = read_only_mcp_only or (
+            claude_tool_policy is not None and claude_tool_policy.sets_permission_mode
+        )
+        self._skip_permissions = skip_permissions and not bounded
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
-        self._agent_teams = agent_teams and not read_only_mcp_only
+        self._agent_teams = agent_teams and not bounded
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
-        self._ask_user_question_enabled = ask_user_question_enabled
+        self._ask_user_question_enabled = ask_user_question_enabled and not bounded
         self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_config = build_claude_mcp_config(mcp_servers or [])
         self._initial_prompt_sent = False
@@ -168,6 +174,8 @@ class PersistentSubprocessTransport(CLITransport):
             session_resume=True,
             slash_commands=True,
             skills=True,
+            # ``claude -p`` emits system/init only after reading its first message.
+            announces_ready=False,
         )
 
     @property
@@ -325,6 +333,8 @@ class PersistentSubprocessTransport(CLITransport):
             )
             if self._allowed_mcp_tools:
                 cmd.extend(["--allowedTools", ",".join(self._allowed_mcp_tools)])
+        elif self._tool_policy is not None and self._tool_policy.sets_permission_mode:
+            cmd.extend(self._tool_policy.cli_args())
         elif self._ask_user_question_enabled:
             # Do NOT pass --permission-mode bypassPermissions in this mode —
             # bypass auto-allows every tool and gives us no way to intercept
@@ -336,6 +346,9 @@ class PersistentSubprocessTransport(CLITransport):
             cmd.extend(["--permission-prompt-tool", "stdio"])
         elif self._skip_permissions:
             cmd.extend(["--permission-mode", self._claude_permission_mode])
+        if self._tool_policy is not None and not self._tool_policy.sets_permission_mode:
+            # A persona that only forbids a few tools leaves the node's mode in place.
+            cmd.extend(self._tool_policy.cli_args())
         # ``--resume`` applies when re-spawning after a crash or when a
         # resume id was seeded for an imported session. Otherwise the first
         # spawn has no session yet — Claude assigns one in its first
@@ -348,7 +361,7 @@ class PersistentSubprocessTransport(CLITransport):
                 mcp_servers=self._raw_mcp_servers,
                 legacy_mcp_config=self._mcp_config,
                 system_prompt=self._system_prompt,
-                include_system_prompt=not self._session_id,
+                include_system_prompt=True,
             )
         )
         return cmd

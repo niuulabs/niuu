@@ -79,7 +79,7 @@ scheduler for a given maintenance workload.
 
 ## Niuu integration
 
-Connect through `ravn.adapters.mimir.gbrain.GBrainMimirAdapter`, using the service's
+Connect through `mimir.adapters.gbrain.GBrainMimirAdapter`, using the service's
 `/mcp` URL and a scoped API token. gbrain's native MCP endpoint is not the Mimir
 HTTP API: a registry URL alone does not turn it into a Mimir mount. The existing
 adapter supplies that boundary and enables graph projection.

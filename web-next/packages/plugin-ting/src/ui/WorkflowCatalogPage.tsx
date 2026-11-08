@@ -214,8 +214,8 @@ export function WorkflowCatalogPage() {
       });
       draft.reset();
       await navigate({
-        to: '/volundr/sessions/$sessionId',
-        params: { sessionId: result.sessionId },
+        to: '/ting/review/run/$slug',
+        params: { slug: result.campaignSlug },
       });
     } catch (launchError) {
       draft.update({

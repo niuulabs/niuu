@@ -1,4 +1,4 @@
-"""Tests for ting.domain.templates — NIU-644: flock_flow + persona_overrides parsing."""
+"""Tests for ting.domain.templates — persona_overrides parsing and the retired flock_flow."""
 
 from __future__ import annotations
 
@@ -44,30 +44,27 @@ def _load(yaml_str: str) -> SagaTemplate:
 
 
 # ---------------------------------------------------------------------------
-# SagaTemplate.flock_flow field
+# flock_flow: retired with the flocks it named
 # ---------------------------------------------------------------------------
 
 
-class TestFlockFlowField:
-    def test_flock_flow_absent_defaults_to_none(self):
-        template = _load(_BASE_PIPELINE + _STAGES_BLOCK)
-        assert template.flock_flow is None
-
-    def test_flock_flow_empty_string_normalised_to_none(self):
-        yaml_str = _BASE_PIPELINE + "flock_flow: ''\n" + _STAGES_BLOCK
-        template = _load(yaml_str)
-        assert template.flock_flow is None
-
-    def test_flock_flow_stored_from_yaml(self):
+class TestFlockFlowIsRefused:
+    def test_a_template_naming_a_flock_flow_is_refused_with_the_remedy(self):
         yaml_str = _BASE_PIPELINE + "flock_flow: code-review-flow\n" + _STAGES_BLOCK
-        template = _load(yaml_str)
-        assert template.flock_flow == "code-review-flow"
+        with pytest.raises(ValueError, match="flocks no longer exist; remove flock_flow"):
+            _load(yaml_str)
 
-    def test_flock_flow_propagated_to_all_phases(self):
+    def test_the_refusal_names_the_template_and_the_flow(self):
         yaml_str = _BASE_PIPELINE + "flock_flow: my-flow\n" + _STAGES_BLOCK
-        template = _load(yaml_str)
-        # The flow name lives on the SagaTemplate, not on individual phases
-        assert template.flock_flow == "my-flow"
+        with pytest.raises(ValueError, match="Test Pipeline.*my-flow"):
+            _load(yaml_str)
+
+    def test_an_empty_flock_flow_is_no_flock_flow(self):
+        template = _load(_BASE_PIPELINE + "flock_flow: ''\n" + _STAGES_BLOCK)
+        assert len(template.phases) == 1
+
+    def test_a_template_without_one_loads(self):
+        template = _load(_BASE_PIPELINE + _STAGES_BLOCK)
         assert len(template.phases) == 1
 
 
@@ -109,7 +106,6 @@ class TestPersonaOverridesField:
             feature_branch: "feat/x"
             base_branch: "main"
             repos: ["test/repo"]
-            flock_flow: code-review-flow
             stages:
               - name: parallel-review
                 parallel:
@@ -331,15 +327,14 @@ class TestPersonaOverridesSecurityBoundary:
 # ---------------------------------------------------------------------------
 
 
-class TestFlockFlowInterpolation:
-    def test_flock_flow_preserved_through_interpolation(self):
+class TestInterpolation:
+    def test_event_placeholders_are_filled_in(self):
         yaml_str = textwrap.dedent(
             """
             name: "Review: {event.repo}"
             feature_branch: "{event.branch}"
             base_branch: "main"
             repos: ["{event.repo}"]
-            flock_flow: code-review-flow
             stages:
               - name: review
                 sequential:
@@ -350,5 +345,5 @@ class TestFlockFlowInterpolation:
         template = load_template_from_string(
             yaml_str, payload={"repo": "acme/app", "branch": "feat/x"}
         )
-        assert template.flock_flow == "code-review-flow"
         assert template.name == "Review: acme/app"
+        assert template.feature_branch == "feat/x"

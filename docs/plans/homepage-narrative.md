@@ -1,12 +1,13 @@
 # Homepage narrative
 
-Status: sixth pass, implemented in this worktree as an uncommitted proposal, 2026-11-01.
-The fifth pass is live on `dev`.
+Status: seventh pass, implemented in this worktree as an uncommitted proposal, 2026-11-05.
+The sixth pass is live on `dev`. This pass waits for Jozef before it is pushed.
 
-The fifth pass gave each step its own layout, but too many screens competed for
-attention. This pass gives every capability one dominant screen, keeps the others as
-thumbnails, lifts the ground a shade as the story grows, and makes the end of the page
-the point where NIUU stops looking like an agent tool.
+The seventh pass rebuilds the page around composability. The ecosystem is fragmented,
+said without criticizing anyone's tools. NIUU provides building blocks that are useful
+alone and work together. You assemble what you need. The gallery then shows what
+combinations make possible. The page got shorter, and "operating system" left all
+public copy: the page, its title and the site description.
 
 The page states selling points in a line each. Detail goes to the docs;
 `docs-rewrite.md` lists where.
@@ -15,33 +16,71 @@ The page states selling points in a line each. Detail goes to the docs;
 
 | # | Section | Heading | Job |
 |---|---|---|---|
-| - | Hero | A place where intelligent systems do real work. | What NIUU is. Headline and supporting copy unchanged. |
-| 1 | Gallery | One agent is a starting point. Not the limit. | The centre of the page: Agent, Workflows, Collaboration, Continuity, Autonomy, Scale, Environment. |
-| 2 | What NIUU builds on | We extend the best tools. We don't rebuild them. | Harnesses, models, connections and runtimes. |
+| - | Hero | A place where intelligent systems do real work. | What NIUU is. The headline is unchanged, and the supporting line now names building blocks. |
+| 1 | Building blocks | Great tools. Hard to make work together. | The fragmentation, then nine blocks and three configurations that light them. |
+| 2 | Gallery | Combine them, and see what becomes possible. | Workflows, Collaboration, Memory, Autonomy, Scale, each labelled with the blocks it combines. |
 | 3 | Use cases | Not just for code. | The range of work, ending on Add your own. |
 | 4 | Get started | Try it on your own machine. | Docker first, from source second, in tabs. |
 | 5 | Closing | None | Where to go next, in large links: the four docs areas and GitHub. |
 
+### Building blocks
+
+Eleven blocks in a connected grid of four columns, so each stage is one row:
+Harnesses, Sessions, Memory, Runtimes; then Models, Collaboration, Workspaces,
+Observability; then Workflows, Residents, Security & governance. Two columns below
+1100px, one below 780px. Each card names what it does, what it works with, and the
+products it lives in, and links to its docs. Three buttons light a stage of growth
+rather than a kind of buyer, so nobody reads themselves out of a stage:
+
+| Stage | Blocks lit |
+|---|---|
+| Day 1 | Harnesses, Sessions, Memory, Runtimes |
+| Day 2 | adds Models, Collaboration, Workspaces, Observability |
+| Day 3 | adds Workflows, Residents, Security & governance |
+
+Jozef moved Memory to Day 1, because one engineer wants work to carry between
+sessions, and Workflows to Day 3, because gated processes are an organization's need.
+He then split the old Execution block: Sessions on Day 1, Workspaces with their
+scheduled jobs on Day 2, Residents on Day 3. A Workspace's jobs run through its
+resident, so the Workspaces card names the jobs and the home, and leaves the agent
+that runs them to the Residents card.
+
+Pressing a lit button again shows all nine. Without JavaScript all nine show. The
+grid is three columns, two at 900px and one below 780px. Two lines under the grid say
+blocks can be replaced or extended and that the platform takes plugins.
+
+| Block | Evidence |
+|---|---|
+| Sessions | The session gateway runs every harness behind one interface (`src/skuld/transports/`). The session page has Chat, Terminal, Diffs, Files, Chronicle and Logs tabs (`plugin-volundr` `SessionDetailPage.tsx`). Durable history and effort survive a broker restart (`history_hydration.py`, `effort.py`). Channels deliver to the browser and Telegram (`channels.py`). |
+| Workspaces | `plugin-realms`: charter, trust, budget and activity log; templates carry cron and event jobs (`domain/templates.ts`), run by the Workspace's resident. |
+| Residents | `plugin-valkyrie` and the resident runtime: mandates, triggers (`src/ravn/adapters/triggers`), Inbox, reflection and `build_tool`. |
+| Harnesses | Skuld transports: Claude Code, Codex, OpenCode, Pi, Grok Build, Muse, DeepSeek Harness; resident gateways for OpenClaw and NemoClaw (`openclaw_gateway.py`) and Hermes (`hermes_gateway.py`). |
+| Models | Bifröst: Anthropic, OpenAI-compatible, Ollama; routing strategies direct, failover, cost_optimised, round_robin, latency_optimised; `tenant_quotas` and the rules engine. |
+| Workflows | Gate, wait, subworkflow and include nodes, evidence gates, `graph.board` (`src/ting/domain/workflow_board.py`). |
+| Collaboration | `niuu.collaboration` rooms, Flock mesh, A2A, Telegram, review inbox. |
+| Memory | `plugin-mimir`: shared and private memory, evidence, search. |
+| Runtimes | `local_process`, `docker_container`, `direct_k8s`, VM pod manager, OpenShell, joined machines (claimed as bare metal). |
+| Security & governance | OIDC, Cedar policies, scoped workload tokens, OpenShell sandboxes, OpenBao credential store. |
+| Observability | OpenTelemetry export, session traces, Observatory live map, audit log (`/api/v1/audit`). |
+| Each has its own API | REST under `/api/v1/{forge,ting,mimir,bifrost,niuu,observatory,ravn,realms,audit,identity}`. |
+| Replace or extend | Dynamic adapters from configuration; plugins via `src/niuu/plugin.py` and `web-next/packages/plugin-sdk`. |
+
+SPIFFE/SPIRE stays off the Security card: it covers OpenShell sandbox grants only, and
+the card names what a reader can rely on everywhere.
+
 ### Gallery
 
-A quiet bar names where you are, with a thin line filling as you read. It replaced a
-stepper with dots, which read as a wizard. Each capability has one dominant screen.
-Thumbnails swap it, and clicking a screen enlarges it. Phones get focused crops from
-`images/home/gallery/*-phone.webp`.
+A quiet bar names where you are, with a thin line filling as you read. Each capability
+has one dominant screen. Thumbnails swap it, and clicking a screen enlarges it. Phones
+get focused crops from `images/home/gallery/*-phone.webp`.
 
-| Part | Dominant screen | Thumbnails | Composition |
+| Part | Blocks it combines | Dominant screen | Thumbnails |
 |---|---|---|---|
-| Agent | Session | Running now | Text left, screen off the right edge. |
-| Workflows | Run Flow graph with a run moving through it | Gates, Tickets, Decision | Full width on a lifted ground. |
-| Collaboration | Room | Coordinator | Screen off the left edge, handoffs beside it. |
-| Continuity | Memory map | Evidence, Inbox, Workspaces | Large screen with a column of thumbnails. |
-| Autonomy | Tool builder | Resident | A lifted ground and a large heading: the four steps, then the workflow a resident commissions. |
-| Scale | Your hosts | Add a host | Smaller heading, screen off the right edge. |
-| Environment | The six-part drawing, then the Observatory live map | Trace | The largest heading, the lightest ground and the brand line returning. |
-
-The order follows the fourth-pass brief, which puts workflows before multi-agent
-collaboration. Live map now leads Trace, reversing Jozef's earlier flip, because this
-brief asks for a genuine Observatory view as the moment the scale lands.
+| Workflows | Workflows, Harnesses, Models | Run Flow graph with a run moving through it | Gates, Tickets, Decision |
+| Collaboration | Collaboration, Workflows | Room | Coordinator |
+| Memory | Memory, Workspaces | Memory map | Evidence, Inbox, Workspaces |
+| Autonomy | Residents, Collaboration, Workflows | Tool builder | Resident |
+| Scale | Runtimes, Security & governance, Observability | Observatory live map | Trace, Your hosts, Add a host |
 
 ### The graph
 
@@ -56,21 +95,28 @@ Reduced-motion users get one still moment with the same states. It pauses off-sc
 and is hidden on phones, which get a static crop. If the workflow or its layout changes,
 regenerate the screenshot and the partial together.
 
-### The environment drawing
-
-Every box ships. Organizations are tenants on one installation, each seeing what it
-owns (`src/niuu/domain/tenancy.py`). Forge is `system` and scopes by caller, Observatory
-filters per caller, and shared Memory gives an organization its own mounts. Hosts are
-registered in Platform, and models are limited per organization (`tenant_quotas`).
-What is planned stays out of the drawing. Jozef removed the planned line and the local
-install note from the page, so this table is the record of what is direction. The
-drawing keeps all six product names and their links.
-
 ### Taking full-page captures
 
 Keep captures under 16,384px tall, Chrome's limit. A 1.5x capture of this page went
 past it and wrapped back to the top, which looked like the hero repeating at the
 bottom. The page itself has one hero. Capture at 1x, or in sections.
+
+## What changed from the sixth pass
+
+| Sixth pass | Decision | Why |
+|---|---|---|
+| One Execution block | Sessions (Day 1), Workspaces (Day 2), Residents (Day 3) | Jozef: the session gateway was undersold, and jobs, Workspaces and residents come later in growth. |
+| Gallery opened the page | Building blocks open it, gallery follows as what they make possible | The brief's composability story: fragmentation, blocks, assemble, discover. |
+| Agent act (Session, Running now) | Removed | The page could not get longer; Sessions is a block and sessions appear in the Workflows act. |
+| Environment drawing, "In place today" and "We extend the best tools" | Merged into the blocks | They were three lists of the same parts. |
+| Scale and Environment as two acts | One Scale act, Live map leading | Same reason; the live map already carries the scale. |
+| "Toward an operating system" framing in copy and description | Removed from public copy | Brief. The docs nav still links the concept page, which is internal reading, not marketing. |
+| Engineer, team and organization configurations | Day 1, Day 2 and Day 3, with Memory first and Workflows last | Personas limit who sees themselves; stages show needs growing. |
+| Product tags in capitals | "In Forge · Agents" in normal case | Reads as a sentence and keeps the six names searchable. |
+
+The landing page is always dark, so "light and dark safe" means it renders the same
+whatever scheme the reader uses. Heights at 1x: 10,826px at 1440, 10,269px at 800 and
+12,687px at 375, against 12,265, 12,104 and 13,340 before.
 
 ## What changed from the fifth pass
 
@@ -173,7 +219,7 @@ along.
 | Ticket coordinator | Ships | One long-lived session per ticket (`ticket_coordinators`, persona `ticket-coordinator`). It starts workflows, hands over between them, hears gates through its room, tells the person and closes with the ticket. Proved on the same cluster runs. |
 | Workflow graphs with branching, loops and gates | Ships | The Branch and converge and Gates views are bundled workflows (`ting-run-flow-security-memory-curation.yaml`, `ticket-planning-flow.yaml`) in the real builder on a local install. Their names had internal words swapped at capture. |
 | Teams through workflows, with review and gates | Ships | 18 bundled workflows, `src/ting/workflows/` |
-| Per-role tools, model and budget | Ships | Workflow stages set persona, model and budget (`src/ting/workflows/*.yaml`). Personas set tools (`src/ravn/personas/developer-security-plan-reviewer.yaml`). |
+| Per-role tools, model and budget | Ships | Workflow stages set persona, model and budget (`src/ting/workflows/*.yaml`). Personas set tools (`src/personas/builtin/developer-security-plan-reviewer.yaml`). |
 | Rooms shared by people and agents | Ships | `niuu.collaboration`, browser and Telegram. `LiveSessionDetailPage` passes participants and mesh events to `SessionChat`, the component in the Room screen. |
 | Direct peer communication, A2A | Ships | Flock mesh, `src/ravn` |
 | Tool built, verified and adopted | Ships | `build_tool.py`, `tool-skill-builder.yaml` |
@@ -184,7 +230,7 @@ along.
 | Memory with beliefs and evidence | Ships | `plugin-mimir` |
 | Observatory live map | Ships | `plugin-observatory`. It shows what is connected to it, so a small install has a small map. The copy says "you have connected". |
 | Forge overview | Ships | `plugin-volundr`. Sessions run on connected hosts. Copy does not claim every agent runs through it. |
-| One goal and actor model across everything | **Direction** | `concepts/operating-system.md`. In the docs only, not on the page. |
+| One goal and actor model across everything | **Direction** | `concepts/operating-system.md`. In the docs only, not on the page, and no longer named on it. |
 | A resident's intrinsic drive | **Not claimed** | The June design names it as missing. The page says residents observe and judge, not that they set their own goals. |
 
 ## About the screens

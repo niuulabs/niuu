@@ -59,6 +59,10 @@ _TOOL_FILTER_KEYS = ("enabled_tools", "disabled_tools")
 _CREDENTIALS_SCRIPT = str(Path(mcp_credentials.__file__).resolve())
 _CODEX_MCP_SERVER_NAME = re.compile(r"[A-Za-z0-9_-]+")
 
+#: Codex's hosted web search switched off, as a ``-c key=value`` pair (verified against
+#: Codex 0.157.1).
+CODEX_WEB_SEARCH_DISABLED = ("web_search", json.dumps("disabled"))
+
 
 def _string_map(raw: object) -> dict[str, str]:
     if not isinstance(raw, dict):

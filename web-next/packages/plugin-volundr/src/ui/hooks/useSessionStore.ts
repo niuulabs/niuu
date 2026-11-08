@@ -116,10 +116,13 @@ export function useSessionList(filters?: SessionFilters) {
             }),
           );
         }
+        // Detail queries carry the instance as a fourth key part, so match by prefix.
         for (const session of sessions) {
-          const key = ['volundr', 'domain-session', session.id];
-          const old = cache.getQueryData<Session>(key);
-          if (old && changed(old, session)) cache.setQueryData(key, session);
+          for (const [key, old] of cache.getQueriesData<Session>({
+            queryKey: ['volundr', 'domain-session', session.id],
+          })) {
+            if (old && changed(old, session)) cache.setQueryData(key, session);
+          }
         }
       }),
     [store, cache],
@@ -245,6 +248,25 @@ const SETTLED_STATES: ReadonlySet<Session['state']> = new Set(['terminated', 'ar
 /** Queries a single session by id from ISessionStore; a settled session is not polled. */
 export function useSessionDetail(sessionId: string, instanceId?: string) {
   const store = useService<ISessionStore>('sessionStore');
+  const cache = useQueryClient();
+  // Pushed activity (working, idle, needs you) lands at once, not on the next poll; the
+  // session page can be open without the list that otherwise applies these events.
+  useEffect(
+    () =>
+      store.subscribe((sessions) => {
+        const update = sessions.find((session) => session.id === sessionId);
+        if (!update) return;
+        const key = ['volundr', 'domain-session', sessionId, instanceId ?? null];
+        const old = cache.getQueryData<Session>(key);
+        if (
+          old &&
+          update.clusterId === old.clusterId &&
+          JSON.stringify(update) !== JSON.stringify(old)
+        )
+          cache.setQueryData(key, update);
+      }),
+    [store, cache, sessionId, instanceId],
+  );
   return useQuery({
     queryKey: ['volundr', 'domain-session', sessionId, instanceId ?? null],
     queryFn: ({ signal }) => store.getSession(sessionId, { instanceId, signal }),

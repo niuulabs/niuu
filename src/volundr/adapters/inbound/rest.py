@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from niuu.domain.conversation_timeline import resolve_timeline_turn
+from niuu.domain.guild_membership import GuildMembership
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
 from niuu.domain.models import actor_name
@@ -67,6 +68,7 @@ from volundr.adapters.inbound.auth import extract_principal, require_role
 from volundr.adapters.inbound.conversation_voice import VOICE_DETAIL, voice_page
 from volundr.adapters.inbound.durable_transcripts import DurableTranscripts
 from volundr.adapters.inbound.forge_session_auth import require_bound_session
+from volundr.adapters.inbound.rest_guild import own_instance
 from volundr.adapters.inbound.rest_projects import (
     create_projects_router,
     create_session_projects_router,
@@ -106,8 +108,11 @@ from volundr.domain.models import (
     SessionStatus,
     TimelineEventType,
     UsageTokenCounts,
+    WorkloadTypeRemovedError,
     WorkspaceStatus,
+    require_workload_type_available,
 )
+from volundr.domain.pinned_persona import pinned_persona_document
 from volundr.domain.ports import (
     DeviceTokenRepository,
     EventBroadcaster,
@@ -164,6 +169,7 @@ from volundr.domain.session_broker import (
     DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL,
     OPENSHELL_SERVICE_HOST_SUFFIX,
     PRESENTED_FILE_ROUTE,
+    broker_target_request,
     server_side_http_proxy_target,
     session_proxy_url,
 )
@@ -173,11 +179,23 @@ from volundr.domain.session_read_state import (
     SessionReadStateChange,
     SessionReadStateConflictError,
 )
+from volundr.domain.session_runtimes import SessionRuntimeOffer
+from volundr.domain.session_startup import SessionStartup
+from volundr.domain.workflow_session import (
+    WORKFLOW_MEMBER_KEY,
+    WORKFLOW_RUN_ID_KEY,
+    WORKFLOW_STEP_HOST_KEY,
+    session_persona_name,
+)
 from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import load_workspace_transcript
 
 logger = logging.getLogger(__name__)
 WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
+# How long Forge waits for a session's broker to accept or answer one workflow step call. The
+# broker only records the step (it injects it later), so a call that takes longer than this
+# means the broker is not answering, which the caller must hear about (409 after reconcile).
+_WORKFLOW_STEP_PROXY_TIMEOUT_SECONDS = 10.0
 # How long send_session_message holds the WS open waiting for the broker's
 # correlated delivery ACK before reporting the message as "pending" (the broker's
 # bounded retry then drives it to delivered/failed). Named so it is not a magic
@@ -214,6 +232,7 @@ def _session_summary(item: Any, node: str | None) -> dict[str, Any]:
         "name": item.name,
         "status": item.status.value if hasattr(item.status, "value") else item.status,
         "activity_state": getattr(item, "activity_state", None),
+        "startup": getattr(item, "startup", None),
         "short_description": getattr(item, "short_description", None),
         "project": (
             {"id": str(coordination.project_id), "role": coordination.role}
@@ -573,6 +592,44 @@ class ForgeMcpGrantsUpdate(BaseModel):
     )
 
 
+class RuntimeReadinessResponse(BaseModel):
+    state: str = Field(
+        description="'warm': a prepared machine is free, the session starts in seconds; "
+        "'boot': a machine boots first (minutes); 'full': no capacity for a new session"
+    )
+    warm: int = Field(description="Free prepared machines that can take this runtime now")
+    remedy: str | None = Field(default=None, description="Where capacity is raised when full")
+
+
+class SessionRuntimeResponse(BaseModel):
+    runtime: str = Field(
+        description="What every session on this host runs as: 'container', 'openshell' or 'host'"
+    )
+    grants: list[str] = Field(
+        description="Extra access ('sudo', 'docker') this runtime can give a session; send "
+        "the chosen ones as workload_config.runtime_grants"
+    )
+    readiness: RuntimeReadinessResponse
+
+    @classmethod
+    def from_offer(cls, offer: SessionRuntimeOffer) -> "SessionRuntimeResponse":
+        return cls(
+            runtime=offer.runtime.value,
+            grants=[grant.value for grant in offer.grants],
+            readiness=RuntimeReadinessResponse(
+                state=offer.readiness.state.value,
+                warm=offer.readiness.warm,
+                remedy=offer.readiness.remedy,
+            ),
+        )
+
+
+class SessionRuntimesResponse(BaseModel):
+    runtimes: list[SessionRuntimeResponse] = Field(
+        description="The one runtime this host runs sessions as; empty when it does not declare one"
+    )
+
+
 class ForgeMcpGrantsResponse(BaseModel):
     """A session's Forge MCP grants by source, and what its next credential carries."""
 
@@ -642,6 +699,39 @@ class SessionCreate(BaseModel):
         max_length=255,
         description="Persona from the authenticated user's Ravn persona catalog",
     )
+    persona_definition: dict | None = Field(
+        default=None,
+        description=(
+            "The exact pinned portable persona document to play (schema_version, id, "
+            "revision, definition), used verbatim instead of a catalog lookup by name. "
+            "Its content digest is checked against the document: an optional 'digest' "
+            "(sha256:<hex>) must match it, and a content-addressed revision "
+            "('content-<hex>') must match its content; a mismatch is refused with 422. "
+            "Mutually exclusive with persona_name."
+        ),
+    )
+    workflow_step_host: bool = Field(
+        default=False,
+        description=(
+            "Mark the session as a workflow step host: its Skuld enables the workflow step "
+            "API and the workflow_step_close tool."
+        ),
+    )
+    workflow_run_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The workflow run this session works for; recorded in the session metadata so the "
+            "run can find the session again. Requires workflow_member."
+        ),
+    )
+    workflow_member: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        description=(
+            "The workflow stage member (persona id) this session serves. Requires workflow_run_id."
+        ),
+    )
     source: SessionSource = Field(
         default_factory=GitSource,
         description="Workspace source (git repo or local mount)",
@@ -703,7 +793,7 @@ class SessionCreate(BaseModel):
     workload_type: str = Field(
         default="session",
         max_length=100,
-        description="Workload type: 'session' (default) or 'ravn_flock' for runing parties",
+        description="Workload type: 'session' (default)",
     )
     workload_config: dict = Field(
         default_factory=dict,
@@ -728,6 +818,11 @@ class SessionCreate(BaseModel):
         ),
     )
 
+    @field_validator("workload_type")
+    @classmethod
+    def _workload_type_still_exists(cls, value: str) -> str:
+        return require_workload_type_available(value)
+
     @field_validator("workload_config")
     @classmethod
     def _no_forge_mcp_in_workload_config(cls, value: dict) -> dict:
@@ -736,6 +831,24 @@ class SessionCreate(BaseModel):
                 "set Forge MCP grants with the top-level forge_mcp field, not workload_config"
             )
         return value
+
+    @field_validator("persona_definition")
+    @classmethod
+    def _persona_definition_matches_its_digest(cls, value: dict | None) -> dict | None:
+        if value is None:
+            return value
+        return pinned_persona_document(value)
+
+    @model_validator(mode="after")
+    def _persona_and_workflow_identity_agree(self) -> "SessionCreate":
+        if self.persona_name.strip() and self.persona_definition is not None:
+            raise ValueError(
+                "persona_name and persona_definition are mutually exclusive: send the persona "
+                "to look up by name, or the exact pinned document to play, not both"
+            )
+        if (self.workflow_run_id is None) != (self.workflow_member is None):
+            raise ValueError("workflow_run_id and workflow_member must be sent together")
+        return self
 
     @model_validator(mode="before")
     @classmethod
@@ -1173,6 +1286,18 @@ class SessionResponse(BaseModel):
     name: str = Field(description="Human-readable session name")
     model: str = Field(description="LLM model identifier")
     persona_name: str = Field(default="", description="Persona attached at launch")
+    workflow_run_id: str | None = Field(
+        default=None,
+        description="The workflow run this session works for, if it is a workflow step session",
+    )
+    workflow_member: str | None = Field(
+        default=None,
+        description="The workflow stage member this session serves, if it is a step session",
+    )
+    workflow_step_host: bool = Field(
+        default=False,
+        description="Whether the session hosts workflow steps (step API and close tool on)",
+    )
     source: SessionSource = Field(description="Workspace source config")
     status: SessionStatus = Field(description="Current lifecycle status")
     chat_endpoint: str | None = Field(
@@ -1249,6 +1374,18 @@ class SessionResponse(BaseModel):
         default=None,
         description="Tenant ID for multi-tenant isolation",
     )
+    instance_id: str | None = Field(
+        default=None,
+        description="This Forge node's id in its Guild registry (null when not joined)",
+    )
+    instance_name: str | None = Field(
+        default=None,
+        description="This Forge node's name in its Guild registry",
+    )
+    instance_slug: str | None = Field(
+        default=None,
+        description="This Forge node's slug in its Guild registry",
+    )
     activity_state: str | None = Field(
         default=None,
         description=(
@@ -1276,6 +1413,14 @@ class SessionResponse(BaseModel):
     activity_metadata: dict = Field(
         default_factory=dict,
         description="Metadata from the latest activity report",
+    )
+    startup: SessionStartup | None = Field(
+        default=None,
+        description=(
+            "Stages of the latest launch as the runtime backend reported them (pod "
+            "conditions and events, VM state), with when each began and ended; null "
+            "for a session never started since stages were recorded"
+        ),
     )
     needs_attention: bool = Field(
         default=False,
@@ -1376,7 +1521,10 @@ class SessionResponse(BaseModel):
             coordination=session.coordination,
             name=session.name,
             model=session.effective_model,
-            persona_name=str(session.workload_config.get("persona") or ""),
+            persona_name=session_persona_name(session.workload_config),
+            workflow_run_id=session.workload_config.get(WORKFLOW_RUN_ID_KEY),
+            workflow_member=session.workload_config.get(WORKFLOW_MEMBER_KEY),
+            workflow_step_host=session.workload_config.get(WORKFLOW_STEP_HOST_KEY) is True,
             source=session.source,
             status=session.status,
             chat_endpoint=_public_session_endpoint(
@@ -1438,6 +1586,7 @@ class SessionResponse(BaseModel):
                 session.turn_started_at.isoformat() if session.turn_started_at else None
             ),
             activity_metadata=session.activity_metadata,
+            startup=session.startup,
             needs_attention=session.needs_attention,
             workload_type=session.workload_type,
             origin=session.origin,
@@ -1933,6 +2082,18 @@ class StatsResponse(BaseModel):
     local_tokens: int = Field(default=0, description="Tokens from local models today (UTC)")
     cloud_tokens: int = Field(default=0, description="Tokens from cloud models today (UTC)")
     cost_today: float = Field(default=0.0, description="Total cloud cost today (UTC) in USD")
+    instance_id: str | None = Field(
+        default=None,
+        description="This Forge node's id in its Guild registry (null when not joined)",
+    )
+    instance_name: str | None = Field(
+        default=None,
+        description="This Forge node's name in its Guild registry",
+    )
+    instance_slug: str | None = Field(
+        default=None,
+        description="This Forge node's slug in its Guild registry",
+    )
     sparklines: dict[str, list[float]] = Field(
         default_factory=dict,
         description=(
@@ -2075,8 +2236,14 @@ def create_router(
     history_max_bytes: int = 256 * 1024,
     session_participant_service: SessionParticipantService,
     presented_file_store: PresentedFileStore | None = None,
+    guild_membership: GuildMembership | None = None,
 ) -> APIRouter:
-    """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
+    """Create FastAPI router with session, stats, token, repo, and SSE endpoints.
+
+    With *guild_membership*, every session and the stats carry this node's
+    ``instance_*`` fields, as the Guild facade puts them on each aggregated item,
+    so a client reading the node directly can tell whose they are.
+    """
     router = APIRouter(prefix=prefix)
     if preview_cache is None:
         preview_cache = PreviewCache(preview_cache_dir, max_edge=preview_default_edge)
@@ -2096,14 +2263,35 @@ def create_router(
             )
         event_stream = SessionEventStream(broadcaster, session_service, stats_service)
 
+    own_instance_fields = (
+        guild_membership.instance.fields()
+        if guild_membership is not None and guild_membership.instance is not None
+        else {}
+    )
+
     def _session_response(session: Session) -> SessionResponse:
-        return SessionResponse.from_session(session, public_host=server_public_host)
+        response = SessionResponse.from_session(session, public_host=server_public_host)
+        return response.model_copy(update=own_instance_fields) if own_instance_fields else response
 
     def _http_proxy_target(url: str) -> tuple[str, dict[str, str]]:
         return _server_side_http_proxy_target(
             url,
             gateway_url=openshell_internal_gateway_url,
         )
+
+    async def _broker_request(
+        session: Session, base_url: str, *path_segments: str
+    ) -> tuple[str, dict[str, str]]:
+        """The URL and routing headers that reach ``path_segments`` on the session's broker.
+
+        A pod manager that names its broker target (VM sessions, whose chat endpoint is
+        Forge's own session proxy) is dialled there; every other session is reached at
+        its chat endpoint ``base_url``.
+        """
+        target = await forge.get_broker_target(session)
+        if target is not None:
+            return broker_target_request(target, *path_segments)
+        return _http_proxy_target(_session_proxy_url(base_url, *path_segments))
 
     @router.get("/version", tags=["Forge"])
     async def forge_version() -> dict:
@@ -2217,6 +2405,14 @@ def create_router(
 
         router.include_router(create_projects_router(project_service, project_principal))
         router.include_router(create_session_projects_router(project_service, project_principal))
+
+    @router.get("/session-runtimes", tags=["Sessions"], response_model=SessionRuntimesResponse)
+    async def get_session_runtimes() -> SessionRuntimesResponse:
+        """What this host runs every session as, with current warm readiness."""
+        offers = await session_service.session_runtimes()
+        return SessionRuntimesResponse(
+            runtimes=[SessionRuntimeResponse.from_offer(offer) for offer in offers]
+        )
 
     @router.get("/feature-flags", tags=["Features"])
     async def get_feature_flags(request: Request) -> dict:
@@ -2774,6 +2970,11 @@ def create_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             )
+        except WorkloadTypeRemovedError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(e),
+            )
         except SessionStateError as e:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -2900,11 +3101,11 @@ def create_router(
         if not session.chat_endpoint:
             result["state"] = "not_running"
             return result
-        _, base_url = await forge.get_session_proxy_target(session_id)
-        url, headers = _http_proxy_target(_session_proxy_url(base_url, "health"))
-        if auth := request.headers.get("authorization"):
-            headers["Authorization"] = auth
+        live_session, base_url = await forge.get_session_proxy_target(session_id)
         try:
+            url, headers = await _broker_request(live_session, base_url, "health")
+            if auth := request.headers.get("authorization"):
+                headers["Authorization"] = auth
             async with httpx.AsyncClient(timeout=runtime_health_timeout) as client:
                 response = await client.get(url, headers=headers)
                 response.raise_for_status()
@@ -3248,6 +3449,11 @@ def create_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             )
+        except WorkloadTypeRemovedError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(e),
+            )
         except SessionStateError as e:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -3556,12 +3762,23 @@ def create_router(
             )
 
     @router.get("/stats", response_model=StatsResponse, tags=["Models & Stats"])
-    async def get_stats(request: Request) -> StatsResponse:
+    async def get_stats(
+        request: Request,
+        instance_id: str | None = Query(
+            default=None,
+            description=(
+                "Guild instance id, as the Guild facade takes it; must be this node's own "
+                "(another Forge's id is a 404)"
+            ),
+        ),
+    ) -> StatsResponse:
         """Get aggregate statistics over the sessions the caller may list.
 
         Scoped like ``GET /sessions``: the caller's own sessions, or its
         tenant's sessions as a tenant admin.
         """
+        if instance_id is not None:
+            own_instance(guild_membership, instance_id)
         principal = await _optional_principal(request)
         try:
             stats = await forge.get_stats(principal)
@@ -3581,6 +3798,7 @@ def create_router(
             cloud_tokens=stats.cloud_tokens,
             cost_today=float(stats.cost_today),
             sparklines=stats.sparklines or {},
+            **own_instance_fields,
         )
 
     @router.post(
@@ -3679,7 +3897,10 @@ def create_router(
         ``GET /api/logs`` endpoint.
         """
         try:
-            _, base_url = await forge.get_session_proxy_target(session_id)
+            live_session, base_url = await forge.get_session_proxy_target(session_id)
+            proxy_url, routing_headers = await _broker_request(
+                live_session, base_url, "api", "logs"
+            )
         except LookupError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -3696,9 +3917,6 @@ def create_router(
             auth = request.headers.get("authorization")
             if auth:
                 headers["Authorization"] = auth
-            proxy_url, routing_headers = _http_proxy_target(
-                _session_proxy_url(base_url, "api", "logs")
-            )
             headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
@@ -3765,13 +3983,13 @@ def create_router(
 
         try:
             if session.chat_endpoint:
-                _, base_url = await forge.get_session_proxy_target(session_id)
+                live_session, base_url = await forge.get_session_proxy_target(session_id)
                 headers = {}
                 auth = request.headers.get("authorization")
                 if auth:
                     headers["Authorization"] = auth
-                proxy_url, routing_headers = _http_proxy_target(
-                    _session_proxy_url(base_url, "api", "logs", "aggregate")
+                proxy_url, routing_headers = await _broker_request(
+                    live_session, base_url, "api", "logs", "aggregate"
                 )
                 headers.update(routing_headers)
                 async with httpx.AsyncClient(timeout=10.0) as client:
@@ -3830,7 +4048,10 @@ def create_router(
         extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         try:
-            _, base_url = await forge.get_session_proxy_target(session_id)
+            live_session, base_url = await forge.get_session_proxy_target(session_id)
+            proxy_url, routing_headers = await _broker_request(
+                live_session, base_url, "api", *path_segments
+            )
         except LookupError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -3850,9 +4071,6 @@ def create_router(
         headers.update(extra_headers or {})
         body = await request.body()
         try:
-            proxy_url, routing_headers = _http_proxy_target(
-                _session_proxy_url(base_url, "api", *path_segments)
-            )
             headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                 response = await client.request(
@@ -4116,7 +4334,6 @@ def create_router(
                 detail="Not authorized to message this session",
             )
 
-        # Build WS URL with access token
         ws_url = session.chat_endpoint
         # An instruction sender needs delivery ACKs, not the whole conversation.
         # Old proxies only forward history=recent, still avoiding full replay;
@@ -4131,13 +4348,15 @@ def create_router(
             (("history", "recent"), ("history_protocol", "2"), ("history_delivery", "none"))
         )
         ws_url = urlunsplit(endpoint._replace(query=urlencode(query)))
-        auth = request.headers.get("authorization", "")
-        token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
-        if token:
-            sep = "&" if "?" in ws_url else "?"
-            ws_url = f"{ws_url}{sep}access_token={token}"
 
         connect_kwargs: dict[str, object] = {"open_timeout": 10}
+        # The caller's bearer rides in the Authorization header, as for the history
+        # proxy: Envoy reads JWTs from that header (and only a `token` query
+        # parameter), so `?access_token=` reached a standalone Forge's /s route
+        # unauthenticated and the broker socket was refused with 401.
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer ") and auth.removeprefix("Bearer ").strip():
+            connect_kwargs["additional_headers"] = {"Authorization": auth}
         if ws_url.startswith("wss://"):
             ssl_ctx = ssl.create_default_context()
             ssl_ctx.check_hostname = False
@@ -4669,10 +4888,12 @@ def create_router(
         except SessionAccessDeniedError as exc:
             raise HTTPException(403, f"Access denied to session {session_id}") from exc
 
+        # The broker's answer when it holds no turns, kept while the durable rebuild is tried.
+        empty_live: tuple[dict, float] | None = None
         try:
             if session.chat_endpoint:
                 t_tgt = time.perf_counter()
-                _, base_url = await forge.get_session_proxy_target(session_id)
+                live_session, base_url = await forge.get_session_proxy_target(session_id)
                 timings["proxy_target_ms"] = round((time.perf_counter() - t_tgt) * 1000.0, 1)
 
                 headers = {}
@@ -4681,8 +4902,8 @@ def create_router(
                     headers["Authorization"] = auth
 
                 t_fetch = time.perf_counter()
-                proxy_url, routing_headers = _http_proxy_target(
-                    _session_proxy_url(base_url, "api", "conversation", "history")
+                proxy_url, routing_headers = await _broker_request(
+                    live_session, base_url, "api", "conversation", "history"
                 )
                 headers.update(routing_headers)
                 # WEDGE GRACE (2026-07-12): a huge session's broker can stall for seconds
@@ -4856,6 +5077,8 @@ def create_router(
                         "falling through to durable-log rebuild",
                         _sanitize_log(session_id),
                     )
+                    if isinstance(live, dict) and live.get("turns") == []:
+                        empty_live = (live, fetch_ms)
         except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
             logger.info(
                 "Falling back to workspace transcript for session %s: %s",
@@ -4876,6 +5099,17 @@ def create_router(
             fallback = _fallback_workspace_transcript(session)
             if fallback is not None:
                 return _maybe_elide(fallback)
+            if isinstance(e, SessionArchiveNotAvailableError) and empty_live is not None:
+                # The broker holds no turns and no durable source holds anything (a new
+                # session, e.g. a VM session whose workspace lives in its guest): the
+                # empty transcript is the answer, not an outage. A seed-only body with
+                # nothing durable still closes with 503 — that user turn went unrecorded.
+                logger.info(
+                    "No durable transcript for session %s; serving the live broker's "
+                    "empty transcript",
+                    _sanitize_log(session_id),
+                )
+                return _maybe_elide(empty_live[0], fetch_ms=empty_live[1])
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(e) or "Session archive service not available",
@@ -5070,13 +5304,13 @@ def create_router(
 
         if session.chat_endpoint:
             try:
-                _, base_url = await forge.get_session_proxy_target(session_id)
+                live_session, base_url = await forge.get_session_proxy_target(session_id)
                 headers = {}
                 auth = request.headers.get("authorization")
                 if auth:
                     headers["Authorization"] = auth
-                tool_result_url, routing_headers = _http_proxy_target(
-                    _session_proxy_url(base_url, "api", "conversation", "tool-result", tool_use_id)
+                tool_result_url, routing_headers = await _broker_request(
+                    live_session, base_url, "api", "conversation", "tool-result", tool_use_id
                 )
                 headers.update(routing_headers)
                 # Generous timeout: source 2 pulls the WHOLE inline transcript from an old
@@ -5098,8 +5332,8 @@ def create_router(
                     # `detail`), and it is the ONLY live source for the large image results a
                     # durable rebuild misses. Scan it, and hand the turns back so the caller's
                     # warm-pass fills the whole session from this one fetch.
-                    history_url, history_routing_headers = _http_proxy_target(
-                        _session_proxy_url(base_url, "api", "conversation", "history")
+                    history_url, history_routing_headers = await _broker_request(
+                        live_session, base_url, "api", "conversation", "history"
                     )
                     history_headers = {**headers, **history_routing_headers}
                     history = await client.get(
@@ -5369,13 +5603,13 @@ def create_router(
             return {"gates": []}
 
         try:
-            _, base_url = await forge.get_session_proxy_target(session_id)
+            live_session, base_url = await forge.get_session_proxy_target(session_id)
             headers = {}
             auth = request.headers.get("authorization")
             if auth:
                 headers["Authorization"] = auth
-            proxy_url, routing_headers = _http_proxy_target(
-                _session_proxy_url(base_url, "api", "workflow", "gates")
+            proxy_url, routing_headers = await _broker_request(
+                live_session, base_url, "api", "workflow", "gates"
             )
             headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -5490,9 +5724,15 @@ def create_router(
         headers[ROOM_ROLE_HEADER] = "approver"
 
         try:
-            proxy_url, routing_headers = _http_proxy_target(
-                _session_proxy_url(base_url, "api", "workflow", "gates", gate_id, "resolve")
+            proxy_url, routing_headers = await _broker_request(
+                session, base_url, "api", "workflow", "gates", gate_id, "resolve"
             )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} has no active endpoint",
+            )
+        try:
             headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
@@ -5525,6 +5765,97 @@ def create_router(
                 ),
             )
 
+    async def _proxy_workflow_step_call(
+        request: Request,
+        session_id: UUID,
+        method: Literal["GET", "POST"],
+        *path_segments: str,
+        body: dict | None = None,
+    ) -> Response:
+        """Relay one workflow step call to the session's broker, status and body unchanged.
+
+        Skuld answers a step delivery with 202 (accepted), 200 (the same activation again) or
+        409 (a different step is open), and the step state with 200 or 404. The caller (the
+        workflow engine) acts on exactly those, so none is re-mapped; a pod Forge cannot
+        reach is a 409 after the stale row is reconciled, never an accepted step.
+        """
+        action = "read" if method == "GET" else "update"
+        principal = await _optional_principal(request)
+        with _chronicle_errors():
+            await forge.get_authorized_session(session_id, principal=principal, action=action)
+        try:
+            session, base_url = await forge.get_session_proxy_target(session_id)
+            proxy_url, routing_headers = await _broker_request(
+                session, base_url, "api", "workflow", "steps", *path_segments
+            )
+        except LookupError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} has no active endpoint",
+            )
+        headers: dict[str, str] = {}
+        auth = request.headers.get("authorization")
+        if auth:
+            headers["Authorization"] = auth
+        headers.update(routing_headers)
+        try:
+            async with httpx.AsyncClient(timeout=_WORKFLOW_STEP_PROXY_TIMEOUT_SECONDS) as client:
+                response = await client.request(method, proxy_url, headers=headers, json=body)
+        except httpx.RequestError as e:
+            reconciled = await forge.reconcile_session(session_id)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Session {session_id} is no longer reachable; "
+                    f"reconciled to {reconciled.status.value if reconciled else 'unknown'}. "
+                    f"Workflow step call not delivered: {e}"
+                ),
+            )
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            media_type=response.headers.get("content-type", "application/json"),
+        )
+
+    @router.post(
+        "/sessions/{session_id}/workflow/steps",
+        tags=["Sessions"],
+        responses={
+            200: {"description": "The same activation was already delivered; nothing changed"},
+            202: {"description": "The step was recorded and will be injected at a turn boundary"},
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+        },
+    )
+    async def deliver_workflow_step(
+        request: Request,
+        body: dict,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> Response:
+        """Deliver a workflow step activation to a step-host session's broker."""
+        return await _proxy_workflow_step_call(request, session_id, "POST", body=body)
+
+    @router.get(
+        "/sessions/{session_id}/workflow/steps/{activation_id}",
+        tags=["Sessions"],
+        responses={
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+        },
+    )
+    async def get_workflow_step(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+        activation_id: UUID = Path(description="Workflow step activation identifier"),
+    ) -> Response:
+        """Return a workflow step's current durable state from the session's broker."""
+        return await _proxy_workflow_step_call(request, session_id, "GET", str(activation_id))
+
     @router.get(
         "/sessions/{session_id}/help/requests",
         tags=["Sessions"],
@@ -5555,13 +5886,13 @@ def create_router(
         if not session.chat_endpoint:
             return {"requests": []}
         try:
-            _, base_url = await forge.get_session_proxy_target(session_id)
+            live_session, base_url = await forge.get_session_proxy_target(session_id)
             headers = {}
             auth = request.headers.get("authorization")
             if auth:
                 headers["Authorization"] = auth
-            proxy_url, routing_headers = _http_proxy_target(
-                _session_proxy_url(base_url, "api", "help", "requests")
+            proxy_url, routing_headers = await _broker_request(
+                live_session, base_url, "api", "help", "requests"
             )
             headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -5617,9 +5948,15 @@ def create_router(
         if auth:
             headers["Authorization"] = auth
         try:
-            proxy_url, routing_headers = _http_proxy_target(
-                _session_proxy_url(base_url, "api", "help", "requests", request_id, "answer")
+            proxy_url, routing_headers = await _broker_request(
+                session, base_url, "api", "help", "requests", request_id, "answer"
             )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} has no active endpoint",
+            )
+        try:
             headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
@@ -6174,7 +6511,10 @@ def create_router(
             await forge.get_authorized_session(session_id, principal=principal, action="read")
 
         try:
-            _, base_url = await forge.get_session_proxy_target(session_id)
+            live_session, base_url = await forge.get_session_proxy_target(session_id)
+            proxy_url, routing_headers = await _broker_request(
+                live_session, base_url, "api", "diff"
+            )
         except LookupError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -6193,9 +6533,6 @@ def create_router(
             proxy_headers["Authorization"] = auth_header
 
         try:
-            proxy_url, routing_headers = _http_proxy_target(
-                _session_proxy_url(base_url, "api", "diff")
-            )
             proxy_headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(

@@ -1,4 +1,9 @@
-"""The one persistent coordinator session a tracker ticket has while it is open."""
+"""The one record a tracker ticket keeps while it is open: what Ting was asked to start for it.
+
+It used to name a persistent coordinator session. Nothing coordinates a ticket by conversation
+any more, so ``session_id`` is empty; the row remains for the requests, start errors and
+advances the ticket needs to remember.
+"""
 
 from __future__ import annotations
 
@@ -14,12 +19,8 @@ class TicketCoordinatorStatus(StrEnum):
     CLOSED = "closed"
 
 
-#: Directed message metadata that puts a start brief ahead of waiting notices.
-BRIEF_MESSAGE_METADATA: dict[str, object] = {"queue_first": True}
 #: Campaign metadata key that ties a workflow run to its ticket.
 TICKET_METADATA_KEY = "ticket"
-#: Campaign metadata key recording that the coordinator sits in the run's room.
-COORDINATOR_JOINED_KEY = "coordinator_joined"
 #: Campaign metadata key holding the gates a run was last known to wait on.
 PENDING_GATES_KEY = "pending_workflow_gates"
 #: Campaign metadata key holding the pull request Forge reports for the run.

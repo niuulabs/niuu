@@ -86,6 +86,72 @@ route — scoped tokens are only as narrow as the enforcement coverage.
 `tests/test_niuu/test_token_scope.py` fails if the two drift apart in either
 direction.
 
+### Registered-host pairing codes (`compute_host_join`)
+
+A bare-metal host joins a Forge's compute pool with a pairing code minted by
+that Forge (`volundr.domain.services.compute_hosts.ComputeHostService.mint`),
+through the scoped-workload-token mechanism above: `token_use:
+"valkyrie_build"`, `scopes: ["compute_host_join"]`, an empty roles claim, and
+single use — the code's hash, expiry and consumption live in
+`compute_host_pairing_codes`, and everything the host will be (pool,
+execution, connector, tags, slots) is fixed there by the admin, never taken
+from the joining host. `compute_host_join` is issuer-only (`ISSUER_ONLY_SCOPES`):
+the exchange never grants it. Its two routes, `GET …/compute/hosts/join.sh` and
+`POST …/compute/hosts/join`, carry `require_scope("compute_host_join")`, and
+the service also verifies the code's signature and looks up its hash, so a
+mini-mode Forge without Envoy admits nothing else. At the edge
+(`credential_allows_route`) the code is admitted on exactly those two routes.
+It is signed by the workload-identity issuer when that has a configured key,
+otherwise by Forge's own key file (`compute.hosts.pairing_signing_key_file`)
+— and the key file only with the allow-all identity adapter of local mini
+mode, where nothing but Forge checks the bearer. Any other combination is
+fatal at startup (`_create_host_pairing_signer`). A joined host calls no
+other route: Forge reaches it over SSH and reads its health itself, so the
+node-signing exception below is not extended to hosts.
+
+### Exception: the host connect endpoint (`ReverseSshConnector`)
+
+A registered host behind NAT keeps one outbound SSH connection to an OpenSSH
+sidecar of the Forge pod (the volundr chart's `hostConnect`) and forwards a port
+on the pod's loopback to its own sshd. That endpoint is an authenticated entry
+point that is not HTTP: SSH public-key authentication of a *machine* by the
+Ed25519 key it registered with its `compute_host_join` pairing code. It is
+sanctioned for the same reason as node signing: there is no OIDC principal for a
+machine, and the key never leaves the host.
+
+Limits of this exception, enforced together, not individually:
+
+- **Only keys of registered, not-removed hosts whose connector is the reverse
+  SSH connector are admitted, looked up live on every connection.** sshd has no
+  authorized_keys file (`AuthorizedKeysFile none`); its `AuthorizedKeysCommand`
+  asks Forge, on a Unix socket in a volume only Forge and the sidecar mount
+  (`volundr.adapters.inbound.host_connect_keys`), never an HTTP route.
+  `ComputeHostService.endpoint_key` answers only for a host of this pool whose
+  connector admits it, and only for the connect user (`AllowUsers`). Removing a
+  host takes effect at once (the connector stops answering before the row goes),
+  and revoke also ends a live connection: the key command records sshd's
+  per-connection monitor process, and the sidecar's reaper kills it when Forge
+  writes the host's id to its pipe. A revoke that cannot end it is an error,
+  never "done".
+- **Each key may only listen on its own assigned loopback port and nothing
+  else**: `restrict,port-forwarding,permitlisten="127.0.0.1:<port>",command="/usr/sbin/nologin"`,
+  with `AllowTcpForwarding remote` and `PermitOpen none` in the endpoint's
+  `sshd_config` so no key can open a connection anywhere (authorized_keys has no
+  `permitopen="none"`; OpenSSH drops a line that carries it). No shell, PTY,
+  agent, X11 or stream-local forwarding. The port is unique on the Forge
+  (`idx_compute_hosts_tunnel_port`), from the connector's `port_range`; a full
+  range refuses the join.
+- **The endpoint listens in the Forge pod's network namespace only for this**,
+  in one pod (`replicaCount: 1`, `Recreate`, no autoscaling; the chart refuses
+  anything else), with its own pinned Ed25519 host key from a Secret.
+- **What crosses it is an SSH session from Forge to the host's sshd, pinned to
+  the same registered key**, so the endpoint never carries trust of its own:
+  anything else answering on a port fails the pin.
+- **Exactly one way in.** Do not extend this endpoint to another account,
+  another kind of forwarding or an HTTP route without adding it to the same
+  enforcement points: the connector's `endpoint_key_options`, the service's
+  `endpoint_key`, and the chart's `sshd_config`.
+
 ### Exception: session-bound Forge credentials (`forge_session`)
 
 Forge mints a second kind of scoped workload token itself, each time it
@@ -102,7 +168,9 @@ principal for "this one session".
   key file (`forge_mcp.session_tokens`). Enabled with no usable key is fatal at
   startup, never "mint nothing".
 - Its `scopes` are bounded to its own family, `FORGE_SESSION_SCOPES`:
-  `forge:notify` and `forge:session:read` for every session, plus
+  `forge:notify`, `forge:session:read` and `forge:session:secret` (ask the session's own
+  owner for a secret and claim it once; supplying or declining a request stays the owner's
+  alone and is closed to every scoped token) for every session, plus
   `forge:session:message` / `forge:session:lifecycle` only through an operator
   grant. The family is part of `KNOWN_WORKLOAD_SCOPES` and keyed by
   `SCOPES_BY_TOKEN_USE` (`src/niuu/domain/services/token_scope.py`) — a
@@ -179,3 +247,131 @@ Limits of this exception, enforced together, not individually:
   chart's Envoy `jwt_authn` bypass (`charts/guild/templates/envoy-configmap.yaml`,
   an exact `safe_regex` match — never a `prefix`, which would also exempt
   routes that must stay JWT-gated).
+
+### Exception: VM guest metadata identities
+
+A VM session has no kubelet and no human behind it. Its guest agent pulls the
+session's credentials (projected-style ServiceAccount tokens and the Forge
+session credential) from exactly one Forge route,
+`POST /api/v1/internal/compute/metadata/credentials`
+(`volundr.adapters.inbound.rest_compute_metadata`,
+`volundr.domain.services.guest_metadata.GuestMetadataService`). The request
+carries no Keycloak JWT, PAT or scoped workload token; the guest proves which
+allocation it is through one configured `GuestIdentity`. This is sanctioned
+because the caller is a *machine* whose only possible credential is one issued
+to it at provisioning, and the alternative (a long-lived bearer embedded in the
+guest) is strictly worse. Three identities exist; the compute pool configures one
+and Forge never tries another.
+
+- **Host-key signing** (`volundr.adapters.outbound.guest_identity_host_key`).
+  The guest signs with the Ed25519 SSH host key Forge generated for the
+  allocation; Forge verifies against the public key it stores in the
+  allocation's machine bootstrap (`/etc/niuu/ssh_host_ed25519_key.pub`), so no
+  new secret is stored. The signed bytes are the `niuu join` scheme
+  (`niuu.adapters.node_signature.signing_message`):
+  `f"{METHOD}\n{PATH}\n{timestamp_ms}\n{sha256(body).hexdigest()}"`, carried in
+  `Niuu-Guest-Allocation`, `Niuu-Guest-Timestamp` and `Niuu-Guest-Signature`.
+  - **Replay protection is the timestamp, advanced atomically.** It must
+    strictly increase per allocation through one conditional upsert
+    (`PostgresGuestRequestWatermarks.try_advance`, table
+    `compute_guest_request_watermarks`); the write happens only after the
+    signature and the skew check pass, so a forged request cannot burn a
+    legitimate timestamp. Milliseconds, as for `niuu join`.
+  - **A bounded clock-skew window** (`clock_skew_seconds` on the adapter,
+    positive and finite) — an unbounded window lets a captured request replay.
+  - **Every rejection is the identical 401 `{"error": "unauthorized"}`**:
+    missing or malformed header, unknown allocation, missing or non-Ed25519
+    stored key, bad signature, stale timestamp, replay, and a body naming a
+    different allocation than the one authenticated. Nothing distinguishes an
+    allocation that exists from one that does not.
+  - The signature covers method, path, timestamp and body hash; omitting any
+    would let a captured signature be replayed against another route or body.
+  - **A registered host** (`RegisteredHostMachineProvider`, configured with
+    `key_source: registered` on the identity) is the one case where Forge did
+    not generate the key: it is the host's own sshd Ed25519 key, and Forge
+    stores only its public half, on the `compute_hosts` row, received with a
+    single-use `compute_host_join` pairing code (below). Forge never holds
+    that private key. The key belongs to the host, not to one allocation, so
+    the limits still bind to the allocation: the body names the allocation
+    (a mismatch is the identical 401, so a captured request of an earlier
+    allocation of the same host cannot be replayed under a later one), the
+    watermark is per allocation, and only the allocation currently holding the
+    host gets an answer. Removing the host revokes it.
+- **Provider attestation** (`volundr.adapters.outbound.guest_identity_provider`,
+  the Harvester default). The provider puts a token into the guest and vouches
+  for it: on Harvester, the VM's virt-launcher pod ServiceAccount token shared
+  over virtiofs, verified by a TokenReview and by the pod being an active pod
+  (`status.activePods`, written only by virt-controller) of the allocation's
+  VMI. The ServiceAccount holds no RBAC, because the token is addressed to
+  Harvester's API server. A failed check is the identical 401; a TokenReview
+  Forge cannot make is a provider error, never a 401.
+- **SPIFFE JWT-SVIDs** (`volundr.adapters.outbound.guest_identity_spiffe`) are
+  the standard path and need no custom scheme. The guest agent fetches a
+  JWT-SVID from its SPIRE agent and sends `Authorization: Bearer <JWT-SVID>`;
+  Forge verifies it as any OIDC token (issuer, signature against the SPIRE OIDC
+  discovery keys, the configured metadata audience, expiry). The subject must
+  match `spiffe_id_template` (default
+  `spiffe://{trust_domain}/forge-vm/{pool_id}/{allocation_id}`), which binds the
+  token to one allocation of one pool; SPIRE entries selecting that allocation's
+  container decide who may hold it.
+
+Limits of this exception, enforced together:
+
+- **The endpoint only ever answers for the session currently bound to one slot
+  of the allocation.** Authentication yields an allocation, never a session or
+  a slot. The request body names the slot (`{"allocation_id": ..., "slot": n}`);
+  it may be omitted only on a single-slot allocation, and a missing, non-integer
+  or out-of-range `slot` is a 400 after authentication. The machine must be in
+  the configured pool and `ready` or `idle`, and the slot must hold a `starting`
+  or `busy` binding with no stop requested; the credentials come from that
+  session's own launch payload. Anything else is a 409 with the reason (after
+  authentication) or the identical 401. A released or draining machine, or a slot
+  with no bound session, gets nothing, and the Forge session credential carries
+  the session's *current* launch id, so a restart revokes what the previous
+  launch held. An allocation's identity vouches for every slot of the machine, so
+  a process that holds it can ask for any slot: more than one slot per machine
+  needs a runtime that keeps that identity out of the slots' reach (own user,
+  network namespace and credential files per slot; the identity mounted into the
+  slot's guest agent only). A runtime declares that with
+  `VmRuntime.supports_slots`; `SshContainerVmRuntime` does only with
+  `slot_isolation` and a credential delivery that serves slots. Forge refuses
+  more than one slot per machine unless every configured runtime declares it.
+- **Exactly one route.** Do not extend either identity to another route without
+  adding it to the same enforcement points this one touches: the router, the
+  Volundr chart's Envoy `jwt_authn` bypass and Cedar `ext_authz` skip
+  (`charts/volundr/templates/envoy-configmap.yaml`, an exact `safe_regex` on the
+  path and `POST` — never a `prefix`, which would also exempt sibling routes
+  that must stay JWT-gated; enabled by `guestMetadata.enabled`), and, if Forge's
+  `PATRevocationMiddleware` is ever run with `authenticate_http=True`, its
+  exempt-path list.
+- **Forge's authority to mint is narrow.** The ServiceAccount tokens come from
+  the Kubernetes TokenRequest API under a namespaced Role allowing only `create`
+  on `serviceaccounts/token` (`guestMetadata` in the Volundr chart).
+
+### Containers in host-mode slots are rootless
+
+A host-mode session (`SshHostVmRuntime`) runs on its VM or registered host as
+its slot's user, in the slot's network namespace and cgroup
+(`vm_slot_supervisor`). Sessions on one machine are kept apart by those
+boundaries alone, so nothing a slot is given may be root on the machine:
+
+- **No container daemon at all.** The runtime needs none: the slot is a named
+  network namespace and a systemd slice, the session runs in a delegated scope
+  of that slice, and the pod's credential agents are systemd units on overlay
+  roots of their unpacked images (`linux_guest_programs`). A guest's Docker, if
+  the machine has one, is never reached: no slot user joins the `docker` group
+  and its socket is never mounted into a slot, since either is root and reads
+  every other slot.
+- **No sudo** for a slot user, and no other root-equivalent capability (a
+  privileged container, `CAP_SYS_ADMIN`, a host mount).
+- **Containers are rootless Podman**, inside the slot: subordinate ids per
+  slot that overlap no other slot and no VM account, a cgroup delegated from
+  the slot's own (so every container sits under the slot's limits), the
+  slot's network namespace, and the session's PID namespace.
+- **The VM's own credentials are hidden from the session's view** (an empty
+  tmpfs over `/etc/niuu`), whatever their modes, because the session runs on
+  the VM's filesystem.
+
+There is no grant that lifts this, and no "machine to itself" path for a host
+session. A session that needs root runs on a container runtime
+(`SshContainerVmRuntime`), where root is its container's.

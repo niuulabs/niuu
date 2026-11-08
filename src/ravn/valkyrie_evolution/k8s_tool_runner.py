@@ -145,13 +145,13 @@ class KubernetesJobLearnedToolRunner:
         if plan.kubernetes_api and not self._executor.tool_service_account:
             raise LearnedToolError(
                 "this tool declares Kubernetes API reach, but no read-only tool identity "
-                "is configured; set resident_evolution.learned_tool_k8s.tool_service_account"
+                "is configured; set the k8s_job backend kwarg tool_service_account"
             )
         if plan.scoped and not self._executor.dns_service:
             raise LearnedToolError(
                 "this tool declares targeted network reach, which needs the cluster DNS "
                 "Service in its NetworkPolicy; set "
-                "resident_evolution.learned_tool_k8s.dns_service"
+                "the k8s_job backend kwarg dns_service"
             )
         return plan
 
@@ -432,13 +432,16 @@ class KubernetesJobExecutor:
             raise LearnedToolError("k8s_job runner image must be pinned by sha256 digest")
         if dns_service and not _NAMESPACED_NAME_RE.fullmatch(dns_service):
             raise LearnedToolError(
-                f"learned_tool_k8s.dns_service must be 'namespace/name', got {dns_service!r}"
+                "the k8s_job backend kwarg dns_service must be 'namespace/name', "
+                f"got {dns_service!r}"
             )
         for word, ref in (named_targets or {}).items():
             try:
                 parse_service_ref(ref)
             except ValueError as exc:
-                raise LearnedToolError(f"learned_tool_k8s.named_targets[{word!r}]: {exc}") from exc
+                raise LearnedToolError(
+                    f"the k8s_job backend kwarg named_targets[{word!r}]: {exc}"
+                ) from exc
         self._config = _ExecutorConfig(
             namespace=namespace,
             image=image,
@@ -1573,7 +1576,7 @@ for line in lines:
 if missing:
     print(
         "{_REQUIREMENTS_MARKER} " + "; ".join(missing)
-        + " -- bake it into the reviewed runner image (learned_tool_k8s.image)",
+        + " -- bake it into the reviewed runner image (the k8s_job backend kwarg image)",
         end="",
     )
     sys.exit({_REQUIREMENTS_EXIT})

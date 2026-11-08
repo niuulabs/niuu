@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import json
 import logging
+import posixpath
 import re
+import shlex
 import textwrap
 
 from niuu.domain.oauth_credentials import oauth_credential_name
@@ -35,7 +37,25 @@ from volundr.domain.ports import SecretInjectionPort
 
 logger = logging.getLogger(__name__)
 
-_ENV_FILE_PATH = "/run/secrets/env.sh"
+_SECRETS_DIR = "/run/secrets"
+_ENV_FILE_PATH = f"{_SECRETS_DIR}/env.sh"
+#: Where the agent's JWT auth reads the pod's ServiceAccount token, and where the
+#: injector looks for a ServiceAccount token mount to give the agent containers.
+_SERVICE_ACCOUNT_TOKEN_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+#: The projected token a resident workload gets for the agent: its own ServiceAccount
+#: does not automount one.
+_WORKLOAD_TOKEN_VOLUME = "openbao-agent-sa-token"
+#: The shortest projected ServiceAccount token Kubernetes issues.
+_MIN_PROJECTED_TOKEN_SECONDS = 600
+
+#: Names for the agent containers and volumes a VM session runs in place of the injector.
+_GUEST_SECRETS_VOLUME = "openbao-secrets"
+_GUEST_AGENT_HOME_VOLUME = "openbao-agent-home"
+_GUEST_AGENT_HOME = "/home/vault"
+_GUEST_AGENT_CONFIG_PATH = f"{_GUEST_AGENT_HOME}/config.hcl"
+_GUEST_AGENT_CONFIG_ENV = "BAO_AGENT_CONFIG"
+_GUEST_INIT_CONTAINER = "openbao-agent-init"
+_GUEST_SIDECAR_CONTAINER = "openbao-agent"
 
 _ANNOTATION_PREFIX = "vault.hashicorp.com"
 _INJECT_ANNOTATION = f"{_ANNOTATION_PREFIX}/agent-inject"
@@ -81,6 +101,11 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
         role_ttl: str = "1h",
         oauth_mount_path: str = "",
         refresh_interval_seconds: int = 30,
+        workload_token_expiration_seconds: int = 3600,
+        guest_agent_image: str = "",
+        guest_agent_binary: str = "bao",
+        guest_agent_user: int = 100,
+        guest_agent_group: int = 1000,
         **_extra: object,
     ) -> None:
         self._openbao_url = openbao_url.rstrip("/")
@@ -101,6 +126,22 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
             raise ValueError("oauth_mount_path must be a literal OpenBao mount path")
         if refresh_interval_seconds <= 0:
             raise ValueError("refresh_interval_seconds must be positive")
+        if workload_token_expiration_seconds < _MIN_PROJECTED_TOKEN_SECONDS:
+            raise ValueError(
+                "workload_token_expiration_seconds must be at least "
+                f"{_MIN_PROJECTED_TOKEN_SECONDS}, the shortest token Kubernetes projects"
+            )
+        if not guest_agent_binary:
+            raise ValueError("guest_agent_binary must name the OpenBao agent executable")
+        if guest_agent_user < 0 or guest_agent_group < 0:
+            raise ValueError("guest_agent_user and guest_agent_group must not be negative")
+        self._workload_token_expiration = workload_token_expiration_seconds
+        # VM sessions run the agent as plain containers; the injector's own defaults
+        # (uid 100, gid 1000) match the official image's vault user.
+        self._guest_agent_image = guest_agent_image
+        self._guest_agent_binary = guest_agent_binary
+        self._guest_agent_user = guest_agent_user
+        self._guest_agent_group = guest_agent_group
         self._oauth_mount = oauth_mount_path
         self._refresh_interval = refresh_interval_seconds
         self._admin = OpenBaoAdminClient(
@@ -123,6 +164,110 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
     @property
     def supports_managed_oauth(self) -> bool:
         return bool(self._oauth_mount)
+
+    @property
+    def supports_guest_agents(self) -> bool:
+        return True
+
+    async def guest_agent_pod_spec_additions(
+        self,
+        user_id: str,
+        session_id: str,
+        credential_mappings: list[CredentialMapping],
+    ) -> PodSpecAdditions:
+        """Describe the OpenBao agent as containers a VM runtime runs on the guest.
+
+        A VM has no injector. The init container renders every secret into the shared
+        ``/run/secrets`` volume before the session starts; with managed OAuth a sidecar
+        keeps the agent running so tokens are re-rendered. The OpenBao token sink lives
+        in the agent's own home volume, so the session never sees the OpenBao token.
+        """
+        if not self._guest_agent_image:
+            raise ValueError(
+                "guest_agent_image is required for VM sessions: set it on the OpenBao "
+                "secret injection adapter to an image that ships the OpenBao agent"
+            )
+        for mapping in credential_mappings:
+            for destination in mapping.file_mappings:
+                self._require_guest_destination(destination)
+
+        role_name = self._role_name(session_id)
+        configs = self._build_configmap_data(
+            user_id=user_id,
+            credential_mappings=credential_mappings,
+            role_name=role_name,
+        )
+        init_container = self._guest_agent_container(
+            _GUEST_INIT_CONTAINER, configs["config-init.hcl"]
+        )
+        extra_containers = (
+            (self._guest_agent_container(_GUEST_SIDECAR_CONTAINER, configs["config.hcl"]),)
+            if self._oauth_mount
+            else ()
+        )
+        return PodSpecAdditions(
+            service_account=self._service_account_name(session_id),
+            volumes=(
+                {"name": _GUEST_SECRETS_VOLUME, "emptyDir": {}},
+                {"name": _GUEST_AGENT_HOME_VOLUME, "emptyDir": {}},
+                {
+                    "name": _WORKLOAD_TOKEN_VOLUME,
+                    "projected": {
+                        "sources": [
+                            {
+                                "serviceAccountToken": {
+                                    "path": "token",
+                                    "audience": self._audience,
+                                    "expirationSeconds": self._workload_token_expiration,
+                                }
+                            }
+                        ]
+                    },
+                },
+            ),
+            volume_mounts=(
+                {"name": _GUEST_SECRETS_VOLUME, "mountPath": _SECRETS_DIR, "readOnly": True},
+            ),
+            init_containers=(init_container,),
+            extra_containers=extra_containers,
+        )
+
+    @staticmethod
+    def _require_guest_destination(destination: str) -> None:
+        normalized = posixpath.normpath(destination)
+        if posixpath.isabs(destination) and normalized.startswith(f"{_SECRETS_DIR}/"):
+            return
+        raise ValueError(
+            f"Secret destination {destination!r} is outside {_SECRETS_DIR}: "
+            f"the OpenBao agent of VM sessions writes only under {_SECRETS_DIR}"
+        )
+
+    def _guest_agent_container(self, name: str, config_hcl: str) -> dict:
+        binary = shlex.quote(self._guest_agent_binary)
+        return {
+            "name": name,
+            "image": self._guest_agent_image,
+            "command": [
+                "/bin/sh",
+                "-ec",
+                f'printf "%s" "${_GUEST_AGENT_CONFIG_ENV}" > {_GUEST_AGENT_CONFIG_PATH}'
+                f" && exec {binary} agent -config={_GUEST_AGENT_CONFIG_PATH}",
+            ],
+            "env": [{"name": _GUEST_AGENT_CONFIG_ENV, "value": config_hcl}],
+            "volumeMounts": [
+                {"name": _GUEST_SECRETS_VOLUME, "mountPath": _SECRETS_DIR},
+                {"name": _GUEST_AGENT_HOME_VOLUME, "mountPath": _GUEST_AGENT_HOME},
+                {
+                    "name": _WORKLOAD_TOKEN_VOLUME,
+                    "mountPath": _SERVICE_ACCOUNT_TOKEN_DIR,
+                    "readOnly": True,
+                },
+            ],
+            "securityContext": {
+                "runAsUser": self._guest_agent_user,
+                "runAsGroup": self._guest_agent_group,
+            },
+        }
 
     async def pod_spec_additions(
         self,
@@ -227,7 +372,33 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
                 configmap_name=configmap_name,
                 inject_containers=inject_containers,
                 pre_populate_only=True,
-            )
+            ),
+            # The agent proves the workload's identity with its ServiceAccount token,
+            # bound to the audience the JWT role accepts. A workload's own SA mounts
+            # none, and without one the injector refuses the pod.
+            volumes=(
+                {
+                    "name": _WORKLOAD_TOKEN_VOLUME,
+                    "projected": {
+                        "sources": [
+                            {
+                                "serviceAccountToken": {
+                                    "path": "token",
+                                    "audience": self._audience,
+                                    "expirationSeconds": self._workload_token_expiration,
+                                }
+                            }
+                        ]
+                    },
+                },
+            ),
+            volume_mounts=(
+                {
+                    "name": _WORKLOAD_TOKEN_VOLUME,
+                    "mountPath": _SERVICE_ACCOUNT_TOKEN_DIR,
+                    "readOnly": True,
+                },
+            ),
         )
 
     async def cleanup_workload(self, workload_id: str) -> None:
@@ -389,7 +560,7 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
             '  method "jwt" {',
             f'    mount_path = "{self._auth_mount_path()}"',
             "    config = {",
-            '      path = "/var/run/secrets/kubernetes.io/serviceaccount/token"',
+            f'      path = "{_SERVICE_ACCOUNT_TOKEN_DIR}/token"',
             f'      role = "{role_name}"',
             "      remove_jwt_after_reading = false",
             "    }",

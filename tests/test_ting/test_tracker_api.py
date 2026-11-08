@@ -1066,6 +1066,33 @@ class TestImportProject:
         assert response.status_code == 200
         assert "Failed to kick off initial dispatch" in response.json()["warnings"][0]
 
+    def test_start_immediately_kicks_off_the_initial_dispatch(
+        self,
+        mock_tracker: MockTracker,
+    ):
+        workflow = _workflow()
+        dispatch = _DispatchRecorder()
+        client = _build_test_client(
+            mock_tracker,
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+            dispatch_service=dispatch,
+        )
+
+        response = client.post(
+            "/api/v1/ting/tracker/import",
+            json={
+                "project_id": "proj-1",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "workflow_id": str(workflow.id),
+                "start_immediately": True,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["warnings"] == []
+        assert len(dispatch.calls) == 1
+
 
 class TestImportWithoutRepository:
     def test_a_project_imports_with_no_repository(self, client: TestClient):

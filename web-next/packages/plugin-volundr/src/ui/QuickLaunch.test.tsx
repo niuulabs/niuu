@@ -294,6 +294,49 @@ describe('QuickLaunch', () => {
   });
 });
 
+describe('QuickLaunch Forge tools', () => {
+  it('offers both grants off and sends none unless one is switched on', async () => {
+    const { startSession } = setup();
+    await ready();
+    expect(
+      screen.getByRole('heading', { name: 'Forge tools for this session' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: /Manage sessions/ })).not.toBeChecked();
+    expect(screen.getByRole('switch', { name: /Message sessions/ })).not.toBeChecked();
+    expect(screen.getByText(/default grants apply/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Launch Claude' }));
+    await waitFor(() => expect(startSession).toHaveBeenCalledOnce());
+    expect(startSession.mock.calls[0]?.[0]).not.toHaveProperty('forgeMcp');
+  });
+
+  it('sends the grants that are switched on, in a fixed order', async () => {
+    const { startSession } = setup();
+    await ready();
+    fireEvent.click(screen.getByRole('switch', { name: /Message sessions/ }));
+    fireEvent.click(screen.getByRole('switch', { name: /Manage sessions/ }));
+    expect(screen.getByRole('switch', { name: /Manage sessions/ })).toBeChecked();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Launch Claude' }));
+    await waitFor(() =>
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({ forgeMcp: { grants: ['lifecycle', 'message'] } }),
+      ),
+    );
+  });
+
+  it('sends nothing again once a grant is switched back off', async () => {
+    const { startSession } = setup();
+    await ready();
+    fireEvent.click(screen.getByRole('switch', { name: /Message sessions/ }));
+    fireEvent.click(screen.getByRole('switch', { name: /Message sessions/ }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Launch Claude' }));
+    await waitFor(() => expect(startSession).toHaveBeenCalledOnce());
+    expect(startSession.mock.calls[0]?.[0]).not.toHaveProperty('forgeMcp');
+  });
+});
+
 describe('launch policy helpers', () => {
   it('resolves effort from advertised metadata and folders from host configuration', () => {
     expect(selectedEffort(undefined, 'xhigh')).toBe('');
@@ -302,5 +345,81 @@ describe('launch policy helpers', () => {
       'ultra',
     );
     expect(hostDefaultFolder(undefined)).toBe('');
+  });
+});
+
+describe('QuickLaunch runs as', () => {
+  const container = {
+    runtime: 'container' as const,
+    grants: [],
+    readiness: { state: 'warm' as const, warm: 1, remedy: null },
+  };
+  const onTheVm = {
+    runtime: 'host' as const,
+    grants: ['sudo' as const, 'docker' as const],
+    readiness: { state: 'boot' as const, warm: 0, remedy: null },
+  };
+  const spark = (offer: typeof container | typeof onTheVm) => async (instanceId?: string) =>
+    instanceId === 'spark' ? [offer] : [];
+
+  it('shows nothing on a host that declares no runtime', async () => {
+    const { startSession } = setup({ getSessionRuntimes: spark(container) });
+    await ready();
+    expect(screen.queryByTestId('runs-as')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('runs-as-readiness')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Launch Claude' }));
+    await waitFor(() => expect(startSession).toHaveBeenCalledOnce());
+    expect(startSession.mock.calls[0]?.[0]).toMatchObject({
+      workloadConfig: { reasoningEffort: 'xhigh' },
+    });
+  });
+
+  it('names what the host runs as, read-only, and launches without choosing it', async () => {
+    const { startSession } = setup({ getSessionRuntimes: spark(container) });
+    await ready();
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'spark' } });
+    await screen.findByTestId('runs-as');
+    expect(screen.getByTestId('runs-as')).toHaveTextContent('Runs as: Container');
+    expect(screen.getByTestId('runs-as-readiness')).toHaveTextContent(
+      'Free slot ready, starts in seconds',
+    );
+    expect(screen.queryByRole('button', { name: /Container/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Launch Claude' }));
+    await waitFor(() => expect(startSession).toHaveBeenCalledOnce());
+    const request = startSession.mock.calls[0]?.[0];
+    expect(request).toMatchObject({
+      instanceId: 'spark',
+      workloadConfig: { reasoningEffort: 'xhigh' },
+    });
+    expect(request?.workloadConfig).not.toHaveProperty('execution_profile');
+  });
+
+  it('sends the extra access the host runtime offers, and only that', async () => {
+    const { startSession } = setup({ getSessionRuntimes: spark(onTheVm) });
+    await ready();
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'spark' } });
+    await screen.findByTestId('runs-as');
+    expect(screen.getByTestId('runs-as')).toHaveTextContent('Runs as: On the VM');
+    expect(screen.getByText('Either one gives this session a VM to itself.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'sudo' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Launch Claude' }));
+    await waitFor(() => expect(startSession).toHaveBeenCalledOnce());
+    const request = startSession.mock.calls[0]?.[0];
+    expect(request).toMatchObject({
+      workloadConfig: { reasoningEffort: 'xhigh', runtime_grants: ['sudo'] },
+    });
+    expect(request?.workloadConfig).not.toHaveProperty('execution_profile');
+  });
+
+  it('refuses to launch when the host cannot say how it runs sessions', async () => {
+    setup({
+      getSessionRuntimes: async () => {
+        throw new Error('forge down');
+      },
+    });
+    expect(await screen.findByText(/Could not load launch options: .*forge down/)).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Launch Claude' })).toBeDisabled();
   });
 });

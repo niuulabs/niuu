@@ -17,7 +17,12 @@ import type {
   PermissionBehavior,
   PermissionRequest,
   RoomParticipant,
+  SessionAgent,
   SessionCapabilities,
+  SessionEffort,
+  SessionPlan,
+  SessionRuntimeOptions,
+  SessionUsage,
 } from '../types';
 import type { SlashCommand } from '../utils/slashCommands';
 import type { FileAttachment } from './useFileAttachments';
@@ -33,6 +38,18 @@ import {
 } from './historyPaging';
 import { repairCanonicalText } from './canonicalTextRepair';
 import { reconcileHistoryMessages } from './historyReconciliation';
+import {
+  advanceDelivery,
+  deliveryFromSteeringState,
+  effortFromRuntimeOptions,
+  parseAgentUpdate,
+  parseDeliveryFrame,
+  parseEffortFrame,
+  parsePlanFrame,
+  parseRuntimeOptionsFrame,
+  parseUsageFrame,
+  upsertAgent,
+} from './sessionFrames';
 import {
   foldPublicText,
   publicTextContent,
@@ -138,6 +155,8 @@ type CliStreamEvent = {
   is_error?: boolean;
   valid?: boolean;
   request_id?: string;
+  msg_id?: string;
+  steering_state?: string;
   code?: string;
   questions?: Array<{
     question?: string;
@@ -152,6 +171,8 @@ type CliStreamEvent = {
   role?: string;
   created_at?: string;
   thread_id?: string;
+  /** Skuld's `room_message` wire name for the thread (snake_case is the history-turn name). */
+  threadId?: string;
   visibility?: 'visible' | 'internal';
   metadata?: Record<string, unknown>;
   eventType?: string;
@@ -233,6 +254,25 @@ interface UseSkuldChatResult {
   pendingInputRequests: InputRequest[];
   availableCommands: SlashCommand[];
   capabilities: SessionCapabilities;
+  /**
+   * The TCP ports the session listens on, from Skuld's latest `preview_ports` frame
+   * (live preview); null until one arrives on this connection.
+   */
+  previewPorts: number[] | null;
+  /** The agent's current plan (`plan` frame); null until the agent has made one. */
+  plan: SessionPlan | null;
+  /** Subagents and teammates the session started, finished ones included with their status. */
+  agents: SessionAgent[];
+  /** Reasoning effort for the next turn (`effort_status`); null until the broker reports it. */
+  effort: SessionEffort | null;
+  /** The runtime's model catalog and current choice (`runtime_options`). */
+  runtimeOptions: SessionRuntimeOptions | null;
+  /** Token use reported by the runtime (`session_usage`). */
+  usage: SessionUsage | null;
+  /** Why the runtime could not report its effort levels, when it refused to. */
+  effortError: string | null;
+  /** Why the runtime could not report its model choices, when it refused to. */
+  runtimeOptionsError: string | null;
   sendMessage: (text: string, attachments: FileAttachment[]) => void;
   sendDirectedMessages: (
     participants: RoomParticipant[],
@@ -248,12 +288,18 @@ interface UseSkuldChatResult {
   sendInterrupt: () => void;
   sendSetModel: (model: string) => void;
   sendSetThinkingTokens: (tokens: number) => void;
+  /** Ask the broker to use `effort` from the next turn; the answer arrives as `effort`. */
+  sendSetEffort: (effort: string) => void;
+  /** Ask the broker to change the model and/or effort; the answer arrives as `runtimeOptions`. */
+  sendSetRuntimeOptions: (options: { model?: string; effort?: string }) => void;
   sendRewindFiles: () => void;
   sendSetInternalVisibility: (visible: boolean) => void;
   clearMessages: () => void;
 }
 
 const SINGLE_PARTICIPANT_ID = 'skuld-primary';
+// Frames Claude's interactive transport derives from its native hooks (metadata.source).
+const CLAUDE_HOOK_SOURCE = 'claude_hook';
 // Skuld's correlated rejections of an answer (skuld/control_errors.py): the question is
 // still pending natively, so its card must come back.
 const ANSWER_REJECTION_CODES = new Set(['question_answer_rejected', 'question_recovery_required']);
@@ -273,6 +319,32 @@ type PersistedChatState = {
   participants?: RoomParticipant[];
   agentEvents?: Record<string, PersistedAgentEvent[]>;
 };
+
+type SessionLiveState = {
+  url: string | null;
+  plan: SessionPlan | null;
+  agents: SessionAgent[];
+  effort: SessionEffort | null;
+  runtimeOptions: SessionRuntimeOptions | null;
+  usage: SessionUsage | null;
+  effortError: string | null;
+  runtimeOptionsError: string | null;
+};
+
+const EMPTY_AGENTS: SessionAgent[] = [];
+
+function emptyLiveState(url: string | null): SessionLiveState {
+  return {
+    url,
+    plan: null,
+    agents: EMPTY_AGENTS,
+    effort: null,
+    runtimeOptions: null,
+    usage: null,
+    effortError: null,
+    runtimeOptionsError: null,
+  };
+}
 
 type InternalParticipantStream = {
   messageId: string;
@@ -529,6 +601,8 @@ export function transformTurns(turns: ConversationTurn[]): ChatMessage[] {
     const imageContent = extractInlineImages(turn.content);
     const metadata = turn.metadata as ChatMessage['metadata'] | undefined;
     const metadataStatus = (turn.metadata as Record<string, unknown> | undefined)?.status;
+    const delivery =
+      turn.role === 'user' ? deliveryFromSteeringState(turn.metadata?.steering_state) : undefined;
     return {
       id: turn.id,
       role: turn.role === 'user' ? 'user' : 'assistant',
@@ -545,6 +619,7 @@ export function transformTurns(turns: ConversationTurn[]): ChatMessage[] {
       ),
       threadId: turn.thread_id,
       visibility: turn.visibility,
+      ...(delivery ? { delivery } : {}),
     };
   });
 }
@@ -575,6 +650,39 @@ export function insertBrokerTurn(
     : -1;
   if (streamingIndex < 0) return [...messages, message];
   return [...messages.slice(0, streamingIndex), message, ...messages.slice(streamingIndex)];
+}
+
+/**
+ * The room as it is now, plus the workers who were in it and left. The live room lists only
+ * who is connected; a worker that did its part and left is still one of the session's
+ * workers, so it stays, marked `left`. Observers and people who leave are dropped.
+ */
+export function withDeparted(
+  previous: ReadonlyMap<string, RoomParticipant>,
+  current: Map<string, RoomParticipant>,
+): Map<string, RoomParticipant> {
+  const next = new Map(current);
+  for (const [peerId, participant] of previous) {
+    if (next.has(peerId) || participant.participantType !== 'ravn') continue;
+    next.set(peerId, { ...participant, status: 'left' });
+  }
+  return next;
+}
+
+/**
+ * History names only the participants who have spoken; the live room names everyone in it.
+ * History adds the speakers the room no longer lists, and never replaces the room: a worker
+ * that has not spoken yet (a reviewer waiting for code) is still in the room.
+ */
+export function withHistoryParticipants(
+  room: ReadonlyMap<string, RoomParticipant>,
+  history: ReadonlyMap<string, RoomParticipant>,
+): Map<string, RoomParticipant> {
+  const next = new Map(room);
+  for (const [peerId, participant] of history) {
+    if (!next.has(peerId)) next.set(peerId, participant);
+  }
+  return next;
 }
 
 export function participantsFromTurns(turns: ConversationTurn[]): Map<string, RoomParticipant> {
@@ -650,57 +758,6 @@ export function meshEventsFromTurns(turns: ConversationTurn[]): MeshEvent[] {
     });
   }
   return events;
-}
-
-export function stringifyOutcomeValue(value: unknown): string {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-export function pushOutcomeField(lines: string[], key: string, value: unknown): void {
-  const text = stringifyOutcomeValue(value);
-  if (!text) return;
-  if (text.includes('\n')) {
-    lines.push(`${key}: |`);
-    for (const line of text.split('\n')) {
-      lines.push(`  ${line}`);
-    }
-    return;
-  }
-  lines.push(`${key}: ${text}`);
-}
-
-export function formatOutcomeContent(event: CliStreamEvent): string {
-  const fields =
-    event.fields && typeof event.fields === 'object'
-      ? { ...event.fields }
-      : ({} as Record<string, unknown>);
-
-  const lines: string[] = [];
-  pushOutcomeField(lines, 'verdict', event.verdict ?? fields.verdict);
-  pushOutcomeField(
-    lines,
-    'summary',
-    normalizeOutcomeSummaryText(event.summary) ?? normalizeOutcomeSummaryText(fields.summary),
-  );
-
-  for (const [key, value] of Object.entries(fields)) {
-    if (key === 'verdict' || key === 'summary' || key === 'success') continue;
-    pushOutcomeField(lines, key, value);
-  }
-
-  if (lines.length === 0 && event.eventType) {
-    pushOutcomeField(lines, 'event_type', event.eventType);
-  }
-
-  const raw = lines.join('\n');
-  return `\`\`\`outcome\n${raw}\n\`\`\``;
 }
 
 async function attachmentToWireContent(
@@ -797,6 +854,9 @@ export function useSkuldChat(
   // Answered but not yet resolved by Skuld: a rejected answer restores its card, so the
   // question stays answerable instead of vanishing while the agent still waits on it.
   const answeredInputRequestsRef = useRef(new Map<string, InputRequest>());
+  // Request ids of the effort reads sent on connect, so a refusal can be shown on the
+  // composer's effort chip instead of in the conversation.
+  const controlReadsRef = useRef(new Map<string, 'effort'>());
   const pendingInputRequestsRef = useRef<InputRequest[]>([]);
   useEffect(() => {
     pendingInputRequestsRef.current = pendingInputRequests;
@@ -805,11 +865,27 @@ export function useSkuldChat(
     url: string | null;
     commands: SlashCommand[];
   }>({ url, commands: [] });
+  const [previewPortsState, setPreviewPortsState] = useState<{
+    url: string | null;
+    ports: number[] | null;
+  }>({ url, ports: null });
+  const previewPorts = previewPortsState.url === url ? previewPortsState.ports : null;
   const [capabilitiesState, setCapabilitiesState] = useState<{
     url: string | null;
     value: SessionCapabilities;
   }>({ url, value: {} });
   const capabilities = capabilitiesState.url === url ? capabilitiesState.value : {};
+  const [liveState, setLiveState] = useState<SessionLiveState>(() => emptyLiveState(url));
+  const live = liveState.url === url ? liveState : emptyLiveState(url);
+  const updateLive = useCallback(
+    (patch: (state: SessionLiveState) => Partial<SessionLiveState>) => {
+      setLiveState((previous) => {
+        const base = previous.url === url ? previous : emptyLiveState(url);
+        return { ...base, ...patch(base) };
+      });
+    },
+    [url],
+  );
   const [connected, setConnected] = useState(false);
   const [connectionVersion, setConnectionVersion] = useState(0);
   const [historyLoadedForUrl, setHistoryLoadedForUrl] = useState<string | null>(null);
@@ -1144,9 +1220,7 @@ export function useSkuldChat(
           });
         }
         if (historyParticipants && historyParticipants.size > 0) {
-          setParticipants((prev) =>
-            sharesBoundary ? new Map([...prev, ...historyParticipants]) : historyParticipants,
-          );
+          setParticipants((prev) => withHistoryParticipants(prev, historyParticipants));
         }
         if (historyMeshEvents && historyMeshEvents.length > 0) {
           setMeshEvents((prev) => {
@@ -1666,6 +1740,70 @@ export function useSkuldChat(
               syncStreamingMessage();
               break;
             }
+            // Claude's interactive (tmux) transport reports each tool call from its PreToolUse
+            // hook as an assistant frame with no turn id. The call belongs to the reply in
+            // progress; closing that reply here dropped the call until the page reloaded history.
+            if (
+              !event.turn_id &&
+              event.metadata?.source === CLAUDE_HOOK_SOURCE &&
+              blocks?.length &&
+              blocks.every((block) => block.type === 'tool_use' && block.id)
+            ) {
+              if (!streamingMessageIdRef.current) {
+                const id = generateId();
+                streamingMessageIdRef.current = id;
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id,
+                    role: 'assistant',
+                    content: '',
+                    createdAt: new Date(),
+                    status: 'running',
+                    participant: explicitParticipant ?? getDefaultAssistantParticipant(),
+                  },
+                ]);
+              }
+              // The hook frame's model can be the transport's "interactive" placeholder;
+              // the reply's own frames name the model.
+              for (const block of blocks) {
+                streamingPartsRef.current = upsertToolPart(streamingPartsRef.current, {
+                  type: 'tool_use',
+                  id: block.id,
+                  id_source: CLAUDE_HOOK_SOURCE,
+                  name: block.name,
+                  input: block.input ?? {},
+                });
+              }
+              setStreamingParts([...streamingPartsRef.current]);
+              syncStreamingMessage();
+              break;
+            }
+            // The reply's text that follows those hook-reported calls is the same reply.
+            const hookReply = streamingPartsRef.current.some(
+              (part) => part.id_source === CLAUDE_HOOK_SOURCE,
+            );
+            if (
+              streamingMessageIdRef.current &&
+              hookReply &&
+              !event.turn_id &&
+              blocks?.length &&
+              blocks.every((block) => block.type === 'text')
+            ) {
+              const text = blocks.map((block) => block.text ?? '').join('');
+              if (!streamingModelRef.current && event.message?.model) {
+                streamingModelRef.current = event.message.model;
+                setStreamingModel(streamingModelRef.current);
+              }
+              if (text) {
+                streamingTextRef.current += text;
+                streamingPartsRef.current = [...streamingPartsRef.current, { type: 'text', text }];
+                setStreamingContent(streamingTextRef.current);
+                setStreamingParts([...streamingPartsRef.current]);
+                syncStreamingMessage();
+              }
+              break;
+            }
             if (streamingMessageIdRef.current) finalizeStreaming();
             const initialContent =
               event.message?.content
@@ -1839,6 +1977,16 @@ export function useSkuldChat(
                 ? event.error
                 : (event.error?.message ??
                   (typeof event.content === 'string' ? event.content : 'Unknown error'));
+            const controlRead = event.request_id
+              ? controlReadsRef.current.get(event.request_id)
+              : undefined;
+            if (controlRead && event.request_id) {
+              controlReadsRef.current.delete(event.request_id);
+              // The runtime could not describe its choices (a Codex thread that is not
+              // attached yet, a model gateway). The composer control shows why.
+              updateLive(() => ({ effortError: errorMessage }));
+              break;
+            }
             if (event.code && event.request_id) {
               optimisticUserMessagesRef.current.delete(event.request_id);
               const answered = answeredInputRequestsRef.current.get(event.request_id);
@@ -1901,12 +2049,34 @@ export function useSkuldChat(
             ]);
             break;
           }
+          case 'preview_ports': {
+            const reported = (event as unknown as { ports?: unknown }).ports;
+            if (!Array.isArray(reported)) break;
+            setPreviewPortsState({
+              url,
+              ports: [
+                ...new Set(
+                  reported.filter(
+                    (port): port is number =>
+                      Number.isInteger(port) && (port as number) >= 1 && (port as number) <= 65535,
+                  ),
+                ),
+              ].sort((a, b) => a - b),
+            });
+            break;
+          }
           case 'capabilities': {
             const caps = event as unknown as Record<string, unknown>;
             setCapabilitiesState({
               url,
               value: {
                 interrupt: caps.interrupt === true,
+                steer: caps.steer === true,
+                ...(typeof caps.steering_mode === 'string'
+                  ? { steering_mode: caps.steering_mode }
+                  : {}),
+                set_effort: caps.set_effort === true,
+                runtime_options: caps.runtime_options === true,
                 set_model: caps.set_model === true,
                 set_thinking_tokens: caps.set_thinking_tokens === true,
                 rewind_files: caps.rewind_files === true,
@@ -1919,6 +2089,52 @@ export function useSkuldChat(
                 room_prompt_resend: caps.room_prompt_resend === true,
               },
             });
+            break;
+          }
+          case 'plan': {
+            const plan = parsePlanFrame(event);
+            if (!plan) break;
+            updateLive(() => ({ plan }));
+            break;
+          }
+          case 'agent_update': {
+            const update = parseAgentUpdate(event);
+            if (!update) break;
+            updateLive((state) => ({ agents: upsertAgent(state.agents, update) }));
+            break;
+          }
+          case 'effort_status': {
+            const effort = parseEffortFrame(event);
+            if (!effort) break;
+            updateLive(() => ({ effort, effortError: null }));
+            break;
+          }
+          case 'runtime_options': {
+            const runtimeOptions = parseRuntimeOptionsFrame(event);
+            if (!runtimeOptions) break;
+            updateLive(() => ({ runtimeOptions, runtimeOptionsError: null }));
+            break;
+          }
+          case 'session_usage': {
+            const usage = parseUsageFrame(event);
+            if (!usage) break;
+            updateLive(() => ({ usage }));
+            break;
+          }
+          case 'user_active':
+          case 'user_consumed':
+          case 'user_delivered':
+          case 'user_delivery_pending':
+          case 'user_delivery_failed': {
+            const frame = parseDeliveryFrame(event);
+            if (!frame) break;
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.role === 'user' && frame.ids.includes(message.id)
+                  ? { ...message, delivery: advanceDelivery(message.delivery, frame.delivery) }
+                  : message,
+              ),
+            );
             break;
           }
           case 'available_commands': {
@@ -1957,7 +2173,7 @@ export function useSkuldChat(
               setMessages(nextMessages);
             }
             if (historyParticipants && historyParticipants.size > 0) {
-              setParticipants(historyParticipants);
+              setParticipants((prev) => withHistoryParticipants(prev, historyParticipants));
             }
             if (historyMeshEvents && historyMeshEvents.length > 0) {
               setMeshEvents(historyMeshEvents);
@@ -1994,6 +2210,7 @@ export function useSkuldChat(
             if (requestId && optimisticMessageId) {
               optimisticUserMessagesRef.current.delete(requestId);
             }
+            const confirmedDelivery = deliveryFromSteeringState(event.steering_state);
             setMessages((prev) => {
               if (optimisticMessageId) {
                 return prev.map((message) =>
@@ -2001,6 +2218,9 @@ export function useSkuldChat(
                     ? {
                         ...message,
                         id: messageId,
+                        ...(confirmedDelivery
+                          ? { delivery: advanceDelivery(message.delivery, confirmedDelivery) }
+                          : {}),
                         createdAt: event.created_at
                           ? new Date(event.created_at)
                           : message.createdAt,
@@ -2033,6 +2253,7 @@ export function useSkuldChat(
                       ? (event.metadata as ChatMessage['metadata'])
                       : undefined,
                   visibility: event.visibility,
+                  ...(confirmedDelivery ? { delivery: confirmedDelivery } : {}),
                 },
               ];
             });
@@ -2110,9 +2331,16 @@ export function useSkuldChat(
               ];
             });
             if (normalizedQuestions.length === 0) break;
+            // The wait started when the question first reached this client: a replay of the
+            // same question on reconnect keeps the original time.
+            const knownRequest =
+              pendingInputRequestsRef.current.find(
+                (request) => request.requestId === event.request_id,
+              ) ?? answeredInputRequestsRef.current.get(event.request_id);
             const inputRequest: InputRequest = {
               requestId: event.request_id,
               questions: normalizedQuestions,
+              receivedAt: knownRequest?.receivedAt ?? new Date().toISOString(),
               ...(event.metadata?.answerable === false ? { answerable: false } : {}),
             };
             answeredInputRequestsRef.current.delete(inputRequest.requestId);
@@ -2139,11 +2367,9 @@ export function useSkuldChat(
           case 'participant_left': {
             const peerId = String(event.participantId ?? event.participant_id ?? '');
             if (!peerId) break;
-            setParticipants((prev) => {
-              const next = new Map(prev);
-              next.delete(peerId);
-              return next;
-            });
+            setParticipants((prev) =>
+              withDeparted(prev, new Map([...prev].filter(([id]) => id !== peerId))),
+            );
             break;
           }
           case 'room_state': {
@@ -2152,7 +2378,7 @@ export function useSkuldChat(
               const parsed = parseParticipantMeta(participant);
               if (parsed?.peerId) next.set(parsed.peerId, parsed);
             }
-            setParticipants(next);
+            setParticipants((prev) => withDeparted(prev, next));
             break;
           }
           case 'room_message': {
@@ -2160,19 +2386,24 @@ export function useSkuldChat(
             if (senderId) {
               finalizeParticipantStream(senderId);
             }
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: generateId(),
-                role: event.role === 'user' ? 'user' : 'assistant',
-                content: typeof event.content === 'string' ? event.content : '',
-                createdAt: event.created_at ? new Date(event.created_at) : new Date(),
-                status: 'done',
-                participant: parseParticipantMeta(event.participant),
-                threadId: event.thread_id,
-                visibility: event.visibility,
-              },
-            ]);
+            // Skuld stamps the durable turn id on the frame; the same id comes back in history.
+            const messageId = event.id || generateId();
+            setMessages((prev) => {
+              if (prev.some((message) => message.id === messageId)) return prev;
+              return [
+                ...prev,
+                {
+                  id: messageId,
+                  role: event.role === 'user' ? 'user' : 'assistant',
+                  content: typeof event.content === 'string' ? event.content : '',
+                  createdAt: event.created_at ? new Date(event.created_at) : new Date(),
+                  status: 'done',
+                  participant: parseParticipantMeta(event.participant),
+                  threadId: event.threadId ?? event.thread_id,
+                  visibility: event.visibility,
+                },
+              ];
+            });
             break;
           }
           case 'room_activity': {
@@ -2215,19 +2446,6 @@ export function useSkuldChat(
                 fields: event.fields,
                 valid: event.valid === false ? false : true,
               },
-            ]);
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: generateId(),
-                role: 'assistant',
-                content: formatOutcomeContent(event),
-                createdAt: new Date(),
-                status: 'done',
-                participant,
-                participantId,
-                visibility: 'internal',
-              } as ChatMessage & { participantId?: string },
             ]);
             break;
           }
@@ -2307,7 +2525,7 @@ export function useSkuldChat(
                   participant,
                   participantId: peerId,
                   visibility: 'internal',
-                  threadId: event.thread_id,
+                  threadId: event.threadId ?? event.thread_id,
                 } as ChatMessage & { participantId?: string },
               ]);
             }
@@ -2373,7 +2591,11 @@ export function useSkuldChat(
                   { type: 'tool_result', tool_use_id: toolUseId, content: result },
                 ],
               }));
-            } else if (frame.type === 'text' || frame.type === 'message') {
+            } else if (
+              frame.type === 'text' ||
+              frame.type === 'message' ||
+              frame.type === 'response'
+            ) {
               const text =
                 typeof frame.data === 'string' ? frame.data : JSON.stringify(frame.data ?? '');
               appendStreamingTextPart('text', text);
@@ -2410,6 +2632,7 @@ export function useSkuldChat(
       seedStreamingHistory,
       requestHistoryRecovery,
       historyMode,
+      updateLive,
       url,
     ],
   );
@@ -2427,6 +2650,11 @@ export function useSkuldChat(
       setConnected(true);
       setConnectionVersion((version) => version + 1);
       storeAvailableCommands([]);
+      // The broker replays every agent still running when a browser attaches, so a
+      // "running" row from the previous connection is only kept if it is announced again.
+      updateLive((state) => ({
+        agents: state.agents.filter((agent) => agent.status !== 'running'),
+      }));
     },
     onMessage: handleMessage,
     onClose: () => {
@@ -2489,6 +2717,85 @@ export function useSkuldChat(
     storeAvailableCommands,
     url,
   ]);
+
+  // The model catalog is read over the broker's HTTP route, never the socket: a refused socket
+  // request becomes an error turn in the session's durable history, and an idle Codex thread
+  // refuses until its next turn. A refusal here is kept as runtimeOptionsError for the
+  // composer's model chip. Runtimes with a catalog carry their effort levels in it.
+  useEffect(() => {
+    if (!connected || !capabilities.runtime_options) return;
+    const httpBase = url ? wsUrlToHttpBase(url) : null;
+    const controller = new AbortController();
+    void Promise.resolve()
+      .then(() => {
+        if (!httpBase) throw new Error('The session has no broker address');
+        const requestUrl = new URL(
+          'api/runtime-options',
+          httpBase.endsWith('/') ? httpBase : `${httpBase}/`,
+        );
+        return fetch(requestUrl.toString(), {
+          headers: getAuthHeaders(),
+          signal: controller.signal,
+        });
+      })
+      .then(async (response) => {
+        const body: unknown = await response.json().catch(() => null);
+        if (!response.ok) {
+          const detail =
+            body && typeof body === 'object' && 'detail' in body
+              ? String((body as { detail: unknown }).detail)
+              : `The broker answered ${response.status}`;
+          updateLive(() => ({ runtimeOptionsError: detail }));
+          return;
+        }
+        const runtimeOptions =
+          body && typeof body === 'object' ? parseRuntimeOptionsFrame(body as never) : null;
+        updateLive(() =>
+          runtimeOptions
+            ? { runtimeOptions, runtimeOptionsError: null }
+            : { runtimeOptionsError: 'The broker returned a model list this page cannot read' },
+        );
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        const reason = error instanceof Error ? error.message : String(error);
+        // fetch() rejects with a bare "Failed to fetch" for network and CORS refusals alike.
+        const where = httpBase ? new URL(httpBase).host : 'the broker';
+        updateLive(() => ({
+          runtimeOptionsError: `Could not reach ${where} for the model list (${reason})`,
+        }));
+      });
+    return () => controller.abort();
+  }, [capabilities.runtime_options, connected, connectionVersion, updateLive, url]);
+
+  // Runtimes without a model catalog report effort over the socket (effort_status).
+  useEffect(() => {
+    if (!connected || !capabilities.set_effort || capabilities.runtime_options) return;
+    const requestId = generateId();
+    controlReadsRef.current.set(requestId, 'effort');
+    sendJson({ type: 'get_effort', request_id: requestId });
+  }, [
+    capabilities.runtime_options,
+    capabilities.set_effort,
+    connected,
+    connectionVersion,
+    sendJson,
+  ]);
+
+  const sendSetEffort = useCallback(
+    (effort: string) => sendJson({ type: 'set_effort', effort, request_id: generateId() }),
+    [sendJson],
+  );
+
+  const sendSetRuntimeOptions = useCallback(
+    (options: { model?: string; effort?: string }) => {
+      if (!options.model && !options.effort) {
+        throw new Error('sendSetRuntimeOptions needs a model, an effort, or both');
+      }
+      sendJson({ type: 'set_runtime_options', options, request_id: generateId() });
+    },
+    [sendJson],
+  );
 
   const sendMessage = useCallback(
     (text: string, attachments: FileAttachment[]) => {
@@ -2710,6 +3017,14 @@ export function useSkuldChat(
     pendingInputRequests,
     availableCommands,
     capabilities,
+    previewPorts,
+    plan: live.plan,
+    agents: live.agents,
+    effort: live.effort ?? effortFromRuntimeOptions(live.runtimeOptions),
+    runtimeOptions: live.runtimeOptions,
+    usage: live.usage,
+    effortError: live.effortError,
+    runtimeOptionsError: live.runtimeOptionsError,
     sendMessage,
     sendDirectedMessages,
     publishEvent,
@@ -2721,6 +3036,8 @@ export function useSkuldChat(
     sendSetModel: (model: string) => sendJson({ type: 'set_model', model }),
     sendSetThinkingTokens: (tokens: number) =>
       sendJson({ type: 'set_max_thinking_tokens', max_thinking_tokens: tokens }),
+    sendSetEffort,
+    sendSetRuntimeOptions,
     sendRewindFiles: () => sendJson({ type: 'rewind_files' }),
     sendSetInternalVisibility,
     clearMessages,

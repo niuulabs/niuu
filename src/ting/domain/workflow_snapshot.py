@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from ravn.domain.persona_document import (
+from personas.domain.persona_document import (
     PersonaDependency,
     PersonaDependencyResolutionError,
     PortablePersonaSource,

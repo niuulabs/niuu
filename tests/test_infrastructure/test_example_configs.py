@@ -9,7 +9,6 @@ rejects.
 
 from __future__ import annotations
 
-import dataclasses
 import types
 import typing
 from pathlib import Path
@@ -20,8 +19,6 @@ import yaml
 from pydantic import BaseModel
 
 from bifrost.config import BifrostConfig
-from ravn.config import Settings as RavnSettings
-from ravn.tui.keybindings.loader import KeybindingConfig
 from ting.config import Settings as TingSettings
 from volundr.config import Settings as VolundrSettings
 
@@ -94,7 +91,6 @@ def _load(name: str) -> dict[str, Any]:
     [
         ("volundr.yaml", VolundrSettings, None),
         ("ting.yaml", TingSettings, None),
-        ("ravn.yaml", RavnSettings, None),
         # bifrost.__main__ unwraps the top-level ``bifrost:`` key before validating.
         ("bifrost.yaml", BifrostConfig, "bifrost"),
         ("bifrost-pi.yaml", BifrostConfig, "bifrost"),
@@ -115,20 +111,10 @@ def test_example_matches_its_settings_model(
     model.model_validate(data)
 
 
-def test_ravn_tui_example_matches_the_keybinding_loader() -> None:
-    data = _load("ravn-tui.yaml")
-    assert list(data) == ["keybindings"]
-
-    known = {field.name for field in dataclasses.fields(KeybindingConfig)}
-    assert set(data["keybindings"]) <= known
-
-
 def test_every_example_is_covered_here() -> None:
     covered = {
         "volundr.yaml",
         "ting.yaml",
-        "ravn.yaml",
-        "ravn-tui.yaml",
         "bifrost.yaml",
         "bifrost-pi.yaml",
         # Not a settings file: a template for a Claude Code .mcp.json.

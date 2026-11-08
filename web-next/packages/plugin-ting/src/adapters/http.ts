@@ -330,15 +330,11 @@ interface RawWorkflowLaunchResult {
   workflowName?: string;
   workflow_name?: string;
   slug: string;
-  sessionId?: string;
-  session_id?: string;
-  sessionName?: string;
-  session_name?: string;
+  campaignId?: string;
+  campaign_id?: string;
+  campaignSlug?: string;
+  campaign_slug?: string;
   status: string;
-  clusterName?: string;
-  cluster_name?: string;
-  chatEndpoint?: string | null;
-  chat_endpoint?: string | null;
   workflowVersion?: string;
   workflow_version?: string;
   documentRevision?: string;
@@ -903,11 +899,9 @@ function toWorkflowLaunchResult(raw: RawWorkflowLaunchResult): WorkflowLaunchRes
     workflowId: raw.workflowId ?? raw.workflow_id ?? '',
     workflowName: raw.workflowName ?? raw.workflow_name ?? '',
     slug: raw.slug,
-    sessionId: raw.sessionId ?? raw.session_id ?? '',
-    sessionName: raw.sessionName ?? raw.session_name ?? '',
+    campaignId: raw.campaignId ?? raw.campaign_id ?? '',
+    campaignSlug: raw.campaignSlug ?? raw.campaign_slug ?? '',
     status: raw.status,
-    clusterName: raw.clusterName ?? raw.cluster_name ?? '',
-    chatEndpoint: raw.chatEndpoint ?? raw.chat_endpoint ?? null,
     workflowVersion: raw.workflowVersion ?? raw.workflow_version ?? '',
     documentRevision: raw.documentRevision ?? raw.document_revision ?? '',
   };
@@ -1421,7 +1415,6 @@ export function buildDispatchBusHttpAdapter(client: ApiClient): IDispatchBus {
           ? { connection_id: options.instanceId ?? options.connectionId }
           : {}),
         ...(options.sessionDefinition ? { session_definition: options.sessionDefinition } : {}),
-        ...(options.workloadType ? { workload_type: options.workloadType } : {}),
         ...(options.workloadConfig ? { workload_config: options.workloadConfig } : {}),
       });
       return results.map(toDispatchApprovalResult);

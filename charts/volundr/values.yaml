@@ -187,9 +187,9 @@ storage:
     size: 1Gi
     # -- Mount path inside session pods
     mountPath: /volundr/home
-    # -- Workload types that never mount the user's home (e.g. ravn_flock
-    # workflow sessions). With a ReadWriteOnce home, every pod that mounts it
-    # must share one node; leaving workflows out lets them schedule anywhere.
+    # -- Workload types that never mount the user's home. With a
+    # ReadWriteOnce home, every pod that mounts it must share one node;
+    # leaving a workload type out lets it schedule anywhere.
     excludeWorkloadTypes: []
 
 # Tool-result image preview cache (config.preview_cache_dir). The root
@@ -328,6 +328,8 @@ provisioning:
   timeoutSeconds: 300.0
   # -- Initial delay before starting readiness polls in seconds
   initialDelaySeconds: 5.0
+  # -- Seconds between reads of a starting session's launch stages (pod conditions and events, VM state)
+  startupPollSeconds: 2.0
 
 # -- Seconds between realm-detail SSE state checks and idle keepalive comments
 realmDetailStreamIntervalSeconds: 15.0
@@ -339,6 +341,10 @@ bifrost:
   timeoutSeconds: 10.0
   # -- Interval between successful model catalog refreshes
   catalogRefreshIntervalSeconds: 60.0
+  # -- First delay before retrying a failed catalog load; every failure is retried and logged
+  catalogRetryInitialSeconds: 0.1
+  # -- Longest delay between retries of a failed catalog load (backoff doubles up to this)
+  catalogRetryMaxSeconds: 5.0
   auth:
     # -- Fully-qualified outbound auth adapter class
     adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
@@ -348,6 +354,132 @@ bifrost:
     secretKwargs: []
 
 compute: null
+
+# Bring your own machines: a pool of registered hosts (Linux machines and Macs) that join
+# this Forge with one command (Add host, or `niuu remote join`). Turning it on is the whole
+# configuration: Forge runs Niuu's built-in host execution, generates its own host SSH key
+# under dataDir, pins the release's session images (from image.tag) at startup, and with
+# guestMetadata delivers session credentials to the hosts. It replaces podManager and
+# compute for this release. See docs/operator/compute-hosts.md.
+computeHosts:
+  # -- Serve a pool of registered hosts
+  enabled: false
+  # -- This Forge's https URL as hosts reach it (its ingress): the join command, join.sh
+  # and the guest agents' metadata calls go there
+  joinUrl: ""
+  # -- Compute pool id (also its provider binding)
+  poolId: hosts
+  # -- The registered-host provider's profile
+  profile: host
+  # -- How many hosts the pool may hold at once; a host beyond it waits as ready
+  maxHosts: 16
+  # -- Host platforms that may join: linux, darwin
+  platforms: [linux, darwin]
+  # -- Forge's own directory for the hosts (its generated SSH key, pinned host keys,
+  # session archives); must be on the sessions volume
+  dataDir: /volundr/sessions/hosts
+  # -- Source networks Forge's SSH key is accepted from on a host (from=); [] accepts any
+  allowedSources: []
+  # -- What slot sizing leaves for each host itself
+  reservedCpu: 2
+  reservedMemoryMib: 4096
+  # -- Free space on a host's / below which the audit quarantines it
+  minFreeDiskMib: 20480
+  # -- What one Linux slot may use (null: no limit); slot counts are suggested from these
+  slot:
+    cpu: 2
+    memoryMib: 8192
+    pids: 16384
+  # -- Session images; empty: <image.registry>/openshell:<image.tag> and
+  # <image.registry>/skuld-darwin:<image.tag>, the ones published with this release
+  sessionImages:
+    linux: ""
+    darwin: ""
+  # -- ServiceAccount sessions run as, for their projected token volumes
+  defaultServiceAccount: ""
+  # -- Images a Mac runs natively from its session bundle; empty: secretInjection's
+  # guest_agent_image (OpenBao's agent), when set
+  nativeImages: []
+  # -- Skuld preview.router_auth for live preview on hosts ({adapter, kwargs}); {} is off
+  previewRouterAuth: {}
+
+# VM guest metadata endpoint (POST /api/v1/internal/compute/metadata/credentials). A VM
+# session's guest agent pulls its ServiceAccount tokens and Forge session credential
+# there, authenticated by the guest identity configured under `compute` (an Ed25519
+# host-key signature or a SPIFFE JWT-SVID), never by a bearer Keycloak/workload JWT.
+guestMetadata:
+  # -- Serve the endpoint. Renders the Envoy bypass for exactly that route (JWT and
+  # Cedar admission are skipped; the route authenticates the guest itself) and a Role
+  # letting Forge request ServiceAccount tokens (serviceaccounts/token create).
+  enabled: false
+  # -- Namespace of the ServiceAccounts VM sessions run as, where Forge may request
+  # their tokens. Must equal the token issuer's `namespace` kwarg. Empty:
+  # podManager.kwargs.namespace, else the release namespace.
+  serviceAccountNamespace: ""
+  # -- Grant the ServiceAccount-token Role without serving the endpoint, for
+  # SshPushCredentialDelivery (the controller writes tokens over SSH).
+  issueServiceAccountTokens: false
+  # -- Let Forge manage SPIRE ClusterStaticEntry registrations for VM guests
+  # (SpiffeGuestIdentity); requires spire-controller-manager.
+  spiffeRegistration: false
+
+# Host connect endpoint for registered hosts behind NAT (ReverseSshConnector): an OpenSSH
+# sidecar in the Forge pod. Each host keeps one `ssh -N -R` to it and forwards a port on
+# the pod's loopback to its own sshd, which Forge dials. Its AuthorizedKeysCommand asks
+# Forge on a socket in a volume only Forge and the sidecar mount; only keys of
+# registered reverse-SSH hosts are admitted, each to listen on its own loopback port and
+# nothing else. See docs/operator/compute-hosts.md ("Hosts behind NAT").
+hostConnect:
+  # -- Run the endpoint. Needs one Forge pod (replicaCount 1, strategy Recreate, no
+  # autoscaling) and a namespace that admits a root container (Pod Security baseline):
+  # sshd separates privileges per connection.
+  enabled: false
+  # -- Port sshd listens on in the pod, and the Service's port.
+  port: 2222
+  # -- The volume Forge and the sidecar share: the key-lookup socket, the connection
+  # records and the revoke pipe. Must equal the connector's `runtime_dir` kwarg.
+  runtimeDir: /run/niuu-connect
+  # -- The account hosts log in as; must equal the connector's `connect_user` kwarg.
+  # The image creates it with no password and no shell.
+  user: niuu-connect
+  # -- Existing Secret with the endpoint's own Ed25519 host key (OpenSSH format). Hosts
+  # pin its public half: put that in the connector's `endpoint_host_key` kwarg.
+  # Create it once: ssh-keygen -t ed25519 -N '' -f key && kubectl create secret generic
+  # <name> --from-file=ssh_host_ed25519_key=key
+  hostKeySecret:
+    name: ""
+    key: ssh_host_ed25519_key
+  # -- Bound on one key lookup from sshd to Forge; past it the connection is refused
+  # and the host retries.
+  keyLookupTimeoutSeconds: 5
+  # -- The image's Python, which runs the key command (root-owned, as sshd requires).
+  python: /usr/local/bin/python3
+  # -- Keepalive from the endpoint: a host silent for interval × countMax is dropped,
+  # which frees its port for its reconnect.
+  clientAliveIntervalSeconds: 15
+  clientAliveCountMax: 3
+  # -- Bound on a connection's authentication.
+  loginGraceTimeSeconds: 20
+  # -- Public-key attempts per connection; a host offers exactly one key.
+  maxAuthTries: 2
+  resources: {}
+  # -- How hosts reach the endpoint: a LoadBalancer Service, or a Gateway TCPRoute to
+  # a ClusterIP Service.
+  service:
+    type: LoadBalancer
+    port: 2222
+    annotations: {}
+    loadBalancerIP: ""
+    loadBalancerSourceRanges: []
+    externalTrafficPolicy: ""
+  tcpRoute:
+    enabled: false
+    # -- Gateway listeners (TCP) the route attaches to.
+    parentRefs: []
+    annotations: {}
+  # -- NetworkPolicy ingress to the endpoint (networkPolicy.enabled); empty admits any
+  # source, since hosts are wherever their NAT is.
+  networkPolicyFrom: []
 
 podManager:
   # -- Explicit contributor backend identity; set vm for VmPodManager
@@ -376,57 +508,27 @@ podManager:
     code_scheme: "https"
     chat_path: "/session"
     code_path: "/"
-    # -- Base URL residents call for platform reachability (their own
-    # triggers/budget reporting). Empty (the default) means residents get no
-    # platform block at all — resident_triggers_enabled/resident_budget_enabled
-    # below then do nothing (rejected loudly by FluxPodManager.__init__, not
-    # silently — see .claude/rules/no-fallbacks.md) until this is set, e.g.
-    # http://niuu-volundr.volundr.svc.cluster.local.
-    resident_platform_base_url: ""
-    # -- Have deployed residents poll and execute triggers created via
-    # POST /api/v1/ravn/triggers (ravn.adapters.triggers.api_source
-    # .ApiTriggerSource). Requires resident_platform_base_url. Also set the
-    # skuld chart's resident.triggers.enabled (that is what actually runs the
-    # resident's poll loop) and this Ravn API deployment's
-    # trigger_execution.enabled (ravn.config.TriggerExecutionConfig) so
-    # /api/v1/ravn/settings and trigger-create responses stop reporting
-    # execution as off — none of these three is derived from another.
-    resident_triggers_enabled: false
-    # -- Have deployed residents durably report their own spend via
-    # PlatformBudgetReporter. Requires resident_platform_base_url, and the
-    # resident's own resident_budget.adapter (ravn config) must be set to
-    # ravn.adapters.resident_budget.PlatformBudgetReporter for this to do
-    # anything — this flag alone only reaches into the rendered resident
-    # config, it is not itself the adapter selection.
-    resident_budget_enabled: false
-    # -- Every Flux-deployed resident gets its own home and workspace PVCs
-    # (resident-<id>-home, resident-<id>-workspace in `namespace`), created on
-    # deploy and deleted with the resident. These are the defaults; a profile
-    # overrides them per volume in deployment.volumes.<home|workspace>
-    # ({storageClass, size, accessMode}). A profile that sets its own
-    # homeVolume/persistence existingClaim keeps that claim instead.
-    #
-    # OpenShell residents (OpenShellGatewayPodManager) get their own workspace
-    # PVC the same way: resident-<id>-workspace, mounted at the sandbox workspace
+    # -- OpenShell residents (OpenShellGatewayPodManager) get their own workspace
+    # PVC: resident-<id>-workspace, mounted at the sandbox workspace
     # (/sandbox/workspace), sized by resident_workspace_size / storage class /
-    # access mode below and deployment.volumes.workspace per profile. It is
-    # created in resident_workspace_namespace, the namespace where the OpenShell
-    # gateway runs sandboxes; unset, the chart uses storageAdapter.kwargs.namespace
-    # (where OpenShell sessions' claims already live). Set it to "" to keep
-    # OpenShell residents' workspaces in their sandboxes only. A resident whose
-    # sandbox predates its claim has its workspace (and a Ravn's ~/.ravn) copied
-    # onto it once, verified, before its old sandbox is removed.
+    # access mode and deployment.volumes.workspace per profile. It is created in
+    # resident_workspace_namespace, the namespace where the OpenShell gateway runs
+    # sandboxes; unset, the chart uses storageAdapter.kwargs.namespace (where
+    # OpenShell sessions' claims already live). Set it to "" to keep OpenShell
+    # residents' workspaces in their sandboxes only. A resident whose sandbox
+    # predates its claim has its workspace copied onto it once, verified, before
+    # its old sandbox is removed. These kwargs belong to OpenShellGatewayPodManager:
+    # FluxPodManager refuses any resident_* kwarg.
     # resident_workspace_namespace: "openshell-sandboxes"
-    resident_home_size: "1Gi"
-    resident_workspace_size: "2Gi"
+    # resident_workspace_size: "2Gi"
     # -- Empty means the cluster's default StorageClass
-    resident_storage_class: ""
-    resident_access_mode: "ReadWriteOnce"
+    # resident_storage_class: ""
+    # resident_access_mode: "ReadWriteOnce"
     # -- OpenShell: the largest workspace the one-time copy onto a resident's new
     # claim moves (Kubernetes quantity). A larger one is not migrated: the
     # resident keeps running on its old sandbox with a WorkspaceMigration /
     # WorkspaceTooLarge condition.
-    resident_workspace_migration_max_size: "1Gi"
+    # resident_workspace_migration_max_size: "1Gi"
   # -- Secret kwargs from K8s Secrets, merged into kwargs at runtime
   # Each entry: { kwarg: "name", secretName: "k8s-secret", secretKey: "key" }
   secretKwargs: []
@@ -450,35 +552,30 @@ credentialEnrollmentRunner:
 # hidden from the API until explicitly configured and enabled; backend-specific
 # deployment details remain server-side.
 residentRuntimeProfiles: []
-# - id: ravn-helm
+# - id: nemoclaw-openshell
 #   enabled: true
-#   displayName: Resident Ravn (Helm)
-#   description: Long-lived Ravn deployed through the existing Skuld chart
-#   backend: helmrelease
-#   engine: ravn
-#   capabilities: [chat, runtime.restart, runtime.suspend, logs, metrics, usage, flock]
+#   displayName: NemoClaw (OpenShell)
+#   description: NVIDIA OpenClaw resident in an OpenShell sandbox
+#   backend: openshell
+#   engine: openclaw   # openclaw or hermes; the ravn engine was removed and is refused
+#   # OpenShell sandboxes cannot be suspended: do not list runtime.suspend
+#   capabilities: [chat, runtime.restart, logs, usage]
 #   defaultModel: claude-sonnet-4-6
 #   # Engine compatibility policy; only IDs currently enabled in Bifrost are exposed.
 #   allowedModels: [claude-sonnet-4-6]
 #   catalogVendors: [anthropic]
 #   modelPrefix: ""
-#   labels: [resident, ravn]
+#   labels: [resident, openclaw]
 #   deployment:
 #     values:
-#       persistence:
-#         enabled: true
-#         emptyDir: false
-#         existingClaim: volundr-sessions
-#       resident:
-#         persona: product-steward
-#         platform:
-#           enabled: true
-#           baseUrl: http://niuu-volundr.volundr.svc.cluster.local
-#         flock:
-#           mesh:
-#             adapters: [{adapter: sleipnir, transport: nats}]
-#             nats:
-#               servers: [nats://sleipnir.sleipnir.svc.cluster.local:4222]
+#       openshell:
+#         processMode: replace
+#         service: {name: openclaw, port: 18789}
+#         processes:
+#           - name: openclaw
+#             command: [openclaw, gateway, run, --bind, lan, --auth, token, --port, "18789"]
+#             files:
+#               /sandbox/workspace/.openclaw/openclaw.json: "<the gateway's JSON config>"
 
 # Additional resident backend adapters. A PodManager that also implements the
 # resident controller port is registered automatically and should not be repeated.
@@ -494,22 +591,6 @@ residentRuntimeSessionControllers: []
 #   optional: false
 #   kwargs: {}
 #   secretKwargs: []
-# Ravn residents' sessions need no entry here: ravnResidentSessions below wires them
-# on every backend that hosts the shim. An explicit entry replaces that default on
-# its backend; it takes no secret (gateway_token is ignored, with a warning).
-# - adapter: volundr.adapters.outbound.ravn_gateway.RavnResidentSessionController
-#   runtimeBackend: helmrelease
-
-# Ravn residents' sessions ("channels"), on by default: Volundr drives them through
-# each Ravn resident's OpenClaw shim on every resident backend that hosts it (Flux,
-# OpenShell). Each Ravn resident's shim token is its own: generated once (or adopted
-# from the running resident) and kept in Volundr's credential store per resident,
-# like the Hermes residents' API keys; no cluster-wide secret. Profiles get
-# session.list/create/delete wherever this is wired; a profile's
-# deployment.values.resident.openclaw.enabled: false switches one off.
-ravnResidentSessions:
-  # -- Wire Ravn residents' sessions by default
-  enabled: true
 
 # -- Seconds between resident HelmRelease/Deployment reconciliation passes
 residentRuntimeReconciliationIntervalSeconds: 10.0
@@ -553,30 +634,6 @@ sleipnir:
 #     - name: FORGE_OPS_WEBHOOK_SECRET
 #       valueFrom: {secretKeyRef: {name: forge-notification-sinks, key: ops-webhook-secret}}
 #
-# Resident questions (notifications.odin_review_relay, off by default): Forge follows the
-# ODIN review queue that niuu-ravn serves and records one notification per pending
-# `answer_operator_question` item for each owner in `owner_ids`, which the owner's
-# "Needs-input pushes" rule (`push.enabled`) delivers to their phone with the Reply
-# category. Questions already waiting when an owner is first followed reach the feed
-# without a push; one digest push says how many wait. Enabled but unable to run
-# (no owner_ids, unreadable source config) stops Forge at startup. It reads niuu-ravn
-# with the credential `source.kwargs.auth_adapter` supplies; for a Forge in the cluster
-# that is the workload-identity exchange of a projected ServiceAccount token
-# (mount it with extraVolumes/extraVolumeMounts, and give the exchange a mapping for
-# Forge's ServiceAccount under workloadIdentity.mappings). Example:
-#   notifications:
-#     odin_review_relay:
-#       enabled: true
-#       owner_ids: ["<the owner's Forge user id>"]
-#       poll_interval_seconds: 30
-#       source:
-#         kwargs:
-#           base_url: https://yggdrasil.niuu.world
-#           auth_adapter: niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter
-#           auth_kwargs:
-#             exchange_url: https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange
-#             token_file: /var/run/secrets/niuu-workload/token
-#             audiences: [niuu-ravn]
 notifications: {}
 
 # Artifact publications (F1) and their burst notices (F1n): every claude.ai Artifact
@@ -1046,82 +1103,21 @@ workloadIdentity:
   # Any mapping naming a `verifier:` that has no matching entry here never
   # matches — the exchange fails loud with "Verifier not configured: <name>"
   # rather than silently admitting nobody (niuu.domain.services.workload_identity
-  # .WorkloadIdentityService.exchange). In particular, `residentMapping` below
-  # sets `verifier: "kubernetes"` and needs a corresponding entry, e.g.:
+  # .WorkloadIdentityService.exchange). For example, a mapping with
+  # `verifier: "kubernetes"` needs a corresponding entry:
   #   verifiers:
   #     - name: kubernetes
   #       adapter: "niuu.adapters.workload_identity.jwt.JwtWorkloadIdentityVerifier"
   #       kwargs:
   #         issuer: "https://kubernetes.default.svc"       # cluster-specific
   #         jwks_uri: "https://kubernetes.default.svc/openid/v1/jwks"
-  #         audiences: []  # must match the aud claim residents' SA tokens actually carry
+  #         audiences: []  # must match the aud claim the workload's token carries
   # An operator must supply the cluster's real issuer/jwks_uri/audiences —
-  # this chart cannot guess them, and getting `audiences` wrong (e.g. it must
-  # include the CUSTOM audience the resident's projected serviceAccountToken
-  # volume actually carries — charts/skuld's resident.workloadIdentity.audience,
-  # mounted at /var/run/secrets/niuu-workload in deployment.yaml, not the
-  # cluster's default audience; automountServiceAccountToken is disabled on
-  # that ServiceAccount, so no default-audience token is ever mounted) fails
+  # this chart cannot guess them, and getting `audiences` wrong fails
   # verification the same loud way, not silently.
   verifiers: []
-  # -- Dynamic adapter resolving a per-caller tenant_id for residentMapping
-  # below from resident_runtimes.tenant_id, keyed by the same resident id
-  # owner_id_claim_pattern extracts — WITHOUT this, every resident matched by
-  # residentMapping gets the SAME tenantId (below), which is only correct for
-  # a single-tenant deployment: any other tenant's resident would poll an
-  # empty trigger list and write spend where GET /budget/{id} never sees it.
-  # Point it at the same Postgres this release's own database.existingSecret
-  # already names — resident_runtimes lives in this same database.
-  tenantResolver:
-    adapter: ""
-    # adapter: "volundr.adapters.outbound.resident_tenant_resolver.LazyPostgresResidentTenantResolver"
-    kwargs: {}
-    # kwargs:
-    #   dsn: ""  # prefer secretKwargs below over a plaintext DSN here
-    secretKwargs: []
-    # secretKwargs:
-    #   - kwarg: "dsn"
-    #     secretName: "volundr-postgres-app"
-    #     secretKey: "dsn"
-  # -- Extra mappings appended verbatim (raw niuu WorkloadIdentityMappingConfig
-  # objects — see residentMapping below for the one this chart synthesizes).
+  # -- Mappings (raw niuu WorkloadIdentityMappingConfig objects).
   mappings: []
-  # -- Admits the projected ServiceAccount token every resident pod carries
-  # (see charts/skuld's serviceaccount.yaml + resident's serviceAccountName,
-  # set by volundr.adapters.outbound.flux.FluxPodManager's
-  # resident_platform_base_url/*_enabled kwargs) and derives ravn_id from the
-  # verified subject per-caller — WITHOUT this, every resident matching a
-  # bare "system:serviceaccount:<namespace>:" mapping would share one
-  # owner_id/ravn_id, and GET/POST /api/v1/ravn/budget/* would key rows by
-  # that shared id instead of the resident_runtimes id the web passes.
-  #
-  # Enable residentMapping BEFORE setting podManager.kwargs
-  # .resident_platform_base_url (which starts every managed resident calling
-  # this platform for real). Flip the order and a resident's projected token
-  # only matches whatever's already in workloadIdentity.mappings — a bare
-  # "system:serviceaccount:<ns>:" catch-all, if one exists, admits it with a
-  # SHARED owner_id instead of its own, and budget/trigger rows land under
-  # that shared id until residentMapping is turned on and every resident
-  # cycles onto its own identity.
-  residentMapping:
-    enabled: false
-    name: "ravn-resident"
-    verifier: "kubernetes"
-    # -- Issuer of the resident pods' ServiceAccount tokens (the verifier's
-    # cluster), e.g. "https://kubernetes.default.svc". Required when enabled:
-    # a mapping without an issuer admits no one.
-    issuer: ""
-    # -- Namespace resident pods run in — must match whatever namespace the
-    # ResidentRuntimeController (flux.py) deploys resident HelmReleases into.
-    namespace: ""
-    # -- Used ONLY when tenantResolver.adapter above is unset (the default) —
-    # every resident this mapping admits then gets this ONE tenantId, an
-    # explicit single-tenant-only choice, not a silent multi-tenant guess.
-    # Configure tenantResolver instead for a deployment with more than one
-    # tenant's residents.
-    tenantId: "default"
-    roles:
-      - "volundr:developer"
 
 workflowExecutionCredentials:
   enabled: false
@@ -1327,34 +1323,6 @@ gateway:
 #   kwargs   – forwarded to the constructor as **kwargs (ports are
 #              injected automatically by the factory)
 #
-# Image for the regular per-persona Ravn containers; pin alongside the runtime image.
-ravnFlockImage: ""
-
-# -- Default LLM for the Ravn nodes of flock sessions, in Ravn's `llm:` shape.
-# workload_config.llm_config and per-persona llm overrides are merged over it.
-# When empty, a flock session that names no model fails to launch. Keep
-# credentials out of this block: point the provider at them with
-# `secret_kwargs_env`.
-#   ravnFlockLlmConfig:
-#     model: Qwen/Qwen3.8-27B
-#     max_tokens: 8192
-#     timeout: 300
-#     provider:
-#       adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
-#       kwargs:
-#         base_url: https://vllm.example.internal
-ravnFlockLlmConfig: {}
-
-# -- Per session definition, LLM settings merged over ravnFlockLlmConfig for
-# flocks launched on that definition. Under OpenShell a flock's Ravns run on
-# the session definition's CLI runtime (Codex for skuldCodex, Claude Code for
-# skuldClaude), so a flock launch fails when the resolved model is one that
-# runtime does not serve.
-#   ravnFlockLlmConfigByDefinition:
-#     skuldCodex:
-#       model: gpt-5.6-terra
-ravnFlockLlmConfigByDefinition: {}
-
 sessionContributors:
   - adapter: "volundr.adapters.outbound.contributors.core.CoreSessionContributor"
     kwargs:
@@ -1422,6 +1390,46 @@ sessionGateway:
   httpRedirect: true
   # -- Extra annotations on the Gateway resource
   annotations: {}
+
+# Live preview: <port>--<session-id>.<domain> opens a port a session listens on,
+# on its own origin, for the session's owner only (niuu.preview_proxy). Needs
+# workloadIdentity (the router's credential to each session's Skuld), session
+# pods with skuld's preview.enabled, a wildcard DNS record for *.<domain>
+# pointing at the session gateway, and the OIDC client below.
+sessionPreview:
+  # -- Serve live previews through the session gateway
+  enabled: false
+  # -- Preview domain (defaults to preview.{domain}); the listener serves *.<domain>
+  domain: ""
+  # -- TLS secret for the *.<domain> listener (defaults to "{gateway name}-preview-tls");
+  # cert-manager issues it through sessionGateway.certIssuer, which must solve DNS-01
+  tlsSecretName: ""
+  # -- How long an idle preview stream (hot-reload WebSocket, SSE) stays open at
+  # Forge's Envoy. Past it the dev server's client reconnects.
+  streamIdleTimeout: "3600s"
+  # -- Lifetime of the router credential minted per forwarded request
+  credentialTtlSeconds: 60
+  # -- Audience of the router credential; session pods' Skuld verifies it
+  credentialAudience: "volundr-api"
+  # Sign-in on the preview domain: Envoy Gateway runs the OIDC code flow for
+  # every preview host, with its session cookies scoped to the preview domain
+  # (never the platform's parent domain), and forwards the access token to
+  # Forge, whose Envoy verifies it like any other request.
+  oidc:
+    # -- OIDC issuer (the realm Forge's Envoy trusts)
+    issuer: ""
+    # -- Confidential client for the preview domain; its access tokens must
+    # carry an audience Forge's Envoy accepts
+    clientId: ""
+    # -- Secret (in this namespace) holding the client secret under key "client-secret"
+    clientSecretName: ""
+    # -- Host the provider redirects back to (defaults to auth.<domain>); one
+    # registered redirect URI, https://<host>/oauth2/callback, serves every preview
+    callbackHost: ""
+    # -- Scopes requested at sign-in
+    scopes: ["openid", "profile", "email"]
+    # -- Path on any preview host that signs out of the preview domain
+    logoutPath: "/.niuu/preview/logout"
 
 # Auth discovery (public endpoint for CLI auto-configuration)
 authDiscovery:
@@ -2233,7 +2241,11 @@ webNext:
     auth:
       issuer: ""
       clientId: ""
-    # -- Optional service URL overrides keyed by plugin-sdk service id
+    # -- Optional service URL overrides keyed by plugin-sdk service id.
+    # `forge.scope: node` scopes the UI to the one Forge node at `forge.baseUrl`
+    # (hosts, sessions, metrics and resources of that node only, which names its
+    # own Guild registry entry at GET /api/v1/forge/guild). The default, `guild`,
+    # expects the Guild's Forge facade and covers every registered Forge.
     services: {}
 
   resources:
@@ -2313,6 +2325,10 @@ podSecurityContext:
   runAsNonRoot: true
   runAsUser: 1000
   fsGroup: 1000
+  # Only when the volume's root does not already belong to fsGroup: a recursive change on
+  # every start makes Forge's private files group-readable (its generated host SSH key,
+  # which OpenSSH and Forge then refuse) and slows mounting a large sessions volume.
+  fsGroupChangePolicy: OnRootMismatch
   seccompProfile:
     type: RuntimeDefault
 
@@ -2524,22 +2540,22 @@ initContainers: []
 # -- Container lifecycle hooks
 lifecycle: {}
 
-# Ravn persona distribution — controls how persona YAML is delivered to ravn sidecars.
+# Persona distribution — controls how persona YAML is delivered to workloads.
 #
 # Three modes:
 #
 #   mountedVolume (default for cluster deployments)
 #     Volundr writes personas to a Kubernetes ConfigMap ("ravn-personas").
-#     Flock pods receive the ConfigMap as a read-only volume mount at mountPath.
+#     Workload pods receive the ConfigMap as a read-only volume mount at mountPath.
 #     The RBAC Role in rbac-personas.yaml grants volundr write access.
 #
 #   http
-#     Ravn sidecars fetch personas at runtime via the volundr REST API.
-#     No ConfigMap volume is needed. Sidecars authenticate with their
+#     Workloads fetch personas at runtime via the volundr REST API.
+#     No ConfigMap volume is needed. Workloads authenticate with their
 #     projected workload identity and the configured Envoy-facing Volundr URL.
 #
 #   filesystem (dev / single-node)
-#     Sidecars use only the bundled built-in personas shipped in the ravn image.
+#     Workloads use only the bundled built-in personas shipped in the personas package.
 #     No volumes, secrets, or RBAC additions required.
 #
 personaSource:
@@ -2547,9 +2563,9 @@ personaSource:
   mode: mountedVolume
   # -- ConfigMap name for mountedVolume mode
   configmapName: ravn-personas
-  # -- Mount path inside ravn sidecar containers (mountedVolume mode)
+  # -- Mount path inside workload containers (mountedVolume mode)
   mountPath: /etc/ravn/personas
-  # -- Volundr base URL that sidecars call to fetch personas (http mode)
+  # -- Volundr base URL that workloads call to fetch personas (http mode)
   httpBaseUrl: http://volundr:8080
 
 pat:

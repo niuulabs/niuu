@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from niuu.domain.guild_membership import GuildMembership
+from niuu.domain.guild_membership import GuildInstance, GuildMembership
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.domain.models import Principal
 
@@ -21,6 +21,34 @@ INSTANCE_UNKNOWN_DETAIL = (
     "cluster, set the Volundr chart's guild.instanceId, guild.instanceName and "
     "guild.instanceSlug from the Guild's registry (GET /api/v1/niuu/targets/volundr)."
 )
+
+
+def own_instance(membership: GuildMembership | None, instance_id: str | None) -> GuildInstance:
+    """This node's own Guild instance, for a read that names an ``instance_id``.
+
+    A node answers only for itself: a client scoped to one node reads its
+    figures from the node, keyed by the registry id the Guild facade uses.
+
+    Raises:
+        HTTPException: 404 when the node belongs to no Guild or *instance_id*
+            names another Forge; 503 when the node's own instance is not recorded.
+    """
+    if membership is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_JOINED_DETAIL)
+    instance = membership.instance
+    if instance is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            INSTANCE_UNKNOWN_DETAIL.format(guild_url=membership.guild_url),
+        )
+    if instance_id is not None and instance_id != instance.id:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"Instance {instance_id} is not this Forge node ({instance.name}, "
+            f"{instance.id}); read other Forges through the Guild at "
+            f"{membership.guild_url}",
+        )
+    return instance
 
 
 class GuildMembershipResponse(BaseModel):

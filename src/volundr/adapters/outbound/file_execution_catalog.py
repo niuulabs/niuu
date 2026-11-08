@@ -66,6 +66,10 @@ _UniqueKeyLoader.add_constructor(
 )
 
 
+#: A catalog.yaml key that once let a launch choose between executions.
+_REMOVED_LAUNCH_EXECUTIONS = "launch_executions"
+
+
 class _CatalogManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
@@ -109,7 +113,7 @@ class FileExecutionCatalog(ExecutionCatalogPort):
     def load(self) -> ExecutionCatalogSnapshot:
         if not self._root.is_dir():
             raise ExecutionCatalogError(f"Execution catalog directory does not exist: {self._root}")
-        manifest = self._read_model(self._root / "catalog.yaml", _CatalogManifest)
+        manifest = self._read_manifest(self._root / "catalog.yaml")
         machines = self._load_entries("machines", MachineProfile)
         recipes = self._load_recipes()
         access = self._load_entries("access", AccessConfiguration)
@@ -270,6 +274,21 @@ class FileExecutionCatalog(ExecutionCatalogPort):
         if not isinstance(value, dict):
             raise ExecutionCatalogError(f"Execution catalog file must contain a mapping: {path}")
         return value
+
+    @classmethod
+    def _read_manifest(cls, path: Path) -> _CatalogManifest:
+        raw = cls._read_mapping(path)
+        if _REMOVED_LAUNCH_EXECUTIONS in raw:
+            raise ExecutionCatalogError(
+                f"{path} sets {_REMOVED_LAUNCH_EXECUTIONS}, which no longer exists: a VM Forge "
+                "runs exactly one runtime, the one its default_execution names, and sessions "
+                f"never choose another. Remove {_REMOVED_LAUNCH_EXECUTIONS} from catalog.yaml; "
+                "to offer a different runtime, run it as its own VM Forge."
+            )
+        try:
+            return _CatalogManifest.model_validate(raw)
+        except ValidationError as exc:
+            raise ExecutionCatalogError(f"Invalid execution catalog file {path}: {exc}") from exc
 
     @classmethod
     def _read_model(cls, path: Path, model: type[_EntryT]) -> _EntryT:

@@ -1,12 +1,12 @@
 """Shared discovery adapter builder (NIU-631).
 
-Extracted from ``ravn.cli.commands._build_discovery_adapters`` so both Ravn
-and Skuld can construct discovery adapters from config without duplicating the
-dynamic import + composite wiring pattern.
+Lets every mesh participant (Ravn, Skuld, future agents) construct discovery
+adapters from config without duplicating the dynamic import + composite wiring
+pattern.
 
-Callers supply a pre-built ``own_identity`` object (either
-``ravn.domain.models.RavnIdentity`` or ``niuu.mesh.identity.MeshIdentity`` —
-discovery adapters use duck typing and only access named fields).
+Callers supply a pre-built ``own_identity`` object, a
+``niuu.mesh.identity.MeshIdentity`` (discovery adapters only access named
+fields).
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ from niuu.utils import import_class
 logger = logging.getLogger("niuu.mesh.discovery")
 
 DISCOVERY_ALIASES: dict[str, str] = {
-    "mdns": "ravn.adapters.discovery.mdns.MdnsDiscoveryAdapter",
-    "sleipnir": "ravn.adapters.discovery.sleipnir.SleipnirDiscoveryAdapter",
-    "k8s": "ravn.adapters.discovery.k8s.K8sDiscoveryAdapter",
-    "static": "ravn.adapters.discovery.static.StaticDiscoveryAdapter",
-    "event_bus": "ravn.adapters.discovery.event_bus.EventBusDiscoveryAdapter",
+    "mdns": "niuu.adapters.discovery.mdns.MdnsDiscoveryAdapter",
+    "sleipnir": "niuu.adapters.discovery.sleipnir.SleipnirDiscoveryAdapter",
+    "k8s": "niuu.adapters.discovery.k8s.K8sDiscoveryAdapter",
+    "static": "niuu.adapters.discovery.static.StaticDiscoveryAdapter",
+    "event_bus": "niuu.adapters.discovery.event_bus.EventBusDiscoveryAdapter",
 }
 
 
@@ -53,7 +53,7 @@ def build_discovery_adapters(
     own_identity:
         This node's identity — passed as ``own_identity`` kwarg to each
         discovery adapter.  Accepts any object with the expected fields
-        (``RavnIdentity`` or ``MeshIdentity``).
+        (a ``MeshIdentity``).
     heartbeat_interval_s:
         Default heartbeat interval injected when not specified per-adapter.
     peer_ttl_s:
@@ -81,7 +81,7 @@ def build_discovery_adapters(
         return None
 
     CompositeDiscoveryAdapter = import_class(  # noqa: N806
-        "ravn.adapters.discovery.composite.CompositeDiscoveryAdapter"
+        "niuu.adapters.discovery.composite.CompositeDiscoveryAdapter"
     )
 
     backends: list[Any] = []

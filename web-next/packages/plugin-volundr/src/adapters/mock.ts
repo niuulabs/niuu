@@ -1,6 +1,7 @@
 /**
  * Mock adapters for Völundr ports — used in tests and dev mode.
  */
+import type { SecretRequest } from '@niuulabs/domain';
 import type { IVolundrService, ResolveWorkflowGateRequest } from '../ports/IVolundrService';
 import type { ForgeProject } from '../models/volundr.model';
 import type { IClusterAdapter } from '../ports/IClusterAdapter';
@@ -12,7 +13,7 @@ import type {
   CatalogEntry,
   VolundrSession,
   VolundrStats,
-  VolundrMessage,
+  SessionMessageDelivery,
   StoredCredential,
   FeatureModule,
   SecretType,
@@ -26,9 +27,11 @@ import type {
   VolundrWorkspace,
   VolundrWorkflowGate,
   ExternalSession,
+  SessionReadState,
 } from '../models/volundr.model';
 import type { Cluster } from '../domain/cluster';
-import type { Session } from '../domain/session';
+import { SessionReadStateConflictError, type Session } from '../domain/session';
+import { createMockComputeHosts } from './computeHosts.mock';
 
 // ---------------------------------------------------------------------------
 // Seed data
@@ -58,6 +61,19 @@ const SEED_SESSIONS: VolundrSession[] = [
     tokensUsed: 1_200,
     taskType: 'skuld-claude',
     activityState: null,
+  },
+];
+
+const SEED_SECRET_REQUESTS: SecretRequest[] = [
+  {
+    id: 'secret-request-1',
+    sessionId: 'sess-1',
+    name: 'GITLAB_TOKEN',
+    purpose: 'Push the release branch to the internal GitLab',
+    target: 'gitlab.niuu.world',
+    status: 'pending',
+    keep: null,
+    credentialName: null,
   },
 ];
 
@@ -586,7 +602,36 @@ const SEED_DOMAIN_SESSIONS: Session[] = [
     state: 'provisioning',
     startedAt: new Date(Date.now() - 60_000).toISOString(),
     connectionType: 'cli',
-    bootProgress: 0.3,
+    startup: {
+      startedAt: new Date(Date.now() - 60_000).toISOString(),
+      progressError: null,
+      stages: [
+        {
+          key: 'launch',
+          label: 'Preparing launch',
+          state: 'done',
+          detail: null,
+          startedAt: new Date(Date.now() - 60_000).toISOString(),
+          finishedAt: new Date(Date.now() - 58_000).toISOString(),
+        },
+        {
+          key: 'volumes',
+          label: 'Attaching volumes',
+          state: 'active',
+          detail: 'AttachVolume.Attach succeeded for volume "pvc-mock"',
+          startedAt: new Date(Date.now() - 58_000).toISOString(),
+          finishedAt: null,
+        },
+        {
+          key: 'containers',
+          label: 'Starting containers',
+          state: 'pending',
+          detail: null,
+          startedAt: null,
+          finishedAt: null,
+        },
+      ],
+    },
     preview: 'cloning',
     resources: {
       cpuRequest: 2,
@@ -919,7 +964,6 @@ const SEED_DOMAIN_SESSIONS: Session[] = [
     state: 'provisioning',
     startedAt: new Date(Date.now() - 120_000).toISOString(),
     connectionType: 'api',
-    bootProgress: 0.45,
     resources: {
       cpuRequest: 2,
       cpuLimit: 4,
@@ -1241,10 +1285,39 @@ export function createMockVolundrService(): IVolundrService {
   const sessions = [...SEED_SESSIONS];
   const projects = SEED_PROJECTS.map((project) => ({ ...project }));
   const projectRevisions = new Map<string, number>();
+  const secretRequests = new Map(
+    SEED_SECRET_REQUESTS.map((request) => [request.id, { ...request }]),
+  );
+  const pendingSecretRequest = (sessionId: string, requestId: string): SecretRequest => {
+    const request = secretRequests.get(requestId);
+    if (!request || request.sessionId !== sessionId) {
+      throw new Error(`Secret request not found: ${requestId}`);
+    }
+    if (request.status !== 'pending') {
+      throw new Error(`Secret request ${requestId} is already ${request.status}`);
+    }
+    return request;
+  };
   const externalSessions = SEED_EXTERNAL_SESSIONS.map((session) => ({ ...session }));
   const credentials = new Map(SEED_CREDENTIALS.map((credential) => [credential.name, credential]));
   const launchSpecs = [...SEED_LAUNCH_SPECS];
   const workflowGates = new Map<string, VolundrWorkflowGate[]>();
+  const readStates = new Map<string, SessionReadState>();
+  const readStateOf = (id: string): SessionReadState => {
+    const stored = readStates.get(id);
+    if (stored) return stored;
+    const session = sessions.find((item) => item.id === id);
+    if (!session) throw new Error('Session not found');
+    return (
+      session.readState ?? {
+        isUnread: false,
+        latestOutputSeq: 0,
+        readThroughSeq: 0,
+        manuallyUnread: false,
+        revision: 0,
+      }
+    );
+  };
 
   return {
     getFeatures: async () => ({
@@ -1253,6 +1326,15 @@ export function createMockVolundrService(): IVolundrService {
       miniMode: false,
     }),
 
+    getLivePreviewConfig: async () => ({
+      enabled: true,
+      originTemplate: 'http://{port}--{session_id}.localhost:8080',
+    }),
+
+    getSessionRuntimes: async () => [],
+
+    ...createMockComputeHosts(),
+
     getSessionDefinitions: async () => [...SEED_SESSION_DEFINITIONS],
 
     getSessions: async () => sessions,
@@ -1260,6 +1342,25 @@ export function createMockVolundrService(): IVolundrService {
     getSession: async (id) => sessions.find((s) => s.id === id) ?? null,
     getRuntimeVersion: async () => ({ state: 'unknown', current: null, available: null }),
 
+    getSessionReadState: async (id) => ({ ...readStateOf(id) }),
+    changeSessionReadState: async (id, change) => {
+      const current = readStateOf(id);
+      if (change.expectedRevision !== current.revision) throw new SessionReadStateConflictError();
+      const readThroughSeq =
+        change.state === 'read'
+          ? Math.max(current.readThroughSeq, change.throughSeq)
+          : current.readThroughSeq;
+      const manuallyUnread = change.state === 'unread';
+      const next: SessionReadState = {
+        ...current,
+        readThroughSeq,
+        manuallyUnread,
+        isUnread: manuallyUnread || current.latestOutputSeq > readThroughSeq,
+        revision: current.revision + 1,
+      };
+      readStates.set(id, next);
+      return { ...next };
+    },
     getActiveSessions: async () =>
       sessions.filter((s) => ['starting', 'provisioning', 'running'].includes(s.status)),
 
@@ -1289,6 +1390,8 @@ export function createMockVolundrService(): IVolundrService {
     updateProject: async (project, changes) => {
       const stored = projects.find((item) => item.id === project.id);
       if (!stored) throw new Error('Project not found');
+      if ((project.revision ?? 1) !== (stored.revision ?? 1))
+        throw new Error('Project changed; reload before saving');
       Object.assign(stored, changes, { revision: (stored.revision ?? 1) + 1 });
       return { ...stored };
     },
@@ -1425,12 +1528,48 @@ export function createMockVolundrService(): IVolundrService {
     }),
 
     updateSession: async (_id, updates) => ({ ...sessions[0]!, ...updates }),
+    forkSession: async (sessionId, name) => {
+      const parent = sessions.find((session) => session.id === sessionId);
+      if (!parent) throw new Error(`Session not found: ${sessionId}`);
+      const child: VolundrSession = {
+        ...parent,
+        id: `${parent.id}-side-${sessions.length}`,
+        name,
+        status: 'starting',
+        messageCount: 0,
+        tokensUsed: 0,
+        lastActive: Date.now(),
+      };
+      sessions.unshift(child);
+      return child;
+    },
 
     stopSession: async () => {},
     resumeSession: async () => {},
     deleteSession: async () => {},
     archiveSession: async () => {},
     archiveStoppedSessions: async () => [],
+    getSecretRequest: async (sessionId, requestId) => {
+      const request = secretRequests.get(requestId);
+      if (!request || request.sessionId !== sessionId) {
+        throw new Error(`Secret request not found: ${requestId}`);
+      }
+      return { ...request };
+    },
+    fulfillSecretRequest: async (sessionId, requestId, { keep }) => {
+      const request = pendingSecretRequest(sessionId, requestId);
+      // The mock keeps no value: it records only the decision.
+      request.status = 'fulfilled';
+      request.keep = keep;
+      request.credentialName =
+        keep === 'saved' ? request.name.toLowerCase().replace(/_/g, '-') : null;
+      return { ...request };
+    },
+    declineSecretRequest: async (sessionId, requestId) => {
+      const request = pendingSecretRequest(sessionId, requestId);
+      request.status = 'declined';
+      return { ...request };
+    },
     restoreSession: async () => {},
     listArchivedSessions: async () => [],
 
@@ -1469,6 +1608,9 @@ export function createMockVolundrService(): IVolundrService {
     },
 
     getConversationHistory: async () => ({ turns: [] }),
+    getConversationTurn: async (_sessionId, turnId) => {
+      throw new Error(`The mock conversation has no turn ${turnId}`);
+    },
     getWorkflowGates: async (sessionId) => workflowGates.get(sessionId) ?? [],
     resolveWorkflowGate: async (
       sessionId: string,
@@ -1513,12 +1655,10 @@ export function createMockVolundrService(): IVolundrService {
       return resolved;
     },
     getMessages: async () => [],
-    sendMessage: async (_sessionId, content): Promise<VolundrMessage> => ({
-      id: `msg-${Date.now()}`,
-      sessionId: _sessionId,
-      role: 'assistant',
-      content: `echo: ${content}`,
-      timestamp: Date.now(),
+    sendMessage: async (sessionId): Promise<SessionMessageDelivery> => ({
+      status: 'delivered',
+      requestId: `mock-request-${Date.now()}`,
+      sessionId,
     }),
     subscribeMessages: () => () => {},
 

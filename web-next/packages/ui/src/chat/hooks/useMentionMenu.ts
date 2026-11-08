@@ -142,7 +142,10 @@ export function useMentionMenu(
 
       const queryLower = query.toLowerCase();
       const agentItems: MentionMenuItem[] = Array.from(participants.values())
-        .filter((participant) => participant.participantType === 'ravn')
+        // A worker that left the room can no longer be asked.
+        .filter(
+          (participant) => participant.participantType === 'ravn' && participant.status !== 'left',
+        )
         .flatMap((participant): MentionMenuItem[] => {
           if (!eventRouting) return [{ kind: 'agent', participant }];
           return [

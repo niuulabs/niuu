@@ -1,12 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { ArrowRight } from 'lucide-react';
 import type { PersonaDetail } from '../../ports';
-import type { Ravn } from '../../domain/ravn';
-import { nameForRavn } from '../../domain/residentActions';
-import { ravnLifeState, ravnTarget } from '../../application/ravnWorkbench';
-import { useTriggers } from '../hooks/useTriggers';
-import { RavnStateBadge } from '../workbench/RavnMark';
-import { errorText } from '../workbench/errorText';
 
 function Section({
   title,
@@ -46,43 +40,8 @@ export function describeFanIn(fanIn: PersonaDetail['fanIn']): string | null {
   return typeof target === 'string' ? `${strategy} → ${target}` : strategy;
 }
 
-function Triggers({ persona }: { persona: PersonaDetail }) {
-  const triggers = useTriggers();
-  if (triggers.isLoading) return <p className="rw-muted">Loading triggers…</p>;
-  if (triggers.isError) {
-    return (
-      <p className="rw-muted" data-testid="persona-triggers-unavailable">
-        Triggers can’t be listed: {errorText(triggers.error, 'the trigger service did not answer')}.
-      </p>
-    );
-  }
-  const mine = (triggers.data ?? []).filter((trigger) => trigger.personaName === persona.name);
-  if (mine.length === 0) {
-    return <p className="rw-muted">Nothing starts this persona on a schedule or hook.</p>;
-  }
-  return (
-    <div className="rw-kv">
-      {mine.map((trigger) => (
-        <Field key={trigger.id} label={`${trigger.kind}${trigger.enabled ? '' : ' · paused'}`}>
-          <span className="rw-kv__v--mono">{trigger.spec}</span>
-        </Field>
-      ))}
-    </div>
-  );
-}
-
 /** A persona read as a character sheet: what it does, how it fits the flow, what it may use. */
-export function PersonaSheet({
-  persona,
-  usedBy,
-  onOpenRavn,
-  onDeploy,
-}: {
-  persona: PersonaDetail;
-  usedBy: Ravn[];
-  onOpenRavn: (ravn: Ravn) => void;
-  onDeploy: () => void;
-}) {
+export function PersonaSheet({ persona }: { persona: PersonaDetail }) {
   const [promptOpen, setPromptOpen] = useState(false);
   const consumes = persona.consumes.events;
   const schema = Object.entries(persona.produces.schemaDef ?? {});
@@ -184,37 +143,6 @@ export function PersonaSheet({
         <pre className="rw-prompt" data-open={promptOpen} data-testid="persona-prompt">
           {persona.systemPromptTemplate || 'No system prompt.'}
         </pre>
-      </Section>
-
-      <Section title="Triggers">
-        <Triggers persona={persona} />
-      </Section>
-
-      <Section title="Agents using it" testId="persona-used-by">
-        {usedBy.length === 0 ? (
-          <p className="rw-muted">
-            None yet.{' '}
-            <button type="button" className="rw-btn rw-btn--small" onClick={onDeploy}>
-              Deploy one
-            </button>
-          </p>
-        ) : (
-          <div className="rw-kv">
-            {usedBy.map((ravn) => (
-              <div key={`${ravn.instanceId ?? ''}:${ravn.id}`}>
-                <div className="rw-kv__k">{ravnTarget(ravn)}</div>
-                <button
-                  type="button"
-                  className="rw-btn rw-btn--small"
-                  onClick={() => onOpenRavn(ravn)}
-                >
-                  <RavnStateBadge state={ravnLifeState(ravn)} />
-                  {nameForRavn(ravn)}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
       </Section>
 
       <p className="rw-muted">

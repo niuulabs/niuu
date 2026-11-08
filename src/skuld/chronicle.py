@@ -244,15 +244,11 @@ class ChronicleMixin:
         Called after the session completes.  The reviewer ravn subscribes
         to ``code.changed`` and will trigger a review when it receives this.
 
-        A flock broker publishes nothing here: its turns are coordination, not a
-        peer's work, and announcing them as ``code.changed`` under the default
-        ``coder`` persona told the reviewer the coder Ravn had produced a change
-        it never made.
         """
-        if self._mesh_adapter is None or self._settings.mesh.flock_broker:
+        if self._mesh_adapter is None:
             return
 
-        from ravn.domain.events import RavnEvent, RavnEventType
+        from niuu.mesh.events import MeshEvent, MeshEventType
 
         diff_summary = await self._git_diff_summary()
 
@@ -280,8 +276,8 @@ class ChronicleMixin:
         if self._artifacts.files_changed:
             outcome_payload["files_changed"] = list(self._artifacts.files_changed)
 
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source=f"skuld:{self._mesh_adapter.peer_id}",
             payload=outcome_payload,
             timestamp=datetime.now(UTC),

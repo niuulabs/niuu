@@ -176,7 +176,7 @@ describe('useWorkflowBuilder — initial state', () => {
         },
       ]);
       expect(node.executionMode).toBe('parallel');
-      expect(node.maxConcurrent).toBe(3);
+      expect(node.maxConcurrent).toBeUndefined();
       expect(node.joinMode).toBe('all');
     }
   });
@@ -392,7 +392,7 @@ describe('useWorkflowBuilder — addNode', () => {
           path: '/shared',
           categories: ['decision', 'entity'],
           authRef: 'mimir-secret',
-          adapter: 'ravn.adapters.mimir.gbrain.GBrainMimirAdapter',
+          adapter: 'mimir.adapters.gbrain.GBrainMimirAdapter',
           kwargs: { mcp_url: 'https://brain.test/mcp' },
           secretKwargsEnv: { api_token: 'BRAIN_TOKEN' },
           defaultReadPriority: 3,
@@ -407,7 +407,7 @@ describe('useWorkflowBuilder — addNode', () => {
     const resourceNode = result.current.workflow.nodes.find((node) => node.kind === 'resource');
     expect(resourceNode).toBeDefined();
     expect(resourceNode?.label).toBe('Shared Mimir');
-    expect(resourceNode?.adapter).toBe('ravn.adapters.mimir.gbrain.GBrainMimirAdapter');
+    expect(resourceNode?.adapter).toBe('mimir.adapters.gbrain.GBrainMimirAdapter');
     expect(resourceNode?.kwargs).toEqual({ mcp_url: 'https://brain.test/mcp' });
     expect(resourceNode?.secretKwargsEnv).toEqual({ api_token: 'BRAIN_TOKEN' });
     expect(resourceNode?.position).toEqual({ x: 420, y: 240 });

@@ -23,7 +23,7 @@ POSTGRES_VERSION := $(shell python3 -c "exec(open('$(PG_VERSIONS_PY)').read()); 
 PGVECTOR_VERSION := $(shell python3 -c "exec(open('$(PG_VERSIONS_PY)').read()); print(PGVECTOR_VERSION)")
 PGINSTALL_DIR    := build/pginstall
 
-.PHONY: build build-web build-postgres build-cli build-cli-bin build-ravn clean lint test verify \
+.PHONY: build build-web build-postgres build-cli build-cli-bin clean lint test verify \
        test-integration test-integration-volundr test-integration-ting test-integration-sleipnir \
        test-e2e test-e2e-ui test-all test-ravn
 
@@ -60,13 +60,6 @@ build-cli-bin:
 	uv run --extra cli python -m cli.build \
 		--name $(BINARY_NAME) \
 		--entry $(ENTRY_POINT) \
-		--output-dir $(OUTPUT_DIR)
-
-# --------------------------------------------------------------------------
-# Ravn Nuitka single-binary compilation (no postgres/web assets)
-# --------------------------------------------------------------------------
-build-ravn:
-	uv run python -m ravn.build \
 		--output-dir $(OUTPUT_DIR)
 
 # --------------------------------------------------------------------------
@@ -121,10 +114,10 @@ test-e2e-ui:
 test-all: test test-integration test-e2e
 
 # --------------------------------------------------------------------------
-# Ravn-specific tests with coverage
+# Learned-tool runner tests with coverage
 # --------------------------------------------------------------------------
 test-ravn:
-	uv run --extra test pytest tests/ravn/ tests/test_ravn/ -v --tb=short \
+	uv run --extra test pytest tests/test_ravn/ -v --tb=short \
 		--cov=src/ravn --cov-report=term-missing --cov-fail-under=85
 
 # --------------------------------------------------------------------------

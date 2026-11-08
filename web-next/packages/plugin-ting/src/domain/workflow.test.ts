@@ -5,6 +5,9 @@ import {
   WorkflowValidationError,
   workflowNodeSchema,
   workflowEdgeSchema,
+  workflowGateNodeSchema,
+  workflowStageNodeSchema,
+  workflowWaitNodeSchema,
   includeNodes,
   providedNodeIds,
   resolveWorkflowNode,
@@ -196,6 +199,98 @@ describe('workflowEdgeSchema', () => {
   it('allows absent label', () => {
     const result = workflowEdgeSchema.parse(edgeAB);
     expect(result.label).toBeUndefined();
+  });
+
+  it('keeps a rework edge and its bound through a parse', () => {
+    const result = workflowEdgeSchema.parse({ ...edgeAB, rework: true, maxIterations: 3 });
+    expect(result.rework).toBe(true);
+    expect(result.maxIterations).toBe(3);
+  });
+
+  it('leaves a forward edge without rework fields', () => {
+    const result = workflowEdgeSchema.parse(edgeAB);
+    expect(result.rework).toBeUndefined();
+    expect(result.maxIterations).toBeUndefined();
+  });
+
+  it('rejects a bound that is not a positive whole number', () => {
+    expect(() => workflowEdgeSchema.parse({ ...edgeAB, rework: true, maxIterations: 0 })).toThrow();
+    expect(() =>
+      workflowEdgeSchema.parse({ ...edgeAB, rework: true, maxIterations: 1.5 }),
+    ).toThrow();
+  });
+});
+
+describe('step engine fields round-trip', () => {
+  const position = { x: 0, y: 0 };
+
+  it("keeps a gate's declared decision events", () => {
+    const gate = workflowGateNodeSchema.parse({
+      id: 'gate',
+      kind: 'gate',
+      label: 'Approve',
+      condition: 'ok?',
+      approvalEvent: 'merge.approved',
+      changesRequestedEvent: 'review.changes_requested',
+      position,
+    });
+    expect(gate.approvalEvent).toBe('merge.approved');
+    expect(gate.changesRequestedEvent).toBe('review.changes_requested');
+  });
+
+  it('leaves maxConcurrent unset on a stage unless the author set it', () => {
+    const base = { id: 's', kind: 'stage', label: 'Stage', runId: null, position } as const;
+    const unset = workflowStageNodeSchema.parse(base);
+    expect(unset.maxConcurrent).toBeUndefined();
+    expect('maxConcurrent' in unset).toBe(false);
+    expect(workflowStageNodeSchema.parse({ ...base, maxConcurrent: 6 }).maxConcurrent).toBe(6);
+    expect(() => workflowStageNodeSchema.parse({ ...base, maxConcurrent: 0 })).toThrow();
+  });
+
+  it('keeps a per-node deadline on stage, gate and wait nodes', () => {
+    const stage = workflowStageNodeSchema.parse({
+      id: 's',
+      kind: 'stage',
+      label: 'Stage',
+      runId: null,
+      deadlineSeconds: 600,
+      position,
+    });
+    const gate = workflowGateNodeSchema.parse({
+      id: 'g',
+      kind: 'gate',
+      label: 'Gate',
+      condition: 'ok?',
+      deadlineSeconds: 86400,
+      position,
+    });
+    const wait = workflowWaitNodeSchema.parse({
+      id: 'w',
+      kind: 'wait',
+      label: 'Wait',
+      deadlineSeconds: 3600,
+      position,
+    });
+    expect([stage.deadlineSeconds, gate.deadlineSeconds, wait.deadlineSeconds]).toEqual([
+      600, 86400, 3600,
+    ]);
+  });
+
+  it('keeps rework edges on a whole workflow, ready to be saved', () => {
+    const parsed = workflowSchema.parse(
+      makeWorkflow({
+        edges: [
+          edgeAB,
+          {
+            ...edgeBC,
+            label: 'review.changes_requested -> code.requested',
+            rework: true,
+            maxIterations: 3,
+          },
+        ],
+      }),
+    );
+    expect(parsed.edges[1]).toMatchObject({ rework: true, maxIterations: 3 });
   });
 });
 

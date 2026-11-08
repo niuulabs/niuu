@@ -95,8 +95,7 @@ Modeled on Hindsight's retain/reflect, fully deterministic (zero LLM calls):
   `GET /mimir/evidence?path=…`. Thresholds live in `EvidenceConfig`.
 - **Write-time consolidation ("micro-dream")** — every `ingest` finds the
   pages the new source bears on and recomputes their evidence immediately
-  (`consolidate_on_ingest`, on by default). The nightly dream cycle remains
-  for full-wiki passes.
+  (`consolidate_on_ingest`, on by default).
 - **Belief revision with journey** — `POST /mimir/page/revise` rewrites a fact
   in Compiled Truth *and* appends
   `belief revised: "old" → "new". [Source: …]` to the Timeline, so "what did
@@ -116,14 +115,13 @@ Mimir knows (pointers only — use mimir_read for details):
 [[mimir]] (technology, high confidence, updated 2026-06-12) — mimir_read entities/mimir.md
 ```
 
-Hook points: the Ravn drive loop (persona turns) and the Skuld broker
-(messages forwarded to CLI agents). Per-session dedupe, ~1 ms per turn at
+Hook point: the Skuld broker (messages forwarded to CLI agents). Per-session dedupe, ~1 ms per turn at
 1k entities, fail-open (a dead Mímir never blocks a turn). Each injection
 logs `mimir.reflex.injected session=<id> slugs=[…]` for follow-up-rate
 measurement.
 
 **Base URL resolution**: explicit `reflex.base_url` → first HTTP mimir
-instance (Ravn) → derived from `volundr_api_url` as `{platform}/api/v1`
+instance → derived from `volundr_api_url` as `{platform}/api/v1`
 (Skuld brokers get this automatically). If nothing resolves, the reflex stays
 inert with a single warning. Disable with `reflex.enabled: false`
 (`SKULD__REFLEX__ENABLED=false` for brokers).
@@ -137,8 +135,8 @@ inert with a single warning. Disable with `reflex.enabled: false`
 | Surface | Tools |
 |---|---|
 | **MCP** (`python -m mimir mcp --path ~/.ravn/mimir`) | `mimir_search`, `mimir_read`, `mimir_write`, `mimir_ingest`, `mimir_read_source`, `mimir_lint`, `mimir_stats`, `mimir_related` |
-| **Shell shims** (generated per Skuld session in `.skuld-tools/bin/`) | same eight commands, backed by `ravn.cli.mimir_bridge`; work against a local path or an HTTP URL via `RAVN_MIMIR_PATH` |
-| **Ravn tools** | `MimirIngestTool`, `MimirReadTool`, `MimirWriteTool`, `MimirSearchTool`, `MimirLintTool` (permission-gated: `mimir:read` / `mimir:write`) |
+| **Shell shims** (generated per Skuld session in `.skuld-tools/bin/`) | same eight commands, backed by `mimir.bridge`; work against a local path or an HTTP URL via `RAVN_MIMIR_PATH` |
+| **Tool classes** | `MimirIngestTool`, `MimirReadTool`, `MimirWriteTool`, `MimirSearchTool`, `MimirLintTool` (permission-gated: `mimir:read` / `mimir:write`) for a runtime that embeds Mímir as tools |
 
 `mimir_related --path entities/alice.md --depth 2 [--rel works_at]` traverses
 the wikilink graph in both directions — use it for relationship questions
@@ -163,9 +161,9 @@ Nine tabs under the Mímir rune: **Overview** (KPIs, mounts, live activity —
 writes appear within 5 s) · **Pages** (tree + zone editor) · **Sources**
 (ingest form + raw records) · **Search** (FTS/semantic/hybrid toggle + debug
 score breakdown) · **Graph** (force-directed, degree-scaled nodes, pan/zoom) ·
-**Registry** (mount CRUD) · **Wardens** (ravn bindings lifecycle) · **Health**
+**Registry** (mount CRUD) · **Health**
 (doctor checklist + lint detail with fixes) · **Analytics** (eval metrics,
-query traffic, dream-cycle history).
+query traffic).
 
 ---
 
@@ -248,17 +246,15 @@ Change a boost → run `uv run python scripts/mimir_ranking_ablation.py
 `min_token_overlap=2`, `weakening_after_days=60`, `stale_after_days=90`,
 `strengthening_min_proofs=3`, `consolidate_on_ingest=True`.
 
-### Reflex (Ravn `mimir.reflex` / Skuld `reflex`, env `SKULD__REFLEX__*`)
+### Reflex (`mimir.reflex` / Skuld `reflex`, env `SKULD__REFLEX__*`)
 
 `enabled=True`, `max_pointers=5`, `cache_ttl_seconds=300`,
 `timeout_seconds=5`, `base_url=""` (auto-derived; see §4).
 
-### Ravn-side `MimirConfig` (agent host)
+### Client-side `MimirConfig` (a host that mounts Mímir)
 
-`enabled`, `path`, `auto_distill` (session knowledge capture),
-`idle_lint_threshold_minutes`, `instances` (HTTP mounts),
-`write_routing` (prefix → mount rules), `reflex`, and the
-`dream_cycle` trigger (nightly curator persona; disabled by default).
+`enabled`, `path`, `categories`, `search`, `instances` (HTTP mounts),
+`write_routing` (prefix → mount rules), `read_retry`, and `reflex`.
 
 ---
 
@@ -293,7 +289,7 @@ state; the markdown + `raw/` JSON are the only things that matter.
 | Changed ranking/search code | `python -m mimir eval --against tests/test_mimir/evals/baseline.json --fail-on-regression` (CI enforces this) |
 | Improved retrieval intentionally | refresh the baseline: `python -m mimir eval --json --out tests/test_mimir/evals/baseline.json` |
 | Index corruption suspected | delete `search.db`; it rebuilds on startup |
-| Want reflex off for a session | `SKULD__REFLEX__ENABLED=false` (broker) / `mimir.reflex.enabled: false` (ravn) |
+| Want reflex off for a session | `SKULD__REFLEX__ENABLED=false` (broker) / `mimir.reflex.enabled: false` (client config) |
 | Measuring reflex usefulness | grep logs for `mimir.reflex.injected`, correlate with subsequent `mimir_read` calls |
 
 ### Exploring the knowledge graph
@@ -331,8 +327,8 @@ in this checkout; a future adapter can implement the same port.
 Analytics includes a mount-scoped inspection section. Markdown Mimir reports
 page/source counts and its recorded write/lint timestamps. gbrain reports its
 HTTP health, version, storage engine, and page/category counts. Unreported fields
-are displayed as unavailable; the MCP adapter does not currently retrieve native
-dream history, embedding coverage, or synthesis history. This does not imply
+are displayed as unavailable; the MCP adapter does not currently retrieve
+embedding coverage or synthesis history. This does not imply
 those activities have never happened. WikiLLM adapters without an inspection
 implementation report the capability as unsupported.
 
@@ -370,12 +366,10 @@ not automatically create gbrain API tokens or attach a native MCP URL as a Mimir
 HTTP endpoint. It currently creates and inspects releases; upgrades and deletion
 remain under the existing Flux operational workflow.
 
-### Deployments and instance maintenance
+### Deployments
 
-Registry owns deployment; Analytics owns inspection. Wardens are an optional part
-of an instance deployment. Select the instance in Analytics to find its runtime,
-service logs, native gbrain dream output, and attached warden's overview, console,
-and logs. Existing `/mimir/ravns` links open Analytics.
+Registry owns deployment; Analytics owns inspection. Select the instance in
+Analytics to find its runtime and service logs.
 
 A local host can configure the existing dynamic deployment port:
 
@@ -386,7 +380,6 @@ deployment:
   gbrain_command: [gbrain]
   database:
     adapter: niuu.adapters.embedded_postgres.EmbeddedPostgresDatabase
-  warden_defaults: {}
 ```
 
 The host needs the installed gbrain executable, the Niuu Python runtime, and the
@@ -396,14 +389,9 @@ and pkg-config. Local instances use launchd on macOS or systemd user services on
 Linux, survive the management API exiting, and keep their data in separate named
 directories. PostgreSQL listens on a loopback port with a generated SCRAM password. gbrain receives its
 own scoped read/write token; credentials stay in owner-only files. Deployment
-registers its mount automatically. Start/stop also controls the attached warden.
+registers its mount automatically.
 
-Omit `database` only to explicitly choose PGLite; separate-process native dream
-scheduling is unavailable in that mode. Native dreams reuse Ravn's persisted cron
-scheduler, in UTC. Results preserve phase statuses, including skipped phases:
-`lint` and `backlinks` need an on-disk checkout; a database-only instance can run
-`orphans` but cannot manufacture filesystem results. gbrain uses native dream cycles;
-only Mimir deployments can attach a warden.
+Omit `database` only to explicitly choose PGLite.
 
 The local management API uses the host's configured authentication. Production
 requests still require an authenticated administrator through the trusted gateway;
@@ -416,16 +404,10 @@ kwargs configuration. Local and Flux adapters share this deployment port. An
 unreachable target reports its error without hiding available targets.
 
 Flux targets accept operator-owned `secrets` (backend to Secret name, optionally
-using `{name}` for separately provisioned instances) and `warden` chart values.
-The UI asks for the engine, name, target, and maintenance options; images and
-credentials belong to the target configuration. The Mimir chart supports
-`warden.enabled`, `warden.image`, `warden.config` (existing Ravn Settings),
-`warden.envFrom`, and `warden.resources`. Warden data shares the instance PVC;
-its model/provider configuration uses the existing Ravn runtime. Attached workloads carry the existing Kubernetes warden discovery labels.
-Flux inspection reads actual pod/container logs,
-including labeled dream jobs. The deployment role needs HelmRelease get/list/create/
-patch and pod/log get/list. Cluster consoles still require the existing authenticated
-Ravn gateway/console connection; pod logs alone are not an interactive console.
+using `{name}` for separately provisioned instances). The UI asks for the engine,
+name, and target; images and credentials belong to the target configuration.
+Flux inspection reads actual pod/container logs. The deployment role needs
+HelmRelease get/list/create/patch and pod/log get/list.
 
 
 The Registry displays one list of instances, joining configured mounts, saved
@@ -444,60 +426,15 @@ unavailable; its pages and graph remain accessible through their existing APIs.
 
 Registry deployment and connection forms open in the shared modal component.
 Locally managed instances expose a Delete action with confirmation: the local
-service and attached warden are uninstalled before the instance's owned data
+service is uninstalled before the instance's owned data
 folder is removed. A failed shutdown preserves data and reports an error.
 External connections expose Remove (tooltip: Remove connection), which only
 removes the saved connection. Remote deployment deletion is not exposed.
 
 
-### Embedded Mimir warden profiles
-
-Set `warden.enabled: true` on the Mimir chart to run its warden in the same pod
-and release. `warden.spec` accepts the same model, persona, profile, features,
-schedules, console, and broker fields used by manually created wardens. The
-container uses the existing warden artifact renderer, including MCP tool bindings,
-write routing, source/staleness triggers, and persistent queue/dream state under
-`config.dataPath/.warden`. It automatically binds to `config.name` and shares the
-instance volume. The console defaults to loopback port 8764; external access still
-uses the existing authenticated gateway.
+For direct Helm deployment, evaluation capture is a chart value:
 
 ```yaml
-warden:
-  enabled: true
-  # Set image to your published Ravn image containing the embedded runner.
-  spec:
-    persona: mimir-warden
-    model: claude-sonnet-4-6
-    schedules:
-      dream_cycle_cron_expression: "0 3 * * *"
-      staleness_trigger_schedule_hours: 6
-```
-
-Provide the actual image through `warden.image`, and reference existing provider
-Secrets through `warden.envFrom`. Advanced Ravn Settings remain available through
-`warden.config`. Flux passes the same warden values to the chart. Existing separate
-warden releases are not automatically removed: migrate their settings and disable
-the old workload when rolling out the embedded replacement, avoiding two stewards
-writing to the same instance.
-
-
-When attaching a warden in the deployment modal, optional model, persona, dream
-cron, source polling seconds, and staleness interval hours override only those
-fields. Blank fields retain the target profile. Credentials and provider Secrets
-are never accepted through these instance overrides. Local deployment applies them
-to the WardenSpec; Flux writes the same choices to the chart's `warden.spec`.
-For direct Helm deployment:
-
-```yaml
-warden:
-  enabled: true
-  spec:
-    model: claude-sonnet-4-6
-    persona: mimir-warden
-    schedules:
-      dream_cycle_cron_expression: "0 4 * * *"
-      source_trigger_poll_interval_seconds: 120
-      staleness_trigger_schedule_hours: 12
 config:
   evalCapture: true
 ```

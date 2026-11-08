@@ -1,4 +1,4 @@
-"""Resident Valkyrie self-improvement: learned tools, review, and adoption."""
+"""Learned tools: persisted tool artifacts, their execution backends and verification."""
 
 from ravn.valkyrie_evolution.k8s_tool_runner import (
     KubernetesJobExecutor,
@@ -12,24 +12,14 @@ from ravn.valkyrie_evolution.learned_tools import (
     LocalLearnedToolRunner,
 )
 from ravn.valkyrie_evolution.models import (
+    EVOLUTION_ROLLED_BACK_EVENT,
     LearnedToolArtifact,
     LearnedToolManifest,
     ToolReachGrant,
 )
-from ravn.valkyrie_evolution.resident_learning import (
-    EVOLUTION_ACTIVATED_EVENT,
-    EVOLUTION_ROLLED_BACK_EVENT,
-    EVOLUTION_SKILL_INVENTORY_EVENT,
-    SKILL_INVENTORY_STATUS_PRESENT,
-    ResidentLearningIdentity,
-    ResidentLearningRuntime,
-)
 
 __all__ = [
-    "EVOLUTION_ACTIVATED_EVENT",
     "EVOLUTION_ROLLED_BACK_EVENT",
-    "EVOLUTION_SKILL_INVENTORY_EVENT",
-    "SKILL_INVENTORY_STATUS_PRESENT",
     "LearnedTool",
     "LearnedToolArtifact",
     "LearnedToolError",
@@ -39,7 +29,5 @@ __all__ = [
     "LocalLearnedToolRunner",
     "KubernetesJobExecutor",
     "KubernetesJobLearnedToolRunner",
-    "ResidentLearningIdentity",
-    "ResidentLearningRuntime",
     "ToolReachGrant",
 ]

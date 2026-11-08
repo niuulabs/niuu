@@ -99,30 +99,6 @@ class TestConfigCommand:
         assert result.exit_code == 0
 
 
-class TestContextCommand:
-    def test_context_list(self) -> None:
-        app, _, _ = _build_test_app()
-        result = runner.invoke(app, ["context", "list"])
-        assert result.exit_code == 0
-        assert "local" in result.output
-
-    def test_context_use(self) -> None:
-        app, _, _ = _build_test_app()
-        result = runner.invoke(app, ["context", "use", "prod"])
-        assert result.exit_code == 0
-        assert "prod" in result.output
-
-    def test_context_add(self) -> None:
-        app, _, _ = _build_test_app()
-        result = runner.invoke(app, ["context", "add", "staging", "https://staging.niuu.io"])
-        assert result.exit_code == 0
-
-    def test_context_delete(self) -> None:
-        app, _, _ = _build_test_app()
-        result = runner.invoke(app, ["context", "delete", "staging"])
-        assert result.exit_code == 0
-
-
 class TestIdentityCommands:
     def test_login_requires_issuer(self) -> None:
         app, _, _ = _build_test_app()

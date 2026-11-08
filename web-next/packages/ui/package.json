@@ -39,23 +39,23 @@
     "clsx": "^2.1.1",
     "dompurify": "^3",
     "katex": "^0.19",
-    "lucide-react": "^1.61.0",
+    "lucide-react": "^1.68.0",
     "mermaid": "^12",
     "react-markdown": "^10",
     "rehype-katex": "^7",
     "remark-breaks": "^4",
     "remark-gfm": "^4",
     "remark-math": "^6",
-    "shiki": "^4.5.0"
+    "shiki": "^4.6.0"
   },
   "devDependencies": {
     "@niuulabs/design-tokens": "workspace:*",
     "@types/react": "^19.3.0",
-    "autoprefixer": "^10.6.1",
-    "postcss": "^8.5.31",
+    "autoprefixer": "^10.6.2",
+    "postcss": "^8.5.32",
     "postcss-import": "^17.0.1",
     "react": "^19.3.1",
-    "tailwindcss": "^4.3.3",
+    "tailwindcss": "^4.3.4",
     "tsup": "^9.0.0",
     "typescript": "^6.0.3"
   }

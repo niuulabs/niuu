@@ -420,7 +420,9 @@ class TestHandshake:
         await t._handshake()
 
         thread_params = params_captured[1][1]
-        assert thread_params["baseInstructions"] == "Be helpful"
+        # Additive: baseInstructions would replace Codex's own prompt.
+        assert thread_params["developerInstructions"] == "Be helpful"
+        assert "baseInstructions" not in thread_params
         assert thread_params["experimentalRawEvents"] is True
 
     @pytest.mark.asyncio
@@ -561,6 +563,23 @@ class TestSpawnAppServer:
         call_args = spawn.call_args.args
         assert "features.shell_tool=false" in call_args
         assert "features.multi_agent=false" in call_args
+
+    @pytest.mark.asyncio
+    async def test_spawn_app_server_enables_the_plan_tool(self, tmp_path):
+        """Codex >= 0.152 registers update_plan (turn/plan/updated) only when asked."""
+        t = _make_transport(tmp_path)
+        t._codex_socket_path = str(tmp_path / "app-server.sock")
+
+        process = MagicMock()
+        process.pid = 123
+        process.stdout = None
+        process.stderr = None
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)) as spawn:
+            await t._spawn_app_server()
+
+        call_args = list(spawn.call_args.args)
+        flag = call_args.index("tools.update_plan.enabled=true")
+        assert call_args[flag - 1] == "-c"
 
     @pytest.mark.asyncio
     async def test_spawn_app_server_passes_mcp_overrides(self, tmp_path):

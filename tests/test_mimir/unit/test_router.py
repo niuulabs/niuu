@@ -18,12 +18,12 @@ from identity.adapters.identity import (
     AllowAllHeaderAuthenticationAdapter,
     EnvoyHeaderAuthenticationAdapter,
 )
+from mimir.adapters.composite import CompositeMimirAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
+from mimir.domain import MimirMount, WriteRouting
 from mimir.registry import MimirRegistryStore
 from mimir.router import MimirRouter
 from niuu.domain.mimir import compute_source_id
-from ravn.adapters.mimir.composite import CompositeMimirAdapter
-from ravn.domain.mimir import MimirMount, WriteRouting
 
 #: Headers satisfying both _require_write_auth (tenant + WRITE_ROLES) and
 #: _require_deploy_auth for the default EnvoyHeaderAuthenticationAdapter fixture
@@ -1177,17 +1177,17 @@ def test_embedding_search_falls_back_to_page_search(client_with_page: TestClient
     assert result["mount_name"] == "test"
 
 
-def test_lint_reassign_persists_assignee_on_response(client_with_page: TestClient) -> None:
-    lint_report = client_with_page.get("/mimir/lint")
-    issue_id = lint_report.json()["issues"][0]["id"]
+def test_lint_reassign_route_is_gone(client_with_page: TestClient) -> None:
     resp = client_with_page.post(
-        "/mimir/lint/reassign",
-        json={"issue_ids": [issue_id], "assignee": "ravn-fjolnir"},
+        "/mimir/lint/reassign", json={"issue_ids": [], "assignee": "ravn-a"}
     )
-    assert resp.status_code == 200
-    issues = [issue for issue in resp.json()["issues"] if issue["id"] == issue_id]
+    assert resp.status_code in {404, 405}
+
+
+def test_lint_issues_carry_no_assignee(client_with_page: TestClient) -> None:
+    issues = client_with_page.get("/mimir/lint").json()["issues"]
     assert issues
-    assert all(issue["assignee"] == "ravn-fjolnir" for issue in issues)
+    assert all("assignee" not in issue for issue in issues)
 
 
 def test_file_ingest_endpoint_returns_source_shape(client: TestClient) -> None:
@@ -1537,7 +1537,7 @@ def test_activity_recent_writes_and_dreams_cover_log_variants(tmp_path: Path) ->
 
 def test_mounts_support_remote_http_host_metadata(tmp_path: Path) -> None:
     app = _make_app(tmp_path / "hosted")
-    from ravn.adapters.mimir.http import HttpMimirAdapter
+    from mimir.adapters.http import HttpMimirAdapter
 
     transport = httpx.ASGITransport(app=app)
     remote = HttpMimirAdapter(base_url="http://mimir-test")
@@ -1700,8 +1700,8 @@ def test_graph_preserves_shared_provenance_across_mounts(tmp_path):
 
 
 def test_remote_registry_connection_becomes_a_routable_mount(tmp_path):
+    from mimir.adapters.http import HttpMimirAdapter
     from mimir.registry import MimirRegistryEntry
-    from ravn.adapters.mimir.http import HttpMimirAdapter
 
     store = MimirRegistryStore(tmp_path / "registry.json")
     entry = store.save_entry(MimirRegistryEntry(name="ymir", url="http://ymir.test"))
@@ -1722,8 +1722,8 @@ def test_remote_registry_connection_becomes_a_routable_mount(tmp_path):
 
 
 def test_federation_diagnostics_read_configured_capture_directory(tmp_path):
-    from ravn.adapters.mimir.composite import CompositeMimirAdapter
-    from ravn.domain.mimir import MimirMount
+    from mimir.adapters.composite import CompositeMimirAdapter
+    from mimir.domain import MimirMount
 
     adapter = CompositeMimirAdapter(
         mounts=[

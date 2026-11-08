@@ -55,6 +55,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from mimir.adapters.gbrain import GBrainMimirAdapter  # noqa: E402
 from mimir.eval import (  # noqa: E402
     EvalReport,
     GoldenQuery,
@@ -69,7 +70,6 @@ from mimir.eval import (  # noqa: E402
     run_eval,
     validate_golden_paths,
 )
-from ravn.adapters.mimir.gbrain import GBrainMimirAdapter  # noqa: E402
 
 DEFAULT_CORPUS = REPO_ROOT / "tests/test_mimir/evals/corpus"
 DEFAULT_GOLDEN = REPO_ROOT / "tests/test_mimir/evals/golden.yaml"

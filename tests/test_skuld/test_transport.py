@@ -635,7 +635,7 @@ class TestSubprocessTransport:
             assert call_kwargs["env"]["RAVN_WORKSPACE_DIR"] == str(tmp_path)
 
     @pytest.mark.asyncio
-    async def test_send_message_omits_system_prompt_when_resuming(self, tmp_path):
+    async def test_send_message_resends_system_prompt_when_resuming(self, tmp_path):
         transport = SubprocessTransport(
             str(tmp_path),
             system_prompt="Be careful.",
@@ -656,7 +656,9 @@ class TestSubprocessTransport:
 
             call_args = mock_exec.call_args[0]
             assert "--resume" in call_args
-            assert "--append-system-prompt" not in call_args
+            # Appended prompts do not persist across invocations: a resume resends them.
+            appended = call_args[call_args.index("--append-system-prompt") + 1]
+            assert appended.endswith("Be careful.")
 
     @pytest.mark.asyncio
     async def test_send_message_passes_mcp_config(self, tmp_path):
@@ -1152,6 +1154,7 @@ class TestSdkWebSocketTransport:
             sdk_port=8081,
             session_id="s1",
             skip_permissions=True,
+            claude_permission_mode="bypassPermissions",
         )
         with patch(
             "skuld.transports.sdk_websocket.asyncio.create_subprocess_exec",
@@ -1165,8 +1168,31 @@ class TestSdkWebSocketTransport:
             await t.start()
 
             call_args = mock_exec.call_args[0]
-            assert "--permission-mode" in call_args
-            assert "bypassPermissions" in call_args
+            assert call_args[call_args.index("--permission-mode") + 1] == "bypassPermissions"
+
+    @pytest.mark.asyncio
+    async def test_spawn_follows_the_nodes_permission_mode_not_a_fixed_bypass(self, tmp_path):
+        t = SdkWebSocketTransport(
+            workspace_dir=str(tmp_path),
+            sdk_port=8081,
+            session_id="s1",
+            skip_permissions=True,
+            claude_permission_mode="acceptEdits",
+        )
+        with patch(
+            "skuld.transports.sdk_websocket.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_process = MagicMock()
+            mock_process.stdout = None
+            mock_process.stderr = None
+            mock_exec.return_value = mock_process
+
+            await t.start()
+
+            call_args = mock_exec.call_args[0]
+            assert call_args[call_args.index("--permission-mode") + 1] == "acceptEdits"
+            assert "bypassPermissions" not in call_args
 
     @pytest.mark.asyncio
     async def test_send_control_response(self, transport):

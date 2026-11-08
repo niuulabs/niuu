@@ -1,4 +1,10 @@
-import type { ChatMessage, InputRequest, PermissionRequest, RoomParticipant } from '@niuulabs/ui';
+import type {
+  ChatMessage,
+  InputRequest,
+  PermissionRequest,
+  RoomParticipant,
+  SessionPlan,
+} from '@niuulabs/ui';
 
 export interface SessionGateSummary {
   id: string;
@@ -71,6 +77,25 @@ export function latestChecklist(messages: readonly ChatMessage[]): ChecklistItem
     }
   }
   return [];
+}
+
+function checklistStatus(status: string): ChecklistStatus {
+  return status === 'completed' || status === 'in_progress' ? status : 'pending';
+}
+
+/**
+ * The checklist the panel shows. A runtime that sends plan frames owns the list, even
+ * when its plan is empty; the agent's TodoWrite calls are read only for runtimes that
+ * never send one.
+ */
+export function resolveChecklist(
+  plan: SessionPlan | null | undefined,
+  messages: readonly ChatMessage[],
+): ChecklistItem[] {
+  if (!plan) return latestChecklist(messages);
+  return plan.tasks.flatMap((task): ChecklistItem[] =>
+    task.content.trim() ? [{ label: task.content, status: checklistStatus(task.status) }] : [],
+  );
 }
 
 export function runningPeers(participants: ReadonlyMap<string, RoomParticipant>) {

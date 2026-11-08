@@ -27,7 +27,6 @@ DEFAULT_HEALTH_PATHS: dict[InstanceKind, str] = {
     InstanceKind.TING: "/api/v1/ting/health",
     InstanceKind.MIMIR: "/api/v1/mimir/health",
     InstanceKind.BIFROST: "/api/v1/bifrost/health",
-    InstanceKind.RAVN: "/api/v1/ravn/health",
     InstanceKind.OBSERVATORY: "/api/v1/observatory/health",
     InstanceKind.GENERIC: "/health",
 }

@@ -1,9 +1,5 @@
-{{- $hasFluxController := contains "FluxPodManager" .Values.podManager.adapter -}}
-{{- range .Values.residentRuntimeControllers -}}
-{{- if contains "FluxPodManager" .adapter -}}
-{{- $hasFluxController = true -}}
-{{- end -}}
-{{- end -}}
+{{- $hasFluxController := contains "FluxPodManager" (include "volundr.podManagerAdapter" .) -}}
+{{- $hasAgentInjector := or (contains "InfisicalAgent" .Values.secretInjection.adapter) (contains "OpenBaoAgentInjectionAdapter" .Values.secretInjection.adapter) -}}
 {{- if .Values.rbac.create -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -18,9 +14,6 @@ rules:
   - apiGroups: ["helm.toolkit.fluxcd.io"]
     resources: ["helmreleases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["get", "list", "watch"]
   {{- end }}
   {{- if and (contains "K8sStorageAdapter" .Values.storageAdapter.adapter) (not .Values.rbac.clusterWide) }}
   # Access to PVCs for dynamic per-user/session storage provisioning
@@ -59,7 +52,24 @@ rules:
   # Access to configmaps
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list", "watch"]
+    verbs:
+      - get
+      - list
+      - watch
+      {{- if and $hasAgentInjector (not .Values.rbac.clusterWide) }}
+      # Agent injectors write each session's agent config as a ConfigMap
+      - create
+      - update
+      - patch
+      - delete
+      {{- end }}
+  {{- if and (contains "OpenBaoAgentInjectionAdapter" .Values.secretInjection.adapter) (not .Values.rbac.clusterWide) }}
+  # OpenBao session injection creates a dedicated ServiceAccount per session
+  # NOTE: If sessions run in a different namespace, enable rbac.clusterWide
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- end }}
   # Access to events for monitoring
   - apiGroups: [""]
     resources: ["events"]
@@ -97,9 +107,6 @@ rules:
   - apiGroups: ["helm.toolkit.fluxcd.io"]
     resources: ["helmreleases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["get", "list", "watch"]
   # Session pods' Warning events: why a session could not start (e.g.
   # FailedScheduling). They outlive the pods Flux uninstalls.
   - apiGroups: [""]
@@ -119,7 +126,7 @@ rules:
     resources: ["pods/exec"]
     verbs: ["get", "create"]
   {{- end }}
-  {{- if or (contains "InfisicalAgent" .Values.secretInjection.adapter) (contains "OpenBaoAgentInjectionAdapter" .Values.secretInjection.adapter) }}
+  {{- if $hasAgentInjector }}
   # Cluster-wide access to injector coordination resources in the session namespace
   - apiGroups: [""]
     resources: ["configmaps"]
@@ -155,97 +162,6 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: {{ include "volundr.fullname" . }}
-subjects:
-  - kind: ServiceAccount
-    name: {{ include "volundr.serviceAccountName" . }}
-    namespace: {{ .Release.Namespace }}
-{{- end }}
-{{- /*
-Ravn resident sessions (on by default, ravnResidentSessions): the Flux resident
-controller writes each Ravn resident's own shim token Secret
-(resident-<id>-openclaw) into the residents' namespace.
-Namespaced on purpose, like workflowExecutionCredentials above: never Secret
-writes cluster-wide.
-*/}}
-{{- $ravnSessions := .Values.ravnResidentSessions.enabled -}}
-{{- range .Values.residentRuntimeSessionControllers -}}
-{{- if contains "RavnResidentSessionController" .adapter -}}
-{{- $ravnSessions = true -}}
-{{- end -}}
-{{- end -}}
-{{- $residentNamespace := "" -}}
-{{- if contains "FluxPodManager" .Values.podManager.adapter -}}
-{{- $residentNamespace = (.Values.podManager.kwargs).namespace | default .Release.Namespace -}}
-{{- end -}}
-{{- range .Values.residentRuntimeControllers -}}
-{{- if and (not $residentNamespace) (contains "FluxPodManager" .adapter) -}}
-{{- $residentNamespace = (.kwargs).namespace | default $.Release.Namespace -}}
-{{- end -}}
-{{- end -}}
-{{- if and .Values.rbac.create $ravnSessions $residentNamespace }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: {{ include "volundr.fullname" . }}-resident-openclaw
-  namespace: {{ $residentNamespace }}
-  labels:
-    {{- include "volundr.labels" . | nindent 4 }}
-rules:
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "create", "patch", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: {{ include "volundr.fullname" . }}-resident-openclaw
-  namespace: {{ $residentNamespace }}
-  labels:
-    {{- include "volundr.labels" . | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: {{ include "volundr.fullname" . }}-resident-openclaw
-subjects:
-  - kind: ServiceAccount
-    name: {{ include "volundr.serviceAccountName" . }}
-    namespace: {{ .Release.Namespace }}
-{{- end }}
-{{- /*
-Flux residents' logs: the resident Logs action reads each resident pod's
-container logs in the residents' namespace (FluxPodManager.logs). Always on
-wherever a Flux resident controller runs, so no cluster needs its own grant;
-namespaced, so Völundr reads pod logs only where its residents run.
-*/}}
-{{- if and .Values.rbac.create $residentNamespace }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: {{ include "volundr.fullname" . }}-resident-logs
-  namespace: {{ $residentNamespace }}
-  labels:
-    {{- include "volundr.labels" . | nindent 4 }}
-rules:
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: {{ include "volundr.fullname" . }}-resident-logs
-  namespace: {{ $residentNamespace }}
-  labels:
-    {{- include "volundr.labels" . | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: {{ include "volundr.fullname" . }}-resident-logs
 subjects:
   - kind: ServiceAccount
     name: {{ include "volundr.serviceAccountName" . }}
@@ -320,6 +236,73 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ include "volundr.fullname" . }}-session-credentials
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "volundr.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- /*
+VM guest metadata: a VM session has no kubelet, so Forge requests the ServiceAccount
+tokens a projected volume would carry (TokenRequest) and hands them to the guest agent.
+Namespaced to the ServiceAccounts' namespace, and create-only on the token subresource.
+*/}}
+{{- if and .Values.rbac.create (or .Values.guestMetadata.enabled .Values.guestMetadata.issueServiceAccountTokens) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "volundr.fullname" . }}-guest-metadata
+  namespace: {{ include "volundr.guestMetadataNamespace" . }}
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "volundr.fullname" . }}-guest-metadata
+  namespace: {{ include "volundr.guestMetadataNamespace" . }}
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "volundr.fullname" . }}-guest-metadata
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "volundr.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- /*
+SPIFFE guest identity: one spire-controller-manager ClusterStaticEntry per VM
+allocation, created when its session starts and deleted when it stops.
+*/}}
+{{- if and .Values.rbac.create .Values.guestMetadata.spiffeRegistration }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "volundr.fullname" . }}-guest-spiffe
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["spire.spiffe.io"]
+    resources: ["clusterstaticentries"]
+    verbs: ["get", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "volundr.fullname" . }}-guest-spiffe
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "volundr.fullname" . }}-guest-spiffe
 subjects:
   - kind: ServiceAccount
     name: {{ include "volundr.serviceAccountName" . }}

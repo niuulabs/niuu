@@ -544,7 +544,7 @@ def _session(**overrides: Any) -> VolundrSession:
         repo="",
         branch="",
         base_branch="",
-        workload_type="ravn_flock",
+        workload_type="default",
         **overrides,
     )
 

@@ -18,9 +18,7 @@ async function setup(page: Page) {
   );
 }
 
-test('inspects backend storage and requests a Flux deployment using target defaults', async ({
-  page,
-}) => {
+test('inspects backend storage on the analytics page', async ({ page }) => {
   await setup(page);
   await page.route('**/instance-test-api/instances/inspect*', (route) =>
     route.fulfill({
@@ -29,73 +27,16 @@ test('inspects backend storage and requests a Flux deployment using target defau
           mount: 'research',
           backend: 'gbrain',
           metrics: { 'Storage engine': 'postgres' },
-          unavailable: ['Dream history'],
+          unavailable: ['Write history'],
         },
       ],
     }),
   );
   await page.goto('/mimir/analytics');
   await expect(page.getByRole('region', { name: 'Instance inspection' })).toContainText('postgres');
-  let submitted: unknown;
-  await page.route('**/instance-test-api/deployments', async (route) => {
-    if (route.request().method() === 'POST') {
-      submitted = route.request().postDataJSON();
-      return route.fulfill({ status: 202, json: { ready: false } });
-    }
-    return route.fulfill({
-      json: {
-        cluster: 'test',
-        namespace: 'knowledge',
-        backends: ['gbrain'],
-        releases: [],
-        target: 'cluster',
-        dream_available: true,
-      },
-    });
-  });
-  await page.goto('/mimir/registry');
-  await page.getByRole('button', { name: '+ Deploy instance', exact: true }).click();
-  await page
-    .getByRole('region', { name: 'Instance deployments' })
-    .getByLabel('Instance name', { exact: true })
-    .fill('research');
-  await page.getByRole('button', { name: /gbrain Connected memory/ }).click();
-  await expect(page.getByLabel('Attach a warden')).toHaveCount(0);
-  await page.getByRole('combobox', { name: 'Deploy to' }).click();
-  await page.getByRole('option', { name: 'test', exact: true }).click();
-  await page.getByLabel('Enable scheduled dream cycles').check();
-  await page.getByLabel('Schedule (cron, UTC)').fill('0 3 * * *');
-  await page.getByRole('button', { name: 'Deploy instance' }).focus();
-  await page.keyboard.press('Enter');
-  await expect(page.getByText(/Deployment requested/)).toBeVisible();
-  expect(submitted).toEqual({
-    name: 'research',
-    backend: 'gbrain',
-    target: 'cluster',
-    warden: false,
-    dream: { enabled: true, schedule: '0 3 * * *', phases: ['lint', 'backlinks', 'orphans'] },
-  });
 });
 
-test('shows deployment loading and failure without claiming success', async ({ page }) => {
-  await setup(page);
-  let release!: () => void;
-  const pending = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await page.route('**/instance-test-api/deployments', async (route) => {
-    await pending;
-    await route.fulfill({ status: 503, json: { detail: 'Flux unavailable' } });
-  });
-  await page.goto('/mimir/registry');
-  await page.getByRole('button', { name: '+ Deploy instance', exact: true }).click();
-  await expect(page.getByText('Finding deployment targets…')).toBeVisible();
-  release();
-  await expect(page.getByText(/Deployment targets could not be loaded/)).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Deploy instance' })).toHaveCount(0);
-});
-
-test('uses modals for both entry points and labels connection removal', async ({ page }) => {
+test('uses a modal for the connection form and labels connection removal', async ({ page }) => {
   await setup(page);
   await page.route('**/instance-test-api/registry/mounts', (route) =>
     route.fulfill({
@@ -119,10 +60,7 @@ test('uses modals for both entry points and labels connection removal', async ({
     }),
   );
   await page.goto('/mimir/registry');
-  await page.getByRole('button', { name: '+ Deploy instance', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: 'Deploy instance', exact: true })).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '+ Deploy instance', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '+ Add connection', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Add connection', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Close', exact: true }).click();
@@ -182,7 +120,6 @@ test('Inspect preserves the analytics dashboard for an auto-mounted Helm instanc
         ready: true,
         message: 'Ready',
         logs: {},
-        dream_results: [],
       },
     }),
   );

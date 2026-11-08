@@ -17,6 +17,7 @@ from ting.adapters.notification_channel_factory import NotificationChannelFactor
 from ting.adapters.telegram_notification import TelegramNotificationAdapter
 from ting.domain.models import Run, RunStatus  # Run.id used in event construction
 from ting.domain.services.notification import NotificationService
+from ting.domain.workflow_steps import NOTIFY_STEP_FLAGGED
 from ting.ports.channel_resolver import ChannelResolverPort
 from ting.ports.event_bus import TingEvent
 from ting.ports.notification_channel import (
@@ -914,6 +915,70 @@ class TestNotificationServiceEventMapping:
         assert (
             notification.metadata["ui_path"] == "/ting/sagas/00000000-0000-0000-0000-000000000001"
         )
+
+    @pytest.mark.asyncio
+    async def test_a_stuck_workflow_step_notifies_its_owner_with_a_link_to_the_run(self) -> None:
+        event_bus = InMemoryEventBus()
+        channel = RecordingChannel()
+        factory = StubChannelFactory(channels={"user-1": [channel]})
+        service = NotificationService(event_bus, factory, public_origin="https://niuu.example")
+        await service.start()
+
+        await event_bus.emit(
+            TingEvent(
+                event=NOTIFY_STEP_FLAGGED,
+                owner_id="user-1",
+                data={
+                    "owner_id": "user-1",
+                    "run_id": str(uuid4()),
+                    "run_slug": "add-endpoint-0123",
+                    "run_name": "add-endpoint",
+                    "activation_id": str(uuid4()),
+                    "node_id": "implement",
+                    "member": "coder",
+                    "kind": "unclosed",
+                    "since": "2026-11-08T09:00:00+00:00",
+                    "detail": "its session ses-1 ended a turn without closing the step",
+                    "next": "Retry or reassign it, or abort the run.",
+                    "ui_path": "/ting/review/run/add-endpoint-0123",
+                },
+            )
+        )
+        await asyncio.sleep(0.1)
+        await service.stop()
+
+        [notification] = channel.sent
+        assert notification.title == "Workflow step is stuck"
+        assert notification.urgency is NotificationUrgency.HIGH
+        assert notification.event_type == NOTIFY_STEP_FLAGGED
+        for expected in (
+            "add-endpoint",
+            "implement (coder)",
+            "unclosed",
+            "since 2026-11-08T09:00:00+00:00",
+            "ended a turn without closing the step",
+            "Retry or reassign it",
+            "Run: https://niuu.example/ting/review/run/add-endpoint-0123",
+        ):
+            assert expected in notification.body
+        assert notification.metadata["flag"] == "unclosed"
+        assert notification.metadata["run_slug"] == "add-endpoint-0123"
+        assert notification.metadata["ui_url"] == (
+            "https://niuu.example/ting/review/run/add-endpoint-0123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_stuck_step_without_an_owner_notifies_nobody(self) -> None:
+        event_bus = InMemoryEventBus()
+        channel = RecordingChannel()
+        service = NotificationService(event_bus, StubChannelFactory(channels={"user-1": [channel]}))
+        await service.start()
+
+        await event_bus.emit(TingEvent(event=NOTIFY_STEP_FLAGGED, data={"kind": "overdue"}))
+        await asyncio.sleep(0.1)
+        await service.stop()
+
+        assert channel.sent == []
 
     @pytest.mark.asyncio
     async def test_tracker_id_falls_back_to_run_id(self) -> None:

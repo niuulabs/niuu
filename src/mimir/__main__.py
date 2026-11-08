@@ -8,14 +8,19 @@ Usage::
     python -m mimir doctor --path ~/.ravn/mimir [--fix] [--json]
     python -m mimir eval --json
     python -m mimir eval replay --capture ~/.ravn/mimir/evals/queries-2026-W24.jsonl
+    python -m mimir ingest ./architecture.md --title "Architecture" --mimir local
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import typer
 import uvicorn
@@ -32,10 +37,10 @@ _DEFAULT_EVAL_GOLDEN = "tests/test_mimir/evals/golden.yaml"
 def _configured_mimir_adapter():
     if not os.environ.get("RAVN_CONFIG", "").strip():
         return None
-    from ravn.cli.commands import _build_mimir
-    from ravn.config import Settings
+    from mimir.builders import build_mimir
+    from mimir.client_settings import MimirClientSettings
 
-    return _build_mimir(Settings())
+    return build_mimir(MimirClientSettings())
 
 
 def _mcp_adapter(path: str):
@@ -123,13 +128,16 @@ def mcp(
     if adapter_config:
         import yaml
 
-        from ravn.cli.commands import _build_mimir
-        from ravn.config import MimirConfig, MimirInstanceConfig, Settings
+        from mimir.builders import build_mimir
+        from mimir.client_config import MimirConfig, MimirInstanceConfig
+        from mimir.client_settings import MimirClientSettings
 
         instance = yaml.safe_load(Path(adapter_config).read_text())
         instance["name"] = name
-        adapter = _build_mimir(
-            Settings(mimir=MimirConfig(enabled=True, instances=[MimirInstanceConfig(**instance)]))
+        adapter = build_mimir(
+            MimirClientSettings(
+                mimir=MimirConfig(enabled=True, instances=[MimirInstanceConfig(**instance)])
+            )
         )
         if adapter is None:
             raise ValueError("No knowledge adapter configured")
@@ -286,6 +294,167 @@ def replay(
         typer.echo(json.dumps(report.to_dict(), indent=2))
     else:
         typer.echo(report.format_text())
+
+
+def _configure_logging(settings) -> None:
+    """Apply the logging section of the client settings."""
+    level = getattr(logging, settings.logging.level.upper(), logging.WARNING)
+    if settings.observability.enabled:
+        from niuu.observability import enable_trace_log_correlation
+
+        enable_trace_log_correlation()
+    if settings.logging.format == "text":
+        fmt = "%(asctime)s %(name)s %(levelname)s"
+        if settings.observability.enabled:
+            fmt += " trace_id=%(trace_id)s span_id=%(span_id)s"
+        fmt += " %(message)s"
+    elif settings.observability.enabled:
+        fmt = '{"message":"%(message)s","trace_id":"%(trace_id)s","span_id":"%(span_id)s"}'
+    else:
+        fmt = "%(message)s"
+    logging.basicConfig(level=level, format=fmt, force=True)
+
+
+@app.command("ingest")
+def ingest(
+    path: str = typer.Argument(..., help="Path to a file to ingest, or '-' to read from stdin."),
+    title: str = typer.Option("", "--title", "-t", help="Title override (defaults to filename)."),
+    source_type: str = typer.Option(
+        "document",
+        "--type",
+        help="Source type: document, web, research, conversation, tool_output.",
+    ),
+    origin_url: str = typer.Option("", "--url", "-u", help="Original URL (optional metadata)."),
+    target: str = typer.Option(
+        "",
+        "--mimir",
+        "-m",
+        help=(
+            "Named Mímir instance to ingest into (e.g. 'local', 'shared'). "
+            "Defaults to all configured instances."
+        ),
+    ),
+    config: str = typer.Option(
+        "", "--config", "-c", help="Path to the client config YAML (RAVN_CONFIG)."
+    ),
+) -> None:
+    """Ingest a file or stdin into the Mímir knowledge base.
+
+    Works with both local (filesystem) and remote (HTTP) Mímir adapters —
+    the adapter is selected from the Ravn config file, no explicit URL needed.
+
+    Examples::
+
+        python -m mimir ingest ./architecture.md
+        python -m mimir ingest ./notes.txt --title "Sprint retro notes" --type research
+        python -m mimir ingest ./doc.md --mimir local
+        python -m mimir ingest ./doc.md --mimir shared
+        cat doc.md | python -m mimir ingest -
+    """
+    from mimir.client_settings import MimirClientSettings
+
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = MimirClientSettings()
+    _configure_logging(settings)
+
+    if not settings.mimir.enabled:
+        typer.echo("Mímir is disabled in config (mimir.enabled = false).", err=True)
+        raise typer.Exit(1)
+
+    asyncio.run(
+        _run_mimir_ingest(settings, path, title, source_type, origin_url or None, target or None)
+    )
+
+
+def _build_single_mimir(settings, name: str) -> Any:
+    """Build a single named Mímir adapter by instance name.
+
+    Searches ``settings.mimir.instances`` for *name*.  Falls back to the
+    single-path local adapter when instances are not configured and *name*
+    is ``'local'``.
+    """
+    from mimir.builders import build_mimir_auth
+
+    for inst in settings.mimir.instances:
+        if inst.name != name:
+            continue
+        from mimir.connections import resolve_mimir_connection
+
+        return resolve_mimir_connection(
+            adapter=inst.adapter,
+            kwargs=inst.kwargs,
+            secret_kwargs_env=inst.secret_kwargs_env,
+            path=inst.path,
+            url=inst.url,
+            environment_id=settings.environment.id,
+            auth=build_mimir_auth(settings, inst.auth) if inst.auth is not None else None,
+        )
+
+    # No instances configured — accept "local" as alias for the single path adapter
+    if not settings.mimir.instances and name == "local":
+        from mimir.adapters.markdown import MarkdownMimirAdapter
+
+        return MarkdownMimirAdapter(root=settings.mimir.path)
+
+    available = [inst.name for inst in settings.mimir.instances] or ["local"]
+    typer.echo(f"Unknown Mímir instance {name!r}. Available: {', '.join(available)}", err=True)
+    raise typer.Exit(1)
+
+
+async def _run_mimir_ingest(
+    settings,
+    path: str,
+    title: str,
+    source_type: str,
+    origin_url: str | None,
+    target: str | None = None,
+) -> None:
+    from mimir.builders import build_mimir
+    from niuu.domain.mimir import MimirSource, compute_content_hash
+
+    mimir = _build_single_mimir(settings, target) if target else build_mimir(settings)
+    if mimir is None:
+        typer.echo("Failed to build Mímir adapter — check config.", err=True)
+        raise typer.Exit(1)
+
+    if path == "-":
+        content = sys.stdin.read()
+        resolved_title = title or "stdin"
+        resolved_path = "stdin"
+    else:
+        file_path = Path(path).expanduser()
+        if not file_path.exists():
+            typer.echo(f"File not found: {file_path}", err=True)
+            raise typer.Exit(1)
+        content = file_path.read_text(encoding="utf-8", errors="replace")
+        resolved_title = title or file_path.stem.replace("-", " ").replace("_", " ").title()
+        resolved_path = str(file_path)
+
+    if not content.strip():
+        typer.echo("Content is empty — nothing to ingest.", err=True)
+        raise typer.Exit(1)
+
+    content_hash = compute_content_hash(content)
+    source_id = "src_" + content_hash[:16]
+
+    source = MimirSource(
+        source_id=source_id,
+        title=resolved_title,
+        content=content,
+        source_type=source_type,  # type: ignore[arg-type]
+        origin_url=origin_url,
+        content_hash=content_hash,
+        ingested_at=datetime.now(UTC),
+    )
+
+    await mimir.ingest(source)
+    typer.echo(f"Ingested: {resolved_title!r}")
+    typer.echo(f"source_id: {source_id}")
+    typer.echo(f"file:      {resolved_path}")
+    typer.echo(f"target:    {target or 'all'}")
+    typer.echo("The source is stored; write its wiki pages with mimir_write.")
 
 
 def main() -> None:

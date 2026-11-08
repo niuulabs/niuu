@@ -63,6 +63,7 @@ def test_composition_builds_service_from_config():
         broadcaster=MagicMock(),
         integration_repository=None,
         session_lookup=AsyncMock(return_value=None),
+        broker_target=AsyncMock(return_value=None),
     )
     assert [(s.name, s.label) for s in service._sinks] == [("ops", "Ops"), ("page", "page")]
     assert service._image_scheduler is image_worker
@@ -80,6 +81,7 @@ def test_composition_builds_service_from_config():
             broadcaster=MagicMock(),
             integration_repository=None,
             session_lookup=AsyncMock(return_value=None),
+            broker_target=AsyncMock(return_value=None),
         )
         is None
     )
@@ -167,136 +169,12 @@ def test_push_off_needs_no_sink():
     assert Settings(push={"enabled": False}).push.enabled is False
 
 
-class TestOdinReviewRelayConfig:
-    def test_it_is_off_by_default_and_needs_nothing_then(self):
-        config = NotificationsConfig().odin_review_relay
-        assert config.enabled is False
-        assert config.owner_ids == []
-        assert config.poll_interval_seconds == 30.0
-        assert config.source.adapter.endswith("HttpOdinReviewSource")
-
-    def test_a_valid_relay_parses(self):
-        config = NotificationsConfig(
-            odin_review_relay={
-                "enabled": True,
-                "owner_ids": ["jozef"],
-                "poll_interval_seconds": 15,
-                "source": {"kwargs": {"base_url": "https://ravn.example"}},
-            }
-        ).odin_review_relay
-        assert (config.owner_ids, config.poll_interval_seconds) == (["jozef"], 15)
-        assert config.source.kwargs == {"base_url": "https://ravn.example"}
-
-    @pytest.mark.parametrize(
-        ("values", "message"),
-        [
-            ({"enabled": True}, "owner_ids"),
-            ({"enabled": True, "owner_ids": [" "]}, "owner_ids"),
-            ({"enabled": True, "owner_ids": ["a", "a"]}, "repeat"),
-            ({"enabled": True, "owner_ids": ["a"], "poll_interval_seconds": 0}, "greater than 0"),
-        ],
-    )
-    def test_enabled_but_misconfigured_fails_with_the_remedy(self, values, message):
-        with pytest.raises(ValidationError, match=message):
-            NotificationsConfig(odin_review_relay=values)
-
-    def test_the_relay_cannot_run_without_the_feed_it_records_into(self):
-        with pytest.raises(ValidationError, match=r"notifications\.enabled"):
-            NotificationsConfig(
-                enabled=False, odin_review_relay={"enabled": True, "owner_ids": ["a"]}
-            )
-
-    def test_a_disabled_relay_is_not_validated(self):
-        assert (
-            NotificationsConfig(odin_review_relay={"enabled": False}).odin_review_relay.enabled
-            is False
-        )
-
-
 class TestOdinReviewRelayComposition:
     RELAY = {
         "enabled": True,
         "owner_ids": ["jozef"],
         "source": {"kwargs": {"base_url": "https://ravn.example"}},
     }
-
-    def test_disabled_builds_nothing(self):
-        from volundr.main import _create_odin_review_relay
-
-        assert _create_odin_review_relay(Settings(), MagicMock(), MagicMock()) is None
-
-    async def test_enabled_builds_the_relay_from_config(self):
-        from volundr.adapters.outbound.http_odin_review_source import HttpOdinReviewSource
-        from volundr.main import _create_odin_review_relay
-
-        settings = Settings(
-            notifications={
-                "odin_review_relay": {
-                    **self.RELAY,
-                    "poll_interval_seconds": 12,
-                    "owner_ids": ["a", "b"],
-                }
-            }
-        )
-
-        relay = _create_odin_review_relay(settings, MagicMock(), MagicMock())
-
-        assert relay._owner_ids == ["a", "b"] and relay._poll_interval == 12
-        assert isinstance(relay._source, HttpOdinReviewSource)
-        await relay._source.close()
-
-    async def test_secret_kwargs_come_from_the_environment(self, monkeypatch):
-        from volundr.main import _create_odin_review_relay
-
-        monkeypatch.setenv("ODIN_RELAY_TOKEN", "from-env")
-        relay_config = {
-            **self.RELAY,
-            "source": {
-                "kwargs": {
-                    "base_url": "https://ravn.example",
-                    "auth_adapter": "niuu.adapters.outbound.http_auth.StaticBearerTokenAuthAdapter",
-                    "auth_kwargs": {"token_env": "ODIN_RELAY_TOKEN"},
-                }
-            },
-        }
-        settings = Settings(notifications={"odin_review_relay": relay_config})
-
-        relay = _create_odin_review_relay(settings, MagicMock(), MagicMock())
-
-        assert relay._source._auth.headers() == {"Authorization": "Bearer from-env"}
-        await relay._source.close()
-
-    async def test_the_push_sink_rule_is_given_only_without_the_gateway(self):
-        from volundr.main import _create_odin_review_relay
-
-        notifications = {
-            "odin_review_relay": self.RELAY,
-            "sinks": [
-                {
-                    "name": "push",
-                    "adapter": (
-                        "volundr.adapters.outbound.push_notification_sink.PushNotificationSink"
-                    ),
-                }
-            ],
-        }
-        sink_push = Settings(notifications=notifications, push={"enabled": True})
-        gateway = sink_push.model_copy(
-            update={
-                "push": sink_push.push.model_copy(
-                    update={"gateway": sink_push.push.gateway.model_copy(update={"enabled": True})}
-                )
-            }
-        )
-
-        through_sink = _create_odin_review_relay(sink_push, MagicMock(), MagicMock())
-        through_gateway = _create_odin_review_relay(gateway, MagicMock(), MagicMock())
-
-        # The gateway pushes each question's notification; its node has no push sink.
-        assert through_sink._push_sink == sink_push.push.attention_sink
-        assert through_gateway._push_sink is None
-        await through_sink._source.close()
-        await through_gateway._source.close()
 
     @pytest.mark.parametrize(
         ("gateway_on", "reason"),
@@ -325,60 +203,6 @@ class TestOdinReviewRelayComposition:
         with caplog.at_level(logging.INFO, logger="volundr.main"):
             assert await _retire_unserved_push_rules(Settings(), service, gateway_on=True) == 0
         assert not any("Retired" in r.message for r in caplog.records)
-
-    def test_enabled_without_the_notification_service_is_fatal(self):
-        from volundr.main import _create_odin_review_relay
-
-        settings = Settings(notifications={"odin_review_relay": self.RELAY})
-
-        with pytest.raises(RuntimeError, match=r"notifications\.enabled"):
-            _create_odin_review_relay(settings, MagicMock(), None)
-
-    def test_a_missing_base_url_stops_startup_with_the_remedy(self):
-        from volundr.main import _create_odin_review_relay
-
-        settings = Settings(
-            notifications={"odin_review_relay": {**self.RELAY, "source": {"kwargs": {}}}}
-        )
-
-        with pytest.raises(TypeError, match="base_url"):
-            _create_odin_review_relay(settings, MagicMock(), MagicMock())
-
-    def test_a_bad_base_url_stops_startup_with_the_remedy(self):
-        from volundr.main import _create_odin_review_relay
-
-        settings = Settings(
-            notifications={
-                "odin_review_relay": {**self.RELAY, "source": {"kwargs": {"base_url": "ravn"}}}
-            }
-        )
-
-        with pytest.raises(ValueError, match="kwargs.base_url"):
-            _create_odin_review_relay(settings, MagicMock(), MagicMock())
-
-    def test_an_unknown_source_adapter_stops_startup(self):
-        from volundr.main import _create_odin_review_relay
-
-        settings = Settings(
-            notifications={
-                "odin_review_relay": {**self.RELAY, "source": {"adapter": "nowhere.Missing"}}
-            }
-        )
-
-        with pytest.raises(ModuleNotFoundError):
-            _create_odin_review_relay(settings, MagicMock(), MagicMock())
-
-    async def test_push_off_is_warned_not_fatal(self, caplog):
-        from volundr.main import _create_odin_review_relay
-
-        settings = Settings(notifications={"odin_review_relay": self.RELAY})
-        caplog.set_level("WARNING")
-
-        relay = _create_odin_review_relay(settings, MagicMock(), MagicMock())
-
-        assert relay is not None
-        assert any("push.enabled is false" in r.message for r in caplog.records)
-        await relay._source.close()
 
 
 def test_image_defaults_and_timing():

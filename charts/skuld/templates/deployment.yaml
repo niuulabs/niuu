@@ -1,4 +1,3 @@
-{{- if not (include "skuld.roomGatewayEnabled" .) }}
 {{- if and .Values.homeVolume.enabled .Values.homeVolume.persistentTmp }}
 {{- $id := include "skuld.sessionId" . }}
 {{- if not (regexMatch "^[a-zA-Z0-9][a-zA-Z0-9._-]*$" $id) }}
@@ -27,20 +26,13 @@ spec:
     metadata:
       labels:
         {{- include "skuld.labels" . | nindent 8 }}
-        {{- if include "skuld.residentEnabled" . }}
-        niuu.world/kind: resident
-        niuu.world/persona: {{ include "skuld.residentPersona" . | quote }}
-        {{- end }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- if or .Values.podAnnotations (include "skuld.residentEnabled" .) (and .Values.wsAuth.enforce_ownership .Values.envoy.enabled) }}
+      {{- if or .Values.podAnnotations (and .Values.wsAuth.enforce_ownership .Values.envoy.enabled) }}
       annotations:
         {{- if and .Values.wsAuth.enforce_ownership .Values.envoy.enabled }}
         checksum/authz: {{ include (print $.Template.BasePath "/authz-configmap.yaml") . | sha256sum }}
-        {{- end }}
-        {{- if and (include "skuld.residentEnabled" .) (not (hasKey .Values.podAnnotations "niuu.world/resident-name")) }}
-        niuu.world/resident-name: {{ include "skuld.residentName" . | quote }}
         {{- end }}
         {{- $annotations := deepCopy (.Values.podAnnotations | default dict) }}
         {{- if and .Values.git.credentials.tokenFile (hasKey $annotations "vault.hashicorp.com/agent-inject") }}
@@ -192,7 +184,7 @@ spec:
               TARGET_OWNER="{{ .Values.securityContext.runAsUser }}:{{ .Values.securityContext.fsGroup }}"
               mkdir -p /home/tmp/cache "/home/tmp/sessions/{{ include "skuld.sessionId" . }}"
               chown -h "$TARGET_OWNER" /home/tmp /home/tmp/cache /home/tmp/sessions "/home/tmp/sessions/{{ include "skuld.sessionId" . }}"
-              {{- $names := list "skuld" "devrunner" "ravn" }}
+              {{- $names := list "skuld" "devrunner" }}
               {{- range .Values.extraContainers }}
               {{- $names = append $names .name }}
               {{- end }}
@@ -257,6 +249,9 @@ spec:
               {{- end }}
               if git -C "$WORKSPACE" rev-parse HEAD >/dev/null 2>&1; then
                 echo "Workspace already contains a valid git repository, skipping clone"
+                if [ -n "$BASE_BRANCH" ] && ! git -C "$WORKSPACE" config --get niuu.baseBranch >/dev/null; then
+                  git -C "$WORKSPACE" config niuu.baseBranch "$BASE_BRANCH"
+                fi
               else
                 git -C "$WORKSPACE" fetch origin
                 if git -C "$WORKSPACE" rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
@@ -272,6 +267,19 @@ spec:
                   echo "Branch $BRANCH not found on remote, creating from $FALLBACK"
                   git -C "$WORKSPACE" checkout -B "$FALLBACK" "origin/$FALLBACK"
                   git -C "$WORKSPACE" checkout -b "$BRANCH"
+                fi
+                # Record where this branch started, so the session's changes can be shown against it.
+                RECORDED_BASE="${FALLBACK:-}"
+                if [ -z "$RECORDED_BASE" ]; then
+                  if [ -n "$BASE_BRANCH" ] && \
+                    git -C "$WORKSPACE" rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
+                    RECORDED_BASE="$BASE_BRANCH"
+                  else
+                    RECORDED_BASE=$(git -C "$WORKSPACE" remote show origin | sed -n 's/.*HEAD branch: //p')
+                  fi
+                fi
+                if [ -n "$RECORDED_BASE" ]; then
+                  git -C "$WORKSPACE" config niuu.baseBranch "$RECORDED_BASE"
                 fi
                 echo "Repository cloned successfully"
               fi
@@ -386,22 +394,11 @@ spec:
             {{- range .Values.mesh.peerPorts }}
             - {{- toYaml . | nindent 14 }}
             {{- end }}
-            {{- if and (include "skuld.residentEnabled" .) (not .Values.mesh.peerPorts) }}
-            - name: mesh-pub
-              containerPort: 7480
-              protocol: TCP
-            - name: mesh-rep
-              containerPort: 7481
-              protocol: TCP
-            - name: mesh-hs
-              containerPort: 7580
-              protocol: TCP
-            {{- end }}
           env:
             {{- include "skuld.scratchEnv" . | nindent 12 }}
             - name: SKULD__SESSION__WORKSPACE_DIR
               value: {{ include "skuld.workspacePath" . | quote }}
-            {{- if and .Values.volundr.apiUrl (not (include "skuld.residentEnabled" .)) }}
+            {{- if .Values.volundr.apiUrl }}
             - name: SKULD__VOLUNDR_API_URL
               value: {{ .Values.volundr.apiUrl | quote }}
             {{- end }}
@@ -477,113 +474,11 @@ spec:
               subPath: manifest.json
               readOnly: true
             {{- end }}
-            {{- if and (include "skuld.residentEnabled" .) .Values.resident.platform.enabled }}
-            - name: niuu-workload-identity
-              mountPath: /var/run/secrets/niuu-workload
-              readOnly: true
-            {{- end }}
             {{- range .Values.extraVolumeMounts }}
             - {{- toYaml . | nindent 14 }}
             {{- end }}
-        {{- if include "skuld.residentEnabled" . }}
-        # Ravn resident daemon — the long-lived room-mode agent behind the broker
-        - name: ravn
-          image: {{ include "skuld.image" . | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          securityContext:
-            runAsUser: {{ .Values.securityContext.runAsUser }}
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
-          command:
-            - python
-            - -m
-            - ravn
-            - daemon
-            - --config
-            - /etc/ravn/config.yaml
-            - --persona
-            - {{ include "skuld.residentPersona" . | quote }}
-          env:
-            {{- include "skuld.scratchEnv" . | nindent 12 }}
-            - name: RAVN_PERSONA
-              value: {{ include "skuld.residentPersona" . | quote }}
-            - name: RAVN_PEER_ID
-              value: {{ .Values.resident.flock.peerId | default (printf "flock-%s" (include "skuld.residentPersona" .)) | quote }}
-            - name: HOME
-              value: /workspace
-            - name: RAVN_STATE_DIR
-              value: /workspace/.ravn
-            {{- range .Values.resident.envSecrets }}
-            - name: {{ .envVar }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .secretName }}
-                  key: {{ .secretKey }}
-            {{- end }}
-            {{- if .Values.resident.openclaw.enabled }}
-            - name: RAVN_OPENCLAW_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.resident.openclaw.tokenSecret.name | default (printf "%s-openclaw" .Release.Name) }}
-                  key: {{ .Values.resident.openclaw.tokenSecret.key }}
-            {{- end }}
-          ports:
-            - name: ravn-pub
-              containerPort: 7482
-              protocol: TCP
-            - name: ravn-rep
-              containerPort: 7483
-              protocol: TCP
-            - name: ravn-hs
-              containerPort: 7581
-              protocol: TCP
-            - name: ravn-gw
-              containerPort: 7781
-              protocol: TCP
-            {{- if .Values.resident.openclaw.enabled }}
-            - name: ravn-openclaw
-              containerPort: {{ .Values.resident.openclaw.port }}
-              protocol: TCP
-            {{- end }}
-          volumeMounts:
-            {{- include "skuld.scratchMounts" (dict "root" . "container" "ravn") | nindent 12 }}
-            {{- if .Values.persistence.enabled }}
-            - name: sessions
-              mountPath: /workspace
-              subPath: {{ include "skuld.sessionId" . }}/workspace
-            {{- end }}
-            {{- if .Values.homeVolume.enabled }}
-            # /workspace is an emptyDir for residents, so anything ravn writes
-            # there dies with the pod. The home claim is the only durable place
-            # it can keep episodic memory across restarts.
-            - name: home
-              mountPath: {{ .Values.homeVolume.mountPath }}
-            {{- end }}
-            - name: ravn-config
-              mountPath: /etc/ravn/config.yaml
-              subPath: config.yaml
-              readOnly: true
-            {{- if .Values.resident.platform.enabled }}
-            - name: niuu-workload-identity
-              mountPath: /var/run/secrets/niuu-workload
-              readOnly: true
-            {{- end }}
-        {{- end }}
         {{- range .Values.extraContainers }}
         {{- $container := deepCopy . }}
-        {{- if hasPrefix "ravn-" $container.name }}
-        {{- if and $.Values.git.credentials.tokenFile $container.command }}
-        {{- $loader := list "/bin/sh" "-c" "set -e; if [ -f /run/secrets/env.sh ]; then . /run/secrets/env.sh; fi; exec \"$@\"" "--" }}
-        {{- $_ := set $container "command" (concat $loader $container.command) }}
-        {{- end }}
-        {{- $env := $container.env | default list }}
-        {{- $names := dict }}
-        {{- range $env }}{{- $_ := set $names .name true }}{{- end }}
-        {{- range (include "skuld.gitCredentialEnv" $ | fromYamlArray) }}
-        {{- if not (hasKey $names .name) }}{{- $env = append $env . }}{{- end }}
-        {{- end }}
-        {{- $_ := set $container "env" $env }}
-        {{- end }}
         {{- if and $.Values.homeVolume.enabled $.Values.homeVolume.persistentTmp }}
         {{- $scratchMounts := include "skuld.scratchMounts" (dict "root" $ "container" $container.name) | fromYamlArray }}
         {{- $mounts := $container.volumeMounts | default list }}
@@ -702,20 +597,6 @@ spec:
             claimName: {{ .Values.persistence.existingClaim }}
           {{- end }}
         {{- end }}
-        {{- if include "skuld.residentEnabled" . }}
-        - name: ravn-config
-          configMap:
-            name: {{ include "skuld.fullname" . }}-ravn-config
-        {{- if .Values.resident.platform.enabled }}
-        - name: niuu-workload-identity
-          projected:
-            sources:
-              - serviceAccountToken:
-                  path: token
-                  audience: {{ .Values.resident.workloadIdentity.audience | quote }}
-                  expirationSeconds: {{ .Values.resident.workloadIdentity.expirationSeconds }}
-        {{- end }}
-        {{- end }}
         {{- if .Values.homeVolume.enabled }}
         - name: home
           persistentVolumeClaim:
@@ -739,4 +620,3 @@ spec:
         {{- range .Values.extraVolumes }}
         - {{- toYaml . | nindent 10 }}
         {{- end }}
-{{- end }}

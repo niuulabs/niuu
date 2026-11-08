@@ -84,8 +84,6 @@ def _service(key: rsa.RSAPrivateKey, delegations: InMemoryWorkloadDelegationRepo
                     claims={},
                     owner_from="delegation",
                     owner_id="",
-                    owner_id_claim="",
-                    owner_id_claim_pattern="",
                     tenant_id="ignored",
                     email="",
                     roles=["volundr:developer"],
@@ -127,7 +125,6 @@ async def test_delegated_workload_speaks_for_its_owner_with_itself_as_actor() ->
     assert claims["act"] == {"sub": RESIDENT_SA}
     assert claims["workload_delegation_id"] == str(record.id)
     assert claims["workload_resident_id"] == "0f9e3c1a"
-    assert claims["workload_owner_scoped"] is False
     assert claims["resource_access"]["volundr-api"]["roles"] == ["volundr:developer"]
     assert result.workload_name == "Muninn"
 

@@ -40,6 +40,20 @@ spec:
       allowedRoutes:
         namespaces:
           from: {{ .Values.sessionGateway.allowedRouteNamespaces | default "All" }}
+    {{- if .Values.sessionPreview.enabled }}
+    # Live preview: every <port>--<session-id> host on the preview domain.
+    - name: preview-https
+      protocol: HTTPS
+      port: 443
+      hostname: {{ printf "*.%s" (include "volundr.sessionPreview.domain" .) | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: {{ .Values.sessionPreview.tlsSecretName | default (printf "%s-preview-tls" (include "volundr.sessionGateway.name" .)) }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- end }}
     {{- if .Values.sessionGateway.httpRedirect }}
     - name: http
       protocol: HTTP

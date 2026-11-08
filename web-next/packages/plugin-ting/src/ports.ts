@@ -399,15 +399,17 @@ export interface WorkflowLaunchRequest {
   workflowVersion?: string;
 }
 
+/**
+ * A started run. A run has one harness session per stage member and no single session, so
+ * the launch answers with the campaign that records it.
+ */
 export interface WorkflowLaunchResult {
   workflowId: string;
   workflowName: string;
   slug: string;
-  sessionId: string;
-  sessionName: string;
+  campaignId: string;
+  campaignSlug: string;
   status: string;
-  clusterName: string;
-  chatEndpoint: string | null;
   workflowVersion: string;
   documentRevision: string;
 }
@@ -610,7 +612,6 @@ export interface DispatchApprovalOptions {
   instanceId?: string;
   connectionId?: string;
   sessionDefinition?: string;
-  workloadType?: string;
   workloadConfig?: Record<string, unknown>;
 }
 

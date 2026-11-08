@@ -32,8 +32,8 @@ class StorageContributor(SessionContributor):
         """Create the contributor.
 
         ``home_excluded_workload_types`` lists workload types that never mount
-        the user's home (e.g. ``ravn_flock`` workflow sessions, which run as
-        the user but use none of their home). ``home_colocate`` pins the pods
+        the user's home (workloads that run as the user but use none of their
+        home). ``home_colocate`` pins the pods
         that do mount a home to the node that already holds it; set it when the
         home claim is ReadWriteOnce, where a second node cannot attach it.
         """
@@ -100,7 +100,7 @@ class StorageContributor(SessionContributor):
         else:
             # Session defaults may enable the home volume; without a claim the
             # chart renders an empty PVC and every mount of "home" fails
-            # admission, as every excluded (ravn_flock) session did.
+            # admission, as every session excluded by workload type did.
             values["homeVolume"] = {"enabled": False}
         if workspace_pvc:
             values["persistence"] = {

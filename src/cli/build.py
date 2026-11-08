@@ -39,7 +39,6 @@ INCLUDE_PACKAGES = [
     "niuu",
     "observatory",
     "personas",
-    "ravn",
     "tracker",
     "volundr",
     "ting",
@@ -77,9 +76,14 @@ DATA_DIR_MAPPINGS = [
     # PostgreSQL binaries built from source
     (REPO_ROOT / "build" / "pginstall", "niuu/pginstall"),
     # Versioned built-in personas and the read-only workflow catalog
-    (REPO_ROOT / "src" / "ravn" / "personas", "ravn/personas"),
+    (REPO_ROOT / "src" / "personas" / "builtin", "personas/builtin"),
     (REPO_ROOT / "src" / "ting" / "workflows", "ting/workflows"),
     (REPO_ROOT / "src" / "ting" / "workflow_templates", "ting/workflow_templates"),
+    # The built-in host execution's recipe scripts (builtin_host_catalog)
+    (
+        REPO_ROOT / "src" / "volundr" / "adapters" / "outbound" / "host_recipes",
+        "volundr/adapters/outbound/host_recipes",
+    ),
 ]
 
 # Data file globs mapped into the binary. Use file globs for migrations so

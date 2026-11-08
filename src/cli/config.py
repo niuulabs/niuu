@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -455,18 +464,292 @@ class ServerConfig(BaseModel):
     )
 
 
+#: The context that is always there: this machine's own server.
+LOCAL_CONTEXT = "local"
+_CONTEXT_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+
+class ContextConfig(BaseModel):
+    """A named Niuu host the CLI talks to (`niuu context add`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(description="Base URL of the Niuu host (http:// or https://).")
+    forge: str = Field(
+        default="",
+        description="The Forge (id, slug or name) commands use on it when it has several.",
+    )
+    issuer: str = Field(
+        default="",
+        description=(
+            "OIDC issuer of its login: `niuu login` uses it, and commands refuse a stored "
+            "login from another issuer."
+        ),
+    )
+
+    @field_validator("url")
+    @classmethod
+    def _http_url(cls, value: str) -> str:
+        parts = urlsplit(value.strip())
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError(f"a context URL is http:// or https:// with a host, not {value!r}")
+        return value.strip().rstrip("/")
+
+
+def validate_context_name(name: str) -> str:
+    if not _CONTEXT_NAME.match(name):
+        raise ValueError(
+            f"a context name is lowercase letters, digits, '.', '_' or '-', not {name!r}"
+        )
+    if name == LOCAL_CONTEXT:
+        raise ValueError(f"'{LOCAL_CONTEXT}' is this machine's own server; pick another name")
+    return name
+
+
+class RemoteConfig(BaseModel):
+    """`niuu remote`: how long to follow a joining or leaving host, and how often to look."""
+
+    poll_interval_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        description="How often `niuu remote join`/`leave` re-read the host from Forge.",
+    )
+    follow_timeout_seconds: float = Field(
+        default=900.0,
+        gt=0,
+        description=(
+            "How long `niuu remote join` follows a host to ready. Bounded by the Forge's own "
+            "pending checks; a host not ready by then fails the command (exit 1), naming "
+            "its step. Override per run with --timeout."
+        ),
+    )
+    leave_timeout_seconds: float = Field(
+        default=3600.0,
+        gt=0,
+        description=(
+            "How long `niuu remote leave` waits for a draining host's sessions to end and "
+            "Forge to forget it. On a hit the command fails (exit 1); Forge still removes "
+            "the host once it is empty. Override per run with --timeout."
+        ),
+    )
+
+
 class ResidentsConfig(BaseModel):
     """How mini mode hosts long-lived residents on this machine."""
 
-    runtime: Literal["process", "docker"] = Field(
-        default="process",
+    runtime: Literal["docker"] = Field(
+        default="docker",
         description=(
-            "'process' runs Ravn residents as Skuld and Ravn processes on this host and "
-            "needs no container engine. 'docker' runs resident images through the local "
-            "Docker Engine, which must be running, and also offers the NemoClaw and "
-            "NemoHermes profiles."
+            "How residents run on this machine. 'docker' runs resident images through the "
+            "local Docker Engine and offers the NemoClaw and NemoHermes profiles. The engine "
+            "is contacted when a resident is created or inspected, not when the platform "
+            "starts: with Docker stopped the platform runs and creating a resident fails "
+            "naming Docker. The host-process runtime ('process') was removed with the "
+            "Ravn resident engine it hosted; remove residents.runtime: process."
         ),
     )
+
+
+PLACEMENT_POD_MANAGER_ADAPTER = (
+    "volundr.adapters.outbound.placement_pod_manager.PlacementPodManager"
+)
+VM_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.vm_pod_manager.VmPodManager"
+REGISTERED_HOST_PROVIDER_ADAPTER = (
+    "volundr.adapters.outbound.registered_hosts.RegisteredHostMachineProvider"
+)
+DIRECT_SSH_CONNECTOR_ADAPTER = "volundr.adapters.outbound.host_connectors.DirectSshConnector"
+#: compute.hosts.join_listener.port's default (HostJoinListenerConfig).
+_JOIN_LISTENER_PORT = 8443
+
+
+BUILTIN_HOST_CATALOG_ADAPTER = "volundr.adapters.outbound.builtin_host_catalog.BuiltinHostCatalog"
+#: The release's session images a checkout runs (the latest dev build); pinned by digest
+#: when Forge starts.
+DEFAULT_LINUX_SESSION_IMAGE = "ghcr.io/niuulabs/openshell:dev"
+DEFAULT_DARWIN_SESSION_BUNDLE = "ghcr.io/niuulabs/skuld-darwin:dev"
+
+
+class HostSessionImagesConfig(BaseModel):
+    """``hosts.session_images``: what joined machines run (compute.session_images)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    linux: str = Field(
+        default=DEFAULT_LINUX_SESSION_IMAGE,
+        min_length=1,
+        description="Skuld image Linux hosts unpack; a tag is pinned by digest at startup.",
+    )
+    darwin: str = Field(
+        default=DEFAULT_DARWIN_SESSION_BUNDLE,
+        min_length=1,
+        description="macOS session bundle Macs fetch; a tag is pinned by digest at startup.",
+    )
+
+
+class HostsConfig(BaseModel):
+    """Registered hosts next to this machine's own sessions (mini mode).
+
+    On by default in mini mode: ``niuu platform up`` serves a pool of registered hosts with
+    Niuu's built-in host execution (Linux machines and Macs alike), and ``niuu remote
+    join <ssh destination>`` or Add host joins one. A session is placed there only when it
+    asks for a host (``workload_config.host_selector`` or ``execution_profile``); every
+    other session keeps running on this machine.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Run sessions on registered hosts too. Unset: on in mini mode (unless compute: "
+            "defines this Forge's pool), off in other modes."
+        ),
+    )
+    pool_id: str = Field(
+        default="local-hosts", min_length=1, description="The hosts pool's compute pool id."
+    )
+    profile: str = Field(
+        default="host",
+        min_length=1,
+        description="Provider profile of the hosts; the catalog's execution machine names it.",
+    )
+    max_hosts: int = Field(
+        default=16,
+        gt=0,
+        description=(
+            "compute.max_machines: how many hosts the pool may hold at once. A host "
+            "beyond it waits as ready and unclaimed; raise it to use more hosts."
+        ),
+    )
+    session_images: HostSessionImagesConfig = Field(
+        default_factory=HostSessionImagesConfig,
+        description="What Niuu's built-in host execution runs on joined machines.",
+    )
+    data_dir: str = Field(
+        default="~/.niuu/hosts",
+        min_length=1,
+        description=(
+            "Forge's own directory for the hosts: its generated SSH key, the hosts' pinned "
+            "keys and session archives."
+        ),
+    )
+    join_host: str = Field(
+        default="",
+        description=(
+            "The address other machines reach this one at, for the pinned join listener. "
+            "Empty: server.external_host, else the address of this machine's default route."
+        ),
+    )
+    join_url: str = Field(
+        default="",
+        description=(
+            "compute.hosts.join_url: Forge's base URL as hosts reach it. Empty: the pinned "
+            "join listener at join_host."
+        ),
+    )
+    allow_plaintext_join: bool = Field(
+        default=False,
+        description="compute.hosts.allow_plaintext_join: accept an http:// join_url.",
+    )
+    allowed_sources: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Source networks Forge's SSH key is accepted from on a host (from=); "
+            "empty accepts any source."
+        ),
+    )
+    reserved_cpu: float = Field(
+        default=2, ge=0, description="CPU cores kept for each host itself when slots are sized."
+    )
+    reserved_memory_mib: int = Field(
+        default=4096, ge=0, description="Memory kept for each host itself when slots are sized."
+    )
+    min_free_disk_mib: int = Field(
+        default=20480,
+        ge=0,
+        description="Free space on a host's / below which the audit quarantines it.",
+    )
+    pairing_signing_key_file: str = Field(
+        default="~/.niuu/forge-host-pairing-key.pem",
+        min_length=1,
+        description="Forge's own key that signs host pairing codes in mini mode.",
+    )
+
+    def active(self, mode: str, compute_configured: bool) -> bool:
+        """Whether this Forge serves a hosts pool in ``mode``."""
+        if self.enabled is not None:
+            return self.enabled
+        return mode == "mini" and not compute_configured
+
+    def compute(self, *, platform_port: int, join_host: str = "") -> ComputeConfig:
+        """The Forge ``compute:`` section for the hosts pool.
+
+        ``join_host`` is where other machines reach this one; it names the pinned join
+        listener unless ``join_url`` is set. ``platform_port`` is this Forge's own port,
+        where Skuld on a host calls back through its SSH tunnel.
+        """
+        hosts: dict[str, Any] = {
+            "allow_plaintext_join": self.allow_plaintext_join,
+            "connectors": [
+                {
+                    "binding_id": "direct-ssh",
+                    "adapter": DIRECT_SSH_CONNECTOR_ADAPTER,
+                    "kwargs": {"allowed_sources": list(self.allowed_sources)},
+                }
+            ],
+            "reserved_cpu": self.reserved_cpu,
+            "reserved_memory_mib": self.reserved_memory_mib,
+            "min_free_disk_mib": self.min_free_disk_mib,
+            "pairing_signing_key_file": self.pairing_signing_key_file,
+        }
+        if self.join_url:
+            hosts["join_url"] = self.join_url
+        elif join_host:
+            # The pinned listener, at the address other machines reach: no CA is needed.
+            hosts["join_listener"] = {}
+            hosts["join_url"] = f"https://{join_host}:{_JOIN_LISTENER_PORT}"
+        catalog = {
+            "adapter": BUILTIN_HOST_CATALOG_ADAPTER,
+            "kwargs": {
+                "pool_id": self.pool_id,
+                "provider_binding": self.pool_id,
+                "profile": self.profile,
+                "data_dir": str(Path(self.data_dir).expanduser()),
+                "platform_port": platform_port,
+            },
+        }
+        return ComputeConfig.model_validate(
+            {
+                "pool_id": self.pool_id,
+                "max_machines": self.max_hosts,
+                "reuse_policy": "reuse",
+                "provider_binding": self.pool_id,
+                "provider": {
+                    "adapter": REGISTERED_HOST_PROVIDER_ADAPTER,
+                    "kwargs": {"profiles": {self.profile: {"label": "Registered host"}}},
+                },
+                "execution_catalog": catalog,
+                "session_images": self.session_images.model_dump(),
+                "hosts": hosts,
+            }
+        )
+
+    def pod_manager(self, local_adapter: str, local_kwargs: dict[str, Any]) -> dict[str, Any]:
+        """The placement pod manager: ``local`` as configured, ``pool`` on the hosts."""
+        return {
+            "adapter": PLACEMENT_POD_MANAGER_ADAPTER,
+            "kwargs": {
+                "local": {"adapter": local_adapter, "kwargs": dict(local_kwargs)},
+                "pool": {
+                    "adapter": VM_POD_MANAGER_ADAPTER,
+                    "kwargs": {
+                        "profile": self.profile,
+                        "pool_id": self.pool_id,
+                        "max_machines": self.max_hosts,
+                    },
+                },
+            },
+        }
 
 
 class ServiceConfig(BaseModel):
@@ -620,7 +903,7 @@ class AuthConfig(BaseModel):
 #: accepted in Kubernetes maps to the same platform roles here. Völundr's own
 #: identity composition (``niuu.service_runtime.create_identity_adapter``)
 #: applies this automatically from ``identity.role_mapping``; services that
-#: compose their own identity adapter directly (Ravn's inbound API, Ting) do
+#: compose their own identity adapter directly (Ting) do
 #: not, so it is threaded through explicitly below for those.
 _DEFAULT_OIDC_ROLE_MAPPING = {
     "admin": "volundr:admin",
@@ -655,8 +938,7 @@ def auth_adapter_env(auth: AuthConfig) -> dict[str, str]:
     (``cli.services.compose_bundle``) so both compute the same adapter
     selection from the same config, for every co-hosted service that reads
     these env vars: Völundr/Identity's shared ``IDENTITY__ADAPTER`` /
-    ``AUTHORIZATION__ADAPTER`` slot, Ravn's own inbound API
-    (``RAVN_API_AUTH__*``), Ting's own inbound API (``AUTH__*``), the
+    ``AUTHORIZATION__ADAPTER`` slot, Ting's own inbound API (``AUTH__*``), the
     niuu root app's session-proxy identity (``HOST_IDENTITY__*``), and
     Mímir's own inbound API (``MIMIR_AUTH__*``, read via
     ``mimir.config.MimirServiceConfig.identity_adapter``). ``none``
@@ -674,9 +956,6 @@ def auth_adapter_env(auth: AuthConfig) -> dict[str, str]:
             "IDENTITY__ADAPTER": "identity.adapters.identity.AllowAllIdentityAdapter",
             "AUTHORIZATION__ADAPTER": (
                 "identity.adapters.authorization.AllowAllAuthorizationAdapter"
-            ),
-            "RAVN_API_AUTH__ADAPTER": (
-                "identity.adapters.identity.AllowAllHeaderAuthenticationAdapter"
             ),
             # Ting's own default (EnvoyHeaderAuthenticationAdapter +
             # allow_anonymous_dev) trusts caller-supplied x-auth-* headers
@@ -701,8 +980,6 @@ def auth_adapter_env(auth: AuthConfig) -> dict[str, str]:
         "IDENTITY__ADAPTER": "identity.adapters.jwks.JwksIdentityAdapter",
         "IDENTITY__KWARGS": oidc_kwargs_json,
         "AUTHORIZATION__ADAPTER": "identity.adapters.cedar.CedarAuthorizationAdapter",
-        "RAVN_API_AUTH__ADAPTER": "identity.adapters.jwks.JwksBearerAuthenticationAdapter",
-        "RAVN_API_AUTH__KWARGS": oidc_kwargs_json,
         "AUTH__ADAPTER": "identity.adapters.jwks.JwksBearerAuthenticationAdapter",
         "AUTH__KWARGS": oidc_kwargs_json,
         "HOST_IDENTITY__ADAPTER": "identity.adapters.jwks.JwksBearerAuthenticationAdapter",
@@ -894,6 +1171,33 @@ def clear_guild_join(*, config_file: Path | None = None) -> None:
     persist_guild_join(url="", node_id="", config_file=config_file)
 
 
+def persist_contexts(
+    *,
+    contexts: dict[str, ContextConfig] | None = None,
+    active: str | None = None,
+    config_file: Path | None = None,
+) -> None:
+    """Write ``contexts`` and/or the active ``context`` into the CLI's config.yaml.
+
+    Merges into the existing file, as `niuu join` does, so unrelated configuration stays.
+    """
+    import yaml
+
+    target = config_file or config_paths()[0]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing: dict[str, Any] = {}
+    if target.exists():
+        existing = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    if contexts is not None:
+        existing["contexts"] = {
+            name: context.model_dump(mode="json", exclude_defaults=True)
+            for name, context in contexts.items()
+        }
+    if active is not None:
+        existing["context"] = active
+    target.write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+
+
 class CLISettings(BaseSettings):
     """Root configuration for the niuu CLI."""
 
@@ -933,6 +1237,7 @@ class CLISettings(BaseSettings):
     guild: GuildConfig = Field(default_factory=GuildConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    remote: RemoteConfig = Field(default_factory=RemoteConfig)
     residents: ResidentsConfig = Field(default_factory=ResidentsConfig)
     docker: DockerConfig = Field(default_factory=DockerConfig)
     plugins: PluginConfig = Field(default_factory=PluginConfig)
@@ -940,16 +1245,33 @@ class CLISettings(BaseSettings):
     bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
     observability: CLIObservabilityConfig = Field(default_factory=CLIObservabilityConfig)
     compute: ComputeConfig | None = None
+    hosts: HostsConfig = Field(default_factory=HostsConfig)
     service_overrides: dict[str, PerServiceConfig] = Field(
         default_factory=dict,
         description="Per-service enabled/port overrides keyed by service name.",
     )
     tui: TUIConfig = Field(default_factory=TUIConfig)
+    contexts: dict[str, ContextConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Named Niuu hosts (`niuu context add`). 'local', this machine's own server, "
+            "is built in."
+        ),
+    )
     context: str = Field(
-        default="local",
-        description="Active context (local, remote, etc.).",
+        default=LOCAL_CONTEXT,
+        description="The active context's name (`niuu context use`, env NIUU_CONTEXT).",
     )
     version: str = Field(default="0.1.0")
+
+    @model_validator(mode="after")
+    def _context_names_are_valid(self) -> CLISettings:
+        for name in self.contexts:
+            try:
+                validate_context_name(name)
+            except ValueError as exc:
+                raise ValueError(f"contexts.{name}: {exc}") from exc
+        return self
 
     @model_validator(mode="after")
     def _docker_compute_uses_vm_pod_manager(self) -> CLISettings:
@@ -969,6 +1291,28 @@ class CLISettings(BaseSettings):
             raise ValueError("Docker compute requires a runtime adapter")
         return self
 
+    @model_validator(mode="after")
+    def _hosts_pool_is_the_only_pool(self) -> CLISettings:
+        if not self.hosts_active:
+            return self
+        if self.mode != "mini":
+            raise ValueError(
+                f"hosts.enabled is for mini mode; mode {self.mode!r} configures its "
+                "compute pool under compute:"
+            )
+        if self.compute is not None:
+            raise ValueError(
+                "hosts.enabled and compute: both define this Forge's compute pool; "
+                "remove compute:, or set hosts.enabled: false"
+            )
+        self.hosts.compute(platform_port=self.server.port)
+        return self
+
+    @property
+    def hosts_active(self) -> bool:
+        """Whether this Forge serves a pool of registered hosts (``hosts``)."""
+        return self.hosts.active(self.mode, self.compute is not None)
+
     #: Plugins that do not yet go through any auth.mode-aware identity check
     #: (they trust x-auth-* headers, or accept requests unauthenticated,
     #: independently of IDENTITY__ADAPTER/AUTH_MODE) but default to enabled.
@@ -981,10 +1325,9 @@ class CLISettings(BaseSettings):
             "oidc, but nothing yet supplies sessions or residents with a verifiable "
             "credential to send it: skuld.config.ModelGatewayConfig.token has no "
             "real default (it used to be the placeholder literal 'niuu-gateway', "
-            "meaningful only because 'open' mode ignores it), and "
-            "ravn.adapters.llm.bifrost.BifrostAdapter (used by local residents) "
-            "sends no Authorization header at all. Every model call routed through "
-            "Bifröst — every session and resident — would get 401. Minting and "
+            "meaningful only because 'open' mode ignores it). Every model call "
+            "routed through Bifröst — every session and resident — would get 401. "
+            "Minting and "
             "threading a real per-session/per-resident PAT through both paths is "
             "tracked as follow-up work"
         ),

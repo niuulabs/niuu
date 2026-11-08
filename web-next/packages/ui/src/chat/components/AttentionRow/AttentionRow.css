@@ -1,0 +1,48 @@
+.niuu-chat-attention {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-accent-amber) 40%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-accent-amber) 7%, transparent);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  text-align: left;
+}
+
+button.niuu-chat-attention {
+  cursor: pointer;
+}
+
+button.niuu-chat-attention:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+.niuu-chat-attention-icon {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--color-accent-amber);
+}
+
+.niuu-chat-attention b {
+  flex: none;
+  font-weight: 600;
+}
+
+.niuu-chat-attention-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.niuu-chat-attention-kind {
+  flex: none;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}

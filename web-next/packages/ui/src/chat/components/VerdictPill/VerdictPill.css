@@ -1,0 +1,26 @@
+.niuu-chat-verdict {
+  --niuu-pill-tone: var(--color-text-faint);
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: var(--radius-full);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--niuu-pill-tone);
+  background: color-mix(in srgb, var(--niuu-pill-tone) 15%, transparent);
+}
+
+.niuu-chat-verdict--pass {
+  --niuu-pill-tone: var(--status-healthy);
+}
+.niuu-chat-verdict--changes {
+  --niuu-pill-tone: var(--color-accent-amber);
+}
+.niuu-chat-verdict--blocked {
+  --niuu-pill-tone: var(--color-critical);
+}
+.niuu-chat-verdict--working {
+  --niuu-pill-tone: var(--color-brand);
+}

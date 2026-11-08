@@ -42,8 +42,6 @@ export interface SessionNotification {
   engine: string | null;
   model: string | null;
   correlationId: string | null;
-  /** The review this notification asks the operator to decide, when it asks one. */
-  reviewId: string | null;
   /** What the phone may say aloud for it; `null` when the notice asks for no voice. */
   speak: ForgeNotificationSpeak | null;
   createdAt: string;

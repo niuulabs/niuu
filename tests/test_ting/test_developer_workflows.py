@@ -2,22 +2,11 @@ from __future__ import annotations
 
 import copy
 from dataclasses import replace
-from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
-from uuid import uuid4
 
 import pytest
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
-from ravn.config import Settings
-from ravn.drive_loop import FanInBuffer, _parse_outcome_for_persona
-from ravn.workflow_runtime import (
-    _workflow_allowed_outcome_topics,
-    _workflow_runtime_for_persona,
-)
-from skuld.workflow_runtime import _workflow_gate_nodes, _workflow_terminal_nodes
-from ting.adapters.parent_workflow_continuation import VolundrParentWorkflowContinuation
+from personas.adapters.loader import FilesystemPersonaAdapter
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDependency
 from ting.domain.workflow_document import (
@@ -25,12 +14,6 @@ from ting.domain.workflow_document import (
     workflow_document_revision,
 )
 from ting.domain.workflow_snapshot import build_workflow_snapshot
-from ting.domain.workflow_wait import (
-    WaitObservation,
-    WaitObservationStatus,
-    WorkflowWait,
-    WorkflowWaitState,
-)
 from ting.system_workflows import BUNDLED_SYSTEM_WORKFLOWS_PATH, load_system_workflows
 
 
@@ -81,29 +64,22 @@ def test_developer_workflows_pin_current_integration_reviewer_content() -> None:
 
 def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_is_bounded() -> None:
     files = [
-        *Path("src/ravn/personas").glob("developer-*.yaml"),
+        *Path("src/personas/builtin").glob("developer-*.yaml"),
         *BUNDLED_SYSTEM_WORKFLOWS_PATH.glob("developer-*.yaml"),
     ]
     rendered = "\n".join(path.read_text(encoding="utf-8").casefold() for path in files)
     assert "github" not in rendered
     assert "gitlab" not in rendered
 
-    coordinator = Path("src/ravn/personas/developer-coordinator.yaml").read_text(encoding="utf-8")
-    for tool in (
-        "delivery_expand_workstreams",
-        "workflow_execution_reconcile",
-        "workflow_execution_message",
-        "workflow_execution_cancel",
-        "delivery_complete",
-        "delivery_record_integration",
-        "workflow_execution_wait",
-        "delivery_workspace",
-        "delivery_forge",
-        "delivery_evidence",
-    ):
-        assert f"- {tool}" in coordinator
-    for forbidden in ("terminal", "bash", "file_write", "file_edit"):
-        assert f"- {forbidden}" in coordinator
+    # The coordinator's retired-runtime tools have no counterpart in a harness session, so it
+    # is closed to the plan tool and cannot touch files, a shell or a repository.
+    coordinator = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
+        "developer-coordinator"
+    )
+    assert coordinator is not None
+    assert coordinator.allowed_tools == ["plan"]
+    for forbidden in ("shell", "file_write", "file_read", "git"):
+        assert forbidden in coordinator.forbidden_tools
 
     coordinator_persona = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
         "developer-coordinator"
@@ -139,64 +115,14 @@ def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_i
         coordinator_persona.system_prompt_template
     )
 
-    integration_reviewer = Path("src/ravn/personas/developer-integration-verifier.yaml").read_text(
-        encoding="utf-8"
-    )
+    integration_reviewer = Path(
+        "src/personas/builtin/developer-integration-verifier.yaml"
+    ).read_text(encoding="utf-8")
     assert "delivery_workspace.inspect" in integration_reviewer
     assert "bounded exact-candidate patch" in integration_reviewer
-    assert "allowed_tools: [delivery_workspace]" in integration_reviewer
-    assert "delivery_forge, delivery_evidence" in integration_reviewer
+    assert "allowed_tools: [plan]" in integration_reviewer
     assert "final delivery evidence policy" in integration_reviewer
     assert "Remote CI and full-policy" in integration_reviewer
-
-
-@pytest.mark.parametrize(
-    ("outcome", "expected_verdict"),
-    [
-        (
-            """---outcome---
-verdict: verify
-attempt_id: attempt-1
-candidate_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-candidate_tree: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-verification_receipts: []
-rationale: trusted child verification completed
-result: {}
----end---""",
-            "verify",
-        ),
-        (
-            """---outcome---
-verdict: accept
-rationale: all candidate-bound reviews passed
-result:
-  attemptId: attempt-1
-  candidateSha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  candidateTree: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-  verificationReceipts: []
-  reviewReceipts: []
-  requirementEvidence: []
----end---""",
-            "accept",
-        ),
-    ],
-)
-def test_child_coordinator_outcomes_do_not_require_parent_stage_fields(
-    outcome: str,
-    expected_verdict: str,
-) -> None:
-    coordinator = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
-        "developer-coordinator"
-    )
-    assert coordinator is not None
-
-    parsed = _parse_outcome_for_persona(outcome, coordinator)
-
-    assert parsed is not None
-    assert parsed.valid is True
-    assert parsed.fields["verdict"] == expected_verdict
-    for absent in ("plan_revision", "generation", "workstreams", "task_handles"):
-        assert absent not in parsed.fields
 
 
 @pytest.mark.parametrize(
@@ -303,187 +229,6 @@ def test_delivery_pins_current_workstream_content() -> None:
     }
 
 
-def test_integration_and_ci_failures_compile_to_durable_generation_repair() -> None:
-    graph = build_workflow_snapshot(_developer_workflows()["Developer Delivery"])["graph"]
-    edges = {edge["id"]: edge for edge in graph["edges"]}
-
-    assert edges["delivery-integrate-repair"] == {
-        "id": "delivery-integrate-repair",
-        "source": "delivery-integrate",
-        "target": "delivery-repair",
-        "label": ("developer.workstream.repair_requested -> developer.workstream.repair_requested"),
-    }
-    assert edges["delivery-tests-repair"] == {
-        "id": "delivery-tests-repair",
-        "source": "delivery-integration-tests",
-        "target": "delivery-repair",
-        "label": ("developer.workstream.repair_requested -> developer.workstream.repair_requested"),
-    }
-    assert edges["delivery-integration-repair"] == {
-        "id": "delivery-integration-repair",
-        "source": "delivery-integration-review",
-        "target": "delivery-repair",
-        "label": "delivery.repair.required -> delivery.repair.required",
-    }
-    assert edges["delivery-publish-repair"] == {
-        "id": "delivery-publish-repair",
-        "source": "delivery-publish",
-        "target": "delivery-repair",
-        "label": ("developer.workstream.repair_requested -> developer.workstream.repair_requested"),
-    }
-    assert edges["delivery-repair-workstreams"] == {
-        "id": "delivery-repair-workstreams",
-        "source": "delivery-repair",
-        "target": "delivery-workstreams",
-        "label": "developer.children.waiting -> developer.children.waiting",
-    }
-
-    settings = Settings.model_validate(
-        {
-            "workflow": {
-                "workflow_id": "developer-delivery",
-                "name": "Developer Delivery",
-                "graph": graph,
-            }
-        }
-    )
-    runtime = _workflow_runtime_for_persona(settings, "developer-coordinator")
-    assert runtime is not None
-    groups = {group["id"]: group for group in runtime["consumer_groups"]}
-    assert groups["delivery-repair"] == {
-        "id": "delivery-repair",
-        "label": "Replace a rejected integration generation",
-        "event_types": ["delivery.repair.required", "developer.workstream.repair_requested"],
-        "fan_in_strategy": "any_pass",
-    }
-    assert groups["delivery-publish"]["event_types"] == [
-        "developer.integration.approved",
-        "developer.delivery.observed",
-    ]
-    assert groups["delivery-publish"]["fan_in_strategy"] == "any_pass"
-    assert _workflow_allowed_outcome_topics(settings, node_id="delivery-integrate") == {
-        "developer.integration.requested",
-        "developer.workstream.repair_requested",
-    }
-    assert _workflow_allowed_outcome_topics(settings, node_id="delivery-integration-tests") == {
-        "developer.integration.verified",
-        "developer.workstream.repair_requested",
-    }
-
-
-@pytest.mark.parametrize(
-    "event_type",
-    ["developer.integration.approved", "developer.delivery.observed"],
-)
-def test_delivery_publish_inputs_independently_activate_publish_stage(event_type: str) -> None:
-    graph = _developer_workflows()["Developer Delivery"].graph
-    settings = Settings.model_validate(
-        {
-            "workflow": {
-                "workflow_id": "developer-delivery",
-                "name": "Developer Delivery",
-                "graph": graph,
-            }
-        }
-    )
-    runtime = _workflow_runtime_for_persona(settings, "developer-coordinator")
-    assert runtime is not None
-    group = next(item for item in runtime["consumer_groups"] if item["id"] == "delivery-publish")
-
-    accepted = FanInBuffer().try_accept_consumer(
-        event_type=event_type,
-        event_payload={"event_type": event_type, "valid": True},
-        root_correlation_id="delivery-run-1",
-        persona_name="developer-coordinator",
-        consumes_event_types=group["event_types"],
-        strategy=group["fan_in_strategy"],
-        consumer_key=group["id"],
-        cycle_correlation_id=f"{event_type}-1",
-    )
-
-    assert accepted is not None
-    assert accepted.consumer_key == "delivery-publish"
-    assert accepted.triggered_by == f"mesh:outcome:{event_type}"
-
-
-def test_workstream_verification_failure_compiles_to_in_task_repair() -> None:
-    graph = _developer_workflows()["Developer Workstream"].graph
-    edges = {edge["id"]: edge for edge in graph["edges"]}
-    assert edges["workstream-verify-repair"] == {
-        "id": "workstream-verify-repair",
-        "source": "workstream-verify",
-        "target": "workstream-code",
-        "label": ("developer.workstream.repair_requested -> developer.workstream.repair_requested"),
-    }
-
-    settings = Settings.model_validate(
-        {
-            "workflow": {
-                "workflow_id": "developer-workstream",
-                "name": "Developer Workstream",
-                "graph": graph,
-            }
-        }
-    )
-    runtime = _workflow_runtime_for_persona(settings, "developer-coordinator")
-    assert runtime is not None
-    assert "developer.workstream.repair_requested" in (
-        _workflow_allowed_outcome_topics(settings, node_id="workstream-verify") or set()
-    )
-    coder_runtime = _workflow_runtime_for_persona(settings, "developer-coder")
-    assert coder_runtime is not None
-    groups = {group["id"]: group for group in coder_runtime["consumer_groups"]}
-    assert groups["workstream-code"]["event_types"] == [
-        "developer.workstream.requested",
-        "developer.workstream.repair_requested",
-    ]
-
-
-def test_delivery_observation_wait_is_passive_and_reenters_publication() -> None:
-    graph = _developer_workflows()["Developer Delivery"].graph
-    wait = next(node for node in graph["nodes"] if node["id"] == "delivery-publication-wait")
-    assert wait == {
-        "id": "delivery-publication-wait",
-        "kind": "wait",
-        "label": "Await authoritative delivery observation",
-        "conditions": ["forge.checks", "forge.merge"],
-    }
-    edges = {edge["id"]: edge for edge in graph["edges"]}
-    assert edges["delivery-publish-wait"] == {
-        "id": "delivery-publish-wait",
-        "source": "delivery-publish",
-        "target": "delivery-publication-wait",
-        "label": "developer.delivery.waiting -> developer.delivery.waiting",
-    }
-    assert edges["delivery-wait-publish"] == {
-        "id": "delivery-wait-publish",
-        "source": "delivery-publication-wait",
-        "target": "delivery-publish",
-        "label": "developer.delivery.observed -> developer.delivery.observed",
-    }
-
-    settings = Settings.model_validate(
-        {
-            "workflow": {
-                "workflow_id": "developer-delivery",
-                "name": "Developer Delivery",
-                "graph": graph,
-            }
-        }
-    )
-    runtime = _workflow_runtime_for_persona(settings, "developer-coordinator")
-    assert runtime is not None
-    assert "developer.delivery.observed" in runtime["event_types"]
-    assert all(group["id"] != "delivery-publication-wait" for group in runtime["consumer_groups"])
-    assert all(node.node_id != "delivery-publication-wait" for node in _workflow_gate_nodes(graph))
-    assert all(
-        node.node_id != "delivery-publication-wait" for node in _workflow_terminal_nodes(graph)
-    )
-    assert "developer.delivery.waiting" in (
-        _workflow_allowed_outcome_topics(settings, node_id="delivery-publish") or set()
-    )
-
-
 def test_workflow_revision_ignores_transport_paths_for_both_dependency_kinds() -> None:
     document = load_workflow_document(
         (BUNDLED_SYSTEM_WORKFLOWS_PATH / "developer-delivery.yaml").read_text()
@@ -532,264 +277,3 @@ def test_execution_snapshot_rejects_invalid_workflow_dependency_closure(mutation
                 workflow_definitions=definitions,
             )
         )
-
-
-def _subworkflow_snapshot() -> dict:
-    """A minimal pinned graph naming the joined/blocked events for one node.
-
-    Deliberately uses event names distinct from any bundled workflow's own
-    vocabulary, to prove the continuation adapter reads them from the graph
-    rather than assuming a fixed name.
-    """
-    return {
-        "graph": {
-            "nodes": [
-                {
-                    "id": "delivery-workstreams",
-                    "kind": "subworkflow",
-                    "blockedEvent": "workstreams.blocked",
-                },
-            ],
-            "edges": [
-                {
-                    "id": "workstreams-joined",
-                    "source": "delivery-workstreams",
-                    "target": "delivery-integrate",
-                    "label": "workstreams.verified -> workstreams.verified",
-                },
-            ],
-        }
-    }
-
-
-@pytest.mark.asyncio
-async def test_verified_children_resume_parent_as_deterministic_mesh_event() -> None:
-    class Adapter:
-        def __init__(self) -> None:
-            self.calls = []
-
-        async def publish_workflow_event(self, *args, **kwargs) -> None:
-            self.calls.append((args, kwargs))
-
-    adapter = Adapter()
-
-    class Factory:
-        async def primary_for_owner(self, owner_id):
-            assert owner_id == "owner-1"
-            return adapter
-
-        async def for_connection(self, owner_id, connection_id):
-            raise AssertionError("no explicit connection expected")
-
-    execution_id = uuid4()
-    execution = SimpleNamespace(
-        id=execution_id,
-        owner_id="owner-1",
-        connection_id="",
-        parent_session_id="session-1",
-        parent_node_id="delivery-workstreams",
-        workflow_snapshot=_subworkflow_snapshot(),
-    )
-    continuation = VolundrParentWorkflowContinuation(volundr_factory=Factory())
-
-    await continuation.resume_parent(
-        execution,
-        generation=2,
-        results=[{"childKey": "api", "candidateSha": "a" * 40}],
-    )
-
-    assert len(adapter.calls) == 1
-    args, kwargs = adapter.calls[0]
-    assert args[:2] == ("session-1", "workstreams.verified")
-    assert kwargs["payload"]["parentNodeId"] == "delivery-workstreams"
-    assert kwargs["payload"]["generation"] == 2
-    assert kwargs["request_id"] == kwargs["payload"]["continuationId"]
-
-
-@pytest.mark.asyncio
-async def test_parent_continuation_never_falls_back_from_explicit_connection() -> None:
-    class Factory:
-        async def primary_for_owner(self, owner_id):
-            raise AssertionError("explicit connection must not fall back to primary")
-
-        async def for_connection(self, owner_id, connection_id):
-            assert (owner_id, connection_id) == ("owner-1", "connection-1")
-            return None
-
-    execution = SimpleNamespace(
-        id=uuid4(),
-        owner_id="owner-1",
-        connection_id="connection-1",
-        parent_session_id="session-1",
-        parent_node_id="delivery-workstreams",
-    )
-    continuation = VolundrParentWorkflowContinuation(volundr_factory=Factory())
-
-    with pytest.raises(RuntimeError, match="connection is unavailable"):
-        await continuation.resume_parent(execution, generation=1, results=[])
-
-
-@pytest.mark.asyncio
-async def test_parent_continuation_stops_exact_session_through_existing_connection() -> None:
-    class Adapter:
-        def __init__(self) -> None:
-            self.stopped = []
-
-        async def stop_session(self, session_id) -> None:
-            self.stopped.append(session_id)
-
-    adapter = Adapter()
-
-    class Factory:
-        async def primary_for_owner(self, owner_id):
-            raise AssertionError("explicit connection must not fall back to primary")
-
-        async def for_connection(self, owner_id, connection_id):
-            assert (owner_id, connection_id) == ("owner-1", "connection-1")
-            return adapter
-
-    execution = SimpleNamespace(
-        id=uuid4(),
-        owner_id="owner-1",
-        connection_id="connection-1",
-        parent_session_id="session-1",
-    )
-    continuation = VolundrParentWorkflowContinuation(volundr_factory=Factory())
-
-    await continuation.stop_parent(execution)
-
-    assert adapter.stopped == ["session-1"]
-
-
-@pytest.mark.asyncio
-async def test_blocked_children_notify_parent_with_stable_correlation() -> None:
-    class Adapter:
-        def __init__(self) -> None:
-            self.calls = []
-
-        async def publish_workflow_event(self, *args, **kwargs) -> None:
-            self.calls.append((args, kwargs))
-
-    adapter = Adapter()
-
-    class Factory:
-        async def primary_for_owner(self, owner_id):
-            return adapter
-
-    execution = SimpleNamespace(
-        id=uuid4(),
-        owner_id="owner-1",
-        connection_id="",
-        parent_session_id="session-1",
-        parent_node_id="delivery-workstreams",
-        workflow_snapshot=_subworkflow_snapshot(),
-    )
-    continuation = VolundrParentWorkflowContinuation(volundr_factory=Factory())
-    children = [
-        {
-            "childKey": "api",
-            "attempt": 2,
-            "attemptId": str(uuid4()),
-            "taskId": "task-1",
-            "state": "blocked",
-            "failureKind": "missing_credentials",
-            "detail": "Which credential should I use?",
-        }
-    ]
-
-    await continuation.notify_parent(
-        execution,
-        generation=3,
-        correlation_revision=7,
-        children=children,
-    )
-
-    args, kwargs = adapter.calls[0]
-    assert args[:2] == ("session-1", "workstreams.blocked")
-    assert kwargs["payload"]["children"] == children
-    assert kwargs["payload"]["revision"] == 7
-    assert kwargs["request_id"] == kwargs["payload"]["continuationId"]
-
-
-def _wait_snapshot() -> dict:
-    """A minimal pinned graph naming the exact wait node's observed event.
-
-    Uses an event name distinct from any bundled workflow's own vocabulary,
-    to prove the continuation adapter reads it from the exact wait node
-    rather than assuming a single graph-wide wait.
-    """
-    return {
-        "graph": {
-            "nodes": [
-                {"id": "publication-wait", "kind": "wait", "conditions": ["timer"]},
-            ],
-            "edges": [
-                {
-                    "id": "wait-observed",
-                    "source": "publication-wait",
-                    "target": "delivery-publish",
-                    "label": "publication.observed -> publication.observed",
-                },
-            ],
-        }
-    }
-
-
-@pytest.mark.asyncio
-async def test_terminal_wait_observation_notifies_parent_with_exact_wait_binding() -> None:
-    class Adapter:
-        def __init__(self) -> None:
-            self.calls = []
-
-        async def publish_workflow_event(self, *args, **kwargs) -> None:
-            self.calls.append((args, kwargs))
-
-    adapter = Adapter()
-
-    class Factory:
-        async def primary_for_owner(self, owner_id):
-            assert owner_id == "owner-1"
-            return adapter
-
-    execution = SimpleNamespace(
-        id=uuid4(),
-        owner_id="owner-1",
-        connection_id="",
-        parent_session_id="session-1",
-        parent_node_id="publication-wait",
-        workflow_snapshot=_wait_snapshot(),
-    )
-    wait = WorkflowWait(
-        id=uuid4(),
-        execution_id=execution.id,
-        node_id="publication-wait",
-        condition_type="timer",
-        request={"until": "2026-01-01T00:00:00+00:00"},
-        request_digest="a" * 64,
-        execution_generation=2,
-        execution_revision=1,
-        state=WorkflowWaitState.READY,
-        next_poll_at=datetime.now(UTC),
-    )
-    observation = WaitObservation(
-        status=WaitObservationStatus.SATISFIED,
-        observed_at=datetime.now(UTC),
-        reason="The configured deadline has passed",
-        detail={"until": "2026-01-01T00:00:00+00:00"},
-    )
-    continuation = VolundrParentWorkflowContinuation(volundr_factory=Factory())
-
-    await continuation.notify_wait_observation(execution, wait, observation)
-    await continuation.notify_wait_observation(execution, wait, observation)
-
-    first_args, first_kwargs = adapter.calls[0]
-    second_args, second_kwargs = adapter.calls[1]
-    assert first_args[:2] == ("session-1", "publication.observed")
-    assert first_kwargs["payload"]["waitId"] == str(wait.id)
-    assert first_kwargs["payload"]["nodeId"] == "publication-wait"
-    assert first_kwargs["payload"]["conditionType"] == "timer"
-    assert first_kwargs["payload"]["generation"] == 2
-    assert first_kwargs["payload"]["status"] == "satisfied"
-    assert first_kwargs["payload"]["detail"] == {"until": "2026-01-01T00:00:00+00:00"}
-    assert first_kwargs["request_id"] == second_kwargs["request_id"]
-    assert first_args == second_args

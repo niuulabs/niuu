@@ -129,7 +129,6 @@ async def test_embedded_transport_without_an_app_is_reported_as_unreachable() ->
         (InstanceKind.TING, "/api/v1/ting/health"),
         (InstanceKind.MIMIR, "/api/v1/mimir/health"),
         (InstanceKind.BIFROST, "/api/v1/bifrost/health"),
-        (InstanceKind.RAVN, "/api/v1/ravn/health"),
         (InstanceKind.OBSERVATORY, "/api/v1/observatory/health"),
         (InstanceKind.GENERIC, "/health"),
     ],
@@ -162,8 +161,8 @@ async def test_configured_health_paths_override_the_kind_default() -> None:
 
     assert result.ok is True
     # The override did not clobber other kinds' defaults.
-    assert adapter._resolve_health_path(_instance(kind=InstanceKind.RAVN)) == (
-        "/api/v1/ravn/health"
+    assert adapter._resolve_health_path(_instance(kind=InstanceKind.TING)) == (
+        "/api/v1/ting/health"
     )
 
 

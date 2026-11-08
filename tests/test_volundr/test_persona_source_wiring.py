@@ -7,8 +7,8 @@ hardcoding FilesystemPersonaAdapter.
 
 from __future__ import annotations
 
-from ravn.adapters.personas.loader import PersonaConfig
-from ravn.ports.persona import PersonaRegistryPort
+from personas.domain.persona import PersonaConfig
+from personas.ports.persona import PersonaRegistryPort
 from volundr.config import PersonaSourceConfig, RavnConfig
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ class StubPersonaRegistry(PersonaRegistryPort):
 class TestVolundrPersonaSourceConfig:
     def test_default_adapter_is_filesystem(self) -> None:
         cfg = PersonaSourceConfig()
-        assert cfg.adapter == "ravn.adapters.personas.loader.FilesystemPersonaAdapter"
+        assert cfg.adapter == "personas.adapters.loader.FilesystemPersonaAdapter"
 
     def test_custom_adapter(self) -> None:
         cfg = PersonaSourceConfig(
@@ -101,7 +101,7 @@ class TestVolundrDynamicWiring:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from ravn.api.personas import create_personas_router
+        from personas.api.personas import create_personas_router
 
         adapter = StubPersonaRegistry()
         app = FastAPI()
@@ -117,7 +117,7 @@ class TestVolundrDynamicWiring:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from ravn.api.personas import create_personas_router
+        from personas.api.personas import create_personas_router
 
         adapter = StubPersonaRegistry()
         app = FastAPI()

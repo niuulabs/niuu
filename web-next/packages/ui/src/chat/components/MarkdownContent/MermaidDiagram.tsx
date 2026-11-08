@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react';
 import { Expand, Code, ChartNoAxesCombined } from 'lucide-react';
 import { Dialog, DialogContent } from '../../../primitives/Dialog/Dialog';
 import { MarkdownCodeBlock } from './MarkdownCodeBlock';
+import { foreignLabelsToText } from './mermaidLabels';
 
 let renderQueue: Promise<unknown> = Promise.resolve();
 
@@ -51,7 +52,7 @@ export function MermaidDiagram({
         });
         const { svg } = await mermaid.render(`niuu-mermaid-${id}`, source);
         if (cancelled) return;
-        const safe = purify.sanitize(svg, {
+        const safe = purify.sanitize(foreignLabelsToText(svg, token('--color-text-primary')), {
           USE_PROFILES: { svg: true, svgFilters: true },
           FORBID_TAGS: ['foreignObject', 'script', 'iframe', 'object', 'embed'],
           ALLOW_DATA_ATTR: false,

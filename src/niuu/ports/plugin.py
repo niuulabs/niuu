@@ -118,12 +118,39 @@ class APIRouteDomain:
     description: str = ""
 
 
+@dataclass(frozen=True)
+class CLITarget:
+    """Where a plugin's CLI commands send requests, and the bearer they send.
+
+    The CLI app resolves it from the active context (``cli.context``) when a command
+    runs; a plugin built outside the app talks to the local default.
+    """
+
+    base_url: str = "http://localhost:8080"
+    auth_token: str | None = None
+
+
 class ServicePlugin(ABC):
     """Base class for niuu CLI plugins.
 
     Each package (volundr, ting, etc.) implements this to register its
     commands, services, API clients, and TUI pages.
     """
+
+    _cli_target: Callable[[], CLITarget] | None = None
+
+    def set_cli_target(self, resolve: Callable[[], CLITarget]) -> None:
+        """Where this plugin's commands go; called once, resolved per command."""
+        self._cli_target = resolve
+
+    def cli_client(self, service_name: str) -> Any:
+        """A sync API client for this plugin's commands, aimed at the active context."""
+        from niuu.cli_api_client import CLIAPIClient
+
+        target = self._cli_target() if self._cli_target is not None else CLITarget()
+        return CLIAPIClient(
+            base_url=target.base_url, auth_token=target.auth_token, service_name=service_name
+        )
 
     @property
     @abstractmethod

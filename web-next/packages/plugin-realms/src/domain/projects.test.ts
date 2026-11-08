@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { RealmSummary, ValkyrieDashboard } from '@niuulabs/plugin-valkyrie';
 import type { ForgeProject } from '@niuulabs/plugin-volundr';
-import {
-  groupByProject,
-  projectsWithoutWorkspaces,
-  slugForResident,
-  unclaimedResidents,
-} from './projects';
+import type { RealmSummary } from './governance';
+import { groupByProject, projectsWithoutWorkspaces } from './projects';
 
 function realm(slug: string, projectId: string | null): RealmSummary {
   return {
@@ -23,9 +18,9 @@ function realm(slug: string, projectId: string | null): RealmSummary {
   };
 }
 
-const card = (slug: string, projectId: string | null, pending = 0) => ({
+const card = (slug: string, projectId: string | null, waiting = 0) => ({
   realm: realm(slug, projectId),
-  pendingReviews: pending,
+  waitingTickets: Array.from({ length: waiting }, (_, index) => ({ index })),
 });
 
 const project = (id: string, name: string): ForgeProject => ({
@@ -74,47 +69,5 @@ describe('projectsWithoutWorkspaces', () => {
       ],
     );
     expect(empty.map((entry) => entry.name)).toEqual(['Alpha', 'Zebra']);
-  });
-});
-
-describe('unclaimedResidents', () => {
-  const resident = (id: string, name: string, environmentId: string) => ({
-    id,
-    name,
-    environmentId,
-  });
-  const dashboard = {
-    valkyries: [
-      resident('1', 'runa', 'env-k8s-valhalla'),
-      resident('2', 'regin', 'env-k8s-valhalla'),
-      resident('3', 'sigrun', 'env-k8s-ymir'),
-    ],
-  } as unknown as ValkyrieDashboard;
-
-  it('lists residents no workspace keeps', () => {
-    const left = unclaimedResidents(dashboard, [realm('runa', null)]);
-    expect(left.map((entry) => entry.name)).toEqual(['regin', 'sigrun']);
-  });
-
-  it('stops listing a resident once a workspace is made around it', () => {
-    const capitalised = {
-      valkyries: [resident('1', 'Runa', 'env-k8s-valhalla')],
-    } as unknown as ValkyrieDashboard;
-    const slug = slugForResident(capitalised.valkyries[0]!);
-    expect(unclaimedResidents(capitalised, [realm(slug, null)])).toEqual([]);
-  });
-
-  it('has nothing to list before the dashboard answers', () => {
-    expect(unclaimedResidents(undefined, [])).toEqual([]);
-  });
-});
-
-describe('slugForResident', () => {
-  it('uses the resident name, which is how a workspace finds it again', () => {
-    expect(slugForResident({ name: 'Regin' } as never)).toBe('regin');
-  });
-
-  it('refuses a name that cannot make a slug', () => {
-    expect(() => slugForResident({ name: '---' } as never)).toThrow(/no name/);
   });
 });

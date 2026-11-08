@@ -1,10 +1,8 @@
 """Shared in-process storage for Ting operator settings routes.
 
-These settings are intentionally mounted behind ``/api/v1/ting/settings/*`` and
-kept distinct from runtime workflow config like ``/api/v1/ting/flock/config``.
-Until Ting grows a dedicated settings repository, we persist changes in
-``app.state`` for the lifetime of the process and seed initial values from the
-loaded ``Settings`` object.
+These settings are mounted behind ``/api/v1/ting/settings/*``. Until Ting grows a
+dedicated settings repository, we persist changes in ``app.state`` for the
+lifetime of the process and seed initial values from the loaded ``Settings`` object.
 """
 
 from __future__ import annotations

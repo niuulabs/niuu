@@ -6,9 +6,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from ting.api.flock_config import create_flock_config_router
 from ting.api.settings import create_settings_router
-from ting.config import AuthConfig, FlockConfig, NotificationConfig, Settings, WatcherConfig
+from ting.config import AuthConfig, NotificationConfig, Settings, WatcherConfig
 
 PLATFORM_ADMIN = {
     "x-auth-user-id": "dev-user",
@@ -20,13 +19,11 @@ PLATFORM_ADMIN = {
 def _make_client() -> TestClient:
     app = FastAPI()
     app.include_router(create_settings_router())
-    app.include_router(create_flock_config_router())
     settings = Settings(
         auth=AuthConfig(allow_anonymous_dev=True),
         notification=NotificationConfig(enabled=True),
         watcher=WatcherConfig(batch_size=12),
     )
-    settings.dispatch.flock = FlockConfig()
     app.state.settings = settings
     return TestClient(app, headers=PLATFORM_ADMIN)
 
@@ -141,25 +138,17 @@ class TestSettingsAPI:
         assert body["webhook_url"] is None
         assert client.app.state.settings.notification.enabled is False
 
-    def test_operator_flock_settings_do_not_overwrite_runtime_flock_config(self) -> None:
+    def test_operator_flock_settings_are_saga_defaults_only(self) -> None:
         client = _make_client()
 
         patch_response = client.patch(
             "/api/v1/ting/settings/flock",
             json={"flock_name": "Core Platform"},
         )
-        runtime_response = client.get(
-            "/api/v1/ting/flock/config",
-            headers={
-                "x-auth-user-id": "dev-user",
-                "x-auth-tenant": "default",
-                "x-auth-roles": "volundr:admin",
-            },
-        )
 
         assert patch_response.status_code == 200
-        assert runtime_response.status_code == 200
-        assert runtime_response.json()["flock_enabled"] is False
+        assert patch_response.json()["flock_name"] == "Core Platform"
+        assert client.get("/api/v1/ting/flock/config").status_code == 404
 
 
 class TestSharedSettingsAccess:

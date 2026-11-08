@@ -23,6 +23,8 @@ export function SessionResources({
   filesystem,
   presented = NO_PRESENTED,
   filesReadable = true,
+  onOpenWorkspaceFile,
+  onOpenExternalLink,
   children,
 }: {
   sessionId: string;
@@ -32,6 +34,17 @@ export function SessionResources({
   presented?: readonly PresentedFileRef[];
   /** False once the session has stopped: its own files can no longer be read. */
   filesReadable?: boolean;
+  /**
+   * Opens a workspace file the conversation links to somewhere of the host's own, such as a
+   * dock pane beside the chat, instead of this dialog. Used only while the files are readable.
+   */
+  onOpenWorkspaceFile?: (path: string) => void;
+  /**
+   * Offered every external link the conversation opens first. Returns true when the host
+   * opened it itself (a session's `localhost:<port>` in its live preview, say), so the link
+   * preview dialog stays closed.
+   */
+  onOpenExternalLink?: (href: string) => boolean;
   children: ReactNode;
 }) {
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -62,16 +75,24 @@ export function SessionResources({
     },
     [filesystem, sessionId, filesReadable],
   );
-  const open = useCallback((resource: ConversationResource) => {
-    if (!isOpen.current) {
-      returnFocus.current =
-        document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      isOpen.current = true;
-    }
-    setPreview(undefined);
-    setError(undefined);
-    setSelected(resource);
-  }, []);
+  const open = useCallback(
+    (resource: ConversationResource) => {
+      if (resource.kind === 'workspace' && filesReadable && onOpenWorkspaceFile) {
+        onOpenWorkspaceFile(resource.path);
+        return;
+      }
+      if (resource.kind === 'external' && onOpenExternalLink?.(resource.path)) return;
+      if (!isOpen.current) {
+        returnFocus.current =
+          document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        isOpen.current = true;
+      }
+      setPreview(undefined);
+      setError(undefined);
+      setSelected(resource);
+    },
+    [filesReadable, onOpenWorkspaceFile, onOpenExternalLink],
+  );
   const port = useMemo(
     () => ({
       resolve: (href: string) => {

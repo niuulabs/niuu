@@ -7,7 +7,6 @@ import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
-from niuu.domain.discovered_residents import discovered_resident_id
 from niuu.ports.realm_repository import RealmRepository
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.models import (
@@ -25,10 +24,8 @@ from volundr.domain.models import (
     ResidentSession,
 )
 from volundr.domain.ports import (
-    DiscoveredResident,
     ResidentChatConnection,
     ResidentDeploymentProfileProvider,
-    ResidentDiscoverySource,
     ResidentLogsUnavailableError,
     ResidentRuntimeController,
     ResidentRuntimeLogReader,
@@ -103,7 +100,7 @@ class ResidentRuntimeService:
         if len(self._controllers) != len(controllers or []):
             raise ValueError("Resident runtime controller backends must be unique")
         # Keyed by (backend, engine): one engine can have a controller per backend
-        # (Ravn on Flux and on OpenShell). A backend of None drives any backend.
+        # (OpenClaw on the local and OpenShell backends). A backend of None drives any backend.
         self._session_controllers = {
             (controller.runtime_backend, controller.engine): controller
             for controller in session_controllers or []
@@ -120,7 +117,6 @@ class ResidentRuntimeService:
             self._with_wired_capabilities(profile)
             for profile in self._profiles.list()
             if (controller := self._controllers.get(profile.backend))
-            and not isinstance(controller, ResidentDiscoverySource)
             and controller.supports(profile)
             and self._profile_session_api_available(profile)
             and self._profile_logs_available(profile, controller)
@@ -142,11 +138,13 @@ class ResidentRuntimeService:
     ) -> ResidentRuntime:
         """Persist one resident and provision its backend asynchronously."""
         profile = self._require_profile(profile_id)
-        if isinstance(self._require_controller(profile), ResidentDiscoverySource):
-            raise ResidentRuntimeValidationError(
-                f"Resident profile {profile_id} is for residents the Forge discovers; it "
-                "deploys none"
-            )
+        controller = self._require_controller(profile)
+        # Bound here, inside the owner's request: the deploy runs in the background and
+        # the reconciler has no caller, and reading the owner's connections may need one.
+        try:
+            integration_bindings = await controller.bind_integrations(principal.user_id, profile)
+        except ValueError as exc:
+            raise ResidentRuntimeValidationError(str(exc)) from exc
         runtime = await self.create_record(
             principal,
             name=name,
@@ -158,10 +156,12 @@ class ResidentRuntimeService:
             flock_role=flock_role,
             flock_peer_id=flock_peer_id,
             realm_id=realm_id,
+            integration_bindings=integration_bindings,
         )
         deploying = runtime.model_copy(
             update={
                 "observed_state": ResidentObservedState.DEPLOYING,
+                "backend_ref": controller.planned_backend_ref(runtime),
                 "conditions": [
                     ResidentCondition(
                         type="BackendReady",
@@ -182,8 +182,7 @@ class ResidentRuntimeService:
         runtime: ResidentRuntime,
         profile: ResidentDeploymentProfile,
     ) -> None:
-        existing = self._deployment_tasks.get(runtime.id)
-        if existing is not None and not existing.done():
+        if self._deployment_in_flight(runtime.id):
             return
         task = asyncio.create_task(
             self._deploy_background(runtime, profile),
@@ -248,8 +247,13 @@ class ResidentRuntimeService:
         flock_role: str = "",
         flock_peer_id: str = "",
         realm_id: UUID | None = None,
+        integration_bindings: dict[str, str] | None = None,
     ) -> ResidentRuntime:
-        """Create the durable record used by a real deployment adapter."""
+        """Create the durable record used by a real deployment adapter.
+
+        ``integration_bindings`` are the owner credentials the controller bound the
+        profile's declared integrations to (``ResidentRuntimeController.bind_integrations``).
+        """
         self._require_write_role(principal)
         profile = self._require_profile(profile_id)
 
@@ -292,6 +296,7 @@ class ResidentRuntimeService:
             flock_role=flock_role.strip(),
             flock_peer_id=flock_peer_id.strip(),
             realm_id=realm_id,
+            integration_bindings=integration_bindings or {},
             capabilities=profile.capabilities,
         )
         try:
@@ -383,6 +388,10 @@ class ResidentRuntimeService:
         try:
             profile = self._require_profile(runtime.profile_id)
             controller = self._require_controller(profile)
+            if self._deployment_in_flight(runtime.id):
+                # The create carries the planned backend ref, so the record no longer
+                # says "not deployed yet"; reconciling now would deploy it a second time.
+                return runtime
             if self._awaits_deployment(runtime):
                 self._schedule_deployment(runtime, profile)
                 return runtime
@@ -400,6 +409,10 @@ class ResidentRuntimeService:
             self._schedule_deployment(reconciled, profile)
         return reconciled
 
+    def _deployment_in_flight(self, runtime_id: UUID) -> bool:
+        task = self._deployment_tasks.get(runtime_id)
+        return task is not None and not task.done()
+
     @staticmethod
     def _awaits_deployment(runtime: ResidentRuntime) -> bool:
         return (
@@ -412,84 +425,12 @@ class ResidentRuntimeService:
         )
 
     async def reconcile_all(self) -> None:
-        """Refresh every durable resident without letting one failure stop the pass.
-
-        Records of discovered residents are brought in line with their sources first,
-        so a newly discovered resident is reconciled in the same pass.
-        """
-        await self.sync_discovered()
+        """Refresh every durable resident without letting one failure stop the pass."""
         for runtime in await self._repository.list_for_reconciliation():
             try:
                 await self.reconcile(runtime.id)
             except ResidentRuntimeDeploymentError:
                 continue
-
-    async def sync_discovered(self) -> None:
-        """Keep one record per resident each discovery source reports, and no other.
-
-        A discovered resident's record has the id derived from its key, so the same
-        resident keeps the same record (and its sessions) across passes and restarts.
-        A source that cannot answer raises; its records are left as they are.
-        """
-        for controller in self._controllers.values():
-            if not isinstance(controller, ResidentDiscoverySource):
-                continue
-            discovered = {
-                discovered_resident_id(resident.key): resident
-                for resident in await controller.discovered_residents()
-            }
-            known = {
-                runtime.id: runtime
-                for runtime in await self._repository.list_for_reconciliation()
-                if runtime.backend is controller.backend
-            }
-            for runtime_id, resident in discovered.items():
-                await self._record_discovered(controller.backend, runtime_id, resident)
-            for runtime_id, runtime in known.items():
-                if runtime_id in discovered:
-                    continue
-                await self._repository.delete(runtime_id)
-                logger.info("Resident %s is no longer discovered; removed its record", runtime.name)
-
-    async def _record_discovered(
-        self,
-        backend: ResidentBackend,
-        runtime_id: UUID,
-        resident: DiscoveredResident,
-    ) -> None:
-        profile = self._require_profile(resident.profile_id)
-        if profile.backend is not backend:
-            raise ResidentRuntimeValidationError(
-                f"Discovered resident {resident.key!r} names profile {profile.id}, which is for "
-                f"the {profile.backend.value} backend, not {backend.value}"
-            )
-        fields = {
-            "owner_id": resident.owner_id,
-            "tenant_id": resident.tenant_id,
-            "name": resident.name,
-            "persona_name": resident.persona_name,
-            "model": resident.model or profile.default_model,
-            "profile_id": profile.id,
-            "engine": profile.engine,
-        }
-        existing = await self._repository.get(runtime_id)
-        if existing is None:
-            await self._repository.create(
-                ResidentRuntime(
-                    id=runtime_id,
-                    backend=backend,
-                    capabilities=profile.capabilities,
-                    backend_ref={"key": resident.key},
-                    **fields,
-                )
-            )
-            logger.info("Discovered resident %s (%s)", resident.name, resident.key)
-            return
-        if all(getattr(existing, name) == value for name, value in fields.items()):
-            return
-        await self._repository.update(
-            existing.model_copy(update={**fields, "updated_at": datetime.now(UTC)})
-        )
 
     @staticmethod
     def _require_lifecycle_capability(
@@ -753,7 +694,7 @@ class ResidentRuntimeService:
         them too.
         """
         controller = self._session_controller_for(profile.backend, profile.engine)
-        if controller is None or not controller.provides_sessions(profile):
+        if controller is None:
             return profile
         missing = [
             capability

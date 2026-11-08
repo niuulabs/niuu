@@ -2,8 +2,9 @@ import { useSyncExternalStore } from 'react';
 
 // niuu:ux: compact-chat preferences.
 //
-// Defaults follow the Forge review layout: the agent avatar, timestamps and an
-// inline copy row under each reply, with every turn expanded. The Display menu
+// Defaults follow the Forge review layout: timestamps and an inline copy row under each
+// reply, with every turn expanded. The speaker is the engine-coloured model name, so the
+// agent avatar is off unless chosen. The Display menu
 // (and localStorage keys `niuu.compactUx.<key>`) switch to the compact,
 // Codex-style view: hidden actions and avatar, hover timestamps, folded turns.
 export interface CompactUxChatPrefs {
@@ -15,6 +16,8 @@ export interface CompactUxChatPrefs {
   timestamp: 'hover' | 'always' | 'never';
   /** copy affordance: a hover control near the message, or the inline row */
   copyMode: 'hover' | 'inline';
+  /** a burst of tool calls: one summary row that opens a sheet, or every call inline */
+  toolRuns: 'rows' | 'cards';
 }
 
 /** Codex-style conversation fold: question → "Worked" disclosure → answer. */
@@ -22,13 +25,16 @@ export type ConversationView = 'compact' | 'expanded';
 
 const DEFAULTS: CompactUxChatPrefs = {
   showMessageActions: true,
-  showAgentAvatar: true,
+  showAgentAvatar: false,
   timestamp: 'always',
   copyMode: 'inline',
+  toolRuns: 'rows',
 };
 
-const CONVERSATION_VIEW_KEY = 'conversationView';
-const CONVERSATION_VIEW_DEFAULT: ConversationView = 'expanded';
+// A new key, so a view saved while Expanded was the default does not hold it there.
+const CONVERSATION_VIEW_KEY = 'conversationFold';
+// Lexi folds a turn's work under one "Worked" row and shows the answer.
+const CONVERSATION_VIEW_DEFAULT: ConversationView = 'compact';
 const CONVERSATION_VIEW_VALUES = ['compact', 'expanded'] as const;
 
 function readBool(key: string, fallback: boolean): boolean {
@@ -57,10 +63,11 @@ export function getCompactUxChatPrefs(): CompactUxChatPrefs {
     showAgentAvatar: readBool('showAgentAvatar', DEFAULTS.showAgentAvatar),
     timestamp: readEnum('timestamp', ['hover', 'always', 'never'] as const, DEFAULTS.timestamp),
     copyMode: readEnum('copyMode', ['hover', 'inline'] as const, DEFAULTS.copyMode),
+    toolRuns: readEnum('toolRuns', ['rows', 'cards'] as const, DEFAULTS.toolRuns),
   };
 }
 
-/** Read the persisted conversation-fold view (defaults to "expanded"). */
+/** Read the persisted conversation-fold view (defaults to "compact"). */
 export function getConversationView(): ConversationView {
   return readEnum(CONVERSATION_VIEW_KEY, CONVERSATION_VIEW_VALUES, CONVERSATION_VIEW_DEFAULT);
 }

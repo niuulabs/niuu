@@ -6,8 +6,6 @@ from uuid import uuid4
 
 import pytest
 
-from ravn.config import Settings
-from ravn.workflow_runtime import _workflow_allowed_outcome_topics
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import workflow_document_revision
@@ -89,7 +87,6 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
 
     names = {workflow.name for workflow in workflows}
     assert names == {
-        "Ting Run Flow + Security + Memory Curation",
         "Research Campaign",
         "Research Thread",
         "Research Thread — Breadth",
@@ -109,30 +106,6 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "Developer Workstream",
         "Developer Integration",
     }
-
-    run_flow = next(
-        workflow
-        for workflow in workflows
-        if workflow.name == "Ting Run Flow + Security + Memory Curation"
-    )
-    assert run_flow.scope == WorkflowScope.SYSTEM
-    assert run_flow.owner_id is None
-    assert set(run_flow.persona_definitions) == set(run_flow.persona_dependencies)
-    assert all(
-        run_flow.persona_definitions[alias]["revision"] == dependency.revision
-        for alias, dependency in run_flow.persona_dependencies.items()
-    )
-    stage_personas = {
-        node["label"]: [member["personaId"] for member in node.get("stageMembers", [])]
-        for node in run_flow.graph["nodes"]
-        if node.get("kind") == "stage"
-    }
-    assert stage_personas["Implement code"] == ["coder"]
-    assert stage_personas["Security review"] == ["security-auditor"]
-    assert stage_personas["Curate shared memory"] == ["mimir-memory-curator"]
-    edge_labels = {edge["label"] for edge in run_flow.graph["edges"]}
-    assert "security.completed -> security.completed" in edge_labels
-    assert "mimir.curated -> mimir.curated" in edge_labels
 
     research_flow = next(workflow for workflow in workflows if workflow.name == "Research Campaign")
     research_stage_labels = [
@@ -296,28 +269,19 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "kind": "gate",
         "label": "Delivery blocked",
         "condition": (
-            "Review the coder's stated reason, correct the ticket, then re-commission the delivery."
+            "Review the coder's stated reason and correct the ticket, then send the delivery "
+            "back to the coder."
         ),
         "mode": "human_approval",
         "pendingBehavior": "help_needed",
+        "approvalEvent": "review.changes_requested",
+        "changesRequestedEvent": "review.changes_requested",
         "instructions": (
             "The requested change could not be completed as written. Review the implementation "
-            "outcome and update the ticket before re-commissioning."
+            "outcome and update the ticket, then answer to send the delivery back to the coder "
+            "for another attempt."
         ),
         "position": {"x": 704, "y": 480},
-    }
-    delivery_settings = Settings.model_validate(
-        {
-            "workflow": {
-                "workflow_id": "tracker-delivery-flow",
-                "name": "Tracker Delivery Flow",
-                "graph": delivery_flow.graph,
-            }
-        }
-    )
-    assert _workflow_allowed_outcome_topics(delivery_settings, node_id="delivery-implement") == {
-        "code.changed",
-        "code.blocked",
     }
     delivery_resources = {
         node["label"]: node
@@ -489,7 +453,6 @@ async def test_seed_system_workflows_preserves_authored_and_obsolete_entries() -
     saved = await seed_system_workflows(repo)
     names = {workflow.name for workflow in saved}
     assert names == {
-        "Ting Run Flow + Security + Memory Curation",
         "Research Campaign",
         "Research Thread",
         "Research Thread — Breadth",
@@ -640,7 +603,7 @@ async def test_seed_reclassified_legacy_row_matching_package_is_replaced_not_com
 async def test_seed_reclassified_legacy_research_campaign_reseeds_current_version(
     monkeypatch,
 ) -> None:
-    """The real Research Campaign case: a legacy 1.0.0 row, package now 2.1.0.
+    """The real Research Campaign case: a legacy 1.0.0 row, package now 2.1.1.
 
     A version mismatch already took the reseed branch before this fix (it
     never reached the strict content-hash comparison), so this locks in that
@@ -650,7 +613,7 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
     seed = next(
         workflow for workflow in load_system_workflows() if workflow.name == "Research Campaign"
     )
-    assert seed.version == "2.1.0"
+    assert seed.version == "2.1.1"
     legacy = replace(
         seed,
         version="1.0.0",
@@ -672,7 +635,7 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
 
     assert repo.save_calls == saved
     assert saved[0].id == seed.id
-    assert saved[0].version == "2.1.0"
+    assert saved[0].version == "2.1.1"
     assert saved[0].graph == seed.graph
     assert saved[0].origin == "bundled"
 
@@ -681,7 +644,7 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
     rerun = await seed_system_workflows(repo)
 
     assert repo.save_calls == []
-    assert rerun[0].version == "2.1.0"
+    assert rerun[0].version == "2.1.1"
 
 
 @pytest.mark.asyncio
@@ -752,7 +715,7 @@ async def test_bundled_memory_wells_provision_without_a_stored_integration(workf
 
     store = AsyncMock()
     contributor = SecretInjectionContributor(credential_store=store)
-    context = SessionContext(workload_type="ravn_flock", workload_config={"mimir": mimir})
+    context = SessionContext(workload_type="default", workload_config={"mimir": mimir})
 
     assert await contributor._build_mappings(context, "owner-without-a-volundr-integration") == []
     store.get.assert_not_called()

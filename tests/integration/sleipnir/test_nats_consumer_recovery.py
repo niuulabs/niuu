@@ -143,7 +143,7 @@ async def test_durable_push_consumer_creates_without_a_cycle_error():
     Before the fix, ``subscribe()`` with a ``consumer_group`` raised on this
     real server: ``nats: JetStreamAPIError ... consumer deliver subject
     forms a cycle`` — every mesh RPC reply durable
-    (``ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter.send``) would
+    (``niuu.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter.send``) would
     have failed the same way.
     """
     stream_name = f"sleipnir_test_{uuid.uuid4().hex[:8]}"

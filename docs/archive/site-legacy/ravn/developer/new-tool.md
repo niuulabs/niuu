@@ -8,7 +8,7 @@ Create a new adapter in `src/ravn/adapters/tools/`:
 
 ```python
 # src/ravn/adapters/tools/my_tool.py
-from ravn.ports.tool import ToolPort
+from niuu.ports.tool import ToolPort
 
 
 class MyTool(ToolPort):

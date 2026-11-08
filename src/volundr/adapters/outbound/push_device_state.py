@@ -134,6 +134,11 @@ HOLDER_SQL = """SELECT * FROM device_tokens
 WHERE token_sha256 = $1 AND kind = $2 AND credential_name IS DISTINCT FROM $3
 LIMIT 1"""
 
+# Registrations of one token take turns. Two installs racing for it would each wait on the
+# other's take-over and insert, which Postgres ends as a deadlock; in turn, the later one
+# takes the token over. The lock is released when the registration's transaction ends.
+LOCK_TOKEN_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))"
+
 # A token belongs to whoever is signed in on that install now: another row holding
 # it (another owner's, or one written before tokens left Postgres) is taken over.
 TAKE_OVER_SQL = """DELETE FROM device_tokens
@@ -239,6 +244,7 @@ class PostgresDeviceStateStore(DeviceStateStore):
     async def register(self, row: DeviceStateRow) -> tuple[DeviceStateRow, list[DeviceStateRow]]:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
+                await conn.execute(LOCK_TOKEN_SQL, row.token_sha256, row.kind)
                 removed = _moved(
                     await conn.fetch(TAKE_OVER_SQL, row.token_sha256, row.kind, row.credential_name)
                 )

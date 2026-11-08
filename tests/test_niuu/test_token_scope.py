@@ -13,13 +13,18 @@ from fastapi.testclient import TestClient
 
 from niuu.domain.services import token_scope
 from niuu.domain.services.token_scope import (
+    EXCHANGE_GRANTABLE_SCOPES,
     FORGE_NOTIFY_SCOPE,
     FORGE_SESSION_LIFECYCLE_SCOPE,
     FORGE_SESSION_MESSAGE_SCOPE,
+    FORGE_SESSION_PREVIEW_SCOPE,
     FORGE_SESSION_READ_SCOPE,
     FORGE_SESSION_SCOPES,
+    FORGE_SESSION_SECRET_SCOPE,
     FORGE_SESSION_TOKEN_USE,
+    ISSUER_ONLY_SCOPES,
     KNOWN_WORKLOAD_SCOPES,
+    SESSION_PREVIEW_PATH,
     VALKYRIE_BUILD_SCOPES,
     VALKYRIE_BUILD_TOKEN_USE,
     bound_workload_scopes,
@@ -28,7 +33,6 @@ from niuu.domain.services.token_scope import (
     require_scope,
     token_has_scope,
     token_requires_scope_check,
-    workload_owner_scoped,
 )
 
 _SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
@@ -61,6 +65,10 @@ def _enforced_scopes() -> set[str]:
     guard that only saw literals would report a false gap.
     """
     call = re.compile(r"""(?:require_scope|token_has_scope)\(\s*([A-Za-z_][\w.]*|["'][^"']+["'])""")
+    # token_has_scope(token, SCOPE) names its scope second, after the credential.
+    token_call = re.compile(
+        r"""token_has_scope\(\s*[^,()]*(?:\([^()]*\))?[^,()]*,\s*([A-Za-z_][\w.]*|["'][^"']+["'])"""
+    )
     assignment = re.compile(r"""^([A-Z][A-Z0-9_]*)\s*=\s*["']([^"']+)["']""", re.MULTILINE)
     known = {
         name: value
@@ -76,7 +84,7 @@ def _enforced_scopes() -> set[str]:
         if "require_scope(" not in text and "token_has_scope(" not in text:
             continue
         local = dict(assignment.findall(text))
-        for raw in call.findall(text):
+        for raw in [*call.findall(text), *token_call.findall(text)]:
             if raw[:1] in {'"', "'"}:
                 found.add(raw[1:-1])
                 continue
@@ -99,12 +107,15 @@ class TestKnownWorkloadScopes:
                 "ting:workflow:launch",
                 "observatory:topology:push",
                 "node_join",
+                "compute_host_join",
                 "forge:notify",
                 "forge:session:read",
+                "forge:session:secret",
                 "forge:session:message",
                 "forge:session:lifecycle",
                 "forge:notifications:deliver",
                 "forge:push:call",
+                "forge:session:preview",
             }
         )
 
@@ -263,33 +274,6 @@ class TestBoundWorkloadScopes:
         assert result == ["forge:session:create", "ting:workflow:launch"]
 
 
-class TestWorkloadOwnerScoped:
-    """``workload_owner_scoped`` is how ``PlatformBudgetReporter`` refuses to
-    seed a resident's budget from a caller identity it cannot prove is this
-    resident's own — see ``niuu.domain.services.workload_identity`` for
-    where the ``workload_owner_scoped`` claim is minted."""
-
-    def test_true_when_the_claim_is_true(self) -> None:
-        token = _encode({"workload_owner_scoped": True})
-        assert workload_owner_scoped(token) is True
-
-    def test_false_when_the_claim_is_false(self) -> None:
-        token = _encode({"workload_owner_scoped": False})
-        assert workload_owner_scoped(token) is False
-
-    def test_false_when_the_claim_is_absent(self) -> None:
-        """A token minted before this claim existed, or by a mapping that
-        never set it, must read as NOT scoped — never a permissive default."""
-        token = _encode({})
-        assert workload_owner_scoped(token) is False
-
-    def test_false_for_an_empty_token(self) -> None:
-        assert workload_owner_scoped("") is False
-
-    def test_false_for_a_malformed_token(self) -> None:
-        assert workload_owner_scoped("not-a-jwt") is False
-
-
 class TestRequireScopeFactory:
     def test_rejects_unknown_scope(self) -> None:
         with pytest.raises(ValueError, match="Unknown workload scope"):
@@ -349,6 +333,7 @@ class TestForgeSessionScopes:
         assert FORGE_SESSION_SCOPES == {
             FORGE_NOTIFY_SCOPE,
             FORGE_SESSION_READ_SCOPE,
+            FORGE_SESSION_SECRET_SCOPE,
             FORGE_SESSION_MESSAGE_SCOPE,
             FORGE_SESSION_LIFECYCLE_SCOPE,
         }
@@ -362,6 +347,25 @@ class TestForgeSessionScopes:
     def test_session_token_with_scope_allowed(self) -> None:
         token = _session_token([FORGE_NOTIFY_SCOPE, FORGE_SESSION_READ_SCOPE])
         assert token_has_scope(token, FORGE_SESSION_READ_SCOPE) is True
+
+    def test_secret_scope_admits_only_the_owned_secret_routes(self) -> None:
+        sid = "0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
+        base = f"/api/v1/forge/sessions/{sid}/secret-requests"
+        with_scope = _session_token([FORGE_SESSION_SECRET_SCOPE])
+        without = _session_token([FORGE_NOTIFY_SCOPE, FORGE_SESSION_READ_SCOPE])
+        owned = [
+            ("POST", base),
+            ("GET", base),
+            ("GET", f"{base}/r-1"),
+            ("POST", f"{base}/r-1/claim"),
+            ("POST", f"{base}/r-1/cancel"),
+        ]
+        for method, path in owned:
+            assert credential_allows_route(with_scope, method, path) is True
+            assert credential_allows_route(without, method, path) is False
+        # Supplying or declining belongs to the owner: no scope opens it to a token.
+        for action in ("fulfill", "decline"):
+            assert credential_allows_route(with_scope, "POST", f"{base}/r-1/{action}") is False
 
     def test_session_token_missing_grant_denied(self) -> None:
         token = _session_token([FORGE_NOTIFY_SCOPE, FORGE_SESSION_READ_SCOPE])
@@ -573,3 +577,83 @@ class TestNotificationDeliveryScope:
         # A session credential still reads the feed with its own scope.
         session = {"Authorization": f"Bearer {_session_token([FORGE_SESSION_READ_SCOPE])}"}
         assert client.get("/feed", headers=session).status_code == 200
+
+
+class TestSessionPreviewScope:
+    """``forge:session:preview``: the live-preview router's credential for one Skuld."""
+
+    def test_it_is_issuer_only(self) -> None:
+        assert FORGE_SESSION_PREVIEW_SCOPE == "forge:session:preview"
+        assert FORGE_SESSION_PREVIEW_SCOPE in VALKYRIE_BUILD_SCOPES
+        assert ISSUER_ONLY_SCOPES == frozenset(
+            {FORGE_SESSION_PREVIEW_SCOPE, token_scope.COMPUTE_HOST_JOIN_SCOPE}
+        )
+        assert EXCHANGE_GRANTABLE_SCOPES == VALKYRIE_BUILD_SCOPES - ISSUER_ONLY_SCOPES
+        assert FORGE_SESSION_PREVIEW_SCOPE not in EXCHANGE_GRANTABLE_SCOPES
+
+    def test_bounding_to_the_exchange_set_drops_it(self) -> None:
+        kept = bound_workload_scopes(
+            ["forge:session:create", FORGE_SESSION_PREVIEW_SCOPE],
+            allowed=EXCHANGE_GRANTABLE_SCOPES,
+        )
+        assert kept == ["forge:session:create"]
+
+    @pytest.mark.parametrize("method", ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
+    @pytest.mark.parametrize(
+        "path",
+        ["/preview/3000", "/preview/3000/", "/preview/5173/@vite/client", "/preview/80/a/b/c"],
+    )
+    def test_a_scoped_token_reaches_preview_paths_with_any_method(
+        self, method: str, path: str
+    ) -> None:
+        token = _build_token([FORGE_SESSION_PREVIEW_SCOPE])
+        assert credential_allows_route(token, method, path) is True
+
+    def test_websocket_upgrades_are_admitted(self) -> None:
+        token = _build_token([FORGE_SESSION_PREVIEW_SCOPE])
+        assert credential_allows_route(token, "WEBSOCKET", "/preview/3000/hmr") is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/",
+            "/preview",
+            "/preview/",
+            "/preview/abc",
+            "/preview/3000x",
+            "/previews/3000/",
+            "/api/preview/3000",
+            "/s/abc/preview/3000/",
+            "/api/v1/forge/sessions",
+            "/api/conversation/history",
+        ],
+    )
+    def test_it_is_refused_everywhere_else(self, path: str) -> None:
+        token = _build_token([FORGE_SESSION_PREVIEW_SCOPE])
+        assert credential_allows_route(token, "GET", path) is False
+        assert credential_allows_route(token, "WEBSOCKET", path) is False
+
+    def test_a_token_without_the_scope_is_refused_on_preview_paths(self) -> None:
+        token = _build_token(["forge:session:create", FORGE_NOTIFY_SCOPE])
+        assert credential_allows_route(token, "GET", "/preview/3000/") is False
+        assert credential_allows_route(_build_token([]), "GET", "/preview/3000/") is False
+
+    def test_a_forge_session_token_cannot_reach_preview_paths(self) -> None:
+        token = _session_token(sorted(FORGE_SESSION_SCOPES))
+        assert credential_allows_route(token, "GET", "/preview/3000/") is False
+
+    def test_an_unscoped_token_is_unaffected(self) -> None:
+        assert credential_allows_route(_encode({}), "GET", "/preview/3000/") is True
+
+    def test_the_path_pattern_matches_only_whole_preview_paths(self) -> None:
+        assert SESSION_PREVIEW_PATH.fullmatch("/preview/443/x")
+        assert not SESSION_PREVIEW_PATH.fullmatch("/preview/443x")
+        assert not SESSION_PREVIEW_PATH.fullmatch("/x/preview/443")
+
+    def test_skuld_enforces_it_through_token_has_scope(self) -> None:
+        # The enforcement scan finds skuld.preview_adapters' token_has_scope(...) call.
+        assert FORGE_SESSION_PREVIEW_SCOPE in _enforced_scopes()
+        assert token_has_scope(
+            _build_token([FORGE_SESSION_PREVIEW_SCOPE]), FORGE_SESSION_PREVIEW_SCOPE
+        )
+        assert not token_has_scope(_build_token([FORGE_NOTIFY_SCOPE]), FORGE_SESSION_PREVIEW_SCOPE)

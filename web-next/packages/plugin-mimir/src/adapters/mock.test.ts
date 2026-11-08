@@ -298,27 +298,6 @@ describe('createMimirMockAdapter', () => {
     });
   });
 
-  describe('lint.getDreamCycles', () => {
-    it('returns dream cycle records', async () => {
-      const svc = createMimirMockAdapter();
-      const cycles = await svc.lint.getDreamCycles();
-      expect(cycles.length).toBeGreaterThan(0);
-      for (const c of cycles) {
-        expect(c).toHaveProperty('id');
-        expect(c).toHaveProperty('ravn');
-        expect(c).toHaveProperty('timestamp');
-        expect(c).toHaveProperty('pagesUpdated');
-        expect(c).toHaveProperty('durationMs');
-      }
-    });
-
-    it('respects limit parameter', async () => {
-      const svc = createMimirMockAdapter();
-      const cycles = await svc.lint.getDreamCycles(1);
-      expect(cycles.length).toBeLessThanOrEqual(1);
-    });
-  });
-
   describe('lint.getActivityLog', () => {
     it('returns activity event records', async () => {
       const svc = createMimirMockAdapter();
@@ -346,7 +325,6 @@ describe('createMimirMockAdapter', () => {
       expect(kinds.has('write')).toBe(true);
       expect(kinds.has('ingest')).toBe(true);
       expect(kinds.has('lint')).toBe(true);
-      expect(kinds.has('dream')).toBe(true);
     });
 
     it('respects limit parameter', async () => {

@@ -329,6 +329,18 @@ def test_conflicting_machine_and_runtime_host_requirements_are_fatal(tmp_path: P
         ExecutionPlanResolver(FileExecutionCatalog(root)).resolve()
 
 
+def test_a_registered_hosts_access_pins_the_key_it_registered(tmp_path: Path) -> None:
+    root, _ = _catalog(tmp_path)
+    access_path = root / "access" / "ssh.yaml"
+    access = yaml.safe_load(access_path.read_text(encoding="utf-8"))
+    access["trust"] = {"mode": "registered_host_key", "kwargs": {}}
+    _yaml(access_path, access)
+
+    plan = ExecutionPlanResolver(FileExecutionCatalog(root)).resolve()
+
+    assert plan.access.trust.mode.value == "registered_host_key"
+
+
 def test_catalog_requires_each_separate_entry_directory(tmp_path: Path) -> None:
     _yaml(
         tmp_path / "catalog.yaml",

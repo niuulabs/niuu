@@ -1,6 +1,8 @@
-import type { Session, SessionState } from '../../domain/session';
+import { modelLabel as readableModel } from '@niuulabs/domain';
+import { sessionHarness, type Session, type SessionState } from '../../domain/session';
 
 export const SESSION_FILTERS = [
+  'unread',
   'live',
   'active',
   'idle',
@@ -12,6 +14,7 @@ export const SESSION_FILTERS = [
 ] as const;
 export type SessionFilter = (typeof SESSION_FILTERS)[number];
 export const FILTER_LABELS: Record<SessionFilter, string> = {
+  unread: 'Unread',
   live: 'Live',
   all: 'All',
   active: 'Working',
@@ -44,6 +47,8 @@ export const STOPPABLE_STATES = new Set<SessionState>([
 
 export function matchesSessionFilter(session: Session, filter: SessionFilter): boolean {
   switch (filter) {
+    case 'unread':
+      return session.readState?.isUnread === true;
     case 'all':
       return true;
     case 'live':
@@ -63,4 +68,26 @@ export function matchesSessionFilter(session: Session, filter: SessionFilter): b
   }
 }
 
-export const SIDEBAR_WIDTH = { default: 272, min: 232, max: 640, keyboardStep: 20 } as const;
+export const SIDEBAR_WIDTH = { default: 340, min: 288, max: 640, keyboardStep: 20 } as const;
+/** The right dock (Changes, Files): its width when the person has not dragged it. */
+export const DOCK_WIDTH = { default: 560, min: 340, max: 960, keyboardStep: 20 } as const;
+/**
+ * The conversation's narrowest usable width beside the dock, as Lexi's transcript minimum:
+ * the dock narrows to keep it, and steps aside when even its own minimum does not fit.
+ */
+export const TRANSCRIPT_MIN_WIDTH = 480;
+/** The terminal dock under the conversation, as Lexi's: its height when not dragged. */
+export const TERMINAL_HEIGHT = { default: 230, min: 140, max: 520, keyboardStep: 20 } as const;
+/**
+ * The conversation's lowest usable height above the terminal: the composer and a few turns.
+ * The terminal shortens to keep it, and hides for the moment when even its minimum does not fit.
+ */
+export const CONVERSATION_MIN_HEIGHT = 320;
+
+/** The model a row names: its own, else the harness that runs it. */
+export function sessionModelLabel(
+  session: Pick<Session, 'model' | 'sessionDefinition' | 'origin'>,
+): string {
+  if (session.model) return readableModel(session.model);
+  return sessionHarness(session) === 'claude' ? 'Claude' : 'Codex';
+}

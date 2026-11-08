@@ -1,9 +1,12 @@
-"""Start and close the persistent coordinator a ticket works through.
+"""Start a ticket's workflow runs, and close the ticket's record when the ticket closes.
 
-Ting records which session coordinates a ticket and hands it the request. What
-to do with that request is the coordinator's judgment: it is a Ravn, and it
-starts workflows itself over A2A. The launch defaults set here are what tie
-those runs back to the ticket, so the link never depends on the model.
+A ticket used to work through a persistent coordinator session, a Ravn resident that
+started its workflows over A2A. That resident is gone: Ting starts a ticket's workflow
+itself. ``TicketCoordinatorService.start_workflow`` creates the run's campaign, tied to
+the ticket, and starts it on the step engine. The ticket keeps one ``TicketCoordinator``
+row, now only the ticket's record: which workflow Ting was asked to start and when, a
+start that failed, and the finished run that already advanced the ticket. It names no
+session, because nothing coordinates a ticket by conversation any more.
 """
 
 from __future__ import annotations
@@ -11,33 +14,33 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Any
+from uuid import UUID, uuid4
 
 from niuu.domain.models import Principal
-from ting.domain.models import Saga, TrackerIssue
-from ting.domain.services.dispatch_service import persona_on_model
+from ting.domain.models import (
+    Saga,
+    TrackerIssue,
+    WorkflowCampaign,
+    WorkflowCampaignStatus,
+)
+from ting.domain.services.workflow_runs import WorkflowRuns
 from ting.domain.ticket_coordinator import (
-    BRIEF_MESSAGE_METADATA,
     TICKET_METADATA_KEY,
     TicketCoordinator,
     TicketCoordinatorStatus,
     ticket_metadata,
 )
+from ting.domain.utils import _slugify
+from ting.domain.workflow_snapshot import workflow_uses_isolated_branch
+from ting.domain.workflow_steps import RunStateError
 from ting.ports.ticket_coordinator_repository import TicketCoordinatorRepository
-from ting.ports.volundr import SessionMembership, SpawnRequest, VolundrPort, VolundrSession
+from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 
-COORDINATOR_ROLE = "coordinator"
-WORKER_ROLE = "worker"
-_SESSION_NAME_PREFIX = "coordinator"
-_FLOCK_PEER_PREFIX = "flock-"
-_WORK_PROJECT_LABEL_PREFIX = "work-project:"
-AGENT_CARD_PATH = "/.well-known/agent-card.json"
-WORKLOAD_EXCHANGE_PATH = "/api/v1/tokens/workload/exchange"
+TICKET_SURFACE = "ting.ticket"
+#: Prefix of the branch an isolated-branch workflow's sessions work on.
+_ISOLATED_BRANCH_PREFIX = "workflow"
+_CAMPAIGN_SLUG_MAX = 60
 _BRANCH_UNSAFE = re.compile(r"[^a-z0-9._-]+")
-_LISTENING_SESSION_STATUS = "running"
-_BOOTING_SESSION_STATUSES = frozenset({"starting", "provisioning", "created"})
-_RUNNING_SESSION_STATUSES = frozenset({"running", *_BOOTING_SESSION_STATUSES})
-_FAILED_ACTIVITY_STATE = "error"
 
 
 @dataclass(frozen=True)
@@ -46,23 +49,6 @@ class TicketWorkflow:
 
     id: str
     name: str
-
-
-def coordinator_ravn_config(flock: dict[str, Any], own: dict[str, Any]) -> dict[str, Any]:
-    """A coordinator's Ravn config: the deployment's flock settings under its own.
-
-    The flock settings carry what a Ravn needs to reach the platform on a
-    cluster. Without them a coordinator has no platform tools, ``a2a_task``
-    among them, and cannot start a workflow.
-    """
-    merged = dict(flock)
-    for key, value in own.items():
-        inherited = merged.get(key)
-        if isinstance(inherited, dict) and isinstance(value, dict):
-            merged[key] = coordinator_ravn_config(inherited, value)
-            continue
-        merged[key] = value
-    return merged
 
 
 def ticket_branch(saga: Saga, issue: TrackerIssue) -> str:
@@ -76,109 +62,28 @@ def ticket_branch(saga: Saga, issue: TrackerIssue) -> str:
     return f"{saga.feature_branch}-{identifier}"
 
 
-def coordinator_peer_id(persona: str) -> str:
-    """The peer a coordinator session's single persona answers as."""
-    return f"{_FLOCK_PEER_PREFIX}{persona}"
-
-
-def work_project_label(saga: Saga) -> str:
-    """Names the tracker link on a session, since one Forge project can hold several."""
-    return f"{_WORK_PROJECT_LABEL_PREFIX}{saga.id}"
-
-
-async def ticket_membership(
-    volundr: VolundrPort,
-    saga: Saga,
-    coordinator: TicketCoordinator | None,
-    objective: str,
-    *,
-    auth_token: str | None,
-    principal: Principal,
-) -> SessionMembership:
-    """Where a workflow session of a ticket joins Forge's project: under its coordinator."""
-    project = await volundr.ensure_project(
-        str(saga.forge_project_id), saga.name, auth_token=auth_token, principal=principal
-    )
-    labels = (work_project_label(saga),)
-    if coordinator is None:
-        return SessionMembership(
-            project_id=project.id, role=WORKER_ROLE, objective=objective, labels=labels
-        )
-    # Coordinators from before tickets joined projects are not members yet.
-    await volundr.join_project(
-        coordinator.session_id,
-        project.id,
-        role=COORDINATOR_ROLE,
-        auth_token=auth_token,
-        principal=principal,
-    )
-    return SessionMembership(
-        project_id=project.id,
-        role=WORKER_ROLE,
-        parent_instance_id=project.instance_id,
-        parent_session_id=coordinator.session_id,
-        objective=objective,
-        labels=labels,
-    )
-
-
-async def child_membership(
-    volundr: VolundrPort,
-    parent_forge: VolundrPort,
-    parent_session_id: str,
-    objective: str,
-    *,
-    auth_token: str | None,
-    principal: Principal,
-) -> SessionMembership | None:
-    """A child session follows its parent; a parent outside any project keeps it outside."""
-    project_id = await parent_forge.session_project(
-        parent_session_id, auth_token=auth_token, principal=principal
-    )
-    if project_id is None:
-        return None
-    home = await parent_forge.get_project(project_id, auth_token=auth_token, principal=principal)
-    if home is None:
-        raise LookupError(f"Session {parent_session_id} names project {project_id}, which is gone")
-    project = await volundr.ensure_project(
-        project_id, home.name, auth_token=auth_token, principal=principal
-    )
-    return SessionMembership(
-        project_id=project.id,
-        role=WORKER_ROLE,
-        parent_instance_id=home.instance_id,
-        parent_session_id=parent_session_id,
-        objective=objective,
-    )
-
-
-def _project_repo(saga: Saga) -> str:
-    """The repository a ticket's sessions check out; empty on a project without one."""
-    return saga.repos[0] if saga.repos else ""
-
-
-def _repository_line(repo: str) -> str:
-    return f"Repository: {repo}\n" if repo else ""
-
-
-def _standing_context(saga: Saga, issue: TrackerIssue) -> str:
-    """What a coordinator knows on every turn, whatever woke it."""
-    return (
-        f"The ticket you coordinate is {issue.identifier}: {issue.title}\n"
-        f"URL: {issue.url}\n"
-        f"{_repository_line(_project_repo(saga))}\n"
-        f"{issue.description}"
-    )
-
-
-def coordinator_brief(issue: TrackerIssue, *, repo: str, workflow: TicketWorkflow) -> str:
-    """The request a coordinator receives when its ticket should start a workflow."""
+def ticket_brief(issue: TrackerIssue, *, repo: str, workflow: TicketWorkflow) -> str:
+    """What a ticket's run is about, as its first step reads it."""
+    repository = f"Repository: {repo}\n" if repo else ""
     return (
         f"Ticket {issue.identifier}: {issue.title}\n"
         f"URL: {issue.url}\n"
-        f"{_repository_line(repo)}\n"
+        f"{repository}\n"
         f"{issue.description}\n\n"
-        f"Start the workflow {workflow.name!r} (skill {workflow.id}) for this ticket now."
+        f"Work this ticket through the workflow {workflow.name!r}."
+    )
+
+
+def _pinned_workflow(saga: Saga, workflow: TicketWorkflow) -> tuple[UUID, str, dict]:
+    """The workflow's id, version and snapshot as the project pinned them."""
+    for pin in saga.board_workflows:
+        if str(pin.workflow_id) == workflow.id:
+            return pin.workflow_id, pin.workflow_version, pin.workflow_snapshot
+    if saga.workflow_id is not None and str(saga.workflow_id) == workflow.id:
+        return saga.workflow_id, saga.workflow_version or "", saga.workflow_snapshot or {}
+    raise RunStateError(
+        f"{workflow.name or workflow.id} is not on this project's board, so a ticket cannot "
+        "run it; add it to the board first"
     )
 
 
@@ -187,226 +92,146 @@ class TicketCoordinatorService:
         self,
         *,
         repo: TicketCoordinatorRepository,
-        volundr: VolundrPort,
+        campaigns: WorkflowCampaignRepository,
+        runs: WorkflowRuns,
         principal: Principal,
-        auth_token: str | None,
-        persona: str,
-        model: str,
-        session_definitions: dict[str, Any],
-        configured_models: list[Any],
-        cli_turn_timeout_seconds: float,
-        ravn_config: dict[str, Any],
-        platform_origin: str,
-        anonymous_platform: bool,
     ) -> None:
         self._repo = repo
-        self._volundr = volundr
+        self._campaigns = campaigns
+        self._runs = runs
         self._principal = principal
-        self._auth_token = auth_token
-        self._persona = persona
-        self._model = model
-        self._session_definitions = session_definitions
-        self._configured_models = configured_models
-        self._cli_turn_timeout_seconds = cli_turn_timeout_seconds
-        self._ravn_config = ravn_config
-        self._platform_origin = platform_origin
-        self._anonymous_platform = anonymous_platform
 
     async def start_workflow(
         self,
         saga: Saga,
         issue: TrackerIssue,
         workflow: TicketWorkflow,
+        *,
+        connection_id: str | None,
     ) -> TicketCoordinator:
-        """Ask the ticket's coordinator to start a workflow, creating it the first time."""
-        brief = coordinator_brief(issue, repo=_project_repo(saga), workflow=workflow)
-        current = await self._repo.get(saga.id, issue.id)
-        if current is None or current.status == TicketCoordinatorStatus.CLOSED:
-            return await self._spawn(saga, issue, brief, workflow, previous=current)
+        """Start a workflow run for the ticket, on the project's pinned version of it.
 
-        session = await self._session(current.session_id)
-        if session is None:
-            return await self._spawn(saga, issue, brief, workflow, previous=current)
-        if session.activity_state == _FAILED_ACTIVITY_STATE:
-            # Its agent is dead, so a brief would reach nothing: replace it with one
-            # launched on today's settings.
-            await self._volundr.stop_session(
-                current.session_id,
-                auth_token=self._auth_token,
-                principal=self._principal,
-            )
-            return await self._spawn(saga, issue, brief, workflow, previous=current)
-        requested = replace(
-            current,
-            requested_workflow_id=workflow.id,
-            requested_at=datetime.now(UTC),
-            start_error=None,
+        The run's campaign carries the ticket, so the board finds it. ``connection_id``
+        is the Forge connection the run's sessions are created on. A start that fails
+        is recorded on the ticket and raised: the ticket can be started again.
+        """
+        workflow_id, version, snapshot = _pinned_workflow(saga, workflow)
+        isolated = workflow_uses_isolated_branch(snapshot)
+        record = await self._request(saga, issue, workflow, connection_id)
+        campaign_id = uuid4()
+        name = str(snapshot.get("name") or workflow.name)
+        slug = _slugify(f"{issue.identifier}-{name}")[:_CAMPAIGN_SLUG_MAX].strip("-")
+        slug = f"{slug}-{campaign_id.hex[:12]}"
+        repo = saga.repos[0] if saga.repos else ""
+        branch, base_branch = ticket_branch(saga, issue), saga.base_branch
+        if isolated:
+            branch, base_branch = f"{_ISOLATED_BRANCH_PREFIX}/{slug}", base_branch or branch
+        brief = ticket_brief(issue, repo=repo, workflow=workflow)
+        ticket = ticket_metadata(
+            saga_id=saga.id, issue_id=issue.id, identifier=issue.identifier, title=issue.title
         )
-        if session.status not in _RUNNING_SESSION_STATUSES:
-            await self._volundr.start_session(
-                current.session_id,
-                auth_token=self._auth_token,
-                principal=self._principal,
-            )
-        if session.status != _LISTENING_SESSION_STATUS:
-            # Nothing is listening yet, so the brief waits for the session to report in.
-            return await self._repo.save(replace(requested, pending_brief=brief))
-        await self._volundr.send_directed_room_message(
-            current.session_id,
-            coordinator_peer_id(self._persona),
-            brief,
-            metadata=BRIEF_MESSAGE_METADATA,
-            auth_token=self._auth_token,
-            principal=self._principal,
+        now = datetime.now(UTC)
+        campaign = WorkflowCampaign(
+            id=campaign_id,
+            tenant_id=self._principal.tenant_id,
+            slug=slug,
+            name=f"{issue.identifier} {name}",
+            owner_id=self._principal.user_id,
+            workflow_id=workflow_id,
+            workflow_version=version,
+            workflow_name=name,
+            workflow_snapshot=snapshot,
+            session_id="",
+            session_name="",
+            status=WorkflowCampaignStatus.PENDING,
+            active_stage_id=None,
+            stage_state=[],
+            metadata={
+                "surface": TICKET_SURFACE,
+                "prompt": brief,
+                "launch_slug": slug,
+                TICKET_METADATA_KEY: ticket,
+                **({"repo": repo, "branch": branch, "base_branch": base_branch} if repo else {}),
+                **({"actor_id": self._principal.actor} if self._principal.actor else {}),
+            },
+            created_at=now,
+            updated_at=now,
+            last_activity_at=now,
+            connection_id=connection_id,
         )
-        return await self._repo.save(replace(requested, pending_brief=None))
+        active = await self._campaigns.save_ticket_campaign(
+            campaign, saga_id=saga.id, issue_id=issue.id
+        )
+        if active is not None:
+            raise RunStateError(f"{issue.identifier} already has a run in progress ({active})")
+        payload = {
+            "prompt": brief,
+            "initiative_context": brief,
+            TICKET_METADATA_KEY: ticket,
+            **({"repo": repo, "branch": branch, "base_branch": base_branch} if repo else {}),
+        }
+        try:
+            await self._runs.launch(campaign, payload)
+        except Exception as exc:
+            await self._fail_start(campaign, record, workflow, exc)
+            raise
+        return record
 
     async def close(self, coordinator: TicketCoordinator) -> None:
-        """End a coordinator with its ticket."""
-        await self._volundr.stop_session(
-            coordinator.session_id,
-            auth_token=self._auth_token,
-            principal=self._principal,
-        )
+        """End a ticket's record with its ticket."""
         await self._repo.close(coordinator.saga_id, coordinator.issue_id)
 
-    async def _session(self, session_id: str) -> VolundrSession | None:
-        return await self._volundr.get_session(
-            session_id,
-            auth_token=self._auth_token,
-            principal=self._principal,
-        )
-
-    async def _spawn(
+    async def _request(
         self,
         saga: Saga,
         issue: TrackerIssue,
-        brief: str,
         workflow: TicketWorkflow,
-        *,
-        previous: TicketCoordinator | None,
+        connection_id: str | None,
     ) -> TicketCoordinator:
-        if not self._platform_origin:
-            raise RuntimeError(
-                "A coordinator cannot be created here because it would not know how to reach "
-                "Ting; set a2a.public_base_url"
-            )
-        project = await self._volundr.ensure_project(
-            str(saga.forge_project_id),
-            saga.name,
-            auth_token=self._auth_token,
-            principal=self._principal,
-        )
-        session = await self._volundr.spawn_session(
-            self._spawn_request(saga, issue, brief, project_id=project.id),
-            auth_token=self._auth_token,
-            principal=self._principal,
-        )
-        coordinator = TicketCoordinator(
-            saga_id=saga.id,
-            issue_id=issue.id,
-            owner_id=self._principal.user_id,
-            tenant_id=self._principal.tenant_id,
-            session_id=session.id,
-            connection_id=saga.instance_id,
-            status=TicketCoordinatorStatus.ACTIVE,
-            created_at=datetime.now(UTC),
-            requested_workflow_id=workflow.id,
-            requested_at=datetime.now(UTC),
-        )
-        if previous is not None:
-            coordinator = replace(
-                coordinator,
-                created_at=previous.created_at,
-                advanced_from=previous.advanced_from,
-            )
-        return await self._repo.save(coordinator)
-
-    def _spawn_request(
-        self, saga: Saga, issue: TrackerIssue, brief: str, *, project_id: str
-    ) -> SpawnRequest:
-        persona, definition = persona_on_model(
-            {"name": self._persona, "system_prompt_extra": _standing_context(saga, issue)},
-            self._model,
-            session_definitions=self._session_definitions,
-            configured_models=self._configured_models,
-            workflow_cli_turn_timeout_seconds=self._cli_turn_timeout_seconds,
-        )
-        return SpawnRequest(
-            name=f"{_SESSION_NAME_PREFIX}-{issue.identifier.lower()}",
-            repo=_project_repo(saga),
-            branch=saga.base_branch,
-            base_branch=saga.base_branch,
-            model=self._model,
-            definition=definition,
-            tracker_issue_id=issue.identifier,
-            tracker_issue_url=issue.url,
-            system_prompt="",
-            initial_prompt=brief,
-            workload_type="ravn_flock",
-            workload_config={
-                "personas": [persona],
-                "initiative_context": brief,
-                "ravn_config": self._launch_defaults(saga, issue),
-            },
-            membership=SessionMembership(
-                project_id=project_id,
-                role=COORDINATOR_ROLE,
-                objective=f"{issue.identifier}: {issue.title}",
-                labels=(work_project_label(saga),),
-            ),
-        )
-
-    def _launch_defaults(self, saga: Saga, issue: TrackerIssue) -> dict[str, Any]:
-        """Stamp the ticket on everything this coordinator launches over A2A."""
-        configured = self._ravn_config.get("gateway", {}).get("platform", {})
-        repo = _project_repo(saga)
-        checkout = (
-            {
-                "repo": repo,
-                "branch": ticket_branch(saga, issue),
-                "baseBranch": saga.base_branch,
-            }
-            if repo
-            else {}
-        )
-        metadata = {
-            **configured.get("a2a_default_metadata", {}),
-            **checkout,
-            TICKET_METADATA_KEY: ticket_metadata(
+        """Record that Ting was asked to start this workflow, before its run exists."""
+        current = await self._repo.get(saga.id, issue.id)
+        now = datetime.now(UTC)
+        if current is None or current.status == TicketCoordinatorStatus.CLOSED:
+            record = TicketCoordinator(
                 saga_id=saga.id,
                 issue_id=issue.id,
-                identifier=issue.identifier,
-                title=issue.title,
-            ),
-        }
-        gateway = self._ravn_config.get("gateway", {})
-        forge = self._volundr.api_base_url.rstrip("/")
-        return {
-            **self._ravn_config,
-            "gateway": {
-                **gateway,
-                "platform": {
-                    **configured,
-                    # The Forge that launches the session, whichever connection that
-                    # is: its token exchanges there, and its platform tools live there.
-                    "enabled": True,
-                    "base_url": forge,
-                    "workload_exchange_url": f"{forge}{WORKLOAD_EXCHANGE_PATH}",
-                    # Ting otherwise places each workflow on a random Forge; a ticket's
-                    # sessions stay together so the coordinator can reach their rooms.
-                    "a2a_default_connection_id": self._volundr.target_id,
-                    "a2a_default_metadata": metadata,
-                    "a2a_gate_decisions": False,
-                    "anonymous_dev_mode": self._anonymous_platform,
-                    "a2a_trusted_origins": [
-                        *configured.get("a2a_trusted_origins", []),
-                        self._platform_origin,
-                    ],
-                    "a2a_agent_card_urls": [
-                        *configured.get("a2a_agent_card_urls", []),
-                        f"{self._platform_origin}{AGENT_CARD_PATH}",
-                    ],
-                },
-            },
-        }
+                owner_id=self._principal.user_id,
+                tenant_id=self._principal.tenant_id,
+                session_id="",
+                connection_id=connection_id,
+                status=TicketCoordinatorStatus.ACTIVE,
+                created_at=current.created_at if current is not None else now,
+                advanced_from=current.advanced_from if current is not None else None,
+            )
+        else:
+            record = current
+        return await self._repo.save(
+            replace(
+                record,
+                requested_workflow_id=workflow.id,
+                requested_at=now,
+                pending_brief=None,
+                start_error=None,
+            )
+        )
+
+    async def _fail_start(
+        self,
+        campaign: WorkflowCampaign,
+        record: TicketCoordinator,
+        workflow: TicketWorkflow,
+        exc: Exception,
+    ) -> None:
+        """A run that could not start fails its campaign and says why on the ticket."""
+        now = datetime.now(UTC)
+        await self._campaigns.save_campaign(
+            replace(
+                campaign,
+                status=WorkflowCampaignStatus.FAILED,
+                metadata={**campaign.metadata, "failure_error": str(exc)},
+                updated_at=now,
+            )
+        )
+        await self._repo.save(
+            replace(record, start_error=f"{workflow.name or workflow.id} could not start: {exc}")
+        )

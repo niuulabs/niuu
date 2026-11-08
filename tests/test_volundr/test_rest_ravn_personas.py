@@ -9,14 +9,15 @@ import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
-from ravn.adapters.personas.postgres_registry import (
+from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.adapters.postgres_registry import (
     PersonaView,
     _config_to_payload,
     _normalize_payload,
     _payload_to_config,
 )
-from ravn.domain.persona_document import (
+from personas.domain.persona import parse_persona, persona_to_yaml
+from personas.domain.persona_document import (
     PortablePersonaDefinition,
     portable_persona_from_config,
 )
@@ -87,7 +88,7 @@ class _InMemoryPersonaRegistry:
         view = await self.get_persona(owner_id, name)
         if view is None:
             return None
-        return FilesystemPersonaAdapter.to_yaml(view.config)
+        return persona_to_yaml(view.config)
 
     async def get_current_portable_persona(
         self,
@@ -100,7 +101,7 @@ class _InMemoryPersonaRegistry:
         builtin = self._builtin_loader.load_current_portable(name)
         fallback = None
         if builtin is not None:
-            fallback = FilesystemPersonaAdapter.parse(
+            fallback = parse_persona(
                 yaml.safe_dump(
                     builtin.definition,
                     allow_unicode=True,
@@ -156,7 +157,7 @@ def _make_payload(name: str) -> dict:
         "summary": "Custom coding persona",
         "description": "Custom coding persona for testing.",
         "system_prompt_template": "You are a custom coding persona.",
-        "allowed_tools": ["read", "write"],
+        "allowed_tools": ["file_read", "file_write"],
         "forbidden_tools": [],
         "permission_mode": "default",
         "iteration_budget": 12,
@@ -284,13 +285,13 @@ class TestRavnPersonaRoutes:
 
     def test_builtin_override_and_delete_restore_builtin(self) -> None:
         client, _ = _make_client()
-        payload = _make_payload("coding-agent") | {
+        payload = _make_payload("coder") | {
             "summary": "Overridden coding agent",
             "system_prompt_template": "Override built-in coding agent.",
         }
 
         put_resp = client.put(
-            "/api/v1/ravn/personas/coding-agent",
+            "/api/v1/ravn/personas/coder",
             json=payload,
             headers={"Authorization": "Bearer token"},
         )
@@ -302,13 +303,13 @@ class TestRavnPersonaRoutes:
         assert updated["override_source"] == "[user:user-1]"
 
         delete_resp = client.delete(
-            "/api/v1/ravn/personas/coding-agent",
+            "/api/v1/ravn/personas/coder",
             headers={"Authorization": "Bearer token"},
         )
         assert delete_resp.status_code == 204
 
         detail_resp = client.get(
-            "/api/v1/ravn/personas/coding-agent",
+            "/api/v1/ravn/personas/coder",
             headers={"Authorization": "Bearer token"},
         )
         assert detail_resp.status_code == 200
@@ -362,7 +363,7 @@ class TestRavnPersonaRoutes:
 def test_validate_rejects_overlapping_tool_lists() -> None:
     client, _ = _make_client()
     payload = _make_payload("validation-agent")
-    payload["forbidden_tools"] = ["read"]
+    payload["forbidden_tools"] = ["file_read"]
 
     resp = client.post(
         "/api/v1/ravn/personas/validate",
@@ -373,3 +374,38 @@ def test_validate_rejects_overlapping_tool_lists() -> None:
     assert resp.status_code == 200
     assert resp.json()["valid"] is False
     assert "allowed_tools and forbidden_tools overlap" in resp.json()["errors"][0]
+
+
+def test_validate_rejects_a_tool_outside_the_neutral_vocabulary() -> None:
+    client, _ = _make_client()
+    payload = _make_payload("validation-agent")
+    payload["allowed_tools"] = ["terminal"]
+
+    resp = client.post(
+        "/api/v1/ravn/personas/validate",
+        json=payload,
+        headers={"Authorization": "Bearer token"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["valid"] is False
+    assert "use shell" in resp.json()["errors"][0]
+    assert "file_read" in resp.json()["errors"][0]
+
+
+def test_create_and_replace_refuse_a_retired_tool_before_saving() -> None:
+    client, _ = _make_client()
+    payload = _make_payload("retired-tool-agent")
+    payload["forbidden_tools"] = ["cascade"]
+    headers = {"Authorization": "Bearer token"}
+
+    created = client.post("/api/v1/ravn/personas", json=payload, headers=headers)
+
+    assert created.status_code == 422
+    assert "retired Ravn runtime" in created.json()["detail"]
+
+    payload["forbidden_tools"] = []
+    assert client.post("/api/v1/ravn/personas", json=payload, headers=headers).status_code == 201
+    payload["allowed_tools"] = ["bash"]
+    replaced = client.put("/api/v1/ravn/personas/retired-tool-agent", json=payload, headers=headers)
+    assert replaced.status_code == 422

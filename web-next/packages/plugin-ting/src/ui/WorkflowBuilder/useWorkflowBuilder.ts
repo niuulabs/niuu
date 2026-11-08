@@ -176,7 +176,6 @@ function makeNewNode(kind: WorkflowNodeKind, position: { x: number; y: number })
         personaIds: [],
         stageMembers: [],
         executionMode: 'parallel',
-        maxConcurrent: 3,
         joinMode: 'all',
         position,
       };
@@ -312,7 +311,6 @@ function syncStagePersonaIds(node: WorkflowStageNode, defaultModelId = ''): Work
       eventFilters: member.eventFilters ?? {},
     })),
     executionMode: node.executionMode ?? 'parallel',
-    maxConcurrent: node.maxConcurrent ?? 3,
     joinMode: node.joinMode ?? 'all',
     personaIds,
   };

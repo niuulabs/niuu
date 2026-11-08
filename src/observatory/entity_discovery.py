@@ -58,7 +58,6 @@ _COMPONENT_TYPES = {
     "resident-agent": "valkyrie",
     "valkyrie": "valkyrie",
     "volundr": "volundr",
-    "warden": "warden",
     "web": "volundr",
     "web-next": "volundr",
 }
@@ -191,19 +190,6 @@ def _status_from_session(status: str) -> str:
     return "unknown"
 
 
-def _status_from_valkyrie(status: str) -> str:
-    normalized = status.strip().lower()
-    if normalized in {"online", "healthy", "watching", "wakeful"}:
-        return "healthy"
-    if normalized in {"watch", "degraded", "observing"}:
-        return "observing"
-    if normalized in {"sleeping", "dreaming", "idle"}:
-        return "idle"
-    if normalized in {"offline", "failed"}:
-        return "failed"
-    return "unknown"
-
-
 def _condition_status(payload: dict[str, Any], condition_type: str) -> bool:
     status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
     conditions = status.get("conditions") if isinstance(status.get("conditions"), list) else []
@@ -251,11 +237,7 @@ def _merge_discovered_entity(
     if current is None:
         return incoming
     kind = incoming.kind if incoming.kind != "service" else current.kind
-    if current.kind == "warden" or incoming.kind == "warden":
-        kind = "warden"
     name = incoming.name if incoming.name and incoming.name != incoming.id else current.name
-    if current.kind == "warden" and current.name:
-        name = current.name
     source_kinds = {
         item
         for value in (current.source_kind, incoming.source_kind)
@@ -531,124 +513,6 @@ class LocalHostDiscoveryAdapter:
                 )
             ]
         )
-
-
-class WardenSpecDiscoveryAdapter:
-    """Discover locally persisted WardenSpec records."""
-
-    def __init__(self, root: str = "", cluster: str = "", namespace: str = "") -> None:
-        self._root = root
-        self._cluster = cluster
-        self._namespace = namespace
-
-    async def discover(self) -> DiscoveryResult:
-        try:
-            from ravn.adapters.warden_discovery.spec import (  # noqa: PLC0415
-                WardenSpecDiscoveryAdapter as RavnWardenSpecDiscoveryAdapter,
-            )
-        except ImportError:
-            return DiscoveryResult(
-                events=[
-                    _adapter_warning(
-                        "wardenspec",
-                        "Ravn WardenSpec adapter unavailable",
-                    )
-                ]
-            )
-
-        try:
-            wardens = await RavnWardenSpecDiscoveryAdapter(root=self._root).list_wardens()
-        except Exception as exc:
-            return DiscoveryResult(events=[_adapter_warning("wardenspec", str(exc))])
-
-        entities: list[DiscoveredEntity] = []
-        edges: list[ObservatoryEdge] = []
-        for warden in wardens:
-            warden_id = str(getattr(warden, "id", "") or "").strip()
-            if not warden_id:
-                continue
-            deployment_kwargs = getattr(warden, "deployment_kwargs", {}) or {}
-            cluster = str(deployment_kwargs.get("cluster") or self._cluster)
-            namespace = str(deployment_kwargs.get("namespace") or self._namespace)
-            warden_node_id = (
-                f"runtime:{_slug(cluster or 'local')}:"
-                f"{_slug(namespace or 'default')}:warden:{_slug(warden_id)}"
-            )
-            entities.append(
-                DiscoveredEntity(
-                    id=warden_node_id,
-                    kind="warden",
-                    name=str(getattr(warden, "name", "") or warden_id),
-                    cluster=cluster,
-                    namespace=namespace,
-                    status=(
-                        "healthy"
-                        if str(getattr(getattr(warden, "runtime", None), "state", "")).lower()
-                        == "active"
-                        else "unknown"
-                    ),
-                    source_adapter=self.__class__.__name__,
-                    source_kind="wardenspec",
-                    source_uid=warden_id,
-                    metadata={"persona": str(getattr(warden, "persona", "") or "")},
-                )
-            )
-
-            if cluster or namespace:
-                edges.append(
-                    _edge(
-                        source_id=f"service:ravn@{cluster or 'local'}/{namespace or 'default'}",
-                        target_id=warden_node_id,
-                        relation_type="manages",
-                        source_adapter=self.__class__.__name__,
-                        evidence_field="WardenSpec.deployment",
-                    )
-                )
-
-            mimir_binding = getattr(warden, "mimir", None)
-            explicit_mimir = str(deployment_kwargs.get("mimir_entity") or "").strip()
-            read_mounts = [
-                str(item)
-                for item in (
-                    getattr(mimir_binding, "read_mount_names", None)
-                    or getattr(mimir_binding, "mount_names", None)
-                    or []
-                )
-                if str(item).strip()
-            ]
-            write_mounts = [
-                str(item)
-                for item in (
-                    getattr(mimir_binding, "write_mount_names", None)
-                    or (
-                        [getattr(mimir_binding, "write_mount", "")]
-                        if getattr(mimir_binding, "write_mount", "")
-                        else []
-                    )
-                )
-                if str(item).strip()
-            ]
-            for relation_type, mounts, field_name in (
-                ("reads", read_mounts, "WardenSpec.mimir.read_mount_names"),
-                ("writes", write_mounts, "WardenSpec.mimir.write_mount_names"),
-            ):
-                targets = [explicit_mimir] if explicit_mimir else []
-                targets.extend(
-                    f"mimir:{mount}@{cluster or 'local'}/{namespace or 'default'}"
-                    for mount in mounts
-                )
-                for target in dict.fromkeys(targets):
-                    if target:
-                        edges.append(
-                            _edge(
-                                source_id=warden_node_id,
-                                target_id=target,
-                                relation_type=relation_type,
-                                source_adapter=self.__class__.__name__,
-                                evidence_field=field_name,
-                            )
-                        )
-        return DiscoveryResult(entities=entities, edges=edges)
 
 
 class StaticRelationshipDiscoveryAdapter:
@@ -1397,104 +1261,6 @@ class BifrostUsageDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
         )
 
 
-class RavnResidentsDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
-    """Discover long-running residents from Ravn's fleet projection.
-
-    This is also how residents outside Kubernetes reach the graph when the
-    Ravn that knows about them is reachable: the projection already carries
-    local and container deployments, not only cluster ones.
-
-    Only system-visible residents: the topology is one picture shown to every
-    signed-in user, so it must not carry any one user's own residents (and the
-    Observatory's site identity owns none).
-    """
-
-    warning_name = "ravn-residents"
-
-    async def collect(
-        self,
-        client: httpx.AsyncClient,
-        headers: dict[str, str],
-    ) -> DiscoveryResult:
-        payload = await self._json(
-            client, headers, "/api/v1/ravn/ravens", params={"visibility": "system"}
-        )
-        ravens = payload if isinstance(payload, list) else []
-        entities: list[DiscoveredEntity] = []
-        edges: list[ObservatoryEdge] = []
-        flock_ids: set[str] = set()
-
-        for raven in ravens:
-            if not isinstance(raven, dict) or not raven.get("id"):
-                continue
-            raven_id = str(raven["id"])
-            name = str(raven.get("resident_name") or raven.get("persona_name") or raven_id)
-            node_id = f"ravn:{_slug(self._cluster or 'unknown')}:{_slug(raven_id)}"
-            flock_id = str(raven.get("flock_id") or "")
-            endpoints = {
-                key: str(raven[field])
-                for key, field in (
-                    ("chat", "chat_endpoint"),
-                    ("a2a", "a2a_endpoint_url"),
-                    ("a2aCard", "a2a_card_url"),
-                )
-                if raven.get(field)
-            }
-            # A resident publishing an Agent Card is an A2A agent: the directory
-            # lists it to its owner, like a workflow session.
-            a2a_metadata = (
-                {
-                    "agentKind": "resident",
-                    "visibility": str(raven.get("a2a_visibility") or "user"),
-                    "ownerId": str(raven.get("owner_id") or ""),
-                    "tenantId": str(raven.get("tenant_id") or ""),
-                }
-                if "a2aCard" in endpoints
-                else {}
-            )
-            entities.append(
-                self._entity(
-                    "ravn_long",
-                    name,
-                    node_id,
-                    # A resident reports where it runs; a local or container
-                    # deployment has no cluster placement to inherit.
-                    host=str(raven.get("location") or ""),
-                    status=_status_from_valkyrie(str(raven.get("status") or "")),
-                    endpoints=endpoints,
-                    metadata={
-                        **a2a_metadata,
-                        "persona": str(raven.get("persona_name") or ""),
-                        "model": str(raven.get("model") or ""),
-                        "deployment": str(raven.get("deployment") or raven.get("backend") or ""),
-                        "engine": str(raven.get("engine") or ""),
-                        "flockId": flock_id,
-                        "flockRole": str(raven.get("flock_role") or ""),
-                        "peerId": str(raven.get("peer_id") or ""),
-                        "desiredState": raven.get("desired_state"),
-                        "observedState": raven.get("observed_state"),
-                    },
-                )
-            )
-            if flock_id:
-                flock_ids.add(flock_id)
-                # Flock membership is declared by the resident's own config,
-                # which is what makes a mesh visible as more than co-location.
-                edges.append(
-                    _edge(
-                        source_id=node_id,
-                        target_id=_flock_node_id(flock_id),
-                        relation_type="member_of",
-                        source_adapter=self.__class__.__name__,
-                        evidence_field="flock_id",
-                        confidence="observed",
-                    )
-                )
-
-        entities.extend(_flock_entities(flock_ids, self.__class__.__name__))
-        return DiscoveryResult(entities=entities, edges=edges)
-
-
 class TingWorkDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
     """Discover the dispatcher and what it currently has in flight."""
 
@@ -1586,65 +1352,6 @@ _VENDOR_LABELS = {
     "xai": "xAI",
     "deepseek": "DeepSeek",
 }
-
-
-def _flock_node_id(flock_id: str) -> str:
-    """One node per flock, shared by every adapter and cluster that sees it.
-
-    A flock is a mesh, not a place: the same flock spans clusters, so its id
-    must not be scoped by one.
-    """
-    return f"flock:{_slug(flock_id)}"
-
-
-def _flock_entities(
-    flock_ids: Iterable[str],
-    source_adapter: str,
-    described: Mapping[str, Mapping[str, Any]] | None = None,
-) -> list[DiscoveredEntity]:
-    """The flocks that anything actually belongs to.
-
-    `member_of` edges pointed at a `flock:` id that nothing emitted, so every
-    mesh edge dangled and the canvas drew no connection between agents that
-    are demonstrably on the same mesh.
-
-    `described` carries what the source knows about a flock beyond its id — its
-    name, what it is for, and the subject its members talk over. A flock named
-    from its id alone is a fallback, used only for one nothing described.
-    """
-    records = described or {}
-    entities: list[DiscoveredEntity] = []
-    for flock_id in sorted({f for f in flock_ids if f}):
-        record = records.get(flock_id, {})
-        subject = str(record.get("natsSubject") or "").strip()
-        entities.append(
-            DiscoveredEntity(
-                id=_flock_node_id(flock_id),
-                kind="flock",
-                name=str(record.get("name") or "").strip() or humanize_flock(flock_id),
-                source_adapter=source_adapter,
-                metadata={
-                    "flockId": flock_id,
-                    "purpose": str(record.get("domain") or "").strip(),
-                    # A standing flock of residents, as opposed to the flock a
-                    # workflow session runs for as long as it lasts.
-                    "meshKind": "standing",
-                    # Claimed only where there is evidence: a NATS subject is
-                    # how a Flokk mesh actually carries traffic.
-                    "meshTransport": "nats" if subject else "",
-                    "meshSubject": subject,
-                },
-            )
-        )
-    return entities
-
-
-def humanize_flock(flock_id: str) -> str:
-    """Name a flock for a human. `flock-k8s` is an id, not a name."""
-    stripped = flock_id.removeprefix("flock-").replace("-", " ").replace("_", " ").strip()
-    if not stripped:
-        return flock_id
-    return f"{stripped.title()} flock"
 
 
 def _vendor_label(vendor: str) -> str:
@@ -1869,115 +1576,6 @@ def _device_metadata(record: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(job, Mapping):
         metadata["job"] = job
     return metadata
-
-
-class RavnValkyrieDiscoveryAdapter:
-    """Discover cross-cluster Valkyries from Ravn's live dashboard projection."""
-
-    def __init__(
-        self,
-        base_url: str,
-        namespace: str = "nats",
-        timeout_seconds: float = 5.0,
-        auth_adapter: str = "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter",
-        auth_kwargs: dict[str, Any] | None = None,
-        transport: httpx.AsyncBaseTransport | None = None,
-    ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._namespace = namespace
-        self._timeout_seconds = timeout_seconds
-        self._auth: HttpAuthPort = import_class(auth_adapter)(**(auth_kwargs or {}))
-        self._transport = transport
-
-    async def discover(self) -> DiscoveryResult:
-        try:
-            headers = await asyncio.to_thread(self._auth.headers)
-            async with httpx.AsyncClient(
-                timeout=self._timeout_seconds,
-                follow_redirects=True,
-                transport=self._transport,
-            ) as client:
-                response = await client.get(
-                    f"{self._base_url}/api/v1/ravn/valkyrie/dashboard",
-                    headers=headers,
-                )
-                response.raise_for_status()
-                payload = response.json()
-        except Exception as exc:
-            return DiscoveryResult(
-                events=[_adapter_warning("ravn-valkyrie", f"{self._base_url}: {exc}")]
-            )
-
-        if not isinstance(payload, dict):
-            return DiscoveryResult()
-
-        environments = {
-            str(item.get("id") or ""): item
-            for item in payload.get("environments", [])
-            if isinstance(item, dict) and str(item.get("id") or "")
-        }
-        entities: list[DiscoveredEntity] = []
-        edges: list[ObservatoryEdge] = []
-        flock_ids: set[str] = set()
-        for item in payload.get("valkyries", []):
-            if not isinstance(item, dict):
-                continue
-            valkyrie_id = str(item.get("id") or "").strip()
-            environment_id = str(item.get("environmentId") or "").strip()
-            if not valkyrie_id or not environment_id:
-                continue
-            environment = environments.get(environment_id, {})
-            topology_cluster = environment_id.removeprefix("env-k8s-") or environment_id
-            flock_id = str(item.get("flockId") or "").strip()
-            node_id = (
-                f"runtime:{_slug(topology_cluster)}:{_slug(self._namespace)}:"
-                f"valkyrie:{_slug(valkyrie_id)}"
-            )
-            if flock_id:
-                # This adapter carried flockId in metadata and emitted no edge
-                # for it, so seven Valkyries demonstrably on one mesh drew no
-                # connection between them at all.
-                flock_ids.add(flock_id)
-                edges.append(
-                    _edge(
-                        source_id=node_id,
-                        target_id=_flock_node_id(flock_id),
-                        relation_type="member_of",
-                        source_adapter=self.__class__.__name__,
-                        evidence_field="flockId",
-                        confidence="observed",
-                    )
-                )
-            entities.append(
-                DiscoveredEntity(
-                    id=node_id,
-                    kind="valkyrie",
-                    name=str(item.get("name") or valkyrie_id),
-                    cluster=topology_cluster,
-                    namespace=self._namespace,
-                    status=_status_from_valkyrie(str(item.get("status") or "")),
-                    source_adapter=self.__class__.__name__,
-                    source_kind="ravn:valkyrie-dashboard",
-                    source_uid=valkyrie_id,
-                    metadata={
-                        "ravnEnvironmentId": environment_id,
-                        "environmentHealth": str(environment.get("health") or ""),
-                        "persona": str(item.get("persona") or ""),
-                        "specialty": str(item.get("specialty") or ""),
-                        "autonomy": str(item.get("autonomyMode") or ""),
-                        "wakefulness": str(item.get("wakefulness") or ""),
-                        "flockId": flock_id,
-                        "confidence": item.get("confidence"),
-                    },
-                )
-            )
-        described = {
-            str(item.get("id") or ""): item
-            for item in payload.get("flocks", [])
-            if isinstance(item, dict) and str(item.get("id") or "")
-        }
-        entities.extend(_flock_entities(flock_ids, self.__class__.__name__, described))
-        return DiscoveryResult(entities=entities, edges=edges)
 
 
 def _flock_personas(values: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -2544,15 +2142,7 @@ class KubernetesDiscoveryAdapter:
         )
         logical_name = labels.get("niuu.world/entity-id") or labels.get("niuu.world/service-id")
         display_name = labels.get("niuu.world/display-name") or ""
-        if labels.get("niuu.world/warden-id"):
-            logical_name = labels["niuu.world/warden-id"]
-            display_name = (
-                annotations.get("niuu.world/warden-name")
-                or labels.get("niuu.world/warden-name")
-                or display_name
-            )
-            type_id = "warden"
-        elif logical_name:
+        if logical_name:
             pass
         elif app_name:
             logical_name = app_name
@@ -3168,10 +2758,10 @@ def _memory_gib(value: Any) -> int:
 
 #: Kinds that usually describe a workload rather than being one.
 #:
-#: A warden's ConfigMap and PersistentVolumeClaim carry only the chart's
+#: A resident's ConfigMap and PersistentVolumeClaim carry only the chart's
 #: generic labels, so they grouped into an entity of their own and the canvas
-#: listed a resident called `agent` — which was the warden's config and its
-#: disk, drawn as an agent. Unless one names itself (see
+#: listed a resident called `agent` — which was its config and its disk, drawn
+#: as an agent. Unless one names itself (see
 #: `_declares_its_own_identity`), it now joins the workload that shares its
 #: identity or is dropped, rather than inventing a thing.
 _ATTACHMENT_ONLY_KINDS = frozenset({"configmap", "persistentvolumeclaim"})
@@ -3194,8 +2784,6 @@ _DECLARED_FIELD_KEYS = {
     "niuu.world/persona": "persona",
     "niuu.world/specialty": "specialty",
     "niuu.world/autonomy": "autonomy",
-    "niuu.world/warden-persona": "persona",
-    "niuu.world/warden-kind": "wardenKind",
 }
 
 
@@ -3205,7 +2793,6 @@ _IDENTITY_LABELS = (
     "observatory.niuu.world/type",
     "niuu.world/entity-id",
     "niuu.world/service-id",
-    "niuu.world/warden-id",
     "niuu.world/display-name",
 )
 

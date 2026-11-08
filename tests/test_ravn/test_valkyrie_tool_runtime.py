@@ -13,12 +13,9 @@ from typing import Any
 
 import pytest
 
-import ravn.adapters.tools.terminal_docker as terminal_docker
-from ravn.adapters.skill.file_registry import FileSkillRegistry
-from ravn.odin.review import ReviewItem, ReviewKind, ReviewStatus, review_decided_event
-from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution import learned_tools as learned_tools_mod
 from ravn.valkyrie_evolution import tool_runtime as tool_runtime_mod
+from ravn.valkyrie_evolution.docker_shell import DockerShellConfig
 from ravn.valkyrie_evolution.learned_tools import (
     NETWORK_ALLOWED_DOCKER_NETWORK,
     NETWORK_DENIED_DOCKER_NETWORK,
@@ -47,23 +44,15 @@ from ravn.valkyrie_evolution.models import (
     OperationalSignal,
     ToolReachGrant,
 )
-from ravn.valkyrie_evolution.resident_learning import (
-    ResidentLearningArtifact,
-    ResidentLearningIdentity,
-    ResidentLearningRuntime,
-)
 from ravn.valkyrie_evolution.tool_runtime import (
     ToolRunResult,
     ToolVenvError,
     ensure_tool_venv,
     network_isolation_unavailable_reason,
     run_tool,
-    tool_path_for_skill,
     tool_venv_python,
     write_tool,
 )
-from sleipnir.adapters.in_process import InProcessBus
-from tests.ravn.fixtures.skills import probe_skill_content
 
 
 def _signal(capability_payload: dict | None = None) -> OperationalSignal:
@@ -344,344 +333,9 @@ def test_tool_implementation_findings_accepts_a_clean_tool() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _runtime(
-    tmp_path,
-    name: str,
-    autonomy_mode: str = "yolo",
-) -> ResidentLearningRuntime:
-    skill_dir = tmp_path / name / "skills"
-    registry = FileSkillRegistry(
-        skill_dirs=[str(skill_dir)],
-        write_dir=skill_dir,
-        include_builtin=False,
-    )
-    skills = SkillManagementRegistry(
-        registry,
-        metadata_path=tmp_path / name / "skill_management.json",
-    )
-    bus = InProcessBus()
-    return ResidentLearningRuntime(
-        identity=ResidentLearningIdentity(
-            environment_id=f"env-{name}",
-            valkyrie_id=f"valkyrie:{name}",
-            domain="k8s",
-            flock_ids=["flock:k8s-valkyries"],
-            autonomy_mode=autonomy_mode,
-            environment_type="k8s",
-        ),
-        skills=skills,
-        publisher=bus,
-        subscriber=bus,
-        tools_dir=tmp_path / name / "tools",
-    )
-
-
-async def test_missing_capability_returns_a_catalog_hint_without_routing(tmp_path) -> None:
-    runtime = _runtime(tmp_path, "k8s-investigate")
-
-    result = await runtime.process_signal(_signal())
-
-    assert result["decision"] == "capability_lookup_miss"
-    assert result["usedAdoptedLearning"] is False
-    assert not (tmp_path / "k8s-investigate" / "tools").exists()
-
-
-async def test_peer_adoption_installs_proposed_tool_implementation(tmp_path) -> None:
-    peer = _runtime(tmp_path, "k8s-b")
-    skill_name = "valkyrie-inspect-kubernetes-pod-oomkilled"
-    artifact = ResidentLearningArtifact(
-        learning_id="learn-oom",
-        title=skill_name,
-        summary="OOM probe",
-        content=probe_skill_content(skill_name),
-        artifact_type="ravn_skill_tool",
-        scope="flock",
-        confidence=0.9,
-        source_environment_id="env-k8s-a",
-        source_valkyrie_id="valkyrie:k8s-a",
-        flock_id="flock:k8s-valkyries",
-        domain="k8s",
-        redaction_status="redacted",
-        tool_code=(
-            "def run(signal):\n"
-            "    return {'matches': True, 'observed': signal.get('payload', {})}\n"
-        ),
-        canary_sample={"kind": "Pod", "reason": "OOMKilled"},
-    )
-    decision = await peer.evaluate_and_apply(artifact)
-    assert decision.action == "adopted"
-    peer_tool = tool_path_for_skill(tmp_path / "k8s-b" / "tools", skill_name)
-    assert peer_tool.is_file()
-
-    replay = await peer.execute_selected_capability(_signal(), skill_name=skill_name)
-    assert replay["usedAdoptedLearning"] is True
-    assert replay["executionSelected"] is True
-    assert replay["toolResult"]["matches"] is True
-
-
-async def test_peer_adoption_reviews_canaries_and_installs_agent_tool(tmp_path) -> None:
-    peer = _runtime(tmp_path, "k8s-agent-tool")
-    learned = _learned_tool_artifact()
-    artifact = ResidentLearningArtifact(
-        learning_id=learned.artifact_id,
-        title=learned.manifest.name,
-        summary=learned.manifest.description,
-        content="",
-        artifact_type="agent_tool",
-        scope="flock",
-        confidence=0.9,
-        source_environment_id="env-k8s-teacher",
-        source_valkyrie_id="valkyrie:k8s-teacher",
-        flock_id="flock:k8s-valkyries",
-        domain="k8s",
-        redaction_status="redacted",
-        tool_code=learned.tool_code,
-        tool_entry_point=learned.manifest.entry_point,
-        learned_tool_manifest=learned.manifest.to_dict(),
-        test_code=(
-            "import _verify_tool\n\n"
-            "def test_query():\n"
-            "    result = _verify_tool.run({'query': 'up'})\n"
-            "    assert result['query'] == 'up'\n"
-        ),
-        canary_sample={"query": "up"},
-    )
-
-    decision = await peer.evaluate_and_apply(artifact)
-
-    assert decision.action == "adopted"
-    assert decision.installed_skill_name == "mimir_metric_window"
-    tool_path = tmp_path / "k8s-agent-tool" / "learned_tools" / "mimir_metric_window.py"
-    artifact_path = (
-        tmp_path / "k8s-agent-tool" / "learned_tool_artifacts" / "mimir_metric_window.json"
-    )
-    assert tool_path.is_file()
-    installed = read_learned_tool_artifact(artifact_path)
-    assert installed.manifest.name == "mimir_metric_window"
-    assert installed.manifest.declared_reach[0].kind == "network"
-    registered = await peer.skills.show("mimir_metric_window")
-    assert "capability: mimir_metric_window" in registered["skill"]["content"]
-
-
-async def test_existing_agent_tool_is_registered_and_returned_as_a_hint(tmp_path) -> None:
-    peer = _runtime(tmp_path, "k8s-existing-agent-tool")
-    capability = "inspect.pod.oomkilled"
-    learned = LearnedToolArtifact(
-        artifact_id=f"learned-tool:{capability}:v1",
-        manifest=LearnedToolManifest(
-            name=capability,
-            description="Inspect a recurring Kubernetes event without mutating it.",
-            input_schema={
-                "type": "object",
-                "properties": {"namespace": {"type": "string"}},
-                "required": ["namespace"],
-            },
-            required_permission="kubernetes:read",
-            declared_reach=[ToolReachGrant(kind="pure_compute", access="read")],
-        ),
-        tool_code=(
-            "def run(input):\n"
-            "    return {'inspected': True, 'namespace': input.get('namespace', '')}\n"
-        ),
-        provenance={
-            "scope": "flock",
-            "source_environment_id": "env-k8s-teacher",
-            "source_valkyrie_id": "valkyrie:k8s-teacher",
-        },
-    )
-    state_dir = tmp_path / "k8s-existing-agent-tool"
-    write_learned_tool(tools_dir=state_dir / "learned_tools", artifact=learned)
-    write_learned_tool_artifact(
-        artifacts_dir=state_dir / "learned_tool_artifacts",
-        artifact=learned,
-    )
-
-    result = await peer.process_signal(_signal())
-
-    assert result["usedAdoptedLearning"] is False
-    assert result["skillName"] == capability
-    assert result["decision"] == "capability_hint_available"
-    registered = await peer.skills.show(capability)
-    assert registered["metadata"]["run_count"] == 0
-    assert registered["metadata"]["source_environment_id"] == "env-k8s-teacher"
-
-
-async def test_review_approval_installs_self_authored_agent_tool(tmp_path) -> None:
-    bus = InProcessBus()
-    skill_dir = tmp_path / "k8s-reviewed-agent-tool" / "skills"
-    registry = FileSkillRegistry(
-        skill_dirs=[str(skill_dir)],
-        write_dir=skill_dir,
-        include_builtin=False,
-    )
-    skills = SkillManagementRegistry(
-        registry,
-        metadata_path=tmp_path / "k8s-reviewed-agent-tool" / "skill_management.json",
-    )
-    peer = ResidentLearningRuntime(
-        identity=ResidentLearningIdentity(
-            environment_id="env-k8s-reviewed-agent-tool",
-            valkyrie_id="valkyrie:k8s-reviewed-agent-tool",
-            domain="k8s",
-            flock_ids=["flock:k8s-valkyries"],
-            autonomy_mode="guarded",
-            environment_type="k8s",
-        ),
-        skills=skills,
-        publisher=bus,
-        subscriber=bus,
-        tools_dir=tmp_path / "k8s-reviewed-agent-tool" / "tools",
-    )
-    await peer.start()
-    learned = _learned_tool_artifact()
-    item = ReviewItem.new(
-        kind=ReviewKind.EVOLUTION_BUILD.value,
-        requested_action="install",
-        environment_id=peer.identity.environment_id,
-        valkyrie_id=peer.identity.valkyrie_id,
-        title=learned.manifest.name,
-        summary=learned.manifest.description,
-        flock_id="flock:k8s-valkyries",
-        domain="k8s",
-        risk_class="medium",
-        safety_class="mutating",
-        dedupe_key="build_tool:env-k8s-reviewed-agent-tool:mimir_metric_window",
-        evidence={
-            "artifact": {
-                "learning_id": learned.artifact_id,
-                "title": learned.manifest.name,
-                "summary": learned.manifest.description,
-                "content": "",
-                "artifact_type": "agent_tool",
-                "scope": "environment",
-                "confidence": 0.74,
-                "source_environment_id": peer.identity.environment_id,
-                "source_valkyrie_id": peer.identity.valkyrie_id,
-                "promotion_id": learned.artifact_id,
-                "flock_id": "flock:k8s-valkyries",
-                "domain": "k8s",
-                "redaction_status": "redacted",
-                "tool_code": learned.tool_code,
-                "tool_entry_point": learned.manifest.entry_point,
-                "learned_tool_manifest": learned.manifest.to_dict(),
-                "canary_sample": {"query": "up"},
-            }
-        },
-        requested_by=peer.identity.valkyrie_id,
-        correlation_id=learned.artifact_id,
-    )
-    item.decide(
-        decision=ReviewStatus.APPROVED.value,
-        operator_id="operator:odin",
-        reason="safe enough for guarded install",
-    )
-
-    await bus.publish(review_decided_event(item, source="operator:odin"))
-    await bus.flush()
-    await bus.flush()
-
-    adopted = [decision for decision in peer.decisions() if decision.action == "adopted"]
-    assert adopted
-    assert adopted[-1].installed_skill_name == "mimir_metric_window"
-    tool_path = tmp_path / "k8s-reviewed-agent-tool" / "learned_tools" / "mimir_metric_window.py"
-    artifact_path = (
-        tmp_path / "k8s-reviewed-agent-tool" / "learned_tool_artifacts" / "mimir_metric_window.json"
-    )
-    assert tool_path.is_file()
-    assert read_learned_tool_artifact(artifact_path).manifest.name == "mimir_metric_window"
-
-
-async def test_signal_lookup_does_not_execute_a_regressed_tool(tmp_path) -> None:
-    runtime = _runtime(tmp_path, "k8s-c")
-    skill_name = "valkyrie-inspect-kubernetes-pod-oomkilled"
-    artifact = ResidentLearningArtifact(
-        learning_id="learn-oom-c",
-        title=skill_name,
-        summary="OOM probe",
-        content=probe_skill_content(skill_name),
-        artifact_type="ravn_skill_tool",
-        scope="flock",
-        confidence=0.9,
-        source_environment_id="env-k8s-x",
-        source_valkyrie_id="valkyrie:k8s-x",
-        flock_id="flock:k8s-valkyries",
-        domain="k8s",
-        redaction_status="redacted",
-        tool_code=(
-            "def run(signal):\n"
-            "    return {'matches': True, 'observed': signal.get('payload', {})}\n"
-        ),
-        canary_sample={"kind": "Pod", "reason": "OOMKilled"},
-    )
-    assert (await runtime.evaluate_and_apply(artifact)).action == "adopted"
-
-    # Regress the installed implementation in place, then replay the signal.
-    tool_path = tool_path_for_skill(tmp_path / "k8s-c" / "tools", skill_name)
-    tool_path.write_text("def run(signal):\n    raise RuntimeError('regression')\n")
-
-    replay = await runtime.execute_selected_capability(_signal(), skill_name=skill_name)
-    assert replay["decision"] == "adopted_learning_failed"
-    assert replay["executionSelected"] is True
-    assert "error" in replay["toolResult"]
-
-
 # ---------------------------------------------------------------------------
 # Canary before ACK (NIU-1038)
 # ---------------------------------------------------------------------------
-
-
-async def test_broken_proposed_tool_is_rejected_by_canary(tmp_path) -> None:
-    peer = _runtime(tmp_path, "k8s-canary")
-    artifact = ResidentLearningArtifact(
-        learning_id="learn-broken",
-        title="valkyrie-inspect-kubernetes-pod-oomkilled",
-        summary="Broken probe",
-        content=probe_skill_content("valkyrie-inspect-kubernetes-pod-oomkilled"),
-        artifact_type="ravn_skill_tool",
-        scope="flock",
-        confidence=0.9,
-        source_environment_id="env-k8s-x",
-        source_valkyrie_id="valkyrie:k8s-x",
-        flock_id="flock:k8s-valkyries",
-        domain="k8s",
-        redaction_status="redacted",
-        tool_code="def run(signal):\n    raise RuntimeError('does not work here')\n",
-        canary_sample={"kind": "Pod", "reason": "OOMKilled"},
-    )
-    decision = await peer.evaluate_and_apply(artifact)
-    assert decision.action == "rejected"
-    assert decision.canary_passed is False
-    assert "Canary execution failed" in decision.rationale
-    tool_path = tool_path_for_skill(
-        tmp_path / "k8s-canary" / "tools", "valkyrie-inspect-kubernetes-pod-oomkilled"
-    )
-    assert not tool_path.is_file()
-
-
-async def test_healthy_proposed_tool_passes_canary_and_is_adopted(tmp_path) -> None:
-    peer = _runtime(tmp_path, "k8s-canary-ok")
-    artifact = ResidentLearningArtifact(
-        learning_id="learn-ok",
-        title="valkyrie-inspect-kubernetes-pod-oomkilled",
-        summary="Healthy probe",
-        content=probe_skill_content("valkyrie-inspect-kubernetes-pod-oomkilled"),
-        artifact_type="ravn_skill_tool",
-        scope="flock",
-        confidence=0.9,
-        source_environment_id="env-k8s-x",
-        source_valkyrie_id="valkyrie:k8s-x",
-        flock_id="flock:k8s-valkyries",
-        domain="k8s",
-        redaction_status="redacted",
-        tool_code=(
-            "def run(signal):\n"
-            "    return {'matches': True, 'observed': signal.get('payload', {})}\n"
-        ),
-        canary_sample={"kind": "Pod", "reason": "OOMKilled"},
-    )
-    decision = await peer.evaluate_and_apply(artifact)
-    assert decision.action == "adopted"
-    assert decision.canary_passed is True
 
 
 # ---------------------------------------------------------------------------
@@ -1548,7 +1202,7 @@ async def test_forge_runner_scopes_container_network_to_declared_reach(
             super().__init__(**kwargs)
             created.append(self)
 
-    monkeypatch.setattr(terminal_docker, "DockerPersistentShell", _TrackingShell)
+    monkeypatch.setattr(learned_tools_mod, "DockerPersistentShell", _TrackingShell)
     tool_path = write_tool(
         tools_dir=tmp_path,
         skill_name="probe",
@@ -1937,7 +1591,7 @@ async def test_forge_runner_surfaces_shell_failures_with_enforcement(tmp_path) -
         assert result.enforcement == REACH_ENFORCEMENT_ENFORCED
 
 
-async def test_forge_runner_uses_unscopable_config_as_is(tmp_path, monkeypatch) -> None:
+async def test_forge_runner_scopes_a_custom_config_per_network_mode(tmp_path, monkeypatch) -> None:
     created: list[Any] = []
 
     class _TrackingShell(_FakeDockerShell):
@@ -1945,22 +1599,23 @@ async def test_forge_runner_uses_unscopable_config_as_is(tmp_path, monkeypatch) 
             super().__init__(**kwargs)
             created.append(self)
 
-    monkeypatch.setattr(terminal_docker, "DockerPersistentShell", _TrackingShell)
+    monkeypatch.setattr(learned_tools_mod, "DockerPersistentShell", _TrackingShell)
     tool_path = write_tool(
         tools_dir=tmp_path,
         skill_name="probe",
         tool_code="def run(signal):\n    return {'ok': True}\n",
     )
-    # A plain config object has no model_copy; it cannot be re-scoped per
-    # network mode, so the runner uses it as-is and reports its actual mode.
-    config = SimpleNamespace(network=NETWORK_DENIED_DOCKER_NETWORK, image="custom:image")
+    config = DockerShellConfig(image="custom:image", network="host", extra_mounts=("/data:/data",))
     runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path, docker_config=config)
 
     result = await runner.run(tool_path, {}, entry_point="run", timeout_seconds=5.0)
 
     assert result.ok
     assert result.enforcement == REACH_ENFORCEMENT_ENFORCED
-    assert created[0]._config is config
+    scoped = created[0]._config
+    assert scoped.network == NETWORK_DENIED_DOCKER_NETWORK
+    assert scoped.image == "custom:image"
+    assert scoped.extra_mounts == ("/data:/data",)
 
 
 # ---------------------------------------------------------------------------

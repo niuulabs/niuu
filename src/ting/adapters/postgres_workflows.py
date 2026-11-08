@@ -11,7 +11,7 @@ from uuid import UUID
 import asyncpg
 
 from identity.ports import AuthorizationDeniedError
-from ravn.domain.persona_document import PersonaDependency
+from personas.domain.persona_document import PersonaDependency
 from ting.domain.exceptions import WorkflowConflictError, WorkflowReadOnlyError
 from ting.domain.models import WorkflowDefinition, WorkflowScope, WorkflowVersionSummary
 from ting.domain.workflow_document import WorkflowDependency, workflow_document_revision

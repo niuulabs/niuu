@@ -52,7 +52,7 @@ def scratch(container):
 
 def test_chart_isolates_temp_and_reuses_user_cache(tmp_path):
     extras = [
-        {"name": f"ravn-{name}", "image": "busybox", "env": []}
+        {"name": f"tool-{name}", "image": "busybox", "env": []}
         for name in ("coder", "reviewer", "security")
     ]
     pod = render(tmp_path, "session-one", extras)
@@ -78,13 +78,13 @@ def test_chart_isolates_temp_and_reuses_user_cache(tmp_path):
     script = init["args"][0].replace("/home/", f"{home}/")
     script = script.replace("1000:1000", f"{os.getuid()}:{os.getgid()}")
     subprocess.run(["sh", "-ec", script], check=True)
-    retained = home / "tmp/sessions/session-one/ravn-coder/build-output"
+    retained = home / "tmp/sessions/session-one/tool-coder/build-output"
     retained.write_text("keep")
     subprocess.run(["sh", "-ec", script], check=True)
     assert retained.read_text() == "keep"
     assert (retained.parent.stat().st_mode & 0o7777) == 0o1777
     second = render(tmp_path, "session-two", extras)
-    coder = next(c for c in second["containers"] if c["name"] == "ravn-coder")
+    coder = next(c for c in second["containers"] if c["name"] == "tool-coder")
     assert scratch(coder)["/tmp"]["subPath"] not in paths
     assert scratch(coder)["/var/cache/niuu"]["subPath"] == "tmp/cache"
 
@@ -102,7 +102,7 @@ def test_chart_rejects_conflicting_tmp_mount(tmp_path):
             "session",
             [
                 {
-                    "name": "ravn-coder",
+                    "name": "tool-coder",
                     "image": "busybox",
                     "volumeMounts": [{"name": "other", "mountPath": "/tmp"}],
                 }

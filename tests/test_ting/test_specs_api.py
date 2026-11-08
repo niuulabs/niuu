@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -36,7 +36,6 @@ from ting.api.specs import (
     _spec_title_from_path,
     _stage_for_pending_gate,
     _stored_spec_gates,
-    _sync_pending_spec_gates,
     create_specs_router,
 )
 from ting.api.workflows import resolve_workflow_repo
@@ -49,7 +48,9 @@ from ting.domain.models import (
     WorkflowScope,
 )
 from ting.domain.workflow_snapshot import build_workflow_snapshot
+from ting.domain.workflow_steps import GateDecision, GateRefusedError
 
+from .fake_workflow_runs import FakeWorkflowRuns
 from .test_research_api import (
     InMemoryWorkflowCampaignRepository,
     InMemoryWorkflowRepository,
@@ -143,55 +144,25 @@ def _spec_workflow(root: Path) -> WorkflowDefinition:
     )
 
 
-class GateRecordingVolundrPort(RecordingVolundrPort):
-    def __init__(self) -> None:
-        super().__init__()
-        self.gates = [
-            {
-                "id": "gate-prd",
-                "node_id": "spec-prd-gate",
-                "status": "pending",
-                "summary": "PRD approval gate",
-            }
-        ]
-        self.resolved: list[dict[str, object]] = []
-
-    async def get_workflow_gates(self, session_id: str, *, auth_token=None, principal=None):
-        return self.gates
-
-    async def resolve_workflow_gate(
-        self,
-        session_id: str,
-        gate_id: str,
-        decision: str,
-        *,
-        notes: str = "",
-        source: str = "ting",
-        auth_token=None,
-        principal=None,
-    ):
-        self.resolved.append(
-            {
-                "session_id": session_id,
-                "gate_id": gate_id,
-                "decision": decision,
-                "notes": notes,
-                "source": source,
-                "principal": principal.user_id if principal else None,
-            }
-        )
-        return {"status": "resolved"}
+PRD_GATE = {
+    "id": "spec-prd-gate",
+    "node_id": "spec-prd-gate",
+    "status": "pending",
+    "summary": "PRD approval gate",
+}
 
 
 def _make_client(
     workflow_repo: InMemoryWorkflowRepository,
     campaign_repo: InMemoryWorkflowCampaignRepository,
     volundr_port: RecordingVolundrPort,
+    runs: FakeWorkflowRuns | None = None,
 ) -> TestClient:
     app = FastAPI()
     app.state.authorization = AllowAllAuthorizationAdapter()
     app.include_router(create_specs_router())
     app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
+    app.state.workflow_runs = runs if runs is not None else FakeWorkflowRuns()
     app.state.event_bus = InMemoryEventBus()
     app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
     app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
@@ -212,22 +183,15 @@ def _campaign_for_workflow(workflow: WorkflowDefinition, slug: str) -> WorkflowC
         workflow_version=workflow.version,
         workflow_name=workflow.name,
         workflow_snapshot=build_workflow_snapshot(workflow),
-        session_id=f"session-{slug}",
-        session_name=slug,
+        session_id="",
+        session_name="",
         status=WorkflowCampaignStatus.BLOCKED,
         active_stage_id="spec-prd-review",
         stage_state=[],
         metadata={
             "surface": "ting.specs",
             "prompt": "Specify SDCP operator",
-            "pending_workflow_gates": [
-                {
-                    "id": "gate-prd",
-                    "node_id": "spec-prd-gate",
-                    "status": "pending",
-                    "summary": "PRD approval gate",
-                }
-            ],
+            "pending_workflow_gates": [dict(PRD_GATE)],
         },
         created_at=now,
         updated_at=now,
@@ -236,14 +200,12 @@ def _campaign_for_workflow(workflow: WorkflowDefinition, slug: str) -> WorkflowC
     )
 
 
-def test_create_spec_campaign_launches_specification_stack(tmp_path: Path) -> None:
+def test_create_spec_campaign_starts_a_run_on_the_step_engine(tmp_path: Path) -> None:
     workflow = _spec_workflow(tmp_path)
     campaign_repo = InMemoryWorkflowCampaignRepository()
-    volundr_port = RecordingVolundrPort()
+    runs = FakeWorkflowRuns()
     client = _make_client(
-        InMemoryWorkflowRepository([workflow]),
-        campaign_repo,
-        volundr_port,
+        InMemoryWorkflowRepository([workflow]), campaign_repo, RecordingVolundrPort(), runs
     )
 
     response = client.post(
@@ -252,27 +214,48 @@ def test_create_spec_campaign_launches_specification_stack(tmp_path: Path) -> No
         json={
             "prompt": "Plan SDCP v3.0.0 as a Kubernetes operator for 3D printers.",
             "name": "SDCP operator",
-            "repos": [
-                "https://github.com/niuulabs/volundr.git",
-                "https://github.com/niuulabs/ravn.git",
-            ],
+            "repos": ["https://github.com/niuulabs/volundr.git"],
             "branch": "dev",
         },
     )
 
     assert response.status_code == 201
     body = response.json()
-    assert body["workflowName"] == "Specification Stack"
-    assert body["metadata"]["surface"] == "ting.specs"
-    assert body["metadata"]["repos"] == [
-        "https://github.com/niuulabs/volundr.git",
-        "https://github.com/niuulabs/ravn.git",
-    ]
-    assert len(volundr_port.requests) == 1
-    request = volundr_port.requests[0]
-    assert request.repo == "https://github.com/niuulabs/volundr.git"
-    assert "Pause at each review gate" in request.initial_prompt
-    assert "https://github.com/niuulabs/ravn.git" in request.initial_prompt
+    assert body["sessionId"] == ""
+    assert body["slug"].startswith("sdcp-operator")
+    [(launched, payload)] = runs.launched
+    assert launched.id == UUID(body["id"])
+    assert launched.session_id == ""
+    assert launched.connection_id == "local"
+    assert launched.metadata["surface"] == "ting.specs"
+    assert (
+        launched.metadata["prompt"] == "Plan SDCP v3.0.0 as a Kubernetes operator for 3D printers."
+    )
+    assert launched.metadata["repo"] == "https://github.com/niuulabs/volundr.git"
+    assert launched.metadata["branch"] == "dev"
+    assert payload["repo"] == "https://github.com/niuulabs/volundr.git"
+    assert "Plan SDCP v3.0.0" in payload["prompt"]
+    assert list(campaign_repo._campaigns) == [launched.id]
+
+
+def test_create_spec_campaign_that_cannot_start_fails_its_campaign(tmp_path: Path) -> None:
+    workflow = _spec_workflow(tmp_path)
+    campaign_repo = InMemoryWorkflowCampaignRepository()
+    runs = FakeWorkflowRuns(launch_error=RuntimeError("no capacity"))
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]), campaign_repo, RecordingVolundrPort(), runs
+    )
+
+    with pytest.raises(RuntimeError, match="no capacity"):
+        client.post(
+            "/api/v1/ting/specs/campaigns",
+            headers=_headers(),
+            json={"prompt": "Plan SDCP.", "name": "SDCP operator"},
+        )
+
+    [failed] = campaign_repo._campaigns.values()
+    assert failed.status == WorkflowCampaignStatus.FAILED
+    assert failed.metadata["failure_error"] == "no capacity"
 
 
 def test_detail_reads_spec_artifacts_from_mimir(tmp_path: Path) -> None:
@@ -313,26 +296,14 @@ def test_detail_reads_spec_artifacts_from_mimir(tmp_path: Path) -> None:
     )
 
 
-def test_detail_clears_stored_gate_when_live_gate_is_resolved(tmp_path: Path) -> None:
+def test_review_resolves_pending_spec_gate_through_the_engine(tmp_path: Path) -> None:
     workflow = _spec_workflow(tmp_path)
     campaign = _campaign_for_workflow(workflow, "sdcp-operator")
     campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
-    volundr_port = GateRecordingVolundrPort()
-    volundr_port.gates = []
-    client = _make_client(InMemoryWorkflowRepository([workflow]), campaign_repo, volundr_port)
-
-    response = client.get("/api/v1/ting/specs/campaigns/sdcp-operator", headers=_headers())
-
-    assert response.status_code == 200
-    assert response.json()["metadata"]["pending_workflow_gates"] == []
-
-
-def test_review_resolves_pending_spec_gate(tmp_path: Path) -> None:
-    workflow = _spec_workflow(tmp_path)
-    campaign = _campaign_for_workflow(workflow, "sdcp-operator")
-    campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
-    volundr_port = GateRecordingVolundrPort()
-    client = _make_client(InMemoryWorkflowRepository([workflow]), campaign_repo, volundr_port)
+    runs = FakeWorkflowRuns(gates_by_run={campaign.id: [dict(PRD_GATE)]})
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]), campaign_repo, RecordingVolundrPort(), runs
+    )
 
     response = client.post(
         "/api/v1/ting/specs/campaigns/sdcp-operator/review",
@@ -345,16 +316,13 @@ def test_review_resolves_pending_spec_gate(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 200
-    assert volundr_port.resolved == [
-        {
-            "session_id": "session-sdcp-operator",
-            "gate_id": "gate-prd",
-            "decision": "CHANGES_REQUESTED",
-            "notes": "Clarify printer capability discovery.",
-            "source": "ting.specs",
-            "principal": "user-1",
-        }
-    ]
+    [decision] = runs.decisions
+    assert decision.campaign_id == campaign.id
+    assert decision.node_id == "spec-prd-gate"
+    assert decision.decision is GateDecision.REQUEST_CHANGES
+    assert decision.note == "Clarify printer capability discovery."
+    assert decision.by.id == "user-1"
+    assert decision.by.kind.value == "person"
     assert response.json()["metadata"]["latest_spec_review"]["decision"] == "changes_requested"
 
 
@@ -363,7 +331,7 @@ def test_review_resolves_pending_spec_gate(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_list_campaigns_filters_to_spec_surface_and_refreshes(tmp_path: Path) -> None:
+def test_list_campaigns_filters_to_spec_surface(tmp_path: Path) -> None:
     workflow = _spec_workflow(tmp_path)
     spec_campaign = _campaign_for_workflow(workflow, "sdcp-operator")
     other_campaign = WorkflowCampaign(
@@ -376,9 +344,9 @@ def test_list_campaigns_filters_to_spec_surface_and_refreshes(tmp_path: Path) ->
         }
     )
     campaign_repo = InMemoryWorkflowCampaignRepository([spec_campaign, other_campaign])
-    volundr_port = GateRecordingVolundrPort()
-    volundr_port.gates = []
-    client = _make_client(InMemoryWorkflowRepository([workflow]), campaign_repo, volundr_port)
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]), campaign_repo, RecordingVolundrPort()
+    )
 
     response = client.get("/api/v1/ting/specs/campaigns", headers=_headers())
 
@@ -512,7 +480,7 @@ def test_review_requires_notes_when_requesting_changes(tmp_path: Path) -> None:
     campaign = _campaign_for_workflow(workflow, "sdcp-operator")
     campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
     client = _make_client(
-        InMemoryWorkflowRepository([workflow]), campaign_repo, GateRecordingVolundrPort()
+        InMemoryWorkflowRepository([workflow]), campaign_repo, RecordingVolundrPort()
     )
 
     response = client.post(
@@ -525,27 +493,14 @@ def test_review_requires_notes_when_requesting_changes(tmp_path: Path) -> None:
     assert "notes are required" in response.json()["detail"]
 
 
-def test_review_returns_503_when_no_volundr_adapter_available(tmp_path: Path) -> None:
+def test_review_returns_503_when_the_step_engine_is_not_configured(tmp_path: Path) -> None:
     workflow = _spec_workflow(tmp_path)
     campaign = _campaign_for_workflow(workflow, "sdcp-operator")
     campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
-    app = FastAPI()
-    app.state.authorization = AllowAllAuthorizationAdapter()
-    app.include_router(create_specs_router())
-    app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
-    app.state.event_bus = InMemoryEventBus()
-    app.dependency_overrides[resolve_workflow_repo] = lambda: InMemoryWorkflowRepository([workflow])
-    app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
-
-    class _EmptyFactory:
-        async def primary_for_principal(self, principal):
-            return None
-
-        async def for_principal(self, principal):
-            return []
-
-    app.dependency_overrides[resolve_volundr_factory] = lambda: _EmptyFactory()
-    client = TestClient(app)
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]), campaign_repo, RecordingVolundrPort()
+    )
+    del client.app.state.workflow_runs
 
     response = client.post(
         "/api/v1/ting/specs/campaigns/sdcp-operator/review",
@@ -554,16 +509,16 @@ def test_review_returns_503_when_no_volundr_adapter_available(tmp_path: Path) ->
     )
 
     assert response.status_code == 503
-    assert "No Volundr connection" in response.json()["detail"]
+    assert "step engine" in response.json()["detail"]
 
 
 def test_review_404s_when_no_pending_gate_matches(tmp_path: Path) -> None:
     workflow = _spec_workflow(tmp_path)
     campaign = _campaign_for_workflow(workflow, "sdcp-operator")
     campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
-    volundr_port = GateRecordingVolundrPort()
-    volundr_port.gates = []
-    client = _make_client(InMemoryWorkflowRepository([workflow]), campaign_repo, volundr_port)
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]), campaign_repo, RecordingVolundrPort()
+    )
 
     response = client.post(
         "/api/v1/ting/specs/campaigns/sdcp-operator/review",
@@ -579,11 +534,14 @@ def test_review_404s_when_matched_gate_has_no_id(tmp_path: Path) -> None:
     workflow = _spec_workflow(tmp_path)
     campaign = _campaign_for_workflow(workflow, "sdcp-operator")
     campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
-    volundr_port = GateRecordingVolundrPort()
-    volundr_port.gates = [
-        {"node_id": "spec-prd-gate", "status": "pending", "summary": "no id here"}
-    ]
-    client = _make_client(InMemoryWorkflowRepository([workflow]), campaign_repo, volundr_port)
+    runs = FakeWorkflowRuns(
+        gates_by_run={
+            campaign.id: [{"node_id": "spec-prd-gate", "status": "pending", "summary": "no id"}]
+        }
+    )
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]), campaign_repo, RecordingVolundrPort(), runs
+    )
 
     response = client.post(
         "/api/v1/ting/specs/campaigns/sdcp-operator/review",
@@ -599,8 +557,10 @@ def test_review_approve_path_records_approve_decision(tmp_path: Path) -> None:
     workflow = _spec_workflow(tmp_path)
     campaign = _campaign_for_workflow(workflow, "sdcp-operator")
     campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
-    volundr_port = GateRecordingVolundrPort()
-    client = _make_client(InMemoryWorkflowRepository([workflow]), campaign_repo, volundr_port)
+    runs = FakeWorkflowRuns(gates_by_run={campaign.id: [dict(PRD_GATE)]})
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]), campaign_repo, RecordingVolundrPort(), runs
+    )
 
     response = client.post(
         "/api/v1/ting/specs/campaigns/sdcp-operator/review",
@@ -609,20 +569,21 @@ def test_review_approve_path_records_approve_decision(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 200
-    assert volundr_port.resolved[0]["decision"] == "APPROVE"
+    assert runs.decisions[0].decision is GateDecision.APPROVE
     assert response.json()["metadata"]["latest_spec_review"]["decision"] == "approve"
 
 
-def test_review_wraps_gate_resolution_failure_as_502(tmp_path: Path) -> None:
+def test_review_reports_a_refused_gate_decision_as_conflict(tmp_path: Path) -> None:
     workflow = _spec_workflow(tmp_path)
     campaign = _campaign_for_workflow(workflow, "sdcp-operator")
     campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
-
-    class _FailingGatePort(GateRecordingVolundrPort):
-        async def resolve_workflow_gate(self, *args, **kwargs):
-            raise RuntimeError("gateway exploded")
-
-    client = _make_client(InMemoryWorkflowRepository([workflow]), campaign_repo, _FailingGatePort())
+    runs = FakeWorkflowRuns(
+        gates_by_run={campaign.id: [dict(PRD_GATE)]},
+        gate_error=GateRefusedError("gate 'spec-prd-gate' waits for a person"),
+    )
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]), campaign_repo, RecordingVolundrPort(), runs
+    )
 
     response = client.post(
         "/api/v1/ting/specs/campaigns/sdcp-operator/review",
@@ -630,8 +591,8 @@ def test_review_wraps_gate_resolution_failure_as_502(tmp_path: Path) -> None:
         json={"decision": "approve"},
     )
 
-    assert response.status_code == 502
-    assert "gateway exploded" in response.json()["detail"]
+    assert response.status_code == 409
+    assert "waits for a person" in response.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -777,52 +738,6 @@ async def test_reserve_spec_slug_increments_on_collision(tmp_path):
     repo = InMemoryWorkflowCampaignRepository([existing])
     slug = await _reserve_spec_slug(repo, "Specification")
     assert slug == "specification-2"
-
-
-class TestSyncPendingSpecGates:
-    async def test_returns_campaign_unchanged_when_no_adapter(self, tmp_path):
-        workflow = _spec_workflow(tmp_path)
-        campaign = _campaign_for_workflow(workflow, "slug")
-        repo = InMemoryWorkflowCampaignRepository([campaign])
-
-        class _NoAdapterFactory:
-            async def primary_for_principal(self, principal):
-                return None
-
-        result = await _sync_pending_spec_gates(
-            campaign=campaign,
-            repo=repo,
-            volundr_factory=_NoAdapterFactory(),
-            principal=_principal(),
-            bearer_token=None,
-        )
-        assert result is campaign
-
-    async def test_returns_campaign_unchanged_when_gates_match_stored(self, tmp_path):
-        workflow = _spec_workflow(tmp_path)
-        campaign = _campaign_for_workflow(workflow, "slug")
-        repo = InMemoryWorkflowCampaignRepository([campaign])
-        stored = _stored_spec_gates(campaign)
-
-        class _MatchingPort:
-            target_id = "local"
-            name = "local"
-
-            async def get_workflow_gates(self, *args, **kwargs):
-                return stored
-
-        class _Factory:
-            async def primary_for_principal(self, principal):
-                return _MatchingPort()
-
-        result = await _sync_pending_spec_gates(
-            campaign=campaign,
-            repo=repo,
-            volundr_factory=_Factory(),
-            principal=_principal(),
-            bearer_token=None,
-        )
-        assert result is campaign
 
 
 def _principal():

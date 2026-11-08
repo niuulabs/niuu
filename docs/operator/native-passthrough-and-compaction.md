@@ -1,14 +1,13 @@
 # Native passthrough and native compaction
 
-Two settings, configured independently, that together let a model run on its own
-provider's protocol and compact its own context:
+A provider setting that lets a model run on its own provider's protocol, so a client
+that speaks it can use that provider's own context compaction:
 
 | Setting | Where | Choices | Default |
 |---|---|---|---|
 | `passthrough` | Bifröst, per provider | `true` / `false` | `false` (canonical translation) |
-| `context_management.compaction` + `compaction_models` | Ravn, per model | `ravn` / `native` / `off` | `ravn` (Ravn's client-side compactor) |
 
-With neither set, every deployment behaves exactly as before.
+With it unset, every deployment behaves exactly as before.
 
 ## Bifröst: native passthrough
 
@@ -78,56 +77,6 @@ the Anthropic adapter (with the `anthropic-beta` header each edit needs) and ref
 400 for any translating provider. Anthropic compaction iterations (`usage.iterations`) are
 added to the metered tokens, since the top-level counts exclude them.
 
-## Ravn: compaction per model
-
-```yaml
-context_management:
-  compaction: ravn             # models not listed below
-  compaction_models:
-    gpt-6-sol: native          # the provider compacts
-    Qwen/Qwen3.8-27B: ravn     # Ravn's ContextCompressor
-```
-
-- **`ravn`** — Ravn's `ContextCompressor` summarises older history into a state document
-  when the estimate crosses `compression_threshold` of the prompt budget. For models with
-  no provider compaction (Qwen, Nemotron, DeepSeek on vLLM).
-- **`native`** — Ravn never compacts. The LLM adapter asks the provider to compact
-  above a threshold, the provider's opaque compaction item round-trips through Ravn's
-  history verbatim (on the assistant message's `provider_items`), and Ravn drops the history
-  before the latest compaction item, which already carries it.
-- **`off`** — nobody compacts; `max_prompt_tokens` is the only guard.
-
-The native threshold is the point Ravn's own compactor would have fired at, in real
-tokens: `budget × compression_threshold ÷ token_estimate_safety_factor`, where the budget
-is `max_prompt_tokens` (or `context_window_tokens − max_tokens`). For Regin
-(200000 × 0.8 ÷ 1.5) that is 106666 tokens.
-
-Adapters with native compaction:
-
-| Adapter | Provider mechanism |
-|---|---|
-| `ravn.adapters.llm.openai_responses.OpenAIResponsesAdapter` | Responses `context_management: [{"type": "compaction", "compact_threshold": N}]` → `compaction` items with `encrypted_content` |
-| `ravn.adapters.llm.anthropic.AnthropicAdapter`, `ravn.adapters.llm.bifrost.BifrostAdapter` | beta `compact-2026-01-12`, edit `compact_20260112` with an `input_tokens` trigger (≥ 50000) → `compaction` content blocks |
-
-`OpenAIResponsesAdapter` speaks `POST {base_url}/v1/responses`. Pointed at Bifröst with
-`passthrough: true` on the provider, the request reaches the ChatGPT backend untranslated.
-It keeps every output item of a turn verbatim (reasoning, message, function_call,
-compaction) and replays them as is.
-
-### Startup errors
-
-Ravn refuses to start when `native` is configured for a model and:
-
-- the LLM adapter has no native compaction (e.g. `OpenAICompatibleAdapter`, which speaks
-  Chat Completions — there is no compaction in that protocol);
-- no prompt budget is configured to derive the threshold from;
-- the derived threshold is below the provider's minimum (Anthropic: 50000).
-
-A history whose context lives in one protocol's compaction item cannot be continued
-through an adapter of another protocol; that is refused at the next call rather than
-silently dropping the compacted context. Switching a model back is a config change, not a
-runtime fallback.
-
 ## What the ChatGPT Codex backend accepts
 
 Verified live against `https://chatgpt.com/backend-api/codex/responses` on 2026-10-24:
@@ -140,4 +89,4 @@ Verified live against `https://chatgpt.com/backend-api/codex/responses` on 2026-
   compaction) — accepted; the response is a single compaction item.
 - `POST /responses/compact` — **404**; not available on this backend.
 - A `function_call_output` whose `function_call` was cut away returns an empty response, so
-  `OpenAIResponsesAdapter` keeps call/output pairs together when it cuts at a compaction item.
+  a client must keep call/output pairs together when it cuts history at a compaction item.

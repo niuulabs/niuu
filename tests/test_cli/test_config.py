@@ -9,6 +9,8 @@ from cli.config import (
     AuthOidcConfig,
     CLISettings,
     DatabaseConfig,
+    HostsConfig,
+    HostSessionImagesConfig,
     OidcIssuerConfig,
     PluginConfig,
     PodManagerConfig,
@@ -75,6 +77,63 @@ class TestCLISettings:
         )
         assert configured.compute is not None
         assert configured.compute.pool_id == "acme"
+
+    def test_compute_slot_settings_default_to_one_session_per_machine(self) -> None:
+        compute = CLISettings(
+            mode="docker",
+            compute=self._compute(),
+            pod_manager=self._pod_manager(),
+        ).compute
+
+        assert compute is not None
+        assert compute.slots_per_machine == 1
+        assert compute.max_sessions_per_machine is None
+        assert compute.max_machine_age_seconds is None
+
+    def test_compute_slot_settings_are_read_from_the_config_file(self) -> None:
+        compute = CLISettings(
+            mode="docker",
+            compute=self._compute(
+                slots_per_machine=4, max_sessions_per_machine=8, max_machine_age_seconds=86400
+            ),
+            pod_manager=self._pod_manager(),
+        ).compute
+
+        assert compute is not None
+        assert (compute.slots_per_machine, compute.max_sessions_per_machine) == (4, 8)
+        assert compute.max_machine_age_seconds == 86400
+
+    @pytest.mark.parametrize(
+        "field", ["slots_per_machine", "max_sessions_per_machine", "max_machine_age_seconds"]
+    )
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_compute_slot_settings_must_be_positive(self, field: str, value: int) -> None:
+        with pytest.raises(ValueError):
+            CLISettings(
+                mode="docker",
+                compute=self._compute(**{field: value}),
+                pod_manager=self._pod_manager(),
+            )
+
+    @staticmethod
+    def _compute(**extra) -> dict:
+        return {
+            "pool_id": "acme",
+            "max_machines": 1,
+            "provider": {"adapter": "private.Provider"},
+            "auth": {"adapter": "private.Auth"},
+            "runtime": {"adapter": "private.Runtime"},
+            **extra,
+        }
+
+    @staticmethod
+    def _pod_manager() -> dict:
+        return {
+            "adapter": "volundr.adapters.outbound.vm_pod_manager.VmPodManager",
+            "profile": "cpu",
+            "pool_id": "acme",
+            "max_machines": 1,
+        }
 
 
 class TestDatabaseConfig:
@@ -151,7 +210,6 @@ class TestAuthAdapterEnv:
         env = auth_adapter_env(AuthConfig())
         assert env["IDENTITY__ADAPTER"].endswith("AllowAllIdentityAdapter")
         assert env["AUTHORIZATION__ADAPTER"].endswith("AllowAllAuthorizationAdapter")
-        assert env["RAVN_API_AUTH__ADAPTER"].endswith("AllowAllHeaderAuthenticationAdapter")
         assert env["HOST_IDENTITY__ADAPTER"].endswith("AllowAllHeaderAuthenticationAdapter")
         assert env["AUTH__ALLOW_ANONYMOUS_DEV"] == "true"
         assert env["AUTH_MODE"] == "none"
@@ -179,10 +237,6 @@ class TestAuthAdapterEnv:
 
         assert env["IDENTITY__ADAPTER"] == "identity.adapters.jwks.JwksIdentityAdapter"
         assert env["AUTHORIZATION__ADAPTER"] == "identity.adapters.cedar.CedarAuthorizationAdapter"
-        assert (
-            env["RAVN_API_AUTH__ADAPTER"]
-            == "identity.adapters.jwks.JwksBearerAuthenticationAdapter"
-        )
         assert env["AUTH__ADAPTER"] == "identity.adapters.jwks.JwksBearerAuthenticationAdapter"
         assert (
             env["HOST_IDENTITY__ADAPTER"]
@@ -199,7 +253,6 @@ class TestAuthAdapterEnv:
             "developer": "volundr:developer",
             "viewer": "volundr:viewer",
         }
-        assert json.loads(env["RAVN_API_AUTH__KWARGS"]) == kwargs
         assert json.loads(env["AUTH__KWARGS"]) == kwargs
         assert json.loads(env["HOST_IDENTITY__KWARGS"]) == kwargs
 
@@ -270,3 +323,110 @@ class TestOidcCoverageGate:
     def test_none_mode_ignores_uncovered_plugins(self) -> None:
         settings = CLISettings()
         assert settings.host_auth.mode == "none"
+
+
+class TestHostsConfig:
+    """The registered-hosts pool: on in mini mode by default, rendered as ``compute:``."""
+
+    COMPUTE = {
+        "pool_id": "vms",
+        "max_machines": 1,
+        "provider": {"adapter": "private.Provider", "kwargs": {}},
+        "runtime": {"adapter": "private.Runtime", "kwargs": {}},
+    }
+
+    def test_unset_means_on_in_mini_mode_only(self) -> None:
+        hosts = HostsConfig()
+
+        assert hosts.enabled is None
+        assert hosts.active("mini", compute_configured=False) is True
+        assert hosts.active("mini", compute_configured=True) is False
+        for mode in ("docker", "cluster", "openshell"):
+            assert hosts.active(mode, compute_configured=False) is False
+
+    @pytest.mark.parametrize("mode", ["mini", "docker"])
+    @pytest.mark.parametrize("compute_configured", [True, False])
+    def test_an_explicit_choice_wins(self, mode, compute_configured) -> None:
+        assert HostsConfig(enabled=True).active(mode, compute_configured) is True
+        assert HostsConfig(enabled=False).active(mode, compute_configured) is False
+
+    def test_settings_report_whether_the_pool_is_served(self) -> None:
+        assert CLISettings(mode="mini").hosts_active is True
+        assert CLISettings(mode="mini", compute=self.COMPUTE).hosts_active is False
+        assert CLISettings(mode="mini", hosts={"enabled": False}).hosts_active is False
+        assert CLISettings(mode="cluster").hosts_active is False
+
+    def test_a_defined_pool_and_an_explicit_hosts_pool_conflict(self) -> None:
+        with pytest.raises(ValueError, match="both define this Forge's compute pool"):
+            CLISettings(mode="mini", hosts={"enabled": True}, compute=self.COMPUTE)
+
+    def test_an_explicit_hosts_pool_is_for_mini_mode(self) -> None:
+        with pytest.raises(ValueError, match="hosts.enabled is for mini mode"):
+            CLISettings(mode="docker", hosts={"enabled": True})
+
+    def test_the_built_in_execution_is_rendered_when_no_catalog_is_named(self, tmp_path) -> None:
+        hosts = HostsConfig(
+            pool_id="pool", profile="byo", data_dir=str(tmp_path / "hosts"), max_hosts=3
+        )
+
+        compute = hosts.compute(platform_port=8081, join_host="10.0.0.5")
+
+        assert compute.pool_id == compute.provider_binding == "pool"
+        assert compute.execution_catalog.adapter.endswith("BuiltinHostCatalog")
+        assert compute.execution_catalog.kwargs == {
+            "pool_id": "pool",
+            "provider_binding": "pool",
+            "profile": "byo",
+            "data_dir": str(tmp_path / "hosts"),
+            "platform_port": 8081,
+        }
+        assert compute.session_images.linux == "ghcr.io/niuulabs/openshell:dev"
+        assert compute.session_images.darwin == "ghcr.io/niuulabs/skuld-darwin:dev"
+
+    def test_the_data_dir_is_expanded(self) -> None:
+        compute = HostsConfig(data_dir="~/hosts-data").compute(platform_port=8080)
+
+        assert "~" not in compute.execution_catalog.kwargs["data_dir"]
+        assert compute.execution_catalog.kwargs["data_dir"].endswith("hosts-data")
+
+    def test_the_release_images_can_be_replaced(self) -> None:
+        hosts = HostsConfig(
+            session_images={
+                "linux": "ghcr.io/niuulabs/openshell:1.2.3",
+                "darwin": "ghcr.io/niuulabs/skuld-darwin:1.2.3",
+            }
+        )
+
+        images = hosts.compute(platform_port=8080).session_images
+
+        assert (images.linux, images.darwin) == (
+            "ghcr.io/niuulabs/openshell:1.2.3",
+            "ghcr.io/niuulabs/skuld-darwin:1.2.3",
+        )
+
+    def test_the_pinned_join_listener_is_named_by_the_host_others_reach_us_at(self) -> None:
+        hosts = HostsConfig().compute(platform_port=8080, join_host="forge.lan").hosts
+
+        assert hosts.join_url == "https://forge.lan:8443"
+        assert hosts.join_listener is not None
+
+    def test_a_join_url_wins_over_the_listener(self) -> None:
+        hosts = (
+            HostsConfig(join_url="https://forge.example.test")
+            .compute(platform_port=8080, join_host="forge.lan")
+            .hosts
+        )
+
+        assert hosts.join_url == "https://forge.example.test"
+        assert hosts.join_listener is None
+
+    def test_without_a_join_host_or_url_none_is_rendered(self) -> None:
+        assert HostsConfig().compute(platform_port=8080).hosts.join_url == ""
+
+    def test_the_session_images_are_never_empty(self) -> None:
+        defaults = HostSessionImagesConfig()
+        assert defaults.linux.endswith(":dev") and defaults.darwin.endswith(":dev")
+        with pytest.raises(ValueError, match="at least 1 character"):
+            HostSessionImagesConfig(linux="")
+        with pytest.raises(ValueError, match="windows"):
+            HostSessionImagesConfig(windows="x")

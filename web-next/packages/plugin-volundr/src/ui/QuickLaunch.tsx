@@ -7,12 +7,14 @@ import { LoadingState, RepoSelect, type RepoRecord } from '@niuulabs/ui';
 import type { IVolundrService } from '../ports/IVolundrService';
 import {
   FORGE_STANDARDS,
+  FORGE_TOOL_GRANTS,
   forgeErrorMessage,
   EFFORT_LABELS,
   hostDefaultFolder,
   selectedEffort,
   type ForgeStandardId,
 } from './quickLaunchModel';
+import type { ForgeMcpGrant } from '../models/volundr.model';
 import { slugifySessionName, validateSessionName } from './launchWizardModel';
 import {
   availableEngines,
@@ -20,6 +22,8 @@ import {
   selectedEngineProvider,
 } from './launchEngines';
 import { useForgePreference } from './useForgePreference';
+import { useRunsAs } from './hooks/useRunsAs';
+import { RunsAs, RunsAsReadiness } from './RunsAs';
 import './QuickLaunch.css';
 
 type RepoCatalog = {
@@ -86,6 +90,8 @@ export function QuickLaunch({
     placeholderData: keepPreviousData,
   });
   const localMountsEnabled = Boolean(features.data?.localMountsEnabled);
+  // A VM Forge says what it runs every session as; other hosts say nothing.
+  const runsAs = useRunsAs(host?.id);
   const [pickedSource, setPickedSource] = useState<'git' | 'local_mount' | null>(null);
   const sourceType =
     pickedSource ?? (features.data?.miniMode && localMountsEnabled ? 'local_mount' : 'git');
@@ -111,6 +117,7 @@ export function QuickLaunch({
     queryKey: ['volundr', 'integration-catalog'],
     queryFn: () => volundr.getIntegrationCatalog(),
   });
+  const [grants, setGrants] = useState<ReadonlySet<ForgeMcpGrant>>(new Set());
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
   const [launching, setLaunching] = useState(false);
@@ -121,6 +128,7 @@ export function QuickLaunch({
     catalog.error ??
     definitions.error ??
     features.error ??
+    runsAs.error ??
     integrations.error ??
     integrationCatalog.error;
   const available = model?.enabled && definitions.data?.some((d) => d.key === standard.definition);
@@ -135,6 +143,7 @@ export function QuickLaunch({
     validSource &&
     features.data &&
     !features.isPlaceholderData &&
+    !runsAs.loading &&
     !nameError &&
     !loadError &&
     !launching,
@@ -181,7 +190,21 @@ export function QuickLaunch({
                 paths: [{ host_path: folder.trim(), mount_path: '/workspace', read_only: false }],
               }
             : { type: 'git', repo: repo.trim(), branch: branch.trim() },
-        ...(effort ? { workloadConfig: { reasoningEffort: effort } } : {}),
+        ...(effort || runsAs.grants.length
+          ? {
+              workloadConfig: {
+                ...(effort ? { reasoningEffort: effort } : {}),
+                ...runsAs.workloadConfig,
+              },
+            }
+          : {}),
+        ...(grants.size
+          ? {
+              forgeMcp: {
+                grants: FORGE_TOOL_GRANTS.map(({ grant }) => grant).filter((g) => grants.has(g)),
+              },
+            }
+          : {}),
         ...(prompt.trim() ? { initialPrompt: prompt.trim() } : {}),
       });
       setPreferredHost(host.id);
@@ -325,6 +348,7 @@ export function QuickLaunch({
               )}
             </>
           )}
+          <RunsAs offer={runsAs.offer} grants={runsAs.grants} onGrantsChange={runsAs.setGrants} />
         </section>
         <section className="vol-quick__section">
           <h2>{standard.name} standard</h2>
@@ -373,6 +397,32 @@ export function QuickLaunch({
           )}
           <p>Host defaults apply. Resources, MCP servers and rules are optional.</p>
         </section>
+        <section className="vol-quick__section" aria-labelledby="quick-launch-forge-tools">
+          <h2 id="quick-launch-forge-tools">Forge tools for this session</h2>
+          {FORGE_TOOL_GRANTS.map(({ grant, label, description }) => (
+            <label key={grant} className="vol-quick__toggle">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={grants.has(grant)}
+                onChange={(e) => {
+                  const next = new Set(grants);
+                  if (e.target.checked) next.add(grant);
+                  else next.delete(grant);
+                  setGrants(next);
+                }}
+              />
+              <span>
+                {label}
+                <small>{description}</small>
+              </span>
+            </label>
+          ))}
+          <small>
+            Reading sessions and notifying are always on. The host&apos;s own default grants apply
+            on top of these.
+          </small>
+        </section>
         <details>
           <summary>Session details · optional</summary>
           <div className="vol-quick">
@@ -411,13 +461,16 @@ export function QuickLaunch({
         >
           Advanced launch
         </button>
-        <button
-          type="submit"
-          className="vol-quick__button vol-quick__primary"
-          disabled={!canLaunch}
-        >
-          {launching ? 'Starting session…' : `Launch ${standard.name}`}
-        </button>
+        <div className="vol-quick__launch-side">
+          <RunsAsReadiness offer={runsAs.offer} />
+          <button
+            type="submit"
+            className="vol-quick__button vol-quick__primary"
+            disabled={!canLaunch}
+          >
+            {launching ? 'Starting session…' : `Launch ${standard.name}`}
+          </button>
+        </div>
       </div>
     </form>
   );

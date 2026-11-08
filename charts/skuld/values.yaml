@@ -30,8 +30,13 @@ session:
   model: "claude-sonnet-4-6"
   # -- Reasoning effort passed to transports that support it
   reasoningEffort: ""
-  # -- System prompt injected into the LLM context
+  # -- Ad-hoc instructions from the launch request. With a persona they are appended after
+  # the persona's own instructions, never in place of them.
   systemPrompt: ""
+  # -- The pinned portable persona document this session plays (schema_version, id, revision,
+  # definition), as Forge resolved it at launch. Skuld projects it onto the harness on every
+  # start and refuses to start when the harness cannot enforce its limits. Empty: no persona.
+  persona: {}
   # -- Initial user message sent when the CLI starts
   initialPrompt: ""
 
@@ -170,8 +175,8 @@ persistence:
   # -- Enable workspace persistence
   enabled: true
   # -- Use a pod-local emptyDir for the sessions volume instead of the shared
-  # existingClaim PVC. Residents and other self-contained sessions don't need
-  # the shared sessions PVC but still get a writable workspace.
+  # existingClaim PVC. Self-contained sessions don't need the shared sessions
+  # PVC but still get a writable workspace.
   emptyDir: false
   # -- Name of an existing PVC to use
   existingClaim: "volundr-sessions"
@@ -233,12 +238,11 @@ git:
     pullPolicy: IfNotPresent
 
 # Broker configuration (Skuld application settings)
-workflow:
-  # -- Deployment-owned verifier adapter and kwargs for deterministic evidence gates.
-  # Imported workflows specify policies, never signing keys or trust configuration.
-  evidenceVerifier: null
-  # -- Artifact digest resolver adapter and kwargs (such as a mounted workspace root).
-  evidenceArtifacts: null
+# -- Workflow step hosting. Forge sets enabled for a session a workflow run launched as a step
+# host (the create request's workflow_step_host). Skuld then serves the workflow step API and
+# offers the workflow_step_close tool; an ordinary session leaves both off.
+workflowSteps:
+  enabled: false
 
 broker:
   conversationRecentMaxTurns: 15
@@ -247,8 +251,7 @@ broker:
   liveFrameMaxBytes: 921600
   codexReceiveMaxBytes: 16777216
   # -- Append every frame to the Forge session's durable event log
-  # (/api/v1/forge/sessions/<id>/log). Off for a runtime with no Forge session
-  # (a resident, whose history lives in its own conversation file).
+  # (/api/v1/forge/sessions/<id>/log). Off for a runtime with no Forge session.
   eventLogEnabled: true
   # -- Report activity state to the Forge session
   # (/api/v1/forge/sessions/<id>/activity). Off for a runtime with no Forge session.
@@ -312,6 +315,22 @@ forgeMcp:
   tokenFile: ""
   # -- Tool grants of the credential (message, lifecycle). Null keeps the token's own.
   grants: null
+  # -- Seconds the engine allows one stdio-server -> broker tool call (forge_mcp.broker_request_timeout_s).
+  # Null keeps the broker default (60). Must exceed secretRequests.waitMaxS.
+  brokerRequestTimeoutS: null
+  # -- Seconds the engine allows one MCP tool call (forge_mcp.tool_timeout_s). Null keeps the broker
+  # default (120). Must exceed secretRequests.waitMaxS.
+  toolTimeoutS: null
+
+# request_secret / request-secret: the agent asks the user for a secret through a masked chat card.
+secretRequests:
+  # -- Seconds between checks of whether the user answered the card (secret_requests.poll_interval_s).
+  pollIntervalS: 2
+  # -- Longest one request_secret call waits for the user, in seconds (secret_requests.wait_max_s).
+  # Bounded by the engine's MCP call timeouts: it must stay below forgeMcp.brokerRequestTimeoutS
+  # (default 60) and forgeMcp.toolTimeoutS (default 120), or the broker refuses to start. When it
+  # passes, the call fails and the request stays open in the chat; the agent calls it again.
+  waitMaxS: 50
 
 # Volundr API (for token usage reporting back to the control plane)
 volundr:
@@ -554,14 +573,7 @@ affinity: {}
 # -- Runtime class name for the pod (e.g., "nvidia", "kata", "gvisor")
 runtimeClassName: ""
 
-# -- Service account name for the pod. For ordinary session pods, set by a
-# secret injection contributor. For a resident release, Völundr sets this to
-# "resident-<runtime.id>" (volundr/adapters/outbound/flux.py
-# _resident_release_name) — templates/serviceaccount.yaml then creates a
-# ServiceAccount by this exact name, giving the resident's own projected
-# workload-identity token (niuu-workload-identity, see deployment.yaml) a
-# subject unique to it, instead of every resident sharing the namespace
-# default ServiceAccount's identity.
+# -- Service account name for the pod, set by a secret injection contributor.
 serviceAccountName: ""
 
 # -- Additional init containers to add to the session pod.
@@ -576,8 +588,8 @@ extraVolumes: []
 # -- Extra volume mounts added to skuld and devrunner containers
 extraVolumeMounts: []
 
-# -- Desired Deployment replicas. Resident lifecycle control uses 0/1 for
-# suspend and resume while preserving configured persistent storage.
+# -- Desired Deployment replicas. 0 suspends the pod while preserving
+# configured persistent storage.
 replicaCount: 1
 
 # -- Mesh configuration for session-local agent flocks.
@@ -585,325 +597,6 @@ mesh:
   enabled: false
   transport: nng
   peerPorts: []
-
-# Mímir memory instances handed to the resident's ravn daemon
-# (same shape the ravn node config `mimir.instances` accepts).
-mimir:
-  # -- Mímir instances mounted by the resident ravn (name/role/url or path)
-  instances: []
-
-# First-class resident ravn support: a long-lived room-mode chat agent.
-# When enabled, the pod becomes broker (room mode) + one ravn daemon sidecar —
-# the same shape the platform's ResidentContributor provisions, but declared
-# with a small hand-written values file (gitops-friendly).
-resident:
-  # -- Deploy this release as a resident ravn (broker room mode + ravn sidecar)
-  enabled: false
-  # -- Exact collaboration-event redeliveries retained by the room adapter.
-  roomDeliveryDedupeMaxEntries: 4096
-  # -- Stable environment identity shared by the resident Ravn and its room.
-  # OpenTelemetry export for the resident's Ravn process. Omitted by default:
-  # ravn's ObservabilityConfig.enabled is false, so a resident emits no traces
-  # or metrics until this block is supplied. Rendered verbatim into the ravn
-  # config's `observability:` section.
-  observability: {}
-  # -- Episodic memory settings. The default path lives under $HOME, which for a
-  # chart-deployed resident is the sessions volume — an emptyDir unless
-  # persistence.existingClaim is set, so episodes are erased on every restart.
-  # Point `path` at a persistent mount (e.g. the homeVolume claim) to keep them.
-  memory: {}
-  environmentId: "local"
-  # -- Display identity of the resident (e.g. "Muninn"); defaults to persona
-  name: ""
-  # -- Ravn persona the resident runs as (required when enabled)
-  persona: ""
-  # -- Route id: path segment for the gateway HTTPRoute (/s/<routeId>) and the
-  # session id. MUST be unique per gateway; empty derives
-  # "<namespace>-<release>" from the Helm release.
-  routeId: ""
-  # -- Max concurrent initiative tasks for the resident ravn
-  maxConcurrentTasks: 3
-  # -- Daily LLM budget cap in USD (float as string, e.g. "100.0"); empty = uncapped
-  dailyBudgetUsd: ""
-  # -- Ravn llm config dict rendered verbatim into the node config. Besides the
-  # model and provider, it carries the retry bound for a gateway that restarts
-  # under a model call: gateway_outage_window_seconds (default 120: how long one
-  # call is retried while the gateway is down, before the response header or
-  # mid-stream; sized to a gateway rollout; 0 disables), with retry_base_delay
-  # (default 1.0) and gateway_outage_max_backoff_seconds (default 10) shaping
-  # the backoff. llm.max_retries was removed and is refused if set.
-  llm: {}
-  # -- Secrets injected only into the resident Ravn daemon.
-  # Uses the same envVar/secretName/secretKey shape as top-level envSecrets.
-  envSecrets: []
-  # -- Realm (Simple mode) this resident is deployed for. Empty slug = no
-  # realm binding, unchanged behavior. Distinct from resident.flock, which
-  # names a Flock mesh group, not a niuu governance Realm.
-  realm:
-    # -- niuu Realm slug, e.g. from ResidentRuntime.realmId.
-    slug: ""
-  # -- Expose the resident's read-only HUD endpoints (ravn gateway.channels.http).
-  hudEnabled: false
-  # -- Ravn's OpenClaw-protocol shim (ravn gateway.channels.openclaw): the resident's
-  # sessions ("channels"), each its own conversation, served to Volundr's
-  # RavnResidentSessionController on its own Service port. On by default for every
-  # resident; the resident's default room on the broker is unaffected.
-  openclaw:
-    enabled: true
-    # -- Port of the shim on the ravn container and on the Service.
-    port: 18790
-    # -- Secret holding this resident's own shim token (RAVN_OPENCLAW_TOKEN).
-    # Empty means <release>-openclaw: the Secret Volundr's Flux resident controller
-    # writes for each resident it deploys (resident-<id>-openclaw: the resident's own
-    # token, kept per resident in Volundr's credential store).
-    tokenSecret:
-      name: ""
-      key: token
-    # -- Session registry and transcripts. /workspace is the sessions volume.
-    storePath: /workspace/.ravn/openclaw/state.db
-    # -- Most sessions the resident keeps (its default session included).
-    maxSessions: 64
-    # -- NetworkPolicy peers allowed to reach the shim port when
-    # networkPolicy.enabled (e.g. Volundr's pods). Empty allows any peer.
-    ingressFrom: []
-  # -- Realtime voice calls (gateway.channels.voice): the resident speaks the
-  # agent-service wire voice clients use, under /voice/ on its own route, behind the same Envoy
-  # checks as its room. Needs a persona with a voice: section and a minter whose key
-  # file is mounted into the ravn container (resident credentials, OpenBao).
-  voice:
-    enabled: false
-    # -- Loopback port of the voice channel on the ravn container; nginx forwards /voice/ here.
-    port: 18791
-    # -- The resident's call store. /workspace is the sessions volume.
-    storePath: /workspace/.ravn/voice/calls.db
-    # -- Name the resident introduces itself by. Empty uses the resident's name.
-    displayName: ""
-    # -- IANA time zone for the date and time in a call's prompt.
-    timeZone: UTC
-    # -- Realtime model per prompt provider, e.g. {grok: grok-voice-3.0}. Empty keeps Ravn's defaults.
-    models: {}
-    # -- Credential minter per provider (xai, openai): {adapter, kwargs: {key_file, …}}.
-    # Required when voice is enabled.
-    minters: {}
-    # -- Copy each call's speech into the resident's room transcript.
-    roomCopy: true
-    # -- Calls the resident places itself: notify with speak rings the owner's phone over its
-    # standby socket. The phone still decides (its allow-list, Focus, quiet hours).
-    calls:
-      enabled: false
-      # -- The cluster the resident runs in, as the phone shows it (call.request session.host).
-      host: ""
-      # -- Seconds after which an undelivered request is dropped (its expiresAt).
-      expiresAfterSeconds: 300
-      # -- The VoIP push when no socket carries a request: {adapter, kwargs}, passed to ravn
-      # unchanged. Empty: nothing is pushed.
-      push: {}
-  # -- Seconds between the resident's own stewardship/home-wake passes.
-  # Empty uses ravn's own default (resident_state.stewardship_interval_seconds).
-  stewardshipIntervalSeconds: ""
-  # -- Optional heterogeneous flock membership supplied by Volundr.
-  flock:
-    id: ""
-    memberId: ""
-    role: ""
-    peerId: ""
-    # -- Mesh transport selected by the operator-owned resident profile.
-    mesh:
-      # Example: [{adapter: sleipnir, transport: nats}]
-      adapters: []
-      # NATS transport settings use the native Ravn mesh.nats contract.
-      nats: {}
-    discovery:
-      # Example: [{adapter: event_bus, transport: nats}]
-      adapters: []
-  skuld:
-    # -- Seconds between attempts when the resident Ravn connects to the broker room.
-    reconnectDelaySeconds: 2
-    # -- Attempts before giving up on the initial broker room connection.
-    maxReconnectAttempts: 60
-    # -- Seconds to wait for a launched Volundr session to become running
-    # before opening a cross-session observer join.
-    sessionReadyTimeoutSeconds: 600
-  platform:
-    # -- Give the resident platform access (Volundr gateway + workload identity)
-    enabled: false
-    # -- In-cluster Volundr base URL for the ravn platform gateway
-    baseUrl: ""
-    # -- Optional workload token exchange URL for the ravn platform gateway.
-    # Defaults to volundr.apiUrl + /api/v1/tokens/workload/exchange.
-    workloadExchangeUrl: ""
-    # -- Per-resident workflow aliases for chat launches through ting_workflow.
-    # Example:
-    # workflowAliases:
-    #   research:
-    #     name: Research Campaign
-    #     defaults:
-    #       gate_auto_forward_after: ""
-    workflowAliases: {}
-    # -- Agent Card URLs the resident's a2a_task reaches beside the Guild Agent
-    # Directory, e.g. the platform's Ting card
-    # (https://<platform>/.well-known/agent-card.json), whose skills launch workflows.
-    a2aAgentCardUrls: []
-    # -- Volundr connection injected into A2A workflow launches that name none.
-    a2aDefaultConnectionId: ""
-  triggers:
-    # -- Have this resident load and run its own durable triggers
-    # (POST /api/v1/ravn/triggers) over the platform gateway above. Requires
-    # resident.platform.enabled — the chart fails the render otherwise, since
-    # a resident with nothing to poll would gate/retry forever for no reason.
-    enabled: false
-    # -- Seconds between polls of the durable trigger store.
-    pollIntervalSeconds: 60
-    # -- Give up (and end the resident process) after this many consecutive
-    # poll failures, instead of retrying an unreachable store forever.
-    maxConsecutivePollFailures: 5
-  budget:
-    # -- Have this resident read/report its own spend
-    # (GET/POST /api/v1/ravn/budget/me,/spend) over the platform gateway
-    # above, instead of only gating locally from an in-memory counter that
-    # resets on restart. Requires resident.platform.enabled.
-    enabled: false
-  mimir:
-    sourceTrigger:
-      # -- Automatically synthesize unprocessed Mímir sources.
-      enabled: true
-      # -- Seconds between source-trigger polls.
-      pollIntervalSeconds: 60
-    stalenessTrigger:
-      # -- Periodically refresh stale frequently-used Mímir pages.
-      enabled: true
-      # -- Hours between staleness checks.
-      scheduleHours: 6
-  # -- Ravn wakefulness trigger configuration. Passed through to ravn.yaml.
-  wakefulness:
-    enabled: false
-  workloadIdentity:
-    # -- Audience for the projected serviceAccountToken
-    audience: "volundr-api"
-    # -- Expiration (seconds) for the projected serviceAccountToken
-    expirationSeconds: 1200
-  serviceAccount:
-    # -- Whether THIS release should create the ServiceAccount named by
-    # serviceAccountName (below/top-level). Default false: several resident
-    # releases can share one existingSecret's worth of infrastructure
-    # (Fleet-managed, e.g. a bundle's own serviceaccount.yaml, or another
-    # controller) naming the SAME ServiceAccount — this chart creating it too
-    # would fail on Helm ownership (two releases claiming the same object),
-    # and uninstalling any ONE such release would delete an SA every other
-    # resident still uses. volundr.adapters.outbound.flux.FluxPodManager
-    # sets this to true only when it assigns the resident its own unique
-    # "resident-<runtime.id>" name — a name no other release can already own.
-    create: false
-
-# Room gateway mode: this release runs ONLY the Skuld broker, as an
-# authenticated collaboration room for a Ravn resident that runs elsewhere
-# (possibly on another cluster) and reaches the room over the network.
-#
-# The pod is the broker, the Envoy sidecar and its Cedar ext_authz sidecar. It
-# has no CLI transport or Codex auth, no resident Ravn sidecar, no IDE, nginx,
-# devrunner/local services, home volume, Forge-session reporting or git clone,
-# whatever the values below those features say. Envoy is the only listener
-# reachable from outside the pod; the broker and the authorization service
-# listen on loopback. Every path, /health and CORS preflight included, needs a
-# verified JWT, and the caller must be the room's owner (session.ownerId in
-# session.tenantId) or an administrator of that tenant:
-#   - /session: the operator's IDP token (Lexi, the web UI): envoy.jwt.*
-#   - /ws/ravn/<peer>: the resident's platform workload token: envoy.jwt.workload.*
-#     (an unscoped token whose sub is session.ownerId)
-# Mandatory settings: roomGateway.routeId, roomGateway.room.environmentId,
-# roomGateway.room.defaultTargetPeerId, session.ownerId, session.tenantId,
-# envoy.jwt.* and roomGateway.ingress.host (or ingress.enabled=false). The
-# render fails with the remedy when one is missing. Ownership enforcement and
-# the Envoy sidecar are implied by the mode; envoy.enabled and
-# wsAuth.enforce_ownership need not be set. See the README.
-roomGateway:
-  # -- Deploy this release as a room gateway (broker + authenticated Envoy only)
-  enabled: false
-  # -- Route id: the /rooms/<routeId> path segment clients use on a shared host,
-  # and the session id when session.id is empty. Required, unique per host.
-  # Lowercase letters, digits and '-', at most 63 characters.
-  routeId: ""
-  room:
-    # -- Environment the room's participants belong to; must equal the
-    # resident Ravn's environment id. Required.
-    environmentId: ""
-    # -- Peer id of the resident that connects to /ws/ravn/<peer>; untargeted
-    # chat from Lexi and the web UI is routed to it. Required.
-    defaultTargetPeerId: ""
-  # -- Directory the broker keeps its workspace (conversation history) under
-  dataPath: /var/lib/skuld
-  persistence:
-    # -- Existing PVC for dataPath. Empty means an emptyDir: the room's
-    # conversation history is lost when the pod is replaced.
-    existingClaim: ""
-  # -- Resources for the broker container
-  resources:
-    requests:
-      memory: "64Mi"
-      cpu: "50m"
-    limits:
-      memory: "512Mi"
-      cpu: "500m"
-  # -- Broker probes. They run inside the container against the loopback
-  # listener, because /health and /ready are not reachable unauthenticated
-  # through Envoy in this mode.
-  probes:
-    readiness:
-      initialDelaySeconds: 5
-      periodSeconds: 10
-      timeoutSeconds: 5
-    liveness:
-      initialDelaySeconds: 15
-      periodSeconds: 30
-      timeoutSeconds: 10
-  # Telegram mirror of the room. The bot token and chat id come from a named
-  # Secret, injected as SKULD__TELEGRAM__BOT_TOKEN / SKULD__TELEGRAM__CHAT_ID,
-  # never rendered into the ConfigMap.
-  telegram:
-    # -- Mirror the room to a Telegram chat
-    enabled: false
-    # -- Secret holding the bot token and chat id (required when enabled)
-    secretName: ""
-    # -- Key of the bot token in the Secret
-    botTokenKey: bot-token
-    # -- Key of the chat id in the Secret
-    chatIdKey: chat-id
-    # -- Only send notifications; do not relay Telegram replies into the room
-    notifyOnly: false
-    # -- shared_chat, fixed_topic or topic_per_session
-    topicMode: shared_chat
-    # -- Telegram topic thread id (required for topicMode fixed_topic)
-    messageThreadId: null
-  # -- OpenTelemetry export for the broker, rendered verbatim as the broker
-  # config's `observability:` section (same keys as resident.observability).
-  # Omitted by default: the broker exports nothing until this is supplied.
-  observability: {}
-  # Exposure. Many rooms can share one host: each gets /rooms/<routeId>, with
-  # the prefix stripped before the request reaches the broker, so clients use
-  # wss://<host>/rooms/<routeId>/session and /rooms/<routeId>/ws/ravn/<peer>.
-  # Rendered instead of the top-level ingress, whose cert-manager annotation
-  # default would try to take over a TLS Secret the host already uses.
-  ingress:
-    # -- Render an Ingress (and the Traefik prefix-strip Middleware in path
-    # mode). false leaves the room reachable through its Service only.
-    enabled: true
-    # -- path: shared host, /<pathPrefix>/<routeId>. host: the room owns the host.
-    mode: path
-    # -- Path prefix shared by all rooms on the host (path mode)
-    pathPrefix: /rooms
-    # -- Ingress class name
-    className: traefik
-    # -- Public host. Required when enabled. Several releases may share it.
-    host: ""
-    # -- Ingress annotations (controller-specific). Empty by default; do not add
-    # cert-manager.io annotations for a TLS Secret another Ingress already owns.
-    annotations: {}
-    tls:
-      # -- Terminate TLS for the host at the ingress
-      enabled: true
-      # -- TLS Secret for the host (required when enabled); an existing shared
-      # Secret may be named
-      secretName: ""
 
 # -- Secret mapping manifest for file-based credential injection.
 # Rendered into a ConfigMap and mounted at /run/secrets/manifest.json.
@@ -957,6 +650,25 @@ wsAuth:
   # volundr.apiUrl below) so a standalone install needs no further values;
   # override wsAuth.room_role_remote.adapter/kwargs/secret_kwargs_env here
   # (or via RoomRoleSourceContributor's per-session values) to change them.
+
+# Live preview (skuld.preview): a port the session listens on opens at
+# <port>--<session-id>.<preview domain> through Forge's preview router, which
+# forwards to /preview/<port>/ here. Skuld admits only the router's workload
+# credential, checked against envoy.jwt.workload's issuer and JWKS (required).
+preview:
+  # -- Discover the pod's listening ports and serve them to Forge's preview router
+  enabled: false
+  # -- Seconds between scans of the pod's listening sockets
+  portScanIntervalSeconds: 2
+  # -- Audience of the router credential (Forge's session_preview.credential_audience)
+  routerAudience: "volundr-api"
+  # -- Ports never offered as previews. The pod's own infrastructure ports
+  # (nginx, broker, Envoy, authz, terminal, mesh) are excluded
+  # automatically; 5432 is the devrunner's Postgres.
+  excludedPorts: [5432]
+  # -- How long nginx keeps an idle preview stream (hot-reload WebSocket, SSE)
+  # open. Past it the dev server's client reconnects (Vite reloads the page).
+  streamIdleTimeout: "3600s"
 
 # Limit pod ingress to the authenticated gateway, including direct pod-IP traffic.
 # Add explicit peer selectors/ports for direct Flokk mesh deployments.

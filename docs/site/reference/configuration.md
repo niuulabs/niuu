@@ -88,7 +88,7 @@ entire environment or configuration containing credentials into a shared log.
 ## Observability (OpenTelemetry)
 
 Every process that owns a composition root — Völundr, Ting, Bifröst, Skuld,
-Ravn, Mímir, Observatory, and the local `niuu` host itself
+Mímir, Observatory, and the local `niuu` host itself
 (`src/cli/shared_host.py`, the "Niuu Shared Services" app) — reads its own
 `observability:` block from the shared
 `niuu.domain.observability.ObservabilityConfig` shape:
@@ -110,7 +110,7 @@ exporter must stop the process, not run quietly without traces. `enabled` false
 (the default) is a decision, not a degraded fallback.
 
 Each service's own `service_name` default (`volundr`, `ting`, `bifrost`, `skuld`,
-`ravn`, `mimir`, `niuu-mini`) makes it identifiable in the trace backend without
+`mimir`, `niuu-mini`) makes it identifiable in the trace backend without
 you setting it. Observatory is the one exception — it reuses
 `volundr.config.Settings` wholesale, so its `observability.service_name`
 defaults to `volundr` too; set it explicitly in Observatory's own
@@ -126,7 +126,7 @@ collector.
 ## Standalone services
 
 Service settings belong to their own configuration models, such as
-`src/volundr/config.py`, `src/ravn/config.py`, and `src/mimir/config.py`.
+`src/volundr/config.py` and `src/mimir/config.py`.
 A standalone Völundr `pod_manager` uses `adapter` plus a nested `kwargs` mapping.
 Do not paste the host's flattened adapter shape into that schema.
 

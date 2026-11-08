@@ -31,6 +31,7 @@ from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.push import PushEnvironment, PushTokenKind
 from volundr.domain.session_read_state import SessionReadState
+from volundr.domain.session_startup import SessionStartup
 
 CIStatus = shared_models.CIStatus
 GitProviderType = shared_models.GitProviderType
@@ -50,15 +51,25 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def flock_peer_id(persona: str) -> str:
-    """Mesh peer id for a flock ravn running *persona*.
+#: Workload types Forge no longer launches, with what replaced them. A request
+#: for one is refused (``require_workload_type_available``), never treated as a
+#: plain session: a caller that asked for sidecar agents must not be handed a
+#: session that quietly has none.
+REMOVED_WORKLOAD_TYPES: dict[str, str] = {
+    "ravn_flock": "workflow steps will run on harness sessions (NIU-1198)",
+}
 
-    The single source of truth for this naming convention: the flock pod
-    builder and the Skuld relay's routing target must agree, or operator
-    chat and event relay silently target a participant that never
-    registered. Keep every derivation routed through here.
-    """
-    return f"flock-{persona}"
+
+class WorkloadTypeRemovedError(ValueError):
+    """A launch asked for a workload type that was removed from Forge."""
+
+
+def require_workload_type_available(workload_type: str) -> str:
+    """Return *workload_type*, or raise if Forge no longer launches it."""
+    replacement = REMOVED_WORKLOAD_TYPES.get(workload_type)
+    if replacement is None:
+        return workload_type
+    raise WorkloadTypeRemovedError(f"workload type {workload_type} was removed: {replacement}")
 
 
 class CleanupTarget(StrEnum):
@@ -452,6 +463,13 @@ class Session(BaseModel):
         default=None,
         exclude=True,
         description="Private durable usage projection, including internal reducer state",
+    )
+    startup: SessionStartup | None = Field(
+        default=None,
+        description=(
+            "Stages of the latest launch as the runtime backend reported them; "
+            "written only by the startup recorder, never by a lifecycle update"
+        ),
     )
 
     @property
@@ -1596,18 +1614,18 @@ class LaunchSpec(BaseModel):
 class ResidentBackend(StrEnum):
     """Infrastructure substrate that owns a resident runtime."""
 
+    # HELMRELEASE and DISCOVERED are kept as members, but no resident controller
+    # implements either now that the Ravn engine is gone: a profile naming one is
+    # not deployable on any target.
     HELMRELEASE = "helmrelease"
     OPENSHELL = "openshell"
     LOCAL = "local"
-    # Running outside the Forge (deployed from infrastructure); the Forge discovers
-    # it and drives its sessions, but never deploys, restarts or removes it.
     DISCOVERED = "discovered"
 
 
 class ResidentEngine(StrEnum):
     """Agent protocol hosted by a resident runtime."""
 
-    RAVN = "ravn"
     OPENCLAW = "openclaw"
     HERMES = "hermes"
 
@@ -1736,6 +1754,10 @@ class ResidentRuntime(BaseModel):
     flock_role: str = Field(default="", max_length=100)
     flock_peer_id: str = Field(default="", max_length=255)
     realm_id: UUID | None = None
+    #: Which of the owner's credentials each integration the profile declares was bound
+    #: to (``{slug: credential name}``), resolved at create while the owner's bearer
+    #: can read their connections; every later render reuses it.
+    integration_bindings: dict[str, str] = Field(default_factory=dict)
     desired_state: ResidentDesiredState = ResidentDesiredState.RUNNING
     observed_state: ResidentObservedState = ResidentObservedState.PENDING
     backend_ref: dict[str, Any] = Field(default_factory=dict)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,6 +14,7 @@ import typer
 from typer.testing import CliRunner
 
 from bifrost.config import BifrostConfig
+from cli.commands import platform as platform_module
 from cli.commands.platform import (
     _build_init_config,
     _build_preflight_config,
@@ -21,6 +23,7 @@ from cli.commands.platform import (
     _collect_service_definitions,
     _effective_bifrost_config,
     _host_resident_platform_url,
+    _hosts_join_host,
     _prompt_mode_selection,
     _resolve_enabled_services,
     _resolve_local_pod_manager_env,
@@ -37,6 +40,18 @@ from tests.test_cli.conftest import FakePlugin, StubService
 from volundr.adapters.outbound.contributors.model_gateway import OPEN_GATEWAY_TOKEN
 
 runner = CliRunner()
+
+#: What the default route of the machine running these tests answers with.
+ROUTE_ADDRESS = "192.168.1.10"
+#: The real lookup, before the fixture below replaces it for every test.
+REAL_DEFAULT_ROUTE_ADDRESS = platform_module._default_route_address
+
+
+@pytest.fixture(autouse=True)
+def _default_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mini mode serves hosts by default and names this machine by its default route;
+    tests must not depend on the network of the machine they run on."""
+    monkeypatch.setattr("cli.commands.platform._default_route_address", lambda: ROUTE_ADDRESS)
 
 
 def _make_svc_def(
@@ -268,7 +283,7 @@ class TestDynamicUpCallback:
     def test_up_callback_sets_mini_mode_runtime_overrides(self) -> None:
         service_defs = {"volundr": _make_svc_def("volundr")}
         manager = MagicMock()
-        settings = CLISettings(mode="mini")
+        settings = CLISettings(mode="mini", hosts={"enabled": False})
         up_fn = _build_up_callback(service_defs, manager, settings)
 
         fake_event = MagicMock()
@@ -362,7 +377,7 @@ class TestDynamicUpCallback:
     def test_up_callback_applies_workspaces_dir_override_in_mini_mode(self) -> None:
         service_defs = {"volundr": _make_svc_def("volundr")}
         manager = MagicMock()
-        settings = CLISettings(mode="mini")
+        settings = CLISettings(mode="mini", hosts={"enabled": False})
         up_fn = _build_up_callback(service_defs, manager, settings)
 
         fake_event = MagicMock()
@@ -407,6 +422,43 @@ class TestDynamicUpCallback:
         called_settings = startup.await_args.args[1]
         assert called_settings.pod_manager.workspaces_dir == "/tmp/mini-workspaces"
         shutdown.assert_awaited_once_with(manager)
+
+    def test_up_callback_serves_registered_hosts_next_to_local_sessions_by_default(self) -> None:
+        service_defs = {"volundr": _make_svc_def("volundr")}
+        manager = MagicMock()
+        settings = CLISettings(mode="mini")
+        up_fn = _build_up_callback(service_defs, manager, settings)
+
+        fake_event = MagicMock()
+        fake_event.wait = AsyncMock(side_effect=asyncio.CancelledError())
+        captured_environment: dict[str, str] = {}
+
+        async def capture_startup(*_args, **_kwargs) -> None:
+            captured_environment.update(os.environ)
+
+        with (
+            patch("cli.commands.platform._startup", AsyncMock(side_effect=capture_startup)),
+            patch("cli.commands.platform._shutdown", AsyncMock()),
+            patch("cli.commands.platform.asyncio.Event", return_value=fake_event),
+            patch("cli.commands.platform.asyncio.run", side_effect=asyncio.run),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            up_fn(
+                skip_preflight=True,
+                all=False,
+                no_web=False,
+                host_profile="full",
+                mounts="",
+                workspaces_dir="/tmp/mini-workspaces",
+                volundr=True,
+            )
+
+        assert "POD_MANAGER__ADAPTER" not in captured_environment
+        pod_manager = json.loads(captured_environment["POD_MANAGER"])
+        assert pod_manager["adapter"].endswith("PlacementPodManager")
+        assert pod_manager["kwargs"]["local"]["kwargs"]["workspaces_dir"] == "/tmp/mini-workspaces"
+        compute = json.loads(captured_environment["COMPUTE"])
+        assert compute["hosts"]["join_url"] == f"https://{ROUTE_ADDRESS}:8443"
 
     def test_up_callback_rejects_workspaces_dir_override_outside_mini_mode(self) -> None:
         service_defs = {"volundr": _make_svc_def("volundr")}
@@ -464,30 +516,6 @@ class TestCreatePlatformCommands:
         assert "down" in names
         assert "status" in names
         assert "init" in names
-
-    def test_platform_ravn_runs_the_ravn_cli_for_compiled_residents(self, monkeypatch) -> None:
-        import ravn.cli.commands
-
-        calls: list[tuple[list[str], str]] = []
-        monkeypatch.setattr(
-            ravn.cli.commands,
-            "app",
-            lambda *, args, prog_name: calls.append((args, prog_name)),
-        )
-        platform, *_ = self._make_platform()
-
-        result = runner.invoke(
-            platform,
-            ["ravn", "daemon", "--config", "/r/ravn.yaml", "--persona", "steward", "--help"],
-        )
-
-        assert result.exit_code == 0, result.output
-        assert calls == [
-            (
-                ["daemon", "--config", "/r/ravn.yaml", "--persona", "steward", "--help"],
-                "ravn",
-            )
-        ]
 
     def test_platform_down_command(self) -> None:
         platform, *_ = self._make_platform()
@@ -648,35 +676,23 @@ class TestBuildInitConfig:
         assert ":latest" not in skuld_image
         assert ":" in skuld_image  # has a version tag
 
-    def test_mini_runtime_runs_ravn_residents_as_host_processes_by_default(self) -> None:
-        from volundr.config import ResidentRuntimesConfig
-
+    def test_mini_runtime_hosts_residents_in_the_local_container_engine_by_default(self) -> None:
         settings = CLISettings(mode="mini", server={"host": "0.0.0.0", "port": 8181})
 
         env = _resolve_local_pod_manager_env(settings)
-        resident_config = ResidentRuntimesConfig.model_validate_json(env["RESIDENT_RUNTIMES"])
+        resident_config = json.loads(env["RESIDENT_RUNTIMES"])
 
-        assert settings.residents.runtime == "process"
-        (controller,) = resident_config.controllers
-        assert controller.adapter.endswith("HostProcessResidentRuntimeController")
-        assert controller.kwargs == {
-            "residents_dir": "~/.niuu/residents",
-            "volundr_api_url": "http://127.0.0.1:8181",
+        assert settings.residents.runtime == "docker"
+        (controller,) = resident_config["controllers"]
+        assert controller["adapter"].endswith("LocalContainerResidentRuntimeController")
+        assert {profile["engine"] for profile in resident_config["profiles"]} == {
+            "openclaw",
+            "hermes",
         }
-        assert resident_config.session_controllers == []
-        (profile,) = resident_config.profiles
-        values = profile.deployment["values"]
-        assert (profile.id, profile.backend.value, profile.engine.value) == (
-            "ravn-local",
-            "local",
-            "ravn",
-        )
-        assert "image" not in values
-        assert "runtime" not in values
-        assert values["resident"]["platform"]["baseUrl"] == "http://127.0.0.1:8181"
-        assert values["resident"]["llm"]["provider"]["kwargs"]["base_url"] == (
-            "http://127.0.0.1:8181/api/v1/bifrost"
-        )
+
+    def test_the_removed_host_process_resident_runtime_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="process"):
+            CLISettings(mode="mini", residents={"runtime": "process"})
 
     def test_host_resident_platform_url_keeps_a_specific_bind_address(self) -> None:
         settings = CLISettings(mode="mini", server={"host": "192.0.2.10", "port": 9000})
@@ -703,26 +719,17 @@ class TestBuildInitConfig:
         assert resident_config["controllers"][0]["adapter"].endswith(
             "LocalContainerResidentRuntimeController"
         )
-        assert resident_config["controllers"][0]["kwargs"] == {
-            "residents_dir": "~/.niuu/residents",
-            "volundr_api_url": "http://host.docker.internal:8080",
-        }
+        assert resident_config["controllers"][0]["kwargs"] == {"residents_dir": "~/.niuu/residents"}
         assert resident_config["profiles"][0]["deployment"]["values"]["image"]
         assert {profile["id"] for profile in resident_config["profiles"]} == {
-            "ravn-local",
             "nemoclaw-local",
             "nemohermes-local",
         }
         assert {profile["backend"] for profile in resident_config["profiles"]} == {"local"}
-        assert resident_config["profiles"][0]["default_model"] == "gpt-5.6-sol"
-        assert resident_config["profiles"][0]["allowed_models"] == ["gpt-5.6-sol"]
-        assert resident_config["profiles"][0]["deployment"]["values"]["session"] == {
-            "reasoningEffort": "high"
-        }
         assert json.loads(env["BIFROST_CONFIG"])["providers"]["local-vllm"]["models"] == [
             "nvidia/nemotron-test"
         ]
-        assert resident_config["profiles"][1]["default_model"] == ("niuu/nvidia/nemotron-test")
+        assert resident_config["profiles"][0]["default_model"] == ("niuu/nvidia/nemotron-test")
         assert "FileCredentialStore" in json.loads(env["CREDENTIAL_STORE"])["adapter"]
 
     def test_bifrost_config_stays_open_under_host_auth_none(self) -> None:
@@ -1210,36 +1217,17 @@ def test_only_mini_targets_local_memory():
     assert "NIUU__REALM_DATABASE" not in env
 
 
-def test_mini_residents_read_personas_and_memory_from_the_platform(tmp_path):
-    from volundr.config import ResidentRuntimesConfig
-
-    settings = CLISettings(
-        mode="mini", pod_manager={"workspaces_dir": str(tmp_path / "workspaces")}
-    )
-
-    env = _resolve_local_pod_manager_env(settings)
-
-    runtimes = ResidentRuntimesConfig.model_validate_json(env["RESIDENT_RUNTIMES"])
-    (profile,) = runtimes.profiles
-    resident = profile.deployment["values"]["resident"]
-    assert resident["personaSource"]["adapter"].endswith("HttpPersonaAdapter")
-    assert resident["personaSource"]["kwargs"] == {"base_url": "http://127.0.0.1:8080"}
-    assert resident["mimir"]["instances"][0]["url"] == "http://127.0.0.1:8080"
-
-
 @pytest.mark.parametrize("mode", ["mini", "cluster"])
 def test_only_mini_selects_no_auth(mode, monkeypatch):
-    from ravn.config import Settings as RavnSettings
     from ting.config import Settings as TingSettings
 
     env = _resolve_local_pod_manager_env(CLISettings(mode=mode))
-    auth_keys = {"RAVN_API_AUTH__ADAPTER", "AUTH__ALLOW_ANONYMOUS_DEV", "AUTHORIZATION__ADAPTER"}
+    auth_keys = {"AUTH__ALLOW_ANONYMOUS_DEV", "AUTHORIZATION__ADAPTER"}
     if mode != "mini":
         assert auth_keys.isdisjoint(env)
         return
     for key in auth_keys:
         monkeypatch.setenv(key, env[key])
-    assert RavnSettings().api_auth.adapter.endswith("AllowAllHeaderAuthenticationAdapter")
     assert TingSettings().auth.allow_anonymous_dev is True
     assert TingSettings().authorization.adapter.endswith("AllowAllAuthorizationAdapter")
 
@@ -1374,3 +1362,277 @@ class TestModelServerSeeds:
         assert seeds[1].config["token"] == OPEN_GATEWAY_TOKEN
         assert seeds[1].credential is not None
         assert seeds[1].credential.data == {"provider": "local"}
+
+
+class TestHostsSwitch:
+    """``hosts: {enabled: true}`` adds a registered-hosts pool next to local sessions."""
+
+    def _settings(self, tmp_path: Path, **hosts: object) -> CLISettings:
+        return CLISettings(
+            mode="mini",
+            hosts={
+                "enabled": True,
+                "data_dir": str(tmp_path / "hosts"),
+                "join_url": "http://192.168.1.10:8080",
+                "allow_plaintext_join": True,
+                **hosts,
+            },
+        )
+
+    def test_renders_the_placement_pod_manager_and_the_hosts_pool(self, tmp_path) -> None:
+        env = _resolve_local_pod_manager_env(self._settings(tmp_path))
+
+        assert "POD_MANAGER__ADAPTER" not in env
+        pod_manager = json.loads(env["POD_MANAGER"])
+        assert pod_manager["adapter"].endswith("PlacementPodManager")
+        assert "runtime_backend" not in pod_manager
+        local = pod_manager["kwargs"]["local"]
+        assert local["adapter"].endswith("LocalProcessPodManager")
+        assert local["kwargs"]["max_concurrent"] == 4
+        assert pod_manager["kwargs"]["pool"] == {
+            "adapter": "volundr.adapters.outbound.vm_pod_manager.VmPodManager",
+            "kwargs": {"profile": "host", "pool_id": "local-hosts", "max_machines": 16},
+        }
+        compute = json.loads(env["COMPUTE"])
+        assert compute["pool_id"] == compute["provider_binding"] == "local-hosts"
+        assert compute["reuse_policy"] == "reuse"
+        assert compute["provider"]["adapter"].endswith("RegisteredHostMachineProvider")
+        assert compute["provider"]["kwargs"]["profiles"] == {"host": {"label": "Registered host"}}
+        assert compute["execution_catalog"]["adapter"].endswith("BuiltinHostCatalog")
+        hosts = compute["hosts"]
+        assert hosts["connectors"] == [
+            {
+                "binding_id": "direct-ssh",
+                "adapter": "volundr.adapters.outbound.host_connectors.DirectSshConnector",
+                "kwargs": {"allowed_sources": []},
+                "secret_kwargs_env": {},
+            }
+        ]
+        assert (hosts["reserved_cpu"], hosts["reserved_memory_mib"]) == (2, 4096)
+        assert hosts["min_free_disk_mib"] == 20480
+        assert hosts["pairing_signing_key_file"] == "~/.niuu/forge-host-pairing-key.pem"
+
+    def test_forge_composes_local_and_hosts_from_the_rendered_env(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from volundr.adapters.outbound.local_process import LocalProcessPodManager
+        from volundr.adapters.outbound.placement_pod_manager import PlacementPodManager
+        from volundr.adapters.outbound.vm_pod_manager import VmPodManager
+        from volundr.composition_builders import _create_pod_manager, _runtime_backend
+        from volundr.config import Settings as VolundrSettings
+
+        env = _resolve_local_pod_manager_env(
+            self._settings(tmp_path, allowed_sources=["192.168.1.0/24"])
+        )
+        for key in ("POD_MANAGER", "COMPUTE"):
+            monkeypatch.setenv(key, env[key])
+        settings = VolundrSettings()
+        pod_manager = _create_pod_manager(settings)
+
+        assert isinstance(pod_manager, PlacementPodManager)
+        assert isinstance(pod_manager._local, LocalProcessPodManager)
+        assert isinstance(pod_manager._pool, VmPodManager)
+        assert pod_manager.profile == "host"
+        assert _runtime_backend(settings, pod_manager) == "process"
+        assert settings.compute.hosts.connectors[0].kwargs == {
+            "allowed_sources": ["192.168.1.0/24"]
+        }
+
+    def test_is_on_by_default_in_mini_mode(self) -> None:
+        env = _resolve_local_pod_manager_env(CLISettings(mode="mini"))
+
+        assert "POD_MANAGER__ADAPTER" not in env
+        assert json.loads(env["POD_MANAGER"])["adapter"].endswith("PlacementPodManager")
+        compute = json.loads(env["COMPUTE"])
+        assert compute["pool_id"] == compute["provider_binding"] == "local-hosts"
+
+    def test_can_be_switched_off(self) -> None:
+        env = _resolve_local_pod_manager_env(CLISettings(mode="mini", hosts={"enabled": False}))
+
+        assert "COMPUTE" not in env
+        assert "POD_MANAGER" not in env
+        assert env["POD_MANAGER__ADAPTER"].endswith("LocalProcessPodManager")
+
+    def test_runs_niuus_built_in_host_execution(self, tmp_path) -> None:
+        settings = CLISettings(
+            mode="mini", server={"port": 9191}, hosts={"data_dir": str(tmp_path / "hosts")}
+        )
+
+        compute = json.loads(_resolve_local_pod_manager_env(settings)["COMPUTE"])
+
+        assert compute["execution_catalog"] == {
+            "adapter": "volundr.adapters.outbound.builtin_host_catalog.BuiltinHostCatalog",
+            "kwargs": {
+                "pool_id": "local-hosts",
+                "provider_binding": "local-hosts",
+                "profile": "host",
+                "data_dir": str(tmp_path / "hosts"),
+                "platform_port": 9191,
+            },
+            "secret_kwargs_env": {},
+        }
+        assert compute["session_images"]["linux"] == "ghcr.io/niuulabs/openshell:dev"
+        assert compute["session_images"]["darwin"] == "ghcr.io/niuulabs/skuld-darwin:dev"
+
+    def test_joins_at_the_pinned_listener_on_the_default_route_address(self) -> None:
+        hosts = json.loads(_resolve_local_pod_manager_env(CLISettings(mode="mini"))["COMPUTE"])[
+            "hosts"
+        ]
+
+        assert hosts["join_url"] == f"https://{ROUTE_ADDRESS}:8443"
+        assert "join_listener" in hosts
+
+    def test_a_join_url_is_used_as_it_is(self, monkeypatch) -> None:
+        def no_route() -> str:
+            raise AssertionError("the default route is not consulted when join_url is set")
+
+        monkeypatch.setattr("cli.commands.platform._default_route_address", no_route)
+        settings = CLISettings(mode="mini", hosts={"join_url": "https://forge.example.test"})
+
+        hosts = json.loads(_resolve_local_pod_manager_env(settings)["COMPUTE"])["hosts"]
+
+        assert hosts["join_url"] == "https://forge.example.test"
+        assert "join_listener" not in hosts
+
+    def test_a_defined_compute_pool_turns_the_default_off(self) -> None:
+        settings = CLISettings(
+            mode="mini",
+            compute={
+                "pool_id": "vms",
+                "max_machines": 1,
+                "provider": {"adapter": "private.Provider", "kwargs": {}},
+                "runtime": {"adapter": "private.Runtime", "kwargs": {}},
+            },
+        )
+
+        assert settings.hosts_active is False
+        env = _resolve_local_pod_manager_env(settings)
+        assert "COMPUTE" not in env
+        assert json.loads(env["POD_MANAGER"])["adapter"] == settings.pod_manager.adapter
+
+    @pytest.mark.parametrize("mode", ["docker", "cluster", "openshell"])
+    def test_is_off_by_default_outside_mini_mode(self, mode) -> None:
+        assert CLISettings(mode=mode).hosts_active is False
+
+    def test_enabled_overrides_the_default_either_way(self, tmp_path) -> None:
+        assert CLISettings(mode="mini", hosts={"enabled": False}).hosts_active is False
+        assert self._settings(tmp_path).hosts_active is True
+
+    def test_refuses_a_second_compute_pool(self, tmp_path) -> None:
+        with pytest.raises(ValueError, match="both define this Forge's compute pool"):
+            CLISettings(
+                mode="mini",
+                hosts={"enabled": True},
+                compute={
+                    "pool_id": "vms",
+                    "max_machines": 1,
+                    "provider": {"adapter": "private.Provider", "kwargs": {}},
+                    "runtime": {"adapter": "private.Runtime", "kwargs": {}},
+                },
+            )
+
+    @pytest.mark.parametrize("mode", ["docker", "cluster", "openshell"])
+    def test_is_for_mini_mode_only(self, tmp_path, mode) -> None:
+        with pytest.raises(ValueError, match="hosts.enabled is for mini mode"):
+            CLISettings(mode=mode, hosts={"enabled": True})
+
+    def test_refuses_a_plaintext_join_url_unless_allowed(self, tmp_path) -> None:
+        with pytest.raises(ValueError, match="allow_plaintext_join"):
+            self._settings(tmp_path, allow_plaintext_join=False)
+
+    def test_refuses_unknown_keys(self, tmp_path) -> None:
+        with pytest.raises(ValueError, match="reserved_gpu"):
+            self._settings(tmp_path, reserved_gpu=1)
+
+
+class TestHostsJoinHost:
+    """Where other machines reach this one to join: configured, else the default route's."""
+
+    def test_the_default_route_address_is_used_when_nothing_is_configured(self) -> None:
+        assert _hosts_join_host(CLISettings(mode="mini")) == ROUTE_ADDRESS
+
+    def test_server_external_host_beats_the_default_route(self) -> None:
+        settings = CLISettings(mode="mini", server={"external_host": "forge.lan"})
+
+        assert _hosts_join_host(settings) == "forge.lan"
+
+    def test_hosts_join_host_beats_server_external_host(self) -> None:
+        settings = CLISettings(
+            mode="mini",
+            server={"external_host": "forge.lan"},
+            hosts={"join_host": " 10.1.2.3 "},
+        )
+
+        assert _hosts_join_host(settings) == "10.1.2.3"
+
+    def test_a_dns_name_is_accepted(self) -> None:
+        settings = CLISettings(mode="mini", hosts={"join_host": "forge.example.test"})
+
+        assert _hosts_join_host(settings) == "forge.example.test"
+
+    @pytest.mark.parametrize("address", ["localhost", "127.0.0.1", "127.9.9.9", "::1", "0.0.0.0"])
+    @pytest.mark.parametrize("source", ["hosts", "server"])
+    def test_an_address_other_machines_cannot_reach_is_refused(self, address, source) -> None:
+        settings = CLISettings(
+            mode="mini",
+            **(
+                {"hosts": {"join_host": address}}
+                if source == "hosts"
+                else {"server": {"external_host": address}}
+            ),
+        )
+
+        with pytest.raises(typer.BadParameter, match="cannot reach this one") as refused:
+            _hosts_join_host(settings)
+
+        assert address in str(refused.value)
+        assert "hosts.enabled: false" in str(refused.value)
+
+    def test_a_refused_address_fails_up_with_the_remedy(self) -> None:
+        settings = CLISettings(mode="mini", hosts={"join_host": "localhost"})
+
+        with pytest.raises(typer.BadParameter, match="hosts.join_host"):
+            _resolve_local_pod_manager_env(settings)
+
+    def test_a_machine_without_a_default_route_is_refused_with_the_remedy(
+        self, monkeypatch
+    ) -> None:
+        def no_route() -> str:
+            raise OSError("Network is unreachable")
+
+        monkeypatch.setattr("cli.commands.platform._default_route_address", no_route)
+
+        with pytest.raises(typer.BadParameter, match="no default route") as refused:
+            _hosts_join_host(CLISettings(mode="mini"))
+
+        assert "Network is unreachable" in str(refused.value)
+        assert "server.external_host" in str(refused.value)
+
+    def test_the_default_route_address_is_the_local_end_of_a_connected_probe(self) -> None:
+        probe = MagicMock()
+        probe.getsockname.return_value = ("10.20.30.40", 54321)
+        context = MagicMock()
+        context.__enter__.return_value = probe
+
+        with patch("socket.socket", return_value=context) as make:
+            address = REAL_DEFAULT_ROUTE_ADDRESS()
+
+        assert address == "10.20.30.40"
+        probe.connect.assert_called_once_with(("192.0.2.1", 9))
+        probe.send.assert_not_called()
+        assert make.call_args.args == (socket.AF_INET, socket.SOCK_DGRAM)
+
+
+def test_mini_mode_switches_workload_identity_off():
+    """One machine has no Kubernetes token issuer for the contributor's projected token."""
+    env = _resolve_local_pod_manager_env(CLISettings(mode="mini", hosts={"enabled": False}))
+    contributors = json.loads(env["SESSION_CONTRIBUTORS"])
+    assert contributors == [
+        {
+            "adapter": (
+                "volundr.adapters.outbound.contributors.workload_identity."
+                "WorkloadIdentityContributor"
+            ),
+            "kwargs": {"enabled": False},
+        }
+    ]

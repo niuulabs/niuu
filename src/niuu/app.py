@@ -122,14 +122,6 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "observatory-registry-api": "observatory",
     "observatory-topology-api": "observatory",
     "persona-api": "personas",
-    "ravn-aggregate-api": "guild",
-    "ravn-api": "ravn",
-    "ravn-budget-api": "ravn",
-    "ravn-odin-api": "ravn",
-    "ravn-runtime-api": "ravn",
-    "ravn-session-api": "ravn",
-    "ravn-trigger-api": "ravn",
-    "ravn-valkyrie-api": "ravn",
     "llm-api": "bifrost",
     "catalog-api": "volundr",
     "forge-internal-api": "volundr",
@@ -163,8 +155,6 @@ HOST_PROFILES: dict[str, frozenset[str]] = {
 _STATIC_ROUTE_PREFIXES: dict[str, tuple[str, ...]] = {
     "skuld-proxy": (
         "/s/{session_id}/session",
-        "/s/{ravn_id}/sessions/{session_id}/session",
-        "/s/{session_id}/ws/ravn/{peer_id}",
         "/s/{session_id}/api/{path:path}",
         "/s/{session_id}/health",
     ),
@@ -699,6 +689,20 @@ def build_root_app(
 
     if "skuld-proxy" in active_mounts:
         register_session_proxy_routes(root, skuld_reg)
+        preview_config = NiuuSettings().host.session_preview
+        if preview_config.enabled:
+            # Outermost (added last): <port>--<session>.localhost:<host port> is a
+            # session's live preview, and none of the host's own middleware
+            # (gzip, CORS) touches an app's traffic. Ownership and the router
+            # credential come from the registry, wired by the embedded Forge.
+            from niuu.preview_proxy import PreviewRouter, PreviewRouterMiddleware
+
+            preview_router = PreviewRouter(skuld_reg, preview_config)
+            root.add_middleware(
+                PreviewRouterMiddleware,
+                domain=preview_config.domain,
+                router_provider=lambda: preview_router,
+            )
 
     live_config_template: str | None = None
 

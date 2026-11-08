@@ -6,13 +6,7 @@ import logging
 import re
 from typing import Any
 
-from volundr.adapters.outbound.contributors.ravn_flock import (
-    _MIMIR_MOUNT_PATH,
-    _MIMIR_VOLUME_NAME,
-    _normalize_mimir_workload_config,
-    _resolve_mimir_runtime,
-)
-from volundr.domain.models import LaunchSpec, PodSpecAdditions, Session
+from volundr.domain.models import LaunchSpec, Session
 from volundr.domain.ports import (
     LaunchSpecProvider,
     SessionContext,
@@ -23,6 +17,261 @@ from volundr.domain.ports import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PYTHON_BINARY = "python3"
+#: Where a session's ephemeral local Mimir mounts live; each mount is a
+#: directory below this path.
+MIMIR_MOUNT_PATH = "/mimir/local"
+#: Where the workload-identity token is projected into the session.
+_DEFAULT_WORKLOAD_IDENTITY_MOUNT_PATH = "/var/run/secrets/niuu-workload"
+#: Where secret-backed Mimir credentials are mounted.
+_SECRET_VOLUME_PATH = "/run/secrets"
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _secret_file_name(value: str) -> str:
+    normalized = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in value)
+    normalized = normalized.strip(".-_")
+    return normalized or "credential"
+
+
+def _mimir_token_file(auth_ref: str) -> str:
+    return f"{_SECRET_VOLUME_PATH}/mimir/{_secret_file_name(auth_ref)}/token"
+
+
+def _mimir_auth_from_ref(auth_ref: object) -> dict[str, Any] | None:
+    normalized = str(auth_ref or "").strip()
+    if not normalized:
+        return None
+    return {
+        "type": "workload",
+        "token_file": f"{_DEFAULT_WORKLOAD_IDENTITY_MOUNT_PATH}/token",
+        "audiences": ["mimir"],
+    }
+
+
+def _normalize_mimir_workload_config(
+    raw: dict[str, Any] | None,
+    legacy_hosted_url: str | None,
+) -> dict[str, Any]:
+    normalized = dict(raw or {})
+    if legacy_hosted_url and not normalized.get("hosted_url"):
+        normalized["hosted_url"] = legacy_hosted_url
+    return normalized
+
+
+def _resolve_mimir_runtime(
+    mimir_cfg: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    instances: list[dict[str, Any]] = []
+    known_mounts: set[str] = set()
+    write_rules: list[dict[str, Any]] = []
+    default_mounts: list[str] = []
+    hosted_url = str(mimir_cfg.get("hosted_url") or "").strip()
+    registry_refs = list(mimir_cfg.get("registry_refs") or [])
+    ephemeral_locals = list(mimir_cfg.get("ephemeral_locals") or [])
+
+    for raw_instance in list(mimir_cfg.get("instances") or []):
+        if not isinstance(raw_instance, dict):
+            continue
+        instance = _normalize_instance(raw_instance)
+        if instance is None:
+            continue
+        if instance["name"] in known_mounts:
+            continue
+        instances.append(instance)
+        known_mounts.add(instance["name"])
+
+    if hosted_url and not registry_refs and "hosted" not in known_mounts:
+        instances.append(
+            {
+                "name": "hosted",
+                "role": "shared",
+                "url": hosted_url,
+                "categories": ["entity", "decision", "directive", "topic"],
+            }
+        )
+        known_mounts.add("hosted")
+        write_rules.extend(
+            [
+                {"prefix": "project/", "mounts": ["hosted"]},
+                {"prefix": "entity/", "mounts": ["hosted"]},
+            ]
+        )
+
+    for raw_ref in registry_refs:
+        if not isinstance(raw_ref, dict):
+            continue
+        mount_name = str(
+            raw_ref.get("mount_name")
+            or raw_ref.get("mountName")
+            or raw_ref.get("registry_entry_id")
+            or raw_ref.get("registryEntryId")
+            or raw_ref.get("resource_node_id")
+            or raw_ref.get("resourceNodeId")
+            or ""
+        ).strip()
+        if not mount_name or mount_name in known_mounts:
+            continue
+
+        instance: dict[str, Any] = {
+            "name": mount_name,
+            "role": str(raw_ref.get("role") or "shared"),
+        }
+        url = str(raw_ref.get("url") or "").strip()
+        path = str(raw_ref.get("path") or "").strip()
+        if raw_ref.get("adapter"):
+            instance["adapter"] = str(raw_ref["adapter"])
+            instance["kwargs"] = dict(raw_ref.get("kwargs") or {})
+            instance["secret_kwargs_env"] = dict(raw_ref.get("secret_kwargs_env") or {})
+            auth_ref = raw_ref.get("auth_ref") or raw_ref.get("authRef")
+            if instance["adapter"] == "mimir.adapters.gbrain.GBrainMimirAdapter" and auth_ref:
+                instance["kwargs"].pop("api_token", None)
+                instance["secret_kwargs_env"].pop("api_token", None)
+                instance["kwargs"]["api_token_file"] = _mimir_token_file(str(auth_ref))
+        elif url:
+            instance["url"] = url
+        elif path:
+            instance["path"] = path
+        elif hosted_url:
+            instance["url"] = hosted_url
+        else:
+            continue
+
+        if auth := _mimir_auth_from_ref(raw_ref.get("auth_ref") or raw_ref.get("authRef")):
+            instance["auth"] = auth
+
+        if "default_read_priority" in raw_ref or "defaultReadPriority" in raw_ref:
+            instance["read_priority"] = int(
+                raw_ref.get("default_read_priority", raw_ref.get("defaultReadPriority"))
+            )
+        categories = _string_list(raw_ref.get("categories"))
+        if categories:
+            instance["categories"] = categories
+        instances.append(instance)
+        known_mounts.add(mount_name)
+
+    for raw_local in ephemeral_locals:
+        if not isinstance(raw_local, dict):
+            continue
+        mount_name = str(
+            raw_local.get("mount_name")
+            or raw_local.get("mountName")
+            or raw_local.get("resource_node_id")
+            or raw_local.get("resourceNodeId")
+            or ""
+        ).strip()
+        if not mount_name or mount_name in known_mounts:
+            continue
+
+        instance = {
+            "name": mount_name,
+            "role": "local",
+            "path": f"{MIMIR_MOUNT_PATH.rstrip('/')}/{mount_name}",
+        }
+        categories = _string_list(raw_local.get("categories"))
+        if categories:
+            instance["categories"] = categories
+        instances.append(instance)
+        known_mounts.add(mount_name)
+
+    local_mount_names = [
+        instance["name"]
+        for instance in instances
+        if str(instance.get("role") or "").strip() == "local"
+    ]
+    if local_mount_names:
+        write_rules.append({"prefix": "self/", "mounts": [local_mount_names[0]]})
+
+    for raw_binding in list(mimir_cfg.get("bindings") or []):
+        if not isinstance(raw_binding, dict):
+            continue
+        mount_name = str(
+            raw_binding.get("mount_name") or raw_binding.get("mountName") or ""
+        ).strip()
+        if not mount_name or mount_name not in known_mounts:
+            continue
+        access = str(raw_binding.get("access") or "read")
+        if "write" not in access:
+            continue
+        for prefix in _string_list(
+            raw_binding.get("write_prefixes") or raw_binding.get("writePrefixes")
+        ):
+            write_rules.append({"prefix": prefix, "mounts": [mount_name]})
+
+    explicit_routing = mimir_cfg.get("write_routing") or {}
+    if isinstance(explicit_routing, dict):
+        for raw_rule in list(explicit_routing.get("rules") or []):
+            if not isinstance(raw_rule, dict):
+                continue
+            prefix = str(raw_rule.get("prefix") or "").strip()
+            mounts = [
+                mount for mount in _string_list(raw_rule.get("mounts")) if mount in known_mounts
+            ]
+            if not prefix or not mounts:
+                continue
+            write_rules.append({"prefix": prefix, "mounts": mounts})
+
+        explicit_defaults = [
+            mount
+            for mount in _string_list(explicit_routing.get("default"))
+            if mount in known_mounts
+        ]
+        if explicit_defaults:
+            default_mounts = explicit_defaults
+
+    configured_defaults = [
+        mount for mount in _string_list(mimir_cfg.get("default_mounts")) if mount in known_mounts
+    ]
+    if configured_defaults:
+        default_mounts = configured_defaults
+    else:
+        local_defaults = [
+            instance["name"]
+            for instance in instances
+            if str(instance.get("role") or "").strip() == "local"
+        ]
+        if local_defaults:
+            default_mounts = [local_defaults[0]]
+        elif len(instances) == 1:
+            default_mounts = [instances[0]["name"]]
+
+    return instances, {"rules": write_rules, "default": default_mounts}
+
+
+def _normalize_instance(raw_instance: dict[str, Any]) -> dict[str, Any] | None:
+    mount_name = str(raw_instance.get("name") or "").strip()
+    if not mount_name:
+        return None
+
+    instance: dict[str, Any] = {
+        "name": mount_name,
+        "role": str(raw_instance.get("role") or "shared"),
+    }
+    url = str(raw_instance.get("url") or "").strip()
+    path = str(raw_instance.get("path") or "").strip()
+    if raw_instance.get("adapter"):
+        instance["adapter"] = str(raw_instance["adapter"])
+        instance["kwargs"] = dict(raw_instance.get("kwargs") or {})
+        instance["secret_kwargs_env"] = dict(raw_instance.get("secret_kwargs_env") or {})
+    elif url:
+        instance["url"] = url
+    elif path:
+        instance["path"] = path
+    else:
+        return None
+
+    if "read_priority" in raw_instance:
+        instance["read_priority"] = int(raw_instance["read_priority"])
+    categories = _string_list(raw_instance.get("categories"))
+    if categories:
+        instance["categories"] = categories
+    if isinstance(raw_instance.get("auth"), dict):
+        instance["auth"] = dict(raw_instance["auth"])
+    return instance
 
 
 def _slugify_server_name(name: str) -> str:
@@ -66,7 +315,7 @@ class SessionMCPContributor(SessionContributor):
         session: Session,
         context: SessionContext,
     ) -> SessionContribution:
-        workload_type, workload_config = self._resolve_workload(context)
+        workload_config = self._resolve_workload(context)
         if not workload_config:
             return SessionContribution()
 
@@ -83,43 +332,28 @@ class SessionMCPContributor(SessionContributor):
             return SessionContribution()
 
         mcp_servers: list[dict[str, Any]] = []
-        requires_local_mount = False
         for instance in instances:
             server = self._build_mimir_server(instance)
             if server is None:
                 continue
             mcp_servers.append(server)
-            path = str(instance.get("path") or "").strip()
-            if path == _MIMIR_MOUNT_PATH or path.startswith(f"{_MIMIR_MOUNT_PATH.rstrip('/')}/"):
-                requires_local_mount = True
 
         if not mcp_servers:
             return SessionContribution()
 
-        pod_spec: PodSpecAdditions | None = None
-        if requires_local_mount and workload_type == "ravn_flock":
-            pod_spec = PodSpecAdditions(
-                volume_mounts=(
-                    {
-                        "name": _MIMIR_VOLUME_NAME,
-                        "mountPath": _MIMIR_MOUNT_PATH,
-                    },
-                ),
-            )
-
-        return SessionContribution(values={"mcpServers": mcp_servers}, pod_spec=pod_spec)
+        return SessionContribution(values={"mcpServers": mcp_servers})
 
     def _resolve_workload(
         self,
         context: SessionContext,
-    ) -> tuple[str, dict[str, Any]]:
+    ) -> dict[str, Any]:
         if context.workload_config:
-            return context.workload_type, context.workload_config
+            return context.workload_config
 
         source = self._resolve_source(context)
         if source is None:
-            return context.workload_type, {}
-        return source.workload_type, dict(source.workload_config or {})
+            return {}
+        return dict(source.workload_config or {})
 
     def _resolve_source(self, context: SessionContext) -> LaunchSpec | None:
         if self._launch_spec_provider is None:

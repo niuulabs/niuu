@@ -13,7 +13,7 @@ from tests.test_skuld.test_codex_ws_transport import FakeWebSocket, _make_transp
 INSTRUCTIONS = "## AGENTS.md\nKeep the original objectives; report material progress.\n"
 
 
-async def test_codex_base_instructions_include_project_owned_guidance(tmp_path):
+async def test_codex_developer_instructions_include_project_owned_guidance(tmp_path):
     transport = _make_transport(tmp_path, system_prompt=INSTRUCTIONS)
     transport._ws = FakeWebSocket()
     transport._alive = True
@@ -23,7 +23,8 @@ async def test_codex_base_instructions_include_project_owned_guidance(tmp_path):
     await transport._handshake()
     call = transport._send_rpc.await_args_list[1]
     assert call.args[0] == "thread/start"
-    assert call.args[1]["baseInstructions"] == INSTRUCTIONS
+    assert call.args[1]["developerInstructions"] == INSTRUCTIONS
+    assert "baseInstructions" not in call.args[1]
 
 
 def test_claude_tmux_appended_prompt_retains_project_bytes(tmp_path):

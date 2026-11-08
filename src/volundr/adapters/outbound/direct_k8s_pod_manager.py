@@ -23,6 +23,7 @@ from typing import Any
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
 from volundr.domain.models import Session, SessionSpec, SessionStatus
 from volundr.domain.ports import CredentialStorePort, PodManager, PodStartResult
+from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -351,6 +352,15 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
             env.append(
                 {"name": "SKULD__SESSION__SYSTEM_PROMPT", "value": session_config["systemPrompt"]}
             )
+        if session_config.get("persona"):
+            env.append(
+                {
+                    "name": "SKULD__SESSION__PERSONA",
+                    "value": json.dumps(session_config["persona"], separators=(",", ":")),
+                }
+            )
+        if workflow_steps_enabled(spec.values):
+            env.append({"name": WORKFLOW_STEPS_ENABLED_ENV, "value": "true"})
         if session_config.get("reasoningEffort"):
             env.append(
                 {
@@ -666,6 +676,9 @@ fi
 {setup}
 if git -C "$WORKSPACE" rev-parse HEAD >/dev/null 2>&1; then
   echo "Workspace already contains a valid git repository, skipping clone"
+  if [ -n "$BASE_BRANCH" ] && ! git -C "$WORKSPACE" config --get niuu.baseBranch >/dev/null; then
+    git -C "$WORKSPACE" config niuu.baseBranch "$BASE_BRANCH"
+  fi
 else
   git -C "$WORKSPACE" fetch origin
   if git -C "$WORKSPACE" rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
@@ -680,6 +693,19 @@ else
     fi
     git -C "$WORKSPACE" checkout -B "$FALLBACK" "origin/$FALLBACK"
     git -C "$WORKSPACE" checkout -b "$BRANCH"
+  fi
+  # Record where this branch started, so the session's changes can be shown against it.
+  RECORDED_BASE="${{FALLBACK:-}}"
+  if [ -z "$RECORDED_BASE" ]; then
+    if [ -n "$BASE_BRANCH" ] && \
+      git -C "$WORKSPACE" rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
+      RECORDED_BASE="$BASE_BRANCH"
+    else
+      RECORDED_BASE=$(git -C "$WORKSPACE" remote show origin | sed -n 's/.*HEAD branch: //p')
+    fi
+  fi
+  if [ -n "$RECORDED_BASE" ]; then
+    git -C "$WORKSPACE" config niuu.baseBranch "$RECORDED_BASE"
   fi
   echo "Repository cloned successfully"
 fi
@@ -722,7 +748,7 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
         if spec.pod_spec:
             containers[-1]["volumeMounts"].extend(spec.pod_spec.volume_mounts)
 
-        # Append contributor-provided init containers (e.g. ravn config writers).
+        # Append contributor-provided init containers (e.g. credential writers).
         if spec.pod_spec:
             containers.extend(spec.pod_spec.init_containers)
 

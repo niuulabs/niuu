@@ -18,7 +18,6 @@ import {
   type PluginDescriptor,
 } from '@niuulabs/plugin-sdk';
 import { ShellContext, type ShellContextValue } from '@niuulabs/shell';
-import { createMockBudgetStream, createMockSessionStream } from '@niuulabs/plugin-ravn';
 import {
   createMockDispatchBus,
   createMockTingService,
@@ -26,38 +25,23 @@ import {
   createMockRunLogService,
   createMockWorkflowService,
 } from '@niuulabs/plugin-ting';
-import {
-  createMockOdinReviewService,
-  createMockValkyrieService,
-  createSeedRealms,
-} from '@niuulabs/plugin-valkyrie';
 import { useState } from 'react';
 import { createMockSessionStore } from '@niuulabs/plugin-volundr';
+import { createSeedRealms } from '../adapters/mock';
+import { REALM_GOVERNANCE_SERVICE_KEY } from '../application/useRealmGovernance';
 import { homePlugin, realmsPlugin } from '../index';
 import {
   createCallLog,
   fakeMimir,
-  fakePersonas,
   fakeRealmService,
-  fakeResidents,
   fakeTracker,
-  fakeTriggers,
   fakeVolundr,
   type CallLog,
 } from './fakes';
 
 export function defaultServices(log: CallLog, overrides: Record<string, unknown> = {}) {
-  const residents = fakeResidents(log);
   return {
-    'valkyrie.realms': fakeRealmService(log, createSeedRealms()),
-    valkyrie: createMockValkyrieService(),
-    'valkyrie.reviews': createMockOdinReviewService(),
-    'ravn.personas': fakePersonas(log),
-    'ravn.triggers': fakeTriggers(log),
-    'ravn.residents': residents,
-    'ravn.ravens': residents,
-    'ravn.sessions': createMockSessionStream(),
-    'ravn.budget': createMockBudgetStream(),
+    [REALM_GOVERNANCE_SERVICE_KEY]: fakeRealmService(log, createSeedRealms()),
     'ting.tracker': fakeTracker(log),
     'ting.workflows': createMockWorkflowService(),
     ting: createMockTingService(),
@@ -109,8 +93,6 @@ export function renderRealms(
   // Stand-ins for the pages other plugins own, so the links on these pages resolve.
   const extra = [
     '/mimir',
-    '/ravn/ravens',
-    '/valkyrie/inbox',
     '/volundr/forge',
     '/volundr/sessions/new',
     '/volundr/sessions/$sessionId',

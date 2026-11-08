@@ -1,7 +1,6 @@
 import type { AppIdentity } from '@niuulabs/plugin-sdk';
 
-export type InstanceKind =
-  'volundr' | 'ting' | 'mimir' | 'bifrost' | 'ravn' | 'observatory' | 'generic';
+export type InstanceKind = 'volundr' | 'ting' | 'mimir' | 'bifrost' | 'observatory' | 'generic';
 export type VisibilityScope = 'user' | 'tenant' | 'system';
 export type InstanceHealth = 'unknown' | 'ok' | 'unreachable';
 

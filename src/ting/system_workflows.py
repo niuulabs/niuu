@@ -8,8 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
-from ravn.ports.persona import PersonaPort
+from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.ports.persona import PersonaPort
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import (
@@ -27,6 +27,20 @@ from ting.ports.workflow_repository import WorkflowRepository
 
 BUNDLED_SYSTEM_WORKFLOWS_PATH = (Path(__file__).parent / "workflows").resolve()
 BUNDLED_SYSTEM_PACKAGE_ROOT = BUNDLED_SYSTEM_WORKFLOWS_PATH.parent
+
+# Packaged system workflows a release removed. A file catalog migrated while one
+# still shipped lists its id in the migration inventory without storing it,
+# because bundled ids are served from the package, and its legacy PostgreSQL row
+# is package content rather than an operator's. The migration guard stops
+# expecting these ids and the migration does not copy their rows; sagas that
+# named one are detached by a Ting SQL migration.
+RETIRED_SYSTEM_WORKFLOW_IDS: frozenset[UUID] = frozenset(
+    {
+        # "Ting Run Flow + Security + Memory Curation", removed in niuu#1282
+        # with the wardens and memory curation it ran.
+        UUID("29393e53-5a29-5f37-aa87-1171aaf20726"),
+    }
+)
 logger = logging.getLogger(__name__)
 
 
@@ -46,6 +60,12 @@ def load_system_workflows(path: Path = BUNDLED_SYSTEM_WORKFLOWS_PATH) -> list[Wo
         if workflow.id in seen:
             raise WorkflowDocumentError(
                 f"Duplicate bundled workflow id {workflow.id} in {document_path}"
+            )
+        if workflow.id in RETIRED_SYSTEM_WORKFLOW_IDS:
+            raise WorkflowDocumentError(
+                f"Bundled workflow {document_path} uses retired system workflow id "
+                f"{workflow.id}; give it a new id or remove it from "
+                "RETIRED_SYSTEM_WORKFLOW_IDS"
             )
         seen.add(workflow.id)
         workflows.append(workflow)
@@ -100,6 +120,7 @@ def load_bundled_workflow(
         schema_version=document.schema_version,
         persona_dependencies=document.persona_dependencies,
         workflow_dependencies=document.workflow_dependencies,
+        persona_definitions=persona_definitions,
     )
     timestamp = datetime.fromtimestamp(document_path.stat().st_mtime, tz=UTC)
     revision = workflow_document_revision(document)

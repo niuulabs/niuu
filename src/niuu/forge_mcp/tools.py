@@ -54,6 +54,13 @@ from niuu.domain.session_description import (
     DESCRIPTION_MAX_CHARS,
     SHORT_DESCRIPTION_MAX_CHARS,
 )
+from niuu.domain.workflow_step import (
+    STEP_ENDINGS,
+    WAITING_ON_KINDS,
+    WORKFLOW_STEP_CLOSE_TOOL,
+    WorkflowStepCloseArgs,
+    WorkflowStepCloseError,
+)
 from niuu.forge_mcp.guidance import (
     COMPACT_NOTIFICATION_GUIDANCE,
     NOTIFICATION_IMAGE_GUIDANCE,
@@ -62,14 +69,16 @@ from niuu.forge_mcp.guidance import (
     QUESTION_STANDARD,
 )
 from niuu.forge_mcp.models import (
-    FlockError,
+    SECRET_NAME_MAX_CHARS,
+    SECRET_NAME_PATTERN,
     ForgeApiError,
     ForgeMcpGrant,
     ForgeMcpLimits,
     ForgeMcpNotifyMode,
+    SecretRequestError,
     ToolResult,
 )
-from niuu.forge_mcp.ports import ForgeClient, ForgeMcpFlock, ForgeMcpHost
+from niuu.forge_mcp.ports import ForgeClient, ForgeMcpHost
 from niuu.forge_mcp.question_lint import LintedNotification, lint_question
 
 # Wire-format patterns Forge itself enforces (request ids) or that keep ids from
@@ -211,24 +220,6 @@ class _CreateSessionArgs(_Args):
         if value is not None and not value.startswith("/"):
             raise ValueError("local_path must be absolute")
         return value
-
-
-class _FlockDelegateArgs(_Args):
-    peer_id: str = Field(min_length=1, max_length=200)
-    content: str = Field(min_length=1)
-
-    @field_validator("content")
-    @classmethod
-    def _not_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("content must not be blank")
-        return value
-
-
-class _FlockOutcomesArgs(_Args):
-    after: int = Field(ge=0)
-    peer_id: str = Field(default="", max_length=200)
-    wait_s: float | None = Field(default=None, ge=0)
 
 
 class _DescribeSessionArgs(_Args):
@@ -701,6 +692,112 @@ _REPORT_ARTIFACT_SCHEMA = _object(
     required=("url", "title"),
 )
 
+
+class _RequestSecretArgs(_Args):
+    name: str = Field(pattern=SECRET_NAME_PATTERN, max_length=SECRET_NAME_MAX_CHARS)
+    purpose: str = Field(min_length=1)
+    target: str | None = Field(default=None, min_length=1)
+
+
+_REQUEST_SECRET_DESCRIPTION = (
+    "Ask the user for a secret (an API key, token or password) you need. Use this instead "
+    "of ever asking them to paste a secret into the chat: the chat shows them a masked "
+    "field that goes straight to Forge, so the value never enters the transcript or your "
+    "context. The call waits until they answer. On success the value is in a private file "
+    "and you get only its `path`: refer to the secret by that path, e.g. "
+    '`curl -H "Authorization: Bearer $(cat <path>)" …` inside a command. Never echo, '
+    "print, log or copy it into a file you present. `name` is the identifier you will "
+    "know it by (UPPER_SNAKE_CASE, e.g. GITLAB_TOKEN); `purpose` tells the user what it is "
+    "for; `target` optionally names the host or service it unlocks. Asking again for a "
+    "name that is still open returns to the same request instead of a second card. "
+    "Errors say if the user declined, the request was cancelled, or the wait ended while "
+    "the request stays open (call again with the same name to keep waiting)."
+)
+
+_REQUEST_SECRET_SCHEMA = _object(
+    {
+        "name": {
+            "type": "string",
+            "pattern": SECRET_NAME_PATTERN,
+            "maxLength": SECRET_NAME_MAX_CHARS,
+            "description": "UPPER_SNAKE_CASE name of the secret; it becomes the file's name.",
+        },
+        "purpose": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why you need it, in words the user will recognise.",
+        },
+        "target": {
+            "type": ["string", "null"],
+            "description": "The host or service it is for (e.g. gitlab.example.com), if any.",
+        },
+    },
+    required=("name", "purpose"),
+)
+
+_WORKFLOW_STEP_CLOSE_DESCRIPTION = (
+    "Close the workflow step you were activated for. Call it exactly once when the step's "
+    "instructions say you are done (or cannot continue), naming the `activation_id` from "
+    "those instructions. `ending` is one of: `verdict` (hand off: give a `verdict` from the "
+    "step's valid verdicts and, when the step defines an outcome schema, an `outcome` that "
+    "matches it), `waiting` (you are blocked on something that will resolve later: give "
+    "`waiting_on`; the step stays open and you close it again when it resolves), `done` "
+    "(the step is finished and hands nothing off) or `failed` (give `failure_reason`). Only "
+    "the endings the step lists are allowed. Ending your turn without calling this tool "
+    "leaves the step open and is reported as unclosed; nothing is inferred from your reply. "
+    "A rejected call returns the exact reason and records nothing: fix the arguments and "
+    "call again."
+)
+
+_WORKFLOW_STEP_CLOSE_SCHEMA = _object(
+    {
+        "activation_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The activation id given in the step's instructions.",
+        },
+        "ending": {"type": "string", "enum": list(STEP_ENDINGS)},
+        "verdict": {
+            "type": ["string", "null"],
+            "description": "Required for ending=verdict; one of the step's valid verdicts.",
+        },
+        "outcome": {
+            "type": ["object", "null"],
+            "description": "The outcome fields the step's outcome schema defines.",
+        },
+        "note": {"type": ["string", "null"], "description": "A short note for the record."},
+        "evidence": {
+            "type": "array",
+            "items": _object(
+                {
+                    "kind": {"type": "string", "minLength": 1},
+                    "ref": {"type": "string", "minLength": 1},
+                    "summary": {"type": "string"},
+                },
+                required=("kind", "ref"),
+            ),
+            "description": "What supports the ending: commits, files, test runs, links.",
+        },
+        "waiting_on": {
+            "type": ["object", "null"],
+            "description": "Required for ending=waiting: what the step is waiting for.",
+            "properties": {
+                "kind": {"type": "string", "enum": list(WAITING_ON_KINDS)},
+                "ref": {"type": "string", "minLength": 1},
+                "reason": {"type": "string"},
+            },
+            "required": ["kind", "ref"],
+            "additionalProperties": False,
+        },
+        "failure_reason": {
+            "type": ["string", "null"],
+            "description": "Required for ending=failed: why the step cannot be completed.",
+        },
+    },
+    required=("activation_id", "ending"),
+)
+
+
 TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="environment",
@@ -724,6 +821,18 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         description=_REPORT_ARTIFACT_DESCRIPTION,
         input_schema=_REPORT_ARTIFACT_SCHEMA,
         args_model=_ReportArtifactArgs,
+    ),
+    ToolSpec(
+        name="request_secret",
+        description=_REQUEST_SECRET_DESCRIPTION,
+        input_schema=_REQUEST_SECRET_SCHEMA,
+        args_model=_RequestSecretArgs,
+    ),
+    ToolSpec(
+        name=WORKFLOW_STEP_CLOSE_TOOL,
+        description=_WORKFLOW_STEP_CLOSE_DESCRIPTION,
+        input_schema=_WORKFLOW_STEP_CLOSE_SCHEMA,
+        args_model=WorkflowStepCloseArgs,
     ),
     ToolSpec(
         name="describe_session",
@@ -938,69 +1047,6 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
 
 TOOL_NAMES: tuple[str, ...] = tuple(spec.name for spec in TOOL_SPECS)
 
-#: Offered only when the host brokers a Ravn flock (see :class:`ForgeMcpFlock`).
-FLOCK_TOOL_SPECS: tuple[ToolSpec, ...] = (
-    ToolSpec(
-        name="flock_members",
-        description=(
-            "List the Ravns of the flock this session brokers: each member's peer_id, "
-            "persona and status. These Ravns do the flock's work; you hand it to them "
-            "with flock_delegate and do not do it yourself or with sub-agents."
-        ),
-        input_schema=_object({}),
-        args_model=_NoArgs,
-    ),
-    ToolSpec(
-        name="flock_delegate",
-        description=(
-            "Hand a task to one flock member over the mesh. It runs as that Ravn's "
-            "persona; when it finishes the Ravn publishes its outcome, and members that "
-            "consume that outcome react on their own (a coder's change reaches the "
-            "reviewer without another hand-off). Write the task in full, as the member "
-            "sees only this content. Returns a cursor: pass it to flock_outcomes."
-        ),
-        input_schema=_object(
-            {
-                "peer_id": {
-                    "type": "string",
-                    "description": "The member's peer_id from flock_members.",
-                },
-                "content": {"type": "string", "minLength": 1},
-            },
-            required=("peer_id", "content"),
-        ),
-        args_model=_FlockDelegateArgs,
-    ),
-    ToolSpec(
-        name="flock_outcomes",
-        description=(
-            "Outcomes and failures flock members published on the mesh after `after` "
-            "(a cursor from flock_delegate or a previous flock_outcomes call), oldest "
-            "first, each with the member it came from, its event type, verdict and "
-            "summary. Waits up to wait_s for the first one and fails when none "
-            "arrives. These are the only results you may report as the flock's: if "
-            "a verdict is not here, no member gave it. Call again with the returned "
-            "cursor to follow later stages."
-        ),
-        input_schema=_object(
-            {
-                "after": {"type": "integer", "minimum": 0},
-                "peer_id": {
-                    "type": "string",
-                    "description": "Only this member's activity.",
-                },
-                "wait_s": {
-                    "type": "number",
-                    "minimum": 0,
-                    "description": "Seconds to wait for the first result (bounded by the host).",
-                },
-            },
-            required=("after",),
-        ),
-        args_model=_FlockOutcomesArgs,
-    ),
-)
-
 #: ``notify`` as the Forge-hosted HTTP endpoint serves it (direct feed submit).
 FEED_NOTIFY_SPEC = ToolSpec(
     name="notify",
@@ -1010,9 +1056,15 @@ FEED_NOTIFY_SPEC = ToolSpec(
 )
 
 
-#: Tools that write the caller's own durable transcript, so only a session's own broker
+#: Tools that write the caller's own durable transcript (or, for ``request_secret``, put a
+#: card in it and a file in the session's runtime), so only a session's own broker
 #: (transcript mode) can serve them.
-TRANSCRIPT_ONLY_TOOLS = frozenset({"report_artifact"})
+TRANSCRIPT_ONLY_TOOLS = frozenset({"report_artifact", "request_secret", WORKFLOW_STEP_CLOSE_TOOL})
+
+#: Tools listed only on a session whose host says it can use them (``workflow_step_close`` on a
+#: workflow step host). They are listed for the whole session, so every engine sees them whether
+#: or not it honours tool-list change notifications; the host refuses a call it cannot act on.
+HOST_GATED_TOOLS = frozenset({WORKFLOW_STEP_CLOSE_TOOL})
 
 
 def _specs_for(mode: ForgeMcpNotifyMode) -> tuple[ToolSpec, ...]:
@@ -1146,14 +1198,12 @@ class ForgeMcpToolbox:
         grants: Iterable[ForgeMcpGrant | str],
         limits: ForgeMcpLimits,
         notify_mode: ForgeMcpNotifyMode = ForgeMcpNotifyMode.TRANSCRIPT,
-        flock: ForgeMcpFlock | None = None,
     ) -> None:
         self._client = client
         self._host = host
-        self._flock = flock
         self._grants = frozenset(ForgeMcpGrant(grant) for grant in grants)
         self._limits = limits
-        self._tool_specs = _specs_for(notify_mode) + (FLOCK_TOOL_SPECS if flock else ())
+        self._tool_specs = _specs_for(notify_mode)
         self._specs = {spec.name: spec for spec in self._tool_specs}
         notify = self._notify if notify_mode is ForgeMcpNotifyMode.TRANSCRIPT else self._feed_notify
         self._handlers: dict[str, Callable[[Any], Awaitable[ToolResult]]] = {
@@ -1161,6 +1211,8 @@ class ForgeMcpToolbox:
             "notify": notify,
             "describe_session": self._describe_session,
             "report_artifact": self._report_artifact,
+            "request_secret": self._request_secret,
+            WORKFLOW_STEP_CLOSE_TOOL: self._workflow_step_close,
             "list_notifications": self._list_notifications,
             "list_sessions": self._list_sessions,
             "get_session": self._get_session,
@@ -1170,23 +1222,33 @@ class ForgeMcpToolbox:
             "create_session": self._create_session,
             "start_session": self._start_session,
             "stop_session": self._stop_session,
-            "flock_members": self._flock_members,
-            "flock_delegate": self._flock_delegate,
-            "flock_outcomes": self._flock_outcomes,
         }
 
     @property
     def grants(self) -> frozenset[ForgeMcpGrant]:
         return self._grants
 
+    def _offered(self, spec: ToolSpec) -> bool:
+        if spec.name not in HOST_GATED_TOOLS:
+            return True
+        return self._host.workflow_step_host()
+
     def list_tools(self) -> list[dict[str, Any]]:
-        """Every tool, granted or not, so the model learns why a denied one fails."""
-        return [spec.to_mcp() for spec in self._tool_specs]
+        """Every tool, granted or not, so the model learns why a denied one fails.
+
+        A host-gated tool (``workflow_step_close``) is listed on every session whose host says it
+        can use it, for the whole session.
+        """
+        return [spec.to_mcp() for spec in self._tool_specs if self._offered(spec)]
 
     async def call(self, name: str, arguments: dict[str, Any] | None) -> ToolResult:
         spec = self._specs.get(name)
         if spec is None:
             raise UnknownToolError(name)
+        if not self._offered(spec):
+            return ToolResult.error(
+                f"{name} is not available: this session is not a workflow step host."
+            )
         if spec.grant is not None and spec.grant not in self._grants:
             return ToolResult.error(
                 f"The {name} tool needs the '{spec.grant.value}' grant, which this session "
@@ -1202,8 +1264,10 @@ class ForgeMcpToolbox:
             return await self._handlers[name](args)
         except ForgeApiError as exc:
             return ToolResult.error(_forge_error_text(name, exc))
-        except FlockError as exc:
+        except SecretRequestError as exc:
             return ToolResult.error(f"{name} failed: {exc}")
+        except WorkflowStepCloseError as exc:
+            return ToolResult.error(f"{name} rejected: {exc}")
 
     def _ok(self, payload: dict[str, Any]) -> ToolResult:
         return ToolResult.of(payload, max_chars=self._limits.output_max_chars)
@@ -1221,7 +1285,7 @@ class ForgeMcpToolbox:
         environment["tools"] = [
             spec.name
             for spec in self._tool_specs
-            if spec.grant is None or spec.grant in self._grants
+            if self._offered(spec) and (spec.grant is None or spec.grant in self._grants)
         ]
         return self._ok(environment)
 
@@ -1266,6 +1330,14 @@ class ForgeMcpToolbox:
         except ValidationError as exc:
             return ToolResult.error(_validation_text("report_artifact", exc))
         return self._ok(await self._host.report_artifact(report))
+
+    async def _workflow_step_close(self, args: WorkflowStepCloseArgs) -> ToolResult:
+        """The host checks the close against its open step and records it; a bad one raises."""
+        return self._ok(await self._host.close_workflow_step(args))
+
+    async def _request_secret(self, args: _RequestSecretArgs) -> ToolResult:
+        """The host's result carries a path only; the value never passes through here."""
+        return self._ok(await self._host.request_secret(args.name, args.purpose, args.target))
 
     async def _describe_session(self, args: _DescribeSessionArgs) -> ToolResult:
         session_id = self._host.session_id
@@ -1480,32 +1552,3 @@ class ForgeMcpToolbox:
             return refused
         stopped = await self._client.stop_session(args.session_id, instance_id=args.instance_id)
         return self._ok({"session": _session_summary(stopped)})
-
-    # -- brokered flock
-
-    def _require_flock(self) -> ForgeMcpFlock:
-        if self._flock is None:
-            raise FlockError("this session brokers no flock")
-        return self._flock
-
-    async def _flock_members(self, _args: _NoArgs) -> ToolResult:
-        members = await self._require_flock().members()
-        return self._ok({"members": members})
-
-    async def _flock_delegate(self, args: _FlockDelegateArgs) -> ToolResult:
-        handed = await self._require_flock().delegate(args.peer_id, args.content)
-        return self._ok(handed)
-
-    async def _flock_outcomes(self, args: _FlockOutcomesArgs) -> ToolResult:
-        flock = self._require_flock()
-        wait_s = flock.max_wait_s if args.wait_s is None else min(args.wait_s, flock.max_wait_s)
-        result = await flock.activity(after=args.after, peer_id=args.peer_id, wait_s=wait_s)
-        if not result.get("activity"):
-            who = f"member {args.peer_id}" if args.peer_id else "no flock member"
-            return ToolResult.error(
-                f"flock_outcomes: {who} published an outcome or failure after cursor "
-                f"{args.after} within {wait_s:g}s. The flock may still be working; call "
-                "flock_outcomes again with the same cursor. Until a result arrives here, "
-                "no member has produced one: do not report a verdict or outcome."
-            )
-        return self._ok(result)

@@ -13,7 +13,7 @@ async function selectInstance(page: Page, name: string) {
 }
 
 /**
- * Analytics keeps the service-wide reports (eval, query traffic, dreams)
+ * Analytics keeps the service-wide reports (eval, query traffic)
  * behind the "Service diagnostics" disclosure.
  */
 async function openServiceDiagnostics(page: Page) {
@@ -73,14 +73,6 @@ test('/mimir/health stacks the doctor checklist above the lint detail', async ({
 test('/mimir/lint deep link lands on the Health page', async ({ page }) => {
   await page.goto('/mimir/lint');
   await expect(page.getByTestId('health-page')).toBeVisible();
-});
-
-test('/mimir/dreams deep link lands on Analytics with the dream section', async ({ page }) => {
-  await page.goto('/mimir/dreams');
-  await expect(page.getByRole('heading', { name: /analytics/i })).toBeVisible({ timeout: 5000 });
-  await openServiceDiagnostics(page);
-  await expect(page.getByRole('heading', { name: /dreams/i })).toBeVisible();
-  await expect(page.getByTestId('dream-cycle').first()).toBeVisible();
 });
 
 // ---------------------------------------------------------------------------

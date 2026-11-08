@@ -1,4 +1,4 @@
-"""Resident session controllers participating in the Ravn mesh."""
+"""Resident session controllers participating in the flock mesh."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from niuu.domain.outcome import OutcomeField
 from niuu.mesh import mesh_event_prefix
-from ravn.domain.events import RavnEvent, RavnEventType
+from niuu.mesh.events import MeshEvent, MeshEventType
 from sleipnir.adapters.in_process import InProcessBus
 from volundr.adapters.outbound.resident_flock import ResidentFlockAdapter
 from volundr.domain.models import (
@@ -216,8 +216,8 @@ async def test_persona_event_runs_native_reaction_and_publishes_response_and_out
     await bus.subscribe([f"{prefix}.activity.hermes_worker"], surfaced.append)
     await bus.subscribe([f"{prefix}.proof.hermes.completed"], outcomes.append)
 
-    event = RavnEvent(
-        type=RavnEventType.OUTCOME,
+    event = MeshEvent(
+        type=MeshEventType.OUTCOME,
         source="skuld:room-1",
         payload={
             "event_type": "proof.started",
@@ -297,8 +297,8 @@ async def test_matching_persona_event_wakes_resident_and_surfaces_response() -> 
 
     peer = resident._peers[runtime.id]
     await peer.mesh.publish(
-        RavnEvent(
-            type=RavnEventType.OUTCOME,
+        MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="coordinator",
             payload={
                 "event_type": "proof.started",
@@ -367,8 +367,8 @@ async def test_event_reaction_without_assistant_output_surfaces_error() -> None:
 
     peer = resident._peers[runtime.id]
     await peer.mesh.publish(
-        RavnEvent(
-            type=RavnEventType.OUTCOME,
+        MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="skuld:room-1",
             payload={"event_type": "proof.started", "prompt": "Return a response"},
             timestamp=datetime.now(UTC),
@@ -418,8 +418,8 @@ async def test_event_reaction_failure_surfaces_correlated_error() -> None:
 
     peer = resident._peers[runtime.id]
     await peer.mesh.publish(
-        RavnEvent(
-            type=RavnEventType.OUTCOME,
+        MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="skuld:room-1",
             payload={"event_type": "proof.started", "prompt": "Return a response"},
             timestamp=datetime.now(UTC),
@@ -494,8 +494,8 @@ async def test_self_and_missing_runtime_events_do_not_create_reactions() -> None
         InProcessBus(),
         persona_provider=_PersonaProvider(persona),
     )
-    event = RavnEvent(
-        type=RavnEventType.OUTCOME,
+    event = MeshEvent(
+        type=MeshEventType.OUTCOME,
         source=runtime.flock_peer_id,
         payload={"event_type": "proof.started"},
         timestamp=datetime.now(UTC),
@@ -532,8 +532,8 @@ async def test_result_only_and_error_frames_surface_native_engine_results() -> N
         prefix = mesh_event_prefix(str(flock_id))
         await bus.subscribe([f"{prefix}.activity.hermes_worker"], surfaced.append)
         await resident._peers[runtime.id].mesh.publish(
-            RavnEvent(
-                type=RavnEventType.OUTCOME,
+            MeshEvent(
+                type=MeshEventType.OUTCOME,
                 source="coordinator",
                 payload={"event_type": "proof.started"},
                 timestamp=datetime.now(UTC),
@@ -586,8 +586,8 @@ async def test_stop_cancels_running_native_reaction() -> None:
     )
     await resident.sync()
     await resident._peers[runtime.id].mesh.publish(
-        RavnEvent(
-            type=RavnEventType.OUTCOME,
+        MeshEvent(
+            type=MeshEventType.OUTCOME,
             source="coordinator",
             payload={"event_type": "proof.started"},
             timestamp=datetime.now(UTC),
@@ -608,24 +608,3 @@ async def test_stop_cancels_running_native_reaction() -> None:
 
     assert reaction.status == "cancelled"
     assert reaction.connection is None
-
-
-class _RavnController(_Controller):
-    engine = ResidentEngine.RAVN
-
-
-async def test_ravn_residents_are_not_bridged_onto_the_flock_mesh() -> None:
-    """A Ravn resident is its own mesh peer; bridging it would join its peer id twice."""
-    runtime = _runtime(flock_id=uuid4()).model_copy(
-        update={
-            "engine": ResidentEngine.RAVN,
-            "backend": ResidentBackend.HELMRELEASE,
-            "profile_id": "ravn-helm",
-        }
-    )
-    resident = ResidentFlockAdapter(_Repository(runtime), [_RavnController()], InProcessBus())
-
-    await resident.sync()
-
-    assert resident._peers == {}
-    await resident.stop()

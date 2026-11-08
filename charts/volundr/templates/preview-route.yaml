@@ -1,0 +1,63 @@
+{{- if .Values.sessionPreview.enabled -}}
+{{- if not .Values.sessionGateway.enabled }}
+{{- fail "sessionPreview.enabled needs sessionGateway.enabled: previews are served on the session gateway's *.<preview domain> listener" }}
+{{- end }}
+{{- $domain := include "volundr.sessionPreview.domain" . }}
+{{- $oidc := .Values.sessionPreview.oidc }}
+{{- $name := printf "%s-preview" (include "volundr.fullname" .) }}
+# Live preview: every preview host goes to Forge, whose preview router
+# (niuu.preview_proxy) checks ownership and forwards to the session's Skuld.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: session-preview
+spec:
+  parentRefs:
+    - name: {{ include "volundr.sessionGateway.name" . }}
+      namespace: {{ .Release.Namespace }}
+      sectionName: preview-https
+  hostnames:
+    - {{ printf "*.%s" $domain | quote }}
+  rules:
+    - backendRefs:
+        - name: {{ include "volundr.fullname" . }}
+          port: {{ .Values.service.port }}
+      timeouts:
+        # An app's own responses (SSE, long polls) stream unbounded.
+        request: "0s"
+---
+# Sign-in on the preview domain: standard OIDC at the gateway. One callback host
+# serves every preview; the session cookies are scoped to the preview domain, so
+# they never reach the platform's own hosts, and the access token is forwarded
+# to Forge as a bearer token. Forge strips it (and every cookie) before the app.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: session-preview
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ $name }}
+  oidc:
+    provider:
+      issuer: {{ required "sessionPreview.oidc.issuer is required" $oidc.issuer | quote }}
+    clientID: {{ required "sessionPreview.oidc.clientId is required" $oidc.clientId | quote }}
+    clientSecret:
+      name: {{ required "sessionPreview.oidc.clientSecretName is required" $oidc.clientSecretName | quote }}
+    redirectURL: {{ printf "https://%s/oauth2/callback" ($oidc.callbackHost | default (printf "auth.%s" $domain)) | quote }}
+    cookieDomain: {{ $domain | quote }}
+    logoutPath: {{ $oidc.logoutPath | quote }}
+    forwardAccessToken: true
+    refreshToken: true
+    scopes:
+      {{- toYaml $oidc.scopes | nindent 6 }}
+{{- end }}

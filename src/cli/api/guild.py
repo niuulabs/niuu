@@ -43,13 +43,10 @@ class GuildAPIError(Exception):
 class OfferedInstance:
     kind: str
     base_url: str
-    ravn_base_url: str = ""
     config: dict[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"kind": self.kind, "baseUrl": self.base_url}
-        if self.ravn_base_url:
-            payload["ravnBaseUrl"] = self.ravn_base_url
         if self.config:
             payload["config"] = self.config
         return payload

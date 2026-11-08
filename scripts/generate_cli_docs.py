@@ -33,10 +33,6 @@ _SENTINEL_REPR = "<object object"
 
 
 def _load(which: str) -> click.Command:
-    if which == "ravn":
-        from ravn.cli.commands import app
-
-        return get_command(app)
     from cli.app import build_app
 
     return get_command(build_app())
@@ -253,17 +249,8 @@ NIUU_INTRO = [
     "local stack, coding sessions, runs, and sagas.",
     "",
     "Start with the worked examples below; the full command tree follows.",
-    "For the agent runtime CLI see [ravn](cli-ravn.md).",
 ]
 
-RAVN_INTRO = [
-    "`ravn` is the agent runtime: it runs a conversation or daemon, manages",
-    "personas and profiles, and supervises rooms, flocks, and wardens on the",
-    "local host.",
-    "",
-    "Start with the worked examples below; the full command tree follows.",
-    "For the platform CLI see [niuu](cli-niuu.md).",
-]
 
 # Every line here is a real invocation — keep it that way when editing.
 NIUU_TASKS: list[tuple[str, str, list[str]]] = [
@@ -317,17 +304,20 @@ NIUU_TASKS: list[tuple[str, str, list[str]]] = [
     ),
     (
         "Authenticate and switch servers",
-        "A context is a named server the CLI talks to, so you can move between "
-        "a local stack and a shared one.",
+        "A context is a named Niuu host the CLI talks to, so you can move between "
+        "a local stack and a shared one. `local` (this machine) is built in; every "
+        "command uses the active context, and `niuu login` uses its issuer.",
         [
-            "niuu login",
-            "niuu whoami",
-            "",
             "niuu context list",
             "printf 'Server URL: '",
             "read -r NIUU_CONTEXT_URL",
-            'niuu context add staging "$NIUU_CONTEXT_URL"',
-            "niuu context use staging",
+            "printf 'OIDC issuer: '",
+            "read -r NIUU_CONTEXT_ISSUER",
+            'niuu context add staging "$NIUU_CONTEXT_URL" --issuer "$NIUU_CONTEXT_ISSUER" --use',
+            "niuu login",
+            "niuu whoami",
+            "",
+            "niuu context use local",
         ],
     ),
     (
@@ -363,115 +353,6 @@ NIUU_TASKS: list[tuple[str, str, list[str]]] = [
         "",
         [
             "niuu tui                    # interactive terminal UI",
-            "niuu ravn list              # active agent sessions",
-            "niuu ravn status            # Ravn platform status",
-        ],
-    ),
-]
-
-RAVN_TASKS: list[tuple[str, str, list[str]]] = [
-    (
-        "Talk to an agent",
-        "Pass a prompt for a single turn, or omit it for a REPL.",
-        [
-            'ravn run "summarise the failing tests"',
-            "ravn run                                   # interactive REPL",
-            "ravn run --persona reviewer                # pick a role",
-            'ravn run --no-tools "just answer, run nothing"',
-            "ravn run --show-usage                      # print token usage",
-        ],
-    ),
-    (
-        "See what roles are available",
-        "Persona picks *who* an agent is; profile picks *how* it is deployed. "
-        "Both accept a name or a path to a YAML file.",
-        [
-            "ravn personas list",
-            "ravn personas list --builtin",
-            "ravn profiles list",
-            "",
-            "ravn run --persona ./contrib/red-team.yaml",
-        ],
-    ),
-    (
-        "Start a room and put agents in it",
-        "A room is a local collaboration space — no platform services needed. "
-        "It runs until you stop it.",
-        [
-            "ravn room create desk                      # create and start",
-            "ravn room ls                               # rooms and their status",
-            "",
-            "ravn join --persona reviewer --room desk",
-            "ravn join --persona coder --room desk --as builder",
-            "ravn room members --room desk              # who is in, and live?",
-        ],
-    ),
-    (
-        "Talk in a room",
-        "`@handle` addresses a member; every recipient gets the whole message. "
-        "With no address it goes to whoever spoke last.",
-        [
-            "ravn room join --participant human:you --environment desk --role owner",
-            "",
-            "ravn room post --as human:you '@reviewer take a look at the diff'",
-            "ravn room post --as human:you '@builder build it then @reviewer check it'",
-            "ravn room post --as human:you --to reviewer 'explicit target'",
-            "ravn room post --as human:you --dry-run '@reviewer who gets this?'",
-            "",
-            "ravn room tail --room desk                 # recent turns",
-            "ravn room tail --room desk --follow        # keep streaming",
-        ],
-    ),
-    (
-        "Stop and clean up a room",
-        "`stop` keeps the definition so you can start it again; `rm` deletes "
-        "the room and its transcripts.",
-        [
-            "ravn leave --as builder --room desk        # remove one member",
-            "ravn room stop desk                        # stop the broker",
-            "ravn room start desk                       # bring it back",
-            "ravn room rm desk --force                  # delete it entirely",
-        ],
-    ),
-    (
-        "Run a flock",
-        "A flock is a mesh of agent daemons that can delegate work to each "
-        "other. Point one at a room and its nodes join as members.",
-        [
-            "ravn flock init reviewer coder             # write the definition",
-            "ravn flock init --room desk reviewer coder # ...and join a room",
-            "ravn flock start",
-            "ravn flock status",
-            "ravn flock peers                           # who found whom",
-            "ravn flock logs --node reviewer",
-            "ravn flock stop",
-        ],
-    ),
-    (
-        "Run unattended",
-        "The daemon drives itself and answers what is addressed to it; the "
-        "gateway exposes Telegram and a local HTTP channel.",
-        [
-            "ravn daemon --persona coordinator",
-            "ravn listen --persona coder                # take dispatched tasks",
-            "ravn gateway --telegram --http           # human-facing chat channels",
-            "",
-            "ravn warden list                           # persisted long-lived agents",
-            "ravn warden create notes-warden",
-        ],
-    ),
-    (
-        "Operator surfaces",
-        "",
-        [
-            "ravn tui                                   # terminal UI",
-            "ravn web --port 7477                       # standalone web UI",
-            "ravn peers                                 # verified mesh peers",
-            "",
-            "ravn approvals list                        # command approval patterns",
-            "printf 'Exact pattern to revoke from the list above: '",
-            "read -r RAVN_APPROVAL_PATTERN",
-            'ravn approvals revoke "$RAVN_APPROVAL_PATTERN"',
         ],
     ),
 ]
@@ -482,7 +363,6 @@ def main() -> None:
 
     targets = [
         ("niuu", "niuu CLI reference", "cli-niuu.md", NIUU_INTRO, NIUU_TASKS),
-        ("ravn", "ravn CLI reference", "cli-ravn.md", RAVN_INTRO, RAVN_TASKS),
     ]
     for which, title, filename, intro, tasks in targets:
         path = DOCS_DIR / filename

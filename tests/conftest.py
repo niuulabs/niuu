@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator, Callable, Iterator
+from collections.abc import AsyncGenerator, Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -120,29 +120,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     items[:] = selected
 
 
-@pytest.fixture
-def open_outbox() -> Iterator[Callable[..., Any]]:
-    """Open resident notification outboxes that are closed when the test ends.
-
-    Each holds a SQLite connection; one a test leaves open is reported as an
-    unclosed database in whichever later test the garbage collector runs in.
-    """
-    from ravn.adapters.resident_notifications import (  # noqa: PLC0415
-        SqliteResidentNotificationOutbox,
-    )
-
-    opened: list[SqliteResidentNotificationOutbox] = []
-
-    def _open(path: Path, *, max_pending: int = 100) -> SqliteResidentNotificationOutbox:
-        outbox = SqliteResidentNotificationOutbox(path, max_pending=max_pending)
-        opened.append(outbox)
-        return outbox
-
-    yield _open
-    for outbox in opened:
-        outbox.close()
-
-
 @pytest.fixture(autouse=True)
 def _hermetic_settings_env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     saved = {k: v for k, v in os.environ.items() if k.startswith(_AMBIENT_PREFIXES)}
@@ -210,9 +187,18 @@ class InMemorySessionRepository(SessionRepository):
                 "short_description_updated_at": current.short_description_updated_at,
                 "description_updated_at": current.description_updated_at,
                 "session_usage": current.session_usage,
+                "startup": current.startup,
             }
         )
         self._sessions[session.id] = updated
+        return updated
+
+    async def update_startup(self, session_id, startup):
+        current = self._sessions.get(session_id)
+        if current is None:
+            return None
+        updated = current.model_copy(update={"startup": startup})
+        self._sessions[session_id] = updated
         return updated
 
     async def update_description(self, session_id, changes, now):

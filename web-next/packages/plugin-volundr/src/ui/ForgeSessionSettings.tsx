@@ -3,7 +3,6 @@ import './ForgeSessionSettings.css';
 
 export const SESSION_TAB_SETTINGS = [
   { id: 'chat', label: 'Chat', always: true },
-  { id: 'terminal', label: 'Terminal' },
   { id: 'diffs', label: 'Diff' },
   { id: 'files', label: 'Files' },
   { id: 'chronicles', label: 'Chronicle' },

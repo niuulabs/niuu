@@ -13,7 +13,7 @@ from pathlib import PurePosixPath
 
 import yaml
 
-from ravn.domain.persona_document import (
+from personas.domain.persona_document import (
     PortablePersonaDefinition,
     parse_portable_persona,
     persona_revision_for_definition,

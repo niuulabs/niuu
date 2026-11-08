@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import get_args
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -30,6 +31,12 @@ from volundr.domain.services.compute_pool import ComputePoolService
 logger = logging.getLogger(__name__)
 
 STORAGE_SECTION = "storage"
+
+
+def _nullable_number(key: str) -> bool:
+    """Whether a policy field is an optional number that the form may leave empty."""
+    arguments = get_args(ComputePoolPolicy.model_fields[key].annotation)
+    return type(None) in arguments and any(argument in {int, float} for argument in arguments)
 
 
 def _sanitize_log(value: object) -> str:
@@ -176,9 +183,26 @@ def create_admin_settings_router(
                     "Maximum machines",
                     "Includes standby, active, failed and deleting machines.",
                 ),
+                "slots_per_machine": (
+                    "Sessions per machine",
+                    "Sessions one machine serves at once. Above 1 needs a runtime that "
+                    "supports slots; the change is refused otherwise.",
+                ),
+                "max_sessions_per_machine": (
+                    "Sessions before replacement",
+                    "Sessions a machine serves before it drains and is replaced. Unset means "
+                    "one per slot. Applies to 'Replace VM' only.",
+                ),
+                "max_machine_age_seconds": (
+                    "Machine lifetime (seconds)",
+                    "Age after which a machine takes no new sessions and drains once empty. "
+                    "Unset means no limit. Applies to 'Replace VM' only.",
+                ),
                 "warm_min": (
-                    "Ready spare machines",
-                    "Maintain this many clean guests, within the total capacity limit.",
+                    "Free warm slots",
+                    "Keep at least this many free session slots ready on warm machines, booting "
+                    "machines ahead of demand within the total capacity limit. With one "
+                    "session per machine this is the number of ready spare machines.",
                 ),
                 "max_provisioning": (
                     "Concurrent provisioning",
@@ -186,7 +210,7 @@ def create_admin_settings_router(
                 ),
                 "idle_timeout_seconds": (
                     "Spare lifetime (seconds)",
-                    "Delete idle machines above the ready-spare minimum after this interval.",
+                    "Delete empty machines above the free warm slots after this interval.",
                 ),
                 "provisioning_timeout_seconds": (
                     "Provisioning timeout (seconds)",
@@ -234,8 +258,10 @@ def create_admin_settings_router(
                             else "boolean"
                             if isinstance(value, bool)
                             else "number"
-                            if isinstance(value, float | int)
+                            if isinstance(value, float | int) or _nullable_number(key)
                             else "text",
+                            nullable=_nullable_number(key),
+                            placeholder="Unset" if _nullable_number(key) else None,
                         )
                         for key, value in policy.items()
                     ],
@@ -293,18 +319,44 @@ def create_admin_settings_router(
                                 else "Waiting for first reconciliation"
                             ),
                         ),
+                        SettingsFieldSchema(
+                            key="capacity_shortfall",
+                            label="Warm capacity",
+                            type="text",
+                            read_only=True,
+                            value=snapshot["capacity_shortfall"]
+                            or (
+                                f"{snapshot['free_warm_slots']} free warm slots; "
+                                f"{policy['warm_min']} wanted"
+                            ),
+                            description=(
+                                "Free session slots ready on warm machines, against the free "
+                                "warm slots the pool keeps. A shortfall means the pool is at "
+                                "its maximum machines."
+                            ),
+                        ),
                         *[
                             SettingsFieldSchema(
                                 key=lease["id"],
                                 label=lease["id"],
                                 type="text",
                                 read_only=True,
-                                value=f"{lease['state']} · {lease['profile']}",
-                                description=lease["error"]
-                                or (
-                                    f"Session {lease['session_id']}"
-                                    if lease["session_id"]
-                                    else "Unbound machine"
+                                value=(
+                                    f"{lease['state']} · {lease['profile']} · "
+                                    f"{len(lease['sessions'])} of {lease['slots']} slots"
+                                ),
+                                description="; ".join(
+                                    part
+                                    for part in (
+                                        lease["error"],
+                                        ", ".join(
+                                            f"Slot {item['slot']} ({item['state']}): "
+                                            f"session {item['session_id']}"
+                                            for item in lease["sessions"]
+                                        )
+                                        or "No sessions",
+                                    )
+                                    if part
                                 ),
                             )
                             for lease in snapshot["allocations"]
@@ -312,7 +364,7 @@ def create_admin_settings_router(
                     ],
                 )
             )
-            disposable = [lease for lease in snapshot["allocations"] if lease["session_id"] is None]
+            disposable = [lease for lease in snapshot["allocations"] if not lease["sessions"]]
             schema.sections.append(
                 SettingsSectionSchema(
                     id="compute-dispose",

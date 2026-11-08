@@ -64,7 +64,7 @@ def test_openshell_image_installs_locked_agent_clis() -> None:
 
 
 def test_openshell_image_installs_the_otel_extra() -> None:
-    """Workflow flocks enable observability; Ravn fails at startup without otel."""
+    """A session that enables observability fails at startup without the otel extra."""
     dockerfile = (REPO_ROOT / "containers/openshell/Dockerfile").read_text()
     syncs = [line for line in dockerfile.splitlines() if line.startswith("RUN uv sync ")]
 

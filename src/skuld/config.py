@@ -14,7 +14,6 @@ Environment variable override format:
 
 import json
 import os
-from contextlib import suppress
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -90,10 +89,10 @@ class NngConfig(BaseModel):
 
 
 class MeshConfig(BaseModel):
-    """Mesh peer configuration for flock participation.
+    """Mesh peer configuration.
 
     When enabled, Skuld registers as a mesh peer and subscribes to task
-    topics. Other ravens can delegate coding work via the standard mesh
+    topics. Other peers can delegate coding work via the standard mesh
     pub/sub protocol. Disabled by default so solo sessions are unaffected.
     """
 
@@ -117,117 +116,6 @@ class MeshConfig(BaseModel):
     consumes_event_types: list[str] = Field(
         default_factory=lambda: ["code.requested"],
     )
-    flock_broker: bool = Field(
-        default=False,
-        description=(
-            "Skuld brokers a Ravn flock instead of working in it. Its CLI hands work "
-            "to the flock's Ravns over the mesh (the Forge MCP flock tools) and reports "
-            "only the outcomes they publish; Skuld never republishes its own turns as "
-            "a peer outcome, consumes no peer events, and the CLI runs without its "
-            "native sub-agents, which would otherwise stand in for the flock."
-        ),
-    )
-    flock_outcome_history: int = Field(
-        default=200,
-        ge=1,
-        description="Flock member outcomes and failures a broker keeps for its flock tools.",
-    )
-
-    @model_validator(mode="after")
-    def _broker_consumes_nothing(self) -> "MeshConfig":
-        if self.flock_broker and self.consumes_event_types:
-            raise ValueError(
-                "mesh.flock_broker is set but mesh.consumes_event_types is "
-                f"{self.consumes_event_types}: a broker that also subscribes to peer "
-                "events would take the flock's own work. Set consumes_event_types to [] "
-                "or unset flock_broker"
-            )
-        return self
-
-
-class WorkflowTriggerConfig(BaseModel):
-    """Startup workflow trigger published by Skuld onto the mesh."""
-
-    enabled: bool = Field(default=False)
-    node_id: str = Field(default="")
-    label: str = Field(default="")
-    source: str = Field(default="manual dispatch")
-    event_type: str = Field(default="")
-    startup_delay_s: float = Field(default=3.0)
-    ack_timeout_s: float = Field(
-        default=20.0,
-        description=(
-            "Seconds to wait for a workflow.kickoff.acknowledged mesh event "
-            "from the flock before republishing the kickoff."
-        ),
-    )
-    ack_max_redeliveries: int = Field(
-        default=5,
-        description=(
-            "How many times an unacknowledged kickoff is republished before "
-            "the session fails loudly. Total attempts = 1 + this value."
-        ),
-    )
-
-
-class WorkflowRuntimeConfig(BaseModel):
-    """Workflow graph metadata injected into Skuld-backed flock sessions."""
-
-    gate_consumer_wait_s: float = Field(
-        default=20.0,
-        description=(
-            "How long a gate decision waits for the flock to reconnect after a restart. "
-            "Bounded by how long a caller will hold the request; on a hit the decision "
-            "fails with a 503 and the gate stays pending."
-        ),
-    )
-    workflow_id: str = Field(default="")
-    name: str = Field(default="")
-    version: str = Field(default="")
-    scope: str = Field(default="")
-    initial_context: str = Field(default="")
-    graph: dict[str, Any] = Field(default_factory=dict)
-    trace_context: dict[str, str] = Field(default_factory=dict)
-    evidence_verifier: DynamicAdapterConfig | None = Field(
-        default=None,
-        description=(
-            "Deployment-owned evidence verifier adapter and trust configuration. Required "
-            "for evidence gate nodes; never populated from imported workflow graph content."
-        ),
-    )
-    evidence_artifacts: DynamicAdapterConfig | None = Field(
-        default=None,
-        description="Deployment-owned resolver for the current digest of evidence gate artifacts.",
-    )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _coerce_graph_json(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-        graph = value.get("graph")
-        if isinstance(graph, str) and graph.strip():
-            with suppress(Exception):
-                value = dict(value)
-                value["graph"] = json.loads(graph)
-        trace_context = value.get("trace_context")
-        if isinstance(trace_context, str) and trace_context.strip():
-            with suppress(Exception):
-                value = dict(value)
-                value["trace_context"] = json.loads(trace_context)
-        # The initial context is JSON-encoded on the wire because the sandbox
-        # provisioner refuses env values containing newlines, and a workflow
-        # brief is prose. Only accept a decode that yields a string: a context
-        # whose text happens to be valid JSON ("{...}", a bare number) must
-        # stay the literal prose the author wrote, not become an object.
-        initial_context = value.get("initial_context")
-        if isinstance(initial_context, str) and initial_context.strip():
-            with suppress(Exception):
-                decoded = json.loads(initial_context)
-                if isinstance(decoded, str):
-                    value = dict(value)
-                    value["initial_context"] = decoded
-        return value
 
 
 class RoomConfig(BaseModel):
@@ -268,7 +156,7 @@ class RoomConfig(BaseModel):
             "Declare that this broker hosts a room and owns no CLI agent of "
             "its own. The broker then never starts its own CLI transport, and "
             "untargeted browser messages go to the room's sole ravn when "
-            "default_target_peer_id is unset. Set by 'ravn room create'. "
+            "default_target_peer_id is unset. Set by the room's own configuration. "
             "Without it a room broker lazy-starts a Claude/Codex process that "
             "competes with the room's ravns for the same chat frames."
         ),
@@ -314,24 +202,6 @@ class TelegramConfig(BaseModel):
     message_thread_id: int | None = Field(default=None)
 
 
-class PeerWatchdogConfig(BaseModel):
-    """Silence watchdog settings for workflow flock peers."""
-
-    enabled: bool = Field(default=True)
-    poll_seconds: float = Field(
-        default=5.0,
-        description="Seconds between silence watchdog checks.",
-    )
-    silence_seconds: float = Field(
-        default=300.0,
-        description="Seconds of no visible peer progress before warning in normal execution.",
-    )
-    tool_silence_seconds: float = Field(
-        default=300.0,
-        description="Seconds of no visible peer progress before warning while a tool is running.",
-    )
-
-
 class SkuldSessionConfig(BaseModel):
     """Per-session configuration (set by Volundr at pod creation)."""
 
@@ -362,7 +232,24 @@ class SkuldSessionConfig(BaseModel):
         ),
     )
     workspace_dir: str | None = Field(default=None)
-    system_prompt: str = Field(default="")
+    system_prompt: str = Field(
+        default="",
+        description=(
+            "Ad-hoc instructions from the launch request. With a ``persona`` they are appended "
+            "after the persona's own instructions, never in place of them."
+        ),
+    )
+    persona: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The pinned portable persona document (``schema_version``, ``id``, ``revision``, "
+            "``definition``) this session plays, as Forge resolved it at launch. Skuld projects "
+            "it onto the harness on every start, resume included (``skuld.personas``): its "
+            "instructions are appended to the harness's own prompt and its tool and permission "
+            "limits are enforced by the harness, or the session refuses to start. Null means the "
+            "session plays no persona and nothing is projected."
+        ),
+    )
     initial_prompt: str = Field(default="")
     saga_id: str | None = Field(default=None)
     run_id: str | None = Field(default=None)
@@ -687,6 +574,75 @@ class WorkloadIdentityConfig(BaseModel):
         return value
 
 
+class PreviewConfig(BaseModel):
+    """Live preview: serve the session's own listening ports to its owner.
+
+    Skuld watches which TCP ports the session listens on, reports changes to the
+    browser, and forwards Forge's preview router to them on loopback (see
+    ``skuld.preview``). Both adapters are required when enabled.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Discover the session's listening ports and serve them as live previews.",
+    )
+    port_scan_interval_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Seconds between scans of the session's listening sockets: how soon a "
+            "dev server that starts or stops shows up in the browser."
+        ),
+    )
+    port_scanner: DynamicAdapterConfig | None = Field(
+        default=None,
+        description=(
+            "skuld.preview_port.ListeningPortScanner adapter, e.g. "
+            "skuld.preview_adapters.ProcNetListeningPortScanner (a pod or VM: the whole "
+            "network namespace, minus excluded_ports) or "
+            "skuld.preview_adapters.LsofSessionPortScanner (a shared host: only "
+            "the session's own processes)."
+        ),
+    )
+    router_auth: DynamicAdapterConfig | None = Field(
+        default=None,
+        description=(
+            "skuld.preview_port.PreviewRouterAuth adapter that admits Forge's preview "
+            "router: skuld.preview_adapters.WorkloadJwtRouterAuth, or "
+            "skuld.preview_adapters.NoRouterAuth only on a host with no identity provider."
+        ),
+    )
+    connect_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Seconds to wait for a session port to accept a connection. Responses and "
+            "WebSockets stream unbounded, for as long as the browser holds them."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _adapters_when_enabled(self) -> "PreviewConfig":
+        if not self.enabled:
+            return self
+        missing = [
+            name
+            for name, adapter in (
+                ("port_scanner", self.port_scanner),
+                ("router_auth", self.router_auth),
+            )
+            if adapter is None or not adapter.adapter
+        ]
+        if missing:
+            raise ValueError(
+                f"preview.enabled is true but preview.{' and preview.'.join(missing)} "
+                "is not set: configure the adapter, or set preview.enabled to false"
+            )
+        return self
+
+
 class ForgeMcpConfig(BaseModel):
     """The built-in ``forge`` MCP server Skuld injects into every MCP-capable engine.
 
@@ -743,7 +699,9 @@ class ForgeMcpConfig(BaseModel):
     notify_confirm_timeout_s: float = Field(
         default=5.0,
         ge=0,
-        description="How long notify waits for Forge to acknowledge the log flush.",
+        description=(
+            "How long notify, and workflow_step_close, wait for Forge to acknowledge the log flush."
+        ),
     )
     forge_request_timeout_s: float = Field(
         default=20.0, gt=0, description="Timeout for one Forge REST call made by a tool."
@@ -782,24 +740,6 @@ class ForgeMcpConfig(BaseModel):
         default=True,
         description="Materialize the forge-notify skill for engines with per-session skills.",
     )
-    flock_outcome_wait_max_s: float = Field(
-        default=45.0,
-        gt=0,
-        description=(
-            "Longest one flock_outcomes call waits for a flock member's outcome. Must be "
-            "shorter than broker_request_timeout_s; the broker polls again for longer work."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _flock_wait_fits_broker_call(self) -> "ForgeMcpConfig":
-        if self.flock_outcome_wait_max_s >= self.broker_request_timeout_s:
-            raise ValueError(
-                f"forge_mcp.flock_outcome_wait_max_s ({self.flock_outcome_wait_max_s}) must be "
-                f"shorter than forge_mcp.broker_request_timeout_s "
-                f"({self.broker_request_timeout_s}), or every long wait is cut off mid-call"
-            )
-        return self
 
     @field_validator("grants", mode="before")
     @classmethod
@@ -830,6 +770,30 @@ class ForgeMcpConfig(BaseModel):
             raise ValueError(f"forge_mcp.token_file {str(path)!r} is empty")
         self.token = token
         return self
+
+
+class SecretRequestsConfig(BaseModel):
+    """How the ``request_secret`` tool waits for the user to type a secret into the chat card."""
+
+    poll_interval_s: float = Field(
+        default=2.0,
+        gt=0,
+        description=(
+            "How often request_secret asks Forge whether the user answered the card. It "
+            "trades answer latency against Forge load; there is no event to wait on."
+        ),
+    )
+    wait_max_s: float = Field(
+        default=50.0,
+        gt=0,
+        description=(
+            "Longest one request_secret call waits for the user. Bounded by the engine's MCP "
+            "call timeouts: it must be shorter than forge_mcp.broker_request_timeout_s and "
+            "forge_mcp.tool_timeout_s, or the engine kills the call first (startup fails "
+            "otherwise). When it passes the call fails loudly and the request stays open in "
+            "the chat; the agent calls request_secret again with the same name to keep waiting."
+        ),
+    )
 
 
 class CodexAuthConfig(BaseModel):
@@ -1019,6 +983,27 @@ class TraceContextConfig(BaseSettings):
     tracestate: str = Field(
         default="",
         validation_alias=AliasChoices("tracestate", "TRACESTATE"),
+    )
+
+
+class WorkflowStepsConfig(BaseModel):
+    """Hosting workflow steps: this session runs the steps of a workflow run.
+
+    Forge sets ``enabled`` for a session a workflow run created as a step host. Skuld then
+    serves ``POST /api/workflow/steps`` and ``GET /api/workflow/steps/{activation_id}``,
+    holds the open step durably in the session's event log, injects its instructions at a
+    turn boundary and lists the ``workflow_step_close`` tool for the whole session. An
+    ordinary session leaves it off and pays for none of it.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Serve the workflow step API and the workflow_step_close tool. Requires the "
+            "durable event log and history hydration (event_log_enabled and "
+            "history_hydration_enabled, with volundr_api_url): a step is restored from the log "
+            "after a restart, so enabling without them is fatal at startup."
+        ),
     )
 
 
@@ -1280,14 +1265,14 @@ class SkuldSettings(BaseSettings):
     acp_prompt_timeout_s: float = Field(default=300.0)  # ACP/MSP (Grok Build, Muse) turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
+    preview: PreviewConfig = Field(default_factory=PreviewConfig)
+    secret_requests: SecretRequestsConfig = Field(default_factory=SecretRequestsConfig)
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
     observability: SkuldObservabilityConfig = Field(default_factory=SkuldObservabilityConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
-    peer_watchdog: PeerWatchdogConfig = Field(default_factory=PeerWatchdogConfig)
     room: RoomConfig = Field(default_factory=RoomConfig)
     mesh: MeshConfig = Field(default_factory=MeshConfig)
-    workflow_trigger: WorkflowTriggerConfig = Field(default_factory=WorkflowTriggerConfig)
-    workflow: WorkflowRuntimeConfig = Field(default_factory=WorkflowRuntimeConfig)
+    workflow_steps: WorkflowStepsConfig = Field(default_factory=WorkflowStepsConfig)
 
     @model_validator(mode="after")
     def _resolve_transport_adapter(self) -> "SkuldSettings":
@@ -1330,25 +1315,21 @@ class SkuldSettings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _flock_broker_can_reach_its_flock(self) -> "SkuldSettings":
-        """A broker the flock tools cannot serve would do the flock's work itself."""
-        if not self.mesh.flock_broker:
+    def _secret_wait_fits_engine_call(self) -> "SkuldSettings":
+        """A wait the engine cuts off mid-call would read as a failure, not as "still open"."""
+        if not self.forge_mcp.enabled:
             return self
-        missing = [
-            name
-            for name, enabled in (
-                ("mesh.enabled", self.mesh.enabled),
-                ("room.enabled", self.room.enabled),
-                ("forge_mcp.enabled", self.forge_mcp.enabled),
-            )
-            if not enabled
-        ]
-        if missing:
-            raise ValueError(
-                f"mesh.flock_broker is set but {', '.join(missing)} is off: the broker reaches "
-                "its flock through the room's mesh route via the forge MCP flock tools. "
-                "Enable them, or unset mesh.flock_broker"
-            )
+        wait = self.secret_requests.wait_max_s
+        for knob, bound in (
+            ("forge_mcp.broker_request_timeout_s", self.forge_mcp.broker_request_timeout_s),
+            ("forge_mcp.tool_timeout_s", self.forge_mcp.tool_timeout_s),
+        ):
+            if wait >= bound:
+                raise ValueError(
+                    f"secret_requests.wait_max_s ({wait}) must be shorter than {knob} ({bound}), "
+                    "or the engine ends every long request_secret call before it can answer. "
+                    f"Lower secret_requests.wait_max_s or raise {knob}"
+                )
         return self
 
     @property

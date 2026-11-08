@@ -1,6 +1,6 @@
 """SkuldMeshAdapter — mesh peer bridge for Claude CLI sessions (NIU-612).
 
-Gives Skuld a mesh identity so it can participate in a ravn flock as a peer.
+Gives Skuld a mesh identity so it can participate in the mesh as a peer.
 Subscribes to task topics and feeds received prompts to the CLI transport.
 Results (including outcome blocks) are published back as response events.
 
@@ -19,21 +19,21 @@ from typing import Any
 
 from niuu.adapters.cli import CliTurnRunner
 from niuu.domain.outcome import parse_outcome_block
+from niuu.mesh.events import MeshEvent, MeshEventType
 from niuu.mesh.participant import MeshParticipant
 from niuu.ports.cli import CLITransport
-from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.ports.mesh import MeshPort
+from niuu.ports.mesh import MeshPort
 from skuld.config import MeshConfig
 from sleipnir.ports.events import SleipnirSubscriber
 
 logger = logging.getLogger("skuld.mesh_adapter")
 
-#: A broker-side answer to one mesh RPC ``type`` a flock member may send.
+#: A broker-side answer to one mesh RPC ``type`` a mesh peer may send.
 RpcHandler = Callable[[dict], Awaitable[dict]]
 
 
 class SkuldMeshAdapter:
-    """Bridge between the ravn mesh and the CLI transport.
+    """Bridge between the mesh and the CLI transport.
 
     Lifecycle:
         start() — start participant (mesh + discovery), subscribe to task topics
@@ -122,7 +122,7 @@ class SkuldMeshAdapter:
 
         logger.info("mesh adapter: stopped (peer_id=%s)", self._peer_id)
 
-    async def publish(self, event: RavnEvent, topic: str) -> None:
+    async def publish(self, event: MeshEvent, topic: str) -> None:
         """Publish an event onto the mesh when the adapter is active."""
         if self._mesh is None:
             return
@@ -227,13 +227,13 @@ class SkuldMeshAdapter:
         """
         return await self._turn_runner.run_prompt(prompt, request_id)
 
-    async def _handle_outcome_event(self, event: RavnEvent) -> None:
+    async def _handle_outcome_event(self, event: MeshEvent) -> None:
         """Handle incoming outcome events from mesh subscriptions.
 
         When an outcome event arrives that matches our subscribed topics,
         feed the prompt to the CLI transport and publish the result back.
         """
-        if event.type != RavnEventType.OUTCOME:
+        if event.type != MeshEventType.OUTCOME:
             return
 
         payload = event.payload
@@ -288,8 +288,8 @@ class SkuldMeshAdapter:
                 "errors": parsed.errors,
             }
 
-        response_event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        response_event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source=self._peer_id,
             payload=outcome_payload,
             timestamp=datetime.now(UTC),

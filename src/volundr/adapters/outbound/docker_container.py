@@ -35,14 +35,12 @@ from docker.errors import DockerException, ImageNotFound, NotFound
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
 from volundr.adapters.outbound.local_process import (
-    FlockPortPlan,
     LocalProcessPodManager,
     ProcessInfo,
     ProcessState,
-    cleanup_skuld_mesh_sockets,
-    skuld_mesh_addresses,
 )
 from volundr.domain.models import SessionStatus
+from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
 
 if TYPE_CHECKING:
     from volundr.domain.models import Session, SessionSpec
@@ -67,19 +65,6 @@ DEFAULT_READY_PROBE_TIMEOUT_SECONDS = 2.0
 MANAGED_BY = "docker_container"
 LABEL_SESSION = "niuu.session-id"
 LABEL_MANAGED_BY = "niuu.managed-by"
-_SESSION_SECRET_RUNNER = "/app/entrypoint.sh"
-_CHECK_FLOCK_PIDS = """\
-import json,os,sys
-state=json.load(open(sys.argv[1]))
-pids=list(state.get('pids',{}).values())
-if not pids:
-    raise SystemExit(1)
-for pid in pids:
-    try:
-        os.kill(int(pid),0)
-    except (OSError,ValueError):
-        raise SystemExit(1)
-"""
 
 
 class _NetworkRegistry:
@@ -296,23 +281,6 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
             )
         return False
 
-    async def _flock_healthy(self, session_id: str) -> bool:
-        info = self._processes.get(session_id)
-        if info is None or not info.flock_dir:
-            return True
-        container = await asyncio.to_thread(self._get_container, session_id)
-        if container is None:
-            return False
-        state_path = str(Path(self._sandbox_workspace(session_id)) / ".flock" / "state.json")
-        try:
-            result = await asyncio.to_thread(
-                container.exec_run,
-                ["python", "-c", _CHECK_FLOCK_PIDS, state_path],
-            )
-        except DockerException:
-            return False
-        return int(result[0] if isinstance(result, tuple) else result.exit_code) == 0
-
     async def status(self, session: Session) -> SessionStatus:
         """Like the base class, but RUNNING only once the broker has answered."""
         self._ensure_container_monitor(str(session.id))
@@ -332,11 +300,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
                 return SessionStatus.FAILED
             if info.state == ProcessState.STOPPED:
                 return SessionStatus.STOPPED
-            if (
-                info.state == ProcessState.RUNNING
-                and await self._broker_healthy(session_id)
-                and await self._flock_healthy(session_id)
-            ):
+            if info.state == ProcessState.RUNNING and await self._broker_healthy(session_id):
                 self._ready.add(session_id)
                 return SessionStatus.RUNNING
             if session_id in self._broker_startup_failures:
@@ -362,7 +326,6 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         session: Session,
         spec: SessionSpec,
         workspace: Path,
-        flock_plan: FlockPortPlan | None = None,
     ) -> dict[str, str]:
         session_id = str(session.id)
         sandbox_workspace = self._sandbox_workspace(session_id)
@@ -373,24 +336,6 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
             for entry in spec.pod_spec.env:
                 if name := entry.get("name"):
                     env[name] = entry.get("value", "")
-
-        if flock_plan is not None:
-            flock_dir = Path(sandbox_workspace) / ".flock"
-            cleanup_skuld_mesh_sockets(workspace / ".flock")
-            skuld_pub, skuld_rep = skuld_mesh_addresses(flock_dir)
-            env["SKULD__ROOM__ENABLED"] = "true"
-            env["SKULD__MESH__ADAPTERS"] = json.dumps(
-                [
-                    {
-                        "adapter": "ravn.adapters.discovery.static.StaticDiscoveryAdapter",
-                        "cluster_file": str(flock_dir / "cluster.yaml"),
-                        "poll_interval_s": 5,
-                    }
-                ]
-            )
-            env["SKULD__MESH__NNG__PUB_SUB_ADDRESS"] = skuld_pub
-            env["SKULD__MESH__NNG__REQ_REP_ADDRESS"] = skuld_rep
-            env["SKULD__MESH__HANDSHAKE_PORT"] = str(flock_plan.skuld_handshake_port)
 
         env["SESSION_ID"] = session_id
         env["WORKSPACE_DIR"] = sandbox_workspace
@@ -420,8 +365,12 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
             initial_prompt = session_vals.get("initialPrompt", "")
             if system_prompt:
                 env["SKULD__SESSION__SYSTEM_PROMPT"] = system_prompt
+            if persona := session_vals.get("persona"):
+                env["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
             if initial_prompt:
                 env["SKULD__SESSION__INITIAL_PROMPT"] = initial_prompt
+        if workflow_steps_enabled(spec.values):
+            env[WORKFLOW_STEPS_ENABLED_ENV] = "true"
         del workspace
         return env
 
@@ -473,7 +422,6 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         spec: SessionSpec,
         workspace: Path,
         port: int,
-        flock_plan: FlockPortPlan | None = None,
     ) -> dict[str, Any]:
         session_id = str(session.id)
         home_dir = self._session_home_dir(session_id)
@@ -489,7 +437,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
             "detach": True,
             "init": True,
             "labels": {LABEL_SESSION: session_id, LABEL_MANAGED_BY: MANAGED_BY},
-            "environment": self._container_environment(session, spec, workspace, flock_plan),
+            "environment": self._container_environment(session, spec, workspace),
             "volumes": volumes,
             "extra_hosts": {"host.docker.internal": "host-gateway"},
         }
@@ -517,7 +465,6 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         spec: SessionSpec,
         workspace: Path,
         port: int,
-        flock_plan: FlockPortPlan | None = None,
     ) -> int:
         """Start the session container; returns a synthetic PID for the state file."""
         session_id = str(session.id)
@@ -525,12 +472,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         if stale is not None:
             await asyncio.to_thread(stale.remove, force=True)
 
-        if flock_plan is not None:
-            flock_dir = workspace / ".flock"
-            (flock_dir / "state.json").unlink(missing_ok=True)
-            cleanup_skuld_mesh_sockets(flock_dir)
-
-        run_kwargs = self._run_kwargs(session, spec, workspace, port, flock_plan)
+        run_kwargs = self._run_kwargs(session, spec, workspace, port)
         container = await asyncio.to_thread(self._run_container, run_kwargs)
         await asyncio.to_thread(container.reload)
         if str(container.status) in {"exited", "dead"}:
@@ -556,78 +498,6 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         self._alive[session_id] = True
         return self._synthetic_pid(session_id)
 
-    def _flock_skuld_port(self, allocated_port: int) -> int:
-        del allocated_port
-        return self._broker_port
-
-    def _flock_runtime_workspace(self, session: Session, workspace: Path) -> Path:
-        del workspace
-        return Path(self._sandbox_workspace(str(session.id)))
-
-    def _flock_platform_url(self) -> str:
-        return self._platform_url
-
-    def _flock_mesh_transport(self) -> str:
-        return "ipc"
-
-    def _flock_skuld_addresses(self, flock_dir: Path, flock_plan: FlockPortPlan) -> tuple[str, str]:
-        del flock_plan
-        return skuld_mesh_addresses(flock_dir)
-
-    async def _run_flock_cli(
-        self,
-        session: Session,
-        workspace: Path,
-        arguments: list[str],
-    ) -> None:
-        """Run every Ravn lifecycle command inside the isolated session container."""
-        session_id = str(session.id)
-        container = await asyncio.to_thread(self._get_container, session_id)
-        if container is None:
-            raise RuntimeError(f"Session container {self.container_name(session_id)} is missing")
-        result = await asyncio.to_thread(
-            container.exec_run,
-            [_SESSION_SECRET_RUNNER, "python", "-m", "ravn", *arguments],
-            workdir=str(self._flock_runtime_workspace(session, workspace)),
-        )
-        exit_code = int(result[0] if isinstance(result, tuple) else result.exit_code)
-        if exit_code != 0:
-            output = result[1] if isinstance(result, tuple) else result.output
-            if isinstance(output, bytes):
-                output = output.decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"Container flock command failed with exit code {exit_code}: {str(output).strip()}"
-            )
-
-    async def _stop_flock_runtime(self, session_id: str, flock_dir: str) -> None:
-        try:
-            container = await asyncio.to_thread(self._get_container, session_id)
-            if container is not None:
-                runtime_flock_dir = str(Path(self._sandbox_workspace(session_id)) / ".flock")
-                result = await asyncio.to_thread(
-                    container.exec_run,
-                    [
-                        _SESSION_SECRET_RUNNER,
-                        "python",
-                        "-m",
-                        "ravn",
-                        "flock",
-                        "stop",
-                        "--flock-dir",
-                        runtime_flock_dir,
-                    ],
-                    workdir=self._sandbox_workspace(session_id),
-                )
-                exit_code = int(result[0] if isinstance(result, tuple) else result.exit_code)
-                if exit_code != 0:
-                    logger.warning(
-                        "Container flock stop failed session=%s exit=%d", session_id, exit_code
-                    )
-        except Exception:
-            logger.warning("Failed to stop container flock session=%s", session_id, exc_info=True)
-        finally:
-            cleanup_skuld_mesh_sockets(Path(flock_dir))
-
     async def _monitor_process(self, session_id: str, pid: int) -> None:
         """Watch the container and mark the session stopped when it exits."""
         del pid
@@ -635,23 +505,6 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
             while await asyncio.to_thread(self._container_running, session_id):
                 self._alive[session_id] = True
                 info = self._processes.get(session_id)
-                flock_healthy = await self._flock_healthy(session_id)
-                if not flock_healthy:
-                    if info and info.state == ProcessState.RUNNING:
-                        info.state = ProcessState.FAILED
-                        if info.port is not None:
-                            self._port_allocator.release(info.port)
-                        if info.flock_base_port is not None:
-                            self._allocated_flock_base_ports.discard(info.flock_base_port)
-                        if self._skuld_registry is not None:
-                            unregister = getattr(self._skuld_registry, "unregister", None)
-                            if callable(unregister):
-                                unregister(session_id)
-                        self._persist_state()
-                        logger.error("Flock process exited session=%s", session_id)
-                        await self._terminate_process(self._synthetic_pid(session_id))
-                        await self._notify_death(session_id)
-                    return
                 if session_id not in self._ready:
                     if await self._broker_healthy(session_id):
                         self._ready.add(session_id)

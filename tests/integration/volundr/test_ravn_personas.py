@@ -21,7 +21,7 @@ def _payload(name: str) -> dict:
         "summary": "Custom coding persona",
         "description": "Custom coding persona for integration testing.",
         "system_prompt_template": "You are a custom coding persona.",
-        "allowed_tools": ["read", "write"],
+        "allowed_tools": ["file_read", "file_write"],
         "forbidden_tools": [],
         "permission_mode": "default",
         "iteration_budget": 12,
@@ -70,27 +70,25 @@ async def test_create_get_list_and_yaml_persona(volundr_client, auth_headers):
 
 async def test_builtin_override_can_be_restored(volundr_client, auth_headers):
     headers = auth_headers("persona-user-2", "persona2@example.com")
-    payload = _payload("coding-agent") | {
+    payload = _payload("coder") | {
         "summary": "Overridden built-in coding agent",
         "system_prompt_template": "Override built-in coding agent.",
     }
 
-    put_resp = await volundr_client.put(
-        f"{API}/personas/coding-agent", json=payload, headers=headers
-    )
+    put_resp = await volundr_client.put(f"{API}/personas/coder", json=payload, headers=headers)
     assert put_resp.status_code == 200, put_resp.text
     updated = put_resp.json()
-    assert updated["name"] == "coding-agent"
+    assert updated["name"] == "coder"
     assert updated["is_builtin"] is True
     assert updated["has_override"] is True
     assert updated["yaml_source"] == "[built-in]"
     assert updated["override_source"] == "[user:persona-user-2]"
     assert updated["summary"] == "Overridden built-in coding agent"
 
-    delete_resp = await volundr_client.delete(f"{API}/personas/coding-agent", headers=headers)
+    delete_resp = await volundr_client.delete(f"{API}/personas/coder", headers=headers)
     assert delete_resp.status_code == 204, delete_resp.text
 
-    detail_resp = await volundr_client.get(f"{API}/personas/coding-agent", headers=headers)
+    detail_resp = await volundr_client.get(f"{API}/personas/coder", headers=headers)
     assert detail_resp.status_code == 200, detail_resp.text
     restored = detail_resp.json()
     assert restored["is_builtin"] is True

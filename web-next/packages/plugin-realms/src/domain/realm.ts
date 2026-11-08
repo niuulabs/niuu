@@ -2,20 +2,11 @@
  * Naming conventions that bind a realm to the objects the create recipe makes.
  *
  * The realm itself has no free-form field, so every part is found again by name:
- * the resident is named after the realm, the persona is `realm-<slug>`, the memory
- * mount is `realm-<slug>` on its deployment target, and the charter page lives under
- * `realms/<slug>/`.
+ * the memory mount is `realm-<slug>` on its deployment target, and the charter page
+ * lives under `realms/<slug>/`.
  */
 
 export const SLUG_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
-
-export function personaNameFor(slug: string): string {
-  return `realm-${slug}`;
-}
-
-export function residentNameFor(slug: string): string {
-  return slug;
-}
 
 /**
  * Mímir lists a deployed instance under its bare deployment name, whatever target it
@@ -124,9 +115,6 @@ export interface RealmDraft {
   bugBoard: string;
   integrationIds: string[];
   mountTarget: string;
-  profileId: string;
-  instanceId: string;
-  model: string;
   trust: TrustPreset;
   /** An existing project's id, `new`, or empty for none. */
   projectId: string;
@@ -144,9 +132,6 @@ export const EMPTY_DRAFT: RealmDraft = {
   bugBoard: '',
   integrationIds: [],
   mountTarget: '',
-  profileId: '',
-  instanceId: '',
-  model: '',
   trust: BALANCED_TRUST,
   projectId: '',
   newProjectName: '',
@@ -157,27 +142,10 @@ export interface RealmView {
   slug: string;
   name: string;
   autonomyProfile: string;
-  instanceId: string | null;
   binding: RealmBinding | null;
-  /**
-   * Made around a resident that was already running: nothing was deployed for it, so its
-   * persona, charter and memory are the resident's own, not the `realm-<slug>` ones.
-   */
+  /** Made without the create recipe's memory instance, so it has no memory mount of its own. */
   adopted: boolean;
-  personaName: string;
-  residentName: string;
-  /** The resident's own name and the charter it reports, once it has been seen. */
-  residentLabel: string | null;
-  residentCharter: string;
-  environmentId: string | null;
-  wakefulness: string | null;
-  autonomyMode: string | null;
-  confidence: number | null;
-  residentStatus: string | null;
-  ravnId: string | null;
   grants: Array<{ actionClass: string; level: number; target: string }>;
-  pendingReviews: number;
-  runningSessions: number;
 }
 
 export function requiredDraftError(draft: RealmDraft, needsRepo = true): string | null {
@@ -187,7 +155,6 @@ export function requiredDraftError(draft: RealmDraft, needsRepo = true): string 
   if (!draft.name.trim()) return 'Give the workspace a name.';
   if (!draft.charter.trim()) return 'Write a charter: a few sentences about what matters.';
   if (needsRepo && !draft.repo) return 'Pick a repository.';
-  if (!draft.profileId || !draft.instanceId) return 'Pick where the resident runs.';
   if (!draft.mountTarget) return 'Pick where the workspace memory is created.';
   return null;
 }

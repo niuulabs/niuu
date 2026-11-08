@@ -23,6 +23,7 @@ from skuld.claude_permission import (
 )
 from skuld.slash_commands import build_slash_command_catalog, compose_slash_command_text
 from skuld.transports.claude_env import claude_spawn_env
+from skuld.transports.claude_policy import ClaudeToolPolicy
 from skuld.transports.mcp_config import (
     build_claude_mcp_config,
     require_connected_mcp_servers,
@@ -72,6 +73,7 @@ class SubprocessTransport(CLITransport):
         session_tools: SessionTools | None = None,
         read_only_mcp_only: bool = False,
         allowed_mcp_tools: list[str] | None = None,
+        claude_tool_policy: ClaudeToolPolicy | None = None,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
@@ -79,9 +81,13 @@ class SubprocessTransport(CLITransport):
         self._model = model
         self._read_only_mcp_only = read_only_mcp_only
         self._allowed_mcp_tools = list(allowed_mcp_tools or [])
-        self._skip_permissions = skip_permissions and not read_only_mcp_only
+        self._tool_policy = claude_tool_policy
+        bounded = read_only_mcp_only or (
+            claude_tool_policy is not None and claude_tool_policy.sets_permission_mode
+        )
+        self._skip_permissions = skip_permissions and not bounded
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
-        self._agent_teams = agent_teams and not read_only_mcp_only
+        self._agent_teams = agent_teams and not bounded
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
         self._raw_mcp_servers = list(mcp_servers or [])
@@ -181,17 +187,20 @@ class SubprocessTransport(CLITransport):
             )
             if self._allowed_mcp_tools:
                 cmd.extend(["--allowedTools", ",".join(self._allowed_mcp_tools)])
-        elif self._skip_permissions:
+        elif self._tool_policy is not None:
+            cmd.extend(self._tool_policy.cli_args())
+        if self._skip_permissions and not self._read_only_mcp_only:
             cmd.extend(["--permission-mode", self._claude_permission_mode])
         if self._session_id:
             cmd.extend(["--resume", self._session_id])
+        # Appended prompts do not persist across invocations, so every one resends them.
         cmd.extend(
             claude_cli_args(
                 self._session_tools,
                 mcp_servers=self._raw_mcp_servers,
                 legacy_mcp_config=self._mcp_config,
                 system_prompt=self._system_prompt,
-                include_system_prompt=not self._session_id,
+                include_system_prompt=True,
             )
         )
 
@@ -333,6 +342,8 @@ class SubprocessTransport(CLITransport):
             session_resume=True,
             slash_commands=True,
             skills=True,
+            # ``claude -p`` emits system/init only after reading its first message.
+            announces_ready=False,
         )
 
     @property

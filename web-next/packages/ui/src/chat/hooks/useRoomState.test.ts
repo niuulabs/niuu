@@ -100,6 +100,26 @@ describe('useRoomState — room mode', () => {
     expect(result.current.visibleMessages.map((m) => m.content)).toEqual(['from p1']);
   });
 
+  it('keeps user messages and messages without a participant under a peer filter', () => {
+    const msgs = [
+      makeMsg({ role: 'user', content: 'from me', participant: p2 }),
+      makeMsg({ role: 'user', content: 'from me, no participant' }),
+      makeMsg({ role: 'assistant', content: 'no participant' }),
+      makeMsg({ role: 'assistant', content: 'from p1', participant: p1 }),
+      makeMsg({ role: 'assistant', content: 'from p2', participant: p2 }),
+    ];
+    const { result } = renderHook(() => useRoomState(msgs, twoParticipants));
+    act(() => {
+      result.current.setActiveFilter('p1');
+    });
+    expect(result.current.visibleMessages.map((m) => m.content)).toEqual([
+      'from me',
+      'from me, no participant',
+      'no participant',
+      'from p1',
+    ]);
+  });
+
   it('shows all messages when filter reset to "all"', () => {
     const msgs = [
       makeMsg({ role: 'assistant', content: 'from p1', participant: p1 }),

@@ -16,8 +16,6 @@ when packaged dependencies are absent.
 | `bifrost` | Model gateway |
 | `observatory` | Topology and observability |
 | `mimir` | Knowledge service; the umbrella can include multiple aliases |
-| `ravn` | Ravn service |
-| `agent` | Agent workload deployment; inspect separately from the umbrella |
 
 The exact enabled dependencies and versions are in the selected chart's
 `Chart.yaml`. Do not assume that a chart existing in the repository means the

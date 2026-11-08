@@ -8,11 +8,19 @@ from niuu.domain.session_description import DESCRIPTION_FIELDS, SessionDescripti
 from niuu.forge_mcp.credentials import normalize_grants
 from volundr.domain.services.forge_session_launch import FORGE_MCP_KEY, GRANTS_KEY
 from volundr.domain.session_broker import broker_base_url
+from volundr.domain.workflow_session import (
+    PERSONA_DEFINITION_KEY,
+    PERSONA_NAME_KEY,
+    WORKFLOW_MEMBER_KEY,
+    WORKFLOW_RUN_ID_KEY,
+    WORKFLOW_STEP_HOST_KEY,
+)
 
 if TYPE_CHECKING:
     from datetime import datetime
     from uuid import UUID
 
+    from niuu.ports.session_proxy import SessionProxyTarget
     from volundr.adapters.inbound.rest import SessionCreate
     from volundr.domain.models import (
         Chronicle,
@@ -179,7 +187,16 @@ class ForgeService:
         workload_config = dict(data.workload_config or {})
         persona_name = getattr(data, "persona_name", "")
         if persona_name:
-            workload_config["persona"] = persona_name
+            workload_config[PERSONA_NAME_KEY] = persona_name
+        persona_definition = getattr(data, "persona_definition", None)
+        if persona_definition is not None:
+            workload_config[PERSONA_DEFINITION_KEY] = persona_definition
+        if getattr(data, "workflow_step_host", False) is True:
+            workload_config[WORKFLOW_STEP_HOST_KEY] = True
+        workflow_run_id = getattr(data, "workflow_run_id", None)
+        if workflow_run_id is not None:
+            workload_config[WORKFLOW_RUN_ID_KEY] = str(workflow_run_id)
+            workload_config[WORKFLOW_MEMBER_KEY] = data.workflow_member
         if requested_grants:
             workload_config[FORGE_MCP_KEY] = {
                 GRANTS_KEY: [grant.value for grant in normalize_grants(requested_grants)]
@@ -546,6 +563,10 @@ class ForgeService:
         if not session.chat_endpoint:
             raise ValueError(f"Session {session_id} has no active endpoint")
         return session, broker_base_url(session.chat_endpoint)
+
+    async def get_broker_target(self, session: Session) -> SessionProxyTarget | None:
+        """The broker target Forge dials for ``session``; None means its chat endpoint."""
+        return await self._session_service.broker_target(session)
 
     async def get_transcript(self, session_id: UUID, *, tail_turns: int = 0) -> dict:
         """The persisted transcript; ``tail_turns > 0`` lets the durable rebuild read only

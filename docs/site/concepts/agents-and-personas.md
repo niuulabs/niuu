@@ -55,7 +55,3 @@ For a resident, identify its persona, deployment target, persistent state,
 knowledge mounts, triggers, and authority. When it pauses for input, inspect the
 specific case it is waiting on. A new unrelated message is not necessarily an
 answer to that suspended case.
-
-A knowledge warden is a specialized assistant for curation. Give it a defined
-knowledge scope before enabling ongoing maintenance. See
-[direct agents and residents](../get-started/direct-and-resident-assistants.md).

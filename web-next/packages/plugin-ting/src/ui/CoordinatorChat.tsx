@@ -134,6 +134,13 @@ export function CoordinatorChat({
       <p className="ting-board-panel__text">This ticket is closed, and so is its coordinator.</p>
     );
   }
+  if (!coordinator.sessionId) {
+    return (
+      <p className="ting-board-panel__text">
+        This ticket&apos;s workflow runs in its own sessions, so there is no coordinator to talk to.
+      </p>
+    );
+  }
   if (!coordinator.chatEndpoint) {
     return <p className="ting-board-panel__text">The coordinator is starting up.</p>;
   }

@@ -5,6 +5,7 @@
  * structurally compatible with `createApiClient(baseUrl)` from @niuulabs/query.
  */
 import {
+  ApiClientError,
   createApiClient,
   getAuthHeaders,
   openEventStream,
@@ -25,6 +26,7 @@ import type {
   VolundrStats,
   VolundrRepo,
   VolundrMessage,
+  SessionMessageDelivery,
   VolundrLog,
   VolundrAggregatedLog,
   VolundrLogParticipant,
@@ -67,7 +69,24 @@ import type {
   VolundrSessionTraceSpan,
   VolundrSessionTraceSummary,
   ExternalSession,
+  SessionReadState,
+  SessionStartup,
+  StartupStageState,
 } from '../models/volundr.model';
+import { normalizeSecretRequest, type SecretRequestPayload } from './secretRequestWire';
+import { SessionForkError, SessionReadStateConflictError } from '../domain/session';
+import type { SessionRuntimeOffer } from '../domain/sessionRuntimes';
+import {
+  invalidPayload,
+  pairingCodeBody,
+  toComputeHostResponse,
+  toComputeHostsOverview,
+  toNewPairingCode,
+  toRemoveResult,
+  type ComputeHostPayload,
+  type ComputeHostsPayload,
+  type NewPairingCodePayload,
+} from './computeHostsWire';
 
 /** Minimal HTTP client — structurally compatible with ApiClient from @niuulabs/query. */
 export interface HttpClient {
@@ -84,6 +103,21 @@ const LIVE_POLL_MS = 2_000;
 
 interface VolundrHttpAdapterOptions {
   niuuBasePath?: string | null;
+  /**
+   * `guild` (default): the Forge base is the Guild facade and the UI covers every
+   * Forge in the registry. `node`: the Forge base is one Forge node; the UI covers
+   * only that node, which names its own registry entry at `GET /guild`.
+   */
+  forgeScope?: ForgeScope;
+}
+
+export type ForgeScope = 'guild' | 'node';
+
+interface GuildMembershipPayload {
+  guild_url: string;
+  instance_id: string;
+  instance_name: string;
+  instance_slug: string;
 }
 
 /** The Forge service plus its shared fleet stream, for features that need raw events. */
@@ -131,6 +165,7 @@ type SessionPayload = {
     project_id: string;
     role: string;
     parent?: { instance_id: string; session_id: string } | null;
+    objective?: string;
     labels?: string[];
   } | null;
   id: string;
@@ -170,6 +205,7 @@ type SessionPayload = {
   activity_state?: VolundrSession['activityState'];
   activityStateSince?: string | null;
   activity_state_since?: string | null;
+  startup?: StartupPayload | null;
   turnStartedAt?: string | null;
   turn_started_at?: string | null;
   needsAttention?: boolean;
@@ -183,12 +219,47 @@ type SessionPayload = {
   instance_id?: string | null;
   instanceName?: string | null;
   instance_name?: string | null;
-  read_state?: {
-    is_unread?: boolean;
-    latest_output_seq?: number;
-    read_through_seq?: number;
-    revision?: number;
-  } | null;
+  read_state?: ReadStatePayload | null;
+  short_description?: string | null;
+  worked_seconds_24h?: number | null;
+};
+
+type StartupPayload = {
+  started_at: string;
+  stages?: Array<{
+    key: string;
+    label: string;
+    state: StartupStageState;
+    detail?: string | null;
+    started_at?: string | null;
+    finished_at?: string | null;
+  }>;
+  progress_error?: string | null;
+};
+
+function normalizeStartup(payload: StartupPayload): SessionStartup {
+  return {
+    startedAt: payload.started_at,
+    stages: (payload.stages ?? []).map((stage) => ({
+      key: stage.key,
+      label: stage.label,
+      state: stage.state,
+      detail: stage.detail ?? null,
+      startedAt: stage.started_at ?? null,
+      finishedAt: stage.finished_at ?? null,
+    })),
+    progressError: payload.progress_error ?? null,
+  };
+}
+
+type ReadStatePayload = {
+  is_unread?: boolean;
+  latest_output_seq?: number;
+  latest_output_turn_id?: string | null;
+  latest_output_at?: string | null;
+  read_through_seq?: number;
+  manually_unread?: boolean;
+  revision?: number;
 };
 
 type ExternalSessionPayload = {
@@ -430,6 +501,12 @@ type InstanceTargetPayload = {
   tags?: string[];
 };
 
+type SessionRuntimePayload = {
+  runtime: SessionRuntimeOffer['runtime'];
+  grants: SessionRuntimeOffer['grants'];
+  readiness: SessionRuntimeOffer['readiness'];
+};
+
 type SessionDefinitionPayload = {
   key: string;
   display_name?: string;
@@ -497,10 +574,11 @@ function buildStartSessionBody(
     resource_config: config.resourceConfig,
     system_prompt: config.systemPrompt,
     initial_prompt: config.initialPrompt,
-    workload_type: config.workloadType,
     workload_config: config.workloadConfig ?? {},
     issue_id: config.trackerIssue?.id,
     issue_url: config.trackerIssue?.url,
+    // Only a grant the operator asked for is sent; the node's defaults apply regardless.
+    forge_mcp: config.forgeMcp?.grants.length ? { grants: config.forgeMcp.grants } : undefined,
   };
 
   for (const [key, value] of Object.entries(body)) {
@@ -571,6 +649,9 @@ function normalizeSession(session: SessionPayload): VolundrSession {
                   sessionId: session.coordination.parent.session_id,
                 }
               : null,
+            ...(session.coordination.objective
+              ? { objective: session.coordination.objective }
+              : {}),
             labels: session.coordination.labels ?? [],
           },
         }
@@ -596,6 +677,7 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     activityState: session.activityState ?? session.activity_state ?? undefined,
     activityStateSince: session.activityStateSince ?? session.activity_state_since ?? null,
     turnStartedAt: session.turnStartedAt ?? session.turn_started_at ?? null,
+    startup: session.startup ? normalizeStartup(session.startup) : null,
     needsAttention:
       Boolean(session.needsAttention ?? session.needs_attention) ||
       (session.activityState ?? session.activity_state) === 'awaiting_input',
@@ -604,16 +686,23 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     tenantId: session.tenantId ?? session.tenant_id ?? undefined,
     instanceId: session.instanceId ?? session.instance_id ?? undefined,
     instanceName: session.instanceName ?? session.instance_name ?? undefined,
-    ...(session.read_state
-      ? {
-          readState: {
-            isUnread: session.read_state.is_unread === true,
-            latestOutputSeq: session.read_state.latest_output_seq ?? 0,
-            readThroughSeq: session.read_state.read_through_seq ?? 0,
-            revision: session.read_state.revision ?? 0,
-          },
-        }
+    ...(session.read_state ? { readState: normalizeReadState(session.read_state) } : {}),
+    ...(session.short_description ? { shortDescription: session.short_description } : {}),
+    ...(typeof session.worked_seconds_24h === 'number'
+      ? { workedSeconds24h: session.worked_seconds_24h }
       : {}),
+  };
+}
+
+function normalizeReadState(payload: ReadStatePayload): SessionReadState {
+  return {
+    isUnread: payload.is_unread === true,
+    latestOutputSeq: payload.latest_output_seq ?? 0,
+    latestOutputTurnId: payload.latest_output_turn_id ?? null,
+    latestOutputAt: payload.latest_output_at ?? null,
+    readThroughSeq: payload.read_through_seq ?? 0,
+    manuallyUnread: payload.manually_unread === true,
+    revision: payload.revision ?? 0,
   };
 }
 
@@ -659,6 +748,30 @@ function normalizeStats(stats: StatsPayload): VolundrStats {
     costToday: stats.costToday ?? stats.cost_today ?? 0,
     sparklines: stats.sparklines,
   };
+}
+
+interface SessionMessageDeliveryPayload {
+  status?: string;
+  session_id?: string;
+  request_id?: string;
+}
+
+/** Forge's 200 (delivered) and 202 (pending) bodies; anything else is not an answer to a send. */
+function normalizeMessageDelivery(
+  sessionId: string,
+  payload: SessionMessageDeliveryPayload | null | undefined,
+): SessionMessageDelivery {
+  const status = payload?.status;
+  if (status !== 'delivered' && status !== 'pending') {
+    throw new Error(
+      `Forge did not say whether the message to session ${sessionId} was delivered ` +
+        `(status ${JSON.stringify(status)}); check the session before sending it again.`,
+    );
+  }
+  if (!payload?.request_id) {
+    throw new Error(`Forge accepted the message to session ${sessionId} without a request id.`);
+  }
+  return { status, requestId: payload.request_id, sessionId: payload.session_id ?? sessionId };
 }
 
 function normalizeMessageRole(role: string): VolundrMessage['role'] {
@@ -1298,6 +1411,106 @@ export function buildVolundrFileSystemHttpAdapter(options: {
   };
 }
 
+/** Every compute route names the Forge it is for: the Guild facade proxies by `?instance_id=`. */
+function computeHostsPath(instanceId: string, suffix = ''): string {
+  return `/compute/hosts${suffix}?instance_id=${encodeURIComponent(instanceId)}`;
+}
+
+/** A Forge without `compute.hosts` answers 404 on the list: that is "no Hosts view", not a failure. */
+function isNotFound(error: unknown): boolean {
+  return error instanceof ApiClientError && error.status === 404;
+}
+
+type ComputeHostMethods = Pick<
+  IVolundrService,
+  | 'getComputeHosts'
+  | 'getComputeHostTagSets'
+  | 'createPairingCode'
+  | 'revokePairingCode'
+  | 'updateComputeHost'
+  | 'drainComputeHost'
+  | 'resumeComputeHost'
+  | 'reprepareComputeHost'
+  | 'checkComputeHost'
+  | 'removeComputeHost'
+>;
+
+function computeHostMethods(client: HttpClient): ComputeHostMethods {
+  const hostPath = (instanceId: string, hostId: string, action = '') =>
+    computeHostsPath(instanceId, `/${encodeURIComponent(hostId)}${action}`);
+  return {
+    getComputeHosts: async (instanceId) => {
+      try {
+        return toComputeHostsOverview(
+          await client.get<ComputeHostsPayload>(computeHostsPath(instanceId)),
+          instanceId,
+        );
+      } catch (error) {
+        if (isNotFound(error)) return null;
+        throw error;
+      }
+    },
+    getComputeHostTagSets: async (instanceId) => {
+      let payload: { tag_sets?: string[][] };
+      try {
+        payload = await client.get<{ tag_sets?: string[][] }>(
+          computeHostsPath(instanceId, '/tag-sets'),
+        );
+      } catch (error) {
+        if (isNotFound(error)) return null;
+        throw error;
+      }
+      if (!Array.isArray(payload?.tag_sets)) throw invalidPayload('host tag sets', instanceId);
+      return payload.tag_sets;
+    },
+    createPairingCode: async (instanceId, request) =>
+      toNewPairingCode(
+        await client.post<NewPairingCodePayload>(
+          computeHostsPath(instanceId, '/pairing-codes'),
+          pairingCodeBody(request),
+        ),
+        instanceId,
+      ),
+    revokePairingCode: async (instanceId, codeId) => {
+      await client.delete<void>(
+        computeHostsPath(instanceId, `/pairing-codes/${encodeURIComponent(codeId)}`),
+      );
+    },
+    updateComputeHost: async (instanceId, hostId, changes) =>
+      toComputeHostResponse(
+        await client.patch<ComputeHostPayload>(hostPath(instanceId, hostId), changes),
+        instanceId,
+      ),
+    drainComputeHost: async (instanceId, hostId, remove) =>
+      toComputeHostResponse(
+        await client.post<ComputeHostPayload>(hostPath(instanceId, hostId, '/drain'), { remove }),
+        instanceId,
+      ),
+    resumeComputeHost: async (instanceId, hostId) =>
+      toComputeHostResponse(
+        await client.post<ComputeHostPayload>(hostPath(instanceId, hostId, '/resume')),
+        instanceId,
+      ),
+    reprepareComputeHost: async (instanceId, hostId) =>
+      toComputeHostResponse(
+        await client.post<ComputeHostPayload>(hostPath(instanceId, hostId, '/reprepare')),
+        instanceId,
+      ),
+    checkComputeHost: async (instanceId, hostId) =>
+      toComputeHostResponse(
+        await client.post<ComputeHostPayload>(hostPath(instanceId, hostId, '/check')),
+        instanceId,
+      ),
+    removeComputeHost: async (instanceId, hostId) =>
+      toRemoveResult(
+        await client.delete<{ removed: boolean; host_cleanup_command?: string | null }>(
+          hostPath(instanceId, hostId),
+        ),
+        instanceId,
+      ),
+  };
+}
+
 export function buildVolundrHttpAdapter(
   client: HttpClient,
   openStream: EventStreamOpener = openEventStream,
@@ -1380,6 +1593,22 @@ export function buildVolundrHttpAdapter(
       activityStateSince: prior.activityStateSince,
       turnStartedAt: prior.turnStartedAt,
       needsAttention: prior.needsAttention,
+    };
+  }
+
+  /**
+   * A stream event is broadcast, not read for this caller: it carries neither the caller's read
+   * state nor the 24-hour work total the list adds. Keep what the cache already knows.
+   */
+  function keepListOnlyFields(fresh: VolundrSession): VolundrSession {
+    const prior = sessionCache.get(fresh.id);
+    if (!prior || prior.instanceId !== fresh.instanceId) return fresh;
+    const readState = fresh.readState ?? prior.readState;
+    const workedSeconds24h = fresh.workedSeconds24h ?? prior.workedSeconds24h;
+    return {
+      ...fresh,
+      ...(readState ? { readState } : {}),
+      ...(workedSeconds24h !== undefined ? { workedSeconds24h } : {}),
     };
   }
 
@@ -1500,6 +1729,10 @@ export function buildVolundrHttpAdapter(
     const path = `/sessions/${sessionId}${suffix}`;
     if (!instanceId) return path;
     return `${path}${path.includes('?') ? '&' : '?'}instance_id=${encodeURIComponent(instanceId)}`;
+  }
+
+  function secretRequestPath(sessionId: string, requestId: string, action = ''): string {
+    return sessionPath(sessionId, `/secret-requests/${encodeURIComponent(requestId)}${action}`);
   }
 
   async function loadSession(
@@ -1687,8 +1920,8 @@ export function buildVolundrHttpAdapter(
             return;
           }
           if (eventType === 'session_created' || eventType === 'session_updated') {
-            const session = keepNewerActivity(
-              withGateVerdict(normalizeSession(payload as SessionPayload)),
+            const session = keepListOnlyFields(
+              keepNewerActivity(withGateVerdict(normalizeSession(payload as SessionPayload))),
             );
             sessionCache.set(session.id, session);
             publishSessions();
@@ -1830,6 +2063,32 @@ export function buildVolundrHttpAdapter(
         miniMode: flags.mini_mode,
       };
     },
+    getLivePreviewConfig: async (instanceId) => {
+      const payload = await forgeClient.get<{ enabled: boolean; origin_template: string }>(
+        `/settings/live-preview${instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : ''}`,
+      );
+      return { enabled: payload.enabled, originTemplate: payload.origin_template };
+    },
+    getSessionRuntimes: async (instanceId) => {
+      const payload = await forgeClient.get<{ runtimes?: SessionRuntimePayload[] }>(
+        `/session-runtimes${instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : ''}`,
+      );
+      if (!Array.isArray(payload?.runtimes)) {
+        throw new Error(`Invalid session runtimes from ${instanceId ?? 'the default host'}`);
+      }
+      if (payload.runtimes.length > 1) {
+        throw new Error(
+          `${instanceId ?? 'The default host'} offered ${payload.runtimes.length} session ` +
+            'runtimes; a host runs exactly one',
+        );
+      }
+      return payload.runtimes.map((offer) => ({
+        runtime: offer.runtime,
+        grants: offer.grants,
+        readiness: offer.readiness,
+      }));
+    },
+    ...computeHostMethods(forgeClient),
     getSessionDefinitions: async () => {
       const payload = await catalogClient.get<SessionDefinitionPayload[]>('/session-definitions');
       return payload.map(normalizeSessionDefinition);
@@ -1843,6 +2102,37 @@ export function buildVolundrHttpAdapter(
       return forgeClient.get(`/sessions/${encodeURIComponent(id)}/runtime-version${suffix}`);
     },
     getActiveSessions: () => loadSessions('/sessions?active=true'),
+    getSessionReadState: async (id, options) =>
+      normalizeReadState(
+        await forgeClient.get<ReadStatePayload>(
+          sessionPath(id, '/read-state', options?.instanceId),
+          { signal: options?.signal },
+        ),
+      ),
+    changeSessionReadState: async (id, change, options) => {
+      let payload: ReadStatePayload;
+      try {
+        payload = await forgeClient.patch<ReadStatePayload>(
+          sessionPath(id, '/read-state', options?.instanceId),
+          {
+            state: change.state,
+            expected_revision: change.expectedRevision,
+            through_seq: change.throughSeq,
+          },
+        );
+      } catch (error) {
+        if (error instanceof ApiClientError && error.status === 409)
+          throw new SessionReadStateConflictError(error.detail || undefined);
+        throw error;
+      }
+      const readState = normalizeReadState(payload);
+      const cached = sessionCache.get(id);
+      if (cached) {
+        sessionCache.set(id, { ...cached, readState });
+        publishSessions();
+      }
+      return readState;
+    },
     getStats: (options) =>
       options?.instanceId
         ? forgeClient
@@ -1909,10 +2199,23 @@ export function buildVolundrHttpAdapter(
 
     getTargets: async () => {
       const targetClient = niuuClient ?? sharedClient;
-      const payload = await targetClient.get<InstanceTargetPayload[]>(
-        '/instances?kind=volundr&enabledOnly=true',
-      );
-      return payload.map(normalizeTarget);
+      const [payload, membership] = await Promise.all([
+        targetClient.get<InstanceTargetPayload[]>('/instances?kind=volundr&enabledOnly=true'),
+        options.forgeScope === 'node'
+          ? forgeClient.get<GuildMembershipPayload>('/guild')
+          : Promise.resolve(null),
+      ]);
+      if (!membership) return payload.map(normalizeTarget);
+      const own = payload.find((target) => target.id === membership.instance_id);
+      if (!own) {
+        throw new Error(
+          `This Forge node is ${membership.instance_name} (${membership.instance_id}) in the ` +
+            `Guild at ${membership.guild_url}, but that Guild lists no enabled Forge with ` +
+            "this id. Enable the instance in the Guild registry, or correct the node's " +
+            'guild.instanceId.',
+        );
+      }
+      return [normalizeTarget(own)];
     },
 
     subscribe: (callback, options) => {
@@ -2011,6 +2314,42 @@ export function buildVolundrHttpAdapter(
       normalizeSession(await forgeClient.post<SessionPayload>('/sessions/connect', config)),
     updateSession: (sessionId, updates) =>
       forgeClient.put<SessionPayload>(sessionPath(sessionId), updates).then(normalizeSession),
+    forkSession: async (sessionId, name) => {
+      // The reforge runs on the host that holds the session's chronicle, as Lexi's fork does.
+      const instanceId =
+        sessionCache.get(sessionId)?.instanceId ?? archivedSessionOwners.get(sessionId);
+      const chronicle = await forgeClient.get<{ id: string }>(sessionPath(sessionId, '/chronicle'));
+      const reforgePath = `/chronicles/${encodeURIComponent(chronicle.id)}/reforge`;
+      const child = normalizeSession(
+        await forgeClient.post<SessionPayload>(
+          instanceId ? `${reforgePath}?instance_id=${encodeURIComponent(instanceId)}` : reforgePath,
+        ),
+      );
+      if (instanceId && !child.instanceId) child.instanceId = instanceId;
+      sessionCache.set(child.id, child);
+      publishSessions();
+      // Reforge takes no name and only creates the child: name it, then start it.
+      let step = 'name';
+      try {
+        const named = normalizeSession(
+          await forgeClient.put<SessionPayload>(sessionPath(child.id), { name }),
+        );
+        step = 'start';
+        await forgeClient.post<void>(sessionPath(child.id, '/start'));
+        return { ...named, instanceId: named.instanceId ?? child.instanceId };
+      } catch (error) {
+        const detail =
+          error instanceof ApiClientError && error.detail
+            ? error.detail
+            : error instanceof Error
+              ? error.message
+              : String(error);
+        throw new SessionForkError(
+          child.id,
+          `The side chat ${child.name} was created, but Forge could not ${step} it: ${detail}`,
+        );
+      }
+    },
     stopSession: (sessionId) => forgeClient.post<void>(sessionPath(sessionId, '/stop')),
     resumeSession: (sessionId) => forgeClient.post<void>(sessionPath(sessionId, '/resume')),
     deleteSession: (sessionId, cleanup) =>
@@ -2020,6 +2359,23 @@ export function buildVolundrHttpAdapter(
     archiveSession: (sessionId) =>
       forgeClient.patch<void>(sessionPath(sessionId, '/archive'), undefined),
     archiveStoppedSessions: () => forgeClient.post<string[]>('/sessions/archive-stopped'),
+    getSecretRequest: async (sessionId, requestId) =>
+      normalizeSecretRequest(
+        await forgeClient.get<SecretRequestPayload>(secretRequestPath(sessionId, requestId)),
+      ),
+    fulfillSecretRequest: async (sessionId, requestId, fulfillment) =>
+      normalizeSecretRequest(
+        await forgeClient.post<SecretRequestPayload>(
+          secretRequestPath(sessionId, requestId, '/fulfill'),
+          { value: fulfillment.value, keep: fulfillment.keep },
+        ),
+      ),
+    declineSecretRequest: async (sessionId, requestId) =>
+      normalizeSecretRequest(
+        await forgeClient.post<SecretRequestPayload>(
+          secretRequestPath(sessionId, requestId, '/decline'),
+        ),
+      ),
     restoreSession: (sessionId) =>
       forgeClient.patch<void>(sessionPath(sessionId, '/restore'), undefined),
     listArchivedSessions: async (options) => {
@@ -2057,6 +2413,16 @@ export function buildVolundrHttpAdapter(
       forgeClient
         .get<ConversationPayload>(sessionPath(sessionId, '/conversation'))
         .then(normalizeConversationHistory),
+    getConversationTurn: async (sessionId, turnId) => {
+      const payload = await forgeClient.get<{ turn?: ConversationPayload['turns'][number] }>(
+        sessionPath(sessionId, `/conversation/turns/${encodeURIComponent(turnId)}`),
+      );
+      const [turn] = payload.turn
+        ? normalizeConversationHistory({ turns: [payload.turn] }).turns
+        : [];
+      if (!turn) throw new Error(`Forge returned no turn for ${turnId}`);
+      return turn;
+    },
     getWorkflowGates: async (sessionId) => {
       const payload = await forgeClient.get<WorkflowGateListPayload>(
         sessionPath(sessionId, '/workflow/gates'),
@@ -2086,8 +2452,13 @@ export function buildVolundrHttpAdapter(
       return normalizeWorkflowGate(payload as WorkflowGatePayload);
     },
     getMessages: (sessionId) => loadMessages(sessionId),
-    sendMessage: (sessionId, content) =>
-      forgeClient.post<VolundrMessage>(sessionPath(sessionId, '/messages'), { content }),
+    sendMessage: async (sessionId, content) =>
+      normalizeMessageDelivery(
+        sessionId,
+        await forgeClient.post<SessionMessageDeliveryPayload>(sessionPath(sessionId, '/messages'), {
+          content,
+        }),
+      ),
     subscribeMessages: (sessionId, callback) => {
       const connection = ensurePollingConnection(
         messageSubscribers,

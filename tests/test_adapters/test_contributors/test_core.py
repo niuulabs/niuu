@@ -85,7 +85,7 @@ class TestCoreSessionContributor:
         assert "envVars" not in result.values
 
     async def test_carries_w3c_trace_context_into_env_vars(self, session, monkeypatch):
-        """Every session, not only ravn_flock, picks up the active trace.
+        """Every session picks up the active trace.
 
         ``LocalProcessPodManager._session_env`` (used by every pod type, per
         its own docstring) folds ``envVars`` into the spawned process/pod, so

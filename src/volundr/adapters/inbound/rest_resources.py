@@ -1,10 +1,13 @@
-"""REST endpoint for cluster resource discovery."""
+"""REST endpoints for cluster resource discovery."""
 
 import logging
+from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
+from niuu.domain.guild_membership import GuildMembership
+from volundr.adapters.inbound.rest_guild import own_instance
 from volundr.domain.ports import ResourceProvider
 
 logger = logging.getLogger(__name__)
@@ -97,5 +100,74 @@ def create_resources_router(
                 for n in info.nodes
             ],
         )
+
+    return router
+
+
+def create_forge_cluster_resources_router(
+    resource_provider: ResourceProvider,
+    membership: GuildMembership | None,
+    *,
+    prefix: str = "/api/v1/forge",
+) -> APIRouter:
+    """Serve this Forge node's own ``GET /cluster/resources``.
+
+    The Guild facade answers the same path for every member, keyed by the
+    registry's instance id. A UI scoped to one node reads it from the node
+    itself, so the node answers in the facade's shape for its own instance
+    only: an ``instance_id`` naming another Forge is a 404, not this node's
+    data under someone else's name.
+    """
+    router = APIRouter(prefix=prefix, tags=["Resources"])
+
+    @router.get(
+        "/cluster/resources",
+        responses={
+            404: {"description": "Not joined to a Guild, or instance_id names another Forge"},
+            503: {"description": "The node's instance in its Guild is not recorded yet"},
+        },
+    )
+    async def get_own_cluster_resources(
+        instance_id: str | None = Query(
+            default=None,
+            description="Guild instance id; must be this node's own when given",
+        ),
+    ) -> dict[str, Any]:
+        instance = own_instance(membership, instance_id)
+        info = await resource_provider.discover()
+        resource_types = [
+            {
+                "name": rt.name,
+                "resource_key": rt.resource_key,
+                "resourceKey": rt.resource_key,
+                "display_name": rt.display_name,
+                "displayName": rt.display_name,
+                "unit": rt.unit,
+                "category": rt.category.value,
+            }
+            for rt in info.resource_types
+        ]
+        return {
+            "instances": [
+                {
+                    "id": instance.id,
+                    "name": instance.name,
+                    "slug": instance.slug,
+                }
+            ],
+            "resource_types": resource_types,
+            "resourceTypes": resource_types,
+            "nodes": [
+                {
+                    "name": f"{instance.slug}/{node.name}",
+                    "labels": node.labels,
+                    "allocatable": node.allocatable,
+                    "allocated": node.allocated,
+                    "available": node.available,
+                    **instance.fields(),
+                }
+                for node in info.nodes
+            ],
+        }
 
     return router

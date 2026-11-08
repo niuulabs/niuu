@@ -37,8 +37,6 @@ class ActivityReportingMixin:
 
     _RUNNING_RAW_STATES = ("active", "tool_executing")
     _TURN_END_RAW_STATES = ("idle", "stopped", "error")
-    # Flock peer events that mean a peer is doing work right now.
-    _PEER_WORK_EVENT_TYPES = frozenset({"task_started", "thought", "thinking", "tool_start"})
 
     async def _report_session_start(self) -> None:
         """Report the session start timeline event (once)."""
@@ -61,59 +59,6 @@ class ActivityReportingMixin:
             },
             model=self.model,
         )
-
-    async def _report_room_peer_working(self) -> None:
-        """Report ``active`` while flock peers work in a room-only workflow session.
-
-        A flock workflow session has no CLI transport of its own, so the CLI
-        frames that drive activity everywhere else never arrive; peer progress
-        is the only evidence of work. A human gate, an unanswered peer help
-        request, or a reported terminal flock outcome owns the state instead.
-        """
-        if not self._is_room_only_workflow_session():
-            return
-        if self._pending_attention or self._activity_state in ("stopped", "error"):
-            return
-        if any(request.status == "pending" for request in self._pending_help_requests.values()):
-            return
-        if (
-            self._flock_completion_reported
-            or self._flock_failure_reported
-            or self._pending_terminal_activity is not None
-        ):
-            return
-        await self._report_activity_state("active")
-
-    async def _report_room_flock_idle(self) -> None:
-        """Report ``idle`` once no flock peer has a task in flight.
-
-        Peer work is the only thing that makes a room-only workflow session
-        ``active``, so when the last started task completes and nothing owns
-        the state instead, the session is idle. Staying ``active`` kept the
-        heartbeat re-asserting work that had stopped: two builder sessions sat
-        "busy" for eleven hours after their last peer finished, and nothing
-        downstream could tell them from sessions still working. The last peer
-        outcome rides along so whoever closes the session can say where the
-        workflow stopped.
-        """
-        if not self._is_room_only_workflow_session():
-            return
-        if any(self._peer_tasks_in_flight.values()):
-            return
-        if self._activity_state not in self._RUNNING_RAW_STATES:
-            return
-        if self._pending_attention:
-            return
-        if any(request.status == "pending" for request in self._pending_help_requests.values()):
-            return
-        if (
-            self._flock_completion_reported
-            or self._flock_failure_reported
-            or self._pending_terminal_activity is not None
-        ):
-            return
-        extra = {"flock_idle": dict(self._last_flock_outcome)} if self._last_flock_outcome else None
-        await self._report_activity_state("idle", extra_metadata=extra)
 
     @classmethod
     def _coarse_bucket(cls, state: str) -> str:
@@ -212,6 +157,33 @@ class ActivityReportingMixin:
         now = time.monotonic()
         self._last_activity_report = now
 
+        # Capture the state and its anchors together BEFORE any await. Another CLI
+        # event can advance the broker while credentials or the HTTP request waits.
+        payload = self._build_activity_payload(state, extra_metadata)
+
+        # A turn starting or ending is what a workflow step host keys on: it hands over the
+        # step's instructions at a boundary and reports a turn that ended with its step open.
+        await self._observe_workflow_step_activity(state)
+
+        if not self.volundr_api_url or not self._settings.activity_reporting_enabled:
+            return False
+
+        # Stays set until Forge acknowledges a report for the state the broker is
+        # still in, so the heartbeat retries a failed transition (including idle)
+        # with its original anchors instead of dropping it.
+        self._activity_report_pending = True
+        delivered = await self._post_activity_payload(payload)
+        if delivered and (state, payload["state_since"]) == (
+            self._activity_state,
+            self._state_since_iso(self._activity_state_since),
+        ):
+            self._activity_report_pending = False
+        return delivered
+
+    def _build_activity_payload(
+        self, state: str, extra_metadata: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """The activity POST body for ``state``, stamped with the broker's current anchors."""
         metadata = {
             "turn_count": self._artifacts.turn_count,
             "duration_seconds": self._artifacts.duration_seconds,
@@ -226,10 +198,7 @@ class ActivityReportingMixin:
         if extra_metadata:
             metadata.update(extra_metadata)
         metadata["open_controls"] = self._open_controls(state)
-
-        # Capture the state and its anchors together BEFORE any await. Another CLI
-        # event can advance the broker while credentials or the HTTP request waits.
-        payload = {
+        return {
             "state": state,
             "state_since": self._state_since_iso(self._activity_state_since),
             "turn_started_at": (
@@ -239,36 +208,6 @@ class ActivityReportingMixin:
             ),
             "metadata": metadata,
         }
-        terminal_kind = self._terminal_activity_kind(metadata)
-        pending = None
-        if terminal_kind:
-            pending = {"kind": terminal_kind, "payload": payload}
-            self._pending_terminal_activity = pending
-
-        if not self.volundr_api_url or not self._settings.activity_reporting_enabled:
-            return False
-
-        # Stays set until Forge acknowledges a report for the state the broker is
-        # still in, so the heartbeat retries a failed transition (including idle)
-        # with its original anchors instead of dropping it.
-        self._activity_report_pending = True
-        delivered = await self._post_activity_payload(payload)
-        if delivered and pending is not None:
-            self._acknowledge_terminal_activity(pending)
-        if delivered and (state, payload["state_since"]) == (
-            self._activity_state,
-            self._state_since_iso(self._activity_state_since),
-        ):
-            self._activity_report_pending = False
-        return delivered
-
-    @staticmethod
-    def _terminal_activity_kind(metadata: dict[str, Any]) -> str:
-        if metadata.get("completion_source") == "ravn_flock":
-            return "completion"
-        if metadata.get("failure_source") == "ravn_flock":
-            return "failure"
-        return ""
 
     async def _post_activity_payload(self, payload: dict[str, Any]) -> bool:
         """Post one exact activity payload and report whether Forge acknowledged it."""
@@ -302,24 +241,33 @@ class ActivityReportingMixin:
             )
             return False
 
-    def _acknowledge_terminal_activity(self, pending: dict[str, Any]) -> None:
-        """Clear only the exact terminal report acknowledged by Forge."""
-        if self._pending_terminal_activity is not pending:
-            return
-        self._pending_terminal_activity = None
-        if pending["kind"] == "completion":
-            self._flock_completion_reported = True
-        elif pending["kind"] == "failure":
-            self._flock_failure_reported = True
+    async def _report_workflow_step(self, report: dict[str, Any]) -> None:
+        """Report a workflow step's close, or a turn that ended with it open, to Ting.
 
-    async def _retry_pending_terminal_activity(self) -> bool:
-        pending = self._pending_terminal_activity
-        if pending is None or not self.volundr_api_url:
-            return False
-        delivered = await self._post_activity_payload(pending["payload"])
-        if delivered:
-            self._acknowledge_terminal_activity(pending)
-        return delivered
+        The report rides session activity as ``metadata.workflow_step``, which Forge relays on
+        its activity stream. It is stamped with the broker's *current* state and anchors each
+        time it is sent, because Forge ignores a report older than the state it already holds.
+        It never touches the remembered activity detail, so a heartbeat does not repeat it.
+        Reports are kept and sent in order until Forge acknowledges each one.
+        """
+        self._pending_step_reports.append(report)
+        await self._flush_workflow_step_reports()
+
+    async def _flush_workflow_step_reports(self) -> None:
+        """Send the unacknowledged step reports in order; stop at the first Forge refuses."""
+        while self._pending_step_reports:
+            if not self.volundr_api_url or not self._settings.activity_reporting_enabled:
+                logger.error(
+                    "workflow step report cannot be sent: activity reporting is off "
+                    "(volundr_api_url / activity_reporting_enabled), so Ting would never learn "
+                    "of it; it is held, and Ting can read the step from GET /api/workflow/steps"
+                )
+                return
+            report = self._pending_step_reports[0]
+            payload = self._build_activity_payload(self._activity_state, {"workflow_step": report})
+            if not await self._post_activity_payload(payload):
+                return
+            self._pending_step_reports.pop(0)
 
     async def _enter_attention(
         self,
@@ -466,9 +414,8 @@ class ActivityReportingMixin:
         interval = self._settings.activity_heartbeat.interval_seconds
         while True:
             await asyncio.sleep(interval)
-            if self._pending_terminal_activity is not None:
-                await self._retry_pending_terminal_activity()
-                continue
+            if self._pending_step_reports:
+                await self._flush_workflow_step_reports()
             state = self._activity_state
             if (
                 state not in ("active", "tool_executing", "awaiting_input")

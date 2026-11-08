@@ -6,6 +6,7 @@ overriding FastAPI dependencies with mock implementations.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -41,9 +42,11 @@ from ting.domain.services.dispatch_service import (
 from ting.domain.services.dispatch_service import (
     DispatchResult,
     DispatchService,
+    WorkflowRunsNotConfiguredError,
     build_prompt,
     is_ready,
 )
+from ting.domain.workflow_steps import RunState
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.volundr import SpawnRequest, VolundrPort, VolundrSession
 
@@ -398,6 +401,8 @@ def _make_dispatch_service(
     saga_repo: MockSagaRepo,
     dispatcher_repo: MockDispatcherRepo,
     settings: Settings | None = None,
+    workflow_runs: object | None = None,
+    campaign_repo: object | None = None,
 ) -> DispatchService:
     settings = settings or _make_settings()
     return DispatchService(
@@ -410,6 +415,8 @@ def _make_dispatch_service(
             default_model=settings.dispatch.default_model,
             dispatch_prompt_template=settings.dispatch.dispatch_prompt_template,
         ),
+        workflow_runs=workflow_runs,
+        campaign_repo=campaign_repo,
     )
 
 
@@ -420,12 +427,22 @@ def _make_test_app(
     volundr_factory: MockVolundrFactory,
     dispatcher_repo: MockDispatcherRepo,
     settings: Settings | None = None,
+    workflow_runs: object | None = None,
+    campaign_repo: object | None = None,
 ) -> FastAPI:
     settings = settings or _make_settings()
     app = FastAPI()
     app.include_router(create_dispatch_router())
     app.state.settings = settings
-    svc = _make_dispatch_service(tracker, volundr_factory, saga_repo, dispatcher_repo, settings)
+    svc = _make_dispatch_service(
+        tracker,
+        volundr_factory,
+        saga_repo,
+        dispatcher_repo,
+        settings,
+        workflow_runs,
+        campaign_repo,
+    )
     app.dependency_overrides[resolve_trackers] = lambda: [tracker]
     app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
     app.dependency_overrides[resolve_volundr] = lambda: volundr
@@ -591,6 +608,11 @@ class TestGetConfig:
         assert len(data["models"]) == 2
         assert data["models"][0]["id"] == "claude-sonnet-4-6"
 
+    def test_carries_no_flock_settings(self, client: TestClient):
+        data = client.get("/api/v1/ting/dispatch/config").json()
+
+        assert not [key for key in data if key.startswith("flock")]
+
 
 class TestGetQueue:
     def test_returns_ready_issues(self, client: TestClient):
@@ -743,7 +765,125 @@ class TestGetQueue:
         assert resp.json() == []
 
 
+class _CampaignStore:
+    """Keeps the campaigns a dispatch saves."""
+
+    def __init__(self) -> None:
+        self.saved = []
+
+    async def save_campaign(self, campaign):
+        self.saved.append(campaign)
+        return campaign
+
+
 class TestApproveDispatch:
+    def test_a_ravn_flock_workload_is_refused_as_an_invalid_request(
+        self, client: TestClient, saga_repo: MockSagaRepo, mock_volundr: MockVolundr
+    ):
+        resp = client.post(
+            "/api/v1/ting/dispatch/approve",
+            json={
+                "items": [
+                    {"saga_id": str(saga_repo.sagas[0].id), "issue_id": "i-1", "repo": "org/repo-a"}
+                ],
+                "workload_type": "ravn_flock",
+            },
+        )
+
+        assert resp.status_code == 422
+        assert mock_volundr.spawned == []
+
+    def _workflow_saga_batch(self, saga_repo: MockSagaRepo) -> dict:
+        plain = saga_repo.sagas[0]
+        saga_repo.sagas.append(
+            replace(
+                plain,
+                id=uuid4(),
+                slug="beta",
+                workflow_id=uuid4(),
+                workflow_snapshot={
+                    "name": "Review Flow",
+                    "version": "1.0.0",
+                    "graph": {"nodes": [{"id": "n"}]},
+                },
+            )
+        )
+        return {
+            "items": [
+                {"saga_id": str(plain.id), "issue_id": "i-1", "repo": "org/repo-a"},
+                {
+                    "saga_id": str(saga_repo.sagas[1].id),
+                    "issue_id": "i-1",
+                    "repo": "org/repo-a",
+                },
+            ],
+        }
+
+    def test_a_saga_that_runs_a_workflow_without_a_launcher_is_a_503_and_spawns_nothing(
+        self, client: TestClient, saga_repo: MockSagaRepo, mock_volundr: MockVolundr
+    ):
+        resp = client.post(
+            "/api/v1/ting/dispatch/approve", json=self._workflow_saga_batch(saga_repo)
+        )
+
+        assert resp.status_code == 503
+        assert "workflow run launcher" in resp.json()["detail"]
+        assert mock_volundr.spawned == []
+
+    def test_a_saga_that_runs_a_workflow_starts_a_run_and_reports_its_campaign(
+        self,
+        mock_tracker: MockTracker,
+        saga_repo: MockSagaRepo,
+        mock_volundr: MockVolundr,
+        mock_factory: MockVolundrFactory,
+        mock_dispatcher_repo: MockDispatcherRepo,
+    ):
+        launched = []
+
+        class Launcher:
+            async def launch(self, campaign, payload=None, *, trigger_node_id=None):
+                launched.append(campaign)
+                return RunState(run_id=campaign.id)
+
+        app = _make_test_app(
+            mock_tracker,
+            saga_repo,
+            mock_volundr,
+            mock_factory,
+            mock_dispatcher_repo,
+            workflow_runs=Launcher(),
+            campaign_repo=_CampaignStore(),
+        )
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/v1/ting/dispatch/approve", json=self._workflow_saga_batch(saga_repo)
+        )
+
+        assert resp.status_code == 200
+        plain, with_workflow = resp.json()
+        assert plain["session_id"] and plain["campaign_id"] == ""
+        assert with_workflow["session_id"] == ""
+        assert with_workflow["campaign_id"] == str(launched[0].id)
+        assert with_workflow["campaign_slug"] == launched[0].slug
+        assert len(mock_volundr.spawned) == 1
+
+    def test_the_solo_workload_still_spawns(
+        self, client: TestClient, saga_repo: MockSagaRepo, mock_volundr: MockVolundr
+    ):
+        resp = client.post(
+            "/api/v1/ting/dispatch/approve",
+            json={
+                "items": [
+                    {"saga_id": str(saga_repo.sagas[0].id), "issue_id": "i-1", "repo": "org/repo-a"}
+                ],
+                "workload_type": "solo",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(mock_volundr.spawned) == 1
+
     def test_spawns_sessions(
         self,
         client: TestClient,
@@ -1127,6 +1267,39 @@ class TestListClusters:
         assert resp.status_code == 200
         assert registry.principals[0].user_id == "user-1"
         assert registry.principals[0].tenant_id == "tenant-a"
+
+
+class TestDispatchAliasRefusal:
+    def _client(self, service: AsyncMock) -> TestClient:
+        app = FastAPI()
+        app.include_router(create_dispatch_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [DispatchAliasTracker()]
+        app.dependency_overrides[resolve_dispatch_service] = lambda: service
+        app.dependency_overrides[resolve_dispatcher_repo] = MockDispatcherRepo
+        app.state.settings = _make_settings()
+        return TestClient(app)
+
+    def test_single_run_alias_maps_an_unconfigured_dispatcher_to_503(self) -> None:
+        service = AsyncMock()
+        service.dispatch_issues.side_effect = WorkflowRunsNotConfiguredError("no launcher")
+
+        response = self._client(service).post("/api/v1/ting/dispatch/i-1", headers=_auth_headers())
+
+        assert response.status_code == 503
+        assert response.json() == {"detail": "no launcher"}
+
+    def test_batch_alias_maps_an_unconfigured_dispatcher_to_503_not_a_failed_item(self) -> None:
+        service = AsyncMock()
+        service.dispatch_issues.side_effect = WorkflowRunsNotConfiguredError("no launcher")
+
+        response = self._client(service).post(
+            "/api/v1/ting/dispatch/batch",
+            json={"run_ids": ["i-1"]},
+            headers=_auth_headers(),
+        )
+
+        assert response.status_code == 503
+        assert response.json() == {"detail": "no launcher"}
 
 
 class TestDispatchAliases:

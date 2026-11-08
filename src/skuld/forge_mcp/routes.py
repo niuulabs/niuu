@@ -22,6 +22,8 @@ logger = logging.getLogger("skuld.broker")
 FORGE_MCP_TOOLS_PATH = "/api/forge-mcp/tools"
 #: The ``forge-describe`` shim calls the ``describe_session`` tool through this route.
 DESCRIBE_TOOL_PATH = f"{FORGE_MCP_TOOLS_PATH}/describe_session"
+#: The ``request-secret`` shim calls the ``request_secret`` tool through this route.
+REQUEST_SECRET_TOOL_PATH = f"{FORGE_MCP_TOOLS_PATH}/request_secret"
 
 
 def register_forge_mcp_routes(

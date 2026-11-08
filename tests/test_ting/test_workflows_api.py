@@ -2,24 +2,26 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import jwt
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from niuu.domain.models import Principal
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+from personas.adapters.loader import FilesystemPersonaAdapter
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflows import (
-    _configure_child_task_a2a_runtime,
+    WorkflowLaunchBody,
+    _resolve_target_adapter,
     create_workflows_router,
+    prepare_workflow_launch,
     resolve_workflow_launch_campaign_repo,
     resolve_workflow_repo,
 )
@@ -32,11 +34,22 @@ from ting.domain.models import (
     WorkflowScope,
     WorkflowVersionSummary,
 )
-from ting.domain.workflow_document import workflow_document_payload, workflow_document_revision
+from ting.domain.workflow_document import (
+    WorkflowPlacement,
+    workflow_document_payload,
+    workflow_document_revision,
+)
 from ting.domain.workflow_versioning import next_workflow_version
-from ting.ports.volundr import SpawnRequest, VolundrPort, VolundrSession
+from ting.ports.volundr import (
+    HostTagSetsUnreadableError,
+    SpawnRequest,
+    VolundrPort,
+    VolundrSession,
+)
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
+
+from .fake_workflow_runs import FakeWorkflowRuns
 
 
 class InMemoryWorkflowRepository(WorkflowRepository):
@@ -181,11 +194,15 @@ class RecordingVolundrPort(VolundrPort):
         target_id: str = "local",
         chat_endpoint: str = "wss://sessions.example/s/session-123/session",
         tags: list[str] | None = None,
+        tag_sets: list[list[str]] | None = None,
+        tag_sets_unreadable: bool = False,
     ) -> None:
         self._name = name
         self._target_id = target_id
         self._chat_endpoint = chat_endpoint
         self._tags = tags or []
+        self._tag_sets = tag_sets or []
+        self._tag_sets_unreadable = tag_sets_unreadable
         self.requests: list[SpawnRequest] = []
         self.stopped: list[str] = []
 
@@ -200,6 +217,11 @@ class RecordingVolundrPort(VolundrPort):
     @property
     def target_id(self) -> str:
         return self._target_id
+
+    async def host_tag_sets(self, *, auth_token=None, principal=None) -> list[list[str]]:
+        if self._tag_sets_unreadable:
+            raise HostTagSetsUnreadableError(f"{self._name}: HTTP 500")
+        return self._tag_sets
 
     async def spawn_session(
         self,
@@ -272,34 +294,28 @@ class RecordingVolundrFactory:
         return list(self._adapters)
 
 
-def test_developer_runtime_configures_local_a2a_card_without_mutating_defaults() -> None:
-    source = {
-        "gateway": {
-            "platform": {
-                "base_url": "https://platform.example",
-                "a2a_agent_card_urls": ["https://peer.example/card"],
-                "a2a_trusted_origins": ["https://peer.example"],
+def _runnable_graph(entry_id: str) -> dict:
+    """The smallest graph the step engine accepts: a trigger that leads straight to an end."""
+    return {
+        "nodes": [
+            {"id": entry_id, "kind": "trigger", "dispatchEvent": "work.requested"},
+            {"id": f"{entry_id}-end", "kind": "end", "completionEvent": "work.completed"},
+        ],
+        "edges": [
+            {
+                "id": f"{entry_id}-to-end",
+                "source": entry_id,
+                "target": f"{entry_id}-end",
+                "label": "work.requested -> work.requested",
             }
-        }
+        ],
     }
 
-    configured = _configure_child_task_a2a_runtime(
-        source,
-        card_url="https://ting.example/.well-known/agent-card.json",
-    )
 
-    platform = configured["gateway"]["platform"]
-    assert platform["enabled"] is True
-    assert platform["base_url"] == "https://platform.example"
-    assert platform["a2a_agent_card_urls"] == [
-        "https://peer.example/card",
-        "https://ting.example/.well-known/agent-card.json",
-    ]
-    assert platform["a2a_trusted_origins"] == [
-        "https://peer.example",
-        "https://ting.example",
-    ]
-    assert "enabled" not in source["gateway"]["platform"]
+def _runnable_payload() -> dict:
+    """The nodes and edges of a smallest saveable workflow, as a create/update request has them."""
+    graph = _runnable_graph("entry")
+    return {"nodes": graph["nodes"], "edges": graph["edges"]}
 
 
 def _make_workflow(
@@ -317,7 +333,7 @@ def _make_workflow(
         version="1.0.0",
         scope=scope,
         owner_id=owner_id,
-        graph={"nodes": [{"id": "n1", "kind": "stage"}], "edges": []},
+        graph=_runnable_graph("n1"),
         created_at=now,
         updated_at=now,
     )
@@ -418,8 +434,10 @@ def _make_client(
     volundr_factory: RecordingVolundrFactory | None = None,
     settings: Settings | None = None,
     campaign_repo: WorkflowCampaignRepository | None = None,
+    workflow_runs: FakeWorkflowRuns | None = None,
 ) -> TestClient:
     app = FastAPI()
+    app.state.workflow_runs = workflow_runs if workflow_runs is not None else FakeWorkflowRuns()
     app.state.authorization = AllowAllAuthorizationAdapter()
     app.state.persona_source = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
     app.include_router(create_workflows_router())
@@ -482,7 +500,13 @@ class TestWorkflowCatalogAPI:
                 "version": "1.0.0",
                 "scope": "user",
                 "nodes": [
-                    {"id": "trigger-1", "kind": "trigger", "label": "Start", "source": "manual"},
+                    {
+                        "id": "trigger-1",
+                        "kind": "trigger",
+                        "label": "Start",
+                        "source": "manual",
+                        "dispatchEvent": "code.requested",
+                    },
                     {
                         "id": "stage-1",
                         "kind": "stage",
@@ -495,8 +519,18 @@ class TestWorkflowCatalogAPI:
                     {"id": "end-1", "kind": "end", "label": "Done"},
                 ],
                 "edges": [
-                    {"id": "e1", "source": "trigger-1", "target": "stage-1"},
-                    {"id": "e2", "source": "stage-1", "target": "end-1"},
+                    {
+                        "id": "e1",
+                        "source": "trigger-1",
+                        "target": "stage-1",
+                        "label": "code.requested -> code.changed",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "stage-1",
+                        "target": "end-1",
+                        "label": "review.passed -> review.passed",
+                    },
                 ],
             },
         )
@@ -508,6 +542,140 @@ class TestWorkflowCatalogAPI:
         node_ids = {node["id"] for node in body["nodes"]}
         assert node_ids == {"trigger-1", "stage-1", "end-1"}
 
+    def test_a_workflow_the_step_engine_could_not_run_is_refused_at_save(self) -> None:
+        repo = InMemoryWorkflowRepository()
+        client = _make_client(repo)
+        graph = _runnable_payload()
+        graph["nodes"].append({"id": "branch", "kind": "cond", "label": "If", "predicate": "a > b"})
+
+        response = client.post(
+            "/api/v1/ting/workflows",
+            headers=_headers(),
+            json={"name": "Branching", "scope": "user", **graph},
+        )
+
+        assert response.status_code == 422
+        assert "cond nodes are not supported" in response.json()["detail"]
+        assert repo._workflows == {}
+
+    def test_an_unbounded_loop_is_refused_at_save_naming_the_cycle(self) -> None:
+        repo = InMemoryWorkflowRepository()
+        client = _make_client(repo)
+
+        response = client.post(
+            "/api/v1/ting/workflows",
+            headers=_headers(),
+            json={
+                "name": "Loop",
+                "scope": "user",
+                "nodes": [
+                    {"id": "start", "kind": "trigger", "dispatchEvent": "code.requested"},
+                    {
+                        "id": "code",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "coder"}],
+                    },
+                    {
+                        "id": "review",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "reviewer"}],
+                    },
+                    {"id": "finish", "kind": "end"},
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "start",
+                        "target": "code",
+                        "label": "code.requested -> review.changes_requested",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "code",
+                        "target": "review",
+                        "label": "code.changed -> code.changed",
+                    },
+                    {
+                        "id": "e3",
+                        "source": "review",
+                        "target": "code",
+                        "label": "review.changes_requested -> review.changes_requested",
+                    },
+                    {
+                        "id": "e4",
+                        "source": "review",
+                        "target": "finish",
+                        "label": "review.passed -> review.passed",
+                    },
+                ],
+            },
+        )
+
+        assert response.status_code == 422
+        assert "cycle with no rework edge" in response.json()["detail"]
+
+    def test_rework_edges_survive_a_save_and_a_read(self) -> None:
+        repo = InMemoryWorkflowRepository()
+        client = _make_client(repo)
+
+        response = client.post(
+            "/api/v1/ting/workflows",
+            headers=_headers(),
+            json={
+                "name": "Bounded loop",
+                "scope": "user",
+                "nodes": [
+                    {"id": "start", "kind": "trigger", "dispatchEvent": "code.requested"},
+                    {
+                        "id": "code",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "coder"}],
+                    },
+                    {
+                        "id": "review",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "reviewer"}],
+                    },
+                    {"id": "finish", "kind": "end"},
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "start",
+                        "target": "code",
+                        "label": "code.requested -> review.changes_requested",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "code",
+                        "target": "review",
+                        "label": "code.changed -> code.changed",
+                    },
+                    {
+                        "id": "e3",
+                        "source": "review",
+                        "target": "code",
+                        "label": "review.changes_requested -> review.changes_requested",
+                        "rework": True,
+                        "maxIterations": 3,
+                    },
+                    {
+                        "id": "e4",
+                        "source": "review",
+                        "target": "finish",
+                        "label": "review.passed -> review.passed",
+                    },
+                ],
+            },
+        )
+
+        assert response.status_code == 201, response.text
+        saved = next(iter(repo._workflows.values()))
+        rework = next(edge for edge in saved.graph["edges"] if edge["id"] == "e3")
+        assert (rework["rework"], rework["maxIterations"]) == (True, 3)
+        fetched = client.get(f"/api/v1/ting/workflows/{saved.id}", headers=_headers())
+        assert next(e for e in fetched.json()["edges"] if e["id"] == "e3")["maxIterations"] == 3
+
     def test_non_admin_cannot_create_system_workflow(self) -> None:
         repo = InMemoryWorkflowRepository()
         client = _make_client(repo)
@@ -518,8 +686,7 @@ class TestWorkflowCatalogAPI:
             json={
                 "name": "Shared Flow",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -538,7 +705,7 @@ class TestWorkflowCatalogAPI:
         response = client.post(
             "/api/v1/ting/workflows",
             headers={**_headers(roles=roles), "x-auth-tenant": tenant},
-            json={"name": "Shared Flow", "scope": "system", "nodes": [], "edges": []},
+            json={"name": "Shared Flow", "scope": "system", **_runnable_payload()},
         )
 
         assert response.status_code == 403
@@ -553,8 +720,7 @@ class TestWorkflowCatalogAPI:
             json={
                 "name": "Shared Flow",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -573,8 +739,7 @@ class TestWorkflowCatalogAPI:
             json={
                 "name": "Shared Flow",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -625,6 +790,7 @@ class TestWorkflowCatalogAPI:
                         "maxConcurrent": 3,
                         "joinMode": "all",
                     },
+                    {"id": "end-1", "kind": "end", "label": "Done"},
                     {
                         "id": "mimir-1",
                         "kind": "resource",
@@ -636,7 +802,18 @@ class TestWorkflowCatalogAPI:
                     },
                 ],
                 "edges": [
-                    {"id": "e1", "source": "trigger-1", "target": "stage-1"},
+                    {
+                        "id": "e1",
+                        "source": "trigger-1",
+                        "target": "stage-1",
+                        "label": "code.requested -> code.changed",
+                    },
+                    {
+                        "id": "e2",
+                        "source": "stage-1",
+                        "target": "end-1",
+                        "label": "review.passed -> review.passed",
+                    },
                 ],
                 "resourceBindings": [
                     {
@@ -681,8 +858,18 @@ class TestWorkflowCatalogAPI:
                 "description": "Updated",
                 "version": "2.0.0",
                 "scope": "user",
-                "nodes": [{"id": "stage-2", "kind": "stage"}],
-                "edges": [{"id": "edge-1", "source": "a", "target": "b"}],
+                "nodes": [
+                    {"id": "stage-2", "kind": "trigger", "dispatchEvent": "work.requested"},
+                    {"id": "stage-2-end", "kind": "end"},
+                ],
+                "edges": [
+                    {
+                        "id": "edge-1",
+                        "source": "stage-2",
+                        "target": "stage-2-end",
+                        "label": "work.requested -> work.requested",
+                    }
+                ],
             },
         )
 
@@ -710,8 +897,7 @@ class TestWorkflowCatalogAPI:
                 "scope": "user",
                 "expected_revision": "head:1",
                 "base_revision": original_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
         assert response.status_code == 201, response.text
@@ -764,7 +950,7 @@ class TestWorkflowCatalogAPI:
         no_base = client.post(
             f"/api/v1/ting/workflows/{workflow.id}/versions",
             headers=_headers(),
-            json={"name": "No base", "scope": "user", "nodes": [], "edges": []},
+            json={"name": "No base", "scope": "user", **_runnable_payload()},
         )
         assert no_base.status_code == 422
         unknown_base = client.post(
@@ -775,15 +961,14 @@ class TestWorkflowCatalogAPI:
                 "scope": "user",
                 "expected_revision": "head:1",
                 "base_revision": "sha256:" + "f" * 64,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
         assert unknown_base.status_code == 404
         unknown_update = client.put(
             f"/api/v1/ting/workflows/{missing_id}",
             headers=_headers(),
-            json={"name": "Missing", "scope": "user", "nodes": [], "edges": []},
+            json={"name": "Missing", "scope": "user", **_runnable_payload()},
         )
         assert unknown_update.status_code == 404
         changed_scope = client.put(
@@ -793,8 +978,7 @@ class TestWorkflowCatalogAPI:
                 "name": "Changed scope",
                 "scope": "system",
                 "expected_revision": "head:1",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
         assert changed_scope.status_code == 422
@@ -817,8 +1001,7 @@ class TestWorkflowCatalogAPI:
                 "scope": "user",
                 "expected_revision": "head:1",
                 "base_revision": revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -837,7 +1020,7 @@ class TestWorkflowCatalogAPI:
             child_base,
             version="1.1.0",
             name="Child v2",
-            graph={"nodes": [{"id": "new-child", "kind": "stage"}], "edges": []},
+            graph=_runnable_graph("new-child"),
             revision="child-head:2",
             document_revision=None,
         )
@@ -887,8 +1070,18 @@ class TestWorkflowCatalogAPI:
                 "schema_version": 2,
                 "expected_revision": "parent-head:2",
                 "base_revision": parent_base_revision,
-                "nodes": [{"id": "branched-parent", "kind": "stage"}],
-                "edges": [],
+                "nodes": [
+                    {"id": "branched-parent", "kind": "trigger", "dispatchEvent": "work.requested"},
+                    {"id": "branched-parent-end", "kind": "end"},
+                ],
+                "edges": [
+                    {
+                        "id": "branched-parent-to-end",
+                        "source": "branched-parent",
+                        "target": "branched-parent-end",
+                        "label": "work.requested -> work.requested",
+                    }
+                ],
             },
         )
 
@@ -933,8 +1126,7 @@ class TestWorkflowCatalogAPI:
                 "schema_version": 2,
                 "expected_revision": "parent-head:1",
                 "base_revision": parent_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -951,7 +1143,7 @@ class TestWorkflowCatalogAPI:
             child_v1,
             name="Child v2",
             version="2.0.0",
-            graph={"nodes": [{"id": "child-v2", "kind": "stage"}], "edges": []},
+            graph=_runnable_graph("child-v2"),
             document_revision=None,
         )
         child_v2_revision = workflow_document_revision(child_v2)
@@ -998,8 +1190,7 @@ class TestWorkflowCatalogAPI:
                         "digest": child_v1_revision,
                     }
                 },
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1056,8 +1247,7 @@ class TestWorkflowCatalogAPI:
                         "digest": private_revision,
                     }
                 },
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1116,8 +1306,7 @@ class TestWorkflowCatalogAPI:
                         "digest": selected_revision,
                     }
                 },
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1159,8 +1348,7 @@ class TestWorkflowCatalogAPI:
                 "schema_version": 2,
                 "expected_revision": "parent-head:1",
                 "base_revision": parent_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1217,8 +1405,9 @@ class TestWorkflowCatalogAPI:
                         "path": "/legacy",
                         "authRef": "legacy-secret",
                     },
+                    *_runnable_payload()["nodes"],
                 ],
-                "edges": [],
+                "edges": _runnable_payload()["edges"],
             },
         )
 
@@ -1294,8 +1483,7 @@ class TestWorkflowCatalogAPI:
                 "scope": "system",
                 "expected_revision": base_revision,
                 "base_revision": base_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
         assert response.status_code == 201, response.text
@@ -1338,8 +1526,7 @@ class TestWorkflowCatalogAPI:
                 "scope": "system",
                 "expected_revision": base_revision,
                 "base_revision": base_revision,
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1359,8 +1546,7 @@ class TestWorkflowCatalogAPI:
             "scope": "user",
             "expected_revision": "head:1",
             "base_revision": base_revision,
-            "nodes": [],
-            "edges": [],
+            **_runnable_payload(),
         }
 
         first = client.post(
@@ -1406,8 +1592,7 @@ class TestWorkflowCatalogAPI:
                 "description": "Updated",
                 "version": "2.0.0",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1430,8 +1615,7 @@ class TestWorkflowCatalogAPI:
                 "description": "Updated",
                 "version": "2.0.0",
                 "scope": "system",
-                "nodes": [],
-                "edges": [],
+                **_runnable_payload(),
             },
         )
 
@@ -1441,15 +1625,17 @@ class TestWorkflowCatalogAPI:
         assert body["scope"] == "system"
         assert body["owner_id"] is None
 
-    def test_launch_workflow_spawns_direct_flock_session(self) -> None:
+    def test_launch_workflow_starts_a_run_and_answers_with_its_campaign(self) -> None:
         workflow = _make_research_workflow()
         repo = InMemoryWorkflowRepository([workflow])
-        adapter = RecordingVolundrPort()
+        adapter = RecordingVolundrPort(name="cpu", target_id="cpu-1")
         campaign_repo = RecordingCampaignRepository()
+        runs = FakeWorkflowRuns()
         client = _make_client(
             repo,
             volundr_factory=RecordingVolundrFactory([adapter]),
             campaign_repo=campaign_repo,
+            workflow_runs=runs,
         )
 
         response = client.post(
@@ -1460,326 +1646,66 @@ class TestWorkflowCatalogAPI:
                 "sessionName": "grief-companions",
                 "repo": "https://github.com/niuulabs/volundr.git",
                 "branch": "feat/research",
-                "model": "gpt-5.5",
-                "definition": "skuldCodex",
-                "context": {
-                    "question": ("Are AI grief companions a credible product category?"),
-                    "mode": "evaluative",
-                },
-                "inheritedResultSchema": {
-                    "type": "object",
-                    "properties": {"evidence": {"type": "array", "items": {"type": "string"}}},
-                    "required": ["evidence"],
-                    "additionalProperties": False,
-                },
-                "provenance": {
-                    "signal_id": "sig-1",
-                    "valkyrie_id": "valkyrie-ymir",
-                    "policy": "k8s-signals",
-                },
             },
         )
 
         assert response.status_code == 201
-        assert response.json()["workflowVersion"] == "1.0.0"
-        assert response.json()["documentRevision"].startswith("sha256:")
         body = response.json()
+        assert "sessionId" not in body
         assert body["workflowId"] == str(workflow.id)
-        assert body["slug"] == "grief-companions"
-        assert body["sessionId"] == "session-123"
-        assert body["chatEndpoint"] == "wss://sessions.example/s/session-123/session"
-        assert len(adapter.requests) == 1
-        spawn = adapter.requests[0]
-        assert spawn.definition == "skuldCodex"
-        assert spawn.model == "gpt-5.5"
-        assert spawn.workload_type == "ravn_flock"
-        assert spawn.name == "grief-companions"
-        assert spawn.repo == "https://github.com/niuulabs/volundr.git"
-        assert spawn.branch == "feat/research"
-        assert spawn.tracker_issue_id == "workflow:grief-companions"
-        assert spawn.workload_config["workflow"]["name"] == "Research Campaign"
-        assert spawn.workload_config["workflow_result_schema"] == {
-            "type": "object",
-            "properties": {"evidence": {"type": "array", "items": {"type": "string"}}},
-            "required": ["evidence"],
-            "additionalProperties": False,
-        }
-        assert spawn.credential_names == []
-        assert spawn.integration_ids == ["integration-github", "integration-memory"]
-        assert adapter.integration_principal is not None
-        assert spawn.workload_config["provenance"] == {
-            "signal_id": "sig-1",
-            "valkyrie_id": "valkyrie-ymir",
-            "policy": "k8s-signals",
-        }
-        assert spawn.workload_config["personas"][0]["name"] == "research-framer"
-        assert "Workflow Launch" in spawn.initial_prompt
-        assert "Launch Context" in spawn.initial_prompt
-        assert "Are AI grief companions a credible product category?" in spawn.initial_prompt
+        assert body["status"] == "pending"
+        # A run starts no session of its own: the engine creates one per stage member.
+        assert adapter.requests == []
         [campaign] = campaign_repo.items.values()
-        assert campaign.owner_id == "user-1"
-        assert campaign.tenant_id == ""
-        assert campaign.session_id == "session-123"
-        assert campaign.connection_id == "local"
-        assert campaign.workflow_id == workflow.id
-        assert campaign.workflow_version == "1.0.0"
-        assert campaign.workflow_snapshot["workflow_revision"].startswith("sha256:")
-        assert campaign.metadata["surface"] == "ting.workflow-launch"
-        # The run is named by its brief, not by the session it ran in.
-        assert campaign.metadata["prompt"] == (
-            "Research whether AI grief companions are a credible product category."
-        )
+        assert body["campaignId"] == str(campaign.id)
+        assert body["campaignSlug"] == campaign.slug
+        assert campaign.session_id == ""
+        assert campaign.connection_id == "cpu-1"
         assert campaign.metadata["repo"] == "https://github.com/niuulabs/volundr.git"
         assert campaign.metadata["branch"] == "feat/research"
-        assert "actor_id" not in campaign.metadata
+        [(launched, payload)] = runs.launched
+        assert launched.id == campaign.id
+        assert payload["prompt"].startswith("Research whether AI grief companions")
+        assert "Workflow Launch" in payload["initiative_context"]
 
-    def _launch_infra_change(self, body: dict) -> tuple[Any, RecordingVolundrPort]:
-        from ting.system_workflows import load_system_workflows
-
-        workflow = next(w for w in load_system_workflows() if w.name == "Infra Change Flow")
-        adapter = RecordingVolundrPort()
-        client = _make_client(
-            InMemoryWorkflowRepository([workflow]),
-            volundr_factory=RecordingVolundrFactory([adapter]),
-            campaign_repo=RecordingCampaignRepository(),
-        )
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={
-                "prompt": "Pin the Sigrun resident to the dev build.",
-                "sessionName": "niu-1114-sigrun",
-                "repo": "https://github.com/jve/infrastructure",
-                **body,
-            },
-        )
-        return response, adapter
-
-    def test_isolated_workflow_never_works_on_its_target_branch(self) -> None:
-        """A push to an infra repo's target branch is a deploy; only the gated merge may make it."""
-        response, adapter = self._launch_infra_change({"base_branch": "main"})
-
-        assert response.status_code == 201, response.text
-        spawn = adapter.requests[0]
-        assert spawn.branch == "workflow/niu-1114-sigrun"
-        assert spawn.base_branch == "main"
-        assert "Work and commit only on `workflow/niu-1114-sigrun`, cut from `main`" in (
-            spawn.initial_prompt
-        )
-        assert "Never commit to or push `main`" in spawn.initial_prompt
-
-    def test_isolated_workflow_also_takes_the_target_from_branch(self) -> None:
-        response, adapter = self._launch_infra_change({"branch": "main"})
-
-        assert response.status_code == 201, response.text
-        assert adapter.requests[0].branch == "workflow/niu-1114-sigrun"
-        assert adapter.requests[0].base_branch == "main"
-
-    def test_isolated_workflow_without_a_target_branch_is_refused(self) -> None:
-        response, adapter = self._launch_infra_change({})
-
-        assert response.status_code == 422
-        assert "name the target branch" in response.json()["detail"]
-        assert adapter.requests == []
-
-    def test_base_branch_is_honoured_for_an_ordinary_workflow(self) -> None:
-        workflow = _make_research_workflow()
-        adapter = RecordingVolundrPort()
-        client = _make_client(
-            InMemoryWorkflowRepository([workflow]),
-            volundr_factory=RecordingVolundrFactory([adapter]),
-            campaign_repo=RecordingCampaignRepository(),
-        )
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={"prompt": "Research it.", "sessionName": "research", "base_branch": "regin"},
-        )
-
-        assert response.status_code == 201, response.text
-        assert adapter.requests[0].branch == "regin"
-        assert adapter.requests[0].base_branch == "regin"
-        assert "## Branch" not in adapter.requests[0].initial_prompt
-
-    def test_launch_by_a_resident_records_it_as_the_campaign_actor(self) -> None:
-        """A resident's exchanged token launches as its owner and names itself (act.sub)."""
-        import jwt
-
+    def test_a_run_that_cannot_start_fails_its_campaign_and_the_launch(self) -> None:
         workflow = _make_research_workflow()
         campaign_repo = RecordingCampaignRepository()
+        runs = FakeWorkflowRuns(launch_error=RuntimeError("no Forge capacity"))
         client = _make_client(
             InMemoryWorkflowRepository([workflow]),
             volundr_factory=RecordingVolundrFactory([RecordingVolundrPort()]),
             campaign_repo=campaign_repo,
-        )
-        token = jwt.encode(
-            {"sub": "user-1", "act": {"sub": "system:serviceaccount:skuld:resident-ravn"}},
-            "test-only-hmac-key-at-least-32-bytes-long",
-            algorithm="HS256",
+            workflow_runs=runs,
         )
 
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers={**_headers(roles="ting:admin"), "Authorization": f"Bearer {token}"},
-            json={"prompt": "Research the question.", "sessionName": "resident-launch"},
-        )
+        with pytest.raises(RuntimeError, match="no Forge capacity"):
+            client.post(
+                f"/api/v1/ting/workflows/{workflow.id}/launch",
+                headers=_headers(roles="ting:admin"),
+                json={"prompt": "Doomed."},
+            )
 
-        assert response.status_code == 201, response.text
         [campaign] = campaign_repo.items.values()
-        assert campaign.owner_id == "user-1"
-        assert campaign.metadata["actor_id"] == "system:serviceaccount:skuld:resident-ravn"
+        assert campaign.status.value == "failed"
+        assert campaign.metadata["failure_error"] == "no Forge capacity"
 
-    def _launch_claude_workflow_executor(self, settings: Settings) -> dict:
-        workflow = _make_research_workflow()
-        graph = json.loads(json.dumps(workflow.graph))
-        graph["nodes"][2]["stageMembers"][0]["model"] = "claude-sonnet-4-6"
-        workflow = replace(workflow, graph=graph)
+    def test_launch_workflow_still_refuses_a_workflow_the_caller_cannot_see(self) -> None:
+        workflow = _make_workflow(owner_id="someone-else")
         adapter = RecordingVolundrPort()
         client = _make_client(
             InMemoryWorkflowRepository([workflow]),
             volundr_factory=RecordingVolundrFactory([adapter]),
-            settings=settings,
         )
 
         response = client.post(
             f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={
-                "prompt": "Frame the question.",
-                "repo": "https://github.com/niuulabs/volundr.git",
-                "branch": "feat/research",
-                "model": "claude-sonnet-4-6",
-            },
+            headers=_headers(),
+            json={"prompt": "Not yours."},
         )
 
-        assert response.status_code == 201, response.text
-        [spawn] = adapter.requests
-        [persona] = spawn.workload_config["personas"]
-        return persona["executor"]["kwargs"]
-
-    def test_launch_gives_claude_personas_the_configured_turn_timeout(self) -> None:
-        settings = Settings(
-            auth=AuthConfig(allow_anonymous_dev=False),
-            dispatch={"workflow_cli_turn_timeout_seconds": 900},
-        )
-
-        assert self._launch_claude_workflow_executor(settings) == {
-            "transport_adapter": "skuld.transports.sdk.SDKTransport",
-            "transport_kwargs": {"turn_timeout_s": 900.0},
-        }
-
-    def test_launch_passes_a_zero_turn_timeout_through_unchanged(self) -> None:
-        """0 turns the limit off; it must not be replaced by the default."""
-        settings = Settings(
-            auth=AuthConfig(allow_anonymous_dev=False),
-            dispatch={"workflow_cli_turn_timeout_seconds": 0},
-        )
-
-        assert self._launch_claude_workflow_executor(settings) == {
-            "transport_adapter": "skuld.transports.sdk.SDKTransport",
-            "transport_kwargs": {"turn_timeout_s": 0.0},
-        }
-
-    def test_launch_gives_claude_personas_the_default_turn_timeout(self) -> None:
-        settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
-
-        assert self._launch_claude_workflow_executor(settings) == {
-            "transport_adapter": "skuld.transports.sdk.SDKTransport",
-            "transport_kwargs": {"turn_timeout_s": 120.0},
-        }
-
-    def test_launch_historical_version_uses_its_graph_and_dependency_closure(self) -> None:
-        old = _make_research_workflow()
-        child = _make_workflow(name="Historical Child")
-        child = replace(
-            child,
-            graph={"nodes": [{"id": "old-child-stage", "kind": "stage"}], "edges": []},
-        )
-        child_revision = workflow_document_revision(child)
-        dependency = WorkflowDependency(
-            id=child.id,
-            revision=child_revision,
-            digest=child_revision,
-        )
-        old = replace(
-            old,
-            schema_version=2,
-            revision="head:old",
-            document_revision=workflow_document_revision(old),
-            workflow_dependencies={"child": dependency},
-            workflow_definitions={
-                "child": {
-                    "document": workflow_document_payload(child),
-                    "persona_definitions": {},
-                    "workflow_definitions": {},
-                }
-            },
-        )
-        old = replace(old, document_revision=workflow_document_revision(old))
-        head = replace(
-            old,
-            version="1.1.0",
-            graph={
-                "nodes": [
-                    {
-                        "id": "trigger-head",
-                        "kind": "trigger",
-                        "dispatchEvent": "head.requested",
-                    }
-                ],
-                "edges": [],
-            },
-            workflow_dependencies={},
-            workflow_definitions={},
-            revision="head:new",
-            document_revision=None,
-        )
-        head = replace(head, document_revision=workflow_document_revision(head))
-        repo = InMemoryWorkflowRepository([old])
-        repo._versions[old.id][head.version] = head
-        repo._workflows[old.id] = head
-        adapter = RecordingVolundrPort()
-        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{old.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={"prompt": "run the historical workflow", "workflowVersion": "1.0.0"},
-        )
-
-        assert response.status_code == 201, response.text
-        assert response.json()["workflowVersion"] == "1.0.0"
-        snapshot = adapter.requests[0].workload_config["workflow"]
-        assert snapshot["graph"]["nodes"][0]["id"] == "trigger-1"
-        assert (
-            snapshot["workflow_definitions"]["child"]["document"]["graph"]["nodes"][0]["id"]
-            == "old-child-stage"
-        )
-
-    def test_launch_record_failure_stops_spawned_session_and_returns_identity(self) -> None:
-        workflow = _make_research_workflow()
-        adapter = RecordingVolundrPort()
-        client = _make_client(
-            InMemoryWorkflowRepository([workflow]),
-            volundr_factory=RecordingVolundrFactory([adapter]),
-            campaign_repo=FailingCampaignRepository(),
-        )
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={"prompt": "durably launch this workflow"},
-        )
-
-        assert response.status_code == 503
-        detail = response.json()["detail"]
-        assert detail["code"] == "launchRecordFailed"
-        assert detail["sessionId"] == "session-123"
-        assert detail["sessionStopped"] is True
-        assert detail["reconciliationRequired"] is False
-        assert "credentials" not in detail["message"]
-        assert adapter.stopped == ["session-123"]
+        assert response.status_code == 404
+        assert adapter.requests == []
 
     def test_launch_unknown_historical_version_is_not_found(self) -> None:
         workflow = _make_research_workflow()
@@ -1797,29 +1723,6 @@ class TestWorkflowCatalogAPI:
 
         assert response.status_code == 404
         assert adapter.requests == []
-
-    def test_generic_launch_strips_obsolete_global_developer_token(self) -> None:
-        workflow = _make_research_workflow()
-        adapter = RecordingVolundrPort()
-        settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
-        settings.dispatch.flock.ravn_config = {
-            "workflow_execution": {"auth_token": "obsolete-secret"}
-        }
-        client = _make_client(
-            InMemoryWorkflowRepository([workflow]),
-            volundr_factory=RecordingVolundrFactory([adapter]),
-            settings=settings,
-        )
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={"prompt": "ordinary research"},
-        )
-
-        assert response.status_code == 201, response.text
-        assert "obsolete-secret" not in json.dumps(adapter.requests[0].workload_config)
-        assert "auth_token" not in json.dumps(adapter.requests[0].workload_config)
 
     def test_public_launch_rejects_forged_workflow_execution_provenance(self) -> None:
         workflow = _make_research_workflow()
@@ -1844,275 +1747,6 @@ class TestWorkflowCatalogAPI:
         )
 
         assert response.status_code == 403
-        assert adapter.requests == []
-
-    def test_launch_workflow_trims_trailing_dash_from_generated_session_name(self) -> None:
-        workflow = _make_research_workflow()
-        repo = InMemoryWorkflowRepository([workflow])
-        adapter = RecordingVolundrPort()
-        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={
-                "prompt": (
-                    "Final public-session-endpoint observer join smoke from Muninn. "
-                    "Produce one short sentence and stop."
-                ),
-                "definition": "skuldCodex",
-            },
-        )
-
-        assert response.status_code == 201
-        assert adapter.requests[0].name == "research-campaign-final-public-session-endpoint"
-
-    def test_launch_workflow_returns_public_chat_endpoint(self) -> None:
-        workflow = _make_research_workflow()
-        repo = InMemoryWorkflowRepository([workflow])
-        adapter = RecordingVolundrPort(chat_endpoint="ws://127.0.0.1:8080/s/session-123/session")
-        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={"prompt": "Launch a small research smoke test."},
-        )
-
-        assert response.status_code == 201
-        assert response.json()["chatEndpoint"] == "ws://testserver:8080/s/session-123/session"
-
-    def test_launch_workflow_balances_available_connections(self, monkeypatch) -> None:
-        workflow = _make_research_workflow()
-        repo = InMemoryWorkflowRepository([workflow])
-        primary = RecordingVolundrPort(name="primary", target_id="primary")
-        secondary = RecordingVolundrPort(name="secondary", target_id="secondary")
-        client = _make_client(
-            repo,
-            volundr_factory=RecordingVolundrFactory([primary, secondary]),
-        )
-
-        monkeypatch.setattr(
-            "ting.domain.services.dispatch_service.random.choice", lambda candidates: candidates[-1]
-        )
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={
-                "prompt": "Research slow productivity systems for knowledge workers.",
-            },
-        )
-
-        assert response.status_code == 201
-        assert len(primary.requests) == 0
-        assert len(secondary.requests) == 1
-        assert response.json()["clusterName"] == "secondary"
-
-    def test_launch_workflow_placement_tags_selects_matching_target(self) -> None:
-        workflow = _make_research_workflow_with_placement({"tags": ["gpu"]})
-        repo = InMemoryWorkflowRepository([workflow])
-        cpu = RecordingVolundrPort(name="cpu", target_id="cpu", tags=["cpu"])
-        gpu = RecordingVolundrPort(name="gpu-box", target_id="gpu-box", tags=["gpu", "us-west"])
-        client = _make_client(
-            repo,
-            volundr_factory=RecordingVolundrFactory([cpu, gpu]),
-        )
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={"prompt": "Place this workflow team on a GPU-tagged Guild target."},
-        )
-
-        assert response.status_code == 201, response.text
-        assert len(cpu.requests) == 0
-        assert len(gpu.requests) == 1
-        assert response.json()["clusterName"] == "gpu-box"
-
-    def test_launch_workflow_placement_tags_balances_multiple_matches(self, monkeypatch) -> None:
-        workflow = _make_research_workflow_with_placement({"tags": ["gpu"]})
-        repo = InMemoryWorkflowRepository([workflow])
-        first = RecordingVolundrPort(name="first", target_id="first", tags=["gpu"])
-        second = RecordingVolundrPort(name="second", target_id="second", tags=["gpu"])
-        client = _make_client(
-            repo,
-            volundr_factory=RecordingVolundrFactory([first, second]),
-        )
-
-        monkeypatch.setattr(
-            "ting.domain.services.dispatch_service.random.choice", lambda candidates: candidates[-1]
-        )
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={"prompt": "Two GPU targets are eligible; use the existing balancing rule."},
-        )
-
-        assert response.status_code == 201, response.text
-        assert len(first.requests) == 0
-        assert len(second.requests) == 1
-
-    def test_launch_workflow_placement_instance_pins_the_connection(self) -> None:
-        workflow = _make_research_workflow_with_placement({"instance": "spark-01"})
-        repo = InMemoryWorkflowRepository([workflow])
-        other = RecordingVolundrPort(name="other", target_id="other")
-        spark = RecordingVolundrPort(name="spark-01", target_id="spark-01")
-        client = _make_client(
-            repo,
-            volundr_factory=RecordingVolundrFactory([other, spark]),
-        )
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={"prompt": "Pin this workflow team to the Spark instance."},
-        )
-
-        assert response.status_code == 201, response.text
-        assert len(other.requests) == 0
-        assert len(spark.requests) == 1
-        assert response.json()["clusterName"] == "spark-01"
-
-    def test_launch_workflow_placement_with_no_match_is_rejected_and_spawns_nothing(self) -> None:
-        workflow = _make_research_workflow_with_placement({"tags": ["dgx-spark"]})
-        repo = InMemoryWorkflowRepository([workflow])
-        adapter = RecordingVolundrPort(tags=["cpu"])
-        campaign_repo = RecordingCampaignRepository()
-        client = _make_client(
-            repo,
-            volundr_factory=RecordingVolundrFactory([adapter]),
-            campaign_repo=campaign_repo,
-        )
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={"prompt": "No visible target carries the requested tag."},
-        )
-
-        assert response.status_code == 422
-        assert "dgx-spark" in response.json()["detail"]
-        assert "cpu" in response.json()["detail"]
-        assert adapter.requests == []
-        assert campaign_repo.items == {}
-
-    def test_launch_workflow_placement_instance_with_no_match_is_rejected(self) -> None:
-        workflow = _make_research_workflow_with_placement({"instance": "missing-instance"})
-        repo = InMemoryWorkflowRepository([workflow])
-        adapter = RecordingVolundrPort(name="local", target_id="local")
-        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={"prompt": "Pin to an instance that is not visible to this principal."},
-        )
-
-        assert response.status_code == 422
-        assert "missing-instance" in response.json()["detail"]
-        assert adapter.requests == []
-
-    def test_launch_workflow_without_placement_behaves_as_before(self) -> None:
-        """No graph.placement: the pre-existing untargeted balancing rule applies."""
-        workflow = _make_research_workflow()
-        repo = InMemoryWorkflowRepository([workflow])
-        only = RecordingVolundrPort(name="only", target_id="only", tags=["gpu"])
-        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([only]))
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={"prompt": "Launch without declaring a placement."},
-        )
-
-        assert response.status_code == 201, response.text
-        assert len(only.requests) == 1
-
-    def test_launch_workflow_connection_id_conflicting_with_placement_is_rejected(self) -> None:
-        """An explicit connectionId cannot silently strip a workflow's placement."""
-        workflow = _make_research_workflow_with_placement({"tags": ["gpu"]})
-        repo = InMemoryWorkflowRepository([workflow])
-        cpu = RecordingVolundrPort(name="cpu", target_id="cpu", tags=["cpu"])
-        gpu = RecordingVolundrPort(name="gpu-box", target_id="gpu-box", tags=["gpu"])
-        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([cpu, gpu]))
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={
-                "prompt": "A connectionId that does not satisfy graph.placement is a conflict.",
-                "connectionId": "cpu",
-            },
-        )
-
-        assert response.status_code == 422, response.text
-        assert "cpu" in response.json()["detail"]
-        assert "gpu" in response.json()["detail"]
-        assert len(cpu.requests) == 0
-        assert len(gpu.requests) == 0
-
-    def test_launch_workflow_connection_id_compatible_with_placement_is_admitted(self) -> None:
-        """A connectionId that also satisfies graph.placement resolves directly."""
-        workflow = _make_research_workflow_with_placement({"tags": ["gpu"]})
-        repo = InMemoryWorkflowRepository([workflow])
-        cpu = RecordingVolundrPort(name="cpu", target_id="cpu", tags=["cpu"])
-        gpu = RecordingVolundrPort(name="gpu-box", target_id="gpu-box", tags=["gpu"])
-        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([cpu, gpu]))
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={
-                "prompt": "A connectionId that also satisfies graph.placement is admitted.",
-                "connectionId": "gpu-box",
-            },
-        )
-
-        assert response.status_code == 201, response.text
-        assert len(cpu.requests) == 0
-        assert len(gpu.requests) == 1
-
-    def test_launch_workflow_connection_id_instance_placement_conflict_is_rejected(self) -> None:
-        workflow = _make_research_workflow_with_placement({"instance": "spark-01"})
-        repo = InMemoryWorkflowRepository([workflow])
-        other = RecordingVolundrPort(name="other", target_id="other")
-        spark = RecordingVolundrPort(name="spark-01", target_id="spark-01")
-        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([other, spark]))
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={
-                "prompt": "connectionId names a different instance than graph.placement.",
-                "connectionId": "other",
-            },
-        )
-
-        assert response.status_code == 422, response.text
-        assert "other" in response.json()["detail"]
-        assert "spark-01" in response.json()["detail"]
-        assert len(other.requests) == 0
-        assert len(spark.requests) == 0
-
-    def test_launch_workflow_malformed_pinned_placement_is_422_not_500(self) -> None:
-        """A stored graph.placement bypassing authoring validation (a row
-
-        written before this rule existed, or by another tool) must fail the
-        launch loudly with a 422, not bubble up as an unhandled 500.
-        """
-        workflow = _make_research_workflow_with_placement({"tags": ["gpu"], "instance": "x"})
-        repo = InMemoryWorkflowRepository([workflow])
-        adapter = RecordingVolundrPort()
-        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
-
-        response = client.post(
-            f"/api/v1/ting/workflows/{workflow.id}/launch",
-            headers=_headers(roles="ting:admin"),
-            json={"prompt": "This workflow's stored placement is malformed."},
-        )
-
-        assert response.status_code == 422, response.text
-        assert "exactly one of 'tags' or 'instance'" in response.json()["detail"]
         assert adapter.requests == []
 
     def test_launch_workflow_scoped_build_token_missing_scope_is_403(self) -> None:
@@ -2148,7 +1782,7 @@ class TestWorkflowCatalogAPI:
         )
 
         assert response.status_code == 201
-        assert len(adapter.requests) == 1
+        assert adapter.requests == []
 
     def test_launch_workflow_normal_token_unaffected(self) -> None:
         workflow = _make_research_workflow()
@@ -2165,17 +1799,259 @@ class TestWorkflowCatalogAPI:
         )
 
         assert response.status_code == 201
-        assert len(adapter.requests) == 1
+        assert adapter.requests == []
 
 
-def test_workload_memory_ref_is_not_a_credential_name():
-    from ting.api.workflows import _mimir_auth_credential_names
+class TestTargetResolution:
+    """``_resolve_target_adapter`` places a launch; A2A launches still use it."""
 
-    assert _mimir_auth_credential_names(
-        {
-            "registry_refs": [
-                {"auth_ref": "workload:mimir"},
-                {"auth_ref": "brain-token"},
-            ]
-        }
-    ) == ["brain-token"]
+    @staticmethod
+    async def _resolve(adapters, *, placement=None, connection_id=None):
+        return await _resolve_target_adapter(
+            volundr_factory=RecordingVolundrFactory(adapters),
+            principal=Principal(user_id="user-1", email="", roles=["ting:admin"], tenant_id=""),
+            connection_id=connection_id,
+            placement=placement,
+        )
+
+    async def test_no_connections_resolves_to_none(self) -> None:
+        assert await self._resolve([]) is None
+
+    async def test_untargeted_launch_balances_available_connections(self, monkeypatch) -> None:
+        primary = RecordingVolundrPort(name="primary", target_id="primary")
+        secondary = RecordingVolundrPort(name="secondary", target_id="secondary")
+        monkeypatch.setattr(
+            "ting.domain.services.dispatch_service.random.choice", lambda candidates: candidates[-1]
+        )
+
+        assert await self._resolve([primary, secondary]) is secondary
+
+    async def test_unknown_connection_is_a_400(self) -> None:
+        with pytest.raises(HTTPException) as caught:
+            await self._resolve([RecordingVolundrPort()], connection_id="missing")
+
+        assert caught.value.status_code == 400
+        assert "missing" in caught.value.detail
+
+    async def test_placement_tags_select_the_matching_target(self) -> None:
+        cpu = RecordingVolundrPort(name="cpu", target_id="cpu", tags=["cpu"])
+        gpu = RecordingVolundrPort(name="gpu-box", target_id="gpu-box", tags=["gpu", "us-west"])
+
+        resolved = await self._resolve([cpu, gpu], placement=WorkflowPlacement(tags=("gpu",)))
+
+        assert resolved is gpu
+
+    async def test_placement_tags_balance_multiple_matches(self, monkeypatch) -> None:
+        first = RecordingVolundrPort(name="first", target_id="first", tags=["gpu"])
+        second = RecordingVolundrPort(name="second", target_id="second", tags=["gpu"])
+        monkeypatch.setattr(
+            "ting.domain.services.dispatch_service.random.choice", lambda candidates: candidates[-1]
+        )
+
+        resolved = await self._resolve([first, second], placement=WorkflowPlacement(tags=("gpu",)))
+
+        assert resolved is second
+
+    async def test_placement_is_satisfied_through_a_hosts_tags(self) -> None:
+        plain = RecordingVolundrPort(name="plain", target_id="plain", tags=["valhalla"])
+        hosted = RecordingVolundrPort(
+            name="hosted", target_id="hosted", tags=["valhalla"], tag_sets=[["gpu", "site:a"]]
+        )
+
+        resolved = await self._resolve(
+            [plain, hosted], placement=WorkflowPlacement(tags=("valhalla", "gpu"))
+        )
+
+        assert resolved is hosted
+
+    async def test_placement_does_not_union_tag_sets_across_hosts(self) -> None:
+        split = RecordingVolundrPort(name="split", target_id="split", tag_sets=[["gpu"], ["arm64"]])
+
+        with pytest.raises(HTTPException) as caught:
+            await self._resolve([split], placement=WorkflowPlacement(tags=("gpu", "arm64")))
+
+        assert caught.value.status_code == 422
+
+    async def test_placement_names_a_target_whose_hosts_cannot_be_read(self) -> None:
+        cpu = RecordingVolundrPort(name="cpu", target_id="cpu", tags=["cpu"])
+        broken = RecordingVolundrPort(name="broken", target_id="broken", tag_sets_unreadable=True)
+
+        with pytest.raises(HTTPException) as caught:
+            await self._resolve([cpu, broken], placement=WorkflowPlacement(tags=("gpu",)))
+
+        assert caught.value.status_code == 502
+        assert "broken" in caught.value.detail
+
+    async def test_pinned_connection_may_satisfy_placement_through_a_host(self) -> None:
+        hosted = RecordingVolundrPort(name="hosted", target_id="hosted", tag_sets=[["gpu"]])
+
+        resolved = await self._resolve(
+            [hosted], placement=WorkflowPlacement(tags=("gpu",)), connection_id="hosted"
+        )
+
+        assert resolved is hosted
+
+    async def test_pinned_connection_with_unreadable_hosts_is_not_a_conflict(self) -> None:
+        broken = RecordingVolundrPort(name="broken", target_id="broken", tag_sets_unreadable=True)
+
+        with pytest.raises(HTTPException) as caught:
+            await self._resolve(
+                [broken], placement=WorkflowPlacement(tags=("gpu",)), connection_id="broken"
+            )
+
+        assert caught.value.status_code == 502
+        assert "broken" in caught.value.detail
+
+    async def test_placement_instance_pins_the_connection(self) -> None:
+        other = RecordingVolundrPort(name="other", target_id="other")
+        spark = RecordingVolundrPort(name="spark-01", target_id="spark-01")
+
+        resolved = await self._resolve(
+            [other, spark], placement=WorkflowPlacement(instance="spark-01")
+        )
+
+        assert resolved is spark
+
+    async def test_placement_with_no_match_is_rejected_naming_the_visible_targets(self) -> None:
+        adapter = RecordingVolundrPort(tags=["cpu"])
+
+        with pytest.raises(HTTPException) as caught:
+            await self._resolve([adapter], placement=WorkflowPlacement(tags=("dgx-spark",)))
+
+        assert caught.value.status_code == 422
+        assert "dgx-spark" in caught.value.detail
+        assert "cpu" in caught.value.detail
+
+    async def test_placement_instance_with_no_match_is_rejected(self) -> None:
+        with pytest.raises(HTTPException) as caught:
+            await self._resolve(
+                [RecordingVolundrPort()], placement=WorkflowPlacement(instance="missing-instance")
+            )
+
+        assert caught.value.status_code == 422
+        assert "missing-instance" in caught.value.detail
+
+    async def test_connection_id_conflicting_with_placement_is_rejected(self) -> None:
+        """An explicit connectionId cannot silently strip a workflow's placement."""
+        cpu = RecordingVolundrPort(name="cpu", target_id="cpu", tags=["cpu"])
+        gpu = RecordingVolundrPort(name="gpu-box", target_id="gpu-box", tags=["gpu"])
+
+        with pytest.raises(HTTPException) as caught:
+            await self._resolve(
+                [cpu, gpu], placement=WorkflowPlacement(tags=("gpu",)), connection_id="cpu"
+            )
+
+        assert caught.value.status_code == 422
+        assert "cpu" in caught.value.detail
+        assert "gpu" in caught.value.detail
+
+    async def test_connection_id_compatible_with_placement_is_admitted(self) -> None:
+        cpu = RecordingVolundrPort(name="cpu", target_id="cpu", tags=["cpu"])
+        gpu = RecordingVolundrPort(name="gpu-box", target_id="gpu-box", tags=["gpu"])
+
+        resolved = await self._resolve(
+            [cpu, gpu], placement=WorkflowPlacement(tags=("gpu",)), connection_id="gpu-box"
+        )
+
+        assert resolved is gpu
+
+    async def test_connection_id_instance_placement_conflict_is_rejected(self) -> None:
+        other = RecordingVolundrPort(name="other", target_id="other")
+        spark = RecordingVolundrPort(name="spark-01", target_id="spark-01")
+
+        with pytest.raises(HTTPException) as caught:
+            await self._resolve(
+                [other, spark],
+                placement=WorkflowPlacement(instance="spark-01"),
+                connection_id="other",
+            )
+
+        assert caught.value.status_code == 422
+        assert "other" in caught.value.detail
+        assert "spark-01" in caught.value.detail
+
+
+class TestPrepareWorkflowLaunch:
+    """The seam every workflow launch goes through: checks first, then the run's inputs."""
+
+    @staticmethod
+    def _request(*, allowed: bool = True, persona_source=None) -> Request:
+        app = FastAPI()
+        app.state.authorization = (
+            AllowAllAuthorizationAdapter()
+            if allowed
+            else SimpleNamespace(is_allowed=AsyncMock(return_value=False))
+        )
+        app.state.persona_source = persona_source or FilesystemPersonaAdapter(
+            persona_dirs=[], include_builtin=True
+        )
+        app.state.settings = Settings(
+            auth=AuthConfig(allow_anonymous_dev=False, platform_tenant_id="")
+        )
+        return Request({"type": "http", "app": app, "headers": []})
+
+    @staticmethod
+    def _principal() -> Principal:
+        return Principal(user_id="user-1", email="", roles=["ting:admin"], tenant_id="")
+
+    async def _prepare(self, request: Request, workflow: WorkflowDefinition, **kwargs):
+        adapter = RecordingVolundrPort(name="cpu", target_id="cpu-1")
+        launch = kwargs.pop("launch", WorkflowLaunchBody(prompt="run it"))
+        execution = await prepare_workflow_launch(
+            request=request,
+            workflow=workflow,
+            launch=launch,
+            volundr_factory=RecordingVolundrFactory([adapter]),
+            principal=self._principal(),
+            **kwargs,
+        )
+        # Preparing a launch starts nothing on Forge.
+        assert adapter.requests == []
+        return execution
+
+    async def test_a_permitted_launch_resolves_the_runs_inputs(self) -> None:
+        execution = await self._prepare(self._request(), _make_research_workflow())
+
+        assert execution.slug == "run-it"
+        assert execution.connection_id == "cpu-1"
+        assert execution.workflow_snapshot["name"] == "Research Campaign"
+        assert "run it" in execution.initiative_context
+
+    async def test_a_pinned_snapshot_is_what_the_run_executes(self) -> None:
+        workflow = _make_research_workflow()
+        pinned = {"name": workflow.name, "graph": {"nodes": [], "edges": []}}
+
+        execution = await self._prepare(self._request(), workflow, pinned_workflow_snapshot=pinned)
+
+        assert execution.workflow_snapshot == pinned
+
+    async def test_a_denied_launch_is_a_403(self) -> None:
+        with pytest.raises(HTTPException) as caught:
+            await self._prepare(self._request(allowed=False), _make_research_workflow())
+
+        assert caught.value.status_code == 403
+
+    async def test_an_invalid_snapshot_is_a_422(self, monkeypatch) -> None:
+        def broken(*args, **kwargs):
+            raise ValueError("persona 'ghost' is not known")
+
+        monkeypatch.setattr("ting.api.workflows.build_workflow_snapshot", broken)
+
+        with pytest.raises(HTTPException) as caught:
+            await self._prepare(self._request(), _make_research_workflow())
+
+        assert caught.value.status_code == 422
+        assert "ghost" in caught.value.detail
+
+    async def test_no_connection_is_a_503(self) -> None:
+        request = self._request()
+        with pytest.raises(HTTPException) as caught:
+            await prepare_workflow_launch(
+                request=request,
+                workflow=_make_research_workflow(),
+                launch=WorkflowLaunchBody(prompt="run it"),
+                volundr_factory=RecordingVolundrFactory([]),
+                principal=self._principal(),
+            )
+
+        assert caught.value.status_code == 503

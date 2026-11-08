@@ -27,6 +27,10 @@ class SettingsFieldSchema(BaseModel):
     placeholder: str | None = None
     read_only: bool = Field(default=False, serialization_alias="readOnly")
     secret: bool = False
+    nullable: bool = Field(
+        default=False,
+        description="A number field that may be left empty, which is saved as null (unset)",
+    )
     options: list[SettingsOptionSchema] | None = None
 
 

@@ -13,8 +13,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
-from ravn.domain.events import RavnEvent, RavnEventType
+from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
+from niuu.mesh.events import MeshEvent, MeshEventType
 from sleipnir.adapters.nats_transport import NatsTransport
 from sleipnir.adapters.serialization import deserialize
 from sleipnir.domain.events import SleipnirEvent
@@ -69,9 +69,9 @@ def _mesh_peer(
 
 async def _collect_ravn_events(
     count: int,
-    received: list[RavnEvent],
+    received: list[MeshEvent],
     timeout: float = 5.0,
-) -> list[RavnEvent]:
+) -> list[MeshEvent]:
     deadline = asyncio.get_event_loop().time() + timeout
     while len(received) < count:
         remaining = deadline - asyncio.get_event_loop().time()
@@ -295,17 +295,17 @@ async def test_two_sleipnir_mesh_peers_over_nats_publish_and_replay():
     stream_name = f"ravn_environment_test_{uuid.uuid4().hex[:8]}"
     peer_a = _mesh_peer("valkyrie-a", stream_name)
     peer_b = _mesh_peer("valkyrie-b", stream_name)
-    received: list[RavnEvent] = []
+    received: list[MeshEvent] = []
 
-    async def handler(event: RavnEvent) -> None:
+    async def handler(event: MeshEvent) -> None:
         received.append(event)
 
     await peer_a.start()
     await peer_b.start()
     try:
         await peer_b.subscribe("signal.kubernetes.pod", handler)
-        event = RavnEvent(
-            type=RavnEventType.DECISION,
+        event = MeshEvent(
+            type=MeshEventType.DECISION,
             source="valkyrie-a",
             payload={"signal": "pod/restarted", "environment": "local-dev"},
             timestamp=datetime.now(UTC),
@@ -324,9 +324,9 @@ async def test_two_sleipnir_mesh_peers_over_nats_publish_and_replay():
         assert received[0].root_correlation_id == "root-env-signal-1"
 
         replay_peer = _mesh_peer("valkyrie-replay", stream_name, replay_from_sequence=1)
-        replayed: list[RavnEvent] = []
+        replayed: list[MeshEvent] = []
 
-        async def replay_handler(event: RavnEvent) -> None:
+        async def replay_handler(event: MeshEvent) -> None:
             replayed.append(event)
 
         await replay_peer.start()
@@ -351,10 +351,10 @@ async def test_resident_signal_state_judgment_action_flow_over_nats():
     action_runner = _mesh_peer("action-runner", stream_name, environment_id="cluster-a")
     observer = _mesh_peer("odin-observer", stream_name, environment_id="cluster-a")
 
-    signal_events: list[RavnEvent] = []
-    state_events: list[RavnEvent] = []
-    judgment_events: list[RavnEvent] = []
-    action_events: list[RavnEvent] = []
+    signal_events: list[MeshEvent] = []
+    state_events: list[MeshEvent] = []
+    judgment_events: list[MeshEvent] = []
+    action_events: list[MeshEvent] = []
 
     async def action_handler(message: dict) -> dict:
         return {
@@ -364,7 +364,7 @@ async def test_resident_signal_state_judgment_action_flow_over_nats():
             "correlation_id": message["correlation_id"],
         }
 
-    async def signal_handler(event: RavnEvent) -> None:
+    async def signal_handler(event: MeshEvent) -> None:
         signal_events.append(event)
         common = {
             "source": "k8s-valkyrie",
@@ -375,8 +375,8 @@ async def test_resident_signal_state_judgment_action_flow_over_nats():
             "root_correlation_id": event.root_correlation_id,
         }
         await valkyrie.publish(
-            RavnEvent(
-                type=RavnEventType.TASK_STARTED,
+            MeshEvent(
+                type=MeshEventType.TASK_STARTED,
                 payload={
                     "environment": "cluster-a",
                     "state": "investigating",
@@ -387,8 +387,8 @@ async def test_resident_signal_state_judgment_action_flow_over_nats():
             "environment.state",
         )
         await valkyrie.publish(
-            RavnEvent(
-                type=RavnEventType.DECISION,
+            MeshEvent(
+                type=MeshEventType.DECISION,
                 payload={
                     "attention": "watch",
                     "judgment": "pod restart requires inspection",
@@ -408,21 +408,21 @@ async def test_resident_signal_state_judgment_action_flow_over_nats():
             timeout_s=2.0,
         )
         await valkyrie.publish(
-            RavnEvent(
-                type=RavnEventType.TOOL_RESULT,
+            MeshEvent(
+                type=MeshEventType.TOOL_RESULT,
                 payload={"action_reply": reply},
                 **common,
             ),
             "valkyrie.action.result",
         )
 
-    async def state_handler(event: RavnEvent) -> None:
+    async def state_handler(event: MeshEvent) -> None:
         state_events.append(event)
 
-    async def judgment_handler(event: RavnEvent) -> None:
+    async def judgment_handler(event: MeshEvent) -> None:
         judgment_events.append(event)
 
-    async def action_result_handler(event: RavnEvent) -> None:
+    async def action_result_handler(event: MeshEvent) -> None:
         action_events.append(event)
 
     action_runner.set_rpc_handler(action_handler)
@@ -436,8 +436,8 @@ async def test_resident_signal_state_judgment_action_flow_over_nats():
         await observer.subscribe("valkyrie.action.result", action_result_handler)
 
         await signal_source.publish(
-            RavnEvent(
-                type=RavnEventType.DECISION,
+            MeshEvent(
+                type=MeshEventType.DECISION,
                 source="k8s-watcher",
                 payload={"kind": "Pod", "pod": "api-7d9", "reason": "Restarted"},
                 timestamp=datetime.now(UTC),

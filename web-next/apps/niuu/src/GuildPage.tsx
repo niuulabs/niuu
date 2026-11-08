@@ -6,7 +6,6 @@ import { createApiClient } from '@niuulabs/query';
 import { useConfig, useService, type IIdentityService } from '@niuulabs/plugin-sdk';
 import { Dialog, DialogContent, ErrorState, LoadingState, cn } from '@niuulabs/ui';
 import {
-  Bot,
   Brain,
   BriefcaseBusiness,
   Building2,
@@ -28,6 +27,7 @@ import {
   WifiOff,
 } from 'lucide-react';
 import { resolveNiuuRegistryBase, resolveSettingsServiceBase } from './services';
+import { ForgeHostsLink } from '@niuulabs/plugin-volundr';
 import { EditInstanceDialog, DeleteInstanceDialog, guildActionClass } from './GuildInstanceDialogs';
 import {
   canManageInstance,
@@ -93,7 +93,6 @@ const FILTER_KIND_OPTIONS: Array<{
   { value: 'ting', label: 'Work' },
   { value: 'mimir', label: 'Memory' },
   { value: 'bifrost', label: 'AI models' },
-  { value: 'ravn', label: 'Agents' },
   { value: 'observatory', label: 'Observatory' },
 ];
 
@@ -135,7 +134,6 @@ const KIND_ICONS: Record<string, LucideIcon> = {
   ting: BriefcaseBusiness,
   mimir: Brain,
   bifrost: Sparkles,
-  ravn: Bot,
   observatory: Network,
 };
 
@@ -144,7 +142,6 @@ const DEFAULT_CAPABILITIES: Record<InstanceKind, string[]> = {
   ting: ['dispatch', 'sagas', 'workflows', 'targets'],
   mimir: ['search', 'graph', 'embeddings', 'chronicles'],
   bifrost: ['models', 'providers', 'routing', 'usage'],
-  ravn: ['operators', 'audit', 'signals', 'rooms'],
   observatory: ['topology', 'registry', 'health', 'alerts'],
   generic: ['api', 'webhooks', 'integration'],
 };
@@ -347,7 +344,6 @@ function openPathFor(instance: InstanceRecord): string | null {
   if (instance.kind === 'ting') return `/ting/dispatch?${params.toString()}`;
   if (instance.kind === 'mimir') return `/mimir?${params.toString()}`;
   if (instance.kind === 'bifrost') return `/bifrost?${params.toString()}`;
-  if (instance.kind === 'ravn') return `/ravn?${params.toString()}`;
   if (instance.kind === 'observatory') return `/observatory?${params.toString()}`;
   return instance.baseUrl;
 }
@@ -712,6 +708,9 @@ function GuildDetailRail({
             <Trash2 className="niuu:h-4 niuu:w-4" />
             Delete node
           </button>
+          {instance.kind === 'volundr' ? (
+            <ForgeHostsLink instanceId={instance.id} className={guildActionClass} />
+          ) : null}
         </div>
         {!instance.enabled ? (
           <p className="niuu:mt-3 niuu:text-sm niuu:text-text-muted">
@@ -1664,7 +1663,6 @@ export function GuildPage() {
       ting: 0,
       mimir: 0,
       bifrost: 0,
-      ravn: 0,
       observatory: 0,
       generic: 0,
     };

@@ -9,7 +9,7 @@ async function configure(page: Page) {
   const config = JSON.parse(
     readFileSync(new URL('../apps/niuu/public/config.json', import.meta.url), 'utf8'),
   );
-  for (const id of ['ting', 'ravn', 'mimir', 'observatory', 'valkyrie', 'bifrost', 'guild'])
+  for (const id of ['ting', 'ravn', 'mimir', 'observatory', 'bifrost', 'guild'])
     config.plugins[id] = { enabled: false };
   config.services.forge = { mode: 'http', baseUrl: '/api/v1/forge' };
   config.services.volundr = { mode: 'http', baseUrl: '/api/v1/volundr' };

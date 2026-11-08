@@ -24,7 +24,7 @@ from niuu.domain.models import (
 )
 from niuu.domain.services.token_scope import NODE_JOIN_SCOPE, VALKYRIE_BUILD_TOKEN_USE
 from niuu.domain.tls_fingerprint import normalize_tls_fingerprint
-from niuu.domain.transport_security import configured_dial_urls, insecure_transport_reason
+from niuu.domain.transport_security import insecure_transport_reason
 from niuu.ports.guild_join_repository import GuildJoinRepository, InstanceWrite, NodeConflictError
 from niuu.ports.instances import InstanceRepository
 from niuu.ports.nodes import NodeRepository
@@ -73,7 +73,6 @@ class OfferedInstance:
 
     kind: InstanceKind
     base_url: str
-    ravn_base_url: str = ""
     config: dict = field(default_factory=dict)
 
 
@@ -158,8 +157,6 @@ def _resolve_instance_config(offered: OfferedInstance, *, pairing_allow_plaintex
     """
     _validate_offered_config(offered.config)
     config = dict(offered.config)
-    if offered.ravn_base_url:
-        config["ravn_base_url"] = offered.ravn_base_url
     if pairing_allow_plaintext:
         config["allow_plaintext"] = True
     fingerprint = config.get("tls_fingerprint")
@@ -168,15 +165,14 @@ def _resolve_instance_config(offered: OfferedInstance, *, pairing_allow_plaintex
             normalize_tls_fingerprint(str(fingerprint))
         except ValueError as exc:
             raise GuildJoinError(str(exc)) from exc
-    for url in configured_dial_urls(offered.base_url, config):
-        reason = insecure_transport_reason(url, allow_plaintext=pairing_allow_plaintext)
-        if reason:
-            raise GuildJoinError(reason)
-        if fingerprint is not None and urlsplit(url).scheme != "https":
-            raise GuildJoinError(
-                f"{url}: config.tls_fingerprint requires https:// on every URL this "
-                "instance may be dialled on"
-            )
+    reason = insecure_transport_reason(offered.base_url, allow_plaintext=pairing_allow_plaintext)
+    if reason:
+        raise GuildJoinError(reason)
+    if fingerprint is not None and urlsplit(offered.base_url).scheme != "https":
+        raise GuildJoinError(
+            f"{offered.base_url}: config.tls_fingerprint requires https:// on the URL this "
+            "instance is dialled on"
+        )
     return config
 
 

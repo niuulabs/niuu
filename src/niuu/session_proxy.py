@@ -39,6 +39,10 @@ class SessionProxyGuardMissingError(RuntimeError):
     """A non-dev session proxy was asked to attach without an ownership guard."""
 
 
+class PreviewCredentialIssuerMissingError(RuntimeError):
+    """A live preview needs a router credential and nothing is wired to mint one."""
+
+
 class SkuldPortRegistry:
     """Maps session IDs to their Skuld subprocess ports.
 
@@ -103,6 +107,10 @@ class SkuldPortRegistry:
         # (see close_connections) instead of relying solely on
         # _revalidate_loop's interval poll.
         self._live_connections: dict[tuple[str, str], set[WebSocket]] = {}
+        # Mints the credential the live-preview router presents to a session's
+        # Skuld (niuu.preview_proxy). Set by the composition root from its
+        # workload identity service; see preview_credential().
+        self._preview_credential_issuer: Callable[[str, Principal], Awaitable[str]] | None = None
 
     @property
     def dev_identity(self) -> bool:
@@ -153,6 +161,35 @@ class SkuldPortRegistry:
         responses and gate resolution, distinct from the attach decision.
         """
         self._room_role_resolver = resolver
+
+    def set_preview_credential_issuer(
+        self, issuer: Callable[[str, Principal], Awaitable[str]]
+    ) -> None:
+        """Inject the router-credential minting used by live preview.
+
+        ``issuer(session_id, owner) -> token``: a short-lived credential bound to
+        that one session, which its Skuld verifies before dialing a port.
+        """
+        self._preview_credential_issuer = issuer
+
+    async def preview_credential(self, session_id: str, principal: Principal) -> str:
+        """Mint the router credential for one preview request.
+
+        A dev-identity registry (no identity provider anywhere, its Skulds run
+        without router authentication) needs none and returns ``""``.
+
+        Raises:
+            PreviewCredentialIssuerMissingError: No issuer is wired and dev identity is off.
+        """
+        if self._preview_credential_issuer is not None:
+            return await self._preview_credential_issuer(session_id, principal)
+        if self._dev_identity:
+            return ""
+        raise PreviewCredentialIssuerMissingError(
+            "Live preview has no router credential issuer: enable workload_identity "
+            "(the router mints a forge:session:preview workload credential for each "
+            "request), or disable session_preview"
+        )
 
     def track_connection(self, session_id: str, user_id: str, websocket: WebSocket) -> None:
         """Register a live proxied socket so a later revoke can close it immediately."""
@@ -303,7 +340,7 @@ _skuld_registry: SkuldPortRegistry | None = None
 # The broker replays the FULL conversation history as one frame on connect;
 # long sessions exceed the websockets client's 1 MiB default (which killed the
 # broker leg with 1009 "message too big" and trapped clients in a reconnect
-# loop). 64 MiB headroom, shared by both the /session and /ws/ravn proxy legs.
+# loop). 64 MiB headroom, used by the /session proxy leg.
 _WS_PROXY_MAX_FRAME_BYTES = 2**26
 
 
@@ -544,20 +581,13 @@ async def _proxy_ws(
     *,
     log_label: str,
     include_cookie: bool = False,
-    require_owner: bool = False,
 ) -> None:
     """Proxy a WebSocket to a session's Skuld broker (ownership-guarded).
 
-    Shared by the browser ``/session`` and the ravn ``/ws/ravn/{peer}`` legs:
-    identity guard → port lookup → bidirectional pump → M-8 self-heal on a
-    never-connected broker leg. The only per-route differences are the broker
-    path, whether the browser cookie is forwarded, the log label, and whether
-    the leg is owner-only. Identity forwarding follows the registry's
-    ``dev_identity`` policy.
-
-    ``require_owner`` is for legs "attach" alone must not open — the ravn
-    peer leg lets a resident join ANOTHER session's room with full authority
-    over this one (a session_participants grant is never enough for that).
+    Identity guard → port lookup → bidirectional pump → M-8 self-heal on a
+    never-connected broker leg. The per-route differences are the broker
+    path, whether the browser cookie is forwarded and the log label. Identity
+    forwarding follows the registry's ``dev_identity`` policy.
     """
     principal = await _proxy_principal(websocket)
     user_id, tenant_id, roles = (
@@ -579,9 +609,6 @@ async def _proxy_ws(
         # omitted header here would silently hand out owner to a
         # connection this proxy could not actually place a role on.
         room_role = "viewer"
-    if require_owner and room_role != "owner":
-        await websocket.close(code=1008, reason="This connection requires the owner room role")
-        return
 
     port = skuld_reg.get_port(session_id)
     target = None if port is not None else await skuld_reg.resolve_target(session_id)
@@ -712,14 +739,7 @@ def _session_target_url(
 
 def _session_http_connect_url(target: SessionProxyTarget, path: str) -> tuple[str, str]:
     """Return the gateway URL and Host header for an HTTP session request."""
-    service = urllib.parse.urlsplit(target.service_url)
-    scheme = "https" if target.connect_secure else "http"
-    host = target.connect_host
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    netloc = f"{host}:{target.connect_port}"
-    url = urllib.parse.urlunsplit((scheme, netloc, path, "", ""))
-    return url, service.netloc
+    return target.http_url(path)
 
 
 def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) -> None:
@@ -744,31 +764,6 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
             "/session",
             log_label="Skuld WS proxy",
             include_cookie=True,
-        )
-
-    @app.websocket("/s/{session_id}/ws/ravn/{peer_id}")
-    async def skuld_ravn_ws_proxy(
-        websocket: WebSocket,
-        session_id: str,
-        peer_id: str,
-    ) -> None:
-        """Proxy a ravn participant WebSocket to the session's broker.
-
-        This is how a resident joins ANOTHER session's room through the
-        gateway (session_join): the browser chat endpoint is proxied at
-        ``/s/{id}/session``, and the sibling ravn endpoint must be proxied
-        too, or cross-session joins only work in strip-prefix k8s ingress
-        and fail in mini/gateway mode. Owner-only: this leg gives a peer
-        full authority over the session, which no session_participants
-        grant (however senior) is ever enough for.
-        """
-        await _proxy_ws(
-            websocket,
-            session_id,
-            skuld_reg,
-            f"/ws/ravn/{peer_id}",
-            log_label="Ravn WS proxy",
-            require_owner=True,
         )
 
     @app.api_route(

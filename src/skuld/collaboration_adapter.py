@@ -161,11 +161,7 @@ def _room_agent_frame(agent_event: Any) -> dict[str, Any]:
     return {**agent_event, "data": data, "metadata": metadata}
 
 
-def _peer_observation(
-    event: dict[str, Any],
-    *,
-    strict_review_event_types: frozenset[str] = frozenset(),
-) -> tuple[str, dict[str, Any]] | None:
+def _peer_observation(event: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     """Translate a collaboration event into Skuld's peer-observation contract."""
     kind = str(event.get("kind") or "")
     base = {
@@ -199,17 +195,12 @@ def _peer_observation(
         if not isinstance(context, dict):
             context = {}
         event_type = str(event.get("eventType") or "")
-        validity = (
-            event.get("valid")
-            if event_type in strict_review_event_types
-            else event.get("valid", True)
-        )
         data = {
             **fields,
             **context,
             "event_type": event_type,
             "fields": dict(fields),
-            "valid": validity,
+            "valid": event.get("valid", True),
         }
         for key in ("summary", "verdict"):
             if event.get(key) is not None:
@@ -273,7 +264,6 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         report_usage: UsageReporter | None = None,
         environment_id: str | None = None,
         clock: Callable[[], float] | None = None,
-        attestable_review_event_types: frozenset[str] | set[str] = frozenset(),
         deliver_to_session: SessionDeliverer | None = None,
     ) -> None:
         self._config = config
@@ -285,13 +275,6 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         self._observe_peer_event = observe_peer_event
         self._publish_presence_event = publish_presence_event
         self._report_usage = report_usage
-        # Event types requiring an explicit boolean `valid` before being trusted
-        # as attested review evidence: exactly whatever event type(s) this
-        # workflow's own `reviewAttestation` names, threaded in by the caller
-        # (see `attestable_review_event_types`), so a configured review event
-        # never falls through to the default "no `valid` field means valid"
-        # coercion applied to ordinary outcomes.
-        self._strict_review_event_types = frozenset(attestable_review_event_types)
         self._websockets: dict[str, WebSocket] = {}
         self._reported_usage_ids: set[str] = set()
         # Each participant's working steps since its last reply, outcome or finished task.
@@ -405,9 +388,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
                     )
                     return
 
-                observation = _peer_observation(
-                    event, strict_review_event_types=self._strict_review_event_types
-                )
+                observation = _peer_observation(event)
                 if self._observe_peer_event is not None and observation is not None:
                     event_type, payload = observation
                     await self._observe_peer_event(participant.peer_id, event_type, payload)
@@ -583,11 +564,6 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         if event.get("routingOnly"):
             return
         event_type = str(event.get("eventType") or "")
-        validity = (
-            event.get("valid")
-            if event_type in self._strict_review_event_types
-            else event.get("valid", True)
-        )
         outcome: dict[str, Any] = {
             "type": "room_outcome",
             "participantId": participant.peer_id,
@@ -595,7 +571,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
             "persona": event.get("persona") or participant.persona,
             "eventType": event_type,
             "fields": dict(event.get("fields") or {}),
-            "valid": validity,
+            "valid": event.get("valid", True),
             **_source_wire_fields(event),
         }
         for key in ("summary", "verdict"):

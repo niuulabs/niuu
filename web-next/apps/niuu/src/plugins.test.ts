@@ -14,7 +14,6 @@ const disabled = Object.fromEntries(
     'ting',
     'ravn',
     'mimir',
-    'valkyrie',
     'observatory',
     'bifrost',
     'guild',

@@ -2,53 +2,53 @@ schema_version: 2
 id: ca01b422-7ab7-4614-901b-8784ef65c76e
 name: Developer Delivery
 description: Plan, delegate, verify, integrate, publish, and merge one repository change using durable child workflows and typed evidence.
-version: 1.1.0
+version: 1.1.2
 persona_dependencies:
   developer-coordinator:
     id: developer-coordinator
-    revision: content-88ab53096f6bf786
-    digest: sha256:88ab53096f6bf786bf2f9c02f3a82eb91cf633e4ba9d1dd238d47a013d1337b1
+    revision: content-3a9923c7efddc30f
+    digest: sha256:3a9923c7efddc30f37c3f244ba8b19e611c5a54eb015179b8c0ca71773a1db18
     path: personas/developer-coordinator.yaml
   developer-analyst:
     id: developer-analyst
-    revision: content-3f871dbbe714a246
-    digest: sha256:3f871dbbe714a246dca9a4ea335d9b441fec525ba832ddab72362f9636b59f16
+    revision: content-08a22a306c798e6c
+    digest: sha256:08a22a306c798e6c7dcd8679a1bab762221866153a537e77511de85e74a7dd3d
     path: personas/developer-analyst.yaml
   developer-architecture-reviewer:
     id: developer-architecture-reviewer
-    revision: content-31b0fdd1c6b3226c
-    digest: sha256:31b0fdd1c6b3226c67f092403fcdb973452981de857959a45f283c1272996b7f
+    revision: content-a9bb31bbe0c7a54b
+    digest: sha256:a9bb31bbe0c7a54bd417f9686771bbcc4bbc44c62f418b61400191890d6aaf1e
     path: personas/developer-architecture-reviewer.yaml
   developer-correctness-reviewer:
     id: developer-correctness-reviewer
-    revision: content-8f360edd60787644
-    digest: sha256:8f360edd607876442b6a3f926723407faa01a9b40fe6c9729eade761a48263b3
+    revision: content-e58e2878fe158865
+    digest: sha256:e58e2878fe1588659f7848eb423e421f38d68e513658a96845917416250fa573
     path: personas/developer-correctness-reviewer.yaml
   developer-security-plan-reviewer:
     id: developer-security-plan-reviewer
-    revision: content-0b502c246b1819da
-    digest: sha256:0b502c246b1819da85facb13ecd18e44ea9b9996b85a1da277730c742407ff0d
+    revision: content-a5656b3987c656e0
+    digest: sha256:a5656b3987c656e053194bb541d043538857c4e623d6661400a39996038b700e
     path: personas/developer-security-plan-reviewer.yaml
   developer-integration-verifier:
     id: developer-integration-verifier
-    revision: content-52ddb521e74bf8a5
-    digest: sha256:52ddb521e74bf8a54fae225ccde0fc4fae9fc96cef50d1c7ba2b7591556f0f32
+    revision: content-936789faffd17273
+    digest: sha256:936789faffd17273ceb1db2239b7915d17eff0bc4d859d9904011c62b3263ee6
     path: personas/developer-integration-verifier.yaml
 workflow_dependencies:
   workstream:
     id: 98133eab-cd89-44d1-b32d-26c82f99dddc
-    revision: sha256:cc23857ec141780c5bc931bc491a05c60dfccc76bb5c8d58b16bdeb635bcbb4a
-    digest: sha256:cc23857ec141780c5bc931bc491a05c60dfccc76bb5c8d58b16bdeb635bcbb4a
+    revision: sha256:1f3b9eef01a45cfb8f8952fbb6de6ea526b8829c1c6dce6fc4984a08c6b5018c
+    digest: sha256:1f3b9eef01a45cfb8f8952fbb6de6ea526b8829c1c6dce6fc4984a08c6b5018c
     path: workflows/developer-workstream.yaml
   planning:
     id: 195d5026-7adb-4ce7-97ee-fb1e18ea4c3a
-    revision: sha256:4e66235f152d02db5b47d9a203173c27fae2f2c568fd416af90874eca89fb783
-    digest: sha256:4e66235f152d02db5b47d9a203173c27fae2f2c568fd416af90874eca89fb783
+    revision: sha256:88ec46c964bf3beb1faf778a2956f7d7ebdc6fe0c0e5237e1927f2609b5b75c2
+    digest: sha256:88ec46c964bf3beb1faf778a2956f7d7ebdc6fe0c0e5237e1927f2609b5b75c2
     path: workflows/developer-planning.yaml
   integration:
     id: f776d181-ed63-4e3a-b5c4-7b128e4d2094
-    revision: sha256:b7635fefbbaaa3adc9fe20fb72a9d48d393ec9535b46ac48c75da6567bfc8fe5
-    digest: sha256:b7635fefbbaaa3adc9fe20fb72a9d48d393ec9535b46ac48c75da6567bfc8fe5
+    revision: sha256:b8940bc28c4fac43f4a47ec46c7c90deda12e9d4a1f55480cc5cf60e4fe2562c
+    digest: sha256:b8940bc28c4fac43f4a47ec46c7c90deda12e9d4a1f55480cc5cf60e4fe2562c
     path: workflows/developer-integration.yaml
 graph:
   executionContract: developer-delivery/v1
@@ -239,8 +239,8 @@ graph:
     - {id: delivery-tests-repair, source: delivery-integration-tests, target: delivery-repair, label: developer.workstream.repair_requested -> developer.workstream.repair_requested}
     - {id: delivery-integration-publish, source: delivery-integration-review, target: delivery-publish, label: developer.integration.approved -> developer.integration.approved}
     - {id: delivery-publish-wait, source: delivery-publish, target: delivery-publication-wait, label: developer.delivery.waiting -> developer.delivery.waiting}
-    - {id: delivery-wait-publish, source: delivery-publication-wait, target: delivery-publish, label: developer.delivery.observed -> developer.delivery.observed}
+    - {id: delivery-wait-publish, source: delivery-publication-wait, target: delivery-publish, label: developer.delivery.observed -> developer.delivery.observed, rework: true}
     - {id: delivery-integration-repair, source: delivery-integration-review, target: delivery-repair, label: delivery.repair.required -> delivery.repair.required}
     - {id: delivery-publish-repair, source: delivery-publish, target: delivery-repair, label: developer.workstream.repair_requested -> developer.workstream.repair_requested}
-    - {id: delivery-repair-workstreams, source: delivery-repair, target: delivery-workstreams, label: developer.children.waiting -> developer.children.waiting}
+    - {id: delivery-repair-workstreams, source: delivery-repair, target: delivery-workstreams, label: developer.children.waiting -> developer.children.waiting, rework: true}
     - {id: delivery-publish-complete, source: delivery-publish, target: delivery-complete, label: developer.delivery.completed -> developer.delivery.completed}

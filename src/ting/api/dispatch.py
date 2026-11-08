@@ -7,13 +7,13 @@ Endpoints handle auth extraction, request validation, and response formatting.
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from niuu.domain.models import Principal
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
-from ting.api.flock_config import FlockPersonaResponse
 from ting.api.tracker import resolve_trackers
 from ting.domain.services.dispatch_service import (
     DispatchItem as ServiceDispatchItem,
@@ -23,6 +23,7 @@ from ting.domain.services.dispatch_service import (
 )
 from ting.domain.services.dispatch_service import (
     DispatchService,
+    WorkflowRunsNotConfiguredError,
 )
 from ting.domain.services.dispatch_service import (
     QueueItem as ServiceQueueItem,
@@ -77,10 +78,6 @@ class DispatchConfigResponse(BaseModel):
     default_system_prompt: str = ""
     default_model: str = "claude-sonnet-4-6"
     models: list[ModelOption] = []
-    flock_enabled: bool = False
-    flock_default_personas: list[FlockPersonaResponse] = []
-    flock_llm_config: dict = {}
-    flock_sleipnir_publish_urls: list[str] = []
 
 
 class DispatchRequest(BaseModel):
@@ -105,13 +102,13 @@ class DispatchRequest(BaseModel):
         default=None,
         description="Optional Volundr session definition key (e.g. 'skuldCodex')",
     )
-    workload_type: str = Field(
+    workload_type: Literal["solo"] = Field(
         default="solo",
-        description="'solo' for a single Ravn session or 'ravn_flock' for a multi-agent flock",
-    )
-    workload_config: dict = Field(
-        default_factory=dict,
-        description="Flock config — passes 'personas' list to override server defaults",
+        description=(
+            "'solo' is the only workload: one plain Forge session per issue, or a workflow "
+            "run for an issue whose saga names a workflow. The retired 'ravn_flock' "
+            "workload is refused with HTTP 422."
+        ),
     )
 
 
@@ -151,6 +148,8 @@ class DispatchResultResponse(BaseModel):
     session_name: str
     status: str
     cluster_name: str = ""
+    campaign_id: str = ""
+    campaign_slug: str = ""
 
 
 class DispatchBatchRequest(BaseModel):
@@ -220,6 +219,8 @@ def _result_to_response(result: ServiceDispatchResult) -> DispatchResultResponse
         session_name=result.session_name,
         status=result.status,
         cluster_name=result.cluster_name,
+        campaign_id=result.campaign_id,
+        campaign_slug=result.campaign_slug,
     )
 
 
@@ -308,6 +309,16 @@ async def _resolve_dispatch_item_for_run(
     return None, "run not found"
 
 
+async def _dispatch_issues(service: DispatchService, **kwargs) -> list[ServiceDispatchResult]:
+    """Dispatch, reporting a dispatcher that cannot start workflow runs as a 503."""
+    try:
+        return await service.dispatch_issues(**kwargs)
+    except WorkflowRunsNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
@@ -323,7 +334,6 @@ def create_dispatch_router() -> APIRouter:
     ) -> DispatchConfigResponse:
         """Get dispatch defaults from server configuration."""
         settings = request.app.state.settings
-        flock = settings.dispatch.flock
         return DispatchConfigResponse(
             default_system_prompt=settings.dispatch.default_system_prompt,
             default_model=settings.dispatch.default_model,
@@ -331,12 +341,6 @@ def create_dispatch_router() -> APIRouter:
                 ModelOption(id=m.id, name=m.name, provider=m.vendor)
                 for m in settings.bifrost.models
             ],
-            flock_enabled=flock.enabled,
-            flock_default_personas=[
-                FlockPersonaResponse(name=p.name, llm=dict(p.llm)) for p in flock.default_personas
-            ],
-            flock_llm_config=dict(flock.llm_config),
-            flock_sleipnir_publish_urls=list(flock.sleipnir_publish_urls),
         )
 
     @router.get("/queue", response_model=list[QueueItemResponse])
@@ -362,7 +366,11 @@ def create_dispatch_router() -> APIRouter:
         service: DispatchService = Depends(resolve_dispatch_service),
         dispatcher_repo: DispatcherRepository = Depends(resolve_dispatcher_repo),
     ) -> list[DispatchResultResponse]:
-        """Approve and dispatch selected issues — spawns Volundr sessions."""
+        """Approve and dispatch selected issues.
+
+        An issue spawns a Volundr session, or starts a workflow run when its saga (or the
+        item) names a workflow.
+        """
         # Ensure dispatcher state exists so the activity subscriber picks up this owner
         await dispatcher_repo.get_or_create(principal.user_id)
 
@@ -384,13 +392,8 @@ def create_dispatch_router() -> APIRouter:
             for item in body.items
         ]
 
-        persona_overrides: list[dict] | None = None
-        if body.workload_type == "ravn_flock":
-            raw = body.workload_config.get("personas")
-            if isinstance(raw, list) and raw:
-                persona_overrides = [{"name": p} if isinstance(p, str) else p for p in raw]
-
-        results = await service.dispatch_issues(
+        results = await _dispatch_issues(
+            service,
             owner_id=principal.user_id,
             items=service_items,
             principal=principal,
@@ -399,7 +402,6 @@ def create_dispatch_router() -> APIRouter:
             system_prompt=body.system_prompt or settings.dispatch.default_system_prompt,
             connection_id=body.connection_id,
             session_definition=body.session_definition,
-            persona_overrides=persona_overrides,
         )
         return [_result_to_response(r) for r in results]
 
@@ -466,7 +468,8 @@ def create_dispatch_router() -> APIRouter:
 
         auth_token = extract_bearer_token(request)
         settings = request.app.state.settings
-        results = await service.dispatch_issues(
+        results = await _dispatch_issues(
+            service,
             owner_id=principal.user_id,
             items=dispatch_items,
             auth_token=auth_token,
@@ -502,7 +505,8 @@ def create_dispatch_router() -> APIRouter:
 
         auth_token = extract_bearer_token(request)
         settings = request.app.state.settings
-        await service.dispatch_issues(
+        await _dispatch_issues(
+            service,
             owner_id=principal.user_id,
             items=[item],
             auth_token=auth_token,

@@ -1,6 +1,6 @@
 """MimirPort — abstract interface for the Mímir knowledge base.
 
-Both the Mímir service (``src/mimir/``) and Ravn adapters (``src/ravn/``)
+Both the Mímir service (``src/mimir/``) and the clients that call it
 depend on this interface.  Neither module depends on the other.
 """
 

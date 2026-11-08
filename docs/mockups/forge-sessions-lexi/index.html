@@ -1,0 +1,1021 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Forge Session Chat</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: app rail · session list · conversation · right dock, the Lexi Mac shell rebuilt in web-next's niuu theme tokens. */
+:root {
+  color-scheme: dark;
+  /* web-next design-tokens, [data-theme='niuu'] */
+  --bg: #071019;
+  --bg2: #10212d;
+  --bg3: #182b38;
+  --bg-el: #2b4351;
+  --quiet: #0b1722;
+  --code: #050c13;
+  --fg: #edf4f7;
+  --fg2: #a5b7c1;
+  --muted: #78909d;
+  --faint: #648090;
+  --border: #2b4351;
+  --border-subtle: #182b38;
+  --brand: #86d0e8;
+  --brand-300: #a8e7f4;
+  --brand-600: #3a8baa;
+  --brand-800: #1d5a73;
+  --on-brand: #0b2937;
+  --sent: #182b38;
+  --ok: #76bfa7;
+  --warn: #e4bd7e;
+  --crit: #e78d94;
+  --gate: #c4b5fd;
+  --claude: #fb923c;
+  --codex: #60a5fa;
+  --grok: #22d3ee;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrainsMono NF', 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-xl: 16px; --r-pill: 9999px;
+  --ease: 200ms ease;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--font-sans); -webkit-font-smoothing: antialiased; overflow: hidden; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.mono { font-family: var(--font-mono); }
+.tnum { font-variant-numeric: tabular-nums; }
+svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+svg.i.sm { width: 13px; height: 13px; }
+svg.i.lg { width: 18px; height: 18px; }
+
+/* ---------- mockup bar (not product UI) ---------- */
+.mockbar { height: 40px; display: flex; align-items: center; gap: 16px; padding: 0 max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px)); background: repeating-linear-gradient(135deg, #0b1722 0 10px, #0d1b27 10px 20px); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+.mockbar .tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--brand); }
+.mockbar nav { display: flex; gap: 4px; }
+.mockbar nav button { padding: 4px 10px; border-radius: var(--r-pill); color: var(--fg2); }
+.mockbar nav button[aria-pressed="true"] { background: var(--bg3); color: var(--fg); }
+.mockbar .sp { flex: 1; }
+.switch { display: inline-flex; align-items: center; gap: 8px; color: var(--fg2); }
+.switch .track { width: 28px; height: 16px; border-radius: 99px; background: var(--bg-el); position: relative; transition: background var(--ease); }
+.switch .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--fg2); transition: transform var(--ease); }
+.switch[aria-checked="true"] .track { background: var(--brand-600); }
+.switch[aria-checked="true"] .track::after { transform: translateX(12px); background: var(--fg); }
+
+/* ---------- wiring annotations ---------- */
+.wire { display: none; font-family: var(--font-mono); font-size: 10px; line-height: 1.3; font-weight: 500; color: #f5d0fe; background: rgba(192, 132, 252, .14); border: 1px dashed rgba(192, 132, 252, .55); border-radius: 4px; padding: 1px 5px; white-space: nowrap; vertical-align: middle; }
+.wire.new { color: #fde68a; background: rgba(250, 204, 21, .10); border-color: rgba(250, 204, 21, .5); }
+body.wiring .wire { display: inline-block; }
+.wire-row { display: none; gap: 6px; flex-wrap: wrap; }
+body.wiring .wire-row { display: flex; }
+
+/* ---------- shell ---------- */
+.app { height: calc(100% - 40px); display: grid; grid-template-columns: 52px 296px minmax(0, 1fr) 288px; }
+.app.nodock, .app.dockless { grid-template-columns: 52px 296px minmax(0, 1fr) 0; }
+.rail { background: var(--quiet); border-right: 1px solid var(--border-subtle); display: flex; flex-direction: column; align-items: center; gap: 6px; padding-top: 12px; }
+.rail .logo { width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(140deg, var(--brand) 0%, var(--brand-600) 100%); color: var(--on-brand); font-weight: 700; display: grid; place-items: center; font-size: 13px; margin-bottom: 10px; }
+.rail button { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; color: var(--muted); position: relative; }
+.rail button.on { background: var(--bg3); color: var(--brand); }
+.rail button .badge { position: absolute; top: 4px; right: 4px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 99px; background: var(--warn); color: #1d1405; font-size: 9.5px; font-weight: 700; display: grid; place-items: center; }
+
+/* ---------- session list ---------- */
+.side { border-right: 1px solid var(--border-subtle); display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
+.side-head { padding: 14px 14px 8px; display: flex; flex-direction: column; gap: 10px; }
+.side-title { display: flex; align-items: center; gap: 6px; }
+.side-title h1 { font-size: 20px; font-weight: 700; letter-spacing: -.01em; margin: 0; flex: 1; }
+.iconbtn { width: 30px; height: 30px; border-radius: var(--r-md); display: grid; place-items: center; color: var(--fg2); }
+.iconbtn:hover { background: var(--bg3); color: var(--fg); }
+.iconbtn.brand { color: var(--brand); }
+.today { font-size: 12px; color: var(--muted); margin-top: -8px; }
+.search { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: var(--r-md); background: var(--bg2); border: 1px solid var(--border-subtle); color: var(--muted); font-size: 13px; }
+.chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+.chip { flex: none; height: 26px; padding: 0 10px; border-radius: var(--r-pill); border: 1px solid var(--border-subtle); background: var(--bg2); font-size: 12px; font-weight: 600; color: var(--fg2); display: inline-flex; align-items: center; gap: 5px; }
+.chip .n { font-weight: 500; color: var(--muted); }
+.chip.on { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
+.chip.on .n { color: var(--on-brand); opacity: .75; }
+.groupby { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; color: var(--muted); }
+.groupby b { color: var(--fg2); font-weight: 600; }
+.list { flex: 1; overflow-y: auto; padding: 4px 8px 12px; min-height: 0; }
+.grp { display: flex; align-items: center; gap: 6px; padding: 10px 6px 4px; font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.grp .n { font-weight: 500; color: var(--faint); }
+.grp .sp { flex: 1; }
+.row { width: 100%; text-align: left; display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; column-gap: 8px; row-gap: 1px; padding: 9px 10px; border-radius: var(--r-lg); align-items: center; }
+.row:hover { background: var(--bg2); }
+.row.sel { background: var(--bg3); }
+.row .dot { width: 7px; height: 7px; border-radius: 50%; justify-self: center; }
+.row .title { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .title.unread::after { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--brand); margin-left: 6px; vertical-align: middle; }
+.row .preview { grid-column: 2 / 4; font-size: 12.5px; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .meta { grid-column: 2 / 3; font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .fact { grid-column: 3; font-size: 11.5px; color: var(--muted); text-align: right; }
+.pill { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: var(--r-pill); font-size: 10.5px; font-weight: 600; white-space: nowrap; color: var(--c); background: color-mix(in srgb, var(--c) 16%, transparent); border: .5px solid color-mix(in srgb, var(--c) 32%, transparent); }
+.side-foot { border-top: 1px solid var(--border-subtle); padding: 10px 14px; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.side-foot .sp { flex: 1; }
+.eng { font-weight: 600; }
+
+/* ---------- conversation ---------- */
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+.head { padding: 12px 20px 0; border-bottom: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 8px; background: var(--bg); }
+.head-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.head-top .live { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.head-title { min-width: 0; flex: 1; }
+.head-title h2 { margin: 0; font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.head-title h2 span.t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.subline { font-size: 12.5px; color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.subline .sep { color: var(--faint); }
+.head-tools { display: flex; align-items: center; gap: 4px; flex: none; }
+.meter { display: inline-flex; align-items: center; gap: 7px; padding: 3px 9px 3px 4px; border-radius: var(--r-pill); background: var(--bg2); border: 1px solid var(--border-subtle); font-size: 11.5px; color: var(--fg2); }
+.meter svg { width: 20px; height: 20px; }
+.prchip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: var(--r-pill); background: var(--bg2); border: 1px solid var(--border-subtle); font-size: 12px; color: var(--fg2); }
+.prchip .spin { width: 10px; height: 10px; }
+.tabs { display: flex; gap: 2px; margin-bottom: -1px; overflow-x: auto; scrollbar-width: none; }
+.tabs button { padding: 8px 12px; font-size: 12.5px; color: var(--muted); border-bottom: 2px solid transparent; white-space: nowrap; }
+.tabs button.on { color: var(--fg); border-bottom-color: var(--brand); }
+.tabs .n { font-size: 11px; color: var(--faint); margin-left: 3px; }
+
+.scroll { flex: 1; overflow-y: auto; min-height: 0; }
+.transcript { max-width: 820px; margin: 0 auto; padding: 22px 28px 28px; display: flex; flex-direction: column; gap: 14px; }
+.capsule { align-self: center; font-size: 11.5px; font-weight: 500; color: var(--muted); padding: 3px 12px; border-radius: var(--r-pill); background: var(--bg2); border: 1px solid var(--border-subtle); }
+.earlier { border: 1px solid var(--border-subtle); border-radius: var(--r-lg); background: var(--quiet); overflow: hidden; }
+.earlier-h { display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 12px; color: var(--muted); }
+.earlier-h .sp { flex: 1; }
+.pair { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 10px; padding: 8px 14px; border-top: 1px solid var(--border-subtle); font-size: 13px; align-items: baseline; }
+.pair .who { font-size: 11px; color: var(--faint); }
+.pair .q { color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pair .a { grid-column: 2 / 3; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pair .when { font-size: 11px; color: var(--faint); grid-row: 1 / 3; grid-column: 3; align-self: center; }
+
+.you { align-self: flex-end; max-width: 78%; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.you .meta { font-size: 11px; color: var(--faint); display: flex; gap: 6px; align-items: center; }
+.bubble { background: var(--sent); border: 1px solid color-mix(in srgb, var(--brand) 24%, transparent); border-radius: 18px 18px 6px 18px; padding: 10px 14px; font-size: 15px; line-height: 1.5; }
+.bubble.queued { background: color-mix(in srgb, var(--sent) 50%, transparent); border: 1px dashed var(--border); color: var(--fg2); font-style: italic; }
+.qstate { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--warn); }
+.qstate .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); animation: pulse 1.4s ease-out infinite; }
+
+.speaker { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 700; color: var(--c); }
+.speaker i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); display: block; }
+.speaker .when { font-weight: 400; color: var(--faint); font-size: 11.5px; }
+.final-tag { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .12em; font-weight: 600; color: var(--fg2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+.prose { font-size: 15px; line-height: 1.62; }
+.prose p { margin: 0 0 8px; }
+.prose p:last-child { margin-bottom: 0; }
+.prose ul { margin: 4px 0 8px; padding-left: 20px; }
+.prose li { margin: 3px 0; }
+.prose code { font-family: var(--font-mono); font-size: 13px; background: var(--bg3); border-radius: 4px; padding: 1px 5px; }
+.prose a { color: var(--brand); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--brand) 35%, transparent); }
+.commentary { color: color-mix(in srgb, var(--fg) 82%, var(--bg)); }
+.answer { display: flex; flex-direction: column; gap: 8px; }
+.msgbar { display: flex; gap: 2px; margin-top: 2px; opacity: .0; transition: opacity var(--ease); }
+.answer:hover .msgbar, .msgbar:focus-within { opacity: 1; }
+.msgbar button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: var(--r-sm); font-size: 11.5px; color: var(--muted); }
+.msgbar button:hover { background: var(--bg2); color: var(--fg); }
+
+/* tool-call session row (hierarchical) */
+.toolrun { width: 100%; text-align: left; display: flex; flex-direction: column; gap: 4px; padding: 9px 12px; border-radius: var(--r-lg); border: 1px solid var(--border-subtle); background: color-mix(in srgb, var(--bg2) 55%, transparent); }
+.toolrun:hover { border-color: var(--border); }
+.tr-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.tr-icons { display: flex; gap: 3px; flex: none; }
+.tr-icons span { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; background: var(--bg3); color: var(--fg2); }
+.tr-sum { flex: 1; min-width: 0; font-size: 13px; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tr-sum b { color: var(--fg); font-weight: 600; }
+.tr-diff { font-family: var(--font-mono); font-size: 11.5px; flex: none; }
+.tr-diff .add { color: var(--ok); } .tr-diff .del { color: var(--crit); }
+.tr-time { font-size: 11.5px; color: var(--muted); flex: none; }
+.tr-state { flex: none; display: grid; place-items: center; color: var(--muted); }
+.tr-ticker { display: flex; align-items: center; gap: 8px; padding-left: 2px; font-size: 12px; color: var(--brand-300); font-family: var(--font-mono); min-width: 0; }
+.tr-ticker span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toolrun.live { border-color: color-mix(in srgb, var(--brand) 30%, transparent); }
+.spinner { width: 13px; height: 13px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--brand) 25%, transparent); border-top-color: var(--brand); animation: spin .9s linear infinite; flex: none; }
+
+/* inline mode tool cards */
+.inline-calls { display: flex; flex-direction: column; gap: 6px; }
+.tcard { border: .5px solid var(--border); border-radius: var(--r-md); background: color-mix(in srgb, var(--bg2) 35%, transparent); }
+.tcard.fail { border-color: color-mix(in srgb, var(--crit) 45%, transparent); }
+.tcard-h { width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 10px; text-align: left; font-size: 12.5px; min-width: 0; }
+.tcard-h .verb { font-weight: 600; flex: none; }
+.tcard-h .subj { font-family: var(--font-mono); font-size: 12px; color: var(--fg2); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tcard-h .d { font-size: 11px; color: var(--muted); flex: none; }
+.tcard-b { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 6px; }
+.out { background: var(--code); border: 1px solid var(--border-subtle); border-radius: var(--r-sm); padding: 9px 11px; font-family: var(--font-mono); font-size: 12px; line-height: 1.55; color: var(--fg2); overflow-x: auto; white-space: pre; }
+.out .cmd { color: var(--fg); }
+.out .err { color: var(--crit); }
+.out .okl { color: var(--ok); }
+.out .add { color: var(--ok); display: block; background: rgba(118, 191, 167, .08); }
+.out .del { color: var(--crit); display: block; background: rgba(231, 141, 148, .08); }
+.out .hunk { color: var(--brand); display: block; }
+.out .ctx { display: block; }
+.outlabel { display: flex; gap: 10px; align-items: center; font-size: 11px; color: var(--muted); }
+.outlabel .exit { font-family: var(--font-mono); }
+.elide { font-size: 11.5px; color: var(--muted); }
+.elide button { color: var(--brand); }
+
+/* subagent / deliverable / error / relay cards */
+.card { border: 1px solid var(--border); border-radius: 14px; background: linear-gradient(180deg, #13283a 0%, #0e1d29 100%); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+.card-h { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.card-h .k { font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.card-h .sp { flex: 1; }
+.card .stats { font-size: 12px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; }
+.card .stats b { color: var(--fg2); font-weight: 500; }
+.deliver { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; }
+.deliver .ficon { width: 44px; height: 52px; border-radius: 8px; background: var(--bg3); border: 1px solid var(--border); display: grid; place-items: center; color: var(--brand); position: relative; }
+.deliver .ficon small { position: absolute; bottom: 4px; font-family: var(--font-mono); font-size: 8.5px; color: var(--fg2); }
+.deliver .fn { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.deliver .fd { font-size: 12px; color: var(--muted); }
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--bg2); font-size: 12.5px; font-weight: 500; color: var(--fg); white-space: nowrap; }
+.btn:hover { background: var(--bg3); }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--on-brand); font-weight: 600; }
+.btn.ghost { border-color: transparent; background: none; color: var(--fg2); }
+.errcard { border-color: color-mix(in srgb, var(--crit) 40%, transparent); background: color-mix(in srgb, var(--crit) 7%, var(--bg)); }
+.errcard .card-h { color: var(--crit); font-weight: 600; }
+.relay { border-style: dashed; background: var(--quiet); }
+.compact-marker { align-self: stretch; display: flex; align-items: center; gap: 12px; font-size: 11.5px; color: var(--muted); }
+.compact-marker::before, .compact-marker::after { content: ""; flex: 1; height: 1px; background: var(--border-subtle); }
+.worked { display: flex; align-items: center; gap: 12px; font-size: 11.5px; color: var(--faint); }
+.worked::before, .worked::after { content: ""; flex: 1; height: 1px; background: var(--border-subtle); }
+.dots { display: inline-flex; gap: 5px; padding: 4px 0; }
+.dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--claude); animation: bounce 1.2s ease-in-out infinite; }
+.dots i:nth-child(2) { animation-delay: .15s; } .dots i:nth-child(3) { animation-delay: .3s; }
+
+/* ---------- bottom band: plan dock / question / composer ---------- */
+.band { padding: 0 28px 16px; display: flex; flex-direction: column; gap: 8px; max-width: 876px; width: 100%; margin: 0 auto; }
+.plandock { align-self: center; display: flex; flex-direction: column; border-radius: 18px; border: 1px solid var(--border); background: color-mix(in srgb, var(--bg2) 88%, transparent); backdrop-filter: blur(14px); overflow: hidden; max-width: 100%; }
+.plandock.open { align-self: stretch; }
+.plan-cap { display: flex; align-items: center; gap: 10px; padding: 7px 14px; font-size: 12.5px; color: var(--fg2); text-align: left; }
+.plan-cap .ring { width: 16px; height: 16px; flex: none; }
+.plan-cap b { color: var(--fg); font-weight: 600; }
+.plan-cap .ag { color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+.plan-list { padding: 4px 14px 12px; display: grid; gap: 4px; border-top: 1px solid var(--border-subtle); }
+.plan-item { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--fg2); padding: 3px 0; }
+.plan-item.done { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
+.plan-item.active { color: var(--fg); font-weight: 500; }
+.box { width: 15px; height: 15px; border-radius: 4px; border: 1.5px solid var(--faint); display: grid; place-items: center; flex: none; }
+.plan-item.done .box { background: var(--ok); border-color: var(--ok); color: var(--on-brand); }
+.plan-item.active .box { border-color: var(--brand); }
+
+.question { border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); background: linear-gradient(180deg, rgba(228, 189, 126, .08), rgba(228, 189, 126, .02)), var(--bg2); border-radius: 18px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+.q-head { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--warn); font-weight: 600; }
+.q-head .w { font-weight: 400; color: var(--muted); }
+.q-head .sp { flex: 1; }
+.q-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.q-tabs button { height: 24px; padding: 0 10px; border-radius: var(--r-pill); font-size: 11.5px; border: 1px solid var(--border); color: var(--fg2); }
+.q-tabs button.on { border-color: var(--warn); color: var(--warn); background: rgba(228, 189, 126, .1); }
+.q-text { font-size: 15px; font-weight: 500; }
+.opts { display: grid; gap: 6px; }
+.opt { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 10px; text-align: left; padding: 9px 12px; border-radius: var(--r-lg); border: 1px solid var(--border-subtle); background: var(--quiet); }
+.opt:hover { border-color: var(--border); }
+.opt.on { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 9%, var(--quiet)); }
+.opt .radio { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--faint); margin-top: 2px; }
+.opt.on .radio { border: 5px solid var(--brand); }
+.opt .ol { font-size: 13.5px; font-weight: 600; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.opt .od { font-size: 12.5px; color: var(--muted); }
+.rec { font-size: 10.5px; font-weight: 600; color: var(--ok); background: rgba(118, 191, 167, .12); border-radius: 99px; padding: 1px 7px; }
+.q-foot { display: flex; align-items: center; gap: 8px; }
+.q-foot .sp { flex: 1; }
+.q-foot .hint { font-size: 12px; color: var(--muted); }
+
+.composer { border: 1px solid var(--border); background: var(--bg2); border-radius: 22px; padding: 10px 10px 8px 14px; display: flex; flex-direction: column; gap: 8px; }
+.composer:focus-within { border-color: color-mix(in srgb, var(--brand) 55%, var(--border)); }
+.composer textarea { width: 100%; resize: none; border: 0; background: none; color: var(--fg); font: 15px/1.5 var(--font-sans); min-height: 24px; max-height: 160px; padding: 2px 0; }
+.composer textarea::placeholder { color: var(--muted); }
+.composer textarea:focus-visible { outline: none; }
+.c-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.c-row .sp { flex: 1; }
+.cbtn { height: 28px; padding: 0 9px; border-radius: var(--r-pill); display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--fg2); border: 1px solid var(--border-subtle); background: var(--quiet); }
+.cbtn:hover { color: var(--fg); border-color: var(--border); }
+.cbtn.round { width: 28px; padding: 0; justify-content: center; }
+.send { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--brand); color: var(--on-brand); }
+.send.off { background: var(--bg-el); color: var(--muted); }
+.stop { height: 32px; padding: 0 12px; border-radius: var(--r-pill); display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--crit); border: 1px solid color-mix(in srgb, var(--crit) 40%, transparent); background: color-mix(in srgb, var(--crit) 8%, transparent); }
+.c-hint { font-size: 11.5px; color: var(--muted); padding: 0 4px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.kbd { font-family: var(--font-mono); font-size: 10.5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--fg2); }
+.menu { position: absolute; z-index: 30; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: 0 28px 85px rgb(0 0 0 / .4); padding: 6px; min-width: 240px; }
+.menu .mh { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); padding: 6px 10px 4px; font-family: var(--font-mono); }
+.menu button { width: 100%; text-align: left; display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: var(--r-md); font-size: 13px; color: var(--fg2); }
+.menu button:hover { background: var(--bg3); color: var(--fg); }
+.menu button .r { margin-left: auto; font-size: 11.5px; color: var(--muted); }
+.menu hr { border: 0; border-top: 1px solid var(--border-subtle); margin: 5px 4px; }
+
+/* ---------- right dock ---------- */
+.dock { border-left: 1px solid var(--border-subtle); overflow-y: auto; background: var(--quiet); min-width: 0; }
+.app.nodock .dock, .app.dockless .dock { display: none; }
+.dsec { border-bottom: 1px solid var(--border-subtle); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.dsec h3 { margin: 0; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.dsec h3 .sp { flex: 1; }
+.dsec h3 .n { color: var(--faint); letter-spacing: 0; }
+.kv { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 5px 8px; font-size: 12.5px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.frow { display: flex; align-items: center; gap: 8px; font-size: 12.5px; min-width: 0; }
+.frow .p { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg2); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.frow .add { color: var(--ok); font-family: var(--font-mono); font-size: 11px; }
+.frow .del { color: var(--crit); font-family: var(--font-mono); font-size: 11px; }
+.agent { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: var(--r-md); background: var(--bg2); border: 1px solid var(--border-subtle); }
+.agent .an { font-size: 12.5px; font-weight: 600; display: flex; gap: 6px; align-items: center; }
+.agent .as { font-size: 11.5px; color: var(--muted); }
+.thumbs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.thumbs div { aspect-ratio: 4/3; border-radius: 6px; border: 1px solid var(--border-subtle); background: linear-gradient(135deg, #12303f, #0b1722); display: grid; place-items: center; color: var(--faint); font-size: 10px; font-family: var(--font-mono); max-width: 100%; }
+
+/* ---------- drawer (tool session sheet) ---------- */
+.scrim { position: fixed; inset: 0; background: rgba(2, 8, 13, .55); z-index: 40; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100%); z-index: 41; background: var(--bg2); border-left: 1px solid var(--border); display: flex; flex-direction: column; box-shadow: 0 28px 85px rgb(0 0 0 / .4); }
+.drawer-h { padding: 14px 18px; border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; gap: 10px; }
+.drawer-h h4 { margin: 0; font-size: 15px; flex: 1; }
+.drawer-h .sub { font-size: 12px; color: var(--muted); }
+.drawer-b { flex: 1; overflow-y: auto; padding: 12px 18px 24px; display: flex; flex-direction: column; gap: 8px; }
+
+/* ---------- modal (new session) ---------- */
+.modal { position: fixed; z-index: 41; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(680px, calc(100% - 32px)); max-height: calc(100% - 48px); overflow-y: auto; background: var(--bg2); border: 1px solid var(--border); border-radius: 18px; box-shadow: 0 28px 85px rgb(0 0 0 / .4); }
+.modal-h { padding: 18px 22px 6px; display: flex; align-items: center; gap: 10px; }
+.modal-h h4 { margin: 0; font-size: 18px; flex: 1; }
+.modal-b { padding: 8px 22px 18px; display: flex; flex-direction: column; gap: 16px; }
+.fld { display: flex; flex-direction: column; gap: 6px; }
+.fld > label, .fld > .lbl { font-size: 12px; font-weight: 600; color: var(--fg2); display: flex; gap: 8px; align-items: center; }
+.inp { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--r-md); background: var(--quiet); border: 1px solid var(--border); font-size: 13.5px; color: var(--fg); width: 100%; font-family: inherit; }
+.inp.mono { font-family: var(--font-mono); font-size: 12.5px; }
+.seg { display: inline-flex; padding: 3px; border-radius: var(--r-md); background: var(--quiet); border: 1px solid var(--border-subtle); gap: 2px; }
+.seg button { padding: 5px 12px; border-radius: 6px; font-size: 12.5px; color: var(--fg2); }
+.seg button.on { background: var(--bg3); color: var(--fg); }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.engines { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.engine { text-align: left; padding: 10px 12px; border-radius: var(--r-lg); border: 1px solid var(--border-subtle); background: var(--quiet); display: flex; flex-direction: column; gap: 2px; }
+.engine.on { border-color: var(--c); background: color-mix(in srgb, var(--c) 8%, var(--quiet)); }
+.engine .en { font-weight: 600; color: var(--c); display: flex; gap: 6px; align-items: center; font-size: 13.5px; }
+.engine .en i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.engine .ed { font-size: 11.5px; color: var(--muted); }
+.toggle-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; border-radius: var(--r-md); background: var(--quiet); border: 1px solid var(--border-subtle); }
+.toggle-row .tl { flex: 1; font-size: 13px; }
+.toggle-row .tl small { display: block; color: var(--muted); font-size: 11.5px; }
+.modal-f { padding: 14px 22px; border-top: 1px solid var(--border-subtle); display: flex; gap: 8px; align-items: center; }
+.modal-f .sp { flex: 1; }
+
+/* ---------- unread stream ---------- */
+.unread-wrap { max-width: 820px; margin: 0 auto; padding: 18px 28px 40px; }
+.unread-top { display: flex; align-items: center; justify-content: space-between; padding-bottom: 12px; border-bottom: 1px solid var(--border-subtle); font-size: 13px; color: var(--muted); }
+.ublock { border-bottom: 1px solid var(--border-subtle); padding: 16px 0; display: flex; flex-direction: column; gap: 10px; }
+.ub-h { display: flex; align-items: center; gap: 8px; position: sticky; top: 0; background: var(--bg); padding: 4px 0; z-index: 2; }
+.ub-h .nm { font-weight: 700; font-size: 15px; }
+.ub-h .new { font-size: 12px; font-weight: 600; color: var(--warn); }
+.ub-h .sp { flex: 1; }
+.ub-h .ago { font-size: 12px; color: var(--muted); }
+.ub-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* ---------- feature map ---------- */
+.fmap { position: fixed; top: 40px; left: 0; right: 0; bottom: 0; overflow-y: auto; background: var(--bg); z-index: 20; }
+.fmap-in { max-width: 1120px; margin: 0 auto; padding: 28px max(16px, env(safe-area-inset-right, 0px)) 60px max(16px, env(safe-area-inset-left, 0px)); }
+.fmap h2 { font-size: 24px; letter-spacing: -.01em; margin: 0 0 6px; text-wrap: balance; }
+.fmap .lede { color: var(--fg2); max-width: 68ch; margin: 0 0 18px; font-size: 14.5px; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 22px; align-items: center; }
+.fmap h3 { font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--brand); margin: 28px 0 8px; font-weight: 600; }
+.tbl { overflow-x: auto; border: 1px solid var(--border-subtle); border-radius: var(--r-lg); }
+.tbl table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 860px; }
+.tbl th { text-align: left; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 9px 12px; background: var(--quiet); border-bottom: 1px solid var(--border-subtle); }
+.tbl td { padding: 9px 12px; border-bottom: 1px solid var(--border-subtle); vertical-align: top; color: var(--fg2); }
+.tbl tr:last-child td { border-bottom: 0; }
+.tbl td:first-child { color: var(--fg); font-weight: 500; width: 22%; }
+.tbl td code { font-family: var(--font-mono); font-size: 11.5px; color: var(--brand-300); }
+.st { font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 99px; white-space: nowrap; color: var(--c); background: color-mix(in srgb, var(--c) 14%, transparent); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(228, 189, 126, .6); } 100% { box-shadow: 0 0 0 7px rgba(228, 189, 126, 0); } }
+@keyframes bounce { 0%, 80%, 100% { transform: translateY(0); opacity: .5; } 40% { transform: translateY(-4px); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (max-width: 1180px) { .app, .app.nodock { grid-template-columns: 52px 268px minmax(0, 1fr) 0; } .dock { display: none; } }
+@media (max-width: 820px) { .app, .app.nodock { grid-template-columns: 0 0 minmax(0, 1fr) 0; } .rail, .side { display: none; } .transcript, .band { padding-left: 16px; padding-right: 16px; } .mockbar nav button { padding: 4px 6px; } .mockbar .tag { display: none; } .engines, .two { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<div class="mockbar">
+  <span class="tag">Mockup</span>
+  <nav id="views" aria-label="Mockup views">
+    <button data-view="workspace" aria-pressed="true">Session</button>
+    <button data-view="unread" aria-pressed="false">Unread stream</button>
+    <button data-view="new" aria-pressed="false">New session</button>
+    <button data-view="map" aria-pressed="false">Feature map</button>
+  </nav>
+  <span class="sp"></span>
+  <button class="switch" id="wiringToggle" role="switch" aria-checked="false"><span class="track"></span>Show Niuu wiring</button>
+</div>
+
+<div class="app" id="app">
+  <aside class="rail" aria-label="Apps">
+    <div class="logo">n</div>
+    <button title="Home" data-ic="home"></button>
+    <button title="Work" data-ic="layers"></button>
+    <button title="Forge" class="on" data-ic="hammer"></button>
+    <button title="Activity" data-ic="bell"><span class="badge">2</span></button>
+    <button title="Settings" data-ic="gear"></button>
+  </aside>
+  <section class="side" id="side"></section>
+  <main class="main" id="main"></main>
+  <aside class="dock" id="dock"></aside>
+</div>
+
+<div id="overlay"></div>
+<div class="fmap" id="fmap" hidden></div>
+
+<script>
+/* ---------------- icons ---------------- */
+const P = {
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  right: '<path d="m9 18 6-6-6-6"/>',
+  down: '<path d="m6 9 6 6 6-6"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  terminal: '<path d="m4 17 6-6-6-6M12 19h8"/>',
+  file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/>',
+  pencil: '<path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
+  plan: '<path d="m3 7 2 2 4-4M3 17l2 2 4-4M13 6h8M13 12h8M13 18h8"/>',
+  users: '<circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M16 3.5a4 4 0 0 1 0 9M22 21a7 7 0 0 0-4-6.3"/>',
+  folder: '<path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9a6 6 0 0 1-6 6H6"/>',
+  clip: '<path d="m21 11-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 7"/>',
+  up: '<path d="M12 19V5M5 12l7-7 7 7"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+  fork: '<circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M6 7v1a4 4 0 0 0 4 4h4a4 4 0 0 0 4-4V7M12 12v5"/>',
+  forward: '<path d="m15 17 5-5-5-5"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
+  alert: '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/>',
+  ask: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/>',
+  pin: '<path d="M12 17v5M9 10.8V4h6v6.8l3 3.2H6z"/>',
+  hash: '<path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/>',
+  home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  layers: '<path d="m12 2 10 5-10 5L2 7zM2 12l10 5 10-5M2 17l10 5 10-5"/>',
+  hammer: '<path d="m15 12-8.5 8.5a2.1 2.1 0 0 1-3-3L12 9"/><path d="M17.6 15 22 10.6M20 8.6l-3.6-3.6a3 3 0 0 0-2.1-.9h-2.1l1.9 1.9v2.1l2 2h2.1l1.9 1.9"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/>',
+  activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/>',
+  reply: '<path d="m9 17-5-5 5-5M4 12h11a5 5 0 0 1 5 5v2"/>',
+  ext: '<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>',
+  dock: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
+  pr: '<circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><path d="M6 8v8M18 16V9a3 3 0 0 0-3-3h-4M13 4l-2 2 2 2"/>',
+  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  filter: '<path d="M3 5h18M6 12h12M10 19h4"/>',
+  read: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><path d="m9 12 2 2 4-4"/>',
+  heart: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+};
+const ic = (n, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${P[n] || ''}</svg>`;
+const wire = (t, isNew) => `<span class="wire${isNew ? ' new' : ''}">${t}</span>`;
+document.querySelectorAll('[data-ic]').forEach(b => { b.insertAdjacentHTML('afterbegin', ic(b.dataset.ic, 'lg')); });
+
+/* ---------------- data ---------------- */
+const ENG = { claude: 'var(--claude)', codex: 'var(--codex)', grok: 'var(--grok)' };
+const STATE = {
+  progress: { label: 'In progress', c: 'var(--ok)' },
+  needs: { label: 'Needs you', c: 'var(--warn)' },
+  idle: { label: 'Idle', c: 'var(--muted)' },
+  error: { label: 'Error', c: 'var(--crit)' },
+  stopped: { label: 'Stopped', c: 'var(--faint)' },
+};
+const SESSIONS = [
+  { id: 'gates', name: 'plan-review-gates', state: 'progress', eng: 'claude', model: 'Fable 5.1', host: 'valhalla', fact: 'running 4m', preview: 'Running the workflow gate tests', repo: 'niuulabs/niuu', pinned: true },
+  { id: 'migr', name: 'chart-migrations', state: 'needs', eng: 'claude', model: 'Opus 5.5', host: 'ymir', fact: 'waiting 3m', preview: 'Which database should migration 000081 target?', repo: 'niuulabs/niuu', unread: true },
+  { id: 'catalog', name: 'bifrost-catalog', state: 'progress', eng: 'codex', model: 'Sol 6', host: 'noatun', fact: 'running 11m', preview: 'Removing retired models from the catalog', repo: 'niuulabs/niuu' },
+  { id: 'webux', name: 'web-session-ux', state: 'idle', eng: 'claude', model: 'Fable 5.1', host: 'local', fact: 'idle 25m', preview: 'Mockup ready for review', repo: 'niuulabs/niuu', unread: true },
+  { id: 'regin', name: 'regin-rollout', state: 'error', eng: 'codex', model: 'Astra 6', host: 'valhalla', fact: 'stopped 1h', preview: "Codex couldn't run this turn (429)", repo: 'jve/infrastructure' },
+  { id: 'fleet', name: 'fleet-gitrepo-move', state: 'stopped', eng: 'claude', model: 'Opus 5.5', host: 'ymir', fact: 'stopped 3h', preview: 'Moved the GitRepos to local.yaml', repo: 'jve/infrastructure' },
+];
+
+/* tool runs: one row per burst in hierarchical mode */
+const RUNS = {
+  r1: { icons: ['file', 'search'], sum: 'Explored · <b>4 files read</b> · 2 searches', time: '12s', state: 'ok', calls: [
+    { fam: 'search', verb: 'Searched', subj: 'resolve_gate|automated_approval in src/ting', d: '0.4s', out: 'src/ting/domain/services/gates.py:88\nsrc/ting/domain/services/gates.py:131\nsrc/ting/adapters/inbound/rest_workflow_gates.py:57\n… 6 more matches' },
+    { fam: 'read', verb: 'Read', subj: 'src/ting/domain/services/gates.py', d: '0.1s', out: '412 lines' },
+    { fam: 'read', verb: 'Read', subj: 'src/ting/adapters/inbound/rest_workflow_gates.py', d: '0.1s', out: '96 lines' },
+    { fam: 'search', verb: 'Listed', subj: 'tests/test_ting/', d: '0.2s', out: '58 files' },
+    { fam: 'read', verb: 'Read', subj: 'tests/test_ting/test_workflow_gates.py', d: '0.1s', out: '233 lines' },
+    { fam: 'read', verb: 'Read', subj: 'src/ting/domain/models/workflow.py', d: '0.1s', out: '640 lines' },
+  ] },
+  r2: { icons: ['pencil', 'terminal'], sum: '<b>1 file edited</b> · 1 test file written · 1 command', diff: [14, 3], time: '48s', state: 'ok', calls: [
+    { fam: 'edit', verb: 'Edited', subj: 'src/ting/domain/services/gates.py', d: '0.2s', diff: '@@ -128,9 +128,20 @@ def resolve_gate(\n     gate = await self._repo.get(gate_id)\n-    if actor.kind == ActorKind.AGENT and gate.kind != GateKind.HUMAN:\n-        return await self._apply(gate, decision, actor)\n+    if gate.kind == GateKind.HUMAN and actor.kind == ActorKind.AGENT:\n+        if not gate.workflow.automated_approval:\n+            self._metrics.refused(gate.id, reason="agent_on_human_gate")\n+            raise GateRefused(\n+                f"gate {gate.id} needs a human; set automated_approval "\n+                "on the workflow to let agents approve it"\n+            )\n     return await self._apply(gate, decision, actor)' },
+    { fam: 'edit', verb: 'Wrote', subj: 'tests/test_ting/test_human_gate_refusal.py', d: '0.1s', out: '61 lines' },
+    { fam: 'command', verb: 'Ran', subj: 'uv run --extra dev pytest tests/test_ting/test_human_gate_refusal.py -q', d: '41s', exit: 0, out: '<span class="okl">....</span>\n<span class="okl">4 passed in 38.12s</span>' },
+  ] },
+  r3: { live: true, icons: ['terminal'], sum: '<b>2 commands</b>', time: 'running 1m 12s', ticker: 'Running pytest tests/test_ting -q -n auto', calls: [
+    { fam: 'command', verb: 'Ran', subj: 'git status --short', d: '0.1s', exit: 0, out: ' M src/ting/domain/services/gates.py\n?? tests/test_ting/test_human_gate_refusal.py' },
+    { fam: 'command', verb: 'Running', subj: 'uv run --extra dev pytest tests/test_ting -q -n auto', d: '1m 12s', live: true, out: '<span class="cmd">$ uv run --extra dev pytest tests/test_ting -q -n auto</span>\n8 workers [1,284 items]\n........................................................ [ 31%]\n................................................' },
+  ] },
+  m1: { icons: ['search', 'file'], sum: 'Explored · <b>3 files read</b> · 1 search', time: '9s', state: 'ok', calls: [
+    { fam: 'search', verb: 'Listed', subj: 'migrations/ migrations/ting/', d: '0.1s', out: '000080_workspace_trackers.up.sql (latest)\nting/000034_run_steps.up.sql (latest)' },
+    { fam: 'read', verb: 'Read', subj: '.claude/rules/migrations.md', d: '0.1s', out: '64 lines' },
+    { fam: 'read', verb: 'Read', subj: 'charts/guild/templates/migrations-configmap.yaml', d: '0.1s', out: '1,210 lines' },
+    { fam: 'read', verb: 'Read', subj: 'src/ting/adapters/outbound/postgres_runs.py', d: '0.1s', out: '388 lines' },
+  ] },
+};
+const FAM_ICON = { search: 'search', read: 'file', edit: 'pencil', command: 'terminal', web: 'globe', plan: 'plan', agent: 'users' };
+
+const PLAN = [
+  { t: 'Find where agent approvals bypass the human gate', s: 'done' },
+  { t: 'Refuse agent approval unless automated_approval is set', s: 'done' },
+  { t: 'Add a refusal test', s: 'done' },
+  { t: 'Run the workflow test suite', s: 'active' },
+  { t: 'Open a PR into dev', s: 'todo' },
+];
+
+/* ---------------- state ---------------- */
+const S = { view: 'workspace', sel: 'gates', mode: 'hier', menu: null, planOpen: false, qOpt: 0, qTab: 0, draft: '', drawer: null, filter: 'active' };
+try { const saved = JSON.parse(localStorage.getItem('forge-lexi-mock') || '{}'); if (saved.mode) S.mode = saved.mode; } catch (e) {}
+const save = () => { try { localStorage.setItem('forge-lexi-mock', JSON.stringify({ mode: S.mode })); } catch (e) {} };
+
+/* ---------------- sidebar ---------------- */
+function renderSide() {
+  const groups = {};
+  SESSIONS.forEach(s => { if (!s.pinned) (groups[s.repo] = groups[s.repo] || []).push(s); });
+  const row = s => {
+    const st = STATE[s.state];
+    const dotColor = s.state === 'progress' ? 'var(--ok)' : s.state === 'needs' ? 'var(--warn)' : s.state === 'error' ? 'var(--crit)' : 'var(--faint)';
+    return `<button class="row${S.sel === s.id && S.view === 'workspace' ? ' sel' : ''}" data-sess="${s.id}">
+      ${s.pinned ? `<span style="color:var(--muted);display:grid;place-items:center">${ic('pin', 'sm')}</span>` : `<span class="dot" style="background:${dotColor}"></span>`}
+      <span class="title${s.unread ? ' unread' : ''}">${s.name}</span>
+      <span class="pill" style="--c:${st.c}">${st.label}</span>
+      <span class="preview">${s.preview}</span>
+      <span class="meta"><span class="eng" style="color:${ENG[s.eng]}">${s.model}</span> · ${s.host}</span>
+      <span class="fact tnum">${s.fact}</span>
+    </button>`;
+  };
+  document.getElementById('side').innerHTML = `
+    <div class="side-head">
+      <div class="side-title"><h1>Sessions</h1>
+        <button class="iconbtn" title="Quick switcher (⌘K)">${ic('search')}</button>
+        <button class="iconbtn brand" title="New session (⌘N)" data-open="new">${ic('plus', 'lg')}</button>
+      </div>
+      <div class="today tnum">Today · 6 sessions · 3 h 21 m ${wire('activity_state_since', true)}</div>
+      <div class="search">${ic('search', 'sm')} Find a session or project</div>
+      <div class="chips">
+        <button class="chip${S.view === 'unread' ? ' on' : ''}" data-view="unread">Unread <span class="n">2</span></button>
+        <button class="chip${S.view !== 'unread' ? ' on' : ''}" data-view="workspace">Active <span class="n">4</span></button>
+        <button class="chip">Stopped <span class="n">2</span></button>
+        <button class="chip">Archived</button>
+        <button class="chip">All <span class="n">6</span></button>
+      </div>
+      <div class="wire-row">${wire('GET/PUT /sessions/{id}/read-state')} ${wire('SSE session_read_state')}</div>
+      <div class="groupby"><span>Group by <b>Repository</b> ${ic('down', 'sm')}</span><span>Pinned first</span></div>
+    </div>
+    <div class="list">
+      <div class="grp">${ic('pin', 'sm')} Pinned <span class="n">1</span></div>
+      ${SESSIONS.filter(s => s.pinned).map(row).join('')}
+      ${Object.entries(groups).map(([repo, ss]) => `
+        <div class="grp">${ic('folder', 'sm')} ${repo} <span class="n">${ss.length}</span><span class="sp"></span>${ic('down', 'sm')}</div>
+        ${ss.map(row).join('')}`).join('')}
+    </div>
+    <div class="side-foot"><span>3 Forge hosts</span><span class="sp"></span><button class="iconbtn" title="Refresh">${ic('refresh', 'sm')}</button><button class="iconbtn" title="Forge hosts">${ic('gear', 'sm')}</button></div>`;
+}
+
+/* ---------------- transcript pieces ---------------- */
+function callCard(c, open) {
+  const body = c.diff
+    ? `<div class="out">${c.diff.split('\n').map(l => l.startsWith('@@') ? `<span class="hunk">${esc(l)}</span>` : l.startsWith('+') ? `<span class="add">${esc(l)}</span>` : l.startsWith('-') ? `<span class="del">${esc(l)}</span>` : `<span class="ctx">${esc(l)}</span>`).join('')}</div>`
+    : c.fam === 'command'
+      ? `<div class="outlabel"><span>stdout</span>${c.exit !== undefined ? `<span class="exit">exit ${c.exit}</span>` : ''}${c.live ? '<span class="spinner"></span>' : ''}</div><div class="out">${c.out}</div>${c.live ? '' : ''}`
+      : `<div class="out">${esc(c.out)}</div>`;
+  return `<div class="tcard${c.fail ? ' fail' : ''}">
+    <button class="tcard-h" data-toggle-call>${ic(open ? 'down' : 'right', 'sm')}<span style="color:var(--muted)">${ic(FAM_ICON[c.fam], 'sm')}</span><span class="verb">${c.verb}</span><span class="subj">${esc(c.subj)}</span><span class="d tnum">${c.d}</span>${c.live ? '<span class="spinner"></span>' : `<span style="color:var(--muted)">${ic('check', 'sm')}</span>`}</button>
+    <div class="tcard-b"${open ? '' : ' hidden'}>${body}${c.fam === 'command' && !c.live ? `<div class="elide">… +212 lines · <button>View full output</button></div>` : ''}</div>
+  </div>`;
+}
+/** The text of a trusted, static summary that carries <b> emphasis. */
+function plainText(html) { const span = document.createElement('span'); span.innerHTML = html; return esc(span.textContent); }
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+function toolRun(id) {
+  const r = RUNS[id];
+  if (S.mode === 'inline') {
+    return `<div class="inline-calls">${r.calls.map((c, i) => callCard(c, c.live)).join('')}</div>`;
+  }
+  return `<button class="toolrun${r.live ? ' live' : ''}" data-run="${id}">
+    <span class="tr-line">
+      <span class="tr-icons">${r.icons.map(n => `<span>${ic(n, 'sm')}</span>`).join('')}</span>
+      <span class="tr-sum">${r.sum}</span>
+      ${r.diff ? `<span class="tr-diff"><span class="add">+${r.diff[0]}</span> <span class="del">−${r.diff[1]}</span></span>` : ''}
+      <span class="tr-time tnum">${r.time}</span>
+      <span class="tr-state">${r.live ? '<span class="spinner"></span>' : ic('check', 'sm')}</span>
+      <span class="tr-state">${ic('right', 'sm')}</span>
+    </span>
+    ${r.ticker ? `<span class="tr-ticker"><span>${r.ticker}</span></span>` : ''}
+  </button>`;
+}
+const speaker = (s, when, final) => `<div class="speaker" style="--c:${ENG[s.eng]}"><i></i>${s.model}${final ? ' <span class="final-tag">FINAL</span>' : ''}<span class="when">${when}</span></div>`;
+const msgbar = `<div class="msgbar"><button>${ic('reply', 'sm')} Reply</button><button>${ic('forward', 'sm')} Forward…</button><button>${ic('copy', 'sm')} Copy</button><button>${ic('fork', 'sm')} Fork from here</button></div>`;
+
+function transcriptGates(s) {
+  return `
+  <div class="earlier">
+    <div class="earlier-h">${ic('activity', 'sm')} Earlier · 6 exchanges <span class="sp"></span><button class="btn ghost" style="height:24px">Expand all</button></div>
+    <div class="pair"><span class="who">You</span><span class="q">Branch off dev for the plan-review gate bug</span><span class="when">13:41</span><span class="who"></span><span class="a">Created feat/plan-review-gate from dev @ 35c5fff</span></div>
+    <div class="pair"><span class="who">You</span><span class="q">Read the plan review design note first</span><span class="when">13:44</span><span class="who"></span><span class="a">Human gates refuse agents unless automated_approval; refusal is unproven live</span></div>
+  </div>
+  <div class="compact-marker">Context compacted · 182k → 41k tokens ${wire('WS compaction', true)}</div>
+  <div class="capsule">Today · 14:02</div>
+  <div class="you"><div class="meta">14:02 · You</div><div class="bubble">The human gate on plan review still accepts an agent's approval when automated_approval is off. Find where and fix it, with a test.</div></div>
+  ${speaker(s, '14:02')}
+  <div class="prose commentary"><p>I'll start from the gate resolver and the route that records decisions.</p></div>
+  ${toolRun('r1')}
+  <div class="prose commentary"><p><code>resolve_gate</code> only checks whether the gate is human when the actor is <em>not</em> an agent, so an agent's approval falls straight through. Patching it and adding a refusal test.</p></div>
+  ${toolRun('r2')}
+  <div class="card">
+    <div class="card-h">${ic('users', 'sm')}<span class="k">Subagent</span><b>Check the other gate entry points</b><span class="sp"></span><span class="pill" style="--c:var(--ok)">Done</span></div>
+    <div class="stats tnum"><b>1m 52s</b> · 21.4k tokens · 9 tools · Explore ${wire('WS agent_update · /api/agents')}</div>
+    <div style="font-size:13px;color:var(--fg2)">The Ting REST route and the MCP <code class="mono" style="font-size:12px">workflow_gate_resolve</code> tool both call <code class="mono" style="font-size:12px">resolve_gate</code>; nothing else writes gate decisions.</div>
+  </div>
+  <div class="answer">
+    ${speaker(s, '14:06', true)}
+    <div class="prose">
+      <p>Fixed. An agent can no longer approve a human gate unless the workflow sets <code>automated_approval</code>.</p>
+      <ul>
+        <li>The refusal raises <code>GateRefused</code> with the remedy in the message and counts on <code>ting.gate.refused</code>.</li>
+        <li>Both entry points (REST route and MCP tool) go through the same check.</li>
+        <li>New test: <a href="#">tests/test_ting/test_human_gate_refusal.py</a>, 4 cases, all pass.</li>
+      </ul>
+    </div>
+    ${msgbar}
+  </div>
+  <div class="card">
+    <div class="deliver">
+      <div class="ficon">${ic('file', 'lg')}<small>MD</small></div>
+      <div style="min-width:0"><div class="fn">gate-refusal-trace.md</div><div class="fd">Presented file · 3.1 KB · how a refused approval travels to the UI ${wire('present_file · /files/presented/{fid}')}</div></div>
+      <button class="btn">Open</button>
+    </div>
+  </div>
+  <div class="worked tnum">Worked · 14 tools · 3m 41s</div>
+  <div class="you"><div class="meta">14:07 · You</div><div class="bubble">Great. Run the full workflow test suite and open a PR into dev.</div></div>
+  ${speaker(s, '14:07')}
+  <div class="prose commentary"><p>Running the whole Ting suite first, then I'll open the PR.</p></div>
+  ${toolRun('r3')}
+  <div class="dots" aria-label="Working"><i></i><i></i><i></i></div>
+  <div class="you"><div class="meta"><span class="qstate"><span class="pulse"></span>Queued · delivers when this step finishes</span> ${wire('POST /messages → 202 pending')}</div><div class="bubble queued">Also link NIU-1342 in the PR body.</div></div>
+  `;
+}
+
+function transcriptMigr(s) {
+  return `
+  <div class="capsule">Today · 13:20</div>
+  <div class="card relay">
+    <div class="card-h">${ic('forward', 'sm')}<span class="k">From session</span><b>ting-coordinator</b><span class="sp"></span><span style="font-size:11.5px;color:var(--muted)">13:20</span></div>
+    <div style="font-size:14px">Add the run-step retention column the coordinator needs before Friday's rollout. Keep Guild's tailored migration set in sync.</div>
+    <div class="stats">${wire('POST /sessions/{id}/messages/relayed · sender')}</div>
+  </div>
+  ${speaker(s, '13:21')}
+  <div class="prose commentary"><p>Checking where migrations live and which charts embed their own copies.</p></div>
+  ${toolRun('m1')}
+  <div class="answer">
+    ${speaker(s, '13:23', true)}
+    <div class="prose"><p>The retention column belongs to <code>run_steps</code>, which Ting owns, but Forge also reads it for the run page. I can put it in either migration set. Guild's chart needs a tailored copy whichever I pick.</p><p>I need one decision from you before writing SQL.</p></div>
+    ${msgbar}
+  </div>`;
+}
+
+function transcriptRegin(s) {
+  return `
+  <div class="capsule">Today · 12:48</div>
+  <div class="you"><div class="meta">12:48 · You</div><div class="bubble">Roll Regin to dev.458 and confirm the scorecard is green.</div></div>
+  ${speaker(s, '12:49')}
+  <div class="card errcard">
+    <div class="card-h">${ic('alert', 'sm')} Codex couldn't run this turn</div>
+    <div style="font-size:13.5px;color:var(--fg2)">The provider refused the request because the account hit its rate limit. It resets at 13:30.</div>
+    <div class="stats"><span class="mono">HTTP 429 · rate_limit_exceeded · req_7f3a…c21</span> ${wire('WS error code + request_id · rate_limit_event')}</div>
+    <div style="display:flex;gap:6px;margin-top:4px"><button class="btn">${ic('refresh', 'sm')} Retry at 13:30</button><button class="btn ghost">Switch model…</button></div>
+  </div>`;
+}
+
+function transcriptGeneric(s) {
+  return `<div class="capsule">Today</div>
+  <div class="answer">${speaker(s, '11:02', true)}<div class="prose"><p>${s.preview}.</p></div></div>`;
+}
+
+/* ---------------- main pane ---------------- */
+function renderMain() {
+  const main = document.getElementById('main');
+  if (S.view === 'unread') { main.innerHTML = renderUnread(); return; }
+  const s = SESSIONS.find(x => x.id === S.sel);
+  const st = STATE[s.state];
+  const working = s.state === 'progress';
+  const needs = s.state === 'needs';
+  const body = s.id === 'gates' ? transcriptGates(s) : s.id === 'migr' ? transcriptMigr(s) : s.id === 'regin' ? transcriptRegin(s) : transcriptGeneric(s);
+  const ctx = s.id === 'gates' ? 62 : 28;
+  const C = 2 * Math.PI * 8;
+  main.innerHTML = `
+    <header class="head">
+      <div class="head-top">
+        <span class="live" style="background:${st.c};${working ? 'box-shadow:0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent)' : ''}"></span>
+        <div class="head-title">
+          <h2><span class="t">${s.name}</span><span class="pill" style="--c:${st.c}">${st.label}</span></h2>
+          <div class="subline tnum"><span class="eng" style="color:${ENG[s.eng]}">${s.model}</span><span class="sep">·</span>${s.host}<span class="sep">·</span>${s.fact}<span class="sep">·</span>${s.id === 'gates' ? 9 : 3} turns<span class="sep">·</span><span style="display:inline-flex;align-items:center;gap:4px">${ic('branch', 'sm')}<span class="mono" style="font-size:11.5px">feat/${s.name}</span></span></div>
+        </div>
+        <div class="head-tools">
+          ${s.id === 'gates' ? `<span class="prchip">${ic('pr', 'sm')} PR draft · after tests</span>` : ''}
+          <span class="meter tnum" title="124k of 200k context used"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="var(--bg-el)" stroke-width="2.5"/><circle cx="10" cy="10" r="8" fill="none" stroke="${ctx > 80 ? 'var(--warn)' : 'var(--brand)'}" stroke-width="2.5" stroke-dasharray="${C * ctx / 100} ${C}" transform="rotate(-90 10 10)" stroke-linecap="round"/></svg>${ctx}% · $${s.id === 'gates' ? '1.84' : '0.41'}</span>
+          <button class="iconbtn" title="Display" data-menu="display">${ic('sliders')}</button>
+          <button class="iconbtn" title="Fork with context">${ic('fork')}</button>
+          <button class="iconbtn" title="More" data-menu="more">${ic('more')}</button>
+          <button class="iconbtn" title="Toggle side panel" data-dock>${ic('dock')}</button>
+        </div>
+      </div>
+      <div class="wire-row">${wire('WS context frame · unused by both clients', true)} ${wire('WS session_usage · GET /sessions/{id}/status', true)} ${wire('SSE pr_created / pr_merged', true)} ${wire('POST /chronicles/{id}/reforge')}</div>
+      <nav class="tabs"><button class="on">Chat</button><button>Terminal</button><button>Diffs<span class="n">3</span></button><button>Files</button><button>Chronicle<span class="n">41</span></button><button>Telemetry</button><button>Logs</button></nav>
+    </header>
+    <div class="scroll" id="scroll"><div class="transcript">${body}</div></div>
+    <div class="band">
+      ${working && s.id === 'gates' ? planDock() : ''}
+      ${needs ? questionBand() : ''}
+      ${composer(working, needs)}
+    </div>
+    ${S.menu ? menuHtml() : ''}`;
+  const sc = document.getElementById('scroll');
+  sc.scrollTop = sc.scrollHeight;
+}
+
+function planDock() {
+  const done = PLAN.filter(p => p.s === 'done').length;
+  const active = PLAN.find(p => p.s === 'active');
+  const C = 2 * Math.PI * 6.5;
+  return `<div class="plandock${S.planOpen ? ' open' : ''}">
+    <button class="plan-cap" data-plan>
+      <svg class="ring" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5" fill="none" stroke="var(--bg-el)" stroke-width="2"/><circle cx="8" cy="8" r="6.5" fill="none" stroke="var(--ok)" stroke-width="2" stroke-dasharray="${C * done / PLAN.length} ${C}" transform="rotate(-90 8 8)"/></svg>
+      <span class="tnum"><b>${done}/${PLAN.length}</b> · ${active.t}</span>
+      <span class="ag">· ${ic('users', 'sm')} 0 agents running</span>
+      ${wire('WS plan · /api/plan')}
+      ${ic(S.planOpen ? 'down' : 'up', 'sm')}
+    </button>
+    ${S.planOpen ? `<div class="plan-list">${PLAN.map(p => `<div class="plan-item ${p.s}"><span class="box">${p.s === 'done' ? ic('check', 'sm') : ''}</span>${p.t}</div>`).join('')}</div>` : ''}
+  </div>`;
+}
+
+const QUESTIONS = [
+  { q: 'Which migration set should the retention column go in?', opts: [
+    { l: 'Ting · migrations/ting/', d: 'run_steps is a Ting table; Forge reads it through the run API.', rec: true },
+    { l: 'Volundr · migrations/', d: 'Keeps the column next to the run page queries.' },
+    { l: 'Both, with a guard', d: 'Idempotent ALTER in each; more to keep in sync.' },
+  ] },
+  { q: 'Backfill existing rows?', opts: [
+    { l: 'No, default for new rows only', d: 'Old runs keep unlimited retention.', rec: true },
+    { l: 'Yes, 30 days', d: 'Runs older than 30 days become eligible for cleanup.' },
+  ] },
+];
+function questionBand() {
+  const q = QUESTIONS[S.qTab];
+  return `<div class="question" role="group" aria-label="The agent needs your input">
+    <div class="q-head">${ic('ask')} The agent needs your input <span class="w tnum">· waiting 3m</span><span class="sp"></span>${wire('WS ask_user_question')}<button class="btn ghost" style="height:24px">Minimise</button></div>
+    <div class="q-tabs">${QUESTIONS.map((x, i) => `<button class="${i === S.qTab ? 'on' : ''}" data-qtab="${i}">${i + 1}. ${i === 0 ? 'Migration set' : 'Backfill'}</button>`).join('')}</div>
+    <div class="q-text">${q.q}</div>
+    <div class="opts">${q.opts.map((o, i) => `<button class="opt${S.qOpt === i ? ' on' : ''}" data-opt="${i}"><span class="radio"></span><span><span class="ol">${o.l}${o.rec ? '<span class="rec">Recommended</span>' : ''}</span><span class="od">${o.d}</span></span></button>`).join('')}
+      <button class="opt"><span class="radio"></span><span><span class="ol">Something else…</span></span></button></div>
+    <div class="q-foot"><span class="hint">Or answer in the composer below.</span><span class="sp"></span><button class="btn ghost">Skip</button><button class="btn primary" data-qnext>${S.qTab === QUESTIONS.length - 1 ? 'Review answers' : 'Next'}</button></div>
+  </div>`;
+}
+
+function composer(working, needs) {
+  const s = SESSIONS.find(x => x.id === S.sel);
+  return `<div class="composer">
+    <textarea id="draft" rows="1" placeholder="${needs ? 'Answer, or steer this session…' : 'Steer this session…'}">${esc(S.draft)}</textarea>
+    <div class="c-row">
+      <button class="cbtn round" title="Attach files, images or video">${ic('plus', 'sm')}</button>
+      <button class="cbtn" data-menu="model"><i style="width:7px;height:7px;border-radius:50%;background:${ENG[s.eng]};display:block"></i>${s.model} ${ic('down', 'sm')}</button>
+      <button class="cbtn" data-menu="effort">Effort · High ${ic('down', 'sm')}</button>
+      <button class="cbtn" title="Reference another session">${ic('hash', 'sm')} Session</button>
+      ${wire('/api/runtime-options · WS set_effort')}
+      <span class="sp"></span>
+      ${working ? `<button class="stop" title="Interrupt the current turn (Esc)">${ic('stop', 'sm')} Stop</button>` : ''}
+      <button class="send${S.draft ? '' : ' off'}" title="${working ? 'Queue message' : 'Send'}">${ic('up')}</button>
+    </div>
+  </div>
+  <div class="c-hint"><span><span class="kbd">↵</span> ${working ? 'queue for after this step' : 'send'}</span><span><span class="kbd">/</span> commands</span><span><span class="kbd">@</span> files</span><span><span class="kbd">#</span> sessions</span><span><span class="kbd">⌘K</span> switch session</span></div>`;
+}
+
+function menuHtml() {
+  const pos = { display: 'top:58px;right:60px', more: 'top:58px;right:20px', model: 'bottom:96px;left:120px', effort: 'bottom:96px;left:230px' }[S.menu];
+  if (S.menu === 'display') return `<div class="menu" style="${pos}">
+    <div class="mh">Conversation</div>
+    <button data-mode="hier">${S.mode === 'hier' ? ic('check', 'sm') : '<span style="width:13px"></span>'} Hierarchical <span class="r">one row per tool burst</span></button>
+    <button data-mode="inline">${S.mode === 'inline' ? ic('check', 'sm') : '<span style="width:13px"></span>'} Inline <span class="r">every tool card</span></button>
+    <hr><button>${ic('eye', 'sm')} Show tool calls <span class="r">on</span></button>
+    <button>${ic('activity', 'sm')} Fold earlier exchanges <span class="r">on</span></button>
+    <button>${ic('clip', 'sm')} Timestamps <span class="r">per message</span></button></div>`;
+  if (S.menu === 'more') return `<div class="menu" style="${pos}">
+    <button>${ic('read', 'sm')} Mark as unread</button>
+    <button>${ic('heart', 'sm')} Status check <span class="r">${wire('/sessions/{id}/events')}</span></button>
+    <button>${ic('file', 'sm')} Documents <span class="r">4</span></button>
+    <button>${ic('image', 'sm')} Images <span class="r">7</span></button>
+    <button>${ic('forward', 'sm')} Forward to session…</button>
+    <button>${ic('layers', 'sm')} Project and coordinator…</button>
+    <hr><button>${ic('stop', 'sm')} Stop session</button><button>${ic('folder', 'sm')} Archive</button></div>`;
+  if (S.menu === 'model') return `<div class="menu" style="${pos}"><div class="mh">Model · this session</div>
+    <button>${ic('check', 'sm')} Fable 5.1 <span class="r">launch model</span></button><button><span style="width:13px"></span> Opus 5.5</button><hr><div class="mh">From the Bifröst catalog</div></div>`;
+  return `<div class="menu" style="${pos}"><div class="mh">Reasoning effort</div>${['Low', 'Medium', 'High', 'Extra High', 'Max'].map(l => `<button>${l === 'High' ? ic('check', 'sm') : '<span style="width:13px"></span>'} ${l}</button>`).join('')}</div>`;
+}
+
+/* ---------------- dock ---------------- */
+function renderDock() {
+  const s = SESSIONS.find(x => x.id === S.sel);
+  const sessionSec = `<section class="dsec"><h3>Session</h3>
+      <dl class="kv"><dt>Engine</dt><dd><span style="color:${ENG[s.eng]}">${s.model}</span> · ${s.eng === 'claude' ? 'Claude interactive' : 'Codex'}</dd><dt>Host</dt><dd>${s.host}</dd><dt>Workspace</dt><dd class="mono" style="font-size:11.5px">${s.repo}</dd><dt>Forge tools</dt><dd>Notify · Read sessions</dd></dl></section>`;
+  if (S.view === 'workspace' && s.id !== 'gates') {
+    document.getElementById('dock').innerHTML = `<section class="dsec"><h3>Plan</h3><div style="font-size:12.5px;color:var(--muted)">No plan yet</div></section>
+    <section class="dsec"><h3>Changed files <span class="n">0</span></h3></section>${sessionSec}`;
+    return;
+  }
+  document.getElementById('dock').innerHTML = S.view !== 'workspace' ? '' : `
+    <section class="dsec"><h3>Plan <span class="n">3/5</span><span class="sp"></span></h3>
+      ${PLAN.map(p => `<div class="plan-item ${p.s}" style="font-size:12.5px"><span class="box">${p.s === 'done' ? ic('check', 'sm') : ''}</span>${p.t}</div>`).join('')}</section>
+    <section class="dsec"><h3>Agents <span class="n">1</span></h3>
+      <div class="agent"><span class="an">${ic('users', 'sm')} Check the other gate entry points</span><span class="as tnum">done · 1m 52s · 21.4k tokens · 9 tools</span></div></section>
+    <section class="dsec"><h3>Changed files <span class="n">2</span><span class="sp"></span><button class="btn ghost" style="height:22px;padding:0 6px;font-size:11px">Diffs ${ic('right', 'sm')}</button></h3>
+      <div class="frow">${ic('file', 'sm')}<span class="p">src/ting/domain/services/gates.py</span><span class="add">+11</span><span class="del">−3</span></div>
+      <div class="frow">${ic('file', 'sm')}<span class="p">tests/test_ting/test_human_gate_refusal.py</span><span class="add">+61</span></div></section>
+    <section class="dsec"><h3>Deliverables <span class="n">1</span> ${wire('/attachments?kind=')}</h3>
+      <div class="frow">${ic('file', 'sm')}<span class="p">gate-refusal-trace.md</span><span style="font-size:11px;color:var(--muted)">3.1 KB</span></div>
+      <div class="thumbs"><div>gates.png</div><div>trace.png</div><div>+5</div></div></section>
+    <section class="dsec"><h3>Session</h3>
+      <dl class="kv"><dt>Engine</dt><dd><span style="color:${ENG[s.eng]}">${s.model}</span> · Claude interactive</dd><dt>Host</dt><dd>${s.host}</dd><dt>Workspace</dt><dd class="mono" style="font-size:11.5px">${s.repo}</dd><dt>Project</dt><dd>Plan review</dd><dt>Forge tools</dt><dd>Notify · Read sessions</dd><dt>Started</dt><dd>13:38 · 41 min</dd></dl></section>`;
+}
+
+/* ---------------- unread stream ---------------- */
+function renderUnread() {
+  return `<header class="head" style="padding-bottom:12px"><div class="head-top"><div class="head-title"><h2>Unread</h2><div class="subline">New output across your sessions, newest first</div></div></div></header>
+  <div class="scroll"><div class="unread-wrap">
+    <div class="unread-top"><span class="tnum">5 new in 2 sessions ${wire('read-state readThroughSeq / latestOutputSeq')}</span><button class="btn ghost" style="color:var(--brand)">Mark all read</button></div>
+    <div class="ublock">
+      <div class="ub-h"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:var(--warn)"></span><span class="nm">chart-migrations</span><span class="new">2 new</span><span class="pill" style="--c:var(--warn)">Needs you</span><span class="sp"></span><span class="ago">3m</span>${ic('right', 'sm')}</div>
+      <div class="prose commentary" style="font-size:14px">Checking where migrations live and which charts embed their own copies.</div>
+      ${toolRun('m1')}
+      ${speaker(SESSIONS[1], '13:23', true)}
+      <div class="prose" style="font-size:14px"><p>The retention column belongs to <code>run_steps</code>, which Ting owns, but Forge also reads it for the run page. <strong>Which migration set should it go in?</strong></p></div>
+      <div class="ub-actions"><button class="btn ghost">${ic('reply', 'sm')} Answer</button><button class="btn ghost" data-sess="migr">${ic('ext', 'sm')} Open session</button><span style="flex:1"></span><button class="btn ghost" style="color:var(--brand)">${ic('check', 'sm')} Mark read</button></div>
+    </div>
+    <div class="ublock">
+      <div class="ub-h"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:var(--faint)"></span><span class="nm">web-session-ux</span><span class="new" style="color:var(--brand)">3 new</span><span class="pill" style="--c:var(--muted)">Idle</span><span class="sp"></span><span class="ago">25m</span>${ic('right', 'sm')}</div>
+      <button class="toolrun"><span class="tr-line"><span class="tr-icons"><span>${ic('file', 'sm')}</span><span>${ic('pencil', 'sm')}</span></span><span class="tr-sum"><b>2 files read</b> · 1 file written · 1 command</span><span class="tr-time">2m 10s</span><span class="tr-state">${ic('check', 'sm')}</span></span></button>
+      ${speaker(SESSIONS[3], '14:20', true)}
+      <div class="prose" style="font-size:14px"><p>The mockup is in <a href="#">docs/mockups/forge-sessions-lexi/index.html</a>. It covers the session list, the transcript, the question band and the new-session sheet.</p></div>
+      <div class="card" style="padding:10px 12px"><div class="deliver"><div class="ficon" style="width:36px;height:42px">${ic('file')}<small>HTML</small></div><div style="min-width:0"><div class="fn" style="font-size:13px">index.html</div><div class="fd">Presented file · 64 KB</div></div><button class="btn">Open</button></div></div>
+      <div class="ub-actions"><button class="btn ghost">${ic('reply', 'sm')} Reply</button><button class="btn ghost" data-sess="webux">${ic('ext', 'sm')} Open session</button><span style="flex:1"></span><button class="btn ghost" style="color:var(--brand)">${ic('check', 'sm')} Mark read</button></div>
+    </div>
+  </div></div>`;
+}
+
+/* ---------------- overlays ---------------- */
+function renderOverlay() {
+  const o = document.getElementById('overlay');
+  if (S.drawer) {
+    const r = RUNS[S.drawer];
+    o.innerHTML = `<div class="scrim" data-close></div><aside class="drawer" role="dialog" aria-label="Tool calls">
+      <div class="drawer-h"><div style="flex:1;min-width:0"><h4>${r.calls.length} tool calls</h4><div class="sub">${plainText(r.sum)} · ${r.time}</div></div>${wire('/tool-result/{id} lazy')}<button class="iconbtn" data-close title="Close">${ic('x')}</button></div>
+      <div class="drawer-b">${r.calls.map((c, i) => callCard(c, i === r.calls.length - 1)).join('')}</div></aside>`;
+    return;
+  }
+  if (S.view === 'new') {
+    o.innerHTML = `<div class="scrim" data-close></div><div class="modal" role="dialog" aria-label="New session">
+      <div class="modal-h"><h4>New session</h4><button class="iconbtn" data-close title="Close">${ic('x')}</button></div>
+      <div class="modal-b">
+        <div class="fld"><span class="lbl">Workspace</span><div class="seg"><button>Folder</button><button class="on">Repository</button></div></div>
+        <div class="two">
+          <div class="fld"><label for="repo">Repository</label><div class="inp" id="repo">${ic('branch', 'sm')} niuulabs/niuu <span style="margin-left:auto;color:var(--muted)">${ic('down', 'sm')}</span></div></div>
+          <div class="fld"><label for="branch">Branch</label><div class="inp mono" id="branch">dev <span style="margin-left:auto;color:var(--muted)">${ic('down', 'sm')}</span></div></div>
+        </div>
+        <div class="toggle-row"><button class="switch" role="switch" aria-checked="true"><span class="track"></span></button><span class="tl">Work in a new worktree<small>Keeps this session's changes on its own branch, feat/plan-review-gates</small></span></div>
+        <div class="two">
+          <div class="fld"><label for="sname">Session name</label><div class="inp mono" id="sname">plan-review-gates</div></div>
+          <div class="fld"><label for="host">Host</label><div class="inp" id="host"><span style="width:7px;height:7px;border-radius:50%;background:var(--ok)"></span> valhalla <span style="margin-left:auto;color:var(--muted);font-size:12px">4 of 12 slots used</span></div></div>
+        </div>
+        <div class="fld"><span class="lbl">Coding engine ${wire('session definitions')}</span>
+          <div class="engines">
+            <button class="engine on" style="--c:var(--claude)"><span class="en"><i></i>Claude</span><span class="ed">Interactive · tmux</span></button>
+            <button class="engine" style="--c:var(--codex)"><span class="en"><i></i>Codex</span><span class="ed">App server</span></button>
+            <button class="engine" style="--c:var(--grok)"><span class="en"><i></i>Grok</span><span class="ed">ACP</span></button>
+          </div></div>
+        <div class="two">
+          <div class="fld"><label for="model">Model</label><div class="inp" id="model">Fable 5.1 <span style="margin-left:auto;color:var(--muted)">${ic('down', 'sm')}</span></div></div>
+          <div class="fld"><label for="effort">Effort</label><div class="inp" id="effort">Extra High <span style="margin-left:auto;color:var(--muted)">${ic('down', 'sm')}</span></div></div>
+        </div>
+        <div class="fld"><span class="lbl">Forge tools for this session ${wire('forge_mcp grants')}</span>
+          <div class="toggle-row"><button class="switch" role="switch" aria-checked="false"><span class="track"></span></button><span class="tl">Manage sessions<small>Start, stop and archive other sessions you own</small></span></div>
+          <div class="toggle-row"><button class="switch" role="switch" aria-checked="true"><span class="track"></span></button><span class="tl">Message sessions<small>Send messages to other sessions, shown to them as relayed</small></span></div></div>
+        <div class="two">
+          <div class="fld"><label for="proj">Project</label><div class="inp" id="proj">Plan review <span style="margin-left:auto;color:var(--muted)">${ic('down', 'sm')}</span></div></div>
+          <div class="fld"><label for="role">Role</label><div class="inp" id="role">Worker · reports to ting-coordinator</div></div>
+        </div>
+        <div class="fld"><label for="prompt">Instructions <span style="font-weight:400;color:var(--muted)">optional</span></label><textarea class="inp" id="prompt" rows="3" style="resize:vertical">The human gate on plan review still accepts an agent's approval when automated_approval is off. Find where and fix it, with a test.</textarea></div>
+      </div>
+      <div class="modal-f"><button class="btn ghost">Advanced launch…</button><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" data-close>Start session</button></div>
+    </div>`;
+    return;
+  }
+  o.innerHTML = '';
+}
+
+/* ---------------- feature map ---------------- */
+const ST = { missing: ['Missing on web', 'var(--crit)'], partial: ['Partial on web', 'var(--warn)'], have: ['Web has it', 'var(--ok)'], ours: ['Web only', 'var(--brand)'], neither: ['Neither client', 'var(--gate)'] };
+const MAP = [
+  ['Session list', [
+    ['Unread state', 'Unread chip, per-row dot, "Mark read/unread", Unread stream of new output per session', 'missing', 'GET/PUT /sessions/{id}/read-state, SSE session_read_state'],
+    ['Today line', '"Today · 6 sessions · 3 h 21 m" under the title', 'missing', 'activity_state_since on /sessions'],
+    ['Row anatomy', 'Title + state pill; preview line; model in engine colour · host; live time fact ("running 14m", "waiting 30s")', 'partial', 'turn_started_at, activity_state_since'],
+    ['Grouping and pins', 'Project / Repository / Status / Host / None, pinned on top, collapsible groups', 'have', '/projects, /sessions/{id}/project'],
+    ['Quick switcher', '⌘K session switcher, ⌘] next conversation, ⌘N new', 'missing', 'client only'],
+  ]],
+  ['Transcript', [
+    ['Hierarchical mode', 'One row per tool burst: "3 commands · 1 file edited · 2 searches", diffstat, duration; tap opens a sheet of calls', 'partial', 'history_protocol=2 shallow history + lazy /tool-result/{id}'],
+    ['Live tool ticker', 'Second line on the running burst: "Editing Foo.swift", elapsed ticking', 'missing', 'content_block_* stream'],
+    ['Final answer vs commentary', 'Commentary dimmed without header; final answer marked and actionable', 'missing', 'turn structure in /conversation'],
+    ['Folded history', 'Older exchanges compress to one-line You → answer pairs', 'missing', '/conversation/turns/{turn}'],
+    ['Tool verbs and families', 'Running → Ran, Editing → Edited; families command/edit/read/search/web/plan/agent', 'partial', 'client semantics'],
+    ['Output handling', 'stdout/stderr split, exit code, JSON pretty print, "+N lines · View full output"', 'partial', '/tool-result/{id}, /preview'],
+    ['Subagent card', '"running · 4m 10s · 38.2k tokens · 12 tools · Read"', 'missing', 'WS agent_update, broker /api/agents'],
+    ['Plan dock', 'Capsule "3/7 · active task" + running agents, expands to checklist', 'partial', 'WS plan, broker /api/plan'],
+    ['Deliverables', 'Presented files always visible, even with tool calls hidden; Documents and Images galleries', 'partial', 'present_file, /files/presented/{fid}, /attachments?kind='],
+    ['Provider error card', '"Codex couldn\'t run this turn", provider sentence, HTTP status', 'missing', 'WS error code + request_id, rate_limit_event'],
+    ['Relayed / forwarded turns', 'Messages from another session render as a card with the sender; Forward to session', 'missing', 'POST /sessions/{id}/messages/relayed'],
+    ['Message actions', 'Reply, Forward, Copy, Copy Markdown, View source', 'partial', 'client only'],
+    ['Compaction marker', '"Context compacted" capsule (Lexi Mac chat)', 'neither', 'WS compaction'],
+  ]],
+  ['Composer', [
+    ['Steer with a queue', '"Steer this session…"; a message sent while working shows as a queued bubble, then delivered / failed; survives reload', 'missing', 'POST /sessions/{id}/messages → 202 pending, /message-deliveries/{rid}'],
+    ['Model and effort', '/model and /effort pickers in the composer', 'missing', 'broker /api/runtime-options, WS set_effort / effort_status'],
+    ['# session references', 'Link another Forge session in a steer', 'missing', 'session link'],
+    ['Question band', 'Multi-question chips, Recommended option, Skip / Next / review, minimise, "waiting 2m"', 'partial', 'WS ask_user_question / ask_user_answer'],
+    ['Attachments into the workspace', 'Photos, files and video upload into .lexi/attachments', 'partial', 'broker /api/files/upload'],
+    ['Interrupt the turn', 'Not in Lexi Code (Stop stops the session)', 'ours', 'WS interrupt'],
+    ['@file mentions', 'Not in Lexi Code', 'ours', 'broker /api/files'],
+  ]],
+  ['Session chrome', [
+    ['Subtitle line', '"Opus 5.5 · Thor · running 14m · 12 turns"', 'partial', 'session + activity'],
+    ['Status check', 'Health check of the session from its event log', 'missing', 'GET /sessions/{id}/events'],
+    ['Fork with context', 'Child session opens beside the parent', 'missing', 'POST /chronicles/{id}/reforge'],
+    ['Context meter and cost', 'Context % only in Lexi channel header; no cost in Code', 'neither', 'WS context frame, WS session_usage, /sessions/{id}/status'],
+    ['PR status', 'Neither shows the session\'s PR', 'neither', 'SSE pr_created / pr_merged'],
+    ['Terminal, diffs, files, chronicle, telemetry, logs', 'Lexi Mac has terminal, SSH diff and SFTP files', 'ours', 'broker diff/files, chronicles, trace, logs'],
+    ['Permission prompts and workflow gates', 'Only in Niuu agent chat', 'ours', 'control_request, workflow gates'],
+  ]],
+  ['Across sessions', [
+    ['Activities feed', 'Unread count, Mark resolved, resident questions answered in place, "Brief me"', 'partial', '/notifications, PUT /notifications/{id}/resolve, odin_review_decide_path'],
+    ['Push and Live Activities', 'APNs alerts, Live Activities per session, widgets', 'missing', 'POST /devices, /push/*'],
+    ['Project home', 'Needs you, coordinators, shipped, artifacts', 'partial', '/projects, ForgeProjectTree'],
+    ['Forge tools grants at launch', '"Manage sessions" / "Message sessions" toggles', 'missing', 'forge_mcp on POST /sessions'],
+    ['Worktree toggle at launch', 'New worktree per session from a folder', 'missing', 'workspace source'],
+  ]],
+];
+function renderMap() {
+  document.getElementById('fmap').innerHTML = `<div class="fmap-in">
+    <h2>What Lexi does that Forge web doesn't</h2>
+    <p class="lede">Read from the Lexi app (Code tab, Mac shell, Activities) and the web-next session UI. The right column names the Niuu route, frame or event behind each feature. Most of the gaps are backend features that already ship; the web UI just never calls them.</p>
+    <div class="legend">${Object.values(ST).map(([l, c]) => `<span class="st" style="--c:${c}">${l}</span>`).join('')}</div>
+    ${MAP.map(([area, rows]) => `<h3>${area}</h3><div class="tbl"><table><thead><tr><th>Feature</th><th>How Lexi does it</th><th>Forge web</th><th>Niuu wiring</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td><span class="st" style="--c:${ST[r[2]][1]}">${ST[r[2]][0]}</span></td><td><code>${esc(r[3])}</code></td></tr>`).join('')}</tbody></table></div>`).join('')}
+  </div>`;
+}
+
+/* ---------------- render + events ---------------- */
+function render() {
+  document.querySelectorAll('#views button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === S.view || (S.view === 'new' && b.dataset.view === 'new'))));
+  document.getElementById('fmap').hidden = S.view !== 'map';
+  if (S.view === 'map') renderMap();
+  renderSide();
+  renderMain();
+  renderDock();
+  document.getElementById('app').classList.toggle('dockless', S.view === 'unread');
+  renderOverlay();
+}
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('button, [data-close]');
+  if (!t) { if (S.menu) { S.menu = null; render(); } return; }
+  if (t.id === 'wiringToggle') { const on = t.getAttribute('aria-checked') !== 'true'; t.setAttribute('aria-checked', String(on)); document.body.classList.toggle('wiring', on); return; }
+  if (t.dataset.view) { S.view = t.dataset.view; S.menu = null; S.drawer = null; render(); return; }
+  if (t.dataset.open === 'new') { S.view = 'new'; render(); return; }
+  if (t.hasAttribute('data-close')) { S.drawer = null; if (S.view === 'new') S.view = 'workspace'; render(); return; }
+  if (t.dataset.sess) { S.sel = t.dataset.sess; S.view = 'workspace'; S.qOpt = 0; S.qTab = 0; S.planOpen = false; const s = SESSIONS.find(x => x.id === S.sel); s.unread = false; render(); return; }
+  if (t.dataset.run) { S.drawer = t.dataset.run; renderOverlay(); return; }
+  if (t.hasAttribute('data-toggle-call')) { const b = t.nextElementSibling; b.hidden = !b.hidden; t.firstElementChild.outerHTML = ic(b.hidden ? 'right' : 'down', 'sm'); return; }
+  if (t.hasAttribute('data-plan')) { S.planOpen = !S.planOpen; renderMain(); return; }
+  if (t.dataset.menu) { S.menu = S.menu === t.dataset.menu ? null : t.dataset.menu; renderMain(); return; }
+  if (t.dataset.mode) { S.mode = t.dataset.mode; S.menu = null; save(); renderMain(); return; }
+  if (t.hasAttribute('data-dock')) { document.getElementById('app').classList.toggle('nodock'); return; }
+  if (t.dataset.opt !== undefined) { S.qOpt = +t.dataset.opt; renderMain(); return; }
+  if (t.dataset.qtab !== undefined) { S.qTab = +t.dataset.qtab; S.qOpt = 0; renderMain(); return; }
+  if (t.hasAttribute('data-qnext')) { if (S.qTab < QUESTIONS.length - 1) { S.qTab++; S.qOpt = 0; renderMain(); } return; }
+  if (t.getAttribute('role') === 'switch') { t.setAttribute('aria-checked', String(t.getAttribute('aria-checked') !== 'true')); return; }
+  if (S.menu) { S.menu = null; renderMain(); }
+});
+document.addEventListener('input', e => {
+  if (e.target.id !== 'draft') return;
+  S.draft = e.target.value;
+  e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px';
+  const send = document.querySelector('.send'); if (send) send.classList.toggle('off', !S.draft);
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { S.drawer = null; S.menu = null; if (S.view === 'new') S.view = 'workspace'; render(); }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n') { e.preventDefault(); S.view = 'new'; render(); }
+});
+const hash = location.hash.slice(1);
+if (['workspace', 'unread', 'new', 'map'].includes(hash)) S.view = hash;
+render();
+</script>
+</body>
+</html>
