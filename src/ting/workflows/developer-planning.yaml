@@ -83,5 +83,5 @@ graph:
   edges:
     - {id: planning-request-analysis, source: planning-request, target: planning-analysis, label: delivery.requested -> delivery.requested}
     - {id: planning-analysis-review, source: planning-analysis, target: planning-reviews, label: developer.plan.revised -> developer.plan.revised}
-    - {id: planning-review-revise, source: planning-reviews, target: planning-analysis, label: plan.review.completed -> plan.review.completed}
+    - {id: planning-review-revise, source: planning-reviews, target: planning-analysis, label: plan.review.completed -> plan.review.completed, rework: true, maxIterations: 3}
     - {id: planning-analysis-complete, source: planning-analysis, target: planning-complete, label: developer.plan.approved -> developer.plan.approved}

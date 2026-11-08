@@ -1211,6 +1211,26 @@ class WorkflowExecutionConfig(BaseModel):
         return self
 
 
+class WorkflowStepsConfig(BaseModel):
+    """The step engine that runs workflow graphs on harness sessions."""
+
+    step_deadline_seconds: float = Field(
+        default=4 * 3600.0,
+        gt=0.0,
+        description=(
+            "Wall-clock time a stage member's step may stay active before it counts as "
+            "overdue: every activation is stamped deadline_at = activated_at + this. Real "
+            "bound: the longest single agent step an operator tolerates without a close; "
+            "workflows declare no run timeout to derive it from, so a node may override it "
+            "with deadlineSeconds. The engine only stores the deadline and never acts on it; "
+            "when it passes, stuck detection (NIU-1181) flags the step for an operator, it "
+            "is never guessed from the transcript. Gate, wait and subworkflow steps wait on "
+            "a person or an outside event and get a deadline only from their node's "
+            "deadlineSeconds."
+        ),
+    )
+
+
 class Settings(BaseSettings):
     """Application settings.
 
@@ -1299,6 +1319,7 @@ class Settings(BaseSettings):
     ticket_coordinator: TicketCoordinatorConfig = Field(default_factory=TicketCoordinatorConfig)
     review_widgets: ReviewWidgetsConfig = Field(default_factory=ReviewWidgetsConfig)
     workflow_execution: WorkflowExecutionConfig = Field(default_factory=WorkflowExecutionConfig)
+    workflow_steps: WorkflowStepsConfig = Field(default_factory=WorkflowStepsConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)

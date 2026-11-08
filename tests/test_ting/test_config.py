@@ -13,8 +13,32 @@ from ting.config import (
     Settings,
     TicketCoordinatorConfig,
     WorkflowExecutionConfig,
+    WorkflowStepsConfig,
 )
 from ting.domain.exceptions import WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
+
+
+class TestWorkflowStepsConfig:
+    def test_step_deadline_defaults_to_four_hours(self) -> None:
+        assert WorkflowStepsConfig().step_deadline_seconds == 4 * 3600.0
+        assert Settings().workflow_steps.step_deadline_seconds == 4 * 3600.0
+
+    def test_step_deadline_is_set_from_config(self) -> None:
+        config = Settings(workflow_steps={"step_deadline_seconds": 90})
+
+        assert config.workflow_steps.step_deadline_seconds == 90.0
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_step_deadline_must_be_positive(self, value: float) -> None:
+        with pytest.raises(ValueError, match="greater than 0"):
+            WorkflowStepsConfig(step_deadline_seconds=value)
+
+    def test_the_description_says_what_bounds_it_and_what_a_hit_does(self) -> None:
+        description = WorkflowStepsConfig.model_fields["step_deadline_seconds"].description or ""
+
+        assert "bound" in description
+        assert "never acts on it" in description
+        assert "NIU-1181" in description
 
 
 class TestDatabaseConfig:

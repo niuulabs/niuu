@@ -105,10 +105,14 @@ graph:
     source: work-blocked
     target: ticket-work
     label: ticket.work.changes_requested -> ticket.work.changes_requested
+    rework: true
+    maxIterations: 5
   - id: edge-gate-to-work
     source: result-review-gate
     target: ticket-work
     label: ticket.work.changes_requested -> ticket.work.changes_requested
+    rework: true
+    maxIterations: 5
   - id: edge-gate-to-complete
     source: result-review-gate
     target: work-complete

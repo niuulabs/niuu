@@ -54,6 +54,27 @@ def _workflow() -> WorkflowDefinition:
     )
 
 
+def test_loading_a_stored_document_does_not_require_a_runnable_graph() -> None:
+    # Runnability is checked when a workflow is saved and when a run launches
+    # (validate_workflow_graph), so a workflow stored earlier stays readable: this graph
+    # has an unbounded cycle and no trigger or end, and still loads.
+    workflow = _workflow()
+    graph = {
+        "nodes": [
+            {"id": "a", "kind": "stage", "stageMembers": [{"personaId": "reviewer"}]},
+            {"id": "b", "kind": "stage", "stageMembers": [{"personaId": "reviewer"}]},
+        ],
+        "edges": [
+            {"id": "ab", "source": "a", "target": "b", "label": "x -> x"},
+            {"id": "ba", "source": "b", "target": "a", "label": "y -> y"},
+        ],
+    }
+
+    document = load_workflow_document(dump_workflow_document(replace(workflow, graph=graph)))
+
+    assert document.graph == graph
+
+
 def test_workflow_document_round_trip_is_lossless_and_stable() -> None:
     workflow = _workflow()
     text = dump_workflow_document(workflow)

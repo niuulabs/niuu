@@ -36,7 +36,8 @@ export function isReentryEventType(eventType?: string | null): boolean {
   );
 }
 
-export function isReentryEdge(edge: Pick<WorkflowEdge, 'label'>): boolean {
+export function isReentryEdge(edge: Pick<WorkflowEdge, 'label' | 'rework'>): boolean {
+  if (edge.rework === true) return true;
   const parsed = parseWorkflowEdgeLabel(edge.label);
   if (!parsed) return false;
   return isReentryEventType(parsed.sourceEventType) || isReentryEventType(parsed.targetEventType);

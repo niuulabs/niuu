@@ -154,6 +154,8 @@ graph:
     source: plan-check
     target: plan-draft
     label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+    rework: true
+    maxIterations: 3
   - id: edge-plan-check-to-gate
     source: plan-check
     target: plan-review-gate
@@ -170,10 +172,14 @@ graph:
     source: plan-blocked
     target: plan-draft
     label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+    rework: true
+    maxIterations: 5
   - id: edge-plan-gate-to-draft
     source: plan-review-gate
     target: plan-draft
     label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+    rework: true
+    maxIterations: 5
   - id: edge-plan-gate-to-publish
     source: plan-review-gate
     target: plan-publish

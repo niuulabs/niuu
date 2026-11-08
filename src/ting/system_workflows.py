@@ -120,6 +120,7 @@ def load_bundled_workflow(
         schema_version=document.schema_version,
         persona_dependencies=document.persona_dependencies,
         workflow_dependencies=document.workflow_dependencies,
+        persona_definitions=persona_definitions,
     )
     timestamp = datetime.fromtimestamp(document_path.stat().st_mtime, tz=UTC)
     revision = workflow_document_revision(document)

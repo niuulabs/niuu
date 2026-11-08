@@ -164,6 +164,8 @@ graph:
     source: plan-brief-gate
     target: plan-clarify
     label: plan.brief.changes_requested -> plan.brief.changes_requested
+    rework: true
+    maxIterations: 5
   - id: edge-plan-breakdown-to-review
     source: plan-breakdown
     target: plan-review
@@ -172,6 +174,8 @@ graph:
     source: plan-review
     target: plan-breakdown
     label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+    rework: true
+    maxIterations: 3
   - id: edge-plan-review-to-review-gate
     source: plan-review
     target: plan-review-gate
@@ -180,6 +184,8 @@ graph:
     source: plan-review-gate
     target: plan-breakdown
     label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+    rework: true
+    maxIterations: 5
   - id: edge-plan-review-gate-to-publish
     source: plan-review-gate
     target: plan-publish

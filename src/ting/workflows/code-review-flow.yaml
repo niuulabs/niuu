@@ -110,6 +110,8 @@ graph:
     source: code-review-review
     target: code-review-implement
     label: review.changes_requested -> review.changes_requested
+    rework: true
+    maxIterations: 3
   - id: edge-code-review-review-to-close
     source: code-review-review
     target: code-review-close

@@ -65,6 +65,10 @@ describe('workflowSemantics', () => {
     );
     expect(isReentryEdge(makeEdge('normal', 'code.changed -> review.requested'))).toBe(false);
     expect(isReentryEdge(makeEdge('missing'))).toBe(false);
+    // An edge marked rework is a re-entry edge whatever its events are called.
+    expect(
+      isReentryEdge({ ...makeEdge('marked', 'plan.drafted -> plan.reviewed'), rework: true }),
+    ).toBe(true);
   });
 
   it('prefers stage members over personaIds and deduplicates both', () => {
