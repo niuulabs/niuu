@@ -45,11 +45,16 @@ from skuld.mesh_topics import (
     UndeclaredTopicError,
     build_publication,
     peer_table,
+    publication_event_id,
     publication_topics,
     validate_subscribable_topic,
 )
+from skuld.mesh_topics import (
+    producers_of as producer_peers,
+)
 from skuld.peer_inbox import (
     CHANNEL_MESH,
+    OUTCOME_ASKED,
     OUTCOME_FAILED,
     OUTCOME_PUBLISHED,
     OUTCOME_REFUSED,
@@ -551,6 +556,7 @@ class BrokerForgeMcpHost(ForgeMcpHost):
         request_id: str,
         in_reply_to: str,
         urgent: bool = False,
+        thread: str = "",
     ) -> dict[str, Any]:
         """Send a peer message envelope to a mesh peer, stamped with this session's identity.
 
@@ -583,6 +589,7 @@ class BrokerForgeMcpHost(ForgeMcpHost):
             reply=ReplyRoute(kind=ReplyKind.MESH, target=adapter.peer_id) if expect_reply else None,
             in_reply_to=in_reply_to,
             urgent=urgent,
+            thread=thread,
         )
         try:
             answer = await adapter.send_peer_message(peer, message)
@@ -610,14 +617,11 @@ class BrokerForgeMcpHost(ForgeMcpHost):
             "peer": peer,
         }
 
-    async def mesh_peers(
-        self, *, role: str, capability: str, consumes: str, produces: str
-    ) -> dict[str, Any]:
-        """The peers this session's discovery knows, as they announced themselves.
+    def _peer_table(self) -> dict[str, Any]:
+        """The peers this session's discovery knows, or an error when it has none.
 
-        Facts only: the filters are exact matches on announced fields and nothing is ranked.
-        A session with no discovery configured cannot see any peer, which is an error and not
-        an empty table: an empty table would read as "nobody is there".
+        A session with no discovery cannot see any peer: that is an error and not an empty
+        table, which would read as "nobody is there".
         """
         broker = self._broker
         discovery = broker._mesh_discovery
@@ -628,8 +632,175 @@ class BrokerForgeMcpHost(ForgeMcpHost):
                 "peers. Configure a discovery adapter, or use mesh_send with a peer id you know",
                 status=503,
             )
+        return discovery.peers()
+
+    async def mesh_ask(
+        self,
+        content: str,
+        *,
+        producers_of: str,
+        peers: list[str],
+        request_id: str,
+        wait_s: float,
+    ) -> dict[str, Any]:
+        """Put a question to every peer that produces a topic, or to peers the asker chose.
+
+        The recipients are resolved from the peer table as facts: the peers that announce
+        they produce the topic (not its consumers; the asker's own ``produces`` does not
+        limit a question), or exactly the peers named. A question nobody can receive is an
+        error, never silence. Each recipient gets it directly with the same message id and
+        thread; answers come back as events into the inbox, any number or none. With
+        ``wait_s`` the call also waits that long and returns the answers so far.
+        """
+        broker = self._broker
+        adapter = broker._mesh_adapter
+        table = self._peer_table()
+        unknown = 0
+        if producers_of:
+            recipients, unknown = producer_peers(table.values(), producers_of)
+            if not recipients:
+                self._count_question(producers_of, OUTCOME_REFUSED)
+                raise ForgeApiError(
+                    f"no peer announces that it produces {producers_of!r}, so the question "
+                    f"reached nobody ({len(table)} peers known; {unknown} of them did not "
+                    "announce what they produce). Nothing was sent. Choose peers yourself from "
+                    "mesh_peers by their description, or publish an event if you mean to "
+                    "announce something rather than ask",
+                    status=409,
+                )
+            audience = f"the peers that produce {producers_of!r}"
+            reason = f"you announce that you produce {producers_of!r}"
+        else:
+            absent = [peer for peer in peers if peer not in table]
+            if absent:
+                self._count_question(",".join(absent), OUTCOME_REFUSED)
+                raise ForgeApiError(
+                    f"not in this session's peer table: {', '.join(absent)}. Nothing was sent. "
+                    "Choose peer ids from mesh_peers",
+                    status=404,
+                )
+            recipients = [table[peer] for peer in peers]
+            audience = "the peers chosen"
+            reason = "you were chosen to answer"
+        sender = PeerAddress(
+            kind=PeerKind.SESSION,
+            id=str(broker.session_id),
+            name=broker._settings.session.name,
+            node=socket.gethostname(),
+        )
+        question_id = publication_event_id(adapter.peer_id, "question", request_id)
+        text = f"[This question is asked of you because {reason}.]\n{content}"
+        outcomes = await asyncio.gather(
+            *(self._ask_one(adapter, sender, peer, question_id, text) for peer in recipients)
+        )
+        delivered = [outcome for outcome in outcomes if "error" not in outcome]
+        failed = [outcome for outcome in outcomes if "error" in outcome]
+        if not delivered:
+            raise ForgeApiError(
+                f"the question reached none of {audience}: "
+                + "; ".join(f"{o['peer']}: {o['error']}" for o in failed)
+                + ". Retry with the same request_id once they are reachable",
+                status=502,
+            )
+        answer: dict[str, Any] = {
+            "question_id": question_id,
+            "thread": question_id,
+            "asked": audience,
+            "delivered": delivered,
+            "failed": failed,
+            "peers_not_announcing_produces": unknown,
+        }
+        if wait_s > 0:
+            answer.update(await self._wait_for_answers(question_id, wait_s))
+        return answer
+
+    async def _ask_one(
+        self,
+        adapter: Any,
+        sender: PeerAddress,
+        peer: Any,
+        question_id: str,
+        text: str,
+    ) -> dict[str, Any]:
+        message = PeerMessage(
+            message_id=question_id,
+            sender=sender,
+            recipient=PeerAddress(kind=PeerKind.MESH_PEER, id=peer.peer_id),
+            sent_at=datetime.now(UTC),
+            content=text,
+            reply=ReplyRoute(kind=ReplyKind.MESH, target=adapter.peer_id),
+            thread=question_id,
+        )
+        who = {"peer": peer.peer_id, "name": getattr(peer, "display_name", "")}
+        try:
+            answer = await adapter.send_peer_message(peer.peer_id, message)
+            failure = answer.get("error") or (
+                answer.get("status") if answer.get("status") == "error" else None
+            )
+        except PeerNotFoundError:
+            failure = "it left the peer table before the question reached it"
+        except TimeoutError:
+            failure = "it did not answer within mesh.rpc_timeout_s (it may still have the question)"
+        except Exception as exc:  # the one send; any transport failure is this peer's, named
+            failure = f"{type(exc).__name__}: {exc}"
+        if failure:
+            logger.error("mesh_ask %s to %s failed: %s", question_id, peer.peer_id, failure)
+            self._count_question(peer.peer_id, OUTCOME_FAILED)
+            return {**who, "error": str(failure)}
+        self._count_question(peer.peer_id, OUTCOME_ASKED)
+        return who
+
+    async def _wait_for_answers(self, question_id: str, wait_s: float) -> dict[str, Any]:
+        """Wait ``wait_s`` and return every answer to the question so far, taken from the inbox.
+
+        It does not stop at the first answer or at a count: answers can come from any number
+        of peers, and counting them toward "done" is what this avoids.
+        """
+        broker = self._broker
+        async with broker.awaiting_question_answers(question_id) as wait:
+            await asyncio.sleep(wait_s)
+            taken = await broker.take_question_answers(wait)
+        answers = []
+        for item in taken:
+            envelope = item.envelope
+            entry = {
+                "from": envelope.sender.label(),
+                "message_id": envelope.message_id,
+                "content": envelope.content,
+                "answered_at": envelope.sent_at.isoformat(),
+            }
+            if item.already_delivered:
+                entry["note"] = "already handed to you as a message at an earlier turn boundary"
+            answers.append(entry)
+        return {
+            "waited_s": wait_s,
+            "answers": answers,
+            "answered": len({answer["from"] for answer in answers}),
+        }
+
+    def _count_question(self, recipient: str, outcome: str) -> None:
+        get_observability().count(
+            PEER_MESSAGES_COUNTER,
+            attributes={
+                "sender": str(self._broker.session_id),
+                "recipient": recipient,
+                "channel": CHANNEL_MESH,
+                "outcome": outcome,
+            },
+            description="Peer messages this session received, by sender, recipient and outcome.",
+        )
+
+    async def mesh_peers(
+        self, *, role: str, capability: str, consumes: str, produces: str
+    ) -> dict[str, Any]:
+        """The peers this session's discovery knows, as they announced themselves.
+
+        Facts only: the filters are exact matches on announced fields and nothing is ranked.
+        A session with no discovery configured cannot see any peer, which is an error and not
+        an empty table: an empty table would read as "nobody is there".
+        """
         table = peer_table(
-            discovery.peers().values(),
+            self._peer_table().values(),
             role=role,
             capability=capability,
             consumes=consumes,
@@ -668,6 +839,7 @@ class BrokerForgeMcpHost(ForgeMcpHost):
         except UndeclaredTopicError as exc:
             self._count_publication(topic, OUTCOME_REFUSED)
             raise ForgeApiError(str(exc), status=403) from exc
+        correlation_id = correlation_id or self._thread_of(in_reply_to)
         event = build_publication(
             peer_id=adapter.peer_id,
             session_id=str(broker.session_id),
@@ -716,6 +888,11 @@ class BrokerForgeMcpHost(ForgeMcpHost):
         if answered:
             answer["answered_peer"] = answered
         return answer
+
+    def _thread_of(self, message_id: str) -> str:
+        """The thread of a message this session received, else empty (use the id itself)."""
+        entry = self._broker._peer_inbox.get(message_id) if message_id else None
+        return entry.envelope.thread if entry is not None else ""
 
     def _answered_peer(self, in_reply_to: str) -> str:
         """The mesh peer whose message this publication answers, if it came over the mesh.

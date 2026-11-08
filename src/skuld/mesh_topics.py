@@ -142,7 +142,7 @@ def mesh_topics(settings: SkuldSettings) -> MeshTopics:
     if raw is None:
         return MeshTopics(
             consumes=_merged(mesh.consumes_event_types),
-            produces=_merged(mesh.publish_event_types, mesh.standard_event_types),
+            produces=_merged(mesh.publish_event_types),
             role=mesh.role.strip(),
             description=mesh.description.strip(),
         )
@@ -152,9 +152,7 @@ def mesh_topics(settings: SkuldSettings) -> MeshTopics:
             mesh.consumes_event_types, sorted(consumed_event_types(persona.definition))
         ),
         produces=_merged(
-            mesh.publish_event_types,
-            sorted(produced_event_types(persona.definition)),
-            mesh.standard_event_types,
+            mesh.publish_event_types, sorted(produced_event_types(persona.definition))
         ),
         persona_id=persona.id,
         role=mesh.role.strip() or persona.id,
@@ -283,6 +281,25 @@ _FACT_FIELDS = {
     "consumes_event_types": "consumes",
     "emits_event_types": "produces",
 }
+
+
+def producers_of(peers: Iterable[Any], topic: str) -> tuple[list[Any], int]:
+    """The peers that announce they produce ``topic``, in peer id order, and how many peers
+    did not announce what they produce at all.
+
+    That is a fact lookup in the peer table and nothing more: whether a peer is the right one
+    to ask is the asker's judgment. A peer that did not announce its topics is not matched
+    (it is unknown, not "no"), and is counted so the asker knows the match may be incomplete.
+    """
+    matched: list[Any] = []
+    unknown = 0
+    for peer in sorted(peers, key=lambda candidate: candidate.peer_id):
+        if "emits_event_types" in getattr(peer, "not_announced", ()):
+            unknown += 1
+            continue
+        if topic in peer.emits_event_types:
+            matched.append(peer)
+    return matched, unknown
 
 
 def peer_table(

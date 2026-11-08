@@ -14,7 +14,7 @@ import pytest
 
 from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
 from niuu.forge_mcp.models import ForgeApiError
-from niuu.mesh.identity import MeshIdentity
+from niuu.mesh.identity import MeshIdentity, MeshPeer
 from niuu.mesh.participant import MeshParticipant
 from skuld.config import MeshConfig
 from skuld.forge_mcp.host import BrokerForgeMcpHost
@@ -37,11 +37,15 @@ QUESTION = "how do I rotate the signing key?"
 class Node:
     """One session: a real broker (peer inbox, durable log buffer) on a real mesh adapter."""
 
-    def __init__(self, tmp_path, bus, name, *, consumes=(), produces=(), session_id="") -> None:
+    def __init__(
+        self, tmp_path, bus, name, *, consumes=(), produces=(), session_id="", description=""
+    ) -> None:
         directory = tmp_path / f"{name}-{len(list(tmp_path.iterdir()))}"
         directory.mkdir(exist_ok=True)
         self.name = name
         self.consumes = tuple(consumes)
+        self.produces = tuple(produces)
+        self.description = description
         self.broker = _inbox_broker(directory)
         self.broker.session_id = session_id or f"session-{name}"
         self.broker._settings.mesh = MeshConfig(enabled=True, peer_id=name, rpc_timeout_s=5.0)
@@ -86,6 +90,15 @@ class Node:
             (e.envelope.sender.id, e.envelope.content, e.envelope.in_reply_to) for e in self.inbox
         ]
 
+    async def ask(self, content, *, request_id="ask-1", producers_of="", peers=(), wait_s=0):
+        return await self.host.mesh_ask(
+            content,
+            producers_of=producers_of,
+            peers=list(peers),
+            request_id=request_id,
+            wait_s=wait_s,
+        )
+
     async def publish(self, topic, content, *, request_id, correlation_id="", in_reply_to=""):
         return await self.host.publish_mesh_event(
             topic,
@@ -101,8 +114,29 @@ async def flock(tmp_path):
     bus = InProcessBus()
     nodes: list[Node] = []
 
+    def peers_seen_by(me: Node) -> dict[str, MeshPeer]:
+        """What discovery would tell ``me``: every other node, as it announces itself."""
+        return {
+            node.name: MeshPeer(
+                peer_id=node.name,
+                realm_id="r",
+                persona=node.name,
+                capabilities=[],
+                permission_mode="read_only",
+                version="1",
+                display_name=node.name,
+                participant_type="skuld",
+                description=node.description,
+                consumes_event_types=list(node.consumes),
+                emits_event_types=list(node.produces),
+            )
+            for node in nodes
+            if node is not me
+        }
+
     async def add(name, **kwargs) -> Node:
         node = Node(tmp_path, bus, name, **kwargs)
+        node.broker._mesh_discovery = SimpleNamespace(peers=lambda me=node: peers_seen_by(me))
         await node.start()
         nodes.append(node)
         return node
@@ -116,7 +150,7 @@ async def flock(tmp_path):
             if tasks:
                 await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
 
-    flock = SimpleNamespace(add=add, settle=settle, bus=bus, tmp_path=tmp_path)
+    flock = SimpleNamespace(add=add, settle=settle, bus=bus, tmp_path=tmp_path, nodes=nodes)
     yield flock
     for node in nodes:
         await node.stop()
@@ -124,11 +158,11 @@ async def flock(tmp_path):
 
 class TestAQuestionWithManyAnswers:
     async def _asked(self, flock):
-        asker = await flock.add("asker", produces=["help.needed"])
-        first = await flock.add("first", consumes=["help.needed"], produces=["answer.given"])
-        second = await flock.add("second", consumes=["help.needed"], produces=["answer.given"])
+        asker = await flock.add("asker", produces=["advice.wanted"])
+        first = await flock.add("first", consumes=["advice.wanted"], produces=["answer.given"])
+        second = await flock.add("second", consumes=["advice.wanted"], produces=["answer.given"])
         observer = await flock.add("observer")
-        question = await asker.publish("help.needed", QUESTION, request_id="q1")
+        question = await asker.publish("advice.wanted", QUESTION, request_id="q1")
         await flock.settle()
         return asker, first, second, observer, question
 
@@ -214,13 +248,13 @@ class TestAQuestionWithManyAnswers:
         assert asker.inbox == []  # nobody follows it; it is not a reply to anything
 
     async def test_a_named_correlation_id_threads_the_root_and_the_answers(self, flock) -> None:
-        asker = await flock.add("asker", produces=["help.needed"])
-        first = await flock.add("first", consumes=["help.needed"], produces=["answer.given"])
+        asker = await flock.add("asker", produces=["advice.wanted"])
+        first = await flock.add("first", consumes=["advice.wanted"], produces=["answer.given"])
         follower = await flock.add("follower")
         await follower.host.mesh_subscribe(topic="", correlation_id="pr-12")
 
         question = await asker.publish(
-            "help.needed", QUESTION, request_id="q", correlation_id="pr-12"
+            "advice.wanted", QUESTION, request_id="q", correlation_id="pr-12"
         )
         await flock.settle()
         await first.publish(
@@ -241,11 +275,11 @@ class TestAQuestionWithManyAnswers:
 
 class TestAnUnansweredQuestion:
     async def test_it_stays_silent_with_no_error_and_no_wait(self, flock) -> None:
-        asker = await flock.add("asker", produces=["help.needed"])
-        listener = await flock.add("listener", consumes=["help.needed"])
+        asker = await flock.add("asker", produces=["advice.wanted"])
+        listener = await flock.add("listener", consumes=["advice.wanted"])
 
         result = await asyncio.wait_for(
-            asker.publish("help.needed", QUESTION, request_id="q"), timeout=2
+            asker.publish("advice.wanted", QUESTION, request_id="q"), timeout=2
         )
         await flock.settle()
 
@@ -255,9 +289,9 @@ class TestAnUnansweredQuestion:
         assert _sent_texts(asker.broker) == []
 
     async def test_a_question_nobody_follows_is_just_as_quiet(self, flock) -> None:
-        asker = await flock.add("asker", produces=["help.needed"])
+        asker = await flock.add("asker", produces=["advice.wanted"])
 
-        result = await asker.publish("help.needed", QUESTION, request_id="q")
+        result = await asker.publish("advice.wanted", QUESTION, request_id="q")
         await flock.settle()
 
         assert result["status"] == "published" and asker.inbox == []
@@ -429,7 +463,7 @@ class TestTopicNames:
         assert thread_topic("x").startswith("thread.t") and inbox_topic("x").startswith("inbox.p")
         assert thread_topic("x") != inbox_topic("x")
 
-    @pytest.mark.parametrize("topic", ["review.requested", "help.needed", "a", "a-b.c_d"])
+    @pytest.mark.parametrize("topic", ["review.requested", "advice.wanted", "a", "a-b.c_d"])
     def test_ordinary_topics_are_accepted(self, topic) -> None:
         assert validate_subscribable_topic(f" {topic} ") == topic
 
@@ -497,3 +531,278 @@ class TestRendering:
         assert PeerMessage.from_wire(wire).thread == "t1"
         del wire["thread"]
         assert PeerMessage.from_wire(wire).thread == ""
+
+
+class TestAQuestionToTheProducersOfATopic:
+    async def _flock(self, flock):
+        asker = await flock.add("asker")
+        # Two sources of deployment knowledge, one consumer of it, and a bystander.
+        source_a = await flock.add(
+            "source-a",
+            produces=["deploy.status", "answer.given"],
+            description="Runs the production deploys.",
+        )
+        source_b = await flock.add(
+            "source-b",
+            produces=["deploy.status", "answer.given"],
+            description="Runs the staging deploys.",
+        )
+        consumer = await flock.add("consumer", consumes=["deploy.status"])
+        other = await flock.add("other", produces=["billing.report"])
+        return asker, source_a, source_b, consumer, other
+
+    async def test_the_question_reaches_the_producers_and_not_the_consumers(self, flock) -> None:
+        asker, source_a, source_b, consumer, other = await self._flock(flock)
+
+        sent = await asker.ask("did the deploy finish?", producers_of="deploy.status")
+        await flock.settle()
+
+        assert [peer["peer"] for peer in sent["delivered"]] == ["source-a", "source-b"]
+        assert sent["failed"] == [] and sent["asked"] == "the peers that produce 'deploy.status'"
+        for node in (source_a, source_b):
+            [entry] = node.inbox
+            assert entry.envelope.message_id == sent["question_id"]
+            assert entry.envelope.thread == sent["question_id"]
+            assert entry.envelope.reply.target == "asker"
+            assert "because you announce that you produce 'deploy.status'" in entry.envelope.content
+            assert "did the deploy finish?" in entry.envelope.content
+        assert consumer.inbox == [] and other.inbox == [] and asker.inbox == []
+
+    async def test_the_askers_own_produces_does_not_limit_a_question(self, flock) -> None:
+        asker, *_ = await self._flock(flock)
+        assert asker.produces == ()  # it could not publish deploy.status as an event
+
+        sent = await asker.ask("did the deploy finish?", producers_of="deploy.status")
+
+        assert len(sent["delivered"]) == 2
+
+    async def test_two_answers_come_back_correlated_one_by_event_one_by_reply(self, flock) -> None:
+        asker, source_a, source_b, *_ = await self._flock(flock)
+        sent = await asker.ask("did the deploy finish?", producers_of="deploy.status")
+        question = sent["question_id"]
+        await flock.settle()
+        follower = await flock.add("follower")
+        await follower.host.mesh_subscribe(topic="", correlation_id=question)
+
+        # One recipient answers by event (everyone following the thread sees it).
+        await source_a.publish(
+            "answer.given", "production: done", request_id="a", in_reply_to=question
+        )
+        # The other answers directly, as the reply tool does.
+        await source_b.host.send_mesh_message(
+            "asker",
+            "staging: still running",
+            expect_reply=False,
+            request_id="b",
+            in_reply_to=question,
+            thread=question,
+        )
+        await flock.settle()
+
+        assert sorted(sender for sender, _, _ in asker.held()) == [
+            "session-source-b",  # the direct reply comes from the session
+            "source-a",  # the event comes from the mesh peer
+        ]
+        assert {e.envelope.in_reply_to for e in asker.inbox} == {question}
+        assert {e.envelope.thread for e in asker.inbox} == {question}
+        text = render_peer_turn(asker.inbox)
+        assert text.count(f"[Thread {question}: 2 messages]") == 1
+        assert "production: done" in text and "staging: still running" in text
+        # Only the answer published as an event reached the follower.
+        assert [e.envelope.content for e in follower.inbox] == [
+            "[Request for event type answer.given]\nproduction: done"
+        ]
+
+    async def test_a_question_nobody_answers_is_quiet_after_it_was_delivered(self, flock) -> None:
+        asker, source_a, *_ = await self._flock(flock)
+
+        sent = await asker.ask("did the deploy finish?", producers_of="deploy.status")
+        await flock.settle()
+
+        assert len(sent["delivered"]) == 2 and len(source_a.inbox) == 1
+        assert asker.inbox == []
+
+    async def test_a_topic_no_peer_produces_is_refused_not_published_into_silence(
+        self, flock
+    ) -> None:
+        asker, source_a, source_b, consumer, other = await self._flock(flock)
+
+        with pytest.raises(ForgeApiError, match="no peer announces that it produces") as excinfo:
+            await asker.ask("anyone?", producers_of="deploy.statuz")
+        await flock.settle()
+
+        assert excinfo.value.status == 409
+        assert "Nothing was sent" in excinfo.value.detail and "mesh_peers" in excinfo.value.detail
+        for node in (source_a, source_b, consumer, other):
+            assert node.inbox == []
+
+    async def test_a_peer_that_did_not_announce_what_it_produces_is_counted_not_matched(
+        self, flock
+    ) -> None:
+        asker, source_a, *_ = await self._flock(flock)
+        silent = flock.nodes[-1]
+        original = asker.broker._mesh_discovery.peers
+
+        def peers():
+            table = original()
+            table[silent.name].not_announced = ["emits_event_types"]
+            table[silent.name].emits_event_types = []
+            return table
+
+        asker.broker._mesh_discovery = SimpleNamespace(peers=peers)
+
+        with pytest.raises(ForgeApiError, match=r"1 of them did not announce what they produce"):
+            await asker.ask("anyone?", producers_of="billing.report")
+
+    async def test_explicit_recipients_are_chosen_from_mesh_peers_by_description(
+        self, flock
+    ) -> None:
+        asker, source_a, source_b, consumer, other = await self._flock(flock)
+
+        table = await asker.host.mesh_peers(role="", capability="", consumes="", produces="")
+        chosen = [p["peer_id"] for p in table["peers"] if "staging" in p["description"]]
+        sent = await asker.ask("is staging healthy?", peers=chosen)
+        await flock.settle()
+
+        assert chosen == ["source-b"] and sent["asked"] == "the peers chosen"
+        assert [len(n.inbox) for n in (source_a, source_b, consumer, other)] == [0, 1, 0, 0]
+        assert "because you were chosen to answer" in source_b.inbox[0].envelope.content
+
+    async def test_a_peer_that_is_not_in_the_table_is_refused_by_name(self, flock) -> None:
+        asker, source_a, *_ = await self._flock(flock)
+
+        with pytest.raises(
+            ForgeApiError, match="not in this session's peer table: ghost"
+        ) as excinfo:
+            await asker.ask("hello?", peers=["source-a", "ghost"])
+        await flock.settle()
+
+        assert excinfo.value.status == 404 and source_a.inbox == []
+
+    async def test_a_recipient_that_cannot_be_reached_is_listed_and_the_rest_still_get_it(
+        self, flock
+    ) -> None:
+        asker, source_a, source_b, *_ = await self._flock(flock)
+        real = asker.adapter.send_peer_message
+
+        async def flaky(peer, message):
+            if peer == "source-a":
+                raise TimeoutError
+            return await real(peer, message)
+
+        asker.adapter.send_peer_message = flaky  # type: ignore[method-assign]
+
+        sent = await asker.ask("did the deploy finish?", producers_of="deploy.status")
+        await flock.settle()
+
+        assert [p["peer"] for p in sent["delivered"]] == ["source-b"]
+        assert sent["failed"][0]["peer"] == "source-a"
+        assert "mesh.rpc_timeout_s" in sent["failed"][0]["error"]
+        assert source_a.inbox == [] and len(source_b.inbox) == 1
+
+    async def test_when_it_reaches_nobody_the_ask_is_an_error_naming_each_failure(
+        self, flock
+    ) -> None:
+        asker, *_ = await self._flock(flock)
+
+        async def down(peer, message):
+            raise ConnectionError("nats down")
+
+        asker.adapter.send_peer_message = down  # type: ignore[method-assign]
+
+        with pytest.raises(ForgeApiError, match="reached none of") as excinfo:
+            await asker.ask("did the deploy finish?", producers_of="deploy.status")
+
+        assert excinfo.value.status == 502 and "nats down" in excinfo.value.detail
+
+    async def test_a_retry_with_the_same_request_id_asks_once(self, flock) -> None:
+        asker, source_a, *_ = await self._flock(flock)
+
+        first = await asker.ask("did it finish?", producers_of="deploy.status", request_id="r")
+        second = await asker.ask("did it finish?", producers_of="deploy.status", request_id="r")
+        await flock.settle()
+
+        assert first["question_id"] == second["question_id"]
+        assert len(source_a.inbox) == 1  # the repeat is the same message
+
+
+class TestWaitingForAnswers:
+    async def _asked(self, flock):
+        asker = await flock.add("asker")
+        first = await flock.add("first", produces=["deploy.status"])
+        second = await flock.add("second", produces=["deploy.status"])
+        return asker, first, second
+
+    async def test_the_wait_returns_every_answer_so_far_and_consumes_them(self, flock) -> None:
+        asker, first, second = await self._asked(flock)
+
+        async def answer_later() -> None:
+            await asyncio.sleep(0.05)
+            for node in (first, second):
+                question = node.inbox[0].envelope
+                await node.host.send_mesh_message(
+                    "asker",
+                    f"{node.name} says yes",
+                    expect_reply=False,
+                    request_id=node.name,
+                    in_reply_to=question.message_id,
+                    thread=question.thread,
+                )
+
+        async def ask():
+            return await asker.ask("done?", producers_of="deploy.status", wait_s=0.4)
+
+        result, _ = await asyncio.gather(ask(), answer_later())
+
+        assert result["waited_s"] == 0.4 and result["answered"] == 2
+        assert sorted(a["content"] for a in result["answers"]) == [
+            "first says yes",
+            "second says yes",
+        ]
+        # They were taken by the call, so the harness is not handed them again.
+        await flock.settle()
+        assert _sent_texts(asker.broker) == []
+
+    async def test_the_wait_does_not_stop_at_the_first_answer(self, flock) -> None:
+        asker, first, second = await self._asked(flock)
+
+        async def answer_early_and_late() -> None:
+            await asyncio.sleep(0.02)
+            question = first.inbox[0].envelope
+            await first.host.send_mesh_message(
+                "asker", "early", expect_reply=False, request_id="e",
+                in_reply_to=question.message_id, thread=question.thread,
+            )  # fmt: skip
+            await asyncio.sleep(0.15)
+            await second.host.send_mesh_message(
+                "asker", "late", expect_reply=False, request_id="l",
+                in_reply_to=question.message_id, thread=question.thread,
+            )  # fmt: skip
+
+        async def ask():
+            return await asker.ask("done?", producers_of="deploy.status", wait_s=0.4)
+
+        result, _ = await asyncio.gather(ask(), answer_early_and_late())
+
+        assert [a["content"] for a in result["answers"]] == ["early", "late"]
+
+    async def test_without_a_wait_nothing_waits_and_answers_arrive_as_messages(self, flock) -> None:
+        asker, first, _ = await self._asked(flock)
+
+        result = await asyncio.wait_for(asker.ask("done?", producers_of="deploy.status"), timeout=2)
+
+        assert "answers" not in result and "waited_s" not in result
+
+    async def test_an_answer_after_the_wait_is_delivered_normally(self, flock) -> None:
+        asker, first, _ = await self._asked(flock)
+        result = await asker.ask("done?", producers_of="deploy.status", wait_s=0.05)
+        question = first.inbox[0].envelope
+
+        await first.host.send_mesh_message(
+            "asker", "too late for the wait", expect_reply=False, request_id="x",
+            in_reply_to=question.message_id, thread=question.thread,
+        )  # fmt: skip
+        await flock.settle()
+
+        assert result["answers"] == []
+        assert [content for _, content, _ in asker.held()] == ["too late for the wait"]

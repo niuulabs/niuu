@@ -1145,7 +1145,6 @@ MESH_VALUES = {
     "tools": ["codex"],
     "consumesEventTypes": ["review.requested"],
     "publishEventTypes": ["review.done"],
-    "standardEventTypes": ["help.needed", "status.update"],
     "publishedEventUrgency": 0.4,
     "nng": {"pubSubAddress": "tcp://0.0.0.0:7001", "reqRepAddress": "tcp://0.0.0.0:7002"},
     "adapters": [{"adapter": "nats"}],
@@ -1170,7 +1169,6 @@ MESH_KEYS = {
     "tools": "tools",
     "consumesEventTypes": "consumes_event_types",
     "publishEventTypes": "publish_event_types",
-    "standardEventTypes": "standard_event_types",
     "publishedEventUrgency": "published_event_urgency",
     "nng": "nng",
     "adapters": "adapters",
@@ -1228,7 +1226,6 @@ class TestMeshValues:
         assert mesh.capabilities == ["review", "git"] and mesh.tools == ["codex"]
         assert mesh.consumes_event_types == ["review.requested"]
         assert mesh.publish_event_types == ["review.done"]
-        assert mesh.standard_event_types == ["help.needed", "status.update"]
         assert mesh.published_event_urgency == 0.4
         assert mesh.nng.pub_sub_address == "tcp://0.0.0.0:7001"
         assert mesh.adapters == [{"adapter": "nats"}]

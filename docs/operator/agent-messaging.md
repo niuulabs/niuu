@@ -1,29 +1,38 @@
 # Agent messaging: sessions, rooms and the mesh
 
-The mesh is publish/subscribe first. An agent that has a question, work to hand off, a result
-to announce or a need for help **publishes** it as an event; whoever follows that topic
-receives it, any number of them or none, and answers come back as events too. Nothing waits
-and nothing counts answers toward "done". Direct messages (`send_message`, `ask`, `mesh_send`)
-are for when an agent knows it needs one specific peer; they are not the default.
+The mesh is publish/subscribe first, and it carries two use cases that share the same
+mechanics (events in, answers as events, threads):
+
+| | **Events** | **Questions** |
+|---|---|---|
+| Tool | `mesh_publish` | `mesh_ask` |
+| What it is | the publisher announces something: a result, a hand-off, a status | the asker needs something answered |
+| Who may send | only on a topic the sender's own persona declares it **produces** | anyone; the asker's `produces` does not limit a question |
+| Who receives | everyone who **consumes** (follows) the topic: any number, or nobody | the peers that announce they **produce** the topic, or peers the asker chose by description |
+| No receivers | normal: no subscribers is not an error | refused with the reason: a question is never published into silence |
+| Answers | events too, from any number of peers or none, grouped by thread; nothing waits | the same; `mesh_ask` can optionally wait |
+
+Direct messages (`send_message`, `ask`, `mesh_send`) are for when an agent knows it needs one
+specific peer; they are not the default.
 
 Agents start these conversations themselves. Ting never relays them. The platform stamps who
 sent every message, so an agent cannot pass as the user, as another agent or as a room
 participant.
 
-## Publish and subscribe (the default)
+## Events: publish and subscribe
 
 ```
-mesh_publish(topic="help.needed", content="how do I rotate the signing key?")
-  -> {"event_id": "...", "topic": "help.needed", "correlation_id": "<event_id>",
+mesh_publish(topic="review.done", content="PR 12 is approved")
+  -> {"event_id": "...", "topic": "review.done", "correlation_id": "<event_id>",
       "status": "published", "request_id": "..."}
 ```
 
-Publishing is the normal way to ask a question, hand off work (`review.requested`), announce
-a result (`review.done`) or ask for help (`help.needed`), whoever ends up listening. The event
+Publishing is how an agent announces something: a result, a hand-off, a status. The event
 goes straight from the session's Skuld onto its mesh: no Forge round trip. The answer is the
 transport accepting the event; nothing waits for a consumer and none is promised.
 `request_id` makes a retry the same event (the event id derives from the publisher's mesh peer
-id, the topic and the `request_id`), and a consumer's inbox deduplicates on it.
+id, the topic and the `request_id`), and a consumer's inbox deduplicates on it. Putting a
+question to the peers who can answer it is a different use case: see "Asking a question".
 
 **Who listens is declared or chosen by the listener, never named by the sender.** A session
 listens to the topics its pinned persona lists under `consumes.event_types` (plus
@@ -34,20 +43,18 @@ publisher's mesh peer, with the event id as the message id. A topic with nobody 
 an error the mesh can see: pub/sub cannot tell it from a topic everyone is slow to read.
 
 **Publishing is limited to declared topics.** A session may publish the topics its persona
-lists under `produces` (`event_type` and every value of `event_type_map`), `mesh.publish_event_types`,
-and the standard topics. Any other topic is refused with 403 naming what the session declared
-and the remedy. Refusing rather than allowing is deliberate: a mistyped topic would otherwise
-publish to nobody and still answer "published", and `produces` is the contract workflows wire
-consumers against. This does not block asking: the **standard topic `help.needed`** (the
-event type the old Ravn runtime made available to every persona) can be published by every
-session, so any agent can ask a question or ask for help, and anyone can follow it.
-`mesh.standard_event_types` lists the standard topics; empty removes them. A persona that
-answers or hands off on its own topic declares it in `produces`.
+lists under `produces` (`event_type` and every value of `event_type_map`) and
+`mesh.publish_event_types`. Any other topic is refused with 403 naming what the session
+declared and the remedy. Refusing rather than allowing is deliberate: a mistyped topic would
+otherwise publish to nobody and still answer "published", and `produces` is the contract
+workflows wire consumers against and the contract `mesh_ask` resolves producers from. Asking a
+question is not limited this way (below), so this limit never stops an agent from asking.
 
 ### Answers are events
 
-A consumer answers by publishing: `mesh_publish(topic=<a topic it may publish>,
-in_reply_to=<the message id it received>, content=...)`. One publication goes to:
+A consumer answers an event, or a recipient answers a question, by publishing:
+`mesh_publish(topic=<a topic it may publish>, in_reply_to=<the message id it received>,
+content=...)`. One publication goes to:
 
 1. its topic, for whoever follows it;
 2. the **thread's topic**, so everyone following the thread sees the answer, not only the
@@ -88,8 +95,58 @@ published event increments `skuld.peer.messages` with `channel="mesh"`,
 `recipient=<topic>` and `outcome="published"`; a refusal or failure counts as
 `outcome="refused"` or `"failed"`. There are no caps on topics, events, answers or fan-out; the
 counters and the session status are the visibility. Config: `mesh.publish_event_types`,
-`mesh.standard_event_types`, `mesh.published_event_urgency` (the attention hint, 0.0-1.0,
+`mesh.published_event_urgency` (the attention hint, 0.0-1.0,
 default 0.8).
+
+## Asking a question
+
+`mesh_ask` puts a question to the peers that can answer it. It is not a publication: the
+question goes to the recipients directly, not to a topic's consumers, and the asker's own
+`produces` does not limit it. The asker names the audience one of two ways:
+
+```
+mesh_ask(content="did the deploy finish?", producers_of="deploy.status")
+mesh_ask(content="is staging healthy?", peers=["source-b"])
+```
+
+- **`producers_of`: every peer that announces it produces the topic**, because it is the source
+  of that kind of knowledge or work. The platform only resolves this from the peer table as a
+  fact lookup (`mesh_peers(produces=<topic>)` shows the same set); whether those are the right
+  peers to ask is the asker's judgment, made when it picked the topic. A peer that did not
+  announce what it produces is not matched, and is counted in the result
+  (`peers_not_announcing_produces`) so the asker knows the match may be incomplete.
+- **`peers`: peers the asker chose**, for example by their `description` from `mesh_peers`.
+  Every id must be in the peer table; one that is not refuses the whole question by name.
+
+Each recipient gets the question as a peer message from the asker (same message id and thread
+for all of them), prefixed with why it was asked ("because you announce that you produce
+'deploy.status'" or "because you were chosen to answer"), with the usual header saying who
+asked and how to answer. It is acknowledged by each recipient's Skuld like any direct message.
+
+**No recipients is loud.** A question to a topic no peer produces is refused (409) with the
+reason, how many peers are known and how many did not announce what they produce; nothing is
+sent. This is unlike an event, where no subscribers is normal. A recipient that could not be
+reached (gone, timed out, refused) is listed under `failed` with its error and counted on
+`skuld.peer.messages` (`outcome="failed"`; `"asked"` for each delivery); the rest still get the
+question. If it reached none of them the call is an error naming every failure (502).
+
+**Answers** are events correlated to the question: a recipient answers with `reply` (to the
+asker alone) or by publishing with `in_reply_to` set to the question's message id, which also
+puts the answer on the thread's topic and in the asker's inbox (see "Answers are events"). Any
+number of recipients answer, or none. They reach the asker's inbox as they come, at its turn
+boundaries, grouped by thread. Nothing waits by default.
+
+**Waiting is optional.** With `wait_s`, `mesh_ask` also waits that long (at most
+`ask.wait_max_s`, the longest one MCP tool call may run; a larger value is refused and counted
+as a cap hit) and **returns every answer so far**, taken by the call so they are not handed to
+the harness again. It does not return at the first answer, and it does not stop at a count of
+answers. The reasons: the first answer hides the others that arrive moments later and makes a
+partial picture look settled; a count of answers is the "done" condition this design avoids,
+since answers can come from any number of peers, including ones that were not asked; and the
+asker chose how long it is willing to wait. The result carries `answers` and `answered` (the
+number of distinct senders) so the asker sees how many of those asked responded. An answer that
+arrives after the wait is delivered as a message at the next turn boundary. `ask` keeps its own,
+different meaning: one session, one answer, with the outcomes it reports.
 
 ## Following topics and threads
 
@@ -148,6 +205,7 @@ still interrupts.
 | Room message to a member session | the hosting session (`relayed_by`, stamped by Forge from its credential); the participant who spoke is the sender | the room, via the host |
 | Session MCP `mesh_send` | the sending Skuld: this session and its mesh peer id | the sender's mesh peer (only when `expect_reply`) |
 | Session MCP `mesh_publish` | the publishing Skuld: the event's source is this session's mesh peer id | the publisher's mesh peer, always: a consumer may answer later |
+| Session MCP `mesh_ask` | the asking Skuld: this session; one message id and thread for every recipient | the asker's mesh peer |
 
 The request body can add `in_reply_to` and `urgent`. A session that sends `sender`,
 `recipient`, `relayed_by`, `sent_at` or `message_id` is refused with 400: Forge stamps all
@@ -215,11 +273,12 @@ archived.
 
 ## Session MCP tools
 
-The first rows are the default; the direct tools after them are for one specific peer.
+The first rows are the default for the two use cases; the direct tools after them are for one specific peer.
 
 | Tool | Needs | What it does |
 |---|---|---|
-| `mesh_publish(topic, content, correlation_id?, in_reply_to?)` | mesh enabled on this session | **the default**: publish on a topic you may publish, for whoever follows it; answer a message the same way (see "Publish and subscribe"). Listed only when `mesh.enabled` is true |
+| `mesh_publish(topic, content, correlation_id?, in_reply_to?)` | mesh enabled on this session | **announce an event** on a topic your persona declares it produces, for whoever consumes it; answer a message the same way (see "Events: publish and subscribe"). Listed only when `mesh.enabled` is true |
+| `mesh_ask(content, producers_of \| peers, wait_s?)` | mesh enabled on this session | **ask a question** of the peers that produce a topic, or of chosen peers (see "Asking a question"). Listed only when `mesh.enabled` is true |
 | `mesh_subscribe(topic \| correlation_id)` / `mesh_unsubscribe(...)` | mesh enabled on this session | follow or stop following a topic or a thread (see "Following topics and threads") |
 | `send_message` | `message` grant | send to a session by `to` or `session_id`; optional `urgent` |
 | `ask(to / session_id, content, deadline_s?)` | `message` grant | send to a session and **wait for its answer** (see "Asking and waiting") |
@@ -280,16 +339,18 @@ A filter never matches a fact that was not announced. The facts are `role`, `des
 Announcements from older and newer participants both parse: unknown keys are ignored and
 missing ones are `not_announced`.
 
-**When to look a peer up.** Not before every message. To ask a question, hand off work or ask
-for help, just publish: whoever follows the topic answers. Use `mesh_peers` when you need a
-specific peer, or want to know who is around:
+**When to look a peer up.** Not before every message. To ask whoever produces a kind of
+knowledge or work, `mesh_ask(producers_of=<topic>)` finds them for you; to announce something,
+`mesh_publish`. Use `mesh_peers` when you want to choose peers yourself, or need a specific
+one:
 
-1. `mesh_peers(role="reviewer")` (or by `capability`, or by a topic it `consumes`).
+1. `mesh_peers(role="reviewer")` (or by `capability`, or by a topic it `produces` or `consumes`).
 2. Read `description` and `activity_state` and pick.
-3. Then reach it directly: `ask(to=<name>)` to wait for its answer, `send_message(to=<name>)`
-   to hand it work without waiting, or `mesh_send(peer=<peer_id>)` for a mesh peer that is
-   not a Forge session. Or publish to a topic it consumes, when the work should reach every
-   peer that follows that topic and not only it.
+3. Then either ask the ones you picked, `mesh_ask(peers=[...])` (the question goes to
+   them and answers come back correlated), or reach one directly: `ask(to=<name>)` to wait for
+   its answer, `send_message(to=<name>)` to hand it work without waiting, or
+   `mesh_send(peer=<peer_id>)` for a mesh peer that is not a Forge session.
+
 ## Configuring the mesh
 
 Everything under Skuld's `mesh` settings (`skuld.config.MeshConfig`) is a value of the skuld
@@ -318,7 +379,9 @@ podManager:
 Before the chart rendered these values, `mesh.enabled` and `mesh.transport` did nothing in a
 chart-deployed session.
 
-## Asking and waiting
+## Asking and waiting (`ask`)
+
+`ask` is for one specific session. To put a question to several peers, see "Asking a question".
 
 `ask` is `send_message` that blocks until the recipient answers with `reply`. Addressing
 (`to` or `session_id`), the sender stamp, the `message` grant and who may be reached are

@@ -97,7 +97,7 @@ class TestBrokerAnnouncement:
             assert identity.display_name == "reviewer-1"
             assert identity.capabilities == ["review"]
             assert identity.consumes_event_types == ["review.requested"]
-            assert identity.emits_event_types == ["code.changed", "review.done", "help.needed"]
+            assert identity.emits_event_types == ["code.changed", "review.done"]
 
             broker._set_activity_state("tool_executing")
             assert (identity.activity_state, identity.busy) == ("tool_executing", True)

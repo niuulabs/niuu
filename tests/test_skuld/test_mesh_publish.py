@@ -83,9 +83,7 @@ class TestDeclaredTopics:
             _settings(consumes_event_types=["code.requested"], publish_event_types=["build.done"])
         )
 
-        assert topics == MeshTopics(
-            consumes=("code.requested",), produces=("build.done", "help.needed")
-        )
+        assert topics == MeshTopics(consumes=("code.requested",), produces=("build.done",))
 
     def test_the_personas_consumes_are_subscribed_and_its_produces_may_be_published(self) -> None:
         persona = _persona(
@@ -103,7 +101,6 @@ class TestDeclaredTopics:
             "extra.topic",
             "review.done",
             "review.changes_requested",
-            "help.needed",
         }
         assert topics.persona_id == "reviewer"
 
@@ -560,7 +557,7 @@ class TestBrokerWiring:
         await broker._start_mesh_adapter()
         try:
             assert broker._mesh_adapter._consumes == ("code.requested", "review.requested")
-            assert broker._mesh_topics.produces == ("review.done", "help.needed")
+            assert broker._mesh_topics.produces == ("review.done",)
             host = BrokerForgeMcpHost(broker, client=SimpleNamespace())
             answer = await host.publish_mesh_event(
                 "review.done", "ok", request_id="r", correlation_id="", in_reply_to=""
