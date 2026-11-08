@@ -91,6 +91,22 @@ class TestModelGateway:
         assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
         assert env["PATH"] == "/usr/bin"
 
+    def test_behind_the_gateway_auto_mode_keeps_its_built_in_check(self):
+        with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+            env = claude_spawn_env(gateway_url="http://niuu:8080/bifrost", gateway_token="t")
+        assert env["CLAUDE_CODE_AUTO_MODE_SERVER"] == "0"
+
+    def test_an_operators_auto_mode_server_choice_wins(self):
+        fake = {"PATH": "/usr/bin", "CLAUDE_CODE_AUTO_MODE_SERVER": "1"}
+        with patch.dict("os.environ", fake, clear=True):
+            env = claude_spawn_env(gateway_url="http://niuu:8080/bifrost", gateway_token="t")
+        assert env["CLAUDE_CODE_AUTO_MODE_SERVER"] == "1"
+
+    def test_direct_sessions_leave_auto_mode_alone(self):
+        with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+            env = claude_spawn_env()
+        assert "CLAUDE_CODE_AUTO_MODE_SERVER" not in env
+
     def test_blank_gateway_means_the_vendor_api(self):
         with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
             env = claude_spawn_env(gateway_url="  ", gateway_token="x")

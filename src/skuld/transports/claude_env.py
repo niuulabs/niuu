@@ -58,6 +58,8 @@ from skuld.transports.session_env import CLAUDE_OAUTH_ENV_VARS, session_process_
 logger = logging.getLogger(__name__)
 
 _API_KEY_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+#: Where auto mode's permission check runs (Claude Code 2.1.319+): 0 = the built-in classifier.
+CLAUDE_AUTO_MODE_SERVER_ENV = "CLAUDE_CODE_AUTO_MODE_SERVER"
 CLAUDE_OAUTH_TOKEN_FILE_ENV = "SKULD__CLAUDE_OAUTH_TOKEN_FILE"
 _MAX_OAUTH_TOKEN_BYTES = 4096
 
@@ -120,6 +122,11 @@ def claude_spawn_env(*, gateway_url: str = "", gateway_token: str = "") -> dict[
         }
         env["ANTHROPIC_BASE_URL"] = gateway_url.strip().rstrip("/")
         env["ANTHROPIC_AUTH_TOKEN"] = gateway_token
+        # Claude Code 2.1.319: behind an LLM gateway, auto mode's server-side check is out of
+        # reach, and a call it cannot check is asked about or denied with no fallback. An
+        # unattended session has nobody to ask, so its tools would be refused. 0 keeps auto
+        # mode on its built-in classifier, as before 2.1.319; an operator's own value wins.
+        env.setdefault(CLAUDE_AUTO_MODE_SERVER_ENV, "0")
         logger.info("Claude CLI routed through the model gateway at %s", env["ANTHROPIC_BASE_URL"])
         env.update(get_observability().inject())
         return env

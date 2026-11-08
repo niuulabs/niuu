@@ -474,7 +474,7 @@ wheels = [
 
 [[package]]
 name = "claude-agent-sdk"
-version = "0.2.178"
+version = "0.2.179"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -482,13 +482,13 @@ dependencies = [
     { name = "mcp" },
     { name = "sniffio" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bb/96/029c76e62b48c7eef3982873f6882d8e5f94a8eaa293392a91229cc0b87e/claude_agent_sdk-0.2.178.tar.gz", hash = "sha256:b59aca6ba61d43a6d78f0ad03a2230485a26a73d7f5e7b60e9d5e8a70cdba8f2", size = 400217, upload-time = "2026-11-04T00:52:25.514Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/cf/4e6cb9c949abd667c077cd07909bfbf9b6f1c19dff326b9f6dafc716c185/claude_agent_sdk-0.2.179.tar.gz", hash = "sha256:97b29d785bb9c9e868c3d7e7458fb68ea7ceaec8c830273d6ad316da014a974d", size = 400216, upload-time = "2026-11-06T17:56:01.69Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d2/cd/73bf0d3b6ec1456461e7e83e900c3bcf1ef6d767530dac1ad4590cc2ea74/claude_agent_sdk-0.2.178-py3-none-macosx_11_0_arm64.whl", hash = "sha256:7a20f490cfdd7d7cb9a70b3500cb0d9d026420d987e25a10667c638c5dfe036d", size = 138228664, upload-time = "2026-11-04T00:52:32.383Z" },
-    { url = "https://files.pythonhosted.org/packages/ba/b6/62e1a2d67ff4561cf31758b4332594086979c849eede9ab21950601af24e/claude_agent_sdk-0.2.178-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:c944ff5f0bac523b8c77d8d2f7913d533efc983e42eece1502fe74aa3a4a0482", size = 145514246, upload-time = "2026-11-04T00:52:39.069Z" },
-    { url = "https://files.pythonhosted.org/packages/bb/10/c5d2908e1bded45de8b69b44bc5d76f431534e18cca99d192a755d04801e/claude_agent_sdk-0.2.178-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:98fcd5ea6b591d14a65580bee3df3f5fa7c75ad68a44ff81780177d2ed8db2a3", size = 149927469, upload-time = "2026-11-04T00:52:45.46Z" },
-    { url = "https://files.pythonhosted.org/packages/49/5f/fb5dc93b604e8c55bd0da2465ba075b28e6ba4f0b0cda30cd15649c87e7d/claude_agent_sdk-0.2.178-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:1d5e6d2cced242b9d74658ec90d96936a7c9db5867b85705ae52ec0736060146", size = 150300143, upload-time = "2026-11-04T00:52:52.87Z" },
-    { url = "https://files.pythonhosted.org/packages/46/9b/2a8cf8def2c32bd296d6380d08dafef63969ca9eb0c5674a7fa8cce4d1d6/claude_agent_sdk-0.2.178-py3-none-win_amd64.whl", hash = "sha256:b31f5b4076b6a0ce138716f03d04ab9899fa8b4bde7d7760f9862bdcf9b2786b", size = 151962195, upload-time = "2026-11-04T00:53:00.908Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/e4/da356f282abbdfc348864a424ef39d892d4681516150785d8402008940a2/claude_agent_sdk-0.2.179-py3-none-macosx_11_0_arm64.whl", hash = "sha256:28b40c646eb696316ca9d0531bb5f1179d1df4cd76fa630440170c91fbb788f0", size = 139333276, upload-time = "2026-11-06T17:56:09.546Z" },
+    { url = "https://files.pythonhosted.org/packages/03/79/8a37f953154916f81cae43873685afa2a11296fcff2a5191998126d26709/claude_agent_sdk-0.2.179-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:ce95a42db94fa023f97a51982beeb95230d73be1e6c5babc77f2b635469c4759", size = 146623781, upload-time = "2026-11-06T17:56:20.409Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/e7/5429f36dd8a83c2835b6f50e7921b7cf05680007b19f520ed32a458d237f/claude_agent_sdk-0.2.179-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:26b1fb00ac0c2a19af08071bdd20fde579410cb7dbf0d8281feaa834ba5b91db", size = 150981993, upload-time = "2026-11-06T17:56:33.426Z" },
+    { url = "https://files.pythonhosted.org/packages/00/16/972f8bbe1d471bc38b93bdea1744b6931b3e6e5bc7f3f647f07c98346622/claude_agent_sdk-0.2.179-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:834159329beca83e1a1bd63815a5461b5ef5e8e039a8719fcc77df7c2a83296d", size = 151361548, upload-time = "2026-11-06T17:56:40.202Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/5b/25020ae125ea7f58b14f9cbf1d0c1f46c61628c3947ccfbd8c8032946b24/claude_agent_sdk-0.2.179-py3-none-win_amd64.whl", hash = "sha256:f9ac74aec7847f2e0474d710ec5ddcc8c0e1898b1d5f54f60a96c7a39bb6d7cc", size = 153067067, upload-time = "2026-11-06T17:56:56.516Z" },
 ]
 
 [[package]]
@@ -854,13 +854,14 @@ wheels = [
 
 [[package]]
 name = "deepseek-harness-runtime-bin"
-version = "0.1.2rc1"
+version = "0.2.1rc2"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/33/91/be83a7f28b3f09c128913a6f331d3c7b35dd60b2a59e76ab3efe58b43db5/deepseek_harness_runtime_bin-0.1.2rc1-py3-none-macosx_14_0_arm64.whl", hash = "sha256:2cac2256cdebfda726c3378e24f4be31c0847aece7f2a7eb5a8523559f6b5894", size = 72523836, upload-time = "2026-09-04T03:14:39.826Z" },
-    { url = "https://files.pythonhosted.org/packages/95/63/56e9467299c01274143db7c5b122d5f6a5b5bfeb1d19d7f4f55f8d5716b3/deepseek_harness_runtime_bin-0.1.2rc1-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:5052ca9fea2304e28d82a71012a32e7d2399322e1884a065cb08cf5bc57f017f", size = 77218739, upload-time = "2026-09-04T03:14:42.929Z" },
-    { url = "https://files.pythonhosted.org/packages/46/e3/7fdfffff5a5925e52d9726b6e90d489af87090847db54814aa3b14334cb3/deepseek_harness_runtime_bin-0.1.2rc1-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:670d8af06845cc2fc16738f1b030375321f3f8268837152aa3100e14a7b9887d", size = 77713295, upload-time = "2026-09-04T03:14:46.976Z" },
-    { url = "https://files.pythonhosted.org/packages/e7/63/16b5733796e85f5df2d5985f0c78fdf582cd002f687d7e985f16d19d9cb3/deepseek_harness_runtime_bin-0.1.2rc1-py3-none-win_amd64.whl", hash = "sha256:390bd8cd5f8700fc609c58e1ccb78091d5c8c6e11c21656e284e0f68da0e148f", size = 69024367, upload-time = "2026-09-04T03:14:50.092Z" },
+    { url = "https://files.pythonhosted.org/packages/10/99/723905c63929056e05494e8a659bc8eb9adf671ee6712fb4316930b97ac8/deepseek_harness_runtime_bin-0.2.1rc2-py3-none-macosx_14_0_arm64.whl", hash = "sha256:96a173abd14141d5328a78791b69729cbfe22fa3e9daf1dc2600d0daa4d6bb28", size = 90016291, upload-time = "2026-10-17T14:47:52.108Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/b5/8bd76d1247955ba1f502bd684f9307352a879d703475b547cb6934495b6e/deepseek_harness_runtime_bin-0.2.1rc2-py3-none-macosx_14_0_x86_64.whl", hash = "sha256:80614eee24916ce97d692baf8aed3ba146ed00fc2155d266cb0ede98d9354139", size = 93636346, upload-time = "2026-10-17T14:47:55.632Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/36/dd6d86ab8e4dd4ec2b3ed09ccb3bb28864d86c4e1c31189f7753bd0c07c6/deepseek_harness_runtime_bin-0.2.1rc2-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:71ed869e3e9a0e3ea398521730889d2d7e154767834165f1553755818e3f2a78", size = 96833408, upload-time = "2026-10-17T14:47:59.31Z" },
+    { url = "https://files.pythonhosted.org/packages/01/f3/1f7b9ea37ece210a5e432089bd63d048b2c45acc910561ec5e730c46a532/deepseek_harness_runtime_bin-0.2.1rc2-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:0a0a4eb85a22cd9339972e6a5ced77a27ec791353a5b220e3e10b8cdbbdeca39", size = 94615763, upload-time = "2026-10-17T14:48:03.197Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/95/8164c49a5d3430add58db8aeba6546cd05c9ab7ddd2ea3e1acf174448d86/deepseek_harness_runtime_bin-0.2.1rc2-py3-none-win_amd64.whl", hash = "sha256:d38c18f5117859feedaaa791a0eea37b8644bc187118e7e6f3afa231a5381cb7", size = 83860784, upload-time = "2026-10-17T14:48:06.577Z" },
 ]
 
 [[package]]
@@ -3959,12 +3960,12 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.14.2,<4.15" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "cedarpy", specifier = "==4.8.7" },
-    { name = "claude-agent-sdk", specifier = "==0.2.178" },
+    { name = "claude-agent-sdk", specifier = "==0.2.179" },
     { name = "cramjam", marker = "extra == 'provenance'", specifier = ">=2.14.0,<3" },
     { name = "cryptography", specifier = ">=50.0.1" },
     { name = "cryptography", marker = "extra == 'dev'", specifier = ">=50.0.1" },
     { name = "cryptography", marker = "extra == 'encryption'", specifier = ">=50.0.1" },
-    { name = "deepseek-harness-runtime-bin", marker = "extra == 'dsh'", specifier = "==0.1.2rc1" },
+    { name = "deepseek-harness-runtime-bin", marker = "extra == 'dsh'", specifier = "==0.2.1rc2" },
     { name = "docker", specifier = ">=7.2.0" },
     { name = "fastapi", specifier = ">=0.141.1" },
     { name = "gitpython", specifier = ">=3.2.1" },

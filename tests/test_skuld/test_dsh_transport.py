@@ -281,17 +281,16 @@ class TestEventMapping:
                 {
                     "type": "tool/result",
                     "data": {
+                        "turn": 1,
+                        "step": 1,
                         "message": {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "tool-result",
-                                    "toolCallId": "call_1",
-                                    "isError": False,
-                                    "content": [{"type": "text", "text": "hi\n"}],
-                                }
-                            ],
-                        }
+                            "id": "m1",
+                            "role": "tool",
+                            "toolCallId": "call_1",
+                            "isError": False,
+                            "source": {"kind": "tool"},
+                            "content": [{"type": "text", "text": "hi\n"}],
+                        },
                     },
                 },
             )
@@ -311,6 +310,24 @@ class TestEventMapping:
                 },
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_tool_result_in_the_retired_v3_shape_is_logged_not_dropped_unseen(
+        self, transport, events, caplog
+    ):
+        v3 = {
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool-result", "toolCallId": "c", "content": []}],
+            }
+        }
+        with caplog.at_level("ERROR", logger="skuld.transports.dsh"):
+            await transport._handle_session_event(
+                _session_event(transport.session_id, {"type": "tool/result", "data": v3})
+            )
+
+        assert events == []
+        assert any("unknown shape" in record.getMessage() for record in caplog.records)
 
     @pytest.mark.asyncio
     async def test_turn_end_completed_emits_result(self, transport, events):
