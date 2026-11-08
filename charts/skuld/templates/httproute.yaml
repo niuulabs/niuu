@@ -40,9 +40,12 @@ spec:
             # overwrite it with, so a client-supplied copy must be removed
             # explicitly here or it would reach the broker's ASGI app
             # trusted (see skuld.broker_api._enforce_room_role, which only
-            # checks the header's SHAPE, not who set it).
+            # checks the header's SHAPE, not who set it). The room caller
+            # session header is the same: only Forge stamps it, from a
+            # verified session credential.
             remove:
               - {{ .Values.envoy.headerNames.roomRole | quote }}
+              - {{ .Values.envoy.headerNames.roomCallerSession | quote }}
       backendRefs:
         - name: {{ include "skuld.fullname" . }}
           port: {{ .Values.service.port }}

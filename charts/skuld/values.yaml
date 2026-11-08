@@ -439,6 +439,10 @@ envoy:
     # proxy (niuu.session_proxy) is trusted to stamp this, from a verified
     # session_participants grant (see the room-scoped Cedar actions).
     roomRole: x-niuu-room-role
+    # The member session posting into a room (room_post). Forge stamps it from the
+    # caller's verified session credential; a client-supplied copy must never reach
+    # the broker, which seats the message as that session's.
+    roomCallerSession: x-niuu-room-caller-session
   # JWT authentication (via Keycloak)
   jwt:
     # -- Enable JWT authentication filter

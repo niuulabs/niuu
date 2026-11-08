@@ -866,6 +866,24 @@ def test_websocket_auth_configuration_reaches_broker(enabled):
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_the_gateway_strips_the_headers_only_forge_may_stamp():
+    """A browser reaching the pod straight through the Gateway can't claim a room role or
+    pose as a room member session: both headers are removed before the broker sees them."""
+    command = ["helm", "template", "test", str(CHART_DIR), "--set", "gateway.enabled=true"]
+    docs = list(yaml.safe_load_all(subprocess.check_output(command)))
+    route = next(d for d in docs if d and d["kind"] == "HTTPRoute")
+    removed = {
+        header
+        for rule in route["spec"]["rules"]
+        for item in rule.get("filters", [])
+        if item["type"] == "RequestHeaderModifier"
+        for header in item["requestHeaderModifier"].get("remove", [])
+    }
+
+    assert {"x-niuu-room-role", "x-niuu-room-caller-session"} <= removed
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 def test_room_role_source_defaults_to_deployment_with_no_remote_adapter():
     """Existing clusters must render byte-identical wsAuth until they opt in."""
     from skuld.config import SkuldSettings
