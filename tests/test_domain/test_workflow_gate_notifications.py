@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -13,10 +12,8 @@ import pytest
 from niuu.domain.models import Principal
 from niuu.domain.notifications import NotificationKind, NotificationSeverity, NotificationSource
 from niuu.domain.workflow_gate import WORKFLOW_GATE_FRAME
-from skuld.workflow_runtime import WorkflowGateNode, WorkflowGateState
 from tests.conftest import MockEventBroadcaster
 from tests.support.notifications import InMemoryNotificationStore
-from tests.test_skuld.test_broker_review_regressions import _broker
 from volundr.domain.models import EventType, Session, SessionLogEntry
 from volundr.domain.notifications import (
     Notification,
@@ -32,6 +29,34 @@ from volundr.domain.workflow_gate import (
     is_workflow_gate_frame,
     workflow_gate_from_log_payload,
 )
+
+
+@dataclass
+class WorkflowGateState:
+    """The gate payload of a ``workflow_gate`` session-log frame, field for field."""
+
+    id: str
+    node_id: str
+    activation_id: str
+    label: str
+    condition: str
+    status: str
+    mode: str
+    pending_behavior: str
+    instructions: str
+    auto_forward_after: str
+    requested_at: str
+    updated_at: str
+    triggered_by_event_type: str
+    approval_event_type: str
+    changes_requested_event_type: str
+    attempt: int = 1
+    decision: str | None = None
+    notes: str = ""
+    source: str = "workflow"
+    summary: str = ""
+    decided_by: str = ""
+
 
 OWNER = Principal(user_id="owner-a", email="", tenant_id="tenant-a", roles=["volundr:developer"])
 GATE_ID = "result-review-gate:activation:1"
@@ -445,8 +470,8 @@ class TestUnreadableFrames:
         assert not is_workflow_gate_frame("workflow_gate")  # type: ignore[arg-type]
 
 
-class TestReadsWhatSkuldWrites:
-    def test_a_frame_skuld_logged_parses_field_for_field(self):
+class TestReadsTheLoggedFrame:
+    def test_a_logged_frame_parses_field_for_field(self):
         state = _gate(status="changes_requested")
 
         gate = workflow_gate_from_log_payload({"type": WORKFLOW_GATE_FRAME, "gate": asdict(state)})
@@ -456,41 +481,3 @@ class TestReadsWhatSkuldWrites:
         assert gate.activation_id == state.activation_id
         assert gate.pending_behavior == state.pending_behavior
         assert not gate.pending
-
-    async def test_a_broker_opening_and_deciding_a_gate_drives_the_feed(self, tmp_path):
-        """The whole round trip, over the frames a real broker logs."""
-        broker = _broker(tmp_path, api_url="")
-        broker._mesh_adapter = SimpleNamespace(publish=AsyncMock())
-        broker.handle_human_room_message = AsyncMock()
-        broker._emit_broker_frame = AsyncMock()
-        broker._emit_pipeline_event = AsyncMock()
-        broker._start_trace_span = AsyncMock(return_value=None)
-        broker._finish_trace_span = AsyncMock()
-        broker._emit_workflow_gate_help_needed_sleipnir_event = AsyncMock()
-        broker._report_activity_state = AsyncMock()
-        node = WorkflowGateNode(
-            node_id="result-review-gate",
-            label="Review the result",
-            condition="",
-            event_types=["ticket.work.finished"],
-            approval_event_type="ticket.work.completed",
-            changes_requested_event_type="ticket.work.changes_requested",
-            mode="human_approval",
-            pending_behavior="help_needed",
-        )
-        state = await broker._activate_workflow_gate(
-            node, "activation", "ticket.work.finished", summary="Ready."
-        )
-        await broker.resolve_workflow_gate(state.id, "APPROVE", decided_by="Ada")
-        opened, decided = [call.args[0] for call in broker._emit_broker_frame.await_args_list]
-        service, store = _service()
-        session = _session()
-
-        [item] = await service.project_log_entries(session, [_raw_entry(session, 1, opened)])
-        assert item.body == "Ready."
-        assert item.input_request["request_id"] == state.id
-
-        await service.project_log_entries(session, [_raw_entry(session, 2, decided)])
-        [settled] = store.notifications.values()
-        assert settled.resolved
-        assert settled.resolution == "Review the result approved by Ada."

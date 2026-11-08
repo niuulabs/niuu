@@ -150,10 +150,13 @@ class StdioServer:
         stdin: IO[bytes],
         stdout: IO[bytes],
         max_concurrency: int,
+        tools_poll_interval_s: float | None = None,
     ) -> None:
         self._client = client
         self._stdin = stdin
         self._stdout = stdout
+        self._tools_poll_interval_s = tools_poll_interval_s
+        self._stop_polling = threading.Event()
         self._write_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
             max_workers=max_concurrency, thread_name_prefix="forge-mcp"
@@ -208,7 +211,7 @@ class StdioServer:
         if method == "initialize":
             return {
                 "protocolVersion": negotiate_protocol_version(params.get("protocolVersion")),
-                "capabilities": {"tools": {"listChanged": False}},
+                "capabilities": {"tools": {"listChanged": self._tools_poll_interval_s is not None}},
                 "serverInfo": {"name": SERVER_NAME, "title": "Forge", "version": SERVER_VERSION},
                 "instructions": SERVER_INSTRUCTIONS,
             }
@@ -264,11 +267,43 @@ class StdioServer:
             return
         self._respond(message)
 
+    def _poll_tool_list(self, interval_s: float) -> None:
+        """Tell the engine when the broker's tool set changes (a workflow step opening or closing).
+
+        ``workflow_step_close`` is offered only while a step is open, and an engine lists tools
+        once and then again only when told they changed. A list the broker cannot give is
+        reported on stderr and tried again; the engine keeps the list it has.
+        """
+        known: list[str] | None = None
+        while not self._stop_polling.wait(interval_s):
+            try:
+                names = sorted(str(tool.get("name")) for tool in self._client.list_tools())
+            except BrokerError as exc:
+                logger.error("forge-mcp: cannot poll the broker's tool list: %s", exc)
+                continue
+            if known is not None and names != known:
+                self._write(
+                    {"jsonrpc": JSONRPC_VERSION, "method": "notifications/tools/list_changed"}
+                )
+            known = names
+
     def serve(self) -> None:
+        poller: threading.Thread | None = None
+        if self._tools_poll_interval_s is not None:
+            poller = threading.Thread(
+                target=self._poll_tool_list,
+                args=(self._tools_poll_interval_s,),
+                name="forge-mcp-tools-poll",
+                daemon=True,
+            )
+            poller.start()
         try:
             for line in self._stdin:
                 self._process_line(line)
         finally:
+            self._stop_polling.set()
+            if poller is not None:
+                poller.join()
             self._executor.shutdown(wait=True)
 
 
@@ -282,6 +317,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-concurrency", type=int, required=True, help="tool calls served in parallel"
     )
+    parser.add_argument(
+        "--tools-poll-interval",
+        type=float,
+        default=None,
+        help="seconds between tool-list polls; set only for a workflow step host",
+    )
     return parser
 
 
@@ -294,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
         stdin=sys.stdin.buffer,
         stdout=sys.stdout.buffer,
         max_concurrency=args.max_concurrency,
+        tools_poll_interval_s=args.tools_poll_interval,
     )
     server.serve()
     return 0

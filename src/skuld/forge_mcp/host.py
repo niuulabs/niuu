@@ -16,6 +16,7 @@ from niuu.build_identity import build_identity
 from niuu.domain.artifact_reports import ArtifactReport, build_report_turn
 from niuu.domain.notifications import NotificationDraft, build_notification_turn
 from niuu.domain.services.forge_session_token import SESSION_ID_CLAIM
+from niuu.domain.workflow_step import WorkflowStepCloseArgs
 from niuu.forge_mcp.credentials import is_forge_session_claims, token_scopes, unverified_claims
 from niuu.forge_mcp.models import (
     SECRET_NAME_MAX_CHARS,
@@ -219,6 +220,16 @@ class BrokerForgeMcpHost(ForgeMcpHost):
             "url": report.url,
             "state": STATE_COMMITTED if stored else STATE_PENDING,
         }
+
+    def workflow_step_open(self) -> bool:
+        return self._broker.workflow_step_open()
+
+    def workflow_step_unavailable_reason(self) -> str:
+        return self._broker.workflow_step_unavailable_reason()
+
+    async def close_workflow_step(self, args: WorkflowStepCloseArgs) -> dict[str, Any]:
+        """Close the session's open workflow step; a close the step does not allow raises."""
+        return await self._broker.close_workflow_step(args)
 
     async def request_secret(self, name: str, purpose: str, target: str | None) -> dict[str, Any]:
         """Ask the user for a secret in the chat and hand the agent a file path, never the value.

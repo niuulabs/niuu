@@ -107,6 +107,24 @@ class TestBrokerComposition:
         assert "Forge sends nothing when a turn ends" in tools.instructions
         assert "reply ready" not in tools.instructions
 
+    def test_an_ordinary_session_does_not_poll_the_tool_list(self, tmp_path) -> None:
+        forge = _forge_server(_broker(tmp_path)._build_transport_kwargs()["mcp_servers"])
+
+        assert "--tools-poll-interval" not in forge["args"]
+
+    def test_a_step_host_polls_the_tool_list_at_the_configured_interval(self, tmp_path) -> None:
+        broker = _broker(
+            tmp_path,
+            volundr_api_url="http://forge.test",
+            workflow_steps={"enabled": True},
+            forge_mcp={"tool_list_poll_interval_s": 0.25},
+        )
+
+        forge = _forge_server(broker._build_transport_kwargs()["mcp_servers"])
+
+        args = forge["args"]
+        assert args[args.index("--tools-poll-interval") + 1] == "0.25"
+
     def test_skill_is_materialized_outside_the_workspace(self, tmp_path) -> None:
         tools = _broker(tmp_path)._session_tools()
         [plugin] = tools.claude_plugin_dirs

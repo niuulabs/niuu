@@ -153,7 +153,7 @@ def _coordinator_log():
     ]
 
 
-def _coordinator_broker(tmp_path):
+def _coordinator_broker(tmp_path, *, step_host=False):
     broker = Broker(
         SkuldSettings(
             session={
@@ -164,7 +164,7 @@ def _coordinator_broker(tmp_path):
             volundr_api_url="http://forge.test",
             transport="subprocess",
             room={"enabled": True},
-            workflow_trigger={"enabled": True, "event_type": "run.requested"},
+            workflow_steps={"enabled": step_host},
         )
     )
     broker._transport = MagicMock()
@@ -178,7 +178,7 @@ def _cache_turns(broker):
     broker._save_conversation_history()
 
 
-async def _restart(tmp_path, entries):
+async def _restart(tmp_path, entries, *, step_host=False):
     """Boot a fresh broker over the workspace, hydrating from the real log route."""
     app = FastAPI()
     repo = InMemoryLog()
@@ -189,7 +189,7 @@ async def _restart(tmp_path, entries):
         stored = await client.post(_LOG, json={"entries": entries})
         assert stored.status_code == 201
         assert await repo.latest_seq(UUID(_SID)) == entries[-1]["seq"]
-        broker = _coordinator_broker(tmp_path)
+        broker = _coordinator_broker(tmp_path, step_host=step_host)
         broker._http_client = client
         broker._load_conversation_history()
         await broker._hydrate_conversation_history()
@@ -224,11 +224,11 @@ async def test_coordinator_recovers_ravn_replies_with_no_cache(tmp_path):
     assert broker._conversation_turns[1].participant_id == _RAVN
 
 
-async def test_coordinator_still_refuses_a_cached_turn_the_log_lacks(tmp_path):
-    _cache_turns(_coordinator_broker(tmp_path))
+async def test_step_host_refuses_a_cached_turn_the_log_lacks(tmp_path):
+    _cache_turns(_coordinator_broker(tmp_path, step_host=True))
     log = [entry for entry in _coordinator_log() if entry["seq"] != 8]
 
-    with pytest.raises(RuntimeError, match="complete review evidence") as refused:
-        await _restart(tmp_path, log)
+    with pytest.raises(RuntimeError, match="which step is open") as refused:
+        await _restart(tmp_path, log, step_host=True)
 
     assert "unmatched turns within the durable span" in str(refused.value.__cause__)

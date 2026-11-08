@@ -341,7 +341,6 @@ class EventLogMixin:
             attributes={
                 "model": self.model,
                 "workspace_path": self.workspace_dir,
-                "workflow_enabled": bool(self._has_workflow_trigger()),
             },
         )
 
