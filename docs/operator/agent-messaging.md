@@ -548,15 +548,40 @@ newer heartbeat. This covers the discovery adapters that share the mesh bus (`ev
 `sleipnir`). `static` (configuration) and `k8s` (the cluster's own API) do not ride the bus;
 `mdns` proves membership with the realm key's handshake.
 
-**Platform events are not mesh messages.** The resident's `ObservationRelay` forwards
-events that Forge, Ting and Mímir publish on the bus (a plan was approved, a gate opened). Those
-publishers are services, not mesh peers: they hold no mesh certificate, and Forge issues
-certificates only to sessions and residents. These events are therefore not signed, and
-anyone allowed to publish on the bus can forge one. The relay ignores everything under the mesh
-prefix (`ravn.mesh.`), so a mesh peer cannot pass itself off as a platform service through the
-mesh. The control that closes the rest is on the bus itself: let sessions publish only under
-`ravn.mesh.*` (NATS subject permissions, a RabbitMQ user per session), which is an extra layer
-this platform does not set up for you.
+**Platform events are signed too, by platform services.** Forge, Ting and the other services
+publish events on the bus ("a plan was approved", "a gate opened"), and a resident's
+`ObservationRelay` and Ting's event triggers act on them. Each publisher signs what it
+publishes, with the same machinery as the mesh, and whoever acts on an event checks it:
+
+- **Who signs.** Forge signs with its authority certificate (the one that signs revocation
+  notices; as a service of its own when it has none). Ting gives itself a `service`
+  certificate (peer `service:ting`, no scopes, no memberships) from the key it already holds
+  for workload identity, so there is no call to Forge and nothing to set up: where the
+  deployment configures `workload_identity` with its signing key (the key Envoy validates
+  and Forge signs with), the service signs with that; otherwise, on one host, with the key
+  file Forge signs session credentials with (`~/.niuu/forge-session-signing-key.pem`, created
+  once, 0600), which `niuu platform up` shares between the host's services. Every service
+  that verifies a certificate trusts the same JWKS.
+- **Who checks.** The relay checks an event only when it is about to forward it (the resident
+  subscribed to it), and Ting only when a trigger rule matches and would start a saga. An
+  event no one acts on is not a refusal. An unsigned, altered, stale or wrongly signed
+  event is refused, logged at error and counted on `niuu.mesh.attestation.refusals`
+  (`direction="platform_event"`, with the `reason`), and acts on nothing.
+- **A mesh peer's certificate is not a platform service's.** Sessions and residents hold
+  `session`/`resident` certificates, which are refused as `not_platform_service`, so a
+  session cannot publish a platform event.
+- **One switch.** `mesh.attestation.required: false` turns this off with the rest: nothing is
+  signed or checked, and each service logs that once at startup.
+- **Limits.** Any platform service may publish any platform event; a compromised service can
+  forge another's events. The mesh's own events (`ravn.mesh.*`) are not platform events and
+  carry their peers' signatures. Services other than Forge and Ting (Mímir, Bifröst) do not
+  publish on the bus in this repo's compositions; one that does must wrap its bus with
+  `niuu.mesh.platform_events.SigningBus` using `start_platform_signer`, or its events are
+  refused by whoever acts on them. A service deployed on its own (Ting in its own pod) signs
+  only if it holds the workload-identity signing key (`workloadIdentity.signingKey` in its
+  chart); without it, and with signing required, it refuses to start and says so. Keeping
+  mesh peers off the platform event subjects with bus permissions (NATS subject permissions,
+  a RabbitMQ user per session) remains a worthwhile extra layer
 
 **Where the session credential reaches the session** (it is what the certificate request
 uses; a session without one cannot start its mesh unless attestation is off):

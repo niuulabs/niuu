@@ -25,6 +25,7 @@ from niuu.domain.services.token_scope import MESH_PEER_TOKEN_USE
 from niuu.mesh.attestation import (
     KIND_AUTHORITY,
     KIND_RESIDENT,
+    KIND_SERVICE,
     KIND_SESSION,
     MESH_AUDIENCE,
     IssuedMeshCertificate,
@@ -34,7 +35,7 @@ from niuu.mesh.attestation import (
 #: Seconds a certificate is valid before ``nbf``: tolerates clock drift between hosts.
 _NOT_BEFORE_LEEWAY_S = 5
 
-_KINDS = frozenset({KIND_SESSION, KIND_RESIDENT, KIND_AUTHORITY})
+_KINDS = frozenset({KIND_SESSION, KIND_RESIDENT, KIND_AUTHORITY, KIND_SERVICE})
 
 
 class MeshCertificateError(ValueError):

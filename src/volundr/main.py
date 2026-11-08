@@ -185,6 +185,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_secret_injection_adapter,
     _create_workflow_execution_credential_service,
     _runtime_backend,
+    _sign_forge_platform_events,
     _start_sleipnir_bus,
     _validate_remote_room_role_config,
     create_oauth_client_registry,
@@ -998,6 +999,9 @@ def create_app(
                     "(sleipnir.enabled); a stopped session's certificate lasts until it "
                     "expires (forge_mcp.mesh_identity.ttl_seconds)"
                 )
+            sleipnir_bus = await _sign_forge_platform_events(
+                settings, sleipnir_bus, mesh_revocation_publisher
+            )
             mesh_identity_service = (
                 MeshIdentityService(
                     mesh_certificate_issuer,

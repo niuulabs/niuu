@@ -19,6 +19,12 @@ from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
+from niuu.mesh.platform_events import SigningBus
+from niuu.mesh.platform_identity import (
+    platform_event_verifier,
+    start_platform_signer,
+    verifier_for,
+)
 from niuu.observability import enable_trace_log_correlation
 from niuu.ports.delivery import EvidenceAuthenticator
 from niuu.ports.integrations import IntegrationRepository
@@ -853,6 +859,23 @@ def create_app(
             if settings.sleipnir.enabled:
                 sl_cls = import_class(settings.sleipnir.adapter)
                 sleipnir_bus = sl_cls(**settings.sleipnir.kwargs)
+            # Platform events are signed as service:ting; the same signer's keys verify the
+            # events Ting acts on. With mesh.attestation.required false both are off (logged).
+            platform_signer = await start_platform_signer(
+                "ting",
+                settings.mesh.attestation,
+                workload_identity=settings.workload_identity,
+            )
+            platform_verifier = (
+                platform_event_verifier(
+                    verifier_for(platform_signer, settings.mesh.attestation),
+                    settings.mesh.attestation,
+                )
+                if platform_signer is not None
+                else None
+            )
+            if sleipnir_bus is not None and platform_signer is not None:
+                sleipnir_bus = SigningBus(sleipnir_bus, platform_signer)
 
             persona_source: PersonaPort | None = FilesystemPersonaAdapter()
             app.state.persona_source = persona_source
@@ -1537,6 +1560,7 @@ def create_app(
                         volundr_factory=app.state.volundr_factory,
                         event_bus=event_bus,
                         config=et_cfg,
+                        platform_verifier=platform_verifier,
                     )
                     await event_trigger_adapter.start()
                     app.state.event_trigger_adapter = event_trigger_adapter
@@ -1551,6 +1575,8 @@ def create_app(
             # Lifecycle cleanup
             if event_trigger_adapter is not None:
                 await event_trigger_adapter.stop()
+            if platform_signer is not None:
+                await platform_signer.stop()
             if stuck_sweeper is not None:
                 await stuck_sweeper.stop()
             await subscriber.stop()

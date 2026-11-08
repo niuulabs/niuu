@@ -53,6 +53,11 @@ class MeshRevocationPublisher:
     def peer_id(self) -> str:
         return self._signer.peer_id
 
+    @property
+    def signer(self) -> MeshSigner:
+        """Forge's authority signer, also used to sign Forge's platform events."""
+        return self._signer
+
     async def start(self) -> None:
         """Obtain Forge's authority certificate; raises when it cannot be had."""
         await self._signer.start()

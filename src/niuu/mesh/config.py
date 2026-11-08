@@ -188,6 +188,15 @@ class MeshAttestationConfig(BaseModel):
             "sending fail with the reason, and peers refuse what this peer signed."
         ),
     )
+    service_certificate_ttl_s: int = Field(
+        default=900,
+        ge=2,
+        description=(
+            "Lifetime of the certificate a platform service (Ting, Mímir, ...) issues itself "
+            "to sign the platform events it publishes. It bounds how long a leaked certificate "
+            "is believed; the service renews it at half of it."
+        ),
+    )
     clock_skew_s: float = Field(
         default=300.0,
         gt=0.0,
@@ -207,6 +216,16 @@ class MeshAttestationConfig(BaseModel):
             "are refused as stale and counted."
         ),
     )
+
+
+class MeshSettings(BaseModel):
+    """The one decision about proof of who sent a mesh message or published a platform event.
+
+    A top-level ``mesh`` section of Forge's, Ting's and every other platform service's
+    settings, with the same meaning in each. See :class:`MeshAttestationConfig`.
+    """
+
+    attestation: MeshAttestationConfig = Field(default_factory=MeshAttestationConfig)
 
 
 class DiscoveryMdnsConfig(BaseModel):

@@ -80,6 +80,28 @@ def reset_refusal_counts() -> None:
         _refusals.clear()
 
 
+def record_refusal(error: AttestationRefusedError, direction: str, what: str) -> None:
+    """Log at error and count one refused message (the shared surface for every direction)."""
+    with _lock:
+        _refusals[f"{direction}.{error.reason.value}"] += 1
+    logger.error(
+        "mesh attestation refused a %s (%s) from %r: %s",
+        direction,
+        what,
+        error.claimed or "?",
+        error,
+    )
+    get_observability().count(
+        COUNTER_REFUSALS,
+        attributes={
+            "direction": direction,
+            "reason": error.reason.value,
+            "sender": error.claimed or "unknown",
+        },
+        description="Mesh messages refused because their sender could not be verified.",
+    )
+
+
 def event_subject(event: MeshEvent, topic: str) -> dict[str, Any]:
     """What an event signature covers: everything a receiver acts on, and the topic."""
     return {
@@ -291,24 +313,7 @@ class AttestedMesh:
     # ------------------------------------------------------------------
 
     def _refused(self, error: AttestationRefusedError, direction: str, what: str) -> None:
-        with _lock:
-            _refusals[f"{direction}.{error.reason.value}"] += 1
-        logger.error(
-            "mesh attestation refused a %s (%s) from %r: %s",
-            direction,
-            what,
-            error.claimed or "?",
-            error,
-        )
-        get_observability().count(
-            COUNTER_REFUSALS,
-            attributes={
-                "direction": direction,
-                "reason": error.reason.value,
-                "sender": error.claimed or "unknown",
-            },
-            description="Mesh messages refused because their sender could not be verified.",
-        )
+        record_refusal(error, direction, what)
         if self._on_refusal is not None:
             self._on_refusal(error, direction, what)
 
@@ -557,6 +562,7 @@ __all__ = [
     "MeshAttestor",
     "VerifiedSleipnirSubscriber",
     "bind_event",
+    "record_refusal",
     "bind_rpc",
     "event_subject",
     "refusal_counts",
