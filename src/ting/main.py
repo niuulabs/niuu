@@ -866,6 +866,7 @@ def create_app(
                 settings.mesh.attestation,
                 workload_identity=settings.workload_identity,
             )
+            app.state.mesh_signing = platform_signer is not None
             platform_verifier = (
                 platform_event_verifier(
                     verifier_for(platform_signer, settings.mesh.attestation),
@@ -1620,8 +1621,15 @@ def create_app(
 
     @app.get("/health")
     @app.get("/api/v1/ting/health", include_in_schema=False)
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health(request: Request) -> dict[str, Any]:
+        body: dict[str, Any] = {"status": "ok"}
+        signing = getattr(request.app.state, "mesh_signing", None)
+        if signing is not None:
+            body["mesh_attestation"] = {
+                "required": signing,
+                "state": "signed" if signing else "unauthenticated",
+            }
+        return body
 
     return app
 
