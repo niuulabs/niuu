@@ -301,6 +301,13 @@ class _MeshPublishArgs(_Args):
         return value
 
 
+class _MeshPeersArgs(_Args):
+    role: str = Field(default="", max_length=200)
+    capability: str = Field(default="", max_length=200)
+    consumes: str = Field(default="", max_length=200)
+    produces: str = Field(default="", max_length=200)
+
+
 class _MessageStatusArgs(_SessionRef):
     request_id: str = Field(pattern=_REQUEST_ID_PATTERN)
 
@@ -1210,6 +1217,40 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         args_model=_MeshSendArgs,
     ),
     ToolSpec(
+        name="mesh_peers",
+        description=(
+            "List the peers on your mesh with what each announced about itself: its name, "
+            "persona, role, a description of what it does, capabilities, the topics it consumes "
+            "and produces, and its current activity state. Use it to choose who to talk to, "
+            "then `send_message` / `ask` (by its name), `mesh_send` (by peer_id) or "
+            "`mesh_publish` (to a topic it consumes). It returns facts and nothing ranks them: "
+            "the choice is yours. Optional filters are exact matches on one announced fact "
+            "(role, capability, a topic consumed or produced); all given filters must match. A "
+            "field a peer did not announce is empty. Peers are announced on a heartbeat, so check "
+            "last_heartbeat before relying on activity_state. Listed only on a session whose "
+            "mesh is enabled."
+        ),
+        input_schema=_object(
+            {
+                "role": {"type": "string", "description": "Only peers announcing this role."},
+                "capability": {
+                    "type": "string",
+                    "description": "Only peers announcing this capability.",
+                },
+                "consumes": {
+                    "type": "string",
+                    "description": "Only peers that consume this topic.",
+                },
+                "produces": {
+                    "type": "string",
+                    "description": "Only peers that produce this topic.",
+                },
+            },
+            required=(),
+        ),
+        args_model=_MeshPeersArgs,
+    ),
+    ToolSpec(
         name="mesh_publish",
         description=(
             "Publish a message on a mesh topic for whoever is declared to listen to it, "
@@ -1338,8 +1379,8 @@ FEED_NOTIFY_SPEC = ToolSpec(
 
 #: Tools that write the caller's own durable transcript (or, for ``request_secret``, put a
 #: card in it and a file in the session's runtime), or that act through the caller's own broker
-#: (``reply`` reads its inbox, ``room_post`` speaks as the session, ``mesh_send`` and
-#: ``mesh_publish`` use its mesh),
+#: (``reply`` reads its inbox, ``room_post`` speaks as the session, ``mesh_send``,
+#: ``mesh_publish`` and ``mesh_peers`` use its mesh),
 #: so only a session's own broker (transcript mode) can serve them.
 TRANSCRIPT_ONLY_TOOLS = frozenset(
     {
@@ -1351,6 +1392,7 @@ TRANSCRIPT_ONLY_TOOLS = frozenset(
         "room_post",
         "mesh_send",
         "mesh_publish",
+        "mesh_peers",
     }
 )
 
@@ -1367,6 +1409,10 @@ _HOST_GATES: dict[str, tuple[Callable[[ForgeMcpHost], bool], str]] = {
         "this session has no mesh (mesh.enabled is false)",
     ),
     "mesh_publish": (
+        lambda host: host.mesh_host(),
+        "this session has no mesh (mesh.enabled is false)",
+    ),
+    "mesh_peers": (
         lambda host: host.mesh_host(),
         "this session has no mesh (mesh.enabled is false)",
     ),
@@ -1531,6 +1577,7 @@ class ForgeMcpToolbox:
             "room_post": self._room_post,
             "mesh_send": self._mesh_send,
             "mesh_publish": self._mesh_publish,
+            "mesh_peers": self._mesh_peers,
             "create_session": self._create_session,
             "start_session": self._start_session,
             "stop_session": self._stop_session,
@@ -1953,6 +2000,15 @@ class ForgeMcpToolbox:
             in_reply_to="",
         )
         return self._ok({"peer": args.peer, "request_id": request_id, **answer})
+
+    async def _mesh_peers(self, args: _MeshPeersArgs) -> ToolResult:
+        answer = await self._host.mesh_peers(
+            role=args.role,
+            capability=args.capability,
+            consumes=args.consumes,
+            produces=args.produces,
+        )
+        return self._ok(answer)
 
     async def _mesh_publish(self, args: _MeshPublishArgs) -> ToolResult:
         request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"

@@ -27,6 +27,7 @@ _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$")
 _PORTABLE_DEFINITION_FIELDS = frozenset(
     {
         "name",
+        "description",
         "system_prompt_template",
         "allowed_tools",
         "forbidden_tools",
@@ -389,6 +390,7 @@ def _validate_definition(persona_id: str, definition: Mapping[str, Any]) -> None
         raise PersonaDocumentError(
             f"Portable persona id '{persona_id}' does not match definition.name '{name}'"
         )
+    _validate_optional_string(definition, "description")
     _validate_optional_string(definition, "system_prompt_template")
     _validate_string_list(definition, "allowed_tools")
     _validate_string_list(definition, "forbidden_tools")

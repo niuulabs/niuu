@@ -26,6 +26,7 @@ from personas.domain.persona_document import (
 def _complete_persona(prompt: str = "First line.\nSecond line.\n") -> PersonaConfig:
     return PersonaConfig(
         name="reviewer",
+        description="Reviews pull requests for correctness.",
         system_prompt_template=prompt,
         allowed_tools=["file_read", "git"],
         forbidden_tools=["shell"],
@@ -76,6 +77,27 @@ def test_portable_persona_round_trips_every_source_field_without_prompt_injectio
     assert parsed.definition["system_prompt_template"] == "First line.\nSecond line.\n"
     assert parsed.revision == f"content-{parsed.digest.removeprefix('sha256:')[:16]}"
     assert parsed.digest == document.digest
+
+
+def test_the_description_is_optional_and_leaves_a_persona_without_one_unchanged() -> None:
+    without = PersonaConfig(name="plain", system_prompt_template="x")
+    assert "description" not in without.to_dict()
+    assert portable_persona_from_config(without).definition == {
+        "name": "plain",
+        "system_prompt_template": "x",
+    }
+
+
+def test_a_description_that_is_not_text_is_refused() -> None:
+    with pytest.raises(PersonaDocumentError, match="description must be a string"):
+        parse_portable_persona(
+            {
+                "schema_version": 1,
+                "id": "p",
+                "revision": "r1",
+                "definition": {"name": "p", "description": 3},
+            }
+        )
 
 
 def test_portable_persona_rejects_an_executor_field() -> None:

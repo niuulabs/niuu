@@ -54,6 +54,9 @@ class MeshTopics:
     consumes: tuple[str, ...]
     produces: tuple[str, ...]
     persona_id: str = ""
+    #: What this session announces about itself, from its persona and its mesh config.
+    role: str = ""
+    description: str = ""
 
     def check_publishable(self, topic: str) -> None:
         """Raise :class:`UndeclaredTopicError` unless ``topic`` is declared as published."""
@@ -92,6 +95,8 @@ def mesh_topics(settings: SkuldSettings) -> MeshTopics:
         return MeshTopics(
             consumes=_merged(mesh.consumes_event_types),
             produces=_merged(mesh.publish_event_types),
+            role=mesh.role.strip(),
+            description=mesh.description.strip(),
         )
     persona = PortablePersonaDefinition.from_dict(raw)
     return MeshTopics(
@@ -102,6 +107,9 @@ def mesh_topics(settings: SkuldSettings) -> MeshTopics:
             mesh.publish_event_types, sorted(produced_event_types(persona.definition))
         ),
         persona_id=persona.id,
+        role=mesh.role.strip() or persona.id,
+        description=str(persona.definition.get("description") or "").strip()
+        or mesh.description.strip(),
     )
 
 
@@ -161,3 +169,55 @@ def build_publication(
         root_correlation_id=session_id,
         trace_context=dict(trace_context or {}),
     )
+
+
+def describe_peer(peer: Any) -> dict[str, Any]:
+    """The facts a discovered peer announced, as a chooser reads them.
+
+    Nothing here is ranked or scored. A field a peer's announcement did not carry (an older
+    Skuld, a Ravn, an mDNS peer) is empty, which says only that it did not announce it.
+    """
+    return {
+        "peer_id": peer.peer_id,
+        "name": getattr(peer, "display_name", ""),
+        "kind": getattr(peer, "participant_type", ""),
+        "persona": peer.persona,
+        "role": getattr(peer, "role", ""),
+        "description": getattr(peer, "description", ""),
+        "capabilities": list(peer.capabilities),
+        "consumes": list(getattr(peer, "consumes_event_types", [])),
+        "produces": list(getattr(peer, "emits_event_types", [])),
+        "activity_state": getattr(peer, "activity_state", ""),
+        "status": peer.status,
+        "task_count": peer.task_count,
+        "trust_level": peer.trust_level,
+        "last_heartbeat": peer.last_heartbeat.isoformat(),
+    }
+
+
+def peer_table(
+    peers: Iterable[Any],
+    *,
+    role: str = "",
+    capability: str = "",
+    consumes: str = "",
+    produces: str = "",
+) -> list[dict[str, Any]]:
+    """The peers that match every given filter exactly, in peer id order.
+
+    A filter is an exact match on one announced fact (the role is the role, the capability
+    is among the capabilities). The order is the peer id's, not a preference.
+    """
+    table = []
+    for peer in sorted(peers, key=lambda candidate: candidate.peer_id):
+        facts = describe_peer(peer)
+        if role and facts["role"] != role:
+            continue
+        if capability and capability not in facts["capabilities"]:
+            continue
+        if consumes and consumes not in facts["consumes"]:
+            continue
+        if produces and produces not in facts["produces"]:
+            continue
+        table.append(facts)
+    return table

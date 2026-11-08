@@ -118,6 +118,22 @@ class MeshConfig(BaseModel):
             "``consumes.event_types`` are subscribed in addition (``skuld.mesh_topics``)."
         ),
     )
+    role: str = Field(
+        default="",
+        description=(
+            "What this session is for, announced to its peers so they can choose whom to talk "
+            "to (e.g. 'reviewer'). Empty announces the pinned persona's id as the role, or no "
+            "role when there is no persona."
+        ),
+    )
+    description: str = Field(
+        default="",
+        description=(
+            "One or two sentences on what this session does, announced to its peers. The "
+            "pinned persona's own ``description`` is announced when it has one; this is used "
+            "when it has none."
+        ),
+    )
     publish_event_types: list[str] = Field(
         default_factory=list,
         description=(

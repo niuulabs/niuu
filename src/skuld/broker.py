@@ -676,6 +676,8 @@ class Broker(
         # Mesh adapter — only active when mesh.enabled is True
         self._mesh_adapter: Any = None
         self._mesh_topics: MeshTopics | None = None
+        self._mesh_identity: Any = None
+        self._mesh_discovery: Any = None
 
         # Optional mesh-to-collaboration bridge.
         self._collaboration_mesh_bridge: Any = None
@@ -939,18 +941,31 @@ class Broker(
                 rpc_reply_cache_size=mesh_cfg.rpc_reply_cache_size,
             )
 
+        # Who listens and what is published is declared: the persona's `consumes` and
+        # `produces` on top of the mesh config. The same declaration is announced to peers.
+        self._mesh_topics = mesh_topics(self._settings)
+        topics = self._mesh_topics
+
         # Build discovery adapter using shared niuu.mesh.discovery_builder
         own_identity = MeshIdentity(
             peer_id=mesh_cfg.peer_id or self.session_id or "skuld",
             realm_id=mesh_cfg.realm_id,
-            persona=mesh_cfg.persona,
+            persona=topics.persona_id or mesh_cfg.persona,
             # The session's name, so a peer can address this session by it.
             display_name=self._settings.session.name or "Skuld",
             participant_type="skuld",
             capabilities=list(mesh_cfg.capabilities),
             permission_mode="full_access",
             version="0.1.0",
+            consumes_event_types=list(topics.consumes),
+            emits_event_types=["code.changed", *topics.produces],
+            role=topics.role,
+            description=topics.description,
+            activity_state=self._activity_state,
+            busy=self._coarse_bucket(self._activity_state) == "running",
         )
+        # Kept current by `_set_activity_state`, so every heartbeat carries it.
+        self._mesh_identity = own_identity
         discovery = build_discovery_adapters(
             adapters_config=list(mesh_cfg.discovery_adapters or mesh_cfg.adapters),
             own_identity=own_identity,
@@ -994,8 +1009,7 @@ class Broker(
             peer_id=own_peer_id,
         )
 
-        # Who listens is declared: the persona's `consumes` on top of the mesh config.
-        self._mesh_topics = mesh_topics(self._settings)
+        self._mesh_discovery = discovery
         self._mesh_adapter = SkuldMeshAdapter(
             participant=participant,
             config=mesh_cfg,
@@ -1024,8 +1038,8 @@ class Broker(
                     peer_id=self._mesh_adapter.peer_id,
                     persona="Skuld",
                     display_name="Skuld",
-                    subscribes_to=list(self._mesh_topics.consumes),
-                    emits=["code.changed", *self._mesh_topics.produces],
+                    subscribes_to=list(topics.consumes),
+                    emits=["code.changed", *topics.produces],
                     tools=list(mesh_cfg.tools),
                     participant_type="skuld",
                     participant_kind="mesh",
