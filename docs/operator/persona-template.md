@@ -1,12 +1,12 @@
-# Ravn Persona Template
+# Persona Template
 
-This document defines the standard structure for Ravn personas. All built-in
+This document defines the standard structure for personas. All built-in
 and user-defined personas should follow this template to ensure consistent
 quality and behavior.
 
 ## Voice and Tone
 
-All Ravn personas share these communication principles:
+All personas share these communication principles:
 
 ### Core Principles
 

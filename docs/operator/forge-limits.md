@@ -7,7 +7,7 @@ when the limit is reached. These follow the rule in `.claude/rules/no-hidden-lim
 - hitting it raises an error that names the knob and the remedy;
 - each hit is counted where an operator looks.
 
-Ravn's limits are in [ravn-limits.md](ravn-limits.md).
+The limits of the shared helpers and the other services are in [limits.md](limits.md).
 
 | Limit | Default | Real bound | When it is hit |
 |---|---|---|---|

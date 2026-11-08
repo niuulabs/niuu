@@ -12,7 +12,6 @@ next to this file.
 | [`design/`](design/) | Feature designs with their research, vision and validation. |
 | [`plans/`](plans/) | Implementation plans. |
 | [`forge/`](forge/) | Forge and Skuld session work: designs, procedures, client handoffs, the [session orchestrator guide](forge/openclaw-session-orchestrator-guide.md). |
-| [`ravn/`](ravn/) | Ravn and resident design, persona template, quickstarts. |
 | [`operator/`](operator/), [`operations/`](operations/) | Running the platform: feature guides and credential/bootstrap procedures. |
 | [`testing/`](testing/) | Acceptance procedures and test plans. |
 | [`mockups/`](mockups/), [`demo/`](demo/) | UI mockups, demo material. |
