@@ -322,6 +322,8 @@ class TestCodex:
         assert f'mcp_servers.forge.command="{sys.executable}"' in overrides
         assert any(o.startswith("mcp_servers.forge.args=[") for o in overrides)
         assert "mcp_servers.forge.tool_timeout_sec=120.0" in overrides
+        # Unattended Codex (approval policy "never") refuses an MCP call that needs approval.
+        assert 'mcp_servers.forge.default_tools_approval_mode="approve"' in overrides
         env = spawn.call_args.kwargs["env"]
         assert env[BROKER_TOKEN_FILE_ENV].endswith("forge-mcp.token")
 

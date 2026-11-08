@@ -109,6 +109,12 @@ class ForgeSessionMixin:
                 ],
                 "startup_timeout_sec": cfg.startup_timeout_s,
                 "tool_timeout_sec": cfg.tool_timeout_s,
+                # The platform's own server: Forge authorizes every call against the
+                # session's credential, so a harness approval prompt adds nothing. Codex
+                # asks for approval on MCP calls by default, and an unattended session
+                # (approval policy "never") refuses every one: workflow_step_close, ask
+                # and notify could never run there.
+                "default_tools_approval_mode": "approve",
                 "description": "Forge: notify the user, inspect and supervise sessions.",
             }
         ]
