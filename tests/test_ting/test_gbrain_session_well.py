@@ -8,9 +8,9 @@ import respx
 
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.builders import build_mimir
+from mimir.client_settings import MimirClientSettings
 from mimir.connections import resolve_mimir_registry_refs
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
-from ravn.config import Settings
 
 
 def test_disabled_registry_well_fails_before_dispatch(tmp_path):
@@ -112,7 +112,7 @@ async def test_research_reads_the_same_gateway_mount_as_the_runtime(backend, tmp
         "registry_refs": [{"mount_name": "research-well", **connection}],
     }
     runtime = build_mimir(
-        Settings.model_validate(
+        MimirClientSettings.model_validate(
             {
                 "mimir": {
                     "enabled": True,
