@@ -227,6 +227,14 @@ a2a:
     # single agent turn; workflows declare no run timeout to derive it from.
     idleTimeoutSeconds: 7200
 
+# The step engine that runs a workflow graph on harness sessions.
+workflowSteps:
+  # -- Seconds a stage member's step may stay active before it counts as overdue
+  # (deadline_at = activated_at + this). The longest single agent step you tolerate
+  # without a close; a node overrides it with deadlineSeconds. Only stored: stuck
+  # detection flags an overdue step, nothing is cancelled or retried because of it.
+  stepDeadlineSeconds: 14400
+
 workflowExecution:
   # Domain-neutral fan-out/join, durable waits, and the A2A gateway.
   enabled: false

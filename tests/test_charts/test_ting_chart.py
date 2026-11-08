@@ -204,6 +204,17 @@ class TestConfigMapTemplate:
         assert settings.workflow_execution.enabled is False
         assert settings.workflow_execution.delivery.enabled is False
 
+    def test_step_deadline_renders_from_values_into_settings(self, tmp_path):
+        default = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
+        tightened = Settings(
+            **_config_from_rendered(
+                _render_ting_chart(tmp_path, {"workflowSteps": {"stepDeadlineSeconds": 900}})
+            )
+        )
+
+        assert default.workflow_steps.step_deadline_seconds == 4 * 3600.0
+        assert tightened.workflow_steps.step_deadline_seconds == 900.0
+
     def test_default_values_render_the_documented_watcher_defaults(self, tmp_path):
         settings = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
 

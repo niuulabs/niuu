@@ -183,6 +183,9 @@ data:
         idle_timeout_seconds: {{ .Values.a2a.staleCampaigns.idleTimeoutSeconds }}
     {{- end }}
 
+    workflow_steps:
+      step_deadline_seconds: {{ .Values.workflowSteps.stepDeadlineSeconds }}
+
     workflow_execution:
       enabled: {{ .Values.workflowExecution.enabled }}
       gateway_adapter: {{ .Values.workflowExecution.gatewayAdapter | quote }}
