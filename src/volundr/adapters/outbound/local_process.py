@@ -37,6 +37,7 @@ from typing import Any
 import httpx
 
 from volundr.adapters.outbound.contributors.session_mcp import MIMIR_MOUNT_PATH
+from volundr.adapters.outbound.mesh_settings import mesh_environment, parse_mesh_settings
 from volundr.domain.models import (
     GitSource,
     LocalMountSource,
@@ -182,43 +183,6 @@ class SdkPortAllocator:
         return True
 
 
-def _mesh_settings(raw: dict | str | None) -> dict:
-    """The ``mesh`` kwarg: Skuld's ``mesh`` settings for every session started here.
-
-    A dict, or its JSON text when it came through an environment variable.
-    """
-    if raw is None or raw == "":
-        return {}
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"pod_manager mesh must be a mapping of Skuld mesh settings, got {raw!r}: {exc}"
-            ) from exc
-    if not isinstance(raw, dict):
-        raise ValueError(f"pod_manager mesh must be a mapping, got {type(raw).__name__}")
-    return raw
-
-
-def _mesh_env(mesh: dict, prefix: str = "SKULD__MESH") -> dict[str, str]:
-    """Skuld's nested ``mesh`` settings as ``SKULD__MESH__...`` variables."""
-    env: dict[str, str] = {}
-    for key, value in mesh.items():
-        name = f"{prefix}__{str(key).upper()}"
-        if isinstance(value, dict) and value and all(isinstance(k, str) for k in value):
-            env.update(_mesh_env(value, name))
-            continue
-        env[name] = (
-            str(value).lower()
-            if isinstance(value, bool)
-            else json.dumps(value)
-            if isinstance(value, dict | list)
-            else str(value)
-        )
-    return env
-
-
 def _inject_token_into_url(repo_url: str, token: str) -> str:
     """Rewrite a git URL to include an access token for cloning.
 
@@ -335,6 +299,9 @@ class LocalProcessPodManager(PodManager):
         """The broker receives its session credential in its own process env."""
         return True
 
+    #: Takes Skuld's ``mesh`` settings and hands them to every session (``mesh_settings``).
+    carries_mesh_setting = True
+
     def __init__(
         self,
         *,
@@ -359,7 +326,7 @@ class LocalProcessPodManager(PodManager):
         local sessions run without live preview."""
         self._workspaces_dir = Path(str(workspaces_dir)).expanduser()
         self._preview_router_auth = dict(preview_router_auth or {})
-        self._mesh = _mesh_settings(mesh)
+        self._mesh = parse_mesh_settings(mesh)
         self._claude_binary = str(claude_binary)
         self._max_concurrent = int(max_concurrent)
         self._stop_timeout = int(stop_timeout)
@@ -917,7 +884,7 @@ class LocalProcessPodManager(PodManager):
         # .room_role_source, default "deployment" — every other backend).
         env["SKULD__WS_AUTH__ROOM_ROLE_SOURCE"] = "proxy"
         env.update(self._preview_env(session_id))
-        env.update(_mesh_env(self._mesh))
+        env.update(mesh_environment(self._mesh))
         model = str(session.model or spec.values.get("model", "") or "").strip()
         env["SKULD__SESSION__MODEL"] = model
         env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)

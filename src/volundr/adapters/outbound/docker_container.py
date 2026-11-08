@@ -44,6 +44,7 @@ from volundr.adapters.outbound.local_process import (
     ProcessInfo,
     ProcessState,
 )
+from volundr.adapters.outbound.mesh_settings import mesh_environment
 from volundr.domain.models import SessionStatus
 from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
 
@@ -435,6 +436,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         env["SKULD__PERSISTENT_HOME_PATH"] = self._sandbox_home
         env["SKULD__VOLUNDR_API_URL"] = self._platform_url
         self._apply_forge_session_env_file(env, spec)
+        env.update(mesh_environment(self._mesh))
 
         session_vals = spec.values.get("session", {})
         if isinstance(session_vals, dict):

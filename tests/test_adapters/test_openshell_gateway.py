@@ -4816,3 +4816,23 @@ def test_a_phase_the_gateway_has_no_name_for_is_reported_by_its_number(
     assert adapter._phase_name(99) == "phase 99"
     assert adapter._last_line("one\n\nWorkspace ready\n  \n") == "Workspace ready"
     assert adapter._last_line("") is None
+
+
+@pytest.mark.asyncio
+async def test_start_hands_the_mesh_setting_to_the_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        ready_timeout=0.1,
+        volundr_api_url="http://niuu-volundr.volundr.svc.cluster.local",
+        mesh={"attestation": {"required": False}},
+    )
+    manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
+
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    assert client.created["env"]["SKULD__MESH__ATTESTATION__REQUIRED"] == "false"

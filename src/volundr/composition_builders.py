@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import json
 import logging
 import socket
 import typing
@@ -34,6 +33,7 @@ from volundr.adapters.outbound.contributors.workflow_execution_credentials impor
     WorkflowExecutionCredentialContributor,
 )
 from volundr.adapters.outbound.mesh_revocation import MeshRevocationPublisher
+from volundr.adapters.outbound.mesh_settings import parse_mesh_settings
 from volundr.config import ALLOW_ALL_IDENTITY_ADAPTERS, Settings
 from volundr.domain.mesh_peer_claims import MeshPeerClaims
 from volundr.domain.ports import (
@@ -552,16 +552,7 @@ def _nested_pod_manager_parameters(cls: type, kwargs: dict[str, Any]) -> set[str
 
 
 def _mesh_mapping(raw: Any, where: str) -> dict[str, Any]:
-    if raw in (None, ""):
-        return {}
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"{where} must be a mapping, got {raw!r}: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise ValueError(f"{where} must be a mapping, got {type(raw).__name__}")
-    return dict(raw)
+    return parse_mesh_settings(raw, where)
 
 
 def _apply_mesh_decision(
@@ -569,20 +560,20 @@ def _apply_mesh_decision(
 ) -> None:
     """Carry ``mesh.attestation.required`` into the sessions this pod manager launches.
 
-    It is one decision for everything Forge runs. Where the pod manager has a place for
-    Skuld's mesh settings (``mesh`` for the local process manager, ``session_defaults.mesh``
-    for Flux) the decision is written there, and a different value set there is refused at
-    startup rather than letting a session disagree with Forge. Signing is Skuld's default, so
-    only the operator's ``false`` has to be written. A pod manager with no such place gets a
-    warning that names it, once, so the gap is visible.
+    It is one decision for everything Forge runs, so every pod manager that starts Skuld
+    takes Skuld's ``mesh`` settings (the ``mesh`` kwarg; ``session_defaults.mesh`` for Flux)
+    and hands them to its sessions. Forge writes the decision there, and a different value
+    set there is refused at startup rather than letting a session disagree with Forge.
+    Signing is Skuld's default, so only the operator's ``false`` has to be written. A pod
+    manager that cannot carry it is refused while signing is off, never left to disagree.
+    ``covered`` is a pod manager that only wraps others (placement), each built on its own.
     """
     required = settings.mesh.attestation.required
-    parameters = inspect.signature(cls.__init__).parameters
-    if "mesh" in parameters:
+    if getattr(cls, "carries_mesh_setting", False):
         mesh = _mesh_mapping(kwargs.get("mesh"), "pod_manager.kwargs.mesh")
         holder, key, where = mesh, "mesh", "pod_manager.kwargs.mesh"
         target = mesh
-    elif "session_defaults" in parameters:
+    elif "session_defaults" in inspect.signature(cls.__init__).parameters:
         defaults = _mesh_mapping(
             kwargs.get("session_defaults"), "pod_manager.kwargs.session_defaults"
         )
@@ -595,14 +586,14 @@ def _apply_mesh_decision(
         )
         target = mesh
     else:
-        if not required and not covered:
-            logger.warning(
-                "mesh.attestation.required is false, but %s has no setting for the Skuld mesh "
-                "configuration of its sessions: they keep Skuld's own setting (signing on) "
-                "unless SKULD__MESH__ATTESTATION__REQUIRED=false reaches them another way",
-                cls.__name__,
-            )
-        return
+        if required or covered:
+            return
+        raise ValueError(
+            f"mesh.attestation.required is false, but {cls.__name__} has no setting for the "
+            "Skuld mesh configuration of its sessions, so they would keep signing on and "
+            "disagree. Give the pod manager a `mesh` setting (carries_mesh_setting), or "
+            "set mesh.attestation.required: true"
+        )
     attestation = _mesh_mapping(target.get("attestation"), f"{where}.attestation")
     explicit = attestation.get("required")
     if explicit is not None and bool(explicit) != required:
