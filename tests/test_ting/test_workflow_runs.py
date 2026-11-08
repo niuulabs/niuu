@@ -8,7 +8,9 @@ the ``workflow_step`` metadata Skuld would report.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import logging
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -497,6 +499,50 @@ async def test_reconnecting_leaves_a_step_the_session_still_holds_open(harness: 
 
     assert len(harness.forge.deliveries) == 1
     assert harness.current.active_stage_id == "implement"
+
+
+async def test_a_run_that_cannot_be_reconciled_is_loud_and_the_others_still_are(
+    harness: Harness,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    await harness.launch()
+    session, body = harness.last_delivery()
+    harness.forge.step_states[(session, body["activation_id"])] = {
+        "activation_id": body["activation_id"],
+        "state": "closed",
+        "attempt": 1,
+        "ending": {"kind": "verdict", "verdict": "implemented", "outcome": {"summary": "x"}},
+    }
+    broken = replace(
+        harness.campaign, id=uuid4(), slug="broken-run", created_at=NOW - timedelta(days=1)
+    )
+    # Listed first: the broken run is reconciled before the healthy one.
+    harness.campaigns.items = {broken.id: broken, **harness.campaigns.items}
+    counted: list[str] = []
+    monkeypatch.setattr(
+        "ting.domain.services.workflow_runs.get_observability",
+        lambda: SimpleNamespace(count=lambda name, **_: counted.append(name)),
+    )
+    real = harness.runs._reconcile_run
+
+    async def reconcile(campaign: WorkflowCampaign) -> None:
+        if campaign.id == broken.id:
+            raise ConnectionError("forge is down")
+        await real(campaign)
+
+    monkeypatch.setattr(harness.runs, "_reconcile_run", reconcile)
+
+    with caplog.at_level(logging.ERROR):
+        await harness.runs.reconcile_owner(OWNER)
+
+    assert counted == ["ting_workflow_run_reconcile_errors_total"]
+    [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert "broken-run" in record.getMessage()
+    assert "ConnectionError: forge is down" in record.getMessage()
+    assert record.exc_info is not None
+    # The healthy run behind it was still caught up.
+    assert harness.current.active_stage_id == "review"
 
 
 async def test_reconnecting_with_a_session_that_never_saw_the_step_changes_nothing(

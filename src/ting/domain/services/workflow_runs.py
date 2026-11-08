@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
 
+from niuu.observability import get_observability
 from ting.domain.campaign_run_projection import RunProjection, open_gates, project_run, run_gates
 from ting.domain.models import WorkflowCampaign
 from ting.domain.services.workflow_step_engine import (
@@ -313,9 +314,22 @@ class WorkflowRuns:
                 continue
             try:
                 await self._reconcile_run(campaign)
-            except Exception:
+            except Exception as exc:
+                # One broken run must not stop the others being caught up, but it is seen:
+                # logged at error with the run and the exception, and counted.
                 logger.error(
-                    "Reconciling the open steps of run %s failed", campaign.slug, exc_info=True
+                    "Reconciling the open steps of run %s failed: %s: %s",
+                    campaign.slug,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
+                get_observability().count(
+                    "ting_workflow_run_reconcile_errors_total",
+                    description=(
+                        "Workflow runs whose open steps could not be reconciled with their "
+                        "sessions after the activity stream reconnected."
+                    ),
                 )
 
     async def _reconcile_run(self, campaign: WorkflowCampaign) -> None:
