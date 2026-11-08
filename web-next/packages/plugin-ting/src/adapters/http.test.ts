@@ -2480,8 +2480,7 @@ describe('buildDispatchBusHttpAdapter', () => {
         systemPrompt: 'Ship it',
         connectionId: 'cluster-default',
         sessionDefinition: 'skuldCodex',
-        workloadType: 'ravn_flock',
-        workloadConfig: { personas: ['coder'] },
+        workloadConfig: { reasoningEffort: 'xhigh' },
       },
     );
 
@@ -2499,8 +2498,7 @@ describe('buildDispatchBusHttpAdapter', () => {
       system_prompt: 'Ship it',
       connection_id: 'cluster-default',
       session_definition: 'skuldCodex',
-      workload_type: 'ravn_flock',
-      workload_config: { personas: ['coder'] },
+      workload_config: { reasoningEffort: 'xhigh' },
     });
     expect(result?.issueId).toBe(rawDispatchApprovalResult.issue_id);
     expect(result?.clusterName).toBe(rawDispatchApprovalResult.cluster_name);
