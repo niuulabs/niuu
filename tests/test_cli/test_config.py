@@ -210,7 +210,6 @@ class TestAuthAdapterEnv:
         env = auth_adapter_env(AuthConfig())
         assert env["IDENTITY__ADAPTER"].endswith("AllowAllIdentityAdapter")
         assert env["AUTHORIZATION__ADAPTER"].endswith("AllowAllAuthorizationAdapter")
-        assert env["RAVN_API_AUTH__ADAPTER"].endswith("AllowAllHeaderAuthenticationAdapter")
         assert env["HOST_IDENTITY__ADAPTER"].endswith("AllowAllHeaderAuthenticationAdapter")
         assert env["AUTH__ALLOW_ANONYMOUS_DEV"] == "true"
         assert env["AUTH_MODE"] == "none"
@@ -238,10 +237,6 @@ class TestAuthAdapterEnv:
 
         assert env["IDENTITY__ADAPTER"] == "identity.adapters.jwks.JwksIdentityAdapter"
         assert env["AUTHORIZATION__ADAPTER"] == "identity.adapters.cedar.CedarAuthorizationAdapter"
-        assert (
-            env["RAVN_API_AUTH__ADAPTER"]
-            == "identity.adapters.jwks.JwksBearerAuthenticationAdapter"
-        )
         assert env["AUTH__ADAPTER"] == "identity.adapters.jwks.JwksBearerAuthenticationAdapter"
         assert (
             env["HOST_IDENTITY__ADAPTER"]
@@ -258,7 +253,6 @@ class TestAuthAdapterEnv:
             "developer": "volundr:developer",
             "viewer": "volundr:viewer",
         }
-        assert json.loads(env["RAVN_API_AUTH__KWARGS"]) == kwargs
         assert json.loads(env["AUTH__KWARGS"]) == kwargs
         assert json.loads(env["HOST_IDENTITY__KWARGS"]) == kwargs
 

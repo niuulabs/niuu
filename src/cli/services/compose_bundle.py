@@ -425,7 +425,6 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "SESSION_ROOM__INTERNAL_BASE_URL": f"http://127.0.0.1:{settings.server.port}",
         "OBSERVATORY__GUILD__URL": f"http://127.0.0.1:{settings.server.port}",
         "BIFROST__URL": f"http://127.0.0.1:{settings.server.port}",
-        "RAVN_GATEWAY__PLATFORM__BASE_URL": f"http://127.0.0.1:{settings.server.port}",
         "PYTHONUNBUFFERED": "1",
     }
     env.update(auth_adapter_env(settings.host_auth))

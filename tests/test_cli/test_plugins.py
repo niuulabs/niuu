@@ -327,8 +327,6 @@ class TestTingPlugin:
         ]
         assert route_domains[0].prefixes == ("/api/v1/tracker/projects", "/api/v1/tracker/import")
         assert route_domains[4].prefixes == (
-            "/api/v1/ting/flock",
-            "/api/v1/ting/flock_flows",
             "/api/v1/ting/research",
             "/api/v1/ting/specs",
         )
