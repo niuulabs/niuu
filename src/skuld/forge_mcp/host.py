@@ -39,7 +39,16 @@ from niuu.forge_mcp.ports import ForgeClient, ForgeMcpHost
 from niuu.observability import get_observability
 from niuu.ports.mesh import PeerNotFoundError
 from skuld.conversation_models import ConversationTurn
-from skuld.peer_inbox import AnswerWait, TakenAnswer
+from skuld.mesh_topics import UndeclaredTopicError, build_publication
+from skuld.peer_inbox import (
+    CHANNEL_MESH,
+    OUTCOME_FAILED,
+    OUTCOME_PUBLISHED,
+    OUTCOME_REFUSED,
+    PEER_MESSAGES_COUNTER,
+    AnswerWait,
+    TakenAnswer,
+)
 from skuld.session_runtime import RuntimeDirError
 
 if TYPE_CHECKING:
@@ -484,6 +493,81 @@ class BrokerForgeMcpHost(ForgeMcpHost):
         if failure:
             raise ForgeApiError(f"mesh peer {peer!r} refused the message: {failure}", status=502)
         return {"message_id": message.message_id, "status": answer.get("status") or "sent"}
+
+    async def publish_mesh_event(
+        self,
+        topic: str,
+        content: str,
+        *,
+        request_id: str,
+        correlation_id: str,
+        in_reply_to: str,
+    ) -> dict[str, Any]:
+        """Publish ``content`` on a declared mesh topic, straight onto this session's mesh.
+
+        No Forge round trip. The sender is this session's mesh identity, stamped here; the
+        content cannot name one. The answer is the transport accepting the event: no consumer
+        is waited for and none is promised. A topic the session did not declare, a mesh that
+        is down and a transport that refuses the event are errors, each counted.
+        """
+        broker = self._broker
+        adapter = broker._mesh_adapter
+        topics = broker._mesh_topics
+        if adapter is None or topics is None:
+            self._count_publication(topic, OUTCOME_FAILED)
+            raise ForgeApiError(
+                "this session's mesh is not running (mesh.enabled is set but the adapter did "
+                "not start); check the broker log, or set mesh.enabled to false",
+                status=503,
+            )
+        try:
+            topics.check_publishable(topic)
+        except UndeclaredTopicError as exc:
+            self._count_publication(topic, OUTCOME_REFUSED)
+            raise ForgeApiError(str(exc), status=403) from exc
+        event = build_publication(
+            peer_id=adapter.peer_id,
+            session_id=str(broker.session_id),
+            session_name=broker._settings.session.name,
+            persona_id=topics.persona_id,
+            topic=topic,
+            content=content,
+            request_id=request_id,
+            urgency=broker._settings.mesh.published_event_urgency,
+            correlation_id=correlation_id,
+            in_reply_to=in_reply_to,
+            trace_context=get_observability().inject(),
+        )
+        try:
+            await adapter.publish_event(event, topic)
+        except Exception as exc:
+            self._count_publication(topic, OUTCOME_FAILED)
+            logger.error("mesh_publish of %s (event %s) failed: %s", topic, event.event_id, exc)
+            raise ForgeApiError(
+                f"the mesh did not accept the event on {topic!r}: {exc}. Nothing is known to "
+                "have been published; retry with the same request_id once the mesh is back",
+                status=502,
+            ) from exc
+        self._count_publication(topic, OUTCOME_PUBLISHED)
+        return {
+            "event_id": event.event_id,
+            "topic": topic,
+            "correlation_id": event.correlation_id,
+            "status": "published",
+        }
+
+    def _count_publication(self, topic: str, outcome: str) -> None:
+        """Count a publication on ``skuld.peer.messages``, the recipient being the topic."""
+        get_observability().count(
+            PEER_MESSAGES_COUNTER,
+            attributes={
+                "sender": str(self._broker.session_id),
+                "recipient": topic,
+                "channel": CHANNEL_MESH,
+                "outcome": outcome,
+            },
+            description="Peer messages this session received, by sender, recipient and outcome.",
+        )
 
     async def close_workflow_step(self, args: WorkflowStepCloseArgs) -> dict[str, Any]:
         """Close the session's open workflow step; a close the step does not allow raises."""

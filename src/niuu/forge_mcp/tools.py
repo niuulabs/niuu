@@ -277,6 +277,28 @@ class _MeshSendArgs(_Args):
         return value
 
 
+class _MeshPublishArgs(_Args):
+    topic: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1)
+    correlation_id: str = Field(default="", max_length=200)
+    in_reply_to: str = Field(default="", max_length=200)
+    request_id: str | None = Field(default=None, pattern=_REQUEST_ID_PATTERN)
+
+    @field_validator("topic")
+    @classmethod
+    def _topic_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("topic must not be blank")
+        return value.strip()
+
+    @field_validator("content")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("content must not be blank")
+        return value
+
+
 class _MessageStatusArgs(_SessionRef):
     request_id: str = Field(pattern=_REQUEST_ID_PATTERN)
 
@@ -1185,6 +1207,46 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         args_model=_MeshSendArgs,
     ),
     ToolSpec(
+        name="mesh_publish",
+        description=(
+            "Publish a message on a mesh topic for whoever is declared to listen to it, "
+            "without naming them: every session whose persona consumes the topic receives it "
+            "in its inbox, however many there are. Use this to start parallel work or announce "
+            "a result when the consumers are decided by the workflow, not by you; use "
+            "`mesh_send` to reach one named peer. The topic must be one your persona declares "
+            "it produces (or the session's mesh.publish_event_types); any other topic is "
+            "refused with the declared list. The platform stamps you as the publisher. You get "
+            "the event id back and nothing waits: the answer is only that the mesh accepted the "
+            "event. Consumers may answer later: with `reply` (it arrives in your inbox "
+            "marked as a reply to the event id) or by publishing with in_reply_to set to the "
+            "event id. `correlation_id` is an optional thread tag the consumers see and can "
+            "echo; `in_reply_to` names the message or event this one answers. Retries with the "
+            "same request_id publish the event once. Listed only on a session whose mesh is "
+            "enabled."
+        ),
+        input_schema=_object(
+            {
+                "topic": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The event type, e.g. review.requested.",
+                },
+                "content": {"type": "string", "minLength": 1},
+                "correlation_id": {
+                    "type": "string",
+                    "description": "Optional thread tag consumers see; defaults to the event id.",
+                },
+                "in_reply_to": {
+                    "type": "string",
+                    "description": "Optional: the event or message id this publication answers.",
+                },
+                "request_id": _REQUEST_ID_SCHEMA,
+            },
+            required=("topic", "content"),
+        ),
+        args_model=_MeshPublishArgs,
+    ),
+    ToolSpec(
         name="create_session",
         description=(
             "Create and start a new Forge session. Returns its launch state — creation is "
@@ -1273,7 +1335,8 @@ FEED_NOTIFY_SPEC = ToolSpec(
 
 #: Tools that write the caller's own durable transcript (or, for ``request_secret``, put a
 #: card in it and a file in the session's runtime), or that act through the caller's own broker
-#: (``reply`` reads its inbox, ``room_post`` speaks as the session, ``mesh_send`` uses its mesh),
+#: (``reply`` reads its inbox, ``room_post`` speaks as the session, ``mesh_send`` and
+#: ``mesh_publish`` use its mesh),
 #: so only a session's own broker (transcript mode) can serve them.
 TRANSCRIPT_ONLY_TOOLS = frozenset(
     {
@@ -1284,6 +1347,7 @@ TRANSCRIPT_ONLY_TOOLS = frozenset(
         REPLY_TOOL,
         "room_post",
         "mesh_send",
+        "mesh_publish",
     }
 )
 
@@ -1296,6 +1360,10 @@ _HOST_GATES: dict[str, tuple[Callable[[ForgeMcpHost], bool], str]] = {
         "this session is not a workflow step host",
     ),
     "mesh_send": (
+        lambda host: host.mesh_host(),
+        "this session has no mesh (mesh.enabled is false)",
+    ),
+    "mesh_publish": (
         lambda host: host.mesh_host(),
         "this session has no mesh (mesh.enabled is false)",
     ),
@@ -1459,6 +1527,7 @@ class ForgeMcpToolbox:
             REPLY_TOOL: self._reply,
             "room_post": self._room_post,
             "mesh_send": self._mesh_send,
+            "mesh_publish": self._mesh_publish,
             "create_session": self._create_session,
             "start_session": self._start_session,
             "stop_session": self._stop_session,
@@ -1838,6 +1907,17 @@ class ForgeMcpToolbox:
             in_reply_to="",
         )
         return self._ok({"peer": args.peer, "request_id": request_id, **answer})
+
+    async def _mesh_publish(self, args: _MeshPublishArgs) -> ToolResult:
+        request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
+        answer = await self._host.publish_mesh_event(
+            args.topic,
+            args.content,
+            request_id=request_id,
+            correlation_id=args.correlation_id,
+            in_reply_to=args.in_reply_to,
+        )
+        return self._ok({"request_id": request_id, **answer})
 
     async def _ask(self, args: _AskArgs) -> ToolResult:
         ceiling_s = self._host.ask_wait_max_s()

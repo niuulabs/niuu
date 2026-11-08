@@ -22,6 +22,7 @@ still interrupts.
 | Cross-node `send_message` | the sender's home node attests it; the owning node builds the envelope | the sender's session on its node |
 | Room message to a member session | the hosting session (`relayed_by`, stamped by Forge from its credential); the participant who spoke is the sender | the room, via the host |
 | Session MCP `mesh_send` | the sending Skuld: this session and its mesh peer id | the sender's mesh peer (only when `expect_reply`) |
+| Session MCP `mesh_publish` | the publishing Skuld: the event's source is this session's mesh peer id | the publisher's mesh peer, always: a consumer may answer later |
 
 The request body can add `in_reply_to` and `urgent`. A session that sends `sender`,
 `recipient`, `relayed_by`, `sent_at` or `message_id` is refused with 400: Forge stamps all
@@ -63,12 +64,77 @@ archived.
 | `reply(message_id, content)` | the route's own need | answer a message you received, by the route its sender gave: session, mesh peer or room. A message sent as a notice (no reply route) is refused with the reason |
 | `room_post(room_id, host_session_id, content)` | `message` grant | speak in a room another session hosts. The host records the message in the room as said by this session, and refuses it when the session is not seated in that room |
 | `mesh_send(peer, content, expect_reply)` | mesh enabled on this session | send a peer message to a mesh peer id. Listed only when `mesh.enabled` is true |
+| `mesh_publish(topic, content, correlation_id?, in_reply_to?)` | mesh enabled on this session | publish on a declared topic for whoever consumes it (see "Publishing to a topic"). Listed only when `mesh.enabled` is true |
 
 `room_post` takes the hosting session explicitly: the "Relayed by" line of a message from
 the room names the host, and the "Said in room" line names the room. Forge proxies the
 call to the host as `POST /sessions/{host}/room/session-message` and stamps the calling
 session itself; the room host trusts only that stamp. `reply` to a room message uses the
 same call.
+
+## Publishing to a topic
+
+`mesh_send` reaches one named peer. `mesh_publish` is the other half of the mesh: put a
+message on a **topic** and let whoever is declared to listen receive it, so a workflow never
+hard-codes which agents are called and the consumers run in parallel. There may be no
+answer, only the transport's acknowledgement, or a consumer may answer later with changes.
+
+```
+mesh_publish(topic="review.requested", content="please review PR 12", correlation_id="pr-12")
+  -> {"event_id": "...", "topic": "review.requested", "correlation_id": "pr-12",
+      "status": "published", "request_id": "..."}
+```
+
+The event goes straight from the session's Skuld onto its mesh: no Forge round trip. The
+answer is the transport accepting the event; nothing waits for a consumer and none is
+promised. `request_id` makes a retry the same event (the event id derives from the
+publisher's mesh peer id, the topic and the `request_id`), and a consumer's inbox
+deduplicates on it.
+
+**Consumers are declared, not named.** A session subscribes to the topics its pinned
+persona lists under `consumes.event_types`, plus `mesh.consumes_event_types` (default
+`code.requested`). Every subscribed session's inbox receives the event as a peer message
+from the publisher's mesh peer, with the same message id (the event id). No sender names a
+recipient, and a topic with no subscribers is not an error the mesh can see: pub/sub cannot
+tell it from a topic everyone is slow to read.
+
+**Producers are declared too, and an undeclared topic is refused.** A session may publish
+the topics its persona lists under `produces` (`event_type` and every value of
+`event_type_map`), plus `mesh.publish_event_types` for a session without that persona. Any
+other topic is refused with 403 naming what the session declared and the remedy. The reason
+for refusing rather than allowing: a mistyped topic would otherwise publish to nobody and
+still answer "published", which is exactly the failure that cannot be seen later; and the
+`produces` declaration is the contract workflows wire consumers against. With nothing
+declared, every topic is refused. Add the topic to the persona, or list it in
+`mesh.publish_event_types`.
+
+**Linking a later answer.** The event id is the message id the consumer sees. A consumer
+answers in either of two ways, and the publisher's inbox holds the answer with
+`in_reply_to` set to the event id:
+
+- `reply(message_id, content)` on the mesh route the envelope carries (back to the
+  publisher's mesh peer); or
+- `mesh_publish` of its own topic with `in_reply_to` set to the event id, when the original
+  publisher consumes that topic.
+
+`correlation_id` is an optional thread tag, not an identity: consumers see it as a
+`[Correlation ...]` line at the top of the message and may echo it on their own
+publications. It defaults to the event id.
+
+**Who is the sender.** Skuld stamps the event: the source is this session's mesh peer id,
+and a `publisher` block (session id, name, node, peer id) rides in the payload for the
+audit trail. Nothing about the sender is taken from the content, and the tool has no
+argument for it. The mesh itself does not yet authenticate a source, so a consumer trusts
+the event's source as far as it trusts the mesh; sender authentication on the mesh is a
+separate change.
+
+**Failures are loud.** A mesh that is not running (503), a transport that refuses the event
+(502, with the retry remedy), and an undeclared topic (403) are tool errors and are logged at
+error. A published event increments `skuld.peer.messages` with `channel="mesh"`,
+`recipient=<topic>` and `outcome="published"`; a refusal or failure counts as
+`outcome="refused"` or `"failed"`. There are no caps on topics, events or fan-out; the
+counter and the session status are the visibility. Config: `mesh.publish_event_types`,
+`mesh.published_event_urgency` (the attention hint, 0.0-1.0, default 0.8).
 
 ## Asking and waiting
 

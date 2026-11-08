@@ -60,6 +60,11 @@ OUTCOME_REFUSED = "refused"
 OUTCOME_DELIVERED = "delivered"
 _OUTCOMES = (OUTCOME_ACCEPTED, OUTCOME_DUPLICATE, OUTCOME_REFUSED, OUTCOME_DELIVERED)
 
+#: Outcomes of a message this session *published* to a mesh topic (the sending side of the
+#: same counter): the transport took it, or it was refused (an undeclared topic) or failed.
+OUTCOME_PUBLISHED = "published"
+OUTCOME_FAILED = "failed"
+
 CHANNEL_SESSION = "session"
 CHANNEL_ROOM = "room"
 CHANNEL_MESH = "mesh"

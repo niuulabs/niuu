@@ -487,7 +487,8 @@ def _string_set(value: Any) -> set[str]:
     return {str(item).strip() for item in value if str(item).strip()}
 
 
-def _produced_events(definition: Mapping[str, Any]) -> set[str]:
+def produced_event_types(definition: Mapping[str, Any]) -> set[str]:
+    """Every event type the persona declares it produces: its default and its mapped ones."""
     raw = definition.get("produces")
     if not isinstance(raw, dict):
         return set()
@@ -496,6 +497,17 @@ def _produced_events(definition: Mapping[str, Any]) -> set[str]:
     if isinstance(event_map, dict):
         events.update(str(value).strip() for value in event_map.values())
     return {event for event in events if event}
+
+
+def consumed_event_types(definition: Mapping[str, Any]) -> set[str]:
+    """Every event type the persona declares it consumes."""
+    raw = definition.get("consumes")
+    if not isinstance(raw, dict):
+        return set()
+    return _string_set(raw.get("event_types"))
+
+
+_produced_events = produced_event_types
 
 
 class _StrictSafeLoader(yaml.SafeLoader):

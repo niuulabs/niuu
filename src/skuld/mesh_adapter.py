@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import socket
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -36,6 +36,7 @@ from niuu.mesh.events import MeshEvent, MeshEventType
 from niuu.mesh.participant import MeshParticipant
 from niuu.ports.mesh import MeshPort
 from skuld.config import MeshConfig
+from skuld.mesh_topics import CORRELATION_KEY, IN_REPLY_TO_KEY
 from skuld.peer_inbox import CHANNEL_MESH, PeerAcceptance, PeerMessageRefusedError
 from sleipnir.ports.events import SleipnirSubscriber
 
@@ -68,6 +69,7 @@ class SkuldMeshAdapter:
         session_id: str,
         peer_inbox: PeerMessageReceiver,
         rpc_handlers: Mapping[str, RpcHandler] | None = None,
+        consumes_event_types: Sequence[str] | None = None,
     ) -> None:
         self._participant = participant
         self._rpc_handlers = dict(rpc_handlers or {})
@@ -75,6 +77,11 @@ class SkuldMeshAdapter:
         self._peer_inbox = peer_inbox
         self._config = config
         self._session_id = session_id
+        # The topics subscribed to: the session's declaration when the composition root
+        # resolved one (its persona's `consumes` on top of the config), else the config's.
+        self._consumes = tuple(
+            config.consumes_event_types if consumes_event_types is None else consumes_event_types
+        )
         self._peer_id = participant.peer_id or config.peer_id or socket.gethostname()
         self._running = False
 
@@ -110,7 +117,7 @@ class SkuldMeshAdapter:
 
         # Subscribe to consumed event types
         if self._mesh is not None:
-            for event_type in self._config.consumes_event_types:
+            for event_type in self._consumes:
                 await self._mesh.subscribe(event_type, self._handle_outcome_event)
                 logger.info("mesh adapter: subscribed to topic %r", event_type)
 
@@ -119,7 +126,7 @@ class SkuldMeshAdapter:
             "mesh adapter: started (peer_id=%s, capabilities=%s, consumes=%s)",
             self._peer_id,
             self._config.capabilities,
-            self._config.consumes_event_types,
+            list(self._consumes),
         )
 
     async def stop(self) -> None:
@@ -130,7 +137,7 @@ class SkuldMeshAdapter:
         self._running = False
 
         if self._mesh is not None:
-            for event_type in self._config.consumes_event_types:
+            for event_type in self._consumes:
                 await self._mesh.unsubscribe(event_type)
 
         await self._participant.stop()
@@ -141,6 +148,19 @@ class SkuldMeshAdapter:
         """Publish an event onto the mesh when the adapter is active."""
         if self._mesh is None:
             return
+        await self._mesh.publish(event, topic=topic)
+
+    async def publish_event(self, event: MeshEvent, topic: str) -> None:
+        """Publish an event the caller needs to know left this peer.
+
+        Unlike :meth:`publish`, a mesh that is not running raises instead of being skipped,
+        and so does a transport that refuses the event. Nothing waits for a consumer.
+        """
+        if not self._running or self._mesh is None:
+            raise RuntimeError(
+                "the mesh is not running, so the event was not published; check the broker "
+                "log for why the mesh adapter did not start"
+            )
         await self._mesh.publish(event, topic=topic)
 
     async def send_directed_message(
@@ -277,6 +297,8 @@ class SkuldMeshAdapter:
             source_peer_id=event.source,
             prompt=prompt,
             event_type=event_type,
+            in_reply_to=str(payload.get(IN_REPLY_TO_KEY) or ""),
+            correlation_id=str(payload.get(CORRELATION_KEY) or ""),
         )
         answer = await self._accept(envelope)
         if answer["status"] != "accepted":
@@ -285,9 +307,18 @@ class SkuldMeshAdapter:
             )
 
     def _mesh_message(
-        self, *, message_id: str, source_peer_id: str, prompt: str, event_type: str
+        self,
+        *,
+        message_id: str,
+        source_peer_id: str,
+        prompt: str,
+        event_type: str,
+        in_reply_to: str = "",
+        correlation_id: str = "",
     ) -> PeerMessage:
         content = f"[Request for event type {event_type}]\n{prompt}" if event_type else prompt
+        if correlation_id:
+            content = f"[Correlation {correlation_id}]\n{content}"
         return PeerMessage(
             message_id=message_id,
             sender=PeerAddress(PeerKind.MESH_PEER, source_peer_id, name=source_peer_id),
@@ -295,4 +326,5 @@ class SkuldMeshAdapter:
             sent_at=datetime.now(UTC),
             content=content,
             reply=ReplyRoute(ReplyKind.MESH, source_peer_id),
+            in_reply_to=in_reply_to,
         )
