@@ -70,6 +70,9 @@ export interface SessionRef {
   title: string;
   /** Notes reach it as a chat message only while it runs. */
   running: boolean;
+  /** The workflow run the session works for, and its role there, when it is one. */
+  runSlug?: string;
+  member?: string;
 }
 
 export interface Artifact {

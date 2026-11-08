@@ -25,7 +25,12 @@ interface ForgeSession {
   id: string;
   name: string;
   status: string;
+  tracker_issue_id?: string | null;
+  coordination?: { role?: string | null } | null;
 }
+
+/** Ting tags each session of a workflow run `workflow:<run slug>`. */
+const WORKFLOW_RUN_TAG = 'workflow:';
 
 interface ForgeInstance {
   id: string;
@@ -87,11 +92,18 @@ export function buildRunLogHttpAdapter(
         const session = await client.get<ForgeSession>(
           `/sessions/${encodeURIComponent(sessionId)}${query({ instance_id: instanceId })}`,
         );
+        const tag = session.tracker_issue_id ?? '';
         return {
           sessionId: session.id,
           instanceId,
           title: session.name,
           running: session.status === RUNNING,
+          ...(tag.startsWith(WORKFLOW_RUN_TAG)
+            ? {
+                runSlug: tag.slice(WORKFLOW_RUN_TAG.length),
+                member: session.coordination?.role ?? '',
+              }
+            : {}),
         };
       } catch (error) {
         if (error instanceof ApiClientError && error.status === NOT_FOUND) return null;

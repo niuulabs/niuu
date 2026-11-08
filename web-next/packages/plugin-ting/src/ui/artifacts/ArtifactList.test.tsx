@@ -98,6 +98,10 @@ function setup({
   projectId,
   page = false,
   session = vi.fn(async (sessionId: string) => SESSIONS[sessionId] ?? null),
+  campaigns = [
+    run('a2a-plan', 'blocked', 'needsAttention'),
+    run('a2a-tool', 'completed', 'completed'),
+  ],
 }: {
   reviews?: ReviewItem[];
   publications?: IRunLogService['publications'];
@@ -105,14 +109,12 @@ function setup({
   projectId?: string;
   page?: boolean;
   session?: IRunLogService['session'];
+  campaigns?: WorkSummary[];
 } = {}) {
   const work = {
     list: vi.fn().mockResolvedValue({
       projects: [],
-      campaigns: [
-        run('a2a-plan', 'blocked', 'needsAttention'),
-        run('a2a-tool', 'completed', 'completed'),
-      ],
+      campaigns,
       executions: [],
       executionNextCursor: null,
       coverage: [],
@@ -223,6 +225,42 @@ describe('ArtifactList', () => {
     const row = within(waiting).getByText('Developer Planning').closest('a');
     expect(row).toHaveAttribute('href', '/ting/artifacts/a2a-plan?returnTo=%2Fhere');
     expect(row).toHaveTextContent('Waiting at a gate · nothing presented yet');
+  });
+
+  it("lists a step run's files from every member session, under the run", async () => {
+    // A step-engine run has no session of its own: each member works in its own.
+    const stepRun = { ...run('n587', 'running', 'active'), title: 'Live-run probe', session: null };
+    setup({
+      campaigns: [stepRun],
+      publications: vi.fn(async (host: string | null) =>
+        host === 'valhalla'
+          ? [
+              presented(1, 'session-coder', 'notes', '2026-11-08T22:58:00Z'),
+              presented(2, 'session-reviewer', 'review', '2026-11-08T23:00:00Z'),
+            ]
+          : [],
+      ),
+      session: vi.fn(async (sessionId: string) => ({
+        sessionId,
+        instanceId: 'valhalla',
+        title: `wf-n587-${sessionId.slice(8)}`,
+        running: true,
+        runSlug: 'n587',
+        member: sessionId.slice(8),
+      })),
+    });
+
+    const group = await screen.findByRole('region', { name: 'No project' });
+    await waitFor(() => expect(within(group).getAllByTestId('artifact-row')).toHaveLength(2));
+    const [review, notes] = within(group).getAllByTestId('artifact-row');
+    expect(review).toHaveAttribute(
+      'href',
+      '/ting/artifacts/n587?artifact=session-reviewer%3Areview&returnTo=%2Fhere',
+    );
+    expect(notes).toHaveAttribute(
+      'href',
+      '/ting/artifacts/n587?artifact=session-coder%3Anotes&returnTo=%2Fhere',
+    );
   });
 
   it('says which hosts and sessions could not be read, and why', async () => {

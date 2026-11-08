@@ -19,6 +19,7 @@ import {
   type SessionRef,
   RUN_ENDED,
 } from '../domain/artifacts';
+import type { WorkSummary } from '../domain/work';
 import { mergeWorkPages, useReviews, useWorkCollection } from './useWork';
 
 /** A running session may present again; what was presented is read again on this cadence. */
@@ -108,13 +109,24 @@ export function useArtifacts(projectId?: string) {
     queryKey: ['ting', 'artifacts', 'hosts'],
     queryFn: () => runLog.hosts(),
   });
-  const allRuns = useMemo(() => {
+  // Every run Work lists, by slug. A step-engine run has no session of its own: it is
+  // listed with none, and each member session that presented files is joined to it below.
+  const summaries = useMemo(() => {
     const merged = mergeWorkPages(work.data?.pages);
-    if (!merged) return [];
-    return [...merged.campaigns, ...merged.executions]
-      .map(runRef)
-      .filter((run): run is RunRef => run !== null);
+    if (!merged) return new Map<string, WorkSummary>();
+    return new Map(
+      [...merged.campaigns, ...merged.executions].flatMap((item) =>
+        item.campaignSlug ? [[item.campaignSlug, item] as const] : [],
+      ),
+    );
   }, [work.data]);
+  const allRuns = useMemo(
+    () =>
+      [...summaries.values()]
+        .map((item) => runRef(item) ?? runWithSessions(item, []))
+        .filter((run): run is RunRef => run !== null),
+    [summaries],
+  );
   const inProject = useMemo(() => {
     if (!projectId) return null;
     return new Set(
@@ -123,7 +135,12 @@ export function useArtifacts(projectId?: string) {
   }, [projectId, projects.data]);
   const ready = !projectId || Boolean(projects.data);
   const runs = useMemo(
-    () => (ready ? allRuns.filter((run) => !inProject || inProject.has(run.sessionId)) : []),
+    () =>
+      ready
+        ? allRuns.filter(
+            (run) => !inProject || (run.sessionId !== '' && inProject.has(run.sessionId)),
+          )
+        : [],
     [allRuns, inProject, ready],
   );
   const hosts = useMemo(
@@ -181,12 +198,26 @@ export function useArtifacts(projectId?: string) {
       const lookup = sessions[index];
       if (!lookup || lookup.data === undefined) return;
       const session = lookup.data ?? goneSession(item.sessionId, item.host);
-      for (const artifact of sessionArtifacts(session, byHost.get(item.host) ?? [])) {
-        all.push({ ...artifact, project: sessionProjects.get(item.sessionId) ?? null });
-      }
+      const published = byHost.get(item.host) ?? [];
+      const project = sessionProjects.get(item.sessionId) ?? null;
+      // A member session of a run Work lists presents for that run.
+      const summary = session.runSlug ? summaries.get(session.runSlug) : undefined;
+      const run = summary
+        ? runWithSessions(summary, [
+            {
+              sessionId: session.sessionId,
+              instanceId: session.instanceId,
+              member: session.member ?? '',
+            },
+          ])
+        : null;
+      const artifacts = run
+        ? artifactsFromPublications(run, published, waiting)
+        : sessionArtifacts(session, published);
+      for (const artifact of artifacts) all.push({ ...artifact, project });
     });
     return newestFirst(all);
-  }, [runs, byHost, waiting, sessionProjects, others, sessions]);
+  }, [runs, byHost, waiting, sessionProjects, others, sessions, summaries]);
 
   const waitingRuns = useMemo((): WaitingRun[] => {
     const presented = new Set(rows.flatMap((row) => (row.run ? [row.run.slug] : [])));
