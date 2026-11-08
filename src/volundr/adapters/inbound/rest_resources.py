@@ -3,11 +3,11 @@
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
 from niuu.domain.guild_membership import GuildMembership
-from volundr.adapters.inbound.rest_guild import INSTANCE_UNKNOWN_DETAIL, NOT_JOINED_DETAIL
+from volundr.adapters.inbound.rest_guild import own_instance
 from volundr.domain.ports import ResourceProvider
 
 logger = logging.getLogger(__name__)
@@ -133,21 +133,7 @@ def create_forge_cluster_resources_router(
             description="Guild instance id; must be this node's own when given",
         ),
     ) -> dict[str, Any]:
-        if membership is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_JOINED_DETAIL)
-        instance = membership.instance
-        if instance is None:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-                INSTANCE_UNKNOWN_DETAIL.format(guild_url=membership.guild_url),
-            )
-        if instance_id is not None and instance_id != instance.id:
-            raise HTTPException(
-                status.HTTP_404_NOT_FOUND,
-                f"Instance {instance_id} is not this Forge node ({instance.name}, "
-                f"{instance.id}); read other Forges through the Guild at "
-                f"{membership.guild_url}",
-            )
+        instance = own_instance(membership, instance_id)
         info = await resource_provider.discover()
         resource_types = [
             {

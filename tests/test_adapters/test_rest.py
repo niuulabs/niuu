@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from niuu.domain.guild_membership import GuildInstance, GuildMembership
 from niuu.domain.models import Principal
 from tests.conftest import (
     InMemoryPricingProvider,
@@ -2373,6 +2374,82 @@ class TestGetStats:
         assert data["total_sessions"] == 0
         assert data["tokens_today"] == 0
         assert data["cost_today"] == 0.0
+
+
+NOATUN = GuildInstance(id="70b502d8", name="Noatun", slug="noatun")
+
+
+def _node_client(
+    service: SessionService,
+    stats_service: StatsService,
+    membership: GuildMembership | None,
+) -> TestClient:
+    app = FastAPI()
+    app.include_router(
+        create_router(
+            service,
+            stats_service,
+            session_participant_service=make_session_participant_service(service),
+            guild_membership=membership,
+        )
+    )
+    return TestClient(app)
+
+
+class TestNodeInstanceFields:
+    """A node joined to a Guild names itself on its sessions and stats, as the facade does."""
+
+    async def test_sessions_and_stats_carry_the_nodes_instance(
+        self, service: SessionService, stats_service: StatsService
+    ):
+        await service.create_session(
+            "On Noatun",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        membership = GuildMembership(guild_url="https://guild.example", instance=NOATUN)
+        with _node_client(service, stats_service, membership) as client:
+            sessions = client.get("/api/v1/forge/sessions").json()
+            stats = client.get("/api/v1/forge/stats", params={"instance_id": NOATUN.id})
+
+        assert [(s["instance_id"], s["instance_name"], s["instance_slug"]) for s in sessions] == [
+            ("70b502d8", "Noatun", "noatun")
+        ]
+        assert stats.status_code == 200
+        assert stats.json()["instance_id"] == "70b502d8"
+        assert stats.json()["instance_name"] == "Noatun"
+        assert stats.json()["tokens_today"] == 50000
+
+    def test_stats_for_another_forge_is_404(
+        self, service: SessionService, stats_service: StatsService
+    ):
+        membership = GuildMembership(guild_url="https://guild.example", instance=NOATUN)
+        with _node_client(service, stats_service, membership) as client:
+            response = client.get("/api/v1/forge/stats", params={"instance_id": "ymir-id"})
+
+        assert response.status_code == 404
+        assert "not this Forge node (Noatun, 70b502d8)" in response.json()["detail"]
+
+    def test_stats_by_instance_on_an_unjoined_node_is_404(
+        self, service: SessionService, stats_service: StatsService
+    ):
+        with _node_client(service, stats_service, None) as client:
+            by_instance = client.get("/api/v1/forge/stats", params={"instance_id": NOATUN.id})
+            plain = client.get("/api/v1/forge/stats")
+
+        assert by_instance.status_code == 404
+        assert plain.status_code == 200
+        assert plain.json()["instance_id"] is None
+
+    def test_stats_by_instance_before_the_instance_is_recorded_is_503(
+        self, service: SessionService, stats_service: StatsService
+    ):
+        membership = GuildMembership(guild_url="https://guild.example")
+        with _node_client(service, stats_service, membership) as client:
+            response = client.get("/api/v1/forge/stats", params={"instance_id": NOATUN.id})
+
+        assert response.status_code == 503
+        assert "https://guild.example" in response.json()["detail"]
 
 
 class TestListRepos:

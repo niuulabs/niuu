@@ -13,6 +13,7 @@ from volundr.domain.models import EventType, RealtimeEvent, TimelineResponse
 from volundr.domain.ports import EventBroadcaster
 
 if TYPE_CHECKING:
+    from niuu.domain.guild_membership import GuildInstance
     from sleipnir.ports.events import SleipnirPublisher
     from volundr.domain.models import Session, TimelineEvent
 
@@ -74,6 +75,7 @@ class InMemoryEventBroadcaster(EventBroadcaster):
         max_queue_size: int = 100,
         sleipnir_publisher: SleipnirPublisher | None = None,
         sleipnir_source: str = "volundr",
+        guild_instance: GuildInstance | None = None,
     ):
         """Initialize the broadcaster.
 
@@ -85,6 +87,9 @@ class InMemoryEventBroadcaster(EventBroadcaster):
                 platform event bus in addition to local SSE clients.
             sleipnir_source: Source string used in Sleipnir events (e.g.
                 ``"volundr"`` or ``"volundr:prod"``).
+            guild_instance: This node's entry in its Guild registry. Session
+                events then carry its ``instance_*`` fields, as the session
+                responses do, so a client of this node alone can place them.
         """
         self._subscribers: set[asyncio.Queue[RealtimeEvent]] = set()
         self._max_queue_size = max_queue_size
@@ -92,6 +97,7 @@ class InMemoryEventBroadcaster(EventBroadcaster):
         self._sleipnir_publisher = sleipnir_publisher
         self._sleipnir_source = sleipnir_source
         self._sleipnir_type_map: dict[str, str] | None = None
+        self._instance_fields = guild_instance.fields() if guild_instance else {}
 
     async def publish(self, event: RealtimeEvent) -> None:
         """Publish an event to all connected subscribers.
@@ -238,6 +244,7 @@ class InMemoryEventBroadcaster(EventBroadcaster):
         return RealtimeEvent(
             type=event_type,
             data={
+                **self._instance_fields,
                 "id": str(session.id),
                 "name": session.name,
                 "model": session.effective_model,
