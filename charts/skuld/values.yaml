@@ -238,13 +238,6 @@ git:
     pullPolicy: IfNotPresent
 
 # Broker configuration (Skuld application settings)
-workflow:
-  # -- Deployment-owned verifier adapter and kwargs for deterministic evidence gates.
-  # Imported workflows specify policies, never signing keys or trust configuration.
-  evidenceVerifier: null
-  # -- Artifact digest resolver adapter and kwargs (such as a mounted workspace root).
-  evidenceArtifacts: null
-
 # -- Workflow step hosting. Forge sets enabled for a session a workflow run launched as a step
 # host (the create request's workflow_step_host). Skuld then serves the workflow step API and
 # offers the workflow_step_close tool; an ordinary session leaves both off.
