@@ -72,6 +72,15 @@ ingress:
   # -- TLS configuration
   tls: []
 
+# One decision about proof of who published a platform event. On by default: Ting signs the
+# events it publishes with the workload-identity signing key below (workloadIdentity.signingKey)
+# and acts only on events a platform service signed. `required: false` turns both off, logged
+# at startup; it should match the Volundr chart's mesh.attestation.required.
+mesh:
+  attestation:
+    # -- false runs without proof of who published a platform event. Null keeps true.
+    required: null
+
 config:
   logLevel: "info"
   logFormat: "json"

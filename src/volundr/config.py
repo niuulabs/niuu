@@ -62,7 +62,7 @@ from niuu.domain.presented_files import (
 )
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.forge_mcp.models import ForgeMcpGrant
-from niuu.mesh.config import MeshAttestationConfig
+from niuu.mesh.config import MeshSettings
 from personas.config import PersonaSourceConfig
 from skuld.tool_result_preview import PREVIEW_EDGE_LIMIT, PREVIEW_MAX_EDGE, PREVIEW_MIN_EDGE
 from volundr.compute.config import ComputeConfig
@@ -1801,20 +1801,6 @@ class ForgeMcpSessionTokenConfig(BaseModel):
         default_factory=dict,
         description="Mapping of projection kwarg names to env vars holding secret values.",
     )
-
-
-class MeshSettings(BaseModel):
-    """The one decision about proof of who sent a mesh message, for everything Forge runs.
-
-    ``attestation.required`` governs Forge's own signers (residents and the revocation
-    publisher) and the sessions Forge launches: it is applied to the local pod manager's
-    ``mesh`` setting and the Flux pod manager's ``session_defaults.mesh``, and a value
-    set there that disagrees with it is refused at startup. False is the operator's
-    decision to run the mesh unauthenticated: Forge logs that once at startup and reports
-    it on ``/health``.
-    """
-
-    attestation: MeshAttestationConfig = Field(default_factory=MeshAttestationConfig)
 
 
 class ForgeMcpMeshIdentityConfig(BaseModel):

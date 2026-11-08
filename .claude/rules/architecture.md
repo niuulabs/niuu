@@ -257,9 +257,20 @@ never leaves its process.
   networked bus) ends it sooner.
 - **Discovery announcements are signed** by the discovery adapters that share the bus
   (`event_bus`, `sleipnir`) through the same peer identity (`MeshAttestor`), bound to the peer
-  they describe and ordered per peer. Platform events (`ObservationRelay`) are published by
-  services that hold no mesh certificate and are not signed; keep mesh peers off the platform
-  event subjects with bus permissions.
+  they describe and ordered per peer.
+- **Platform events are signed by platform services.** Forge (its `authority` certificate) and
+  every other service that publishes on the bus (Ting; Mímir and Bifröst when wired) sign them
+  through `niuu.mesh.platform_events.SigningBus`, and a subscriber that *acts* on one
+  (`ObservationRelay`, Ting's event triggers) checks it with `PlatformEventVerifier`. The
+  certificate kind is `service` (no scopes, no memberships, peer `service:<name>`) and a service
+  issues it to itself, in process, with the key it already has: the workload-identity signing key
+  where the deployment configures one, else the host key file Forge signs session credentials
+  with (`niuu.mesh.platform_identity`). There is no issuing route: the key is the proof that a
+  service is part of the platform, so a service without it (Ting in its own pod without
+  `workloadIdentity.signingKey`) cannot sign and, with signing required, fails startup naming the
+  fix. A `session` or `resident` certificate is refused as `not_platform_service`. The limits: a
+  platform service can publish any platform event, and the key is shared by every service that
+  holds it, so it is a platform-wide secret, not a per-service one.
 - **Fail closed, counted, never silent.** An unverifiable request gets a signed `refused`
   reply naming the reason; an unverifiable event is not handled; an unverifiable reply
   raises. Each counts on `niuu.mesh.attestation.refusals` by reason, direction and claimed

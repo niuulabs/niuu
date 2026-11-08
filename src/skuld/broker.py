@@ -1073,6 +1073,9 @@ class Broker(
                 from sleipnir.ports.events import SleipnirSubscriber
 
                 sleipnir_subscriber = self._mesh_adapter.sleipnir_subscriber
+                # Platform events are not mesh events: the relay reads the bus itself and
+                # checks each one it acts on (below), so it never sees the mesh-only wrapper.
+                raw_subscriber = sleipnir_subscriber
                 if sleipnir_subscriber is not None and self._mesh_attested is not None:
                     # The room trusts what it shows: only verified mesh events, with the
                     # sender and the projection taken from the proof, not the envelope.
@@ -1085,6 +1088,7 @@ class Broker(
                     # Only use it if it actually satisfies the Subscriber interface.
                     if isinstance(self._sleipnir_publisher, SleipnirSubscriber):
                         sleipnir_subscriber = self._sleipnir_publisher
+                        raw_subscriber = sleipnir_subscriber
                     else:
                         logger.warning(
                             "Sleipnir publisher does not implement SleipnirSubscriber"
@@ -1131,7 +1135,8 @@ class Broker(
                             )
 
                         self._observation_relay = ObservationRelay(
-                            sleipnir_subscriber,
+                            raw_subscriber,
+                            platform_verifier=self._platform_event_verifier(),
                             participant=lambda: self._room_bridge.participant(resident_peer),
                             patterns=self._settings.observation_relay.event_patterns,
                             send_directed=_relay_directed,
@@ -1149,6 +1154,18 @@ class Broker(
                 await self._mesh_attested.signer.stop()
                 self._mesh_attested = None
             raise
+
+    def _platform_event_verifier(self) -> Any | None:
+        """Checks the platform events this session acts on; ``None`` while signing is off."""
+        if self._mesh_attested is None:
+            return None
+        from niuu.mesh.platform_events import PlatformEventVerifier  # noqa: PLC0415
+
+        return PlatformEventVerifier(
+            self._mesh_attested.verifier,
+            event_max_age_s=self._settings.mesh.attestation.event_max_age_s,
+            on_refusal=self.record_unverified_mesh_sender,
+        )
 
     async def _attest_mesh(self, mesh: Any, own_peer_id: str) -> Any:
         """Wrap the mesh so it signs and verifies; fatal when this session cannot sign."""

@@ -30,6 +30,7 @@ from niuu.config import CorsConfig, HttpAuthAdapterConfig, InstanceRegistryConfi
 from niuu.config_models import WorkloadIdentityConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
+from niuu.mesh.config import MeshSettings
 
 
 # Config file search paths (in order of priority).
@@ -1330,6 +1331,7 @@ class Settings(BaseSettings):
     authorization: AuthorizationAdapterConfig = Field(default_factory=AuthorizationAdapterConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
+    mesh: MeshSettings = Field(default_factory=MeshSettings)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     auth_mode: str = Field(
         default="envoy",

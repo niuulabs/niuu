@@ -71,12 +71,15 @@ KIND_SESSION = "session"
 KIND_RESIDENT = "resident"
 #: ``kind`` of Forge's own certificate: the only holder that may publish revocations.
 KIND_AUTHORITY = "authority"
+#: ``kind`` of a platform service (Ting, Mímir, ...): may sign platform events, not mesh messages.
+KIND_SERVICE = "service"
 
 PURPOSE_RPC = "rpc"
 PURPOSE_RPC_REPLY = "rpc_reply"
 PURPOSE_EVENT = "event"
 PURPOSE_REVOCATION = "revocation"
 PURPOSE_ANNOUNCE = "announce"
+PURPOSE_PLATFORM_EVENT = "platform_event"
 
 COUNTER_REFUSALS = "niuu.mesh.attestation.refusals"
 COUNTER_REVOCATIONS = "niuu.mesh.attestation.revocations"
@@ -104,6 +107,7 @@ class AttestationReason(StrEnum):
     NOT_MEMBER = "not_member"
     REVOKED = "revoked"
     NOT_AUTHORITY = "not_authority"
+    NOT_PLATFORM_SERVICE = "not_platform_service"
     TRUST_UNAVAILABLE = "trust_unavailable"
 
 
@@ -511,6 +515,7 @@ class MeshAttestationVerifier:
         *,
         claimed: str = "",
         authority: bool = False,
+        platform: bool = False,
         max_age_ms: int | None = None,
         check_membership: bool = True,
     ) -> VerifiedSender:
@@ -577,8 +582,14 @@ class MeshAttestationVerifier:
                 f"only Forge may send this; the sender is a {certificate.kind}",
                 claimed=who,
             )
+        if platform and certificate.kind not in {KIND_AUTHORITY, KIND_SERVICE}:
+            raise AttestationRefusedError(
+                AttestationReason.NOT_PLATFORM_SERVICE,
+                f"only a platform service may publish this; the sender is a {certificate.kind}",
+                claimed=who,
+            )
         self._check_revoked(certificate, now_ms_value)
-        if check_membership and certificate.kind != KIND_AUTHORITY:
+        if check_membership and certificate.kind not in {KIND_AUTHORITY, KIND_SERVICE}:
             self._check_membership(certificate)
         return VerifiedSender(
             peer_id=certificate.peer_id,
@@ -663,7 +674,7 @@ def _certificate_from(token: str, claims: Mapping[str, Any], key_id: str) -> Mes
     if (
         not isinstance(peer_id, str)
         or not peer_id
-        or kind not in {KIND_SESSION, KIND_RESIDENT, KIND_AUTHORITY}
+        or kind not in {KIND_SESSION, KIND_RESIDENT, KIND_AUTHORITY, KIND_SERVICE}
         or not isinstance(memberships, list)
         or not all(isinstance(item, str) for item in memberships)
         or not isinstance(key_text, str)
@@ -701,9 +712,11 @@ __all__ = [
     "COUNTER_REVOCATIONS",
     "KIND_AUTHORITY",
     "KIND_RESIDENT",
+    "KIND_SERVICE",
     "KIND_SESSION",
     "MESH_AUDIENCE",
     "PURPOSE_ANNOUNCE",
+    "PURPOSE_PLATFORM_EVENT",
     "PURPOSE_EVENT",
     "PURPOSE_RPC",
     "PURPOSE_RPC_REPLY",

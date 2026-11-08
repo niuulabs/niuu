@@ -21,6 +21,8 @@ from niuu.domain.services.mesh_certificate import MeshCertificateIssuer
 from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.mesh.attestation import KIND_AUTHORITY, MeshSigner
 from niuu.mesh.config import MeshAttestationConfig
+from niuu.mesh.platform_events import SigningBus
+from niuu.mesh.platform_identity import start_platform_signer
 from niuu.ports.credentials import CredentialRefreshLockPort
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
@@ -1012,3 +1014,25 @@ async def _start_sleipnir_bus(settings: Settings) -> Any | None:
         "Sleipnir integration enabled: adapter=%s", settings.sleipnir.adapter.rsplit(".", 1)[-1]
     )
     return bus
+
+
+async def _sign_forge_platform_events(
+    settings: Settings, bus: Any | None, revocations: Any | None
+) -> Any | None:
+    """Forge's bus with its platform events signed, or the bus untouched while signing is off.
+
+    Forge signs with its ``authority`` certificate (the revocation publisher's); without one,
+    as a platform service of its own. Mesh events keep the signatures their peers give them.
+    """
+    if bus is None or not settings.mesh.attestation.required:
+        return bus
+    signer = (
+        revocations.signer
+        if revocations is not None
+        else await start_platform_signer(
+            "forge", settings.mesh.attestation, workload_identity=settings.workload_identity
+        )
+    )
+    if signer is None:
+        return bus
+    return SigningBus(bus, signer)

@@ -661,3 +661,15 @@ def test_ting_chart_ships_no_flock_flow_resources(tmp_path: Path) -> None:
 
     assert "flock-flows" not in rendered
     assert "flockFlows" not in (CHART_DIR / "values.yaml").read_text(encoding="utf-8")
+
+
+def test_mesh_signing_renders_nothing_by_default_and_the_one_switch_when_set(tmp_path):
+    default = _config_from_rendered(_render_ting_chart(tmp_path, {}))
+    assert "mesh" not in default
+    assert Settings(**default).mesh.attestation.required is True
+
+    off = _config_from_rendered(
+        _render_ting_chart(tmp_path, {"mesh": {"attestation": {"required": False}}})
+    )
+    assert off["mesh"] == {"attestation": {"required": False}}
+    assert Settings(**off).mesh.attestation.required is False

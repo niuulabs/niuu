@@ -240,3 +240,39 @@ class TestVisible:
             "required": False,
             "state": "unauthenticated",
         }
+
+
+class TestPlatformServicesFollowTheSwitch:
+    def test_forge_and_ting_read_the_same_value_from_the_mini_mode_environment(
+        self, monkeypatch
+    ) -> None:
+        from ting.config import Settings as TingSettings
+
+        settings = CLISettings(mode="mini", mesh={"attestation": {"required": False}})
+        for key, value in _resolve_local_pod_manager_env(settings).items():
+            monkeypatch.setenv(key, value)
+
+        assert Settings().mesh.attestation.required is False
+        assert TingSettings().mesh.attestation.required is False
+
+    def test_the_default_is_signing_in_both(self) -> None:
+        from ting.config import Settings as TingSettings
+
+        assert Settings().mesh.attestation.required is True
+        assert TingSettings().mesh.attestation.required is True
+
+    async def test_a_session_checks_platform_events_only_while_signing_is_on(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from skuld.broker import Broker
+        from skuld.config import SkuldSettings
+
+        monkeypatch.setitem(SkuldSettings.model_config, "yaml_file", [])
+        broker = Broker(
+            settings=SkuldSettings(session={"id": "s1", "workspace_dir": str(tmp_path)})
+        )
+        assert broker._platform_event_verifier() is None  # noqa: SLF001
+
+        broker._mesh_attested = type("A", (), {"verifier": object()})()  # noqa: SLF001
+        verifier = broker._platform_event_verifier()  # noqa: SLF001
+        assert verifier is not None
