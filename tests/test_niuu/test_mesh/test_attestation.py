@@ -1116,3 +1116,10 @@ class TestDecoratorSurface:
         await _settle()
         assert not [e for e in seen if e.payload.get("ravn_source") == "a"]
         assert listener.refusals[-1][0].reason is AttestationReason.BINDING_MISMATCH
+
+
+def test_a_revocation_notice_is_not_projected_into_a_room() -> None:
+    from niuu.mesh.projection import project_mesh_event
+
+    event = replace(_event("forge"), type=MeshEventType.REVOCATION)
+    assert project_mesh_event(event) == []

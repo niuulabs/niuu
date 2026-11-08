@@ -608,11 +608,72 @@ extraVolumeMounts: []
 # configured persistent storage.
 replicaCount: 1
 
-# -- Mesh configuration for session-local agent flocks.
+# Mesh configuration for session-local agent flocks. Every value below is a key of Skuld's
+# `mesh` settings (skuld.config.MeshConfig), rendered into the broker's config file. A value
+# left null (or empty) keeps Skuld's own default. Forge sets them per session through the
+# pod manager's `session_defaults` (the volundr chart's podManager.kwargs) or a session
+# contributor, as it does for every other value of this chart.
 mesh:
+  # -- Join the flock as a mesh peer (mesh.enabled). Adds the session's mesh tools:
+  # mesh_send, mesh_publish and mesh_peers.
   enabled: false
+  # -- Mesh transport: nng, nats, in_process or a Sleipnir transport class path (mesh.transport)
   transport: nng
+  # -- Container ports to expose for direct mesh peers (not a Skuld setting)
   peerPorts: []
+  # -- This peer's id on the mesh (mesh.peer_id). Empty uses the pod's host name.
+  peerId: ""
+  # -- Flock realm the peer announces in and discovers within (mesh.realm_id). Peers in
+  # another realm are not seen.
+  realmId: ""
+  # -- Persona name announced when the session has no pinned persona (mesh.persona).
+  # Null keeps `coder`. A pinned persona's id is announced instead.
+  persona: null
+  # -- What the session is for, announced to peers so they can choose whom to talk to
+  # (mesh.role). Empty announces the pinned persona's id.
+  role: ""
+  # -- What the session does, announced to peers (mesh.description). The pinned persona's
+  # own description wins when it has one.
+  description: ""
+  # -- Capabilities announced to peers (mesh.capabilities). Null keeps Skuld's default.
+  capabilities: null
+  # -- Tools announced to peers (mesh.tools). Null keeps Skuld's default.
+  tools: null
+  # -- Topics the session subscribes to (mesh.consumes_event_types). Null keeps
+  # `["code.requested"]`. A pinned persona's `consumes` are subscribed in addition.
+  consumesEventTypes: null
+  # -- Topics mesh_publish may publish (mesh.publish_event_types), in addition to the pinned
+  # persona's `produces`. A topic in neither is refused.
+  publishEventTypes: null
+  # -- Attention hint (0.0-1.0) on events mesh_publish publishes (mesh.published_event_urgency).
+  # Null keeps 0.8.
+  publishedEventUrgency: null
+  # -- NNG transport addresses (mesh.nng) when `transport` is nng. Empty keeps
+  # tcp://127.0.0.1:0 for both.
+  nng:
+    # -- Publish/subscribe address (mesh.nng.pub_sub_address)
+    pubSubAddress: ""
+    # -- Request/reply address (mesh.nng.req_rep_address)
+    reqRepAddress: ""
+  # -- Mesh adapter entries (mesh.adapters): each has an `adapter` alias or class path and
+  # that adapter's own settings. Null keeps none.
+  adapters: null
+  # -- Discovery adapter entries (mesh.discovery_adapters), same shape as `adapters`. With
+  # none configured the session cannot list peers (mesh_peers is an error). Null keeps none.
+  discoveryAdapters: null
+  # -- NATS JetStream settings (mesh.nats), as a map of niuu.mesh.config.MeshNatsConfig
+  # keys, e.g. `{servers: ["nats://nats:4222"], stream_name: ravn_environment}`.
+  nats: {}
+  # -- Seconds a mesh request waits for the peer's answer (mesh.rpc_timeout_s). Null keeps 10.
+  rpcTimeoutS: null
+  # -- Replies the mesh remembers so a retried request is answered once
+  # (mesh.rpc_reply_cache_size). Null keeps Skuld's default.
+  rpcReplyCacheSize: null
+  # -- Largest diff, in bytes, a peer may fetch from this session (mesh.diff_max_bytes). Null
+  # keeps 8192.
+  diffMaxBytes: null
+  # -- Seconds a diff request may take (mesh.diff_timeout_s). Null keeps 10.
+  diffTimeoutS: null
   # Proof of who sent each mesh message. On by default and needs no setting: the session asks
   # the Forge that launched it for a certificate with the credential it already holds
   # (forgeMcp.tokenFile; Kubernetes and Flux sessions need Forge's

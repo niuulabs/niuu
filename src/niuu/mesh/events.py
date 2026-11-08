@@ -21,6 +21,7 @@ class MeshEventType(StrEnum):
     OUTCOME = "outcome"  # emitted when persona produces outcome (mesh event routing)
     HELP_NEEDED = "help_needed"  # emitted when persona needs human input to proceed
     USAGE = "usage"  # emitted when a turn reports token usage for session accounting
+    REVOCATION = "revocation"  # Forge: a session stopped; peers drop it (never shown in rooms)
 
 
 @dataclass(frozen=True)

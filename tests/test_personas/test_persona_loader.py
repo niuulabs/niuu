@@ -523,3 +523,12 @@ class TestPersonaNamePaths:
         with pytest.raises(PersonaDocumentError):
             loader.save(config)
         assert not (tmp_path / "escape.yaml").exists()
+
+
+def test_a_personas_description_is_read_from_its_yaml() -> None:
+    from personas.domain.persona import parse_persona
+
+    persona = parse_persona("name: p\ndescription: ' Reviews code. '\n")
+
+    assert persona.description == "Reviews code."
+    assert parse_persona("name: q\n").description == ""

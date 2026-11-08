@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import socket
 import typing
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -14,7 +16,10 @@ from niuu.adapters.workload_identity.key_file import (
 )
 from niuu.config_models import WorkloadIdentityConfig
 from niuu.domain.services.forge_session_token import ForgeSessionTokenService
+from niuu.domain.services.mesh_certificate import MeshCertificateIssuer
 from niuu.domain.services.workload_identity import WorkloadIdentityService
+from niuu.mesh.attestation import KIND_AUTHORITY, MeshSigner
+from niuu.mesh.config import MeshAttestationConfig
 from niuu.ports.credentials import CredentialRefreshLockPort
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
@@ -26,7 +31,9 @@ from volundr.adapters.inbound.host_join_listener import (
 from volundr.adapters.outbound.contributors.workflow_execution_credentials import (
     WorkflowExecutionCredentialContributor,
 )
+from volundr.adapters.outbound.mesh_revocation import MeshRevocationPublisher
 from volundr.config import ALLOW_ALL_IDENTITY_ADAPTERS, Settings
+from volundr.domain.mesh_peer_claims import MeshPeerClaims
 from volundr.domain.ports import (
     ArchiveStorePort,
     AuthorizationPort,
@@ -45,6 +52,7 @@ from volundr.domain.ports import (
 )
 from volundr.domain.presented_files import PresentedFileStore
 from volundr.domain.services.integration_registry import IntegrationRegistry
+from volundr.domain.services.mesh_identity import ForgeMeshCertificateSource
 from volundr.domain.services.oauth_clients import (
     SOURCE_CONFIGURED,
     OAuthClient,
@@ -64,6 +72,10 @@ KEY_SOURCE_KEY_FILE = "key_file"
 
 class ForgeSessionCredentialsUnavailableError(RuntimeError):
     """Forge session credentials are enabled but no signing key is usable."""
+
+
+class MeshIdentityUnavailableError(RuntimeError):
+    """Mesh identities are enabled but the session-credential signer cannot sign them."""
 
 
 class HostPairingSignerUnavailableError(RuntimeError):
@@ -122,6 +134,81 @@ def _create_forge_session_tokens(
         ttl_seconds=cfg.ttl_seconds,
         key_source=KEY_SOURCE_KEY_FILE,
     )
+
+
+def _create_mesh_certificate_issuer(
+    settings: Settings,
+    session_tokens: ForgeSessionTokenService | None,
+) -> MeshCertificateIssuer | None:
+    """The issuer of mesh certificates, or ``None`` when Forge runs without a mesh identity.
+
+    It signs with the issuer that signs the session credentials, so the same key serves
+    both (the workload-identity key, or Forge's own key file in local mini mode) and the
+    certificates verify against a JWKS the peers can fetch from Forge. No session
+    credentials means no mesh identity. With them enabled the signer must be able to sign
+    mesh certificates; one that cannot is fatal, never "no mesh identity".
+    """
+    cfg = settings.forge_mcp.mesh_identity
+    if not cfg.enabled:
+        logger.info("Mesh identity: disabled (forge_mcp.mesh_identity.enabled)")
+        return None
+    if session_tokens is None:
+        logger.info(
+            "Mesh identity: off because Forge session credentials are disabled "
+            "(forge_mcp.session_tokens.enabled)"
+        )
+        return None
+    signing = session_tokens.signing_issuer
+    if not callable(getattr(signing, "sign_claims", None)) or not callable(
+        getattr(signing, "jwks", None)
+    ):
+        raise MeshIdentityUnavailableError(
+            "forge_mcp.mesh_identity is enabled but the session-credential signer "
+            f"({type(signing).__name__}) cannot sign mesh certificates; use a workload "
+            "identity issuer, or set forge_mcp.mesh_identity.enabled: false."
+        )
+    logger.info("Mesh identity: certificates valid for %ss", cfg.ttl_seconds)
+    return MeshCertificateIssuer(signing, ttl_seconds=cfg.ttl_seconds)
+
+
+def _forge_authority_peer_id(settings: Settings) -> str:
+    """The mesh peer id of this Forge: ``forge:<instance id>``, else its host name."""
+    return f"forge:{settings.projects.instance_id or socket.gethostname()}"
+
+
+async def _create_mesh_revocation_publisher(
+    settings: Settings,
+    issuer: MeshCertificateIssuer,
+    claims: MeshPeerClaims,
+    bus: typing.Any,
+    attestation: MeshAttestationConfig | None = None,
+) -> MeshRevocationPublisher:
+    """Forge's authority peer: a key generated now, certified by Forge itself.
+
+    Raises when the authority certificate cannot be had (for instance another Forge
+    already holds this peer id): a Forge that was asked to publish revocations and cannot
+    must not start as if it did.
+    """
+    attestation = attestation or MeshAttestationConfig()
+    peer_id = _forge_authority_peer_id(settings)
+    source = ForgeMeshCertificateSource(
+        issuer,
+        claims,
+        holder=f"authority:{peer_id}",
+        kind=KIND_AUTHORITY,
+        launch_id=uuid.uuid4().hex,
+        memberships=(),
+    )
+    signer = MeshSigner(
+        source,
+        peer_id,
+        renew_fraction=attestation.renew_fraction,
+        retry_fraction=attestation.retry_fraction,
+    )
+    publisher = MeshRevocationPublisher(bus, signer, attestation=attestation)
+    await publisher.start()
+    logger.info("Mesh revocations: published as %s on the Sleipnir bus", peer_id)
+    return publisher
 
 
 def _create_host_pairing_signer(

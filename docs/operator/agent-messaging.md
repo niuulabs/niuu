@@ -163,6 +163,7 @@ archived.
 | `reply(message_id, content)` | the route's own need | answer a message you received, by the route its sender gave: session, mesh peer or room. A message sent as a notice (no reply route) is refused with the reason |
 | `room_post(room_id, host_session_id, content)` | `message` grant | speak in a room another session hosts. The host records the message in the room as said by this session, and refuses it when the session is not seated in that room |
 | `mesh_send(peer, content, expect_reply)` | mesh enabled on this session | send a peer message to a mesh peer id. Listed only when `mesh.enabled` is true |
+| `mesh_peers(role?, capability?, consumes?, produces?)` | mesh enabled on this session | list the peers on the mesh with what each announced: name, persona, role, description, capabilities, topics consumed and produced, activity state. Facts only (see "Finding a peer"). Listed only when `mesh.enabled` is true |
 | `mesh_publish(topic, content, correlation_id?, in_reply_to?)` | mesh enabled on this session | publish on a declared topic for whoever consumes it (see "Publishing to a topic"). Listed only when `mesh.enabled` is true |
 
 `room_post` takes the hosting session explicitly: the "Relayed by" line of a message from
@@ -234,6 +235,80 @@ error. A published event increments `skuld.peer.messages` with `channel="mesh"`,
 `outcome="refused"` or `"failed"`. There are no caps on topics, events or fan-out; the
 counter and the session status are the visibility. Config: `mesh.publish_event_types`,
 `mesh.published_event_urgency` (the attention hint, 0.0-1.0, default 0.8).
+
+## Finding a peer
+
+An agent chooses whom to talk to; the platform does not route for it. Each Skuld announces
+itself on the mesh with facts taken from its persona and its mesh config, never typed by the
+agent, and `mesh_peers` returns the table of what the session's discovery has heard.
+
+| Field | Where it comes from |
+|---|---|
+| `peer_id`, `name`, `kind` | the peer's mesh id; the session name (what `send_message` and `ask` take as `to`); `skuld`, `ravn`, ... |
+| `persona` | the pinned persona's id, else `mesh.persona` |
+| `role` | `mesh.role`, else the pinned persona's id |
+| `description` | the pinned persona's `description` (a new optional persona field, a sentence or two on what it does), else `mesh.description` |
+| `capabilities` | `mesh.capabilities` |
+| `consumes`, `produces` | the pinned persona's `consumes` / `produces` on top of `mesh.consumes_event_types` / `mesh.publish_event_types` |
+| `activity_state`, `status`, `last_heartbeat` | the peer's own activity state (`idle`, `active`, `tool_executing`, `awaiting_input`, ...), whether it is working (`busy`), and when it last announced |
+
+The filters (`role`, `capability`, `consumes`, `produces`) are exact matches on one announced
+fact and all must hold. The result is in peer id order, which is not a preference: nothing is
+ranked, scored or routed, and the choice is the agent's judgment. A field a peer did not
+announce is empty (an older Skuld, a Ravn that sets no role, an mDNS peer). A session with no
+discovery configured gets an error that names the remedy, never an empty table, which would
+read as "nobody is there".
+
+**Activity is as fresh as the last heartbeat.** The Skuld updates its announced state when its
+activity changes and the next heartbeat carries it, so `activity_state` can lag by a heartbeat
+interval. Check `last_heartbeat` before relying on it. A peer that is `awaiting_input` is
+blocked on a person.
+
+**Which discovery adapters carry the new fields.** `event_bus` (the transport-neutral
+adapter used over NATS and nng) carries role, description and activity state, along with the
+display name, capabilities and topics it already carried. The mDNS, Kubernetes, static and
+AMQP adapters announce what they announced before; their peers show those fields empty.
+Announcements from older and newer participants both parse: unknown fields are ignored and
+missing ones are empty.
+
+**The default flow.**
+
+1. `mesh_peers(role="reviewer")` (or by `capability`, or by a topic it `consumes`).
+2. Read `description` and `activity_state` and pick.
+3. Then one of:
+   - `ask(to=<name>)` to hand it a question and wait for the answer;
+   - `send_message(to=<name>)` to hand it work without waiting;
+   - `mesh_send(peer=<peer_id>)` for a mesh peer that is not a Forge session;
+   - `mesh_publish(topic=<a topic it consumes>)` when the work should reach every peer that
+     consumes the topic, not just the one.
+
+## Configuring the mesh
+
+Everything under Skuld's `mesh` settings (`skuld.config.MeshConfig`) is a value of the skuld
+chart's `mesh` block (`charts/skuld/values.yaml`, documented in its README) and renders
+into the broker's config file. Forge reaches a session pod through the same Helm values
+as for every other setting: the pod manager's `session_defaults`
+(`podManager.kwargs.session_defaults` in the volundr chart) is merged under what the session
+contributors add, and the result is the session's release values. There is no mesh
+contributor: the mesh settings that differ per session (topics, role, description) come from
+the session's pinned persona, which Skuld reads itself, so one set of `session_defaults`
+serves every session of a flock. Set at least `mesh.enabled`, a `mesh.realmId` shared by the
+flock, a transport and a discovery adapter:
+
+```yaml
+podManager:
+  kwargs:
+    session_defaults:
+      mesh:
+        enabled: true
+        realmId: flock-a
+        transport: nats
+        nats: {servers: ["nats://nats:4222"]}
+        discoveryAdapters: [{adapter: event_bus}]
+```
+
+Before the chart rendered these values, `mesh.enabled` and `mesh.transport` did nothing in a
+chart-deployed session.
 
 ## Asking and waiting
 

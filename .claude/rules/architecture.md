@@ -220,7 +220,7 @@ never leaves its process.
   is not a person** (`mesh-peer:<peer id>`). Its scope family is empty and deny-by-default
   (`MESH_PEER_SCOPES`), `credential_allows_route` admits it on **no route at all**, not
   even `identity/me`, and no Forge or Envoy audience list contains `niuu-mesh`. A peer
-  that receives one cannot replay it against Forge. `tests/test_volundr/...` fails if any
+  that receives one cannot replay it against Forge. `tests/test_adapters/test_mesh_identity_rest.py` fails if any
   Forge route admits a `mesh_peer` token.
 - Forge sets every claim: peer id, kind (`session`, `resident`, `authority`), the
   session and launch, the memberships (`tenant:`, `flock:`, `realm:`), and the peer's

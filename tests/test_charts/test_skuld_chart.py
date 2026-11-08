@@ -1133,12 +1133,146 @@ def test_ask_knobs_reach_runtime_configuration():
         SkuldSettings(**_skuld_config("--set", "ask.waitMaxS=300"))
 
 
+MESH_VALUES = {
+    "enabled": True,
+    "transport": "nats",
+    "peerId": "reviewer-1",
+    "realmId": "flock-a",
+    "persona": "reviewer",
+    "role": "reviewer",
+    "description": "Reviews pull requests.",
+    "capabilities": ["review", "git"],
+    "tools": ["codex"],
+    "consumesEventTypes": ["review.requested"],
+    "publishEventTypes": ["review.done"],
+    "publishedEventUrgency": 0.4,
+    "nng": {"pubSubAddress": "tcp://0.0.0.0:7001", "reqRepAddress": "tcp://0.0.0.0:7002"},
+    "adapters": [{"adapter": "nats"}],
+    "discoveryAdapters": [{"adapter": "event_bus", "heartbeat_interval_s": 5}],
+    "nats": {"servers": ["nats://nats:4222"], "stream_name": "flock"},
+    "rpcTimeoutS": 20,
+    "rpcReplyCacheSize": 64,
+    "diffMaxBytes": 4096,
+    "diffTimeoutS": 7,
+    "attestation": {
+        "required": False,
+        "renewFraction": 0.4,
+        "retryFraction": 0.2,
+        "clockSkewS": 60,
+        "eventMaxAgeS": 120,
+    },
+}
+
+#: Each chart value and the key of Skuld's `mesh` settings it renders to.
+MESH_KEYS = {
+    "enabled": "enabled",
+    "transport": "transport",
+    "peerId": "peer_id",
+    "realmId": "realm_id",
+    "persona": "persona",
+    "role": "role",
+    "description": "description",
+    "capabilities": "capabilities",
+    "tools": "tools",
+    "consumesEventTypes": "consumes_event_types",
+    "publishEventTypes": "publish_event_types",
+    "publishedEventUrgency": "published_event_urgency",
+    "nng": "nng",
+    "adapters": "adapters",
+    "discoveryAdapters": "discovery_adapters",
+    "nats": "nats",
+    "rpcTimeoutS": "rpc_timeout_s",
+    "rpcReplyCacheSize": "rpc_reply_cache_size",
+    "diffMaxBytes": "diff_max_bytes",
+    "diffTimeoutS": "diff_timeout_s",
+    "attestation": "attestation",
+}
+
+
+def _mesh_config(**values) -> dict:
+    args: list[str] = []
+    for key, value in values.items():
+        args += ["--set-json", f"mesh.{key}={json.dumps(value)}"]
+    return _rendered_skuld_config("skuld", *args)["mesh"]
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestMeshValues:
+    def test_a_chart_that_sets_nothing_renders_what_skuld_defaults_to(self):
+        from skuld.config import MeshConfig, SkuldSettings
+
+        config = _rendered_skuld_config("skuld")
+
+        assert config["mesh"] == {"enabled": False, "transport": "nng"}
+        assert SkuldSettings(**config).mesh == MeshConfig()
+
+    @pytest.mark.parametrize(("value_key", "config_key"), sorted(MESH_KEYS.items()))
+    def test_each_value_renders_into_the_config_key_it_names(self, value_key, config_key):
+        mesh = _mesh_config(**{value_key: MESH_VALUES[value_key]})
+
+        expected = MESH_VALUES[value_key]
+        if value_key == "nng":
+            expected = {
+                "pub_sub_address": "tcp://0.0.0.0:7001",
+                "req_rep_address": "tcp://0.0.0.0:7002",
+            }
+        if value_key == "attestation":
+            expected = {
+                "required": False,
+                "renew_fraction": 0.4,
+                "retry_fraction": 0.2,
+                "clock_skew_s": 60,
+                "event_max_age_s": 120,
+            }
+        assert mesh[config_key] == expected
+
+    def test_every_value_together_is_accepted_by_skuld(self):
+        from skuld.config import SkuldSettings
+
+        config = _rendered_skuld_config(
+            "skuld",
+            "--set-json",
+            "mesh=" + json.dumps(MESH_VALUES),
+        )
+
+        mesh = SkuldSettings(**config).mesh
+        assert mesh.enabled is True and mesh.transport == "nats"
+        assert (mesh.peer_id, mesh.realm_id, mesh.persona) == ("reviewer-1", "flock-a", "reviewer")
+        assert (mesh.role, mesh.description) == ("reviewer", "Reviews pull requests.")
+        assert mesh.capabilities == ["review", "git"] and mesh.tools == ["codex"]
+        assert mesh.consumes_event_types == ["review.requested"]
+        assert mesh.publish_event_types == ["review.done"]
+        assert mesh.published_event_urgency == 0.4
+        assert mesh.nng.pub_sub_address == "tcp://0.0.0.0:7001"
+        assert mesh.adapters == [{"adapter": "nats"}]
+        assert mesh.discovery_adapters[0]["adapter"] == "event_bus"
+        assert mesh.nats.servers == ["nats://nats:4222"] and mesh.nats.stream_name == "flock"
+        assert (mesh.rpc_timeout_s, mesh.rpc_reply_cache_size) == (20, 64)
+        assert (mesh.diff_max_bytes, mesh.diff_timeout_s) == (4096, 7)
+
+    def test_the_chart_covers_every_setting_skuld_has_so_a_new_one_cannot_be_forgotten(self):
+        from skuld.config import MeshConfig
+
+        assert set(MESH_KEYS.values()) == set(MeshConfig.model_fields)
+
+    def test_an_empty_string_or_null_keeps_skuld_s_default(self):
+        mesh = _mesh_config(peerId="", realmId="", role="", capabilities=None, rpcTimeoutS=None)
+
+        assert mesh == {"enabled": False, "transport": "nng"}
+
+    def test_a_values_file_that_never_set_mesh_values_still_renders(self):
+        # Pre-existing releases only ever set `enabled`, `transport` and `peerPorts`.
+        mesh = _mesh_config(peerPorts=[{"name": "mesh", "containerPort": 7001}], enabled=True)
+
+        assert mesh == {"enabled": True, "transport": "nng"}
+
+
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 def test_mesh_attestation_renders_nothing_by_default_and_only_what_is_set():
     from skuld.config import SkuldSettings
 
     default = _rendered_skuld_config("skuld")
-    assert "mesh" not in default
+    assert "attestation" not in default["mesh"]
 
     config = _rendered_skuld_config(
         "skuld",
@@ -1148,7 +1282,7 @@ def test_mesh_attestation_renders_nothing_by_default_and_only_what_is_set():
         "mesh.attestation.clockSkewS=60",
     )
 
-    assert config["mesh"] == {"attestation": {"required": False, "clock_skew_s": 60}}
+    assert config["mesh"]["attestation"] == {"required": False, "clock_skew_s": 60}
     settings = SkuldSettings(**config)
     assert settings.mesh.attestation.required is False
     assert settings.mesh.attestation.clock_skew_s == 60

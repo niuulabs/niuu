@@ -121,6 +121,11 @@ class ForgeSessionTokenService:
         self._key_source = key_source
 
     @property
+    def signing_issuer(self) -> WorkloadTokenIssuer:
+        """The issuer that signs these tokens; the mesh certificates are signed by it too."""
+        return self._issuer
+
+    @property
     def key_source(self) -> str:
         """Where the signing key comes from (``workload_identity`` or a key file)."""
         return self._key_source
