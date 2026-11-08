@@ -13,10 +13,11 @@ from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from ting.domain.workflow_steps import RunEvent, RunState, WorkflowStep
+from ting.domain.workflow_steps import FlagKind, RunEvent, RunState, StepFlag, WorkflowStep
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,34 @@ class StepActivation:
     workflow_name: str = ""
 
 
+class SessionLiveness(StrEnum):
+    """Whether a step's session can still run the step, as its Forge reports it."""
+
+    #: Up and answering: a step can be asked about.
+    RUNNING = "running"
+    #: Created or starting; it has not come up yet.
+    STARTING = "starting"
+    #: Stopped, stopping or archived.
+    STOPPED = "stopped"
+    FAILED = "failed"
+    #: Forge no longer has the session.
+    GONE = "gone"
+
+
+@dataclass(frozen=True)
+class StepObservation:
+    """What Ting can see of a step's session right now.
+
+    ``reported`` is the session's own durable record of the step (``state`` is
+    ``active``, ``waiting`` or ``closed``, with the ``ending`` once it ended); ``None``
+    means the session does not know the activation, or was not asked because it is not
+    running.
+    """
+
+    liveness: SessionLiveness
+    reported: Mapping[str, Any] | None = None
+
+
 class StepSessionPort(ABC):
     """The harness sessions that run a run's stage members.
 
@@ -101,6 +130,29 @@ class StepSessionPort(ABC):
     async def stop_run_sessions(self, run_id: UUID) -> None:
         """Stop every session of the run (it completed, failed or was canceled)."""
 
+    @abstractmethod
+    async def observe(self, run_id: UUID, session_id: str, activation_id: UUID) -> StepObservation:
+        """The session's liveness and, if it is running, what it holds of the activation.
+
+        Raises when Forge or the session cannot be asked: a question that cannot be
+        answered is never reported as "the session does not know the step".
+        """
+
+    @abstractmethod
+    async def replace_session(
+        self,
+        run_id: UUID,
+        member: str,
+        persona_ref: PersonaRef,
+        replaces: str | None,
+    ) -> str:
+        """Give the member a fresh session in place of ``replaces`` and return its id.
+
+        The replaced session is stopped if it is still up. Later ``ensure_session``
+        calls for the member find the replacement, not the replaced session. Asking
+        again for a session that was already replaced returns the replacement.
+        """
+
 
 class StepRunDefinitions(ABC):
     """Where the engine finds what a run executes."""
@@ -119,7 +171,7 @@ class LedgerTransaction(ABC):
 
     @abstractmethod
     async def load(self) -> RunState:
-        """The run's steps (oldest first) and events (by sequence)."""
+        """The run's steps (oldest first), events (by sequence) and flags (oldest first)."""
 
     @abstractmethod
     async def save_step(self, step: WorkflowStep) -> None:
@@ -137,6 +189,22 @@ class LedgerTransaction(ABC):
     ) -> RunEvent:
         """Append to the run's event log; the next sequence number is assigned here."""
 
+    @abstractmethod
+    async def raise_flag(self, flag: StepFlag) -> bool:
+        """Record the flag unless the step already has one of its kind; True if it is new."""
+
+    @abstractmethod
+    async def resolve_flag(
+        self, activation_id: UUID, kind: FlagKind, *, at: datetime, resolution: str
+    ) -> None:
+        """Mark the step's flag of this kind resolved, with how it ended."""
+
+    @abstractmethod
+    async def mark_flag_notified(
+        self, activation_id: UUID, kind: FlagKind, *, at: datetime
+    ) -> None:
+        """Record that a person was told about the flag."""
+
 
 class WorkflowStepRepository(ABC):
     """Persistence of the step ledger."""
@@ -151,4 +219,4 @@ class WorkflowStepRepository(ABC):
 
     @abstractmethod
     async def load(self, run_id: UUID) -> RunState:
-        """The run's ledger, without locking it."""
+        """The run's ledger (steps, events and flags), without locking it."""

@@ -46,6 +46,8 @@ from ting.domain.workflow_steps import (
 
 #: Campaign metadata key that lists the gates a run is waiting on.
 PENDING_GATES_KEY = "pending_workflow_gates"
+#: Campaign metadata key that lists the open steps stuck detection has flagged.
+STUCK_STEPS_KEY = "stuck_workflow_steps"
 #: Campaign metadata key that records a run canceled through the engine.
 CANCELED_KEY = "run_canceled"
 
@@ -106,6 +108,11 @@ def project_run(campaign: WorkflowCampaign, state: RunState, *, now: datetime) -
         metadata[PENDING_GATES_KEY] = gates
     else:
         metadata.pop(PENDING_GATES_KEY, None)
+    stuck = stuck_steps(state)
+    if stuck:
+        metadata[STUCK_STEPS_KEY] = stuck
+    else:
+        metadata.pop(STUCK_STEPS_KEY, None)
 
     failure = _failure(state) if status is WorkflowCampaignStatus.FAILED else ""
     failed_stage = _failed_stage(state) if failure else None
@@ -138,6 +145,30 @@ def project_run(campaign: WorkflowCampaign, state: RunState, *, now: datetime) -
         metadata=metadata,
         failure=failure,
     )
+
+
+def stuck_steps(state: RunState) -> list[dict[str, Any]]:
+    """The run's open steps that stuck detection flagged, oldest flag first.
+
+    One entry per live flag, so a step stuck in two ways appears twice. A flag leaves
+    the list when its step closes or the condition clears.
+    """
+    steps = {step.id: step for step in state.steps}
+    flagged = sorted(state.live_flags(), key=lambda flag: (flag.raised_at, flag.kind.value))
+    return [
+        {
+            "activation_id": str(flag.activation_id),
+            "node_id": steps[flag.activation_id].node_id,
+            "member": steps[flag.activation_id].member,
+            "attempt": steps[flag.activation_id].attempt,
+            "session_id": steps[flag.activation_id].session_id,
+            "kind": flag.kind.value,
+            "since": flag.since.isoformat(),
+            "raised_at": flag.raised_at.isoformat(),
+            "detail": flag.detail,
+        }
+        for flag in flagged
+    ]
 
 
 def _status(state: RunState) -> WorkflowCampaignStatus:

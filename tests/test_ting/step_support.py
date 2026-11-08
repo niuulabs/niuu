@@ -10,7 +10,7 @@ import asyncio
 import copy
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -22,14 +22,18 @@ from ting.domain.step_engine import EngineSettings
 from ting.domain.step_graph import compile_step_graph
 from ting.domain.workflow_steps import (
     Ending,
+    FlagKind,
     RunEvent,
     RunState,
+    StepFlag,
     WorkflowStep,
 )
 from ting.ports.workflow_steps import (
     LedgerTransaction,
     PersonaRef,
+    SessionLiveness,
     StepActivation,
+    StepObservation,
     StepRunDefinition,
     StepRunDefinitions,
     StepSessionPort,
@@ -93,6 +97,28 @@ class _FakeTransaction(LedgerTransaction):
         events.append(event)
         return event
 
+    async def raise_flag(self, flag: StepFlag) -> bool:
+        key = (flag.activation_id, flag.kind)
+        if key in self._repository.flags:
+            return False
+        self._repository.flags[key] = flag
+        return True
+
+    async def resolve_flag(
+        self, activation_id: UUID, kind: FlagKind, *, at: datetime, resolution: str
+    ) -> None:
+        flag = self._repository.flags[(activation_id, kind)]
+        if not flag.is_resolved:
+            self._repository.flags[(activation_id, kind)] = replace(
+                flag, resolved_at=at, resolution=resolution
+            )
+
+    async def mark_flag_notified(
+        self, activation_id: UUID, kind: FlagKind, *, at: datetime
+    ) -> None:
+        key = (activation_id, kind)
+        self._repository.flags[key] = replace(self._repository.flags[key], notified_at=at)
+
 
 class InMemoryStepRepository(WorkflowStepRepository):
     """The ledger in memory; a transaction that raises leaves nothing behind."""
@@ -100,6 +126,7 @@ class InMemoryStepRepository(WorkflowStepRepository):
     def __init__(self) -> None:
         self.steps: dict[UUID, WorkflowStep] = {}
         self.events: dict[UUID, list[RunEvent]] = {}
+        self.flags: dict[tuple[UUID, FlagKind], StepFlag] = {}
         self._locks: dict[UUID, asyncio.Lock] = {}
 
     def snapshot(self, run_id: UUID) -> RunState:
@@ -109,7 +136,18 @@ class InMemoryStepRepository(WorkflowStepRepository):
                 key=lambda step: (step.created_at, str(step.id)),
             )
         )
-        return RunState(run_id=run_id, steps=steps, events=tuple(self.events.get(run_id, ())))
+        flags = tuple(
+            sorted(
+                (flag for flag in self.flags.values() if flag.run_id == run_id),
+                key=lambda flag: (flag.raised_at, str(flag.activation_id), flag.kind.value),
+            )
+        )
+        return RunState(
+            run_id=run_id,
+            steps=steps,
+            events=tuple(self.events.get(run_id, ())),
+            flags=flags,
+        )
 
     @asynccontextmanager
     async def transaction(self, run_id: UUID) -> AsyncIterator[LedgerTransaction]:
@@ -117,11 +155,13 @@ class InMemoryStepRepository(WorkflowStepRepository):
         async with lock:
             steps_before = dict(self.steps)
             events_before = {key: list(value) for key, value in self.events.items()}
+            flags_before = dict(self.flags)
             try:
                 yield _FakeTransaction(self, run_id)
             except BaseException:
                 self.steps = steps_before
                 self.events = events_before
+                self.flags = flags_before
                 raise
 
     async def find_step(self, activation_id: UUID) -> WorkflowStep | None:
@@ -141,6 +181,13 @@ class FakeSessions(StepSessionPort):
         self.stopped: list[UUID] = []
         self.fail_ensure: set[str] = set()
         self.fail_deliver: set[str] = set()
+        #: Per session id: what ``observe`` says. Unlisted sessions are running and hold nothing.
+        self.liveness: dict[str, SessionLiveness] = {}
+        #: Per (session id, activation id): the session's durable record of the step.
+        self.reported: dict[tuple[str, UUID], dict[str, Any]] = {}
+        self.fail_observe: set[str] = set()
+        self.replaced: list[tuple[UUID, str, str | None]] = []
+        self.fail_replace = False
 
     async def ensure_session(self, run_id: UUID, member: str, persona_ref: PersonaRef) -> str:
         if member in self.fail_ensure:
@@ -159,6 +206,36 @@ class FakeSessions(StepSessionPort):
     async def stop_run_sessions(self, run_id: UUID) -> None:
         self.stopped.append(run_id)
 
+    async def observe(self, run_id: UUID, session_id: str, activation_id: UUID) -> StepObservation:
+        if session_id in self.fail_observe:
+            raise ConnectionError(f"cannot ask {session_id}")
+        liveness = self.liveness.get(session_id, SessionLiveness.RUNNING)
+        if liveness is not SessionLiveness.RUNNING:
+            return StepObservation(liveness)
+        reported = self.reported.get((session_id, activation_id))
+        if reported is None and any(
+            item.activation_id == activation_id and item.session_id == session_id
+            for item in self.delivered
+        ):
+            reported = {"state": "active", "activation_id": str(activation_id), "ending": None}
+        return StepObservation(liveness, reported)
+
+    async def replace_session(
+        self,
+        run_id: UUID,
+        member: str,
+        persona_ref: PersonaRef,
+        replaces: str | None,
+    ) -> str:
+        if self.fail_replace:
+            raise RuntimeError("cannot create a replacement session")
+        self.replaced.append((run_id, member, replaces))
+        fresh = f"session-{member}-r{len(self.replaced) + 1}"
+        self.sessions[(run_id, member)] = fresh
+        if replaces is not None:
+            self.liveness[replaces] = SessionLiveness.STOPPED
+        return fresh
+
 
 class FixedDefinitions(StepRunDefinitions):
     def __init__(self, definition: StepRunDefinition) -> None:
@@ -173,12 +250,25 @@ class Recorder:
 
     def __init__(self) -> None:
         self.counts: list[tuple[str, dict[str, str]]] = []
+        self.gauges: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
 
     def count(self, name: str, *, attributes: dict[str, str] | None = None, **_: Any) -> None:
         self.counts.append((name, attributes or {}))
 
     def total(self, name: str) -> int:
         return sum(1 for counted, _ in self.counts if counted == name)
+
+    def counted(self, name: str, **attributes: str) -> int:
+        """How many times ``name`` was counted with exactly these attributes."""
+        return sum(1 for counted, got in self.counts if counted == name and got == attributes)
+
+    def gauge(
+        self, name: str, value: float, *, attributes: dict[str, str] | None = None, **_: Any
+    ) -> None:
+        self.gauges[(name, tuple(sorted((attributes or {}).items())))] = value
+
+    def gauge_value(self, name: str, **attributes: str) -> float | None:
+        return self.gauges.get((name, tuple(sorted(attributes.items()))))
 
 
 @dataclass

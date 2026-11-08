@@ -45,6 +45,16 @@ EVENT_DELIVERY_COALESCED = "engine.delivery.coalesced"
 EVENT_END_REJECTED = "engine.end.rejected"
 EVENT_CLOSE_REJECTED = "engine.close.rejected"
 EVENT_STEP_UNCLOSED = "engine.step.unclosed"
+#: Stuck detection (NIU-1181): a flag raised on an open step, and a recovery action taken on one.
+EVENT_STEP_FLAGGED = "engine.step.flagged"
+EVENT_RECOVERY = "engine.recovery"
+
+#: The event a flagged step puts on Ting's event bus for the notification feed.
+NOTIFY_STEP_FLAGGED = "workflow.step_flagged"
+
+#: Who the log names for an action Ting took on its own, with no person behind it.
+SYSTEM_ACTOR_KIND = "system"
+SYSTEM_ACTOR_ID = "ting.stuck-step-sweep"
 
 TERMINAL_RUN_EVENTS = frozenset({EVENT_RUN_COMPLETED, EVENT_RUN_FAILED, EVENT_RUN_CANCELED})
 
@@ -98,6 +108,29 @@ class EndingKind(StrEnum):
     FAILED = "failed"
 
 
+class FlagKind(StrEnum):
+    """Why an open step is flagged as stuck. Each is raised once per step."""
+
+    #: The step is past its ``deadline_at``.
+    OVERDUE = "overdue"
+    #: The step is active but has no session after the start grace.
+    NOT_STARTED = "not_started"
+    #: The step has a session but the session does not know the activation.
+    UNDELIVERED = "undelivered"
+    #: A turn ended with the step still open.
+    UNCLOSED = "unclosed"
+    #: The step's Forge session failed, stopped or no longer exists.
+    SESSION_GONE = "session_gone"
+
+
+class RecoveryAction(StrEnum):
+    """What an operator may do about a stuck or failed step, or a run."""
+
+    RETRY = "retry"
+    REASSIGN = "reassign"
+    ABORT = "abort"
+
+
 class GateDecision(StrEnum):
     APPROVE = "approve"
     REQUEST_CHANGES = "request_changes"
@@ -139,6 +172,19 @@ class GateRefusedError(StepEngineError):
 
 class RunStateError(StepEngineError):
     """The call is not valid for the run's state (already launched, already finished, ...)."""
+
+
+class RecoveryRefusedError(StepEngineError):
+    """A recovery action makes no sense for the step or run as it is; ``reason`` says why.
+
+    ``missing`` is set when the run has no such step at all.
+    """
+
+    def __init__(self, action: RecoveryAction, reason: str, *, missing: bool = False) -> None:
+        self.action = action
+        self.reason = reason
+        self.missing = missing
+        super().__init__(f"{action.value} refused: {reason}")
 
 
 @dataclass(frozen=True)
@@ -266,12 +312,37 @@ class RunEvent:
 
 
 @dataclass(frozen=True)
+class StepFlag:
+    """A durable mark that an open step is stuck: one per step and kind, raised once.
+
+    ``since`` is when the condition began as far as Ting can tell (the deadline, the
+    activation, the end of the turn), ``raised_at`` when a sweep first saw it. A flag
+    stays on the row after it is resolved, with how it ended.
+    """
+
+    run_id: UUID
+    activation_id: UUID
+    kind: FlagKind
+    since: datetime
+    raised_at: datetime
+    detail: str = ""
+    notified_at: datetime | None = None
+    resolved_at: datetime | None = None
+    resolution: str = ""
+
+    @property
+    def is_resolved(self) -> bool:
+        return self.resolved_at is not None
+
+
+@dataclass(frozen=True)
 class RunState:
-    """Everything the engine reads about a run: its steps and its event log."""
+    """Everything the engine reads about a run: its steps, its event log and its flags."""
 
     run_id: UUID
     steps: tuple[WorkflowStep, ...] = ()
     events: tuple[RunEvent, ...] = ()
+    flags: tuple[StepFlag, ...] = ()
 
     @property
     def generation(self) -> int:
@@ -298,6 +369,23 @@ class RunState:
 
     def open_steps(self) -> tuple[WorkflowStep, ...]:
         return tuple(step for step in self.steps if step.is_open)
+
+    def flag(self, activation_id: UUID, kind: FlagKind) -> StepFlag | None:
+        return next(
+            (
+                flag
+                for flag in self.flags
+                if flag.activation_id == activation_id and flag.kind is kind
+            ),
+            None,
+        )
+
+    def live_flags(self) -> tuple[StepFlag, ...]:
+        """Unresolved flags of steps that are still open: what is stuck right now."""
+        open_ids = {step.id for step in self.steps if step.is_open}
+        return tuple(
+            flag for flag in self.flags if not flag.is_resolved and flag.activation_id in open_ids
+        )
 
 
 @dataclass(frozen=True)

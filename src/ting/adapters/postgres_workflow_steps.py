@@ -19,8 +19,10 @@ from uuid import UUID
 import asyncpg
 
 from ting.domain.workflow_steps import (
+    FlagKind,
     RunEvent,
     RunState,
+    StepFlag,
     StepInput,
     StepKind,
     StepState,
@@ -67,7 +69,31 @@ WHERE run_id = $1::uuid
 RETURNING run_id, seq, event_type, payload, source_activation_id, generation, created_at
 """
 
+_RAISE_FLAG = """
+INSERT INTO workflow_step_flags (
+    activation_id, kind, run_id, since, raised_at, detail
+) VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (activation_id, kind) DO NOTHING
+RETURNING activation_id
+"""
+
+_RESOLVE_FLAG = """
+UPDATE workflow_step_flags
+SET resolved_at = $3, resolution = $4
+WHERE activation_id = $1 AND kind = $2 AND resolved_at IS NULL
+"""
+
+_NOTIFY_FLAG = """
+UPDATE workflow_step_flags
+SET notified_at = $3
+WHERE activation_id = $1 AND kind = $2
+"""
+
 _SELECT_STEPS = "SELECT * FROM workflow_steps WHERE run_id = $1 ORDER BY created_at, id"
+_SELECT_FLAGS = (
+    "SELECT run_id, activation_id, kind, since, raised_at, detail, notified_at, resolved_at, "
+    "resolution FROM workflow_step_flags WHERE run_id = $1 ORDER BY raised_at, activation_id, kind"
+)
 _SELECT_EVENTS = (
     "SELECT run_id, seq, event_type, payload, source_activation_id, generation, created_at "
     "FROM workflow_run_events WHERE run_id = $1 ORDER BY seq"
@@ -94,7 +120,8 @@ class PostgresWorkflowStepRepository(WorkflowStepRepository):
     async def load(self, run_id: UUID) -> RunState:
         step_rows = await self._pool.fetch(_SELECT_STEPS, run_id)
         event_rows = await self._pool.fetch(_SELECT_EVENTS, run_id)
-        return _state_from_rows(run_id, step_rows, event_rows)
+        flag_rows = await self._pool.fetch(_SELECT_FLAGS, run_id)
+        return _state_from_rows(run_id, step_rows, event_rows, flag_rows)
 
 
 class _PostgresLedgerTransaction(LedgerTransaction):
@@ -105,7 +132,8 @@ class _PostgresLedgerTransaction(LedgerTransaction):
     async def load(self) -> RunState:
         step_rows = await self._conn.fetch(_SELECT_STEPS, self._run_id)
         event_rows = await self._conn.fetch(_SELECT_EVENTS, self._run_id)
-        return _state_from_rows(self._run_id, step_rows, event_rows)
+        flag_rows = await self._conn.fetch(_SELECT_FLAGS, self._run_id)
+        return _state_from_rows(self._run_id, step_rows, event_rows, flag_rows)
 
     async def save_step(self, step: WorkflowStep) -> None:
         await self._conn.execute(
@@ -151,12 +179,51 @@ class _PostgresLedgerTransaction(LedgerTransaction):
         )
         return _event_from_row(row)
 
+    async def raise_flag(self, flag: StepFlag) -> bool:
+        row = await self._conn.fetchrow(
+            _RAISE_FLAG,
+            flag.activation_id,
+            flag.kind.value,
+            flag.run_id,
+            flag.since,
+            flag.raised_at,
+            flag.detail,
+        )
+        return row is not None
 
-def _state_from_rows(run_id: UUID, step_rows: list[Any], event_rows: list[Any]) -> RunState:
+    async def resolve_flag(
+        self, activation_id: UUID, kind: FlagKind, *, at: datetime, resolution: str
+    ) -> None:
+        await self._conn.execute(_RESOLVE_FLAG, activation_id, kind.value, at, resolution)
+
+    async def mark_flag_notified(
+        self, activation_id: UUID, kind: FlagKind, *, at: datetime
+    ) -> None:
+        await self._conn.execute(_NOTIFY_FLAG, activation_id, kind.value, at)
+
+
+def _state_from_rows(
+    run_id: UUID, step_rows: list[Any], event_rows: list[Any], flag_rows: list[Any]
+) -> RunState:
     return RunState(
         run_id=run_id,
         steps=tuple(_step_from_row(row) for row in step_rows),
         events=tuple(_event_from_row(row) for row in event_rows),
+        flags=tuple(_flag_from_row(row) for row in flag_rows),
+    )
+
+
+def _flag_from_row(row: Any) -> StepFlag:
+    return StepFlag(
+        run_id=row["run_id"],
+        activation_id=row["activation_id"],
+        kind=FlagKind(row["kind"]),
+        since=row["since"],
+        raised_at=row["raised_at"],
+        detail=row["detail"],
+        notified_at=row["notified_at"],
+        resolved_at=row["resolved_at"],
+        resolution=row["resolution"],
     )
 
 

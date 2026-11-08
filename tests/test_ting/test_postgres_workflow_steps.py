@@ -11,6 +11,8 @@ import pytest
 
 from ting.adapters.postgres_workflow_steps import PostgresWorkflowStepRepository
 from ting.domain.workflow_steps import (
+    FlagKind,
+    StepFlag,
     StepInput,
     StepKind,
     StepState,
@@ -109,6 +111,22 @@ def _step_row(run_id: Any, **changes: Any) -> dict[str, Any]:
     return row
 
 
+def _flag_row(run_id: Any, activation_id: Any, **changes: Any) -> dict[str, Any]:
+    row = {
+        "run_id": run_id,
+        "activation_id": activation_id,
+        "kind": "overdue",
+        "since": NOW,
+        "raised_at": NOW,
+        "detail": "past its deadline",
+        "notified_at": None,
+        "resolved_at": None,
+        "resolution": "",
+    }
+    row.update(changes)
+    return row
+
+
 def _event_row(run_id: Any, seq: int = 1, **changes: Any) -> dict[str, Any]:
     row = {
         "run_id": run_id,
@@ -176,6 +194,7 @@ async def test_load_reads_steps_oldest_first_and_events_by_sequence(
             ),
         ],
         [_event_row(run_id, 1), _event_row(run_id, 2, payload={"decoded": True}, generation=1)],
+        [],
     ]
 
     state = await repository.load(run_id)
@@ -317,10 +336,92 @@ async def test_the_transaction_loads_the_run_it_locked(
     repository: PostgresWorkflowStepRepository, connection: _Connection
 ) -> None:
     run_id = uuid4()
-    connection.fetch_results = [[_step_row(run_id)], [_event_row(run_id)]]
+    connection.fetch_results = [[_step_row(run_id)], [_event_row(run_id)], []]
 
     async with repository.transaction(run_id) as tx:
         state = await tx.load()
 
     assert state.run_id == run_id and len(state.steps) == 1 and len(state.events) == 1
     assert connection.executed[1][1] == (run_id,)
+
+
+async def test_load_reads_the_runs_flags_with_their_resolution(
+    repository: PostgresWorkflowStepRepository, connection: _Connection
+) -> None:
+    run_id = uuid4()
+    step = _step_row(run_id)
+    resolved = NOW.replace(minute=5)
+    connection.fetch_results = [
+        [step],
+        [],
+        [
+            _flag_row(run_id, step["id"]),
+            _flag_row(
+                run_id,
+                step["id"],
+                kind="unclosed",
+                notified_at=NOW,
+                resolved_at=resolved,
+                resolution="step is done",
+            ),
+        ],
+    ]
+
+    state = await repository.load(run_id)
+
+    overdue, unclosed = state.flags
+    assert (overdue.kind, overdue.is_resolved, overdue.notified_at) == (
+        FlagKind.OVERDUE,
+        False,
+        None,
+    )
+    assert (unclosed.kind, unclosed.resolved_at, unclosed.resolution) == (
+        FlagKind.UNCLOSED,
+        resolved,
+        "step is done",
+    )
+    assert "FROM workflow_step_flags" in connection.executed[2][0]
+    assert connection.executed[2][1] == (run_id,)
+
+
+async def test_raising_a_flag_is_one_insert_that_reports_whether_it_was_new(
+    repository: PostgresWorkflowStepRepository, connection: _Connection
+) -> None:
+    run_id, activation_id = uuid4(), uuid4()
+    flag = StepFlag(
+        run_id=run_id,
+        activation_id=activation_id,
+        kind=FlagKind.NOT_STARTED,
+        since=NOW,
+        raised_at=NOW,
+        detail="no session",
+    )
+
+    async with repository.transaction(run_id) as tx:
+        connection.fetchrow_result = {"activation_id": activation_id}
+        first = await tx.raise_flag(flag)
+        connection.fetchrow_result = None
+        again = await tx.raise_flag(flag)
+
+    query, args = connection.executed[1]
+    assert "ON CONFLICT (activation_id, kind) DO NOTHING" in query
+    assert args == (activation_id, "not_started", run_id, NOW, NOW, "no session")
+    assert (first, again) == (True, False)
+
+
+async def test_resolving_and_notifying_a_flag_touch_only_that_flag(
+    repository: PostgresWorkflowStepRepository, connection: _Connection
+) -> None:
+    run_id, activation_id = uuid4(), uuid4()
+
+    async with repository.transaction(run_id) as tx:
+        await tx.resolve_flag(activation_id, FlagKind.OVERDUE, at=NOW, resolution="step is done")
+        await tx.mark_flag_notified(activation_id, FlagKind.OVERDUE, at=NOW)
+
+    resolve_query, resolve_args = connection.executed[1]
+    notify_query, notify_args = connection.executed[2]
+    assert "SET resolved_at = $3, resolution = $4" in resolve_query
+    assert "resolved_at IS NULL" in resolve_query
+    assert resolve_args == (activation_id, "overdue", NOW, "step is done")
+    assert "SET notified_at = $3" in notify_query
+    assert notify_args == (activation_id, "overdue", NOW)

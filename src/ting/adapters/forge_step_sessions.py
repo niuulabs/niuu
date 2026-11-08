@@ -7,7 +7,10 @@ whole run and reused for the member's later activations, rework included.
 Finding a session again: Forge is the record. A session is named
 ``wf-{run slug}-{member}`` (shortened with a digest of the run and member when the
 name would pass Forge's 63 character limit), is tagged ``workflow:{run slug}`` and
-carries ``workflow_run_id`` / ``workflow_member`` metadata. ``ensure_session`` and
+carries ``workflow_run_id`` / ``workflow_member`` metadata. A member whose session had to
+be replaced (it failed, or a person reassigned the step) gets the next *epoch* of the
+name, ``...-r2``, ``...-r3``: the highest epoch that exists is the member's session, and
+the replaced ones stay behind, stopped. ``ensure_session`` and
 ``stop_run_sessions`` look the run's sessions up from Forge by that name and tag, so
 a Ting restart, or a crash between creating a session and recording it, can neither
 lose a session nor create a second one. Ting keeps no mapping of its own that could
@@ -22,6 +25,7 @@ import hashlib
 import logging
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -29,7 +33,13 @@ from ting.domain.models import WorkflowCampaign
 from ting.domain.step_instructions import render_step_instructions
 from ting.ports.volundr import StepSessionRequest, VolundrFactory, VolundrPort, VolundrSession
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
-from ting.ports.workflow_steps import PersonaRef, StepActivation, StepSessionPort
+from ting.ports.workflow_steps import (
+    PersonaRef,
+    SessionLiveness,
+    StepActivation,
+    StepObservation,
+    StepSessionPort,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +52,10 @@ _NAME_MEMBER_CHARS = 20
 
 _FAILED_STATUSES = frozenset({"failed"})
 _STOPPED_STATUSES = frozenset({"stopped"})
+#: Statuses of a session that is not running and will not come up by itself.
+_ENDED_STATUSES = frozenset({"stopped", "stopping", "archived"})
+#: Statuses of a session that is on its way up.
+_STARTING_STATUSES = frozenset({"created", "starting", "provisioning"})
 
 
 class StepSessionError(RuntimeError):
@@ -53,20 +67,38 @@ def step_session_tag(run_slug: str) -> str:
     return f"workflow:{run_slug}"
 
 
-def step_session_name(run_slug: str, member: str, run_id: UUID, *, prefix: str = "wf") -> str:
-    """The deterministic name of a run's session for one stage member."""
-    name = _label(f"{prefix}-{run_slug}-{member}")
+def step_session_name(
+    run_slug: str, member: str, run_id: UUID, *, prefix: str = "wf", epoch: int = 1
+) -> str:
+    """The deterministic name of a run's session for one stage member.
+
+    ``epoch`` 1 is the member's first session; a replacement is epoch 2, 3, ... and
+    carries ``-r{epoch}`` so the name stays unique within the project.
+    """
+    suffix = "" if epoch == 1 else f"-r{epoch}"
+    name = _label(f"{prefix}-{run_slug}-{member}") + suffix
     if len(name) <= FORGE_SESSION_NAME_MAX:
         return name
-    digest = hashlib.sha256(f"{run_id}:{member}".encode()).hexdigest()[:_NAME_DIGEST_CHARS]
+    seed = f"{run_id}:{member}" if epoch == 1 else f"{run_id}:{member}:{epoch}"
+    digest = hashlib.sha256(seed.encode()).hexdigest()[:_NAME_DIGEST_CHARS]
     member_part = _label(member)[:_NAME_MEMBER_CHARS].rstrip("-")
-    slug_room = FORGE_SESSION_NAME_MAX - len(prefix) - len(member_part) - len(digest) - 3
+    slug_room = (
+        FORGE_SESSION_NAME_MAX - len(prefix) - len(member_part) - len(digest) - len(suffix) - 3
+    )
     slug_part = _label(run_slug)[:slug_room].rstrip("-")
-    return f"{prefix}-{slug_part}-{member_part}-{digest}"
+    return f"{prefix}-{slug_part}-{member_part}-{digest}{suffix}"
 
 
 def _label(value: str) -> str:
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", value.lower())).strip("-")
+
+
+@dataclass(frozen=True)
+class _Current:
+    """A member's session and which epoch of the name it carries."""
+
+    session: VolundrSession
+    epoch: int
 
 
 class ForgeStepSessions(StepSessionPort):
@@ -89,33 +121,39 @@ class ForgeStepSessions(StepSessionPort):
     async def ensure_session(self, run_id: UUID, member: str, persona_ref: PersonaRef) -> str:
         campaign, forge = await self._run(run_id)
         async with self._locks.setdefault((run_id, member), asyncio.Lock()):
-            name = step_session_name(campaign.slug, member, run_id, prefix=self._prefix)
-            tag = step_session_tag(campaign.slug)
-            found = await self._find(forge, name, tag, campaign, member)
-            if found is not None:
-                return await self._reuse(forge, found)
-            document = self._persona_document(campaign, member, persona_ref)
-            created = await forge.create_step_session(
-                StepSessionRequest(
-                    name=name,
-                    model=self._model_of(campaign, member),
-                    persona_definition=document,
-                    tracker_issue_id=tag,
-                    run_id=str(run_id),
-                    member=member,
-                    repo=str(campaign.metadata.get("repo") or ""),
-                    branch=str(campaign.metadata.get("branch") or ""),
-                    base_branch=str(campaign.metadata.get("base_branch") or ""),
-                )
-            )
-            logger.info(
-                "Created step session %s (%s) for member %s of run %s",
-                created.id,
-                name,
-                member,
-                campaign.slug,
-            )
-            return created.id
+            current = await self._current(forge, campaign, member)
+            if current is not None:
+                self._require_tag(current.session, campaign, member)
+                return await self._reuse(forge, current.session)
+            return await self._create(forge, campaign, member, persona_ref, epoch=1)
+
+    async def replace_session(
+        self,
+        run_id: UUID,
+        member: str,
+        persona_ref: PersonaRef,
+        replaces: str | None,
+    ) -> str:
+        campaign, forge = await self._run(run_id)
+        async with self._locks.setdefault((run_id, member), asyncio.Lock()):
+            current = await self._current(forge, campaign, member)
+            if current is None:
+                return await self._create(forge, campaign, member, persona_ref, epoch=1)
+            self._require_tag(current.session, campaign, member)
+            if current.session.id != replaces and not _is_down(current.session):
+                # Another reassignment already put a live session in its place.
+                return current.session.id
+            await self._stop_replaced(forge, current.session, campaign)
+            return await self._create(forge, campaign, member, persona_ref, epoch=current.epoch + 1)
+
+    async def observe(self, run_id: UUID, session_id: str, activation_id: UUID) -> StepObservation:
+        _, forge = await self._run(run_id)
+        liveness = _liveness_of(await forge.get_session(session_id))
+        if liveness is not SessionLiveness.RUNNING:
+            return StepObservation(liveness)
+        return StepObservation(
+            liveness, await forge.get_workflow_step(session_id, str(activation_id))
+        )
 
     async def deliver(self, activation: StepActivation) -> None:
         _, forge = await self._run(activation.run_id)
@@ -165,25 +203,85 @@ class ForgeStepSessions(StepSessionPort):
             )
         return forge
 
-    async def _find(
-        self,
-        forge: VolundrPort,
-        name: str,
-        tag: str,
-        campaign: WorkflowCampaign,
-        member: str,
-    ) -> VolundrSession | None:
-        named = [s for s in await forge.list_sessions() if s.name == name]
-        if not named:
-            return None
-        session = named[0]
+    async def _current(
+        self, forge: VolundrPort, campaign: WorkflowCampaign, member: str
+    ) -> _Current | None:
+        """The member's session: the one of the highest epoch that exists on Forge.
+
+        Epochs are tried up to one more than the number of sessions Forge lists, which is
+        the most a chain of replacements can reach.
+        """
+        sessions = await forge.list_sessions()
+        by_name = {session.name: session for session in sessions}
+        current: _Current | None = None
+        for epoch in range(1, len(sessions) + 2):
+            name = step_session_name(
+                campaign.slug, member, campaign.id, prefix=self._prefix, epoch=epoch
+            )
+            if name in by_name:
+                current = _Current(by_name[name], epoch)
+        return current
+
+    @staticmethod
+    def _require_tag(session: VolundrSession, campaign: WorkflowCampaign, member: str) -> None:
+        tag = step_session_tag(campaign.slug)
         if session.tracker_issue_id != tag:
             raise StepSessionError(
-                f"Forge already has a session named {name!r} that is not run "
+                f"Forge already has a session named {session.name!r} that is not run "
                 f"{campaign.slug}'s session for {member!r} (it is tagged "
                 f"{session.tracker_issue_id!r}, not {tag!r}); rename or stop it"
             )
-        return session
+
+    async def _create(
+        self,
+        forge: VolundrPort,
+        campaign: WorkflowCampaign,
+        member: str,
+        persona_ref: PersonaRef,
+        *,
+        epoch: int,
+    ) -> str:
+        name = step_session_name(
+            campaign.slug, member, campaign.id, prefix=self._prefix, epoch=epoch
+        )
+        document = self._persona_document(campaign, member, persona_ref)
+        created = await forge.create_step_session(
+            StepSessionRequest(
+                name=name,
+                model=self._model_of(campaign, member),
+                persona_definition=document,
+                tracker_issue_id=step_session_tag(campaign.slug),
+                run_id=str(campaign.id),
+                member=member,
+                repo=str(campaign.metadata.get("repo") or ""),
+                branch=str(campaign.metadata.get("branch") or ""),
+                base_branch=str(campaign.metadata.get("base_branch") or ""),
+            )
+        )
+        logger.info(
+            "Created step session %s (%s) for member %s of run %s",
+            created.id,
+            name,
+            member,
+            campaign.slug,
+        )
+        return created.id
+
+    async def _stop_replaced(
+        self, forge: VolundrPort, session: VolundrSession, campaign: WorkflowCampaign
+    ) -> None:
+        if _is_down(session):
+            return
+        try:
+            await forge.stop_session(session.id)
+        except Exception as exc:
+            raise StepSessionError(
+                f"session {session.id} ({session.name}) of run {campaign.slug} is being "
+                f"replaced but could not be stopped: {exc}"
+            ) from exc
+        logger.warning(
+            "Stopped step session %s (%s), which is being replaced", session.id, session.name
+        )
 
     async def _reuse(self, forge: VolundrPort, session: VolundrSession) -> str:
         status = session.status.strip().lower()
@@ -233,6 +331,23 @@ class ForgeStepSessions(StepSessionPort):
                 f"{document.get('id')!r}, not the pinned {persona_ref.id!r}"
             )
         return dict(document)
+
+
+def _is_down(session: VolundrSession) -> bool:
+    return session.status.strip().lower() in (_FAILED_STATUSES | _ENDED_STATUSES)
+
+
+def _liveness_of(session: VolundrSession | None) -> SessionLiveness:
+    if session is None:
+        return SessionLiveness.GONE
+    status = session.status.strip().lower()
+    if status in _FAILED_STATUSES:
+        return SessionLiveness.FAILED
+    if status in _ENDED_STATUSES:
+        return SessionLiveness.STOPPED
+    if status in _STARTING_STATUSES:
+        return SessionLiveness.STARTING
+    return SessionLiveness.RUNNING
 
 
 def activation_body(activation: StepActivation) -> dict[str, Any]:
