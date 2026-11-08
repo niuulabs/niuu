@@ -13,7 +13,7 @@ import base64
 import json
 import logging
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -34,9 +34,7 @@ from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.workflows import resolve_workflow_repo
 from ting.config import A2AConfig, AuthConfig, Settings
-from ting.domain.models import WorkflowDefinition, WorkflowScope
-from volundr.adapters.outbound.postgres import PostgresSessionRepository
-from volundr.domain.models import SessionStatus
+from ting.domain.models import WorkflowCampaignStatus, WorkflowDefinition, WorkflowScope
 
 _A2A_PATH = "/api/v1/ting/a2a"
 
@@ -144,34 +142,21 @@ async def test_a2a_task_lifecycle_uses_postgres_and_volundr_http(
                     },
                 ),
             )
+            # Workflow steps have no runner until they run on harness sessions
+            # (NIU-1198), so the launch is refused loudly instead of starting a
+            # session nothing would drive.
             assert sent.status_code == 200, sent.text
-            task_id = sent.json()["result"]["task"]["id"]
-            session_id = sent.json()["result"]["task"]["metadata"]["sessionId"]
+            body = sent.json()
+            assert "result" not in body, body
+            assert "workflow steps have no runner" in body["error"]["message"]
+            assert "NIU-1198" in body["error"]["message"]
 
-            fetched = await client.post(
-                _A2A_PATH,
-                headers=_headers(),
-                json=_request("GetTask", {"id": task_id}),
-            )
-            assert fetched.status_code == 200, fetched.text
-            assert fetched.json()["result"]["id"] == task_id
-            assert fetched.json()["result"]["metadata"]["sessionId"] == session_id
-
-            canceled = await client.post(
-                _A2A_PATH,
-                headers=_headers(),
-                json=_request("CancelTask", {"id": task_id}),
-            )
-            assert canceled.status_code == 200, canceled.text
-            assert canceled.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
-
-        campaign = await campaign_repo.get_campaign_by_slug(
-            task_id,
-            owner_id="a2a-integration-user",
-        )
-        assert campaign is not None
-        assert campaign.metadata["a2a_canceled"] is True
-        assert campaign.session_id == session_id
+        campaigns = await campaign_repo.list_campaigns(owner_id="a2a-integration-user")
+        assert len(campaigns) == 1
+        campaign = campaigns[0]
+        assert campaign.status is WorkflowCampaignStatus.FAILED
+        assert "workflow steps have no runner" in campaign.metadata["failure_error"]
+        assert campaign.session_id is None
 
         lifecycle_logs = [
             record.getMessage()
@@ -179,23 +164,8 @@ async def test_a2a_task_lifecycle_uses_postgres_and_volundr_http(
             if "A2A JSON-RPC" in record.getMessage()
         ]
         assert lifecycle_logs == [
-            (
-                "A2A JSON-RPC SendMessage finished outcome=ok "
-                f"task_id={task_id} workflow_id={workflow.id}"
-            ),
-            (
-                "A2A JSON-RPC GetTask finished outcome=ok "
-                f"task_id={task_id} workflow_id={workflow.id}"
-            ),
-            (
-                "A2A JSON-RPC CancelTask finished outcome=ok "
-                f"task_id={task_id} workflow_id={workflow.id}"
-            ),
+            f"A2A JSON-RPC SendMessage finished outcome=error task_id= workflow_id={workflow.id}"
         ]
-
-        session = await PostgresSessionRepository(txn_pool).get(UUID(session_id))
-        assert session is not None
-        assert session.status is SessionStatus.STOPPED
     finally:
         await _stop_server(volundr_server)
 
@@ -262,7 +232,10 @@ async def test_ravn_a2a_tool_build_backend_commissions_real_workflow_task(
     )
 
     try:
-        with pytest.raises(ToolBuildError, match="did not finish within 1 polls"):
+        # Ting refuses to launch until workflow steps have a runner (NIU-1198);
+        # the client surfaces that refusal instead of polling a task that will
+        # never run.
+        with pytest.raises(ToolBuildError, match="workflow steps have no runner"):
             await backend.build(request)
 
         campaigns = await campaign_repo.list_campaigns(owner_id="a2a-tool-build-client")
@@ -270,10 +243,8 @@ async def test_ravn_a2a_tool_build_backend_commissions_real_workflow_task(
         campaign = campaigns[0]
         assert campaign.workflow_id == workflow.id
         assert campaign.metadata["surface"] == "a2a"
-        assert campaign.metadata["prompt"]
-        session = await PostgresSessionRepository(txn_pool).get(UUID(campaign.session_id))
-        assert session is not None
-        assert session.status is not SessionStatus.STOPPED
+        assert campaign.status is WorkflowCampaignStatus.FAILED
+        assert campaign.session_id is None
     finally:
         await _stop_server(ting_server)
         await _stop_server(volundr_server)
