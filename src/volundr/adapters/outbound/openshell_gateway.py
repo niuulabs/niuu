@@ -55,6 +55,7 @@ from volundr.adapters.outbound.local_process import (
     LocalProcessPodManager,
 )
 from volundr.adapters.outbound.mesh_settings import mesh_environment, parse_mesh_settings
+from volundr.adapters.outbound.openshell_binaries import CLAUDE_CODE_BINARIES, CODEX_BINARIES
 from volundr.adapters.outbound.openshell_contract import (
     DEFAULT_SANDBOX_ATTACHABLE_LABELS,
     OPENSHELL_WORKSPACE,
@@ -5917,12 +5918,7 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
             "auth_style": "bearer",
             "header_name": "Authorization",
             "hosts": ("api.openai.com",),
-            "binaries": (
-                "/usr/local/bin/codex",
-                "/usr/bin/node",
-                "/usr/local/bin/node",
-                "/opt/venv/bin/python3",
-            ),
+            "binaries": (*CODEX_BINARIES, "/opt/venv/bin/python3"),
             "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
         }
     if env_name in {"ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}:
@@ -5931,12 +5927,7 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
             "auth_style": "bearer" if subscription else "header",
             "header_name": "Authorization" if subscription else "x-api-key",
             "hosts": ("api.anthropic.com",),
-            "binaries": (
-                "/usr/local/bin/claude",
-                "/usr/bin/node",
-                "/usr/local/bin/node",
-                "/opt/venv/bin/python3",
-            ),
+            "binaries": (*CLAUDE_CODE_BINARIES, "/opt/venv/bin/python3"),
             "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
         }
     if env_name == "XAI_API_KEY":

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_env, mcp_token_path
+from volundr.adapters.outbound.openshell_binaries import CLAUDE_CODE_BINARIES, CODEX_BINARIES
 from volundr.domain.models import (
     CredentialMapping,
     IntegrationConnection,
@@ -193,14 +194,18 @@ class SecretInjectionContributor(SessionContributor):
                                             "access": "full",
                                         }
                                     ],
-                                    "binaries": [
-                                        "/usr/local/bin/claude",
-                                        "/usr/local/bin/codex",
-                                        "/usr/bin/node",
-                                        "/usr/local/bin/node",
-                                        "/opt/venv/bin/python3",
-                                        "/opt/niuu/bin/python",
-                                    ],
+                                    # The harness that calls the MCP server runs its
+                                    # native binary, which OpenShell matches.
+                                    "binaries": list(
+                                        dict.fromkeys(
+                                            [
+                                                *CLAUDE_CODE_BINARIES,
+                                                *CODEX_BINARIES,
+                                                "/opt/venv/bin/python3",
+                                                "/opt/niuu/bin/python",
+                                            ]
+                                        )
+                                    ),
                                 }
                                 mappings.append(
                                     CredentialMapping(

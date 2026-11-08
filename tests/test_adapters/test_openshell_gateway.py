@@ -3603,6 +3603,35 @@ def test_claude_subscription_uses_bearer_provider_route():
     assert api_key["header_name"] == "x-api-key"
 
 
+def test_claude_providers_admit_the_native_binary_the_cli_really_runs():
+    """OpenShell matches the executable a process runs. Claude Code's npm package runs
+    @anthropic-ai/claude-code/bin/claude.exe behind the /usr/local/bin/claude symlink;
+    on noatun (dev.586) every model call from it was denied (transparent_tcp_policy_denied)."""
+    import fnmatch
+
+    from volundr.adapters.outbound.openshell_gateway import _provider_target
+
+    native = "/opt/skuld-tools/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
+    sdk_bundled = "/opt/venv/lib/python3.14/site-packages/claude_agent_sdk/_bundled/claude"
+    for env_name in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_API_KEY"):
+        binaries = _provider_target(env_name)["binaries"]
+        for path in (native, sdk_bundled):
+            assert any(fnmatch.fnmatch(path, pattern) for pattern in binaries), (env_name, path)
+
+
+def test_codex_api_key_provider_admits_codex_native_binary():
+    import fnmatch
+
+    from volundr.adapters.outbound.openshell_gateway import _provider_target
+
+    native = (
+        "/opt/skuld-tools/node_modules/@openai/codex-linux-x64/vendor/"
+        "x86_64-unknown-linux-musl/codex/codex"
+    )
+    binaries = _provider_target("OPENAI_API_KEY")["binaries"]
+    assert any(fnmatch.fnmatch(native, pattern) for pattern in binaries)
+
+
 def test_gitlab_token_uses_bearer_provider_route():
     from volundr.adapters.outbound.openshell_gateway import _provider_target
 
