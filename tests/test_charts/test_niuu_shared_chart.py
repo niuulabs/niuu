@@ -67,6 +67,25 @@ def test_shared_db_drops_the_retired_odin_review_and_valkyrie_history_tables() -
         assert f"CREATE TABLE IF NOT EXISTS {table} (" in down
 
 
+def test_shared_db_drops_the_retired_ravn_trigger_store_and_budget_ledger() -> None:
+    template = (CHART_DIR / "templates" / "migrations-configmap.yaml").read_text()
+    blocks = _migration_blocks(template)
+
+    up = blocks["000113_drop_ravn_runtime_tables.up.sql"]
+    assert "DROP TABLE IF EXISTS ravn_triggers;" in up
+    assert "DROP TABLE IF EXISTS ravn_budget_ledger;" in up
+    # The persona registry keeps its table; memory and checkpoints never lived here.
+    dropped = [line for line in up.splitlines() if line.startswith("DROP TABLE")]
+    assert dropped == [
+        "DROP TABLE IF EXISTS ravn_budget_ledger;",
+        "DROP TABLE IF EXISTS ravn_triggers;",
+    ]
+
+    down = blocks["000113_drop_ravn_runtime_tables.down.sql"]
+    assert "CREATE TABLE IF NOT EXISTS ravn_triggers (" in down
+    assert "CREATE TABLE IF NOT EXISTS ravn_budget_ledger (" in down
+
+
 def test_shared_db_does_not_embed_volundr_session_migrations() -> None:
     template = (CHART_DIR / "templates" / "migrations-configmap.yaml").read_text()
     blocks = _migration_blocks(template)

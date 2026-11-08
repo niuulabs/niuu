@@ -21,7 +21,6 @@ LOCAL_SERVICE_DATABASES: dict[str, str] = {
     "observatory": "observatory",
     "ting": "ting",
     "bifrost": "bifrost",
-    "ravn": "ravn",
     "mimir": "mimir",
 }
 

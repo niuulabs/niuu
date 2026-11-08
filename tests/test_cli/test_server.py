@@ -2131,7 +2131,7 @@ class TestRootServerStartEmbeddedDb:
         assert os.environ["NIUU_DATABASE_NAME_GUILD"] == "guild"
         assert os.environ["NIUU_DATABASE_NAME_OBSERVATORY"] == "observatory"
         mock_db.ensure_databases.assert_awaited_once_with(
-            ("volundr", "niuu_shared", "guild", "observatory", "ting", "bifrost", "ravn", "mimir")
+            ("volundr", "niuu_shared", "guild", "observatory", "ting", "bifrost", "mimir")
         )
 
     @pytest.mark.asyncio
@@ -2188,7 +2188,6 @@ class TestRootServerStartEmbeddedDb:
             "observatory",
             "ting",
             "bifrost",
-            "ravn",
             "mimir",
         )
         assert server._migration_connection_info() is server._external_db
