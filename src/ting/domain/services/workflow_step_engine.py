@@ -85,6 +85,7 @@ from ting.ports.workflow_steps import (
     DeliveredEvent,
     LedgerTransaction,
     SessionLiveness,
+    SessionNotReadyError,
     StepActivation,
     StepRunDefinition,
     StepRunDefinitions,
@@ -870,7 +871,19 @@ class WorkflowStepEngine:
             raise StepEngineError(
                 f"session {bound.session_id} is {liveness.value}, so it cannot take the step"
             )
-        await self._deliver(bound, graph, definition, claim=not redeliver)
+        try:
+            await self._deliver(bound, graph, definition, claim=not redeliver)
+        except SessionNotReadyError as exc:
+            logger.info(
+                "Session %s of step %s (%s/%s) runs but does not answer yet (%s); "
+                "delivering the step when it does",
+                bound.session_id,
+                bound.id,
+                bound.node_id,
+                bound.member,
+                exc,
+            )
+            self._defer_delivery(bound, graph, definition)
 
     async def _deliver(
         self,
@@ -904,7 +917,13 @@ class WorkflowStepEngine:
             await self._repository.load(bound.run_id),
             definition.workflow_name,
         )
-        await self._sessions.deliver(activation)
+        try:
+            await self._sessions.deliver(activation)
+        except SessionNotReadyError:
+            # Nothing reached the session: give the claim back so the next try can take it.
+            if claimed:
+                await self._repository.release_delivery(bound.id, session_id)
+            raise
         return True
 
     def _defer_delivery(
@@ -962,30 +981,44 @@ class WorkflowStepEngine:
                     description="Waits for a starting step session that could not ask it.",
                 )
                 return
-            if liveness is SessionLiveness.STARTING:
-                if bound.deadline_at is not None and self._clock() > bound.deadline_at:
+            if liveness is SessionLiveness.RUNNING:
+                try:
+                    await self._deliver(bound, graph, definition)
+                    return
+                except SessionNotReadyError as exc:
+                    logger.info(
+                        "Session %s of step %s (%s/%s) runs but does not answer yet (%s); "
+                        "still waiting",
+                        bound.session_id,
+                        bound.id,
+                        bound.node_id,
+                        bound.member,
+                        exc,
+                    )
+                except Exception as exc:
                     await self._fail_start(
-                        bound,
-                        graph,
-                        definition,
-                        f"session {bound.session_id} did not come up before the step's "
-                        f"deadline of {bound.deadline_at.isoformat()}; raise "
-                        "workflow_steps.step_deadline_seconds if sessions boot that slowly",
+                        bound, graph, definition, f"delivery to {bound.member!r} failed: {exc}"
                     )
                     return
-                continue
-            try:
-                if liveness is not SessionLiveness.RUNNING:
-                    raise StepEngineError(
-                        f"session {bound.session_id} is {liveness.value}, so it cannot take "
-                        "the step"
-                    )
-                await self._deliver(bound, graph, definition)
-            except Exception as exc:
+            elif liveness is not SessionLiveness.STARTING:
                 await self._fail_start(
-                    bound, graph, definition, f"delivery to {bound.member!r} failed: {exc}"
+                    bound,
+                    graph,
+                    definition,
+                    f"delivery to {bound.member!r} failed: session {bound.session_id} is "
+                    f"{liveness.value}, so it cannot take the step",
                 )
-            return
+                return
+            if bound.deadline_at is not None and self._clock() > bound.deadline_at:
+                await self._fail_start(
+                    bound,
+                    graph,
+                    definition,
+                    f"session {bound.session_id} did not come up before the step's "
+                    f"deadline of {bound.deadline_at.isoformat()}; raise "
+                    "workflow_steps.step_deadline_seconds if sessions boot that slowly",
+                )
+                return
 
     async def _bind_session(self, step: WorkflowStep, session_id: str) -> WorkflowStep | None:
         """Record the session that owns an activated step; ``None`` if the step moved on."""

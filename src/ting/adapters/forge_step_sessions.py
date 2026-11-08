@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+import httpx
+
 from ting.domain.models import WorkflowCampaign
 from ting.domain.step_instructions import render_step_instructions
 from ting.ports.volundr import StepSessionRequest, VolundrFactory, VolundrPort, VolundrSession
@@ -36,6 +38,7 @@ from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_steps import (
     PersonaRef,
     SessionLiveness,
+    SessionNotReadyError,
     StepActivation,
     StepObservation,
     StepSessionPort,
@@ -51,6 +54,9 @@ _NAME_DIGEST_CHARS = 8
 _NAME_MEMBER_CHARS = 20
 
 _FAILED_STATUSES = frozenset({"failed"})
+#: What Forge answers for a session whose runtime is up but whose broker does not serve yet:
+#: its proxy could not reach the endpoint (bad gateway, unavailable, gateway timeout).
+_NOT_READY_STATUSES = frozenset({502, 503, 504})
 _STOPPED_STATUSES = frozenset({"stopped"})
 #: Statuses of a session that is not running and will not come up by itself.
 _ENDED_STATUSES = frozenset({"stopped", "stopping", "archived"})
@@ -161,7 +167,14 @@ class ForgeStepSessions(StepSessionPort):
 
     async def deliver(self, activation: StepActivation) -> None:
         _, forge = await self._run(activation.run_id)
-        await forge.deliver_workflow_step(activation.session_id, activation_body(activation))
+        try:
+            await forge.deliver_workflow_step(activation.session_id, activation_body(activation))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in _NOT_READY_STATUSES:
+                raise SessionNotReadyError(str(exc)) from exc
+            raise
+        except httpx.TransportError as exc:
+            raise SessionNotReadyError(f"{type(exc).__name__}: {exc}") from exc
 
     async def stop_run_sessions(self, run_id: UUID) -> None:
         campaign, forge = await self._run(run_id)

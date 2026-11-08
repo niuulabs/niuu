@@ -108,6 +108,10 @@ UPDATE workflow_steps SET delivered_at = $3
 WHERE id = $1 AND session_id = $2 AND state = 'active' AND delivered_at IS NULL
 RETURNING id
 """
+_RELEASE_DELIVERY = """
+UPDATE workflow_steps SET delivered_at = NULL
+WHERE id = $1 AND session_id = $2 AND state = 'active'
+"""
 _SELECT_UNDELIVERED = """
 SELECT * FROM workflow_steps
 WHERE state = 'active' AND kind = 'stage_member' AND session_id IS NOT NULL
@@ -151,6 +155,9 @@ class PostgresWorkflowStepRepository(WorkflowStepRepository):
     async def claim_delivery(self, activation_id: UUID, session_id: str, *, at: datetime) -> bool:
         row = await self._pool.fetchrow(_CLAIM_DELIVERY, activation_id, session_id, at)
         return row is not None
+
+    async def release_delivery(self, activation_id: UUID, session_id: str) -> None:
+        await self._pool.execute(_RELEASE_DELIVERY, activation_id, session_id)
 
     async def undelivered_steps(self) -> list[WorkflowStep]:
         return [_step_from_row(row) for row in await self._pool.fetch(_SELECT_UNDELIVERED)]

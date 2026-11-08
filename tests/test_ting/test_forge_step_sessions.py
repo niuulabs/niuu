@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 
 from ting.adapters.forge_step_sessions import (
@@ -20,6 +21,7 @@ from ting.ports.workflow_steps import (
     DeliveredEvent,
     PersonaRef,
     SessionLiveness,
+    SessionNotReadyError,
     StepActivation,
 )
 
@@ -331,6 +333,28 @@ async def test_delivery_posts_the_contract_body_with_rendered_instructions() -> 
     assert body == expected
     assert "workflow_step_close" in instructions
     assert "add an endpoint" in instructions
+
+
+@pytest.mark.parametrize("status", [502, 503, 504])
+async def test_a_session_whose_endpoint_does_not_answer_yet_is_not_ready(status: int) -> None:
+    campaign = _campaign(id=UUID(contract.RUN_ID))
+    sessions, forge = _sessions(campaign)
+    request = httpx.Request("POST", "http://forge/x")
+    forge.fail_deliver = httpx.HTTPStatusError(
+        "Service endpoint is not reachable", request=request, response=httpx.Response(status)
+    )
+
+    with pytest.raises(SessionNotReadyError, match="not reachable"):
+        await sessions.deliver(_activation())
+
+
+async def test_a_session_forge_cannot_connect_to_is_not_ready() -> None:
+    campaign = _campaign(id=UUID(contract.RUN_ID))
+    sessions, forge = _sessions(campaign)
+    forge.fail_deliver = httpx.ConnectError("connection refused")
+
+    with pytest.raises(SessionNotReadyError, match="ConnectError"):
+        await sessions.deliver(_activation())
 
 
 async def test_a_delivery_forge_refuses_is_raised() -> None:

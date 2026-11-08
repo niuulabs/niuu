@@ -83,6 +83,15 @@ class StepActivation:
     workflow_name: str = ""
 
 
+class SessionNotReadyError(RuntimeError):
+    """The session's Forge reports it running, but its endpoint does not answer yet.
+
+    Forge marks a session running when its runtime is up, which can be a moment before the
+    session's broker serves requests (an OpenShell sandbox, a pod whose proxy route is not
+    ready). Nothing reached the session, so the delivery can be tried again.
+    """
+
+
 class SessionLiveness(StrEnum):
     """Whether a step's session can still run the step, as its Forge reports it."""
 
@@ -124,7 +133,11 @@ class StepSessionPort(ABC):
 
     @abstractmethod
     async def deliver(self, activation: StepActivation) -> None:
-        """Hand a step activation to the member's session."""
+        """Hand a step activation to the member's session.
+
+        Raises ``SessionNotReadyError`` when the session's endpoint does not answer yet, so
+        the step can be delivered again; any other error is a refusal.
+        """
 
     @abstractmethod
     async def stop_run_sessions(self, run_id: UUID) -> None:
@@ -248,6 +261,10 @@ class WorkflowStepRepository(ABC):
         The conditional write is the claim: of several workers waiting on the same step,
         only the one that gets True hands it to the session.
         """
+
+    @abstractmethod
+    async def release_delivery(self, activation_id: UUID, session_id: str) -> None:
+        """Undo a delivery claim whose send never reached the session."""
 
     @abstractmethod
     async def undelivered_steps(self) -> list[WorkflowStep]:

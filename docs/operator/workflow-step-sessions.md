@@ -45,7 +45,9 @@ A session takes minutes to boot, and Forge cannot reach its broker before it is 
 When a step is activated for a session that is not up yet (a member's first step, or a
 stopped session being started again), Ting does not deliver it and does not fail it: the
 step stays active and bound to the session, and Ting delivers it once Forge reports the
-session running, polling every `workflow_steps.session_poll_seconds`. The caller (a launch,
+session running, polling every `workflow_steps.session_poll_seconds`. Forge can report a
+session running a moment before its broker answers (its proxy then answers 502, 503 or 504);
+such a delivery reached nothing, so its claim is given back and Ting keeps waiting. The caller (a launch,
 or the close of the step before it) is not held for the boot. The wait ends when the
 session is running, when it is stopped, failed or gone (the step fails and says so), or at
 the step's deadline (the step fails naming `workflow_steps.step_deadline_seconds`).

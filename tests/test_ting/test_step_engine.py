@@ -654,6 +654,33 @@ async def test_a_step_delivered_at_once_is_recorded_and_not_waited_for_again() -
     assert await second_worker(run).resume_deliveries() == 0
 
 
+async def test_a_running_session_that_does_not_answer_yet_gets_the_step_once_it_does() -> None:
+    # Forge reports the session running a moment before its broker serves (seen on noatun).
+    run = make_run(bundled("Developer Workstream"))
+    run.sessions.not_ready["developer-coder"] = 2
+
+    await run.launch()
+
+    coder = run.current("workstream-code")
+    assert run.finished_with() is None
+    assert coder.id not in run.repository.delivered  # the claim was given back
+    await wait_for(lambda: run.sessions.delivered, what="the step to be delivered")
+    assert [d.activation_id for d in run.sessions.delivered] == [coder.id]
+    assert coder.id in run.repository.delivered
+    await run.engine.aclose()
+
+
+async def test_a_session_that_never_answers_fails_the_step_at_its_deadline() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    run.sessions.not_ready["developer-coder"] = 10_000
+
+    await run.launch()
+    run.clock[0] += timedelta(seconds=STEP_DEADLINE_SECONDS + 1)
+    await wait_for(lambda: run.finished_with(), what="the run to fail")
+
+    assert "did not come up before the step's deadline" in run.steps("workstream-code")[0].note
+
+
 async def test_a_step_that_closed_while_its_delivery_waited_is_not_delivered() -> None:
     run = make_run(bundled("Developer Workstream"))
     run.sessions.liveness[CODER_SESSION] = SessionLiveness.STARTING

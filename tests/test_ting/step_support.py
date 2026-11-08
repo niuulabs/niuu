@@ -34,6 +34,7 @@ from ting.ports.workflow_steps import (
     LedgerTransaction,
     PersonaRef,
     SessionLiveness,
+    SessionNotReadyError,
     StepActivation,
     StepObservation,
     StepRunDefinition,
@@ -203,6 +204,11 @@ class InMemoryStepRepository(WorkflowStepRepository):
         self.delivered[activation_id] = at
         return True
 
+    async def release_delivery(self, activation_id: UUID, session_id: str) -> None:
+        step = self.steps.get(activation_id)
+        if step is not None and step.session_id == session_id:
+            self.delivered.pop(activation_id, None)
+
     async def undelivered_steps(self) -> list[WorkflowStep]:
         return [
             step
@@ -224,6 +230,8 @@ class FakeSessions(StepSessionPort):
         self.stopped: list[UUID] = []
         self.fail_ensure: set[str] = set()
         self.fail_deliver: set[str] = set()
+        #: Per member: how many more deliveries answer "not ready" before one lands.
+        self.not_ready: dict[str, int] = {}
         #: Per session id: what ``observe`` says. Unlisted sessions are running and hold nothing.
         self.liveness: dict[str, SessionLiveness] = {}
         #: Per (session id, activation id): the session's durable record of the step.
@@ -244,6 +252,9 @@ class FakeSessions(StepSessionPort):
     async def deliver(self, activation: StepActivation) -> None:
         if activation.member in self.fail_deliver:
             raise RuntimeError(f"{activation.member} is unreachable")
+        if self.not_ready.get(activation.member, 0) > 0:
+            self.not_ready[activation.member] -= 1
+            raise SessionNotReadyError(f"{activation.member} does not answer yet")
         self.delivered.append(activation)
 
     async def stop_run_sessions(self, run_id: UUID) -> None:

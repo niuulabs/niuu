@@ -82,6 +82,10 @@ class _Pool:
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         return await self.connection.fetchrow(query, *args)
 
+    async def execute(self, query: str, *args: Any) -> str:
+        self.connection.executed.append((query, args))
+        return "UPDATE 1"
+
 
 def _step_row(run_id: Any, **changes: Any) -> dict[str, Any]:
     row = {
@@ -492,3 +496,15 @@ async def test_undelivered_steps_are_the_active_bound_stage_members_not_delivere
         "delivered_at IS NULL",
     ):
         assert condition in query
+
+
+async def test_releasing_a_delivery_clears_the_claim_of_that_session_only(
+    repository: PostgresWorkflowStepRepository, connection: _Connection
+) -> None:
+    activation_id = uuid4()
+
+    await repository.release_delivery(activation_id, "session-1")
+
+    query, args = connection.executed[0]
+    assert "SET delivered_at = NULL" in query and "session_id = $2" in query
+    assert args == (activation_id, "session-1")
