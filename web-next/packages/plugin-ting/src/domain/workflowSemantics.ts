@@ -136,9 +136,6 @@ export function normalizeStageNode(node: WorkflowStageNode): WorkflowStageNode {
   const nextExecutionMode = shouldFillExecutionDefaults
     ? (node.executionMode ?? 'parallel')
     : node.executionMode;
-  const nextMaxConcurrent = shouldFillExecutionDefaults
-    ? (node.maxConcurrent ?? 3)
-    : node.maxConcurrent;
   const nextJoinMode = shouldFillExecutionDefaults ? (node.joinMode ?? 'all') : node.joinMode;
 
   const personaIdsChanged =
@@ -149,7 +146,6 @@ export function normalizeStageNode(node: WorkflowStageNode): WorkflowStageNode {
     !personaIdsChanged &&
     JSON.stringify(nextStageMembers) === JSON.stringify(node.stageMembers ?? []) &&
     node.executionMode === nextExecutionMode &&
-    node.maxConcurrent === nextMaxConcurrent &&
     node.joinMode === nextJoinMode
   ) {
     return node;
@@ -160,7 +156,6 @@ export function normalizeStageNode(node: WorkflowStageNode): WorkflowStageNode {
     stageMembers: nextStageMembers,
     personaIds: nextPersonaIds,
     executionMode: nextExecutionMode,
-    maxConcurrent: nextMaxConcurrent,
     joinMode: nextJoinMode,
   };
 }

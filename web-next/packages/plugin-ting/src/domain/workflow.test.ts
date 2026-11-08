@@ -238,6 +238,15 @@ describe('step engine fields round-trip', () => {
     expect(gate.changesRequestedEvent).toBe('review.changes_requested');
   });
 
+  it('leaves maxConcurrent unset on a stage unless the author set it', () => {
+    const base = { id: 's', kind: 'stage', label: 'Stage', runId: null, position } as const;
+    const unset = workflowStageNodeSchema.parse(base);
+    expect(unset.maxConcurrent).toBeUndefined();
+    expect('maxConcurrent' in unset).toBe(false);
+    expect(workflowStageNodeSchema.parse({ ...base, maxConcurrent: 6 }).maxConcurrent).toBe(6);
+    expect(() => workflowStageNodeSchema.parse({ ...base, maxConcurrent: 0 })).toThrow();
+  });
+
   it('keeps a per-node deadline on stage, gate and wait nodes', () => {
     const stage = workflowStageNodeSchema.parse({
       id: 's',

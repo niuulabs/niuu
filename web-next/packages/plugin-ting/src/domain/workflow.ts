@@ -63,8 +63,12 @@ export const workflowStageNodeSchema = z.object({
   stageMembers: z.array(stageMemberSchema).default([]),
   /** Parallel or sequential execution for the stage flock. */
   executionMode: stageExecutionModeSchema.default('parallel'),
-  /** Maximum number of concurrent workers allowed in the stage. */
-  maxConcurrent: z.number().int().positive().default(3),
+  /**
+   * Maximum number of members of a parallel stage running at once. Unset means
+   * no limit: the step engine treats it as unbounded, so the builder never fills
+   * a number the author did not choose.
+   */
+  maxConcurrent: z.number().int().positive().optional(),
   /** How inbound branches join when this stage has fan-in. */
   joinMode: stageJoinModeSchema.default('all'),
   /** Seconds a step of this stage may stay active before it counts as overdue. */
