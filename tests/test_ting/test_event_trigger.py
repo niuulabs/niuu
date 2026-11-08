@@ -130,11 +130,11 @@ class TestLoadTemplate:
         tpl = load_template("review", BUNDLED_TEMPLATES_DIR, payload)
 
         assert "99" in tpl.name
-        # review.yaml has 3 stages: parallel-review, qa-test, human-approval
-        assert len(tpl.phases) == 3
+        # review.yaml has 2 stages: parallel-review, human-approval
+        assert len(tpl.phases) == 2
         assert tpl.phases[0].name == "parallel-review"
-        assert tpl.phases[2].name == "human-approval"
-        assert tpl.phases[2].needs_approval is True
+        assert tpl.phases[1].name == "human-approval"
+        assert tpl.phases[1].needs_approval is True
         assert len(tpl.phases[0].runs) == 2  # parallel: reviewer + security-auditor
         assert tpl.phases[0].runs[0].persona == "reviewer"
 
@@ -704,40 +704,6 @@ class TestBundledTemplates:
         assert tpl.name
         assert len(tpl.phases) >= 1
 
-    def test_deploy_template_loads(self):
-        payload = {
-            "repo": "niuulabs/v",
-            "sha": "abc123def456",
-            "sha_short": "abc123d",
-            "title": "Merge feat/x",
-            "pr_url": "https://github.com/niuulabs/v/pull/1",
-            "author": "bob",
-        }
-        tpl = load_template("deploy", BUNDLED_TEMPLATES_DIR, payload)
-        assert tpl.name
-
-    def test_investigate_template_loads(self):
-        payload = {
-            "repo": "niuulabs/v",
-            "issue_number": "42",
-            "title": "Something is broken",
-            "author": "alice",
-            "issue_url": "https://github.com/niuulabs/v/issues/42",
-            "body": "It crashes on startup.",
-        }
-        tpl = load_template("investigate", BUNDLED_TEMPLATES_DIR, payload)
-        assert tpl.name
-
-    def test_reflect_template_loads(self):
-        payload = {
-            "session_id": "sess-xyz",
-            "repo": "niuulabs/v",
-            "outcome": "success",
-            "duration_seconds": "120",
-        }
-        tpl = load_template("reflect", BUNDLED_TEMPLATES_DIR, payload)
-        assert tpl.name
-
 
 # ---------------------------------------------------------------------------
 # build_event_trigger_adapter factory
@@ -920,7 +886,7 @@ class TestEventTriggerConfig:
                 {"event": "github.pr.opened", "saga_template": "review", "auto_start": True},
                 {
                     "event": "github.pr.merged",
-                    "saga_template": "deploy",
+                    "saga_template": "review",
                     "auto_start": True,
                     "filter": {"branch": "main"},
                 },
@@ -1552,57 +1518,12 @@ class TestPersonaPassedToSpawnRequest:
 
 
 # ---------------------------------------------------------------------------
-# Bundled template smoke tests (ship + retro)
+# Bundled review template
 # ---------------------------------------------------------------------------
 
 
-class TestBundledShipRetroTemplates:
-    def test_ship_template_loads(self):
-        payload = {
-            "repo": "niuulabs/volundr",
-            "branch": "feat/release",
-            "base_branch": "main",
-        }
-        tpl = load_template("ship", BUNDLED_TEMPLATES_DIR, payload)
-        assert tpl.name
-        assert len(tpl.phases) == 4
-        assert tpl.phases[0].name == "test-suite"
-        assert tpl.phases[1].name == "pre-ship-review"
-        assert tpl.phases[2].name == "version-bump"
-        assert tpl.phases[3].name == "release-pr"
-        # All phases have personas
-        for phase in tpl.phases:
-            for run in phase.runs:
-                assert run.persona
-
-    def test_retro_template_loads(self):
-        payload = {"week": "2026-W15"}
-        tpl = load_template("retro", BUNDLED_TEMPLATES_DIR, payload)
-        assert tpl.name
-        assert "2026-W15" in tpl.name
-        assert len(tpl.phases) == 2
-        assert tpl.phases[0].name == "retrospective-analysis"
-        assert tpl.phases[1].name == "write-to-mimir"
-        for phase in tpl.phases:
-            for run in phase.runs:
-                assert run.persona == "retro-analyst"
-
-    def test_deploy_template_has_3_phases(self):
-        payload = {
-            "repo": "niuulabs/v",
-            "sha": "abc123def456",
-            "sha_short": "abc123d",
-            "title": "Merge feat/x",
-            "pr_url": "https://github.com/niuulabs/v/pull/1",
-            "author": "bob",
-        }
-        tpl = load_template("deploy", BUNDLED_TEMPLATES_DIR, payload)
-        assert len(tpl.phases) == 3
-        assert tpl.phases[0].name == "smoke-test"
-        assert tpl.phases[1].name == "monitor"
-        assert tpl.phases[2].name == "release-docs"
-
-    def test_review_template_has_4_phases_with_approval_gate(self):
+class TestBundledReviewTemplate:
+    def test_review_template_has_2_phases_with_approval_gate(self):
         payload = {
             "repo": "niuulabs/v",
             "pr_number": "42",
@@ -1613,12 +1534,11 @@ class TestBundledShipRetroTemplates:
             "pr_url": "https://github.com/niuulabs/v/pull/42",
         }
         tpl = load_template("review", BUNDLED_TEMPLATES_DIR, payload)
-        # review.yaml has 3 stages: parallel-review, qa-test, human-approval
-        assert len(tpl.phases) == 3
-        assert tpl.phases[2].needs_approval is True
+        # review.yaml has 2 stages: parallel-review, human-approval
+        assert len(tpl.phases) == 2
+        assert tpl.phases[1].needs_approval is True
         assert tpl.phases[0].runs[0].persona == "reviewer"
         assert tpl.phases[0].runs[1].persona == "security-auditor"
-        assert tpl.phases[1].runs[0].persona == "qa-agent"
 
 
 async def test_event_phase_balances_each_run(monkeypatch):

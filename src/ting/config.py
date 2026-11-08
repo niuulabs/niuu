@@ -751,11 +751,6 @@ class EventTriggerConfig(BaseModel):
             - event: "github.pr.opened"
               saga_template: review
               auto_start: true
-            - event: "github.pr.merged"
-              saga_template: deploy
-              auto_start: true
-              filter:
-                branch: main
     """
 
     enabled: bool = Field(default=False, description="Enable the event trigger adapter.")
