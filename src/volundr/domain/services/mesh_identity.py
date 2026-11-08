@@ -73,7 +73,8 @@ class MeshRequestError(ValueError):
 class MeshMembershipSource(Protocol):
     """Where a session's mesh memberships come from. Sources add; none removes."""
 
-    async def memberships(self, session: Session) -> Collection[str]: ...
+    async def memberships(self, session: Session) -> Collection[str]:
+        """The memberships this source grants ``session`` (``kind:id`` strings)."""
 
 
 class TenantMembershipSource:
@@ -86,13 +87,15 @@ class TenantMembershipSource:
 class MeshRevocationPort(Protocol):
     """Tells the mesh a launch ended. Failure is the implementation's to report loudly."""
 
-    async def revoke(self, *, session_id: str, claim: PeerClaim) -> None: ...
+    async def revoke(self, *, session_id: str, claim: PeerClaim) -> None:
+        """Announce that ``claim``'s launch of ``session_id`` ended; raises when it cannot."""
 
 
 class MeshIdentityRetirer(Protocol):
     """What the session service calls when a session's launch ends."""
 
-    async def retire(self, session_id: UUID, launch_id: str | None) -> None: ...
+    async def retire(self, session_id: UUID, launch_id: str | None) -> None:
+        """Release the session's mesh peer claim and revoke the launch that held it."""
 
 
 @dataclass(frozen=True)

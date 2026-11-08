@@ -37,7 +37,6 @@ import base64
 import fnmatch
 import hashlib
 import json
-import logging
 import time
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
@@ -57,8 +56,6 @@ from jwt.exceptions import PyJWKSetError
 from niuu.cap_telemetry import record_degraded, record_retry
 from niuu.domain.services.token_scope import MESH_PEER_TOKEN_USE
 from niuu.observability import get_observability
-
-logger = logging.getLogger(__name__)
 
 #: Audience of a mesh certificate. Forge's and Envoy's audiences never include it.
 MESH_AUDIENCE = "niuu-mesh"
@@ -154,7 +151,8 @@ class IssuedMeshCertificate:
 class CertificateSource(Protocol):
     """Where a peer gets (and renews) its certificate for a public key."""
 
-    async def issue(self, public_key: bytes, peer_id: str) -> IssuedMeshCertificate: ...
+    async def issue(self, public_key: bytes, peer_id: str) -> IssuedMeshCertificate:
+        """A certificate for ``public_key`` as ``peer_id``; raises when none can be issued."""
 
 
 @dataclass(frozen=True)
@@ -635,7 +633,11 @@ class MeshAttestationVerifier:
 
     def revoke(self, session_id: str, launch_id: str) -> None:
         """Refuse every message of this launch from now on."""
-        retain = self._retain() if callable(self._retain) else self._retain
+        retain_source = self._retain
+        if callable(retain_source):
+            retain = retain_source()
+        else:
+            retain = retain_source
         until = int(self._clock() * 1000) + int(retain * 1000)
         self._revocations.until_ms[(session_id, launch_id)] = until
         get_observability().count(

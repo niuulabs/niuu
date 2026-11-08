@@ -512,16 +512,26 @@ class PeerInboxMixin:
         self, task: asyncio.Task[None], turn_id: str, message_ids: list[str]
     ) -> None:
         """Messages whose turn never reached the harness are reported, never quietly lost."""
-        await task
-        turn = next((t for t in self._conversation_turns if t.id == turn_id), None)
-        if turn is None or turn.metadata.get("steering_state") != "failed":
-            return
-        record_degraded(
-            "skuld.peer_inbox.delivery",
-            f"the harness did not accept the turn carrying peer messages {', '.join(message_ids)} "
-            "after the delivery retries (delivery.max_attempts); see the session's "
-            "user_delivery_failed frame. They go back to waiting for the next turn boundary.",
-        )
+        ids = ", ".join(message_ids)
+        try:
+            await task
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            failure = (
+                f"the turn carrying peer messages {ids} failed before the harness took it "
+                f"({exc!r}). They go back to waiting for the next turn boundary."
+            )
+        else:
+            turn = next((t for t in self._conversation_turns if t.id == turn_id), None)
+            if turn is None or turn.metadata.get("steering_state") != "failed":
+                return
+            failure = (
+                f"the harness did not accept the turn carrying peer messages {ids} after the "
+                "delivery retries (delivery.max_attempts); see the session's "
+                "user_delivery_failed frame. They go back to waiting for the next turn boundary."
+            )
+        record_degraded("skuld.peer_inbox.delivery", failure)
         async with self._peer_inbox_lock:
             entries = [
                 self._peer_inbox[message_id]
