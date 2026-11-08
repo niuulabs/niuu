@@ -649,18 +649,39 @@ mesh:
   # -- Attention hint (0.0-1.0) on events mesh_publish publishes (mesh.published_event_urgency).
   # Null keeps 0.8.
   publishedEventUrgency: null
-  # -- NNG transport addresses (mesh.nng) when `transport` is nng. Empty keeps
-  # tcp://127.0.0.1:0 for both.
+  # -- With the mesh enabled on nng and no `discoveryAdapters` or `adapters`, discover the
+  # session pods of the realm by listing pods (see `nng`). false leaves such a mesh without
+  # discovery, which Skuld refuses to start.
+  discoverPods: true
+  # -- NNG transport settings (mesh.nng) when `transport` is nng.
+  # With `enabled: true` and nothing else set (no `discoveryAdapters`, no `adapters`) the chart
+  # runs the mesh for a cluster: `k8s` discovery of the pods of the realm, a PUB socket on
+  # `tcp://0.0.0.0:<port>` announced at the pod's own IP, and the pod labelled and annotated
+  # for that discovery. The session's ServiceAccount must be allowed to `list` pods in the
+  # release namespace, and a NetworkPolicy must let session pods reach each other on <port>
+  # (this chart adds that rule when networkPolicy.enabled). Setting `discoveryAdapters`
+  # turns all of that off: you then choose the addresses yourself.
   nng:
-    # -- Publish/subscribe address (mesh.nng.pub_sub_address)
+    # -- Port of the PUB socket in the cluster default above. Null keeps 7480.
+    port: null
+    # -- Publish/subscribe address (mesh.nng.pub_sub_address). Empty keeps
+    # tcp://127.0.0.1:0, or the cluster default above.
     pubSubAddress: ""
     # -- Request/reply address (mesh.nng.req_rep_address)
     reqRepAddress: ""
+    # -- Host other machines dial this session at (mesh.nng.advertise_host). Needed when
+    # `pubSubAddress` listens on every interface. The cluster default announces the pod IP.
+    advertiseHost: ""
+    # -- Seconds between re-reads of the discovered peers (mesh.nng.rediscover_interval_s).
+    # Null keeps 1.
+    rediscoverIntervalS: null
   # -- Mesh adapter entries (mesh.adapters): each has an `adapter` alias or class path and
   # that adapter's own settings. Null keeps none.
   adapters: null
-  # -- Discovery adapter entries (mesh.discovery_adapters), same shape as `adapters`. With
-  # none configured the session cannot list peers (mesh_peers is an error). Null keeps none.
+  # -- Discovery adapter entries (mesh.discovery_adapters), same shape as `adapters`:
+  # `k8s` (pods of a cluster), `registry` (sessions that share a file system),
+  # `static` (a fixed list), `event_bus` (a NATS bus). Null on nng keeps the cluster default
+  # described at `nng` above.
   discoveryAdapters: null
   # -- NATS JetStream settings (mesh.nats), as a map of niuu.mesh.config.MeshNatsConfig
   # keys, e.g. `{servers: ["nats://nats:4222"], stream_name: ravn_environment}`.

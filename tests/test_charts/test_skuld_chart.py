@@ -1276,7 +1276,9 @@ class TestMeshValues:
             mesh_chart, peerPorts=[{"name": "mesh", "containerPort": 7001}], enabled=True
         )
 
-        assert mesh == {"enabled": True, "transport": "nng"}
+        # Naming no discovery on nng is the cluster default (TestMeshOnNngInACluster).
+        assert mesh["enabled"] is True and mesh["transport"] == "nng"
+        assert mesh["discovery_adapters"][0]["adapter"] == "k8s"
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
@@ -1332,3 +1334,133 @@ class TestThePlannerSharesTheSkuldMeshChart:
         planner = _rendered_skuld_config("skuld-planner", *values)["mesh"]
 
         assert planner == skuld and set(skuld) == set(MESH_KEYS.values())
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestMeshOnNngInACluster:
+    """`mesh.enabled: true` alone runs a cluster mesh on nng: discovery, address, labels."""
+
+    def _docs(self, *extra: str) -> list[dict]:
+        command = [
+            "helm",
+            "template",
+            "mesh-test",
+            str(CHART_DIR),
+            "--namespace",
+            "sessions",
+            "--set",
+            "session.id=11111111-2222-3333-4444-555555555555",
+            "--set",
+            "networkPolicy.enabled=true",
+            *extra,
+        ]
+        return [d for d in yaml.safe_load_all(subprocess.check_output(command)) if d]
+
+    def _kind(self, docs: list[dict], kind: str) -> dict:
+        return next(d for d in docs if d["kind"] == kind)
+
+    def test_the_session_config_names_k8s_discovery_and_a_wildcard_bind(self):
+        from skuld.config import SkuldSettings
+
+        docs = self._docs("--set", "mesh.enabled=true", "--set", "mesh.realmId=flock-a")
+        config = next(
+            yaml.safe_load(d["data"]["config.yaml"])
+            for d in docs
+            if d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+        )
+        mesh = SkuldSettings(**config).mesh
+
+        assert mesh.nng.pub_sub_address == "tcp://0.0.0.0:7480"
+        assert mesh.discovery_adapters == [
+            {"adapter": "k8s", "namespace": "sessions", "nng_port": 7480}
+        ]
+
+    def test_the_pod_gets_its_ip_its_realm_label_and_its_peer_id(self):
+        docs = self._docs("--set", "mesh.enabled=true", "--set", "mesh.realmId=flock-a")
+        pod = self._kind(docs, "Deployment")["spec"]["template"]
+        skuld = next(c for c in pod["spec"]["containers"] if c["name"] == "skuld")
+        env = {e["name"]: e for e in skuld["env"]}
+
+        assert pod["metadata"]["labels"]["ravn.niuu.world/realm"] == "flock-a"
+        assert pod["metadata"]["labels"]["ravn.niuu.world/role"] == "agent"
+        assert pod["metadata"]["annotations"]["ravn.niuu.world/peer-id"] == (
+            "11111111-2222-3333-4444-555555555555"
+        )
+        assert env["POD_IP"]["valueFrom"]["fieldRef"]["fieldPath"] == "status.podIP"
+        assert env["SKULD__MESH__NNG__ADVERTISE_HOST"]["value"] == "$(POD_IP)"
+        names = [e["name"] for e in skuld["env"]]
+        assert names.index("POD_IP") < names.index("SKULD__MESH__NNG__ADVERTISE_HOST")
+        assert {"name": "mesh-pub", "containerPort": 7480, "protocol": "TCP"} in skuld["ports"]
+
+    def test_the_network_policy_lets_the_realms_pods_reach_the_pub_socket(self):
+        docs = self._docs("--set", "mesh.enabled=true", "--set", "mesh.realmId=flock-a")
+        rules = self._kind(docs, "NetworkPolicy")["spec"]["ingress"]
+        [mesh_rule] = [r for r in rules if r["ports"] == [{"protocol": "TCP", "port": 7480}]]
+        assert mesh_rule["from"] == [
+            {
+                "podSelector": {
+                    "matchLabels": {
+                        "ravn.niuu.world/realm": "flock-a",
+                        "ravn.niuu.world/role": "agent",
+                    }
+                }
+            }
+        ]
+
+    def test_the_port_and_the_interval_are_values(self):
+        docs = self._docs(
+            "--set",
+            "mesh.enabled=true",
+            "--set",
+            "mesh.nng.port=9000",
+            "--set",
+            "mesh.nng.rediscoverIntervalS=2",
+        )
+        config = next(
+            yaml.safe_load(d["data"]["config.yaml"])
+            for d in docs
+            if d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+        )
+        assert config["mesh"]["nng"] == {
+            "pub_sub_address": "tcp://0.0.0.0:9000",
+            "rediscover_interval_s": 2,
+        }
+        assert config["mesh"]["discovery_adapters"][0]["nng_port"] == 9000
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            ["--set-json", 'mesh.discoveryAdapters=[{"adapter":"static","peers":[]}]'],
+            ["--set", "mesh.discoverPods=false"],
+            ["--set", "mesh.transport=nats"],
+        ],
+        ids=["operator-discovery", "switched-off", "other-transport"],
+    )
+    def test_naming_discovery_or_another_transport_leaves_the_pod_alone(self, extra):
+        docs = self._docs("--set", "mesh.enabled=true", *extra)
+        pod = self._kind(docs, "Deployment")["spec"]["template"]
+        skuld = next(c for c in pod["spec"]["containers"] if c["name"] == "skuld")
+
+        assert "ravn.niuu.world/realm" not in pod["metadata"]["labels"]
+        assert "POD_IP" not in [e["name"] for e in skuld["env"]]
+        assert not any(
+            "k8s" in json.dumps(r.get("from", []))
+            for r in self._kind(docs, "NetworkPolicy")["spec"]["ingress"]
+        )
+
+    def test_the_planner_chart_gets_the_same_default(self):
+        command = ["helm", "template", "p", str(CHART_DIR.parent / "skuld-planner")]
+        command += ["--set", "mesh.enabled=true", "--namespace", "sessions"]
+        docs = [d for d in yaml.safe_load_all(subprocess.check_output(command)) if d]
+        config = next(
+            yaml.safe_load(d["data"]["config.yaml"])
+            for d in docs
+            if d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+        )
+        pod = next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]
+        skuld = next(c for c in pod["spec"]["containers"] if c["name"] == "skuld")
+
+        assert config["mesh"]["discovery_adapters"][0]["adapter"] == "k8s"
+        assert pod["metadata"]["labels"]["ravn.niuu.world/role"] == "agent"
+        assert "ravn.niuu.world/peer-id" in pod["metadata"]["annotations"]
+        assert "POD_IP" in [e["name"] for e in skuld["env"]]

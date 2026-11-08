@@ -55,6 +55,16 @@ class TestMiniModeConfig:
         assert env["MESH__ATTESTATION__REQUIRED"] == "false"
         assert _local_session_mesh(env) == {"enabled": True, "realm_id": "home"}
 
+    def test_nng_discovery_and_nats_settings_travel_to_the_sessions(self) -> None:
+        mesh = {
+            "enabled": True,
+            "nng": {"pub_sub_address": "tcp://127.0.0.1:7480"},
+            "discovery_adapters": [{"adapter": "static", "peers": []}],
+            "nats": {"servers": ["nats://127.0.0.1:4222"]},
+        }
+        env = _resolve_local_pod_manager_env(CLISettings(mode="mini", mesh=mesh))
+        assert _local_session_mesh(env) == mesh
+
     def test_only_what_the_operator_set_is_sent(self) -> None:
         env = _resolve_local_pod_manager_env(
             CLISettings(mode="mini", mesh={"attestation": {"clock_skew_s": 60}})

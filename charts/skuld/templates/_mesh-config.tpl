@@ -4,6 +4,42 @@ The `mesh:` section of the broker's config file, shared by the skuld and skuld-p
 Skuld's `mesh` settings (skuld.config.MeshConfig) is a value of the chart; a key left null
 keeps Skuld's own default.
 */ -}}
+{{- /*
+"true" when the operator only enabled the mesh on nng and named no discovery: the sessions are
+pods of one cluster, so they find each other by listing the pods of their realm
+(`k8s` discovery) and dial the PUB socket each pod opens on its own IP. The chart then also
+gives the pod its IP, its realm label and its peer id (`skuld.meshPodLabels`, `skuld.meshEnv`).
+*/ -}}
+{{- define "skuld.meshK8sDiscovery" -}}
+{{- if and .Values.mesh.discoverPods .Values.mesh.enabled (eq (.Values.mesh.transport | default "nng") "nng") (not .Values.mesh.discoveryAdapters) (not .Values.mesh.adapters) -}}true{{- end -}}
+{{- end }}
+
+{{- define "skuld.meshNngPort" -}}
+{{- .Values.mesh.nng.port | default 7480 -}}
+{{- end }}
+
+{{- /* Labels and annotations the k8s discovery of the other sessions reads. */ -}}
+{{- define "skuld.meshPodLabels" -}}
+ravn.niuu.world/realm: {{ .Values.mesh.realmId | quote }}
+ravn.niuu.world/role: agent
+{{- end }}
+
+{{- define "skuld.meshPodAnnotations" -}}
+ravn.niuu.world/peer-id: {{ .Values.mesh.peerId | default .Values.session.id | quote }}
+{{- end }}
+
+{{- /* The pod's own IP, and the host other pods dial this one at. */ -}}
+{{- define "skuld.meshEnv" -}}
+- name: POD_IP
+  valueFrom:
+    fieldRef:
+      fieldPath: status.podIP
+{{- if not .Values.mesh.nng.advertiseHost }}
+- name: SKULD__MESH__NNG__ADVERTISE_HOST
+  value: "$(POD_IP)"
+{{- end }}
+{{- end }}
+
 {{- define "skuld.meshConfig" -}}
 # The mesh: this session as a peer of a flock.
 mesh:
@@ -39,13 +75,22 @@ mesh:
   {{- if not (kindIs "invalid" .Values.mesh.publishedEventUrgency) }}
   published_event_urgency: {{ .Values.mesh.publishedEventUrgency | toJson }}
   {{- end }}
-  {{- if or .Values.mesh.nng.pubSubAddress .Values.mesh.nng.reqRepAddress }}
+  {{- $k8s := include "skuld.meshK8sDiscovery" . }}
+  {{- if or .Values.mesh.nng.pubSubAddress .Values.mesh.nng.reqRepAddress .Values.mesh.nng.advertiseHost .Values.mesh.nng.rediscoverIntervalS $k8s }}
   nng:
     {{- if .Values.mesh.nng.pubSubAddress }}
     pub_sub_address: {{ .Values.mesh.nng.pubSubAddress | toJson }}
+    {{- else if $k8s }}
+    pub_sub_address: {{ printf "tcp://0.0.0.0:%v" (include "skuld.meshNngPort" .) | toJson }}
     {{- end }}
     {{- if .Values.mesh.nng.reqRepAddress }}
     req_rep_address: {{ .Values.mesh.nng.reqRepAddress | toJson }}
+    {{- end }}
+    {{- if .Values.mesh.nng.advertiseHost }}
+    advertise_host: {{ .Values.mesh.nng.advertiseHost | toJson }}
+    {{- end }}
+    {{- if .Values.mesh.nng.rediscoverIntervalS }}
+    rediscover_interval_s: {{ .Values.mesh.nng.rediscoverIntervalS | toJson }}
     {{- end }}
   {{- end }}
   {{- if kindIs "slice" .Values.mesh.adapters }}
@@ -53,6 +98,8 @@ mesh:
   {{- end }}
   {{- if kindIs "slice" .Values.mesh.discoveryAdapters }}
   discovery_adapters: {{ .Values.mesh.discoveryAdapters | toJson }}
+  {{- else if $k8s }}
+  discovery_adapters: {{ list (dict "adapter" "k8s" "namespace" .Release.Namespace "nng_port" (int (include "skuld.meshNngPort" .))) | toJson }}
   {{- end }}
   {{- if .Values.mesh.nats }}
   nats: {{ .Values.mesh.nats | toJson }}
