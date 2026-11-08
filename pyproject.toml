@@ -197,6 +197,15 @@ packages = ["src/audit", "src/cli", "src/credentials", "src/features", "src/guil
 [tool.hatch.metadata]
 allow-direct-references = true
 
+# uv installs the OpenShell SDK from the copy committed under vendor/wheels/,
+# never from the GitHub release URL named in the `openshell` extra above: that
+# host times out from CI runners and failed every `uv sync`. The URL stays in the
+# extra so the built niuu wheel's metadata (what pip reads) is unchanged.
+# tests/test_containers/test_vendored_openshell_wheel.py keeps the two in step; to
+# bump the SDK, replace the wheel, the extra's URL and this path together.
+[tool.uv.sources]
+openshell = { path = "vendor/wheels/openshell-0.1.8.dev40+ge9825820d-py3-none-any.whl" }
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "vendor/envoy_authz_protos"]
