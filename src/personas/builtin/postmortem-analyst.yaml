@@ -67,9 +67,9 @@ system_prompt_template: |
   lessons_count: [number of concrete lessons captured]
   ---
 
-allowed_tools: [file, mimir_search, mimir_read, mimir_ingest, ravn]
-forbidden_tools: [git, terminal, cascade, volundr, edit_file, write_file]
-permission_mode: workspace-write
+allowed_tools: [file_read, file_write, "mimir:search", "mimir:read", "mimir:ingest"]
+forbidden_tools: [git, git_read, shell, file_write]
+permission_mode: workspace_write
 
 llm:
   thinking_enabled: false

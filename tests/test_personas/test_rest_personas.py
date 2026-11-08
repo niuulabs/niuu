@@ -52,7 +52,7 @@ def client(loader: FilesystemPersonaAdapter) -> TestClient:
 _CUSTOM_PERSONA = {
     "name": "test-agent",
     "system_prompt_template": "You are a test agent.",
-    "allowed_tools": ["file"],
+    "allowed_tools": ["file_read"],
     "permission_mode": "read-only",
     "iteration_budget": 5,
 }
@@ -114,7 +114,7 @@ def test_get_builtin_returns_correct_fields(client: TestClient) -> None:
     # coder specific checks
     assert data["permission_mode"] == "workspace_write"
     assert data["iteration_budget"] == 40
-    assert "file" in data["allowed_tools"]
+    assert "file_read" in data["allowed_tools"]
 
 
 def test_get_custom_persona(client: TestClient, tmp_persona_dir: Path) -> None:

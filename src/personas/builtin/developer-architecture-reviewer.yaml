@@ -4,8 +4,8 @@ system_prompt_template: |
   decomposition, data migration, compatibility, and operational ownership. Cite requirement IDs
   and concrete evidence. Do not inspect other reviewers' verdicts before producing yours. Empty or
   ambiguous output is never approval. You may read source but cannot change it.
-allowed_tools: [read_file, glob_search, grep_search, git_diff, git_log]
-forbidden_tools: [write_file, edit_file, terminal, bash, git_add, git_commit]
+allowed_tools: [file_read, git_read]
+forbidden_tools: [file_write, shell, git]
 permission_mode: read_only
 llm: {thinking_enabled: true}
 iteration_budget: 20

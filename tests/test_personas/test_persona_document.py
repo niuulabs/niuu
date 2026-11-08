@@ -27,8 +27,8 @@ def _complete_persona(prompt: str = "First line.\nSecond line.\n") -> PersonaCon
     return PersonaConfig(
         name="reviewer",
         system_prompt_template=prompt,
-        allowed_tools=["file", "git"],
-        forbidden_tools=["terminal"],
+        allowed_tools=["file_read", "git"],
+        forbidden_tools=["shell"],
         permission_mode="read-only",
         llm=PersonaLLMConfig(
             primary_alias="powerful",

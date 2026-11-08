@@ -31,9 +31,9 @@ system_prompt_template: |
   artifact_path: capabilities/{slug}/learned_tool.json
   ---end---
 
-allowed_tools: [file, mimir_publish_artifact, mimir_read]
-forbidden_tools: [git, terminal, cascade, volundr, web_search, web_fetch]
-permission_mode: workspace-write
+allowed_tools: [file_read, file_write, "mimir:publish_artifact", "mimir:read"]
+forbidden_tools: [git, git_read, shell, web_search, web_fetch]
+permission_mode: workspace_write
 
 llm:
   thinking_enabled: true

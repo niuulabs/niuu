@@ -24,8 +24,8 @@ _SIMPLE_PERSONA_YAML = """\
 name: custom-agent
 system_prompt_template: |
   You are a custom agent.
-allowed_tools: [file, git]
-forbidden_tools: [cascade]
+allowed_tools: [file_read, git]
+forbidden_tools: [web_search]
 permission_mode: workspace-write
 llm:
   primary_alias: balanced
@@ -36,7 +36,7 @@ iteration_budget: 10
 _OTHER_PERSONA_YAML = """\
 name: other-agent
 system_prompt_template: You are other.
-allowed_tools: [web]
+allowed_tools: [web_fetch]
 permission_mode: read-only
 """
 
@@ -273,7 +273,7 @@ class TestSave:
         config = PersonaConfig(
             name="my-agent",
             system_prompt_template="You are my agent.",
-            allowed_tools=["file"],
+            allowed_tools=["file_read"],
             permission_mode="read-only",
             iteration_budget=5,
         )
@@ -300,8 +300,8 @@ class TestSave:
         config = PersonaConfig(
             name="round-trip",
             system_prompt_template="Round trip test.",
-            allowed_tools=["file", "git"],
-            forbidden_tools=["cascade"],
+            allowed_tools=["file_read", "git"],
+            forbidden_tools=["web_search"],
             permission_mode="workspace-write",
             llm=PersonaLLMConfig(primary_alias="balanced", thinking_enabled=True),
             iteration_budget=20,
@@ -326,7 +326,7 @@ class TestSave:
         assert loaded is not None
         assert loaded.name == "round-trip"
         assert loaded.system_prompt_template == "Round trip test."
-        assert loaded.allowed_tools == ["file", "git"]
+        assert loaded.allowed_tools == ["file_read", "git"]
         assert loaded.permission_mode == "workspace-write"
         assert loaded.llm.thinking_enabled is True
         assert loaded.iteration_budget == 20

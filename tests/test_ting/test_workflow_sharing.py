@@ -38,7 +38,7 @@ def persona():
         definition={
             "name": "reviewer",
             "system_prompt_template": "Review carefully.\nKeep evidence.\n",
-            "allowed_tools": ["read"],
+            "allowed_tools": ["file_read"],
             "produces": {"event_type": "review.completed"},
         },
     )

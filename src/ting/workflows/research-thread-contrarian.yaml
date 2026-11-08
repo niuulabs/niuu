@@ -2,12 +2,12 @@ schema_version: 2
 id: 5777251e-7ff1-47f7-b182-d040ed9a7a2f
 name: Research Thread — Contrarian
 description: Run the contrarian explorer over the framed research question and produce a structured finding for the parent research campaign.
-version: 1.0.2
+version: 1.0.3
 persona_dependencies:
   research-explorer-contrarian:
     id: research-explorer-contrarian
-    revision: content-3c65cb6ac2f78681
-    digest: sha256:3c65cb6ac2f78681d91148aaf835c8f245fb774b5150b2b21d223008b729f52c
+    revision: content-5443eb732e83f5fd
+    digest: sha256:5443eb732e83f5fdf680b1b6fa9d5fddd970879eb637c920bd4d5c5d36c495b5
     path: personas/research-explorer-contrarian.yaml
 workflow_dependencies: {}
 graph:

@@ -70,9 +70,9 @@ system_prompt_template: |
   page_path: specifications/{slug}/10-prd.md
   ---end---
 
-allowed_tools: [mimir_write, mimir_publish_files, mimir_search, mimir_read]
-forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web_search, web_fetch, mimir_ingest]
-permission_mode: workspace-write
+allowed_tools: ["mimir:write", "mimir:publish_files", "mimir:search", "mimir:read"]
+forbidden_tools: [git, git_read, shell, file_read, file_write, web_search, web_fetch, "mimir:ingest"]
+permission_mode: workspace_write
 
 llm:
   thinking_enabled: true

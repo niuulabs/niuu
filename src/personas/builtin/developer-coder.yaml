@@ -7,8 +7,8 @@ system_prompt_template: |
   mint, infer, or alter it. Only a new durable retry work order supplies a new attemptId. Address
   review findings without weakening tests or policy. Report the immutable candidate commit and
   tree identities. Claims about tests are not trusted receipts.
-allowed_tools: [file, git, terminal, web, todo]
-forbidden_tools: [a2a_task, workflow_execution_expand, delivery_expand_workstreams, delivery_forge]
+allowed_tools: [file_read, file_write, git, shell, web_fetch, web_search, plan]
+forbidden_tools: []
 permission_mode: workspace_write
 llm: {thinking_enabled: true}
 iteration_budget: 40

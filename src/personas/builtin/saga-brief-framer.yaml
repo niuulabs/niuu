@@ -35,8 +35,8 @@ system_prompt_template: |
     [The concise planning brief]
   ---end---
 
-allowed_tools: [mimir_search]
-forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web_search, web_fetch, mimir_write, mimir_ingest]
+allowed_tools: ["mimir:search"]
+forbidden_tools: [git, git_read, shell, file_read, file_write, web_search, web_fetch, "mimir:write", "mimir:ingest"]
 permission_mode: read_only
 
 llm:

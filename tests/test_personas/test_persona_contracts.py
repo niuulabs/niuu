@@ -34,7 +34,7 @@ _REVIEWER_YAML = """\
 name: reviewer
 system_prompt_template: |
   You are a code reviewer.
-allowed_tools: [file, git]
+allowed_tools: [file_read, git]
 permission_mode: read-only
 produces:
   event_type: review.completed
@@ -141,7 +141,7 @@ consumes:
 _NO_CONTRACT_YAML = """\
 name: simple-agent
 system_prompt_template: You are a simple agent.
-allowed_tools: [file]
+allowed_tools: [file_read]
 permission_mode: read-only
 """
 
@@ -440,7 +440,7 @@ class TestApplyOutcomeInstruction:
     def test_other_fields_unchanged(self) -> None:
         persona = PersonaConfig(
             name="x",
-            allowed_tools=["file"],
+            allowed_tools=["file_read"],
             permission_mode="read-only",
             produces=PersonaProduces(
                 event_type="x.done",
@@ -448,7 +448,7 @@ class TestApplyOutcomeInstruction:
             ),
         )
         result = apply_outcome_instruction(persona)
-        assert result.allowed_tools == ["file"]
+        assert result.allowed_tools == ["file_read"]
         assert result.permission_mode == "read-only"
 
 
@@ -624,7 +624,7 @@ class TestBuiltinSpecialistContracts:
     def test_capability_publisher_uses_json_artifact_publisher(self) -> None:
         cfg = self._load("capability-publisher")
 
-        assert "mimir_publish_artifact" in cfg.allowed_tools
+        assert "mimir:publish_artifact" in cfg.allowed_tools
         assert "mimir_write" not in cfg.allowed_tools
         assert "mimir_publish_artifact capabilities/{slug}/learned_tool.json" in (
             cfg.system_prompt_template

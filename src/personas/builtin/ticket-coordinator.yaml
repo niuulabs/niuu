@@ -32,11 +32,7 @@ system_prompt_template: |
 
   Be brief and concrete. Say what is happening, what you need and what comes next. Everything you
   write is shown to the person, so never add a [SURFACE] marker.
-allowed_tools:
-  - a2a_task
-  - capability_list
-  - mimir_search
-  - mimir_read
+allowed_tools: ["mimir:search", "mimir:read"]
 permission_mode: read_only
 llm: {thinking_enabled: true}
 iteration_budget: 24

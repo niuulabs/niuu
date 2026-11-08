@@ -66,9 +66,9 @@ system_prompt_template: |
     openQuestions: [array of what remains open after this pass]
   ---end---
 
-allowed_tools: [mimir_search, mimir_read, mimir_read_source, mimir_ingest, mimir_write, web_search, web_fetch]
-forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file]
-permission_mode: workspace-write
+allowed_tools: ["mimir:search", "mimir:read", "mimir:read_source", "mimir:ingest", "mimir:write", web_search, web_fetch]
+forbidden_tools: [git, git_read, shell, file_read, file_write]
+permission_mode: workspace_write
 
 llm:
   thinking_enabled: true
