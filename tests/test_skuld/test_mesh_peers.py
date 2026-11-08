@@ -78,6 +78,8 @@ class TestBrokerAnnouncement:
             rpc_timeout_s=5.0,
             capabilities=["review"],
             consumes_event_types=[],
+            # Signing is covered in test_mesh_attestation; this test is about the announcement.
+            attestation={"required": False},
         )
         persona = _persona(
             consumes=["review.requested"], produces={"event_type": "review.done"}, persona_id="rev"
