@@ -129,8 +129,8 @@ def test_the_operator_test_frame_can_name_a_session():
     assert test["payload"]["session"] == {"host": "ymir", "id": RAVN, "name": "Sidekick"}
 
 
-#: Phase 1's golden frame (tests/ravn/fixtures/voice/call_request.json), the one the
-#: resident's voice gateway sends and the app's wire test decodes.
+#: Phase 1's golden frame, the one the resident's voice gateway sends and the app's
+#: wire test decodes.
 GOLDEN = {
     "type": "call.request",
     "id": "7f3c2a9e-1b4d-4c8e-9a51-2d6f0e8b4c13",

@@ -21,7 +21,6 @@ LOCAL_SERVICE_DATABASES: dict[str, str] = {
     "observatory": "observatory",
     "ting": "ting",
     "bifrost": "bifrost",
-    "ravn": "ravn",
     "mimir": "mimir",
 }
 
@@ -242,6 +241,15 @@ NIUU_SHARED_BOOTSTRAP_SQL: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_ravn_personas_owner_updated
         ON ravn_personas(owner_id, updated_at DESC);
     """,
+    # Mirrors migrations/000112_strip_persona_executor.up.sql. Runs on every start, so it
+    # stays idempotent.
+    """
+    UPDATE ravn_personas
+    SET config_json = config_json - 'executor',
+        runtime_config_json = runtime_config_json - 'executor'
+    WHERE config_json ? 'executor'
+       OR runtime_config_json ? 'executor';
+    """,
     # Mirrors migrations/000091_realm_project.up.sql.
     """
     ALTER TABLE realms ADD COLUMN IF NOT EXISTS project_id UUID;
@@ -316,7 +324,18 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
         )
     );
     """,
-    # Matches migration 000041, for databases this bootstrap created first.
+    # Matches migrations 000041 and 000114, for databases this bootstrap created first.
+    # Runs on every start, so the rows of the removed 'ravn' kind go before the constraint
+    # that refuses them is added.
+    """
+    DELETE FROM niuu_instances WHERE kind = 'ravn';
+    """,
+    """
+    UPDATE niuu_instances
+    SET config = config - 'ravn_base_url' - 'ravnBaseUrl'
+    WHERE config ? 'ravn_base_url'
+       OR config ? 'ravnBaseUrl';
+    """,
     """
     ALTER TABLE niuu_instances
         DROP CONSTRAINT IF EXISTS niuu_instances_kind_check;
@@ -324,7 +343,7 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
     """
     ALTER TABLE niuu_instances
         ADD CONSTRAINT niuu_instances_kind_check
-        CHECK (kind IN ('volundr', 'ting', 'mimir', 'bifrost', 'ravn', 'observatory', 'generic'));
+        CHECK (kind IN ('volundr', 'ting', 'mimir', 'bifrost', 'observatory', 'generic'));
     """,
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_niuu_instances_scope_slug

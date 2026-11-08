@@ -2,7 +2,7 @@
  * HTTP adapter tests — adapted from web/src/modules/ravn/api/client.test.ts
  */
 import { describe, it, expect, vi } from 'vitest';
-import { buildRavnPersonaAdapter, buildRavnTriggerAdapter } from './http';
+import { buildRavnPersonaAdapter } from './http';
 import type { IPersonaStore, PersonaCreateRequest } from '../ports';
 
 // ---------------------------------------------------------------------------
@@ -309,83 +309,5 @@ describe('buildRavnPersonaAdapter', () => {
     expect(typeof store.updatePersona).toBe('function');
     expect(typeof store.deletePersona).toBe('function');
     expect(typeof store.forkPersona).toBe('function');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// buildRavnRavenAdapter
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// buildRavnSessionAdapter
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// buildRavnTriggerAdapter
-// ---------------------------------------------------------------------------
-
-const rawTrigger = {
-  id: '44444444-4444-4444-8444-444444444444',
-  kind: 'cron',
-  persona_name: 'coder',
-  spec: '0 * * * *',
-  enabled: true,
-  created_at: '2026-04-01T12:00:00Z',
-};
-
-describe('buildRavnTriggerAdapter', () => {
-  it('lists triggers', async () => {
-    const client = makeClient();
-    client.get.mockResolvedValue([rawTrigger]);
-    const result = await buildRavnTriggerAdapter(client).listTriggers();
-    expect(result[0]!.personaName).toBe('coder');
-  });
-
-  it('creates a trigger with snake_case body', async () => {
-    const client = makeClient();
-    client.post.mockResolvedValue(rawTrigger);
-    await buildRavnTriggerAdapter(client).createTrigger({
-      kind: 'cron',
-      personaName: 'coder',
-      spec: '0 * * * *',
-      enabled: true,
-    });
-    expect(client.post).toHaveBeenCalledWith('/triggers', {
-      kind: 'cron',
-      persona_name: 'coder',
-      spec: '0 * * * *',
-      enabled: true,
-    });
-  });
-
-  it('deletes a trigger by id', async () => {
-    const client = makeClient();
-    client.delete.mockResolvedValue(undefined);
-    await buildRavnTriggerAdapter(client).deleteTrigger(rawTrigger.id);
-    expect(client.delete).toHaveBeenCalledWith(`/triggers/${rawTrigger.id}`);
-  });
-
-  it('surfaces execution_enabled from the create response', async () => {
-    const client = makeClient();
-    client.post.mockResolvedValue({ ...rawTrigger, execution_enabled: true });
-    const created = await buildRavnTriggerAdapter(client).createTrigger({
-      kind: 'cron',
-      personaName: 'coder',
-      spec: '0 * * * *',
-      enabled: true,
-    });
-    expect(created.executionEnabled).toBe(true);
-  });
-
-  it('treats a missing execution_enabled as false, not a silent true', async () => {
-    const client = makeClient();
-    client.post.mockResolvedValue(rawTrigger); // no execution_enabled field at all
-    const created = await buildRavnTriggerAdapter(client).createTrigger({
-      kind: 'cron',
-      personaName: 'coder',
-      spec: '0 * * * *',
-      enabled: true,
-    });
-    expect(created.executionEnabled).toBe(false);
   });
 });

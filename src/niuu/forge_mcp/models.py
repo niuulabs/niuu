@@ -64,10 +64,6 @@ class ForgeApiError(Exception):
         self.status = status
 
 
-class FlockError(Exception):
-    """A flock tool could not hand work to, or hear from, the brokered flock."""
-
-
 #: A secret's name is also its file name and an environment-variable-shaped identifier, so the
 #: shape is fixed by the Forge REST contract (``POST /sessions/{id}/secret-requests``).
 SECRET_NAME_PATTERN = r"^[A-Z_][A-Z0-9_]*$"

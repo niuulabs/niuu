@@ -39,10 +39,10 @@ def test_configured_adapter_must_implement_the_port():
 
 
 def test_registry_mount_carries_workload_auth_as_plain_kwargs():
-    from ravn.domain.mimir import MimirAuth
+    from mimir.domain import MimirAuth
 
     port = resolve_mimir_connection(
-        adapter="ravn.adapters.mimir.http.HttpMimirAdapter",
+        adapter="mimir.adapters.http.HttpMimirAdapter",
         kwargs={
             "base_url": "https://regin.valhalla.test",
             "auth": {
@@ -65,6 +65,6 @@ def test_registry_mount_carries_workload_auth_as_plain_kwargs():
 def test_registry_mount_auth_with_an_unknown_field_is_refused():
     with pytest.raises(TypeError, match="unexpected keyword"):
         resolve_mimir_connection(
-            adapter="ravn.adapters.mimir.http.HttpMimirAdapter",
+            adapter="mimir.adapters.http.HttpMimirAdapter",
             kwargs={"base_url": "https://regin.valhalla.test", "auth": {"tokn": "x"}},
         )

@@ -76,7 +76,7 @@ jobs:
               return any(regex.search(path) for path in changed)
 
           all_containers = [
-              "agent", "skuld", "openshell", "devrunner", "niuu-web", "niuu", "gbrain"
+              "skuld", "openshell", "devrunner", "niuu-web", "niuu", "gbrain"
           ]
 
           if full_tier:
@@ -93,7 +93,6 @@ jobs:
               web_changed = matches(r"^web-next/")
               helm_changed = matches(r"^charts/")
               container_triggers = {
-                  "agent": r"^containers/(agent|python-security)/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "skuld": r"^containers/skuld/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "openshell": r"^containers/(openshell|python-security)/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "devrunner": r"^containers/(devrunner|python-security)/",
@@ -760,7 +759,7 @@ jobs:
       attestations: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["agent","openshell","devrunner","niuu-web","gbrain"]'
+      containers: '["openshell","devrunner","niuu-web","gbrain"]'
       platforms: '["amd64"]'
       publish-manifests: false
       push: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
@@ -829,7 +828,7 @@ jobs:
         run: |
           VERSION="0.0.0-pr.${{ github.event.number }}"
 
-          for CHART in agent bifrost ravn skuld volundr ting niuu-shared niuu; do
+          for CHART in bifrost skuld volundr ting niuu-shared niuu; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
@@ -837,8 +836,6 @@ jobs:
       - name: Package Helm charts
         run: |
           helm package charts/bifrost -d .helm-packages/
-          helm package charts/agent -d .helm-packages/
-          helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
           helm package charts/ting -d .helm-packages/
@@ -858,9 +855,7 @@ jobs:
       - name: Push Helm charts to OCI registry
         if: needs.changes.outputs.publish == 'true'
         run: |
-          helm push .helm-packages/agent-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/bifrost-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
-          helm push .helm-packages/ravn-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/skuld-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/volundr-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/ting-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts

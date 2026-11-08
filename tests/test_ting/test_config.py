@@ -5,13 +5,16 @@ from __future__ import annotations
 import pytest
 
 from ting.config import (
-    DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS,
     DatabaseConfig,
     DispatchConfig,
+    DispatchMimirConfig,
+    LLMConfig,
     LoggingConfig,
     Settings,
+    TicketCoordinatorConfig,
     WorkflowExecutionConfig,
 )
+from ting.domain.exceptions import WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
 
 
 class TestDatabaseConfig:
@@ -102,34 +105,77 @@ class TestSettings:
             Settings()
 
 
-class TestWorkflowCliTurnTimeout:
-    """``dispatch.workflow_cli_turn_timeout_seconds`` bounds a Claude Code persona's turn."""
+class TestRemovedWorkflowRunnerSettings:
+    """Settings that configured the removed Ravn flock path stop Ting instead of being ignored."""
 
-    def test_defaults_to_120_seconds(self) -> None:
-        assert DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS == 120.0
-        assert DispatchConfig().workflow_cli_turn_timeout_seconds == 120.0
-        assert Settings().dispatch.workflow_cli_turn_timeout_seconds == 120.0
+    def test_enabling_flock_is_fatal_with_the_refusal_message_and_the_remedy(self) -> None:
+        with pytest.raises(ValueError) as raised:
+            Settings(dispatch={"flock": {"enabled": True}})
 
-    def test_config_file_shape_sets_it(self) -> None:
-        settings = Settings(dispatch={"workflow_cli_turn_timeout_seconds": 900})
+        assert WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE in str(raised.value)
+        assert "remove dispatch.flock.enabled" in str(raised.value)
 
-        assert settings.dispatch.workflow_cli_turn_timeout_seconds == 900.0
+    def test_enabling_flock_through_the_environment_is_fatal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DISPATCH__FLOCK__ENABLED", "true")
 
-    def test_environment_sets_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DISPATCH__WORKFLOW_CLI_TURN_TIMEOUT_SECONDS", "1800")
+        with pytest.raises(ValueError, match="remove dispatch.flock.enabled"):
+            Settings()
 
-        assert Settings().dispatch.workflow_cli_turn_timeout_seconds == 1800.0
+    @pytest.mark.parametrize(
+        "flock",
+        [
+            {"enabled": False},
+            {"default_personas": ["coordinator"]},
+            {"default_workflow_name": "reviewed-delivery-flow"},
+            {"mimir_hosted_url": "https://mimir.test"},
+        ],
+    )
+    def test_any_flock_setting_is_fatal_and_names_where_mimir_moved(self, flock: dict) -> None:
+        with pytest.raises(ValueError, match=r"dispatch\.flock was removed.*dispatch\.mimir"):
+            DispatchConfig(flock=flock)
 
-    def test_zero_turns_the_limit_off_and_is_accepted(self) -> None:
-        assert (
-            DispatchConfig(workflow_cli_turn_timeout_seconds=0).workflow_cli_turn_timeout_seconds
-            == 0.0
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [("in_process", {"llm_config": {}}), ("workflow_cli_turn_timeout_seconds", 900)],
+    )
+    def test_removed_dispatch_keys_are_fatal(self, key: str, value: object) -> None:
+        with pytest.raises(ValueError, match=rf"dispatch\.{key} was removed"):
+            DispatchConfig(**{key: value})
+
+    @pytest.mark.parametrize("key", ["model", "ravn_config"])
+    def test_removed_ticket_coordinator_keys_are_fatal(self, key: str) -> None:
+        with pytest.raises(ValueError, match=rf"ticket_coordinator\.{key} was removed"):
+            TicketCoordinatorConfig(**{key: "x" if key == "model" else {}})
+
+    @pytest.mark.parametrize("key", ["ravn_decomposer_enabled", "ravn_decomposer_timeout"])
+    def test_removed_decomposer_keys_are_fatal(self, key: str) -> None:
+        with pytest.raises(ValueError, match=rf"llm\.{key} was removed"):
+            LLMConfig(**{key: True})
+
+    def test_flock_flows_section_is_fatal(self) -> None:
+        with pytest.raises(ValueError, match="settings.flock_flows was removed"):
+            Settings(flock_flows={"adapter": "x"})
+
+    def test_mimir_settings_live_under_dispatch_mimir(self) -> None:
+        settings = Settings(
+            dispatch={
+                "mimir": {
+                    "hosted_url": "https://mimir.test",
+                    "registry_path": "/etc/mimir/registry.json",
+                }
+            }
         )
 
-    @pytest.mark.parametrize("value", [-1, -0.5, "nan", "inf", "-inf", "ten minutes"])
-    def test_negative_non_finite_or_non_numeric_values_fail_loudly(self, value: object) -> None:
-        with pytest.raises(ValueError, match="workflow_cli_turn_timeout_seconds"):
-            DispatchConfig(workflow_cli_turn_timeout_seconds=value)
+        assert settings.dispatch.mimir.hosted_url == "https://mimir.test"
+        assert settings.dispatch.mimir.registry_path == "/etc/mimir/registry.json"
+
+    def test_mimir_defaults(self) -> None:
+        config = DispatchMimirConfig()
+
+        assert config.hosted_url == ""
+        assert config.registry_path == "~/.ravn/mimir/.mimir-registry.json"
 
 
 class TestWorkflowExecutionConfig:

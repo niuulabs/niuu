@@ -1,8 +1,7 @@
 """Shared Sleipnir transport builder (NIU-631).
 
-Extracted from ``ravn.cli.commands._build_sleipnir_transport`` so both Ravn
-and Skuld can build NNG / NATS / in-process transports without duplicating
-the import + instantiate pattern.
+Lets every mesh participant (Ravn, Skuld, future agents) build NNG / NATS /
+in-process transports without duplicating the import + instantiate pattern.
 
 Callers are responsible for resolving transport kwargs from their own
 settings objects — this module only handles the alias resolution, import, and

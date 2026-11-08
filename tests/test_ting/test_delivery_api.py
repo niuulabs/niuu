@@ -38,7 +38,7 @@ from ting.api.workflow_executions import (
     resolve_workflow_execution_repo,
     resolve_workflow_execution_service,
 )
-from ting.api.workflows import _build_workflow_initiative_context, resolve_workflow_repo
+from ting.api.workflows import resolve_workflow_repo
 from ting.delivery import api as delivery_api
 from ting.delivery.api import (
     create_delivery_executions_router,
@@ -461,14 +461,7 @@ def test_replayed_launch_context_uses_reserved_identity_and_excludes_token(monke
             },
         }
         assert "auth_token" not in kwargs["launch"].provenance["workflow_execution"]
-        rendered = _build_workflow_initiative_context(
-            workflow=workflow,
-            launch=kwargs["launch"],
-            slug="developer-launch",
-        )
-        assert "## Launch Context" in rendered
-        assert f'"campaign_id": "{reserved_id}"' in rendered
-        assert "auth_token" not in rendered
+        assert "auth_token" not in json.dumps(kwargs["launch"].context)
         assert "auth_token" not in json.dumps(context)
         return SimpleNamespace(
             session=SimpleNamespace(id="parent-session-replay"),

@@ -14,47 +14,17 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter, PersonaConfig
-from ravn.ports.persona import PersonaRegistryPort
+from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.domain.persona import PersonaConfig, parse_persona, persona_to_yaml
+from personas.ports.persona import PersonaRegistryPort
 
 logger = logging.getLogger(__name__)
-
-# Built-in persona names shipped with the ravn image (src/ravn/personas/*.yaml).
-# Stored as a frozen constant so is_builtin() works without filesystem access.
-_BUILTIN_NAMES: frozenset[str] = frozenset(
-    {
-        "architect",
-        "autonomous-agent",
-        "coder",
-        "coding-agent",
-        "coordinator",
-        "decomposer",
-        "draft-a-note",
-        "health-auditor",
-        "investigator",
-        "mimir-curator",
-        "office-hours",
-        "planning-agent",
-        "produce-recap",
-        "qa-agent",
-        "run-executor",
-        "reporter",
-        "research-agent",
-        "research-and-distill",
-        "retro-analyst",
-        "reviewer",
-        "security",
-        "security-auditor",
-        "ship-agent",
-        "verifier",
-    }
-)
 
 
 class KubernetesConfigMapPersonaRegistry(PersonaRegistryPort):
     """Persona registry backed by a Kubernetes ConfigMap.
 
-    Implements :class:`~ravn.ports.persona.PersonaRegistryPort` by reading and
+    Implements :class:`~personas.ports.persona.PersonaRegistryPort` by reading and
     writing the ``ravn-personas`` ConfigMap via the k8s API.
 
     Designed to run inside a pod — loads in-cluster credentials automatically
@@ -180,7 +150,7 @@ class KubernetesConfigMapPersonaRegistry(PersonaRegistryPort):
         yaml_text = data.get(f"{name}.yaml")
         if yaml_text is None:
             return None
-        return FilesystemPersonaAdapter.parse(yaml_text)
+        return parse_persona(yaml_text)
 
     def list_names(self) -> list[str]:
         """Return a sorted list of persona names present in the ConfigMap."""
@@ -198,7 +168,7 @@ class KubernetesConfigMapPersonaRegistry(PersonaRegistryPort):
         Falls back to creating the ConfigMap when it doesn't exist yet.
         """
         key = f"{config.name}.yaml"
-        yaml_text = FilesystemPersonaAdapter.to_yaml(config)
+        yaml_text = persona_to_yaml(config)
 
         api = self._get_api()
         try:
@@ -252,8 +222,8 @@ class KubernetesConfigMapPersonaRegistry(PersonaRegistryPort):
     # ------------------------------------------------------------------
 
     def is_builtin(self, name: str) -> bool:
-        """Return ``True`` when *name* is a built-in persona shipped with ravn."""
-        return name in _BUILTIN_NAMES
+        """Return ``True`` when *name* is a built-in persona shipped in the personas catalogue."""
+        return FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).is_builtin(name)
 
     def load_all(self) -> list[PersonaConfig]:
         """Return all personas stored in the ConfigMap."""
@@ -262,7 +232,7 @@ class KubernetesConfigMapPersonaRegistry(PersonaRegistryPort):
         for key, yaml_text in sorted(data.items()):
             if not key.endswith(".yaml"):
                 continue
-            persona = FilesystemPersonaAdapter.parse(yaml_text)
+            persona = parse_persona(yaml_text)
             if persona is not None:
                 result.append(persona)
         return result

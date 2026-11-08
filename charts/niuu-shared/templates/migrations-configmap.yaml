@@ -625,4 +625,59 @@ data:
         ON valkyrie_signals (environment_id, received_at DESC);
     CREATE INDEX IF NOT EXISTS idx_valkyrie_signals_severity
         ON valkyrie_signals (severity, received_at DESC);
+  000112_strip_persona_executor.up.sql: |
+    -- A persona no longer names the harness that runs it: the executor block is gone from the
+    -- persona model, and the registry refuses a stored or submitted document that still carries
+    -- one. Every stored registry row (written by the API, including rows forked from built-in
+    -- personas) holds an `executor` key in config_json, and runtime_config_json holds one when
+    -- the persona set an adapter, so the key is removed from both before the new code reads them.
+    UPDATE ravn_personas
+    SET config_json = config_json - 'executor',
+        runtime_config_json = runtime_config_json - 'executor'
+    WHERE config_json ? 'executor'
+       OR runtime_config_json ? 'executor';
+  000112_strip_persona_executor.down.sql: |
+    -- The up migration removed the `executor` key from stored persona documents. The harness a
+    -- persona named is not recorded anywhere else, so it cannot be restored, and the persona
+    -- model no longer has the field to read it back. This migration is deliberately a no-op.
+    SELECT 1;
+  000113_drop_ravn_runtime_tables.up.sql: |
+    -- The Ravn resident runtime was removed; nothing reads or writes the trigger store or
+    -- the fleet budget ledger any more. Their create migrations (000081, 000082) stay in
+    -- the history. ravn_personas (000034) belongs to the persona registry and is kept. The
+    -- other tables the main migration drops (episodic memory, checkpoints) never existed
+    -- in this database.
+    DROP TABLE IF EXISTS ravn_budget_ledger;
+    DROP TABLE IF EXISTS ravn_triggers;
+  000113_drop_ravn_runtime_tables.down.sql: |
+    -- Recreates the tables dropped by the up migration, empty, as 000081 and 000082
+    -- defined them.
+    CREATE TABLE IF NOT EXISTS ravn_triggers (
+        id           UUID        PRIMARY KEY,
+        kind         TEXT        NOT NULL,
+        persona_name TEXT        NOT NULL,
+        spec         TEXT        NOT NULL,
+        repo         TEXT        NOT NULL DEFAULT '',
+        enabled      BOOLEAN     NOT NULL DEFAULT TRUE,
+        owner_id     TEXT        NOT NULL,
+        tenant_id    TEXT        NOT NULL,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ravn_triggers_tenant_created
+        ON ravn_triggers (tenant_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS ravn_budget_ledger (
+        tenant_id  TEXT        NOT NULL,
+        ravn_id    TEXT        NOT NULL,
+        day        DATE        NOT NULL,
+        spent_usd  NUMERIC     NOT NULL DEFAULT 0,
+        cap_usd    NUMERIC     NOT NULL DEFAULT 0,
+        warn_at    DOUBLE PRECISION NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (tenant_id, ravn_id, day)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ravn_budget_ledger_tenant_day
+        ON ravn_budget_ledger (tenant_id, day);
 {{- end }}

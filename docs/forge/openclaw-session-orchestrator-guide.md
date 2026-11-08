@@ -1426,23 +1426,7 @@ async def evaluate_completion(api, session_id, latest_activity):
     return {"state": "running", "confidence": 0.0}
 ```
 
-## 17. Special case: flock or workflow sessions
-
-Be careful with:
-
-- `workload_type == "ravn_flock"`
-
-For flock-style sessions, do not assume `idle` means the entire workflow is complete.
-
-Use a stricter rule:
-
-- wait for explicit workflow outcome signals
-- inspect room events and resulting chronicles
-- treat the session as a coordinator rather than a single worker
-
-If you are binding OpenClaw to this system, model flock sessions separately from ordinary coding sessions.
-
-## 18. Recommended controller state machine
+## 17. Recommended controller state machine
 
 Use this state machine in your orchestrator:
 
@@ -1468,7 +1452,7 @@ Meaning:
 - `FAILED`: terminal runtime or outcome failure
 - `ABANDONED`: operator stopped it or evidence is too weak
 
-## 19. Recommended runtime loop
+## 18. Recommended runtime loop
 
 A robust loop looks like this:
 
@@ -1485,7 +1469,7 @@ A robust loop looks like this:
 11. If complete, fetch chronicle, transcript, events, diff, and PR status.
 12. Stop or archive the session if your operating policy requires it.
 
-## 20. Recovery rules
+## 19. Recovery rules
 
 ### SSE disconnect
 
@@ -1516,7 +1500,7 @@ Interpret this as:
 
 Do not try to chat until `chat_endpoint` is present.
 
-## 21. What to persist in OpenClaw
+## 20. What to persist in OpenClaw
 
 For each tracked session, persist:
 
@@ -1533,7 +1517,7 @@ For each tracked session, persist:
 
 This allows crash recovery without depending on SSE durability.
 
-## 22. Minimum viable implementation
+## 21. Minimum viable implementation
 
 If you want the smallest useful controller:
 
@@ -1550,7 +1534,7 @@ If you want the smallest useful controller:
 
 That is enough to implement a basic Tyr-like controller loop.
 
-## 23. Recommended full implementation
+## 22. Recommended full implementation
 
 For production behavior, support all of:
 
@@ -1566,7 +1550,7 @@ For production behavior, support all of:
 - reconnection and rehydration logic
 - confidence-based completion
 
-## 24. Final guidance for an AI orchestrator
+## 23. Final guidance for an AI orchestrator
 
 If you are the controller:
 

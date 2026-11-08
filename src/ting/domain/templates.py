@@ -27,7 +27,7 @@ Supports two template formats:
     base_branch: "{event.base_branch}"
     repos:
       - "{event.repo}"
-    flock_flow: code-review-flow          # optional named flock flow (NIU-644)
+    flock_flow: code-review-flow          # parsed, but launching it is refused (NIU-1198)
     stages:
       - name: parallel-review
         parallel:
@@ -52,7 +52,9 @@ Supports two template formats:
         notify: [slack]
         condition: "stages.test.verdict == pass"
 
-``persona_overrides`` merges onto the matching persona from ``flock_flow``.
+``flock_flow`` named a flock of Ravn personas, and ``persona_overrides`` merged onto its
+matching persona. Flocks are gone: a template that names ``flock_flow`` still parses, but
+creating a saga from it raises ``WorkflowStepsHaveNoRunnerError``.
 The keys ``allowed_tools`` and ``forbidden_tools`` are rejected at parse
 time — they are a security boundary that cannot be overridden at the
 pipeline layer.
@@ -87,7 +89,7 @@ class TemplateRun:
     estimate_hours: float
     prompt: str
     persona: str = ""
-    persona_overrides: dict | None = None  # NIU-644: per-stage flock persona overrides
+    persona_overrides: dict | None = None  # per-stage overrides; only meaningful with flock_flow
 
 
 @dataclass(frozen=True)
@@ -113,7 +115,7 @@ class SagaTemplate:
     base_branch: str
     repos: list[str]
     phases: list[TemplatePhase]
-    flock_flow: str | None = None  # NIU-644: named flock flow for all stages in this pipeline
+    flock_flow: str | None = None  # launching a template that names one is refused
 
 
 # ---------------------------------------------------------------------------

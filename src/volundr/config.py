@@ -62,7 +62,7 @@ from niuu.domain.presented_files import (
 )
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.forge_mcp.models import ForgeMcpGrant
-from ravn.config import LLMConfig, PersonaSourceConfig
+from personas.config import PersonaSourceConfig
 from skuld.tool_result_preview import PREVIEW_EDGE_LIMIT, PREVIEW_MAX_EDGE, PREVIEW_MIN_EDGE
 from volundr.compute.config import ComputeConfig
 from volundr.domain.mcp_hosts import normalize_internal_host_pattern
@@ -73,6 +73,7 @@ from volundr.domain.models import (
     ResidentCapability,
     ResidentEngine,
     SecretType,
+    require_workload_type_available,
 )
 from volundr.domain.notifications import (
     INTEGRATION_SINK,
@@ -401,6 +402,10 @@ def _default_credential_enrollment_runner() -> DynamicAdapterConfig:
     )
 
 
+#: Engine value of the removed Ravn resident runtime, named only to refuse it.
+REMOVED_RAVN_RESIDENT_ENGINE = "ravn"
+
+
 class ResidentProfileConfig(BaseModel):
     """One operator-approved resident backend and engine combination."""
 
@@ -429,6 +434,17 @@ class ResidentProfileConfig(BaseModel):
         description="Backend-owned deployment input, never exposed through the profile API.",
     )
 
+    @field_validator("engine", mode="before")
+    @classmethod
+    def _refuse_removed_engines(cls, value: Any) -> Any:
+        """Name the remedy for a profile still configured with a removed engine."""
+        if str(value).strip().lower() == REMOVED_RAVN_RESIDENT_ENGINE:
+            raise ValueError(
+                "the ravn resident engine was removed; set this profile's engine to openclaw "
+                "or hermes, or delete the profile (charts/volundr residentRuntimeProfiles)"
+            )
+        return value
+
 
 class ResidentSessionControllerConfig(BaseModel):
     """One dynamically configured resident engine protocol adapter."""
@@ -438,43 +454,6 @@ class ResidentSessionControllerConfig(BaseModel):
     optional: bool = False
     kwargs: dict[str, Any] = Field(default_factory=dict)
     secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
-
-
-class ResidentNotificationRelayConfig(BaseModel):
-    """Residents' notifications into the Forge feed (``ResidentNotificationRelay``).
-
-    Forge follows each active resident's notification outbox over the resident's
-    OpenClaw shim, with the per-resident token it drives the resident's channels
-    with, and records what the resident queued (questions it waits on, their
-    answers, its agent's own notifications). Needs ``notifications.enabled``.
-    """
-
-    enabled: bool = Field(
-        default=True,
-        description="Follow residents' notification outboxes into the notification feed.",
-    )
-    batch_size: int = Field(
-        default=100, ge=1, le=200, description="Most outbox entries read per pull."
-    )
-    idle_resync_seconds: float = Field(
-        default=60.0,
-        gt=0,
-        description=(
-            "Pull again after this long without a change event, so a missed event "
-            "delays an entry by at most this much."
-        ),
-    )
-    reconnect_initial_seconds: float = Field(
-        default=5.0, gt=0, description="First wait before reconnecting to a resident."
-    )
-    reconnect_max_seconds: float = Field(
-        default=300.0,
-        gt=0,
-        description=(
-            "Longest wait between reconnects (doubling from reconnect_initial_seconds), "
-            "and how often a resident that serves no outbox is checked again."
-        ),
-    )
 
 
 class ResidentRuntimesConfig(BaseModel):
@@ -500,23 +479,10 @@ class ResidentRuntimesConfig(BaseModel):
         description="Dynamically configured resident engine protocol adapters.",
     )
     profiles: list[ResidentProfileConfig] = Field(default_factory=list)
-    ravn_sessions_enabled: bool = Field(
-        default=True,
-        description=(
-            'Ravn residents\' sessions ("channels") by default: Volundr drives them '
-            "(RavnResidentSessionController) on every resident backend that hosts the Ravn "
-            "OpenClaw shim, except a backend session_controllers already names a Ravn "
-            "controller for. Each resident's shim token is its own, kept in the "
-            "credential store. charts/volundr sets it from ravnResidentSessions.enabled."
-        ),
-    )
     reconciliation_interval_seconds: float = Field(
         default=10.0,
         gt=0,
         description="Interval between resident backend reconciliation passes.",
-    )
-    notifications: ResidentNotificationRelayConfig = Field(
-        default_factory=ResidentNotificationRelayConfig
     )
     a2a_public_base_url: str = Field(
         default="",
@@ -623,6 +589,11 @@ class LaunchSpecConfig(BaseModel):
     setup_scripts: list[str] = Field(default_factory=list)
     workspace_layout: dict[str, Any] = Field(default_factory=dict)
     cli_tool: str = ""
+
+    @field_validator("workload_type")
+    @classmethod
+    def _workload_type_still_exists(cls, value: str) -> str:
+        return require_workload_type_available(value)
 
 
 def _default_launch_specs() -> list[LaunchSpecConfig]:
@@ -3480,24 +3451,6 @@ class Settings(BaseSettings):
             "handshake that fetches a pinned instance's live certificate."
         ),
     )
-    guild_workload_delegation_url: str = Field(
-        default="",
-        description=(
-            "Platform URL serving /api/v1/tokens/workload/delegations (niuu-shared, e.g. "
-            "https://yggdrasil.niuu.world). When set, the Guild records the delegation that "
-            "lets a resident's own ServiceAccount act for the person deploying it, and "
-            "revokes it when the resident is deleted, for instances whose config names a "
-            "workload_verifier. Empty: no delegation is recorded."
-        ),
-    )
-    guild_owner_probe_timeout_seconds: float = Field(
-        default=15.0,
-        gt=0,
-        description=(
-            "Timeout for the Ravn resident/session proxy's owner-probe HTTP GET "
-            "(niuu.adapters.inbound.rest_ravn) and its TLS-pin handshake."
-        ),
-    )
     guild_transport_trusted_plaintext_host_suffixes: list[str] = Field(
         default_factory=lambda: [".svc.cluster.local", ".svc"],
         description=(
@@ -3700,39 +3653,6 @@ class Settings(BaseSettings):
     external_sessions: ExternalSessionsConfig = Field(default_factory=ExternalSessionsConfig)
     telegram_ingress: TelegramIngressConfig = Field(default_factory=TelegramIngressConfig)
     session_contributors: list[SessionContributorConfig] = Field(default_factory=list)
-    ravn_flock_image: str = Field(
-        default="",
-        description=(
-            "Optional image used for auto-wired regular Ravn flock containers. "
-            "When empty, the contributor's built-in default is used."
-        ),
-    )
-    ravn_flock_init_writer_image: str = Field(
-        default="",
-        description=(
-            "Optional image used by Ravn flock init containers that write per-persona "
-            "config files. When empty, the contributor's built-in default is used."
-        ),
-    )
-    ravn_flock_llm_config: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Default LLM for the Ravn nodes of flock sessions, in Ravn's `llm:` shape "
-            "(model, max_tokens, timeout, provider). It is the base layer: "
-            "workload_config.llm_config and per-persona llm overrides are merged over "
-            "it. When empty, every flock session must name its own model or its "
-            "launch fails."
-        ),
-    )
-    ravn_flock_llm_config_by_definition: dict[str, dict[str, Any]] = Field(
-        default_factory=dict,
-        description=(
-            "Per session definition, LLM settings merged over ravn_flock_llm_config for "
-            "flocks launched on that definition, e.g. {skuldCodex: {model: gpt-5.6-terra}}. "
-            "Under OpenShell a flock's Ravns run on its session definition's CLI runtime, "
-            "so one Forge-wide model cannot serve both a Claude and a Codex flock."
-        ),
-    )
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
         default_factory=default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",
@@ -3753,23 +3673,6 @@ class Settings(BaseSettings):
     )
     ravn: RavnConfig = Field(default_factory=RavnConfig)
     observatory: ObservatoryConfig = Field(default_factory=ObservatoryConfig)
-
-    @field_validator("ravn_flock_llm_config")
-    @classmethod
-    def _validate_ravn_flock_llm_config(cls, value: dict[str, Any]) -> dict[str, Any]:
-        """Reject a flock LLM default Ravn could not load, at startup, not per node."""
-        if value:
-            LLMConfig.model_validate(value)
-        return value
-
-    @field_validator("ravn_flock_llm_config_by_definition")
-    @classmethod
-    def _validate_ravn_flock_llm_config_by_definition(
-        cls, value: dict[str, dict[str, Any]]
-    ) -> dict[str, dict[str, Any]]:
-        for llm in value.values():
-            LLMConfig.model_validate(llm)
-        return value
 
     @model_validator(mode="after")
     def _needs_input_push_has_its_sink(self) -> "Settings":
@@ -3819,14 +3722,6 @@ class Settings(BaseSettings):
     def _merge_built_in_session_definitions(self) -> "Settings":
         """Keep built-in session definitions unless config explicitly overrides them."""
         self.session_definitions = merge_session_definitions(self.session_definitions)
-        unknown = sorted(
-            set(self.ravn_flock_llm_config_by_definition) - set(self.session_definitions)
-        )
-        if unknown:
-            raise ValueError(
-                f"ravn_flock_llm_config_by_definition names unknown session definition(s) "
-                f"{', '.join(unknown)}; known: {', '.join(sorted(self.session_definitions))}"
-            )
         return self
 
     @classmethod

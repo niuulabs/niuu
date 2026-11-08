@@ -610,7 +610,6 @@ export interface DispatchApprovalOptions {
   instanceId?: string;
   connectionId?: string;
   sessionDefinition?: string;
-  workloadType?: string;
   workloadConfig?: Record<string, unknown>;
 }
 

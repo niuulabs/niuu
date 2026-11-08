@@ -219,7 +219,7 @@ along.
 | Ticket coordinator | Ships | One long-lived session per ticket (`ticket_coordinators`, persona `ticket-coordinator`). It starts workflows, hands over between them, hears gates through its room, tells the person and closes with the ticket. Proved on the same cluster runs. |
 | Workflow graphs with branching, loops and gates | Ships | The Branch and converge and Gates views are bundled workflows (`ting-run-flow-security-memory-curation.yaml`, `ticket-planning-flow.yaml`) in the real builder on a local install. Their names had internal words swapped at capture. |
 | Teams through workflows, with review and gates | Ships | 18 bundled workflows, `src/ting/workflows/` |
-| Per-role tools, model and budget | Ships | Workflow stages set persona, model and budget (`src/ting/workflows/*.yaml`). Personas set tools (`src/ravn/personas/developer-security-plan-reviewer.yaml`). |
+| Per-role tools, model and budget | Ships | Workflow stages set persona, model and budget (`src/ting/workflows/*.yaml`). Personas set tools (`src/personas/builtin/developer-security-plan-reviewer.yaml`). |
 | Rooms shared by people and agents | Ships | `niuu.collaboration`, browser and Telegram. `LiveSessionDetailPage` passes participants and mesh events to `SessionChat`, the component in the Room screen. |
 | Direct peer communication, A2A | Ships | Flock mesh, `src/ravn` |
 | Tool built, verified and adopted | Ships | `build_tool.py`, `tool-skill-builder.yaml` |

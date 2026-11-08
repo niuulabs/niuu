@@ -8,8 +8,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
-from ravn.domain.persona_document import (
+from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.domain.persona_document import (
     PersonaDependency,
     PersonaDocumentError,
     PortablePersonaCollection,

@@ -1,9 +1,4 @@
 {{- $hasFluxController := contains "FluxPodManager" (include "volundr.podManagerAdapter" .) -}}
-{{- range .Values.residentRuntimeControllers -}}
-{{- if contains "FluxPodManager" .adapter -}}
-{{- $hasFluxController = true -}}
-{{- end -}}
-{{- end -}}
 {{- $hasAgentInjector := or (contains "InfisicalAgent" .Values.secretInjection.adapter) (contains "OpenBaoAgentInjectionAdapter" .Values.secretInjection.adapter) -}}
 {{- if .Values.rbac.create -}}
 apiVersion: rbac.authorization.k8s.io/v1
@@ -19,9 +14,6 @@ rules:
   - apiGroups: ["helm.toolkit.fluxcd.io"]
     resources: ["helmreleases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["get", "list", "watch"]
   {{- end }}
   {{- if and (contains "K8sStorageAdapter" .Values.storageAdapter.adapter) (not .Values.rbac.clusterWide) }}
   # Access to PVCs for dynamic per-user/session storage provisioning
@@ -115,9 +107,6 @@ rules:
   - apiGroups: ["helm.toolkit.fluxcd.io"]
     resources: ["helmreleases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["get", "list", "watch"]
   # Session pods' Warning events: why a session could not start (e.g.
   # FailedScheduling). They outlive the pods Flux uninstalls.
   - apiGroups: [""]
@@ -173,97 +162,6 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: {{ include "volundr.fullname" . }}
-subjects:
-  - kind: ServiceAccount
-    name: {{ include "volundr.serviceAccountName" . }}
-    namespace: {{ .Release.Namespace }}
-{{- end }}
-{{- /*
-Ravn resident sessions (on by default, ravnResidentSessions): the Flux resident
-controller writes each Ravn resident's own shim token Secret
-(resident-<id>-openclaw) into the residents' namespace.
-Namespaced on purpose, like workflowExecutionCredentials above: never Secret
-writes cluster-wide.
-*/}}
-{{- $ravnSessions := .Values.ravnResidentSessions.enabled -}}
-{{- range .Values.residentRuntimeSessionControllers -}}
-{{- if contains "RavnResidentSessionController" .adapter -}}
-{{- $ravnSessions = true -}}
-{{- end -}}
-{{- end -}}
-{{- $residentNamespace := "" -}}
-{{- if contains "FluxPodManager" (include "volundr.podManagerAdapter" .) -}}
-{{- $residentNamespace = (.Values.podManager.kwargs).namespace | default .Release.Namespace -}}
-{{- end -}}
-{{- range .Values.residentRuntimeControllers -}}
-{{- if and (not $residentNamespace) (contains "FluxPodManager" .adapter) -}}
-{{- $residentNamespace = (.kwargs).namespace | default $.Release.Namespace -}}
-{{- end -}}
-{{- end -}}
-{{- if and .Values.rbac.create $ravnSessions $residentNamespace }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: {{ include "volundr.fullname" . }}-resident-openclaw
-  namespace: {{ $residentNamespace }}
-  labels:
-    {{- include "volundr.labels" . | nindent 4 }}
-rules:
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "create", "patch", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: {{ include "volundr.fullname" . }}-resident-openclaw
-  namespace: {{ $residentNamespace }}
-  labels:
-    {{- include "volundr.labels" . | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: {{ include "volundr.fullname" . }}-resident-openclaw
-subjects:
-  - kind: ServiceAccount
-    name: {{ include "volundr.serviceAccountName" . }}
-    namespace: {{ .Release.Namespace }}
-{{- end }}
-{{- /*
-Flux residents' logs: the resident Logs action reads each resident pod's
-container logs in the residents' namespace (FluxPodManager.logs). Always on
-wherever a Flux resident controller runs, so no cluster needs its own grant;
-namespaced, so Völundr reads pod logs only where its residents run.
-*/}}
-{{- if and .Values.rbac.create $residentNamespace }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: {{ include "volundr.fullname" . }}-resident-logs
-  namespace: {{ $residentNamespace }}
-  labels:
-    {{- include "volundr.labels" . | nindent 4 }}
-rules:
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: {{ include "volundr.fullname" . }}-resident-logs
-  namespace: {{ $residentNamespace }}
-  labels:
-    {{- include "volundr.labels" . | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: {{ include "volundr.fullname" . }}-resident-logs
 subjects:
   - kind: ServiceAccount
     name: {{ include "volundr.serviceAccountName" . }}

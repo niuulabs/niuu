@@ -106,7 +106,6 @@ from skuld.file_routes import (  # noqa: F401
     upload_file_raw,
     upload_files,
 )
-from skuld.flock_outcomes import FlockActivityLog
 from skuld.forge_mcp.integration import ForgeSessionMixin
 from skuld.history_hydration import fetch_durable_history, merge_history_turns
 from skuld.preview import PreviewForwarder, PreviewPortWatcher
@@ -661,12 +660,6 @@ class Broker(
         # evidence projection. Persona identity comes from the registered room
         # participant, never from model-authored fields.
         self._attested_review_outcomes: dict[str, dict[str, Any]] = {}
-        # What the brokered flock published, for the broker agent's flock tools.
-        self._flock_activity: FlockActivityLog | None = (
-            FlockActivityLog(capacity=self._settings.mesh.flock_outcome_history)
-            if self._settings.mesh.flock_broker
-            else None
-        )
         self._review_attestation = _workflow_review_attestation(self._settings.workflow.graph)
         # Durable full-fidelity event log (session_event_log). Every CLI frame is
         # buffered here and flushed to Volundr by a background worker, independent
@@ -1084,7 +1077,7 @@ class Broker(
                 environment_id=mesh_cfg.realm_id,
             )
         else:
-            from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter  # noqa: PLC0415
+            from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter  # noqa: PLC0415
 
             if mesh_cfg.transport == "nng":
                 nng_cfg = getattr(mesh_cfg, "nng", None)
@@ -1196,7 +1189,7 @@ class Broker(
                     persona="Skuld",
                     display_name="Skuld",
                     subscribes_to=list(mesh_cfg.consumes_event_types),
-                    emits=[] if mesh_cfg.flock_broker else ["code.changed"],
+                    emits=["code.changed"],
                     tools=list(mesh_cfg.tools),
                     participant_type="skuld",
                     participant_kind="mesh",
@@ -1302,7 +1295,7 @@ class Broker(
     def _is_declared_room_routed(self) -> bool:
         """True when configuration declares this broker owns no CLI agent.
 
-        ``ravn room create`` sets this: the room exists to host ravns, so the
+        A room's configuration sets this: the room exists to host ravns, so the
         broker must never start a CLI agent of its own even while the room is
         still empty. Without it such a broker lazy-starts Claude on the first
         browser connect and silently answers chat meant for a ravn.
@@ -1613,7 +1606,7 @@ class Broker(
         extra_payload: dict[str, Any] | None = None,
     ) -> str:
         """Publish one task event through Skuld's configured mesh adapter."""
-        from ravn.domain.events import RavnEvent, RavnEventType
+        from niuu.mesh.events import MeshEvent, MeshEventType
 
         if event_type.strip() in self._evidence_gate_outputs:
             raise ValueError("Only the evidence verifier can publish evidence gate output events")
@@ -1629,9 +1622,9 @@ class Broker(
             "task_description": task_description,
             "trigger_source": source,
         }
-        event = RavnEvent(
+        event = MeshEvent(
             event_id=event_id,
-            type=RavnEventType.OUTCOME,
+            type=MeshEventType.OUTCOME,
             source=f"skuld:{self._mesh_adapter.peer_id}",
             payload=payload,
             timestamp=datetime.now(UTC),
@@ -1824,14 +1817,6 @@ class Broker(
             await self._report_peer_help_needed_activity(request, frame)
             await self._emit_peer_help_needed_sleipnir_event(peer_id, frame)
         elif event_type == "error":
-            if self._flock_activity is not None and participant is not None:
-                await self._flock_activity.record(
-                    kind="error",
-                    peer_id=peer_id,
-                    persona=participant.persona,
-                    task_id=str(frame.get("task_id") or ""),
-                    error=_peer_error_message(frame),
-                )
             await self._maybe_report_flock_failure(peer_id, frame)
         elif event_type in self._PEER_WORK_EVENT_TYPES:
             await self._report_room_peer_working()
@@ -2063,20 +2048,6 @@ class Broker(
         files_changed = data.get("files_changed") or fields.get("files_changed")
         if isinstance(files_changed, list) and files_changed:
             payload["files_changed"] = files_changed
-
-        if self._flock_activity is not None and participant is not None:
-            await self._flock_activity.record(
-                kind="outcome",
-                peer_id=peer_id,
-                persona=participant.persona,
-                event_type=event_type,
-                verdict=str(verdict or ""),
-                summary=str(summary or ""),
-                valid=bool(payload["valid"]),
-                routing_only=bool(data.get("routing_only")),
-                task_id=str(metadata.get("task_id") or ""),
-                fields=dict(fields),
-            )
 
         if not data.get("routing_only") and data.get("bubble_up") is not False:
             await self._emit_pipeline_event("outcome", payload)
@@ -2674,10 +2645,10 @@ class Broker(
                 "notes": state.notes,
             },
         }
-        from ravn.domain.events import RavnEvent, RavnEventType
+        from niuu.mesh.events import MeshEvent, MeshEventType
 
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source=f"workflow-gate:{state.node_id}",
             payload=payload,
             timestamp=now,
@@ -2815,10 +2786,10 @@ class Broker(
             "summary": f"{node.label}: evidence {'accepted' if accepted else 'rejected'}",
             "fields": {"evidence_report": report},
         }
-        from ravn.domain.events import RavnEvent, RavnEventType
+        from niuu.mesh.events import MeshEvent, MeshEventType
 
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
+        event = MeshEvent(
+            type=MeshEventType.OUTCOME,
             source=outcome["peer_id"],
             payload=outcome,
             timestamp=datetime.now(UTC),
@@ -4912,7 +4883,7 @@ class Broker(
         if self._reflex_initialised:
             return self._reflex_injector
         self._reflex_initialised = True
-        from ravn.reflex import build_reflex_injector  # noqa: PLC0415
+        from mimir.reflex import build_reflex_injector  # noqa: PLC0415
 
         self._reflex_injector = build_reflex_injector(self._settings)
         return self._reflex_injector
@@ -6033,7 +6004,6 @@ from skuld.broker_api import (  # noqa: E402, F401
     ready,
     websocket_endpoint,
     cli_websocket_endpoint,
-    ravn_websocket_endpoint,
     get_broker_logs,
     get_aggregate_logs,
     get_conversation_history,

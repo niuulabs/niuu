@@ -4262,16 +4262,8 @@ class TestFastAPIEndpoints:
         original_workspace = broker.workspace_dir
         broker.workspace_dir = str(tmp_path)
         try:
-            (tmp_path / ".flock" / "logs").mkdir(parents=True)
             (tmp_path / ".skuld.log").write_text(
                 "2026-05-01 15:19:48,121 - skuld.broker - INFO - Starting Skuld broker\n",
-                encoding="utf-8",
-            )
-            (tmp_path / ".flock" / "logs" / "coder.log").write_text(
-                (
-                    "2026-05-01 15:19:58,326 ravn.drive_loop ERROR "
-                    "drive_loop: task failed after 3 retries\n"
-                ),
                 encoding="utf-8",
             )
 
@@ -4280,10 +4272,9 @@ class TestFastAPIEndpoints:
             data = response.json()
             assert data["session_id"] == broker.session_id
             assert {participant["id"] for participant in data["available_participants"]} == {
-                "skuld",
-                "coder",
+                "skuld"
             }
-            assert [line["participant"] for line in data["lines"]] == ["skuld", "coder"]
+            assert [line["participant"] for line in data["lines"]] == ["skuld"]
         finally:
             broker.workspace_dir = original_workspace
 
@@ -7389,141 +7380,6 @@ class TestBrokerRoomAdapter:
         calls = [c[0][0] for c in mock_ws.send_json.call_args_list]
         room_state_calls = [c for c in calls if c.get("type") == "room_state"]
         assert len(room_state_calls) == 0
-
-    # -----------------------------------------------------------------------
-    # handle_ravn_websocket
-    # -----------------------------------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_handle_ravn_websocket_rejects_when_room_disabled(self, no_room_settings):
-        b = Broker(settings=no_room_settings)
-        mock_ws = AsyncMock()
-        mock_ws.headers = {}
-
-        await b.handle_ravn_websocket(mock_ws, "agent-1")
-
-        mock_ws.close.assert_awaited_once()
-        assert mock_ws.close.call_args[1]["code"] == 1008
-
-    @pytest.mark.asyncio
-    async def test_handle_ravn_websocket_registers_on_connect(self, room_settings):
-        b = Broker(settings=room_settings)
-        mock_bridge = AsyncMock()
-        mock_bridge.register = AsyncMock(
-            return_value=MagicMock(peer_id="agent-1", persona="agent-1")
-        )
-        b._room_bridge = mock_bridge
-
-        mock_ws = AsyncMock()
-        mock_ws.headers = {}
-        mock_ws.receive_text = AsyncMock(side_effect=WebSocketDisconnect())
-
-        await b.handle_ravn_websocket(mock_ws, "agent-1")
-
-        mock_ws.accept.assert_awaited_once()
-        mock_bridge.register.assert_awaited()
-        mock_bridge.unregister.assert_awaited_once_with("agent-1")
-
-    @pytest.mark.asyncio
-    async def test_handle_ravn_websocket_forwards_frames(self, room_settings):
-        import json as _json
-
-        b = Broker(settings=room_settings)
-        mock_bridge = AsyncMock()
-        mock_bridge.register = AsyncMock(
-            return_value=MagicMock(peer_id="agent-1", persona="agent-1")
-        )
-        b._room_bridge = mock_bridge
-        b._observe_room_peer_event = AsyncMock()
-
-        frame = (
-            _json.dumps(
-                {
-                    "type": "collaboration.events",
-                    "events": [
-                        {
-                            "kind": "message",
-                            "sourceEventType": "response",
-                            "content": "Hello",
-                        }
-                    ],
-                }
-            )
-            + "\n"
-        )
-        mock_ws = AsyncMock()
-        mock_ws.headers = {}
-        mock_ws.receive_text = AsyncMock(side_effect=[frame, WebSocketDisconnect()])
-
-        await b.handle_ravn_websocket(mock_ws, "agent-1")
-
-        mock_bridge.handle_collaboration_frame.assert_awaited_once()
-        b._observe_room_peer_event.assert_not_awaited()
-        call_args = mock_bridge.handle_collaboration_frame.call_args[0]
-        assert call_args[0] == "agent-1"
-        assert call_args[1]["type"] == "collaboration.events"
-
-    @pytest.mark.asyncio
-    async def test_handle_ravn_websocket_routes_usage_to_existing_reporter(self, room_settings):
-        import json as _json
-
-        b = Broker(settings=room_settings)
-        mock_bridge = AsyncMock()
-        mock_bridge.register = AsyncMock(
-            return_value=MagicMock(peer_id="agent-1", persona="agent-1")
-        )
-        b._room_bridge = mock_bridge
-        usage = {
-            "model": "gpt-5.6-sol",
-            "inputTokens": 10,
-            "outputTokens": 5,
-            "usage_id": "usage-1",
-        }
-        frame = _json.dumps({"events": [{"kind": "usage", "usage": usage}]}) + "\n"
-        mock_ws = AsyncMock()
-        mock_ws.headers = {}
-        mock_ws.receive_text = AsyncMock(side_effect=[frame, WebSocketDisconnect()])
-
-        await b.handle_ravn_websocket(mock_ws, "agent-1")
-
-        mock_bridge.handle_collaboration_frame.assert_awaited_once_with(
-            "agent-1", {"events": [{"kind": "usage", "usage": usage}]}
-        )
-
-    @pytest.mark.asyncio
-    async def test_handle_ravn_websocket_skips_invalid_json(self, room_settings):
-        b = Broker(settings=room_settings)
-        mock_bridge = AsyncMock()
-        mock_bridge.register = AsyncMock(
-            return_value=MagicMock(peer_id="agent-1", persona="agent-1")
-        )
-        b._room_bridge = mock_bridge
-
-        mock_ws = AsyncMock()
-        mock_ws.headers = {}
-        mock_ws.receive_text = AsyncMock(side_effect=["not valid json\n", WebSocketDisconnect()])
-
-        await b.handle_ravn_websocket(mock_ws, "agent-1")
-
-        mock_bridge.handle_collaboration_frame.assert_not_awaited()
-        mock_bridge.unregister.assert_awaited_once_with("agent-1")
-
-    @pytest.mark.asyncio
-    async def test_handle_ravn_websocket_unregisters_on_exception(self, room_settings):
-        b = Broker(settings=room_settings)
-        mock_bridge = AsyncMock()
-        mock_bridge.register = AsyncMock(
-            return_value=MagicMock(peer_id="agent-1", persona="agent-1")
-        )
-        b._room_bridge = mock_bridge
-
-        mock_ws = AsyncMock()
-        mock_ws.headers = {}
-        mock_ws.receive_text = AsyncMock(side_effect=RuntimeError("unexpected"))
-
-        await b.handle_ravn_websocket(mock_ws, "agent-1")
-
-        mock_bridge.unregister.assert_awaited_once_with("agent-1")
 
 
 class TestWorkloadTokenRefresh:

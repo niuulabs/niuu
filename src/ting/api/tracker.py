@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from niuu.domain.models import Principal
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
+from ting.domain.exceptions import WorkflowStepsHaveNoRunnerError
 from ting.domain.models import (
     Saga,
     SagaStatus,
@@ -661,6 +662,10 @@ def _build_tracker_router(
                     )
                 else:
                     await dispatch_service.try_auto_continue(principal.user_id, saga.tracker_id)
+            except WorkflowStepsHaveNoRunnerError as exc:
+                msg = f"Initial dispatch for imported saga '{slug}' was refused: {exc}"
+                logger.error(msg)
+                warnings.append(msg)
             except Exception:
                 msg = f"Failed to kick off initial dispatch for imported saga '{slug}'"
                 logger.warning(msg, exc_info=True)

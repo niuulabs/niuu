@@ -30,6 +30,7 @@ from volundr.domain.models import (
     RepoInfo,
     Session,
     SessionStatus,
+    WorkloadTypeRemovedError,
 )
 from volundr.domain.ports import SessionContribution
 from volundr.domain.services import (
@@ -715,43 +716,55 @@ class TestSessionServiceStart:
         """
         service = SessionService(repository, pod_manager)
         created = await service.create_session(name="muninn", model="claude-opus-4-8")
-        # Simulate a committed flock session in the store.
-        flock = created.model_copy(
+        # Simulate a committed special-workload session in the store.
+        special = created.model_copy(
             update={
-                "workload_type": "ravn_flock",
+                "workload_type": "batch",
                 "workload_config": {"personas": ["product-steward"]},
                 "status": SessionStatus.STOPPED,
             }
         )
-        await repository.update(flock)
+        await repository.update(special)
 
-        result = await service.start_session(flock.id)
+        result = await service.start_session(special.id)
 
-        assert result.workload_type == "ravn_flock"
+        assert result.workload_type == "batch"
         assert result.workload_config["personas"] == ["product-steward"]
 
-    @pytest.mark.parametrize("override", ["", "Continue with the revised brief"])
-    async def test_restart_restores_workflow_brief(
-        self, repository: Repo, pod_manager: Pods, monkeypatch, override
+    async def test_restart_refuses_a_stored_ravn_flock_session(
+        self, repository: Repo, pod_manager: Pods
+    ):
+        """A session stored with the removed workload type is not restarted as a plain one."""
+        service = SessionService(repository, pod_manager)
+        created = await service.create_session(name="muninn", model="claude-opus-4-8")
+        stopped = created.model_copy(
+            update={"workload_type": "ravn_flock", "status": SessionStatus.STOPPED}
+        )
+        await repository.update(stopped)
+
+        with pytest.raises(WorkloadTypeRemovedError, match=r"workload type ravn_flock was removed"):
+            await service.start_session(stopped.id)
+
+        stored = await repository.get(stopped.id)
+        assert stored.status == SessionStatus.STOPPED
+        assert stored.workload_type == "ravn_flock"
+        assert pod_manager.start_calls == []
+
+    async def test_start_refuses_the_removed_ravn_flock_workload_type(
+        self, repository: Repo, pod_manager: Pods
     ):
         service = SessionService(repository, pod_manager)
-        session = await service.create_session(name="research", model="gpt-5.5")
-        await repository.update(
-            session.model_copy(
-                update={
-                    "status": SessionStatus.STOPPED,
-                    "workload_type": "ravn_flock",
-                    "workload_config": {"initiative_context": "Research PXE boot"},
-                }
-            )
+        created = await service.create_session(name="flock", model="claude-opus-4-8")
+
+        with pytest.raises(WorkloadTypeRemovedError) as caught:
+            await service.start_session(created.id, workload_type="ravn_flock")
+
+        assert str(caught.value) == (
+            "workload type ravn_flock was removed: workflow steps will run on "
+            "harness sessions (NIU-1198)"
         )
-        provision = AsyncMock()
-        monkeypatch.setattr(service, "_provision_background", provision)
-
-        await service.start_session(session.id, initial_prompt=override)
-        await asyncio.gather(*service._provisioning_tasks.values())
-
-        assert provision.await_args.kwargs["initial_prompt"] == (override or "Research PXE boot")
+        assert (await repository.get(created.id)).status == SessionStatus.CREATED
+        assert pod_manager.start_calls == []
 
     async def test_restart_preserves_selected_connections(
         self, repository, pod_manager, monkeypatch

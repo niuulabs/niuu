@@ -18,9 +18,7 @@ class CoreSessionContributor(SessionContributor):
     ``TRACEPARENT``/``TRACESTATE`` — the one place every session, of every
     pod type and local processes alike, picks up env (see
     ``LocalProcessPodManager._session_env``, which folds ``envVars`` into
-    every runtime it spawns). Previously only ``ravn_flock`` sessions carried
-    trace context, via a separate Ting-workflow-specific path
-    (``provenance.trace_context``); this makes it universal.
+    every runtime it spawns).
     """
 
     def __init__(

@@ -589,54 +589,12 @@ data:
       verifiers: []
       {{- end }}
       {{- $wiMappings := .Values.workloadIdentity.mappings | default list }}
-      {{- if .Values.workloadIdentity.residentMapping.enabled }}
-      {{- $rm := .Values.workloadIdentity.residentMapping }}
-      {{- $rmNamespace := required "workloadIdentity.residentMapping.namespace is required when workloadIdentity.residentMapping.enabled=true" $rm.namespace }}
-      {{- $rmIssuer := required "workloadIdentity.residentMapping.issuer is required when workloadIdentity.residentMapping.enabled=true" $rm.issuer }}
-      {{/*
-      WorkloadIdentityService.exchange() picks the MOST SPECIFIC matching
-      mapping (an exact subject over any prefix, a longer prefix over a
-      shorter one), so residentMapping's "...resident-" prefix wins over a
-      broader operator catch-all such as "system:serviceaccount:<ns>:".
-      It is still prepended, which keeps the rendered order readable.
-
-      owner_id_claim_pattern is restricted to UUID-shaped resident ids
-      (FluxPodManager names a per-runtime SA "resident-<runtime.id>", a
-      standard UUID) so this broad subject_prefix cannot shadow an existing,
-      non-UUID-named ServiceAccount a different, more specific mapping on
-      workloadIdentity.mappings owns exactly — e.g. valhalla's
-      "resident-muninn" or "resident-ravn" — WorkloadIdentityService._matches
-      treats a pattern non-match as "this mapping does not apply" and falls
-      through to try those mappings instead of raising.
-      */}}
-      {{- $wiMappings = prepend $wiMappings (dict
-            "name" $rm.name
-            "verifier" $rm.verifier
-            "subject_prefix" (printf "system:serviceaccount:%s:resident-" $rmNamespace)
-            "issuer" $rmIssuer
-            "owner_id_claim" "sub"
-            "owner_id_claim_pattern" "^system:serviceaccount:[^:]+:resident-([0-9a-f-]{36})$"
-            "tenant_id" $rm.tenantId
-            "roles" $rm.roles
-          ) }}
-      {{- end }}
       {{- if $wiMappings }}
       mappings:
         {{- toYaml $wiMappings | nindent 8 }}
       {{- else }}
       mappings: []
       {{- end }}
-      tenant_resolver:
-        adapter: {{ .Values.workloadIdentity.tenantResolver.adapter | default "" | quote }}
-        kwargs: {{ .Values.workloadIdentity.tenantResolver.kwargs | default dict | toJson }}
-        {{- if .Values.workloadIdentity.tenantResolver.secretKwargs }}
-        secret_kwargs_env:
-          {{- range .Values.workloadIdentity.tenantResolver.secretKwargs }}
-          {{ .kwarg }}: WORKLOAD_TENANT_RESOLVER_SK_{{ .kwarg | upper }}
-          {{- end }}
-        {{- else }}
-        secret_kwargs_env: {}
-        {{- end }}
 
     workflow_execution_credentials:
       enabled: {{ .Values.workflowExecutionCredentials.enabled | default false }}
@@ -752,18 +710,14 @@ data:
           namespace: {{ .Release.Namespace | quote }}
           configmap_name: {{ .Values.personaSource.configmapName | default "ravn-personas" | quote }}
         {{- else if eq $mode "http" }}
-        adapter: "ravn.adapters.personas.http.HttpPersonaAdapter"
+        adapter: "personas.adapters.http.HttpPersonaAdapter"
         kwargs:
           base_url: {{ .Values.personaSource.httpBaseUrl | default "http://volundr:8080" | quote }}
         {{- else }}
-        adapter: "ravn.adapters.personas.loader.FilesystemPersonaAdapter"
+        adapter: "personas.adapters.loader.FilesystemPersonaAdapter"
         kwargs: {}
         {{- end }}
     {{- end }}
-
-    ravn_flock_image: {{ .Values.ravnFlockImage | default "" | quote }}
-    ravn_flock_llm_config: {{ .Values.ravnFlockLlmConfig | default dict | toJson }}
-    ravn_flock_llm_config_by_definition: {{ .Values.ravnFlockLlmConfigByDefinition | default dict | toJson }}
 
     {{- if .Values.sessionContributors }}
     session_contributors:

@@ -115,8 +115,6 @@ as literal service names to keep the route table extensible.
 {{ include "niuu.componentFullname" (dict "root" $root "name" "observatory" "values" $root.Values.observatory) }}
 {{- else if eq $service "mimir-shared" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "mimir-shared" "values" (index $root.Values "mimir-shared")) }}
-{{- else if eq $service "ravn" -}}
-{{ include "niuu.componentFullname" (dict "root" $root "name" "ravn" "values" $root.Values.ravn) }}
 {{- else if eq $service "mimir-kanuck" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "mimir-kanuck" "values" (index $root.Values "mimir-kanuck")) }}
 {{- else if eq $service "mimir-research" -}}
@@ -153,8 +151,6 @@ Unknown service names are treated as enabled so custom routes still render.
 {{ ternary "true" "false" ($root.Values.observatory.enabled | default false) }}
 {{- else if eq $service "mimir-shared" -}}
 {{ ternary "true" "false" ((index $root.Values "mimir-shared").enabled | default false) }}
-{{- else if eq $service "ravn" -}}
-{{ ternary "true" "false" ($root.Values.ravn.enabled | default false) }}
 {{- else if eq $service "mimir-kanuck" -}}
 {{ ternary "true" "false" ((index $root.Values "mimir-kanuck").enabled | default false) }}
 {{- else if eq $service "mimir-research" -}}

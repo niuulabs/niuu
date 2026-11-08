@@ -1,4 +1,4 @@
-"""Route inbound communication messages into active flock sessions."""
+"""Route inbound communication messages into active room sessions."""
 
 from __future__ import annotations
 

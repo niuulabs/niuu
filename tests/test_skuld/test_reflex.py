@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from ravn.reflex import POINTER_BLOCK_HEADER, ReflexEntity, ReflexInjector
+from mimir.reflex import POINTER_BLOCK_HEADER, ReflexEntity, ReflexInjector
 from skuld.broker import Broker
 from skuld.config import ReflexConfig, SkuldSettings
 
@@ -76,12 +76,12 @@ class TestBrokerReflex:
 
     async def test_enabled_without_base_url_disables_with_warning(self, tmp_path, caplog):
         broker = Broker(settings=_settings(tmp_path, enabled=True))
-        with caplog.at_level(logging.WARNING, logger="ravn.reflex"):
+        with caplog.at_level(logging.WARNING, logger="mimir.reflex"):
             assert broker._retrieval_reflex_injector() is None
         assert any("no Mimir HTTP endpoint" in r.getMessage() for r in caplog.records)
 
     async def test_base_url_derived_from_volundr_api_url(self, tmp_path):
-        from ravn.reflex import _resolve_base_url
+        from mimir.reflex import _resolve_base_url
 
         settings = _settings(tmp_path, enabled=True)
         settings.volundr_api_url = "http://platform:8080"
@@ -119,7 +119,7 @@ class TestBrokerReflex:
         )
         broker._reflex_initialised = True
 
-        with caplog.at_level(logging.ERROR, logger="ravn.reflex"):
+        with caplog.at_level(logging.ERROR, logger="mimir.reflex"):
             result = await broker._apply_retrieval_reflex("Check Volundr Auth")
 
         assert result == "Check Volundr Auth"

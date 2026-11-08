@@ -4,12 +4,12 @@ import copy
 from pathlib import Path
 from typing import Any
 
+from mimir.adapters.http import HttpMimirAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
+from mimir.domain import MimirAuth
 from mimir.registry import MimirRegistryStore
 from niuu.ports.mimir import MimirPort
 from niuu.utils import import_class, resolve_secret_kwargs
-from ravn.adapters.mimir.http import HttpMimirAdapter
-from ravn.domain.mimir import MimirAuth
 
 
 def resolve_mimir_connection(

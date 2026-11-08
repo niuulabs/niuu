@@ -537,13 +537,15 @@ class RemoteConfig(BaseModel):
 class ResidentsConfig(BaseModel):
     """How mini mode hosts long-lived residents on this machine."""
 
-    runtime: Literal["process", "docker"] = Field(
-        default="process",
+    runtime: Literal["docker"] = Field(
+        default="docker",
         description=(
-            "'process' runs Ravn residents as Skuld and Ravn processes on this host and "
-            "needs no container engine. 'docker' runs resident images through the local "
-            "Docker Engine, which must be running, and also offers the NemoClaw and "
-            "NemoHermes profiles."
+            "How residents run on this machine. 'docker' runs resident images through the "
+            "local Docker Engine and offers the NemoClaw and NemoHermes profiles. The engine "
+            "is contacted when a resident is created or inspected, not when the platform "
+            "starts: with Docker stopped the platform runs and creating a resident fails "
+            "naming Docker. The host-process runtime ('process') was removed with the "
+            "Ravn resident engine it hosted; remove residents.runtime: process."
         ),
     )
 
@@ -901,7 +903,7 @@ class AuthConfig(BaseModel):
 #: accepted in Kubernetes maps to the same platform roles here. Völundr's own
 #: identity composition (``niuu.service_runtime.create_identity_adapter``)
 #: applies this automatically from ``identity.role_mapping``; services that
-#: compose their own identity adapter directly (Ravn's inbound API, Ting) do
+#: compose their own identity adapter directly (Ting) do
 #: not, so it is threaded through explicitly below for those.
 _DEFAULT_OIDC_ROLE_MAPPING = {
     "admin": "volundr:admin",
@@ -936,8 +938,7 @@ def auth_adapter_env(auth: AuthConfig) -> dict[str, str]:
     (``cli.services.compose_bundle``) so both compute the same adapter
     selection from the same config, for every co-hosted service that reads
     these env vars: Völundr/Identity's shared ``IDENTITY__ADAPTER`` /
-    ``AUTHORIZATION__ADAPTER`` slot, Ravn's own inbound API
-    (``RAVN_API_AUTH__*``), Ting's own inbound API (``AUTH__*``), the
+    ``AUTHORIZATION__ADAPTER`` slot, Ting's own inbound API (``AUTH__*``), the
     niuu root app's session-proxy identity (``HOST_IDENTITY__*``), and
     Mímir's own inbound API (``MIMIR_AUTH__*``, read via
     ``mimir.config.MimirServiceConfig.identity_adapter``). ``none``
@@ -955,9 +956,6 @@ def auth_adapter_env(auth: AuthConfig) -> dict[str, str]:
             "IDENTITY__ADAPTER": "identity.adapters.identity.AllowAllIdentityAdapter",
             "AUTHORIZATION__ADAPTER": (
                 "identity.adapters.authorization.AllowAllAuthorizationAdapter"
-            ),
-            "RAVN_API_AUTH__ADAPTER": (
-                "identity.adapters.identity.AllowAllHeaderAuthenticationAdapter"
             ),
             # Ting's own default (EnvoyHeaderAuthenticationAdapter +
             # allow_anonymous_dev) trusts caller-supplied x-auth-* headers
@@ -982,8 +980,6 @@ def auth_adapter_env(auth: AuthConfig) -> dict[str, str]:
         "IDENTITY__ADAPTER": "identity.adapters.jwks.JwksIdentityAdapter",
         "IDENTITY__KWARGS": oidc_kwargs_json,
         "AUTHORIZATION__ADAPTER": "identity.adapters.cedar.CedarAuthorizationAdapter",
-        "RAVN_API_AUTH__ADAPTER": "identity.adapters.jwks.JwksBearerAuthenticationAdapter",
-        "RAVN_API_AUTH__KWARGS": oidc_kwargs_json,
         "AUTH__ADAPTER": "identity.adapters.jwks.JwksBearerAuthenticationAdapter",
         "AUTH__KWARGS": oidc_kwargs_json,
         "HOST_IDENTITY__ADAPTER": "identity.adapters.jwks.JwksBearerAuthenticationAdapter",
@@ -1329,10 +1325,9 @@ class CLISettings(BaseSettings):
             "oidc, but nothing yet supplies sessions or residents with a verifiable "
             "credential to send it: skuld.config.ModelGatewayConfig.token has no "
             "real default (it used to be the placeholder literal 'niuu-gateway', "
-            "meaningful only because 'open' mode ignores it), and "
-            "ravn.adapters.llm.bifrost.BifrostAdapter (used by local residents) "
-            "sends no Authorization header at all. Every model call routed through "
-            "Bifröst — every session and resident — would get 401. Minting and "
+            "meaningful only because 'open' mode ignores it). Every model call "
+            "routed through Bifröst — every session and resident — would get 401. "
+            "Minting and "
             "threading a real per-session/per-resident PAT through both paths is "
             "tracked as follow-up work"
         ),

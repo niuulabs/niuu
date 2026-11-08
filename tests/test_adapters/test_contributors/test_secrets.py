@@ -270,7 +270,7 @@ class TestSecretInjectionContributor:
 
         ctx = SessionContext(
             integration_connections=(_connection("volundr-session-runtime-valhalla", "volundr"),),
-            workload_type="ravn_flock",
+            workload_type="session",
             workload_config={
                 "mimir": {
                     "registry_refs": [

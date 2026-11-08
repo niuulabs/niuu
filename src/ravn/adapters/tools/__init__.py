@@ -1,1 +1,0 @@
-"""Ravn tool adapter implementations."""

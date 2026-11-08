@@ -28,9 +28,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-from ravn.adapters.personas.http import HttpPersonaAdapter
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter, PersonaConfig
-from ravn.api.personas import create_personas_router
+from personas.adapters.http import HttpPersonaAdapter
+from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.api.personas import create_personas_router
+from personas.domain.persona import PersonaConfig
 
 # ---------------------------------------------------------------------------
 # Helpers

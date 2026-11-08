@@ -39,8 +39,10 @@ from ting.api.specs import (
     _sync_pending_spec_gates,
     create_specs_router,
 )
+from ting.api.workflow_runner_refusal import register_workflow_runner_refusal
 from ting.api.workflows import resolve_workflow_repo
 from ting.config import AuthConfig, Settings
+from ting.domain.exceptions import WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
 from ting.domain.models import (
     CampaignStageState,
     WorkflowCampaign,
@@ -191,6 +193,7 @@ def _make_client(
     app = FastAPI()
     app.state.authorization = AllowAllAuthorizationAdapter()
     app.include_router(create_specs_router())
+    register_workflow_runner_refusal(app)
     app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
     app.state.event_bus = InMemoryEventBus()
     app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
@@ -236,7 +239,9 @@ def _campaign_for_workflow(workflow: WorkflowDefinition, slug: str) -> WorkflowC
     )
 
 
-def test_create_spec_campaign_launches_specification_stack(tmp_path: Path) -> None:
+def test_create_spec_campaign_is_refused_because_workflow_steps_have_no_runner(
+    tmp_path: Path,
+) -> None:
     workflow = _spec_workflow(tmp_path)
     campaign_repo = InMemoryWorkflowCampaignRepository()
     volundr_port = RecordingVolundrPort()
@@ -252,27 +257,15 @@ def test_create_spec_campaign_launches_specification_stack(tmp_path: Path) -> No
         json={
             "prompt": "Plan SDCP v3.0.0 as a Kubernetes operator for 3D printers.",
             "name": "SDCP operator",
-            "repos": [
-                "https://github.com/niuulabs/volundr.git",
-                "https://github.com/niuulabs/ravn.git",
-            ],
+            "repos": ["https://github.com/niuulabs/volundr.git"],
             "branch": "dev",
         },
     )
 
-    assert response.status_code == 201
-    body = response.json()
-    assert body["workflowName"] == "Specification Stack"
-    assert body["metadata"]["surface"] == "ting.specs"
-    assert body["metadata"]["repos"] == [
-        "https://github.com/niuulabs/volundr.git",
-        "https://github.com/niuulabs/ravn.git",
-    ]
-    assert len(volundr_port.requests) == 1
-    request = volundr_port.requests[0]
-    assert request.repo == "https://github.com/niuulabs/volundr.git"
-    assert "Pause at each review gate" in request.initial_prompt
-    assert "https://github.com/niuulabs/ravn.git" in request.initial_prompt
+    assert response.status_code == 501
+    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+    assert volundr_port.requests == []
+    assert campaign_repo._campaigns == {}
 
 
 def test_detail_reads_spec_artifacts_from_mimir(tmp_path: Path) -> None:

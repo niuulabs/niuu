@@ -29,9 +29,8 @@ ALLOWLIST = {
         "niuu/adapters/embedded_postgres.py",
         "NIUU_PG_BIN_DIR",
     ): "embedded PostgreSQL executable discovery",
-    ("ravn/cli/mimir_bridge.py", "RAVN_MIMIR_PATH"): "CLI companion executable discovery",
-    ("ravn/cli/mimir_bridge.py", "RAVN_WORKSPACE_DIR"): "CLI workspace bootstrap",
-    ("ravn/main.py", "LOG_LEVEL"): "entrypoint logging bootstrap",
+    ("mimir/bridge.py", "RAVN_MIMIR_PATH"): "CLI companion executable discovery",
+    ("mimir/bridge.py", "RAVN_WORKSPACE_DIR"): "CLI workspace bootstrap",
     ("skuld/transports/claude_env.py", "SKULD__CLAUDE_AUTH"): "child auth environment filtering",
     ("skuld/transports/tmux_interactive.py", "SKULD__CLAUDE_AUTH"): "tmux child auth filtering",
     (
@@ -107,11 +106,7 @@ def test_production_environment_reads_are_config_first() -> None:
 
 
 def test_hardened_modules_have_no_literal_environment_reads() -> None:
-    targets = (
-        "ravn/adapters/browser/browserbase.py",
-        "ravn/adapters/tools/browser.py",
-        "skuld/transports/remote_control.py",
-    )
+    targets = ("skuld/transports/remote_control.py",)
     violations = {
         target: _reads(SRC_ROOT / target) for target in targets if _reads(SRC_ROOT / target)
     }

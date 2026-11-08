@@ -31,6 +31,7 @@ from volundr.domain.services.resident_runtime import (
     ResidentRuntimeConflictError,
     ResidentRuntimeDeploymentError,
     ResidentRuntimeNotFoundError,
+    ResidentRuntimeService,
     ResidentRuntimeStateError,
     ResidentRuntimeValidationError,
 )
@@ -43,7 +44,7 @@ _PRINCIPAL = Principal(
 )
 
 
-def _client(service: Mock) -> TestClient:
+def _client(service: Mock | ResidentRuntimeService) -> TestClient:
     app = FastAPI()
     from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 
@@ -55,10 +56,10 @@ def _client(service: Mock) -> TestClient:
 
 def test_lists_only_public_profile_fields() -> None:
     profile = ResidentDeploymentProfile(
-        id="ravn-openshell",
-        display_name="Ravn on OpenShell",
+        id="openclaw-openshell",
+        display_name="OpenClaw on OpenShell",
         backend=ResidentBackend.OPENSHELL,
-        engine=ResidentEngine.RAVN,
+        engine=ResidentEngine.OPENCLAW,
         capabilities=[ResidentCapability.CHAT],
         deployment={"image": "private-deployment-input"},
     )
@@ -70,11 +71,11 @@ def test_lists_only_public_profile_fields() -> None:
     assert response.status_code == 200
     assert response.json() == [
         {
-            "id": "ravn-openshell",
-            "displayName": "Ravn on OpenShell",
+            "id": "openclaw-openshell",
+            "displayName": "OpenClaw on OpenShell",
             "description": "",
             "backend": "openshell",
-            "engine": "ravn",
+            "engine": "openclaw",
             "capabilities": ["chat"],
             "defaultModel": "",
             "allowedModels": [],
@@ -91,8 +92,8 @@ def test_lists_and_gets_with_authenticated_principal() -> None:
         tenant_id="tenant-a",
         name="Muninn",
         backend=ResidentBackend.OPENSHELL,
-        engine=ResidentEngine.RAVN,
-        profile_id="ravn-openshell",
+        engine=ResidentEngine.OPENCLAW,
+        profile_id="openclaw-openshell",
     )
     service = Mock()
     service.list = AsyncMock(return_value=[runtime])
@@ -104,7 +105,7 @@ def test_lists_and_gets_with_authenticated_principal() -> None:
 
     assert listed.status_code == 200
     assert listed.json()[0]["id"] == str(runtime.id)
-    assert listed.json()[0]["profileId"] == "ravn-openshell"
+    assert listed.json()[0]["profileId"] == "openclaw-openshell"
     assert fetched.status_code == 200
     service.list.assert_awaited_once_with(_PRINCIPAL)
     service.get.assert_awaited_once_with(_PRINCIPAL, runtime.id)
@@ -130,7 +131,7 @@ def test_reads_normalized_resident_logs() -> None:
                     timestamp_ms=1234,
                     level="OCSF",
                     source="sandbox",
-                    message="PROC:LAUNCH ravn",
+                    message="PROC:LAUNCH openclaw",
                 )
             ],
             buffer_total=1,
@@ -143,7 +144,7 @@ def test_reads_normalized_resident_logs() -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["entries"][0]["message"] == "PROC:LAUNCH ravn"
+    assert response.json()["entries"][0]["message"] == "PROC:LAUNCH openclaw"
     service.logs.assert_awaited_once_with(
         _PRINCIPAL,
         runtime_id,
@@ -160,8 +161,8 @@ def test_records_resident_usage() -> None:
         tenant_id="tenant-a",
         name="Muninn",
         backend=ResidentBackend.OPENSHELL,
-        engine=ResidentEngine.RAVN,
-        profile_id="ravn-openshell",
+        engine=ResidentEngine.OPENCLAW,
+        profile_id="openclaw-openshell",
         capabilities=[ResidentCapability.USAGE],
         tokens_used=42,
         message_count=1,
@@ -241,8 +242,8 @@ def test_create_and_lifecycle_routes_use_authenticated_service() -> None:
         tenant_id="tenant-a",
         name="Muninn",
         backend=ResidentBackend.HELMRELEASE,
-        engine=ResidentEngine.RAVN,
-        profile_id="ravn-helm",
+        engine=ResidentEngine.OPENCLAW,
+        profile_id="openclaw-helm",
     )
     service = Mock()
     service.create = AsyncMock(return_value=runtime)
@@ -255,13 +256,13 @@ def test_create_and_lifecycle_routes_use_authenticated_service() -> None:
         "/api/v1/forge/resident-runtimes",
         json={
             "name": "Muninn",
-            "profileId": "ravn-helm",
+            "profileId": "openclaw-helm",
             "personaName": "product-steward",
             "model": "gpt-5.6",
             "flockId": str(flock_id),
             "flockMemberId": str(member_id),
             "flockRole": "coordinator",
-            "flockPeerId": f"ravn-{member_id}",
+            "flockPeerId": f"openclaw-{member_id}",
             "realmId": str(realm_id),
         },
     )
@@ -276,13 +277,13 @@ def test_create_and_lifecycle_routes_use_authenticated_service() -> None:
     service.create.assert_awaited_once_with(
         _PRINCIPAL,
         name="Muninn",
-        profile_id="ravn-helm",
+        profile_id="openclaw-helm",
         persona_name="product-steward",
         model="gpt-5.6",
         flock_id=flock_id,
         flock_member_id=member_id,
         flock_role="coordinator",
-        flock_peer_id=f"ravn-{member_id}",
+        flock_peer_id=f"openclaw-{member_id}",
         realm_id=realm_id,
     )
     service.delete.assert_awaited_once_with(_PRINCIPAL, runtime.id)
@@ -314,10 +315,26 @@ def test_create_maps_domain_failures(error, expected_status) -> None:
 
     response = _client(service).post(
         "/api/v1/forge/resident-runtimes",
-        json={"name": "Muninn", "profileId": "ravn-helm"},
+        json={"name": "Muninn", "profileId": "openclaw-helm"},
     )
 
     assert response.status_code == expected_status
+
+
+def test_create_for_a_removed_ravn_profile_is_refused_with_its_reason() -> None:
+    """The ravn engine is gone, so no profile for it exists: the create names the profile."""
+    profiles = Mock()
+    profiles.get.return_value = None
+    service = ResidentRuntimeService(Mock(), profiles)
+
+    response = _client(service).post(
+        "/api/v1/forge/resident-runtimes",
+        json={"name": "Muninn", "profileId": "ravn-helm"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Resident profile not found: ravn-helm"
+    profiles.get.assert_called_once_with("ravn-helm")
 
 
 @pytest.mark.parametrize(
@@ -387,7 +404,7 @@ def test_unknown_resident_failure_is_not_hidden() -> None:
     with pytest.raises(ValueError, match="unexpected"):
         _client(service).post(
             "/api/v1/forge/resident-runtimes",
-            json={"name": "Muninn", "profileId": "ravn-helm"},
+            json={"name": "Muninn", "profileId": "openclaw-helm"},
         )
 
 

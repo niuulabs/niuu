@@ -733,12 +733,12 @@ async def test_heartbeat_refreshes_last_seen_and_resyncs_instances() -> None:
 
     refreshed, instances = await service.heartbeat(
         joined.node,
-        [OfferedInstance(kind=InstanceKind.RAVN, base_url="http://127.0.0.1:9000")],
+        [OfferedInstance(kind=InstanceKind.TING, base_url="http://127.0.0.1:9000")],
     )
 
     assert refreshed.last_seen_at is not None
     assert len(instances) == 1
-    assert instances[0].kind == InstanceKind.RAVN
+    assert instances[0].kind == InstanceKind.TING
 
 
 @pytest.mark.asyncio

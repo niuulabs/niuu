@@ -1,9 +1,7 @@
-"""Host storage layout and log helpers shared by the local resident runtimes.
+"""Host storage layout and log helpers for the local resident runtime.
 
-Both local resident adapters — Docker containers and host processes — keep a
-resident's durable state under ``<residents_dir>/<resident-id>/sandbox`` with
-the same layout, so switching the local runtime keeps the resident's workspace,
-Ravn state and agent credentials.
+The local resident adapter keeps a resident's durable state under
+``<residents_dir>/<resident-id>/sandbox``: its workspace and its agent credentials.
 """
 
 from __future__ import annotations

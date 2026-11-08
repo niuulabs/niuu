@@ -277,7 +277,7 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
                 token = match.group(1)
                 kwargs = {"mcp_url": url + "/mcp", "api_token": token, "query_expansion": False}
                 record["mount"] = {
-                    "adapter": "ravn.adapters.mimir.gbrain.GBrainMimirAdapter",
+                    "adapter": "mimir.adapters.gbrain.GBrainMimirAdapter",
                     "kwargs": kwargs,
                 }
                 # Keep environment secrets in the private runner config.

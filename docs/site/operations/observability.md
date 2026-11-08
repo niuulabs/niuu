@@ -69,7 +69,7 @@ data after pointing a service at it.
 A single W3C trace id follows one piece of work end to end:
 
 1. **Resident judgment (Ravn)** — the case/run span, tool calls, and each
-   model request. `src/ravn/adapters/llm/{anthropic,openai}.py` inject the
+   model request. The model adapters inject the
    active `traceparent`/`tracestate` onto every model HTTP request.
 2. **Bifröst** — once the gateway's own FastAPI app is instrumented
    (`niuu.observability.instrument_fastapi_app`), the inbound completion
@@ -80,7 +80,7 @@ A single W3C trace id follows one piece of work end to end:
    (`src/volundr/adapters/outbound/contributors/core.py`) carries the trace
    context active when a session is created into that session's own pod/
    process env as `TRACEPARENT`/`TRACESTATE`, for every pod type (via
-   `LocalProcessPodManager._session_env`), not only `ravn_flock` sessions.
+   `LocalProcessPodManager._session_env`).
    Skuld, running as that pod/process, inherits those env vars and forwards
    them onto the Claude CLI/SDK env it spawns
    (`src/skuld/transports/claude_env.py`); Skuld also attaches them as its

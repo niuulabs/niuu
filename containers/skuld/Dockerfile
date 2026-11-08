@@ -36,8 +36,8 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 # --extra dsh bundles the DeepSeek Harness runtime (single-file exe, exact-pinned)
 # for DshJsonRpcTransport; the binary needs no Node at runtime.
-# --extra nats: a resident's ravn sidecar runs this image, and a resident profile
-# whose mesh uses NATS (Valhalla's ravn-helm) cannot start without nats-py.
+# --extra nats: a session whose mesh transport is NATS (mesh.nats) cannot start
+# without nats-py.
 RUN uv sync --frozen --no-dev --no-editable --no-install-project --extra otel --extra dsh --extra nats
 
 # ---------------------------------------------------------------------------

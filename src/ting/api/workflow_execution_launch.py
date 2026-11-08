@@ -47,8 +47,8 @@ from ting.domain.workflow_snapshot import build_workflow_snapshot
 from ting.ports.volundr import VolundrFactory
 from ting.ports.workflow_execution import WorkflowExecutionRepository
 
-#: Tool-name prefix Ravn's tool builder treats as needing an owner-bound
-#: ``workflow_execution`` runtime context (``ravn.cli.tool_builders``).
+#: Tool-name prefix of a persona's tools that need an owner-bound
+#: ``workflow_execution`` runtime context.
 _WORKFLOW_EXECUTION_TOOL = "workflow_execution"
 
 

@@ -113,7 +113,6 @@ data:
     forge_stream_queue_maxsize: {{ .Values.forgeStream.queueMaxsize | default 256 }}
 
     guild_transport_connect_timeout_seconds: {{ .Values.guildTransport.connectTimeoutSeconds | default 5.0 }}
-    guild_owner_probe_timeout_seconds: {{ .Values.guildTransport.ownerProbeTimeoutSeconds | default 15.0 }}
     guild_session_owner_ttl_seconds: {{ .Values.guildTransport.sessionOwnerTtlSeconds | default 3600.0 }}
     guild_feedless_recheck_seconds: {{ .Values.guildTransport.feedlessRecheckSeconds | default 3600.0 }}
     {{- $trustedPlaintextHostSuffixes := .Values.guildTransport.trustedPlaintextHostSuffixes }}

@@ -155,10 +155,3 @@ Now follow the [quick start](first-local-stack.md) in this terminal, including
 authentication, initialization, and foreground startup. The built web and database
 assets are reused. Do not run a second platform while `start-dev` still owns the
 same port/database.
-
-## Optional: standalone Ravn
-
-The first workspace does not require a separate Ravn installation. To run Ravn
-directly, download the matching `ravn-$ARCH` asset from the same release and
-verify its entry in `checksums.txt` using the same procedure. Then follow
-[Direct and resident assistants](direct-and-resident-assistants.md).

@@ -429,12 +429,6 @@ async def cli_websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
     await broker.handle_cli_websocket(websocket, session_id)
 
 
-@app.websocket("/ws/ravn/{peer_id}")
-async def ravn_websocket_endpoint(websocket: WebSocket, peer_id: str) -> None:
-    """WebSocket endpoint for Ravn daemon connections (room mode)."""
-    await broker.handle_ravn_websocket(websocket, peer_id)
-
-
 # --- Broker Log API ---
 
 

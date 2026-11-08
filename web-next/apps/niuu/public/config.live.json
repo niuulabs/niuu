@@ -39,9 +39,7 @@
       "mode": "http",
       "baseUrl": "/api/v1/observatory/events"
     },
-    "ravn": { "mode": "http", "baseUrl": "/api/v1/ravn" },
     "ravn.personas": { "mode": "http", "baseUrl": "/api/v1/ravn/personas" },
-    "ravn.triggers": { "mode": "http", "baseUrl": "/api/v1/ravn/triggers" },
     "forge": { "mode": "http", "baseUrl": "/api/v1/forge" },
     "volundr": { "mode": "http", "baseUrl": "/api/v1/volundr" },
     "forge.pty": { "mode": "ws", "wsUrl": "/s/{sessionId}/session" },

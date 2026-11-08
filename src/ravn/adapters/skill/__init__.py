@@ -1,1 +1,0 @@
-"""Skill registry adapters."""

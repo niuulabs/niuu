@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import pytest
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+from personas.adapters.loader import FilesystemPersonaAdapter
 from ting.adapters.filesystem_workflows import FilesystemWorkflowRepository
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.migrate_workflows import _registry_source_for_workflow, _run, _skip_reason, main

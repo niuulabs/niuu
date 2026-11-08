@@ -132,7 +132,6 @@ class TestConstants:
             "niuu",
             "observatory",
             "personas",
-            "ravn",
             "skuld",
             "tracker",
             "ting",

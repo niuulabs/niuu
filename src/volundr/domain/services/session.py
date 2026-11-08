@@ -45,6 +45,7 @@ from volundr.domain.models import (
     SessionStatus,
     TenantRole,
     _merge_pod_specs,
+    require_workload_type_available,
 )
 from volundr.domain.ports import (
     AuthorizationPort,
@@ -225,7 +226,6 @@ class SessionService:
         self._startup = SessionStartupRecorder(
             repository, pod_manager, broadcaster, startup_poll_seconds
         )
-        self._activity_stop_tasks: set[asyncio.Task[None]] = set()
         self._integration_repo = integration_repo
         self._storage = storage
         self._chronicle_repository = chronicle_repository
@@ -639,8 +639,6 @@ class SessionService:
 
         # The owner's push for a new request is the attention item recorded above:
         # the notification outbox delivers it through their "Needs-input pushes" rule.
-        if self._should_auto_stop_after_activity(updated, state, metadata):
-            self._schedule_activity_stop(updated.id)
         return updated
 
     async def _settle_attention_feed(
@@ -745,57 +743,6 @@ class SessionService:
             if self._broadcaster is not None:
                 await self._broadcaster.publish_session_updated(result)
         return reconciled
-
-    def _should_auto_stop_after_activity(
-        self,
-        session: Session,
-        state: SessionActivityState,
-        metadata: dict,
-    ) -> bool:
-        """Return True when an activity report authoritatively completes a flock session."""
-        if session.status != SessionStatus.RUNNING:
-            return False
-        if session.workload_type != "ravn_flock":
-            return False
-        if state != SessionActivityState.IDLE:
-            return False
-        return metadata.get("completion_source") == "ravn_flock"
-
-    def _schedule_activity_stop(self, session_id: UUID) -> None:
-        """Stop a completed flock session in the background after activity broadcast."""
-        task = asyncio.create_task(
-            self._auto_stop_completed_flock_session(session_id),
-            name=f"auto-stop-{session_id}",
-        )
-        self._activity_stop_tasks.add(task)
-        task.add_done_callback(self._on_activity_stop_done)
-
-    def _on_activity_stop_done(self, task: asyncio.Task[None]) -> None:
-        self._activity_stop_tasks.discard(task)
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc is not None:
-            logger.error("Auto-stop after flock completion failed: %s", exc, exc_info=exc)
-
-    async def _auto_stop_completed_flock_session(self, session_id: UUID) -> None:
-        """Stop a flock session that has reported an authoritative terminal outcome."""
-        try:
-            session = await self._repository.get(session_id)
-            if session is None:
-                raise SessionNotFoundError(session_id)
-            await self._stop_session(session, None)
-        except SessionNotFoundError:
-            logger.debug(
-                "Skipping auto-stop for completed flock session %s because it no longer exists",
-                session_id,
-            )
-        except SessionStateError:
-            logger.debug(
-                "Skipping auto-stop for completed flock session %s because it is no longer "
-                "stoppable",
-                session_id,
-            )
 
     async def list_sessions(
         self,
@@ -1345,13 +1292,14 @@ class SessionService:
 
         # Restart parity for workload identity: the REST start endpoint calls us
         # with the DEFAULT workload_type ("session") and no config, so a naive
-        # copy would demote a special workload (e.g. a ravn flock) to a plain
-        # CLI session on every restart — vanishing from the fleet. Fall back to
+        # copy would demote a special workload to a plain CLI session on
+        # every restart — vanishing from the fleet. Fall back to
         # the stored values whenever the caller did not explicitly override
         # them, and thread them through provisioning so the contributor
         # pipeline re-applies the workload spec.
         if workload_type == "session" and session.workload_type != "session":
             workload_type = session.workload_type
+        require_workload_type_available(workload_type)
         if not workload_config and session.workload_config:
             workload_config = dict(session.workload_config)
         if self._execution_resolver is not None:
@@ -1366,9 +1314,6 @@ class SessionService:
             )
         else:
             await self._require_host_grants(workload_config or {})
-        if workload_type == "ravn_flock" and not initial_prompt:
-            initial_prompt = str((workload_config or {}).get("initiative_context") or "")
-
         if not integration_ids:
             integration_ids = list((workload_config or {}).get("integration_ids") or [])
         if integration_ids:
@@ -1409,8 +1354,8 @@ class SessionService:
                 "error": None,
                 "updated_at": datetime.now(UTC),
                 "workload_type": workload_type,
-                # Persist the workload config so workload identity (e.g. a
-                # flock's personas) survives restarts.
+                # Persist the workload config so workload identity survives
+                # restarts.
                 "workload_config": workload_config or {},
             }
         )

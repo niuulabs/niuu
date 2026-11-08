@@ -43,7 +43,7 @@ _ENV_FILE_PATH = f"{_SECRETS_DIR}/env.sh"
 #: injector looks for a ServiceAccount token mount to give the agent containers.
 _SERVICE_ACCOUNT_TOKEN_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 #: The projected token a resident workload gets for the agent: its own ServiceAccount
-#: does not automount one (charts/skuld/templates/serviceaccount.yaml).
+#: does not automount one.
 _WORKLOAD_TOKEN_VOLUME = "openbao-agent-sa-token"
 #: The shortest projected ServiceAccount token Kubernetes issues.
 _MIN_PROJECTED_TOKEN_SECONDS = 600

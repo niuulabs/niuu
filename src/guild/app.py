@@ -11,10 +11,6 @@ from starlette.types import ASGIApp
 from niuu.adapters.inbound.rest_guild_join import create_guild_join_router
 from niuu.adapters.inbound.rest_instances import create_instances_router
 from niuu.adapters.inbound.rest_pats import create_workload_identity_jwks_router
-from niuu.adapters.inbound.rest_ravn import (
-    create_ravn_router,
-    create_ravn_session_proxy_router,
-)
 from niuu.adapters.inbound.rest_volundr import create_volundr_router
 from niuu.adapters.node_signature import Ed25519NodeVerifier
 from niuu.adapters.outbound import guild_transport
@@ -22,7 +18,6 @@ from niuu.adapters.outbound.http_agent_directory import HttpAgentDirectoryClient
 from niuu.adapters.outbound.http_observatory_topology import (
     HttpObservatoryTopologyClient,
 )
-from niuu.adapters.outbound.http_workload_delegations import HttpResidentDelegationRegistrar
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_guild_join import PostgresGuildJoinRepository
 from niuu.adapters.postgres_instances import PostgresInstanceRepository
@@ -292,28 +287,6 @@ def create_app(
                         forge_stream_queue_maxsize=loaded_settings.forge_stream_queue_maxsize,
                         guild_membership=loaded_settings.guild.membership(),
                         presented_file_max_bytes=loaded_settings.presented_files.max_bytes,
-                    )
-                )
-                app.include_router(
-                    create_ravn_router(
-                        instance_service,
-                        embedded_forge_app=embedded_forge_app,
-                        delegations=(
-                            HttpResidentDelegationRegistrar(
-                                loaded_settings.guild_workload_delegation_url
-                            )
-                            if loaded_settings.guild_workload_delegation_url
-                            else None
-                        ),
-                    )
-                )
-                app.include_router(
-                    create_ravn_session_proxy_router(
-                        instance_service,
-                        embedded_forge_app=embedded_forge_app,
-                        owner_probe_timeout_seconds=(
-                            loaded_settings.guild_owner_probe_timeout_seconds
-                        ),
                     )
                 )
                 app.include_router(create_workload_identity_jwks_router())

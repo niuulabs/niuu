@@ -6,9 +6,10 @@ Ravn refuses to start that persona without an owner-bound
 ``workflow_execution`` runtime context, and only a durable launch provides one.
 ``POST /research/campaigns`` used to launch every workflow plainly, so every
 research campaign crashed the moment the frame stage handed over. These tests
-pin that it now reserves an execution and launches the parent through the same
-trusted path ``POST /workflow-executions`` uses — and that a workflow with no
-fan-out keeps the plain launch and the same response shape.
+pin that it reserves an execution and launches the parent through the same
+trusted path ``POST /workflow-executions`` uses. Workflow steps have no runner
+until they run on harness sessions (NIU-1198), so that launch is refused with
+HTTP 501, and so is the plain launch of a workflow with no fan-out.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+from personas.adapters.loader import FilesystemPersonaAdapter
 from tests.test_ting.test_research_api import (
     InMemoryWorkflowCampaignRepository,
     InMemoryWorkflowRepository,
@@ -33,6 +34,7 @@ from tests.test_ting.test_research_api import (
 )
 from ting.api.workflow_execution_launch import durable_parent_node_id
 from ting.api.workflow_executions import resolve_optional_workflow_execution_repo
+from ting.domain.exceptions import WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.system_workflows import load_system_workflows
 
@@ -89,7 +91,7 @@ def _client(workflow, factory, execution_repo, campaign_repo=None):
     return client, campaign_repo
 
 
-def test_fan_out_research_launches_a_durable_parent_execution() -> None:
+def test_fan_out_research_is_refused_when_its_parent_has_no_runner() -> None:
     workflow = _bundled_research_campaign()
     port = RecordingVolundrPort(name="valhalla", target_id="volundr-valhalla")
     executions = RecordingExecutionRepository()
@@ -98,82 +100,14 @@ def test_fan_out_research_launches_a_durable_parent_execution() -> None:
     response = client.post(
         _CAMPAIGNS_URL,
         headers=_headers(),
-        json={**_SMIDJA_BODY, "workflowId": str(workflow.id)},
+        json={**_SMIDJA_BODY, "workflowId": str(workflow.id), "connectionId": "volundr-valhalla"},
     )
 
-    assert response.status_code == 201, response.text
-    body = response.json()
-
-    # One execution reserved for the graph's one subworkflow node.
-    assert len(executions.reserved) == 1
-    execution = executions.execution
-    assert execution.parent_node_id == "research-threads"
-    assert execution.policy.coordinator_id == "research-coordinator"
-    assert execution.parent_session_id == body["sessionId"]
-    assert execution.connection_id == "volundr-valhalla"
-    assert execution.owner_id == "user-1"
-
-    # The parent was launched with trusted provenance, so Forge hands the
-    # coordinator's Ravn an owner-bound workflow_execution runtime context.
-    assert len(port.requests) == 1
-    workload = port.requests[0].workload_config
-    provenance = workload["provenance"]
-    assert provenance["workflow_execution_id"] == str(execution.id)
-    assert provenance["workflow_execution"] == {
-        "base_url": "http://testserver",
-        "execution_id": str(execution.id),
-        "parent_node_id": "research-threads",
-        "parent_session_key": f"workflow:execution-{execution.id.hex}",
-        "coordinator_id": "research-coordinator",
-    }
-    ravn_execution = workload["ravn_config"]["workflow_execution"]
-    assert ravn_execution["execution_id"] == str(execution.id)
-    assert ravn_execution["enabled"] is True
-    assert "auth_token" not in ravn_execution
-    assert "auth_token_file" not in ravn_execution
-
-    # The campaign record is unchanged apart from the link to its execution.
-    assert body["slug"] == "kit-joinery-survey"
-    assert port.requests[0].name == "kit-joinery-survey"
-    assert port.requests[0].tracker_issue_id == "workflow:kit-joinery-survey"
-    assert body["metadata"]["surface"] == "ting.research"
-    assert body["metadata"]["workflow_execution_id"] == str(execution.id)
-    assert [stage["stageId"] for stage in body["stageState"]][:2] == [
-        "research-frame",
-        "research-coordinate",
-    ]
-    (stored,) = campaign_repo._campaigns.values()
-    assert str(stored.id) == body["id"]
-    assert stored.session_id == execution.parent_session_id
-    assert stored.connection_id == "volundr-valhalla"
-    assert stored.metadata["workflow_execution_id"] == str(execution.id)
-    assert execution.launch_key.startswith("ting.research:")
-    assert execution.launch_key.endswith(body["id"])
-
-
-def test_fan_out_research_honours_the_pinned_connection() -> None:
-    workflow = _bundled_research_campaign()
-    noatun = RecordingVolundrPort(name="noatun", target_id="volundr-noatun")
-    valhalla = RecordingVolundrPort(name="valhalla", target_id="volundr-valhalla")
-    executions = RecordingExecutionRepository()
-    client, _ = _client(workflow, RecordingVolundrFactory(noatun, valhalla), executions)
-
-    response = client.post(
-        _CAMPAIGNS_URL,
-        headers=_headers(),
-        json={
-            **_SMIDJA_BODY,
-            "workflowId": str(workflow.id),
-            "connectionId": "volundr-valhalla",
-        },
-    )
-
-    assert response.status_code == 201, response.text
-    assert noatun.requests == []
-    assert len(valhalla.requests) == 1
-    assert executions.execution.connection_id == "volundr-valhalla"
-    assert response.json()["metadata"]["connection_id"] == "volundr-valhalla"
-    assert response.json()["metadata"]["cluster_name"] == "valhalla"
+    assert response.status_code == 501, response.text
+    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+    assert port.requests == []
+    assert not executions.execution.parent_session_id
+    assert campaign_repo._campaigns == {}
 
 
 def test_fan_out_research_needs_the_execution_ledger() -> None:
@@ -192,38 +126,22 @@ def test_fan_out_research_needs_the_execution_ledger() -> None:
     assert campaign_repo._campaigns == {}
 
 
-def test_research_without_fan_out_keeps_the_plain_launch(tmp_path: Path) -> None:
-    """No subworkflow node and no coordinator tools: no execution, same response shape."""
+def test_research_without_fan_out_is_refused_without_reserving_an_execution(
+    tmp_path: Path,
+) -> None:
+    """No subworkflow node: no execution is reserved, and the plain launch is refused too."""
     workflow = _research_workflow(tmp_path)
     port = RecordingVolundrPort()
-    client, _ = _client(workflow, RecordingVolundrFactory(port), RefusingExecutionRepository())
-
-    plain = client.post(_CAMPAIGNS_URL, headers=_headers(), json=_SMIDJA_BODY)
-
-    assert plain.status_code == 201, plain.text
-    workload = port.requests[0].workload_config
-    assert "workflow_execution" not in workload.get("provenance", {})
-    assert "workflow_execution" not in workload.get("ravn_config", {})
-    assert "workflow_execution_id" not in plain.json()["metadata"]
-
-    # The durable launch answers with exactly the same fields smidja reads.
-    fan_out = _bundled_research_campaign()
-    durable_port = RecordingVolundrPort()
-    durable_client, _ = _client(
-        fan_out, RecordingVolundrFactory(durable_port), RecordingExecutionRepository()
+    client, campaign_repo = _client(
+        workflow, RecordingVolundrFactory(port), RefusingExecutionRepository()
     )
-    durable = durable_client.post(
-        _CAMPAIGNS_URL,
-        headers=_headers(),
-        json={**_SMIDJA_BODY, "workflowId": str(fan_out.id)},
-    )
-    assert durable.status_code == 201, durable.text
-    assert set(durable.json()) == set(plain.json())
-    for field in ("slug", "sessionId", "chatEndpoint"):
-        assert field in durable.json()
-    assert set(durable.json()["metadata"]) == set(plain.json()["metadata"]) | {
-        "workflow_execution_id"
-    }
+
+    response = client.post(_CAMPAIGNS_URL, headers=_headers(), json=_SMIDJA_BODY)
+
+    assert response.status_code == 501, response.text
+    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+    assert port.requests == []
+    assert campaign_repo._campaigns == {}
 
 
 def _workflow_with_nodes(nodes: list[dict]) -> WorkflowDefinition:

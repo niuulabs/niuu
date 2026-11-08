@@ -95,21 +95,10 @@ def create_workload_identity_service(
         verifier_class = import_class(str(getattr(verifier_config, "adapter")))
         verifiers[str(getattr(verifier_config, "name"))] = verifier_class(**kwargs)
 
-    tenant_resolver = None
-    resolver_config = getattr(config, "tenant_resolver", None)
-    resolver_adapter_path = str(getattr(resolver_config, "adapter", "") or "")
-    if resolver_adapter_path:
-        resolver_kwargs = resolve_secret_kwargs(
-            dict(getattr(resolver_config, "kwargs", {}) or {}),
-            dict(getattr(resolver_config, "secret_kwargs_env", {}) or {}),
-        )
-        tenant_resolver = import_class(resolver_adapter_path)(**resolver_kwargs)
-
     return WorkloadIdentityService(
         config,
         signing_key_pem=signing_key_pem,
         verifiers=verifiers,
-        tenant_resolver=tenant_resolver,
         delegations=delegations,
     )
 
@@ -197,7 +186,7 @@ def _validate_identity_adapter_class(cls: type, auth_mode: str) -> None:
             f"token's signature, but identity.adapter={name} does not. Configure "
             "identity.adapters.jwks.JwksIdentityAdapter (or "
             "JwksBearerAuthenticationAdapter for a header-only slot such as "
-            "RAVN_API_AUTH), or set auth.mode: none to run without authentication "
+            "HOST_IDENTITY), or set auth.mode: none to run without authentication "
             "explicitly instead of silently starting an unverified host."
         )
 

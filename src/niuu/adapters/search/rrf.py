@@ -1,8 +1,7 @@
 """Shared retrieval utilities: cosine similarity and Reciprocal Rank Fusion (RRF).
 
-These are extracted from ``ravn.adapters.memory.scoring`` so that both the
-SQLite and Postgres search adapters in ``niuu`` can share them, and so that
-Ravn's memory adapters can delegate to the shared implementations.
+Both the SQLite and Postgres search adapters in ``niuu`` share them, and so do
+Ravn's memory adapters.
 """
 
 from __future__ import annotations

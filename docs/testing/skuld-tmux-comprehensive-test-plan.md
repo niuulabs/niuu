@@ -181,7 +181,7 @@ buffers and flushes via `_flush_event_log`); point it at an in-memory list.
 | Live smoke | `@pytest.mark.e2e` (manual / nightly) | real Claude login | a thin sanity pass of the same scenarios against real Claude | minutes |
 
 Gating follows the existing convention in `pyproject.toml` (default addopts already
-exclude `integration`, `broker`, `kind_integration`). Component/E2E tmux tests skip
+exclude `integration` and `broker`). Component/E2E tmux tests skip
 cleanly when `shutil.which("tmux") is None`, exactly like the current smoke. CI runs
 the tmux tier on a runner that has tmux installed; the live tier is nightly/manual only.
 

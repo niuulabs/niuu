@@ -6,7 +6,6 @@ from volundr.adapters.outbound.contributors.git import GitContributor
 from volundr.adapters.outbound.contributors.integrations import IntegrationContributor
 from volundr.adapters.outbound.contributors.isolation import IsolationContributor
 from volundr.adapters.outbound.contributors.launch_spec import LaunchSpecContributor
-from volundr.adapters.outbound.contributors.ravn_flock import RavnFlockContributor
 from volundr.adapters.outbound.contributors.secrets import (
     SecretInjectionContributor,
     SecretsContributor,
@@ -25,7 +24,6 @@ __all__ = [
     "IntegrationContributor",
     "IsolationContributor",
     "LaunchSpecContributor",
-    "RavnFlockContributor",
     "SecretInjectionContributor",
     "SessionDefinitionContributor",
     "StorageContributor",

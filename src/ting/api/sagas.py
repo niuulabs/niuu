@@ -34,6 +34,7 @@ from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.tracker import resolve_trackers
 from ting.api.workflows import WorkflowLaunchBody, launch_workflow_execution, resolve_workflow_repo
+from ting.domain.exceptions import WorkflowStepsHaveNoRunnerError
 from ting.domain.models import (
     CampaignStageState,
     Phase,
@@ -332,7 +333,6 @@ async def _resolve_selected_workflow(
     principal: Principal,
     workflow_id_value: str | None,
     workflow_version_value: str | None = None,
-    use_default_when_missing: bool = False,
 ) -> tuple[UUID | None, str | None, dict | None]:
     if workflow_version_value and workflow_id_value is None:
         raise HTTPException(
@@ -379,27 +379,7 @@ async def _resolve_selected_workflow(
             )
         return workflow.id, workflow.version, _build_resolved_workflow_snapshot(request, workflow)
 
-    if not use_default_when_missing:
-        return None, None, None
-
-    flock_settings = getattr(request.app.state.settings.dispatch, "flock", None)
-    default_workflow_name = str(
-        getattr(flock_settings, "default_workflow_name", ""),
-    ).strip()
-    if not default_workflow_name:
-        return None, None, None
-
-    workflows = await workflow_repo.list_workflows(
-        owner_id=principal.user_id,
-        scope=WorkflowScope.SYSTEM,
-    )
-    workflow = next(
-        (candidate for candidate in workflows if candidate.name == default_workflow_name),
-        None,
-    )
-    if workflow is None:
-        return None, None, None
-    return workflow.id, workflow.version, _build_resolved_workflow_snapshot(request, workflow)
+    return None, None, None
 
 
 def _build_resolved_workflow_snapshot(
@@ -1766,7 +1746,7 @@ def create_sagas_router() -> APIRouter:
                 completed_at=now if campaign_status == WorkflowCampaignStatus.COMPLETED else None,
             )
             saved = await campaign_repo.save_campaign(campaign)
-        except HTTPException:
+        except (HTTPException, WorkflowStepsHaveNoRunnerError):
             raise
         except Exception as exc:
             logger.error("Failed to spawn planning session: %s", exc)
@@ -1943,7 +1923,6 @@ def create_sagas_router() -> APIRouter:
             principal=principal,
             workflow_id_value=body.workflow_id,
             workflow_version_value=body.workflow_version,
-            use_default_when_missing=False,
         )
         gap = repository_gap(
             replace(saga, workflow_id=workflow_id, workflow_snapshot=workflow_snapshot)
@@ -2241,7 +2220,6 @@ def create_sagas_router() -> APIRouter:
             principal=principal,
             workflow_id_value=body.workflow_id,
             workflow_version_value=body.workflow_version,
-            use_default_when_missing=True,
         )
 
         # Build saga domain object (tracker_id filled after tracker call)
@@ -2495,6 +2473,13 @@ def create_sagas_router() -> APIRouter:
                     )
                 else:
                     await dispatch_service.try_auto_continue(principal.user_id, saga.tracker_id)
+            except WorkflowStepsHaveNoRunnerError as exc:
+                logger.error(
+                    "Initial dispatch for saga %s refused: %s", _sanitize_log(body.slug), exc
+                )
+                warnings.append(
+                    f"Initial dispatch for saga '{_sanitize_log(body.slug)}' was refused: {exc}"
+                )
             except Exception:
                 msg = f"Failed to kick off initial dispatch for saga '{_sanitize_log(body.slug)}'"
                 logger.warning(

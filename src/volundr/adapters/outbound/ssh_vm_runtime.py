@@ -633,10 +633,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             raise ValueError(
                 "SSH VM sessions accept Git or an empty workspace, not host-path mounts"
             )
-        if any(spec.values.get(key) for key in ("homeVolume", "persistence", "flock", "ravnFlock")):
-            raise ValueError(
-                "SSH VM runtime cannot silently replace configured storage or flock topology"
-            )
+        if any(spec.values.get(key) for key in ("homeVolume", "persistence")):
+            raise ValueError("SSH VM runtime cannot silently replace configured storage")
         layout = self._pod_layout(spec)
         brokered = self._with_brokered_credentials(spec)
         env = LocalProcessPodManager._session_env(brokered, Path("/workspace"))

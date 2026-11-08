@@ -517,30 +517,6 @@ class TestCreatePlatformCommands:
         assert "status" in names
         assert "init" in names
 
-    def test_platform_ravn_runs_the_ravn_cli_for_compiled_residents(self, monkeypatch) -> None:
-        import ravn.cli.commands
-
-        calls: list[tuple[list[str], str]] = []
-        monkeypatch.setattr(
-            ravn.cli.commands,
-            "app",
-            lambda *, args, prog_name: calls.append((args, prog_name)),
-        )
-        platform, *_ = self._make_platform()
-
-        result = runner.invoke(
-            platform,
-            ["ravn", "daemon", "--config", "/r/ravn.yaml", "--persona", "steward", "--help"],
-        )
-
-        assert result.exit_code == 0, result.output
-        assert calls == [
-            (
-                ["daemon", "--config", "/r/ravn.yaml", "--persona", "steward", "--help"],
-                "ravn",
-            )
-        ]
-
     def test_platform_down_command(self) -> None:
         platform, *_ = self._make_platform()
         result = runner.invoke(platform, ["down"])
@@ -700,35 +676,23 @@ class TestBuildInitConfig:
         assert ":latest" not in skuld_image
         assert ":" in skuld_image  # has a version tag
 
-    def test_mini_runtime_runs_ravn_residents_as_host_processes_by_default(self) -> None:
-        from volundr.config import ResidentRuntimesConfig
-
+    def test_mini_runtime_hosts_residents_in_the_local_container_engine_by_default(self) -> None:
         settings = CLISettings(mode="mini", server={"host": "0.0.0.0", "port": 8181})
 
         env = _resolve_local_pod_manager_env(settings)
-        resident_config = ResidentRuntimesConfig.model_validate_json(env["RESIDENT_RUNTIMES"])
+        resident_config = json.loads(env["RESIDENT_RUNTIMES"])
 
-        assert settings.residents.runtime == "process"
-        (controller,) = resident_config.controllers
-        assert controller.adapter.endswith("HostProcessResidentRuntimeController")
-        assert controller.kwargs == {
-            "residents_dir": "~/.niuu/residents",
-            "volundr_api_url": "http://127.0.0.1:8181",
+        assert settings.residents.runtime == "docker"
+        (controller,) = resident_config["controllers"]
+        assert controller["adapter"].endswith("LocalContainerResidentRuntimeController")
+        assert {profile["engine"] for profile in resident_config["profiles"]} == {
+            "openclaw",
+            "hermes",
         }
-        assert resident_config.session_controllers == []
-        (profile,) = resident_config.profiles
-        values = profile.deployment["values"]
-        assert (profile.id, profile.backend.value, profile.engine.value) == (
-            "ravn-local",
-            "local",
-            "ravn",
-        )
-        assert "image" not in values
-        assert "runtime" not in values
-        assert values["resident"]["platform"]["baseUrl"] == "http://127.0.0.1:8181"
-        assert values["resident"]["llm"]["provider"]["kwargs"]["base_url"] == (
-            "http://127.0.0.1:8181/api/v1/bifrost"
-        )
+
+    def test_the_removed_host_process_resident_runtime_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="process"):
+            CLISettings(mode="mini", residents={"runtime": "process"})
 
     def test_host_resident_platform_url_keeps_a_specific_bind_address(self) -> None:
         settings = CLISettings(mode="mini", server={"host": "192.0.2.10", "port": 9000})
@@ -755,26 +719,17 @@ class TestBuildInitConfig:
         assert resident_config["controllers"][0]["adapter"].endswith(
             "LocalContainerResidentRuntimeController"
         )
-        assert resident_config["controllers"][0]["kwargs"] == {
-            "residents_dir": "~/.niuu/residents",
-            "volundr_api_url": "http://host.docker.internal:8080",
-        }
+        assert resident_config["controllers"][0]["kwargs"] == {"residents_dir": "~/.niuu/residents"}
         assert resident_config["profiles"][0]["deployment"]["values"]["image"]
         assert {profile["id"] for profile in resident_config["profiles"]} == {
-            "ravn-local",
             "nemoclaw-local",
             "nemohermes-local",
         }
         assert {profile["backend"] for profile in resident_config["profiles"]} == {"local"}
-        assert resident_config["profiles"][0]["default_model"] == "gpt-5.6-sol"
-        assert resident_config["profiles"][0]["allowed_models"] == ["gpt-5.6-sol"]
-        assert resident_config["profiles"][0]["deployment"]["values"]["session"] == {
-            "reasoningEffort": "high"
-        }
         assert json.loads(env["BIFROST_CONFIG"])["providers"]["local-vllm"]["models"] == [
             "nvidia/nemotron-test"
         ]
-        assert resident_config["profiles"][1]["default_model"] == ("niuu/nvidia/nemotron-test")
+        assert resident_config["profiles"][0]["default_model"] == ("niuu/nvidia/nemotron-test")
         assert "FileCredentialStore" in json.loads(env["CREDENTIAL_STORE"])["adapter"]
 
     def test_bifrost_config_stays_open_under_host_auth_none(self) -> None:
@@ -1262,36 +1217,17 @@ def test_only_mini_targets_local_memory():
     assert "NIUU__REALM_DATABASE" not in env
 
 
-def test_mini_residents_read_personas_and_memory_from_the_platform(tmp_path):
-    from volundr.config import ResidentRuntimesConfig
-
-    settings = CLISettings(
-        mode="mini", pod_manager={"workspaces_dir": str(tmp_path / "workspaces")}
-    )
-
-    env = _resolve_local_pod_manager_env(settings)
-
-    runtimes = ResidentRuntimesConfig.model_validate_json(env["RESIDENT_RUNTIMES"])
-    (profile,) = runtimes.profiles
-    resident = profile.deployment["values"]["resident"]
-    assert resident["personaSource"]["adapter"].endswith("HttpPersonaAdapter")
-    assert resident["personaSource"]["kwargs"] == {"base_url": "http://127.0.0.1:8080"}
-    assert resident["mimir"]["instances"][0]["url"] == "http://127.0.0.1:8080"
-
-
 @pytest.mark.parametrize("mode", ["mini", "cluster"])
 def test_only_mini_selects_no_auth(mode, monkeypatch):
-    from ravn.config import Settings as RavnSettings
     from ting.config import Settings as TingSettings
 
     env = _resolve_local_pod_manager_env(CLISettings(mode=mode))
-    auth_keys = {"RAVN_API_AUTH__ADAPTER", "AUTH__ALLOW_ANONYMOUS_DEV", "AUTHORIZATION__ADAPTER"}
+    auth_keys = {"AUTH__ALLOW_ANONYMOUS_DEV", "AUTHORIZATION__ADAPTER"}
     if mode != "mini":
         assert auth_keys.isdisjoint(env)
         return
     for key in auth_keys:
         monkeypatch.setenv(key, env[key])
-    assert RavnSettings().api_auth.adapter.endswith("AllowAllHeaderAuthenticationAdapter")
     assert TingSettings().auth.allow_anonymous_dev is True
     assert TingSettings().authorization.adapter.endswith("AllowAllAuthorizationAdapter")
 

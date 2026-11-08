@@ -98,30 +98,27 @@ defaults in the image or supported session configuration.
 | Node selector and tolerations | Kubernetes driver scheduling fields |
 | Runtime class and priority class | Kubernetes driver pod fields |
 
-Ravn flocks run as peer workload containers, which the Niuu OpenShell fork
-re-implements on OpenShell's sandbox runtime (v0.1.6 and later)
-(`driver_config.kubernetes.containers.workloads`). Each persona is one peer:
+Peer workload containers are re-implemented by the Niuu OpenShell fork on
+OpenShell's sandbox runtime (v0.1.6 and later)
+(`driver_config.kubernetes.containers.workloads`). Each peer is
 a regular container in the sandbox's workload Pod, from its own image, sharing
 the Pod's localhost, the Forge workspace/home PVC mounts, and an `emptyDir` at
 `/tmp/niuu-mesh` for Unix sockets. Local Mimir volumes are shared too; the
 sandbox policy must allow `/mimir/local` when that capability is configured. The
 driver makes each peer's entrypoint OpenShell's subordinate runtime
 (`openshell-sandbox peer`), which applies the sandbox's Landlock, seccomp and
-network mediation to the persona's command, so peers add no isolation boundary
-of their own. Set `volundr.ravnFlockImage` (service configuration:
-`ravn_flock_image`) to a pinned image containing Niuu and Python.
+network mediation to the peer's command, so peers add no isolation boundary
+of their own. The image comes from the launch that declares the peer.
 
-The contributor emits `openshell.workloads`, `openshell.volumes`, and
-`openshell.volumeMounts`; Völundr maps them to the Kubernetes driver
-configuration and checks them against the driver's rules before it creates the
+Völundr maps `openshell.workloads`, `openshell.volumes`, and
+`openshell.volumeMounts` to the Kubernetes driver configuration and checks them against the driver's rules before it creates the
 sandbox (`volundr.adapters.outbound.openshell_contract`):
 
 - A peer carries exactly `name`, `image`, `command`, `environment`, `resources`
   and `volume_mounts`. Anything else is rejected, including `readiness_port`,
   which earlier fork builds accepted.
 - Names are DNS-1123 labels of at most 40 characters, unique, and not `agent`,
-  `supervisor` or anything starting with `openshell`. A persona whose
-  `ravn-<persona>` name breaks this fails the launch: rename the persona.
+  `supervisor` or anything starting with `openshell`.
 - At most 16 peers per sandbox. `command` is explicit (peers never fall back to
   the image entrypoint), environment keys never start with `OPENSHELL_` or
   contain `=`, and resource quantities are strings.
@@ -138,43 +135,9 @@ The workload Pod runs with `restartPolicy: Never`. When a peer exits, OpenShell
 terminates the whole sandbox; when the primary exits, every peer is terminated.
 Peers receive provider credentials as they were at start; later provider updates
 do not reach them. Direct credential environment materialization is rejected for
-peer workloads; use the existing dynamic provider grants. Persona sources must be
-in the image or HTTP-backed; arbitrary ConfigMap/init-container passthrough is
-unsupported. The primary remains the only exec/SSH target. Peer stdout is
+peer workloads; use the existing dynamic provider grants. Arbitrary
+ConfigMap/init-container passthrough is unsupported. The primary remains the only exec/SSH target. Peer stdout is
 written to `/sandbox/workspace/.flock/logs/<persona>.log`.
-
-A sandbox has no projected service-account token, so a launch that enables
-`gateway.platform` for its personas (Ting does, with a `workload_token_file`
-for Kubernetes) is translated: Völundr drops the token file and exchange URL,
-adds the platform `base_url` and `a2a_trusted_origins` to the sandbox's
-platform grant, and each peer exports the grant's `NIUU_VOLUNDR_ACCESS_TOKEN`
-placeholder as `RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN`, as a resident's Ravn
-does. OpenShell swaps the placeholder for a workload-bound token on those hosts
-only. A peer stops at start, naming the gateway's `volundr_api_url`, when the
-sandbox has no platform grant.
-
-A flock with observability enabled (for example Ting's
-`dispatch.flock.observability`) exports from Skuld and every Ravn to the
-configured OTLP endpoints, so the sandbox policy must allow them. Völundr
-refuses to start the flock when it does not, naming the missing endpoint.
-Traces use OTLP/gRPC, which completes TLS itself: OpenShell's TLS termination
-negotiates only HTTP/1.1, so the trace endpoint needs `protocol: tcp` and
-`tls: skip`. Metrics and logs use OTLP/HTTP and can be inspected. List exact
-hosts when the collectors resolve to private addresses: a wildcard host cannot
-reach one without `allowed_ips`.
-
-```yaml
-flock-observability:
-  name: flock-observability
-  endpoints:
-    - {host: tempo.example.org, port: 443, protocol: tcp, tls: skip}
-    - {host: mimir.example.org, port: 443, protocol: rest, enforcement: enforce, access: full}
-    - {host: loki.example.org, port: 443, protocol: rest, enforcement: enforce, access: full}
-  binaries:
-    - {path: /opt/niuu/bin/python}
-    - {path: /opt/niuu/bin/python3}
-    - {path: /sandbox/.uv/python/**}
-```
 
 Deleting a session waits up to `resource_delete_timeout` (120s) for its sandbox
 to go, the DeleteSandbox call included: the Kubernetes driver answers only once
@@ -192,7 +155,7 @@ TOML):
 
 ```toml
 [openshell.drivers.kubernetes]
-# Required: Forge PVC mounts, scheduling fields and flock peers are driver config.
+# Required: Forge PVC mounts, scheduling fields and peers are driver config.
 allow_driver_config = true
 # One fork build for all three images: the fork publishes
 # ghcr.io/jve/openshell/{gateway,sandbox,supervisor}:<commit>.
@@ -224,9 +187,8 @@ in any split workspace release too).
   `kubectl label pvc -n <namespace> -l volundr/pvc-type=workspace openshell.ai/sandbox-attachable=true openshell.ai/sandbox-attachable-workspace=default`.
 - **Pod labels and annotations.** Völundr keeps its own `volundr.niuu.io/*`
   bookkeeping on the sandbox's gateway metadata, not the Pod. Only what
-  something reads from the Pod goes there: a flock resident's
-  `ravn.niuu.world/*` labels and annotations (Ravn's Kubernetes discovery) and
-  any pod-spec labels or annotations session contributors set. List those keys
+  something reads from the Pod goes there: pod-spec labels or annotations
+  session contributors set. List those keys
   in `allowed_pod_labels` / `allowed_pod_annotations`, or the gateway rejects
   the sandbox.
 - **No injected containers.** The fork's admission gate releases a sandbox Pod
@@ -297,11 +259,6 @@ adapter needs no request changes. Gateway configuration to review:
   Start the upgraded gateway on a fresh database, or remove those values first.
 - Label existing PVCs as described above before the first launch.
 
-Ravn peers read `SKULD__VOLUNDR_API_URL` through their typed runtime configuration
-to reach the same Codex credential broker as Skuld. OpenShell's provider proxy
-authenticates that service call; peers do not need a projected service-account
-token. A configured Codex broker without a platform URL fails explicitly.
-
 ## Validate a target
 
 Create a session through the normal Forge launch flow on the intended target.
@@ -309,20 +266,13 @@ Verify the sandbox becomes ready, Skuld is exposed, chat streams an actual model
 answer, and reconnect restores the expected history. Inspect logs under the
 correct session and owner.
 
-For a flock, verify Skuld and at least two Ravn personas run as peer containers
-in the same workload Pod and exchange mesh messages bidirectionally over localhost. Check
-shared workspace files and Unix sockets, authenticated provider/service calls,
-and denial of direct outbound connections. A required peer exiting must fail the
-group closed; stop/delete must clean up the whole sandbox. The shared localhost
-network may be private, but must retain OpenShell's network and process controls.
-
 Since v0.1.6 a Kubernetes sandbox is a workload Pod paired with a supervisor
 Pod. After an upgrade, verify that provider grants still resolve: the SPIRE
 `ClusterSPIFFEID` for sandbox supervisors must still issue
 `spiffe_subject_prefix` + the sandbox ID (`spiffe://niuu.world/openshell/sandbox/<id>`
 by default), which `exchange_credential_grant` looks up with `ListSandboxes`.
 Verify also that Völundr's TCP forward to the sandbox's `127.0.0.1:<port>`
-(long sandbox names, Hermes and Ravn-session residents) still reaches the
+(long sandbox names and Hermes residents) still reaches the
 service.
 
 Test each control advertised by a resident profile. A gateway metrics endpoint

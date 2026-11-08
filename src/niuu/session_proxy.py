@@ -340,7 +340,7 @@ _skuld_registry: SkuldPortRegistry | None = None
 # The broker replays the FULL conversation history as one frame on connect;
 # long sessions exceed the websockets client's 1 MiB default (which killed the
 # broker leg with 1009 "message too big" and trapped clients in a reconnect
-# loop). 64 MiB headroom, shared by both the /session and /ws/ravn proxy legs.
+# loop). 64 MiB headroom, used by the /session proxy leg.
 _WS_PROXY_MAX_FRAME_BYTES = 2**26
 
 
@@ -581,20 +581,13 @@ async def _proxy_ws(
     *,
     log_label: str,
     include_cookie: bool = False,
-    require_owner: bool = False,
 ) -> None:
     """Proxy a WebSocket to a session's Skuld broker (ownership-guarded).
 
-    Shared by the browser ``/session`` and the ravn ``/ws/ravn/{peer}`` legs:
-    identity guard → port lookup → bidirectional pump → M-8 self-heal on a
-    never-connected broker leg. The only per-route differences are the broker
-    path, whether the browser cookie is forwarded, the log label, and whether
-    the leg is owner-only. Identity forwarding follows the registry's
-    ``dev_identity`` policy.
-
-    ``require_owner`` is for legs "attach" alone must not open — the ravn
-    peer leg lets a resident join ANOTHER session's room with full authority
-    over this one (a session_participants grant is never enough for that).
+    Identity guard → port lookup → bidirectional pump → M-8 self-heal on a
+    never-connected broker leg. The per-route differences are the broker
+    path, whether the browser cookie is forwarded and the log label. Identity
+    forwarding follows the registry's ``dev_identity`` policy.
     """
     principal = await _proxy_principal(websocket)
     user_id, tenant_id, roles = (
@@ -616,9 +609,6 @@ async def _proxy_ws(
         # omitted header here would silently hand out owner to a
         # connection this proxy could not actually place a role on.
         room_role = "viewer"
-    if require_owner and room_role != "owner":
-        await websocket.close(code=1008, reason="This connection requires the owner room role")
-        return
 
     port = skuld_reg.get_port(session_id)
     target = None if port is not None else await skuld_reg.resolve_target(session_id)
@@ -774,31 +764,6 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
             "/session",
             log_label="Skuld WS proxy",
             include_cookie=True,
-        )
-
-    @app.websocket("/s/{session_id}/ws/ravn/{peer_id}")
-    async def skuld_ravn_ws_proxy(
-        websocket: WebSocket,
-        session_id: str,
-        peer_id: str,
-    ) -> None:
-        """Proxy a ravn participant WebSocket to the session's broker.
-
-        This is how a resident joins ANOTHER session's room through the
-        gateway (session_join): the browser chat endpoint is proxied at
-        ``/s/{id}/session``, and the sibling ravn endpoint must be proxied
-        too, or cross-session joins only work in strip-prefix k8s ingress
-        and fail in mini/gateway mode. Owner-only: this leg gives a peer
-        full authority over the session, which no session_participants
-        grant (however senior) is ever enough for.
-        """
-        await _proxy_ws(
-            websocket,
-            session_id,
-            skuld_reg,
-            f"/ws/ravn/{peer_id}",
-            log_label="Ravn WS proxy",
-            require_owner=True,
         )
 
     @app.api_route(

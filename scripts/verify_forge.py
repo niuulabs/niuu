@@ -94,7 +94,7 @@ def command_for(lane: str, report: Path, *, coverage: bool = False) -> list[str]
             "--dist",
             "loadfile",
             "-m",
-            "not integration and not broker and not kind_integration and not live_cli",
+            "not integration and not broker and not live_cli",
         ]
         if coverage:
             command += [

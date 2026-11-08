@@ -129,27 +129,12 @@ data:
       {{- if .Values.dispatch.dispatchPromptTemplate }}
       dispatch_prompt_template: {{ .Values.dispatch.dispatchPromptTemplate | quote }}
       {{- end }}
-      # No `| default`: 0 (no per-turn limit) must reach Ting as 0.
-      workflow_cli_turn_timeout_seconds: {{ .Values.dispatch.workflowCliTurnTimeoutSeconds }}
-      {{- if and .Values.dispatch.inProcess .Values.dispatch.inProcess.llmConfig }}
-      in_process:
-        llm_config: {{ .Values.dispatch.inProcess.llmConfig | toJson }}
-      {{- end }}
-      {{- if .Values.dispatch.flock }}
-      flock:
-        enabled: {{ .Values.dispatch.flock.enabled | default false }}
-        {{- if .Values.dispatch.flock.ravnConfig }}
-        ravn_config: {{ .Values.dispatch.flock.ravnConfig | toJson }}
-        {{- end }}
-        {{- if .Values.dispatch.flock.observability }}
-        observability: {{ .Values.dispatch.flock.observability | toJson }}
-        {{- end }}
-        {{- with .Values.dispatch.flock.mimirServiceAuth }}
-        mimir_service_auth:
+      {{- with .Values.dispatch.mimir.serviceAuth }}
+      mimir:
+        service_auth:
           adapter: {{ .adapter | quote }}
           kwargs:
             {{- toYaml .kwargs | nindent 12 }}
-        {{- end }}
       {{- end }}
 
     {{- if and .Values.planner (or .Values.planner.plannerSystemPrompt .Values.planner.finalizePrompt) }}

@@ -8,8 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
-from ravn.ports.persona import PersonaPort
+from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.ports.persona import PersonaPort
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import (

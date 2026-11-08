@@ -462,7 +462,6 @@ async def test_seed_configured_instances_accepts_ymir_style_in_cluster_seeds_by_
             visibility=InstanceVisibility.SYSTEM,
             enabled=True,
             is_default=True,
-            config={"ravn_base_url": "http://niuu-ravn.volundr.svc.cluster.local"},
         ),
     ]
 
@@ -709,10 +708,9 @@ class TestTransportSecurity:
         self,
     ) -> None:
         """A live cluster's Guild seed, like ymir's, registers
-        http://niuu-volundr.volundr.svc.cluster.local with a
-        ravn_base_url on the same in-cluster suffix — both must pass without
-        an explicit allow_plaintext, or every such deployment's Guild would
-        refuse to start."""
+        http://niuu-volundr.volundr.svc.cluster.local, which must pass
+        without an explicit allow_plaintext, or every such deployment's
+        Guild would refuse to start."""
         service = InstanceService(
             InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
         )
@@ -722,10 +720,8 @@ class TestTransportSecurity:
             name="Volundr",
             base_url="http://niuu-volundr.volundr.svc.cluster.local",
             visibility=InstanceVisibility.SYSTEM,
-            config={"ravn_base_url": "http://niuu-ravn.volundr.svc.cluster.local"},
         )
         assert instance.base_url == "http://niuu-volundr.volundr.svc.cluster.local"
-        assert instance.config["ravn_base_url"] == "http://niuu-ravn.volundr.svc.cluster.local"
 
     @pytest.mark.asyncio
     async def test_upsert_seed_instance_refuses_the_in_cluster_seed_once_emptied(self) -> None:
@@ -748,44 +744,6 @@ class TestTransportSecurity:
                 )
         finally:
             configure_trusted_plaintext_host_suffixes(_DEFAULT_TRUSTED_PLAINTEXT_HOST_SUFFIXES)
-
-    @pytest.mark.asyncio
-    async def test_create_instance_rejects_an_insecure_ravn_base_url_even_when_base_url_is_https(
-        self,
-    ) -> None:
-        """A split-service target's ravn_base_url is what a caller actually
-        dials for Ravn reads (see rest_ravn._ravn_base_url) — an insecure
-        one must be caught here just like an insecure base_url, even though
-        base_url itself is fine."""
-        service = InstanceService(
-            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
-        )
-        with pytest.raises(InstanceTransportSecurityError, match="allow_plaintext"):
-            await service.create_instance(
-                _principal(admin=True),
-                kind=InstanceKind.VOLUNDR,
-                slug="split",
-                name="Split",
-                base_url="https://volundr.example.com",
-                visibility=InstanceVisibility.SYSTEM,
-                config={"ravn_base_url": "http://ravn.example.com"},
-            )
-
-    @pytest.mark.asyncio
-    async def test_create_instance_allows_an_insecure_ravn_base_url_with_opt_in(self) -> None:
-        service = InstanceService(
-            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
-        )
-        instance = await service.create_instance(
-            _principal(admin=True),
-            kind=InstanceKind.VOLUNDR,
-            slug="split",
-            name="Split",
-            base_url="https://volundr.example.com",
-            visibility=InstanceVisibility.SYSTEM,
-            config={"ravn_base_url": "http://ravn.example.com", "allow_plaintext": True},
-        )
-        assert instance.config["ravn_base_url"] == "http://ravn.example.com"
 
     @pytest.mark.asyncio
     async def test_create_instance_rejects_a_non_boolean_allow_plaintext(self) -> None:

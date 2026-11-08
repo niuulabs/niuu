@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 import pytest
 
+from niuu.cap_telemetry import OutputTruncatedError
 from ravn.adapters.tool_build.gate_review import (
     build_llm_gate_reviewer,
     build_llm_question_answerer,
     parse_gate_verdict,
 )
-from ravn.domain.exceptions import OutputTruncatedError
-from ravn.domain.models import LLMResponse, StopReason, TokenUsage
 from ravn.ports.tool_build_backend import ToolBuildError, ToolBuildRequest
 
 
@@ -35,10 +36,20 @@ _GATE = {
 }
 
 
+END_TURN = "end_turn"
+MAX_TOKENS = "max_tokens"
+
+
+@dataclass
+class _Answer:
+    content: str
+    stop_reason: str
+    reasoning: str = ""
+    tool_calls: list = field(default_factory=list)
+
+
 class _ScriptedLLM:
-    def __init__(
-        self, contents: list[str], *, stop_reason: StopReason = StopReason.END_TURN
-    ) -> None:
+    def __init__(self, contents: list[str], *, stop_reason: str = END_TURN) -> None:
         self._contents = list(contents)
         self._stop_reason = stop_reason
         self.calls: list[dict] = []
@@ -52,12 +63,7 @@ class _ScriptedLLM:
                 "max_tokens": max_tokens,
             }
         )
-        return LLMResponse(
-            content=self._contents.pop(0),
-            tool_calls=[],
-            stop_reason=self._stop_reason,
-            usage=TokenUsage(input_tokens=0, output_tokens=0),
-        )
+        return _Answer(content=self._contents.pop(0), stop_reason=self._stop_reason)
 
 
 class TestParseGateVerdict:
@@ -155,7 +161,7 @@ class TestNoAnswerCap:
     """A reasoning model thinks before its verdict; a cap sized for the verdict cut that off."""
 
     async def test_review_sends_no_cap_and_refuses_a_cut_off_verdict(self) -> None:
-        llm = _ScriptedLLM(["APPROVE look"], stop_reason=StopReason.MAX_TOKENS)
+        llm = _ScriptedLLM(["APPROVE look"], stop_reason=MAX_TOKENS)
         reviewer = build_llm_gate_reviewer(llm=llm, model="m", valkyrie_id="v")
 
         with pytest.raises(OutputTruncatedError, match="tool_build.gate_review"):
@@ -163,7 +169,7 @@ class TestNoAnswerCap:
         assert llm.calls[0]["max_tokens"] is None
 
     async def test_answer_sends_no_cap_and_refuses_a_cut_off_answer(self) -> None:
-        llm = _ScriptedLLM(["All namespa"], stop_reason=StopReason.MAX_TOKENS)
+        llm = _ScriptedLLM(["All namespa"], stop_reason=MAX_TOKENS)
         answerer = build_llm_question_answerer(llm=llm, model="m", valkyrie_id="v")
 
         with pytest.raises(OutputTruncatedError, match="tool_build.question_answer"):

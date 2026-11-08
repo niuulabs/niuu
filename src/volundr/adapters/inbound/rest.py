@@ -106,7 +106,9 @@ from volundr.domain.models import (
     SessionStatus,
     TimelineEventType,
     UsageTokenCounts,
+    WorkloadTypeRemovedError,
     WorkspaceStatus,
+    require_workload_type_available,
 )
 from volundr.domain.ports import (
     DeviceTokenRepository,
@@ -745,7 +747,7 @@ class SessionCreate(BaseModel):
     workload_type: str = Field(
         default="session",
         max_length=100,
-        description="Workload type: 'session' (default) or 'ravn_flock' for runing parties",
+        description="Workload type: 'session' (default)",
     )
     workload_config: dict = Field(
         default_factory=dict,
@@ -769,6 +771,11 @@ class SessionCreate(BaseModel):
             f"{DESCRIPTION_MAX_CHARS} characters)."
         ),
     )
+
+    @field_validator("workload_type")
+    @classmethod
+    def _workload_type_still_exists(cls, value: str) -> str:
+        return require_workload_type_available(value)
 
     @field_validator("workload_config")
     @classmethod
@@ -2847,6 +2854,11 @@ def create_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             )
+        except WorkloadTypeRemovedError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(e),
+            )
         except SessionStateError as e:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -3319,6 +3331,11 @@ def create_router(
         except SessionCapacityError as e:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
+                detail=str(e),
+            )
+        except WorkloadTypeRemovedError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(e),
             )
         except SessionStateError as e:

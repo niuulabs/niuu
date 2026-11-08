@@ -51,15 +51,25 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def flock_peer_id(persona: str) -> str:
-    """Mesh peer id for a flock ravn running *persona*.
+#: Workload types Forge no longer launches, with what replaced them. A request
+#: for one is refused (``require_workload_type_available``), never treated as a
+#: plain session: a caller that asked for sidecar agents must not be handed a
+#: session that quietly has none.
+REMOVED_WORKLOAD_TYPES: dict[str, str] = {
+    "ravn_flock": "workflow steps will run on harness sessions (NIU-1198)",
+}
 
-    The single source of truth for this naming convention: the flock pod
-    builder and the Skuld relay's routing target must agree, or operator
-    chat and event relay silently target a participant that never
-    registered. Keep every derivation routed through here.
-    """
-    return f"flock-{persona}"
+
+class WorkloadTypeRemovedError(ValueError):
+    """A launch asked for a workload type that was removed from Forge."""
+
+
+def require_workload_type_available(workload_type: str) -> str:
+    """Return *workload_type*, or raise if Forge no longer launches it."""
+    replacement = REMOVED_WORKLOAD_TYPES.get(workload_type)
+    if replacement is None:
+        return workload_type
+    raise WorkloadTypeRemovedError(f"workload type {workload_type} was removed: {replacement}")
 
 
 class CleanupTarget(StrEnum):
@@ -1604,18 +1614,18 @@ class LaunchSpec(BaseModel):
 class ResidentBackend(StrEnum):
     """Infrastructure substrate that owns a resident runtime."""
 
+    # HELMRELEASE and DISCOVERED are kept as members, but no resident controller
+    # implements either now that the Ravn engine is gone: a profile naming one is
+    # not deployable on any target.
     HELMRELEASE = "helmrelease"
     OPENSHELL = "openshell"
     LOCAL = "local"
-    # Running outside the Forge (deployed from infrastructure); the Forge discovers
-    # it and drives its sessions, but never deploys, restarts or removes it.
     DISCOVERED = "discovered"
 
 
 class ResidentEngine(StrEnum):
     """Agent protocol hosted by a resident runtime."""
 
-    RAVN = "ravn"
     OPENCLAW = "openclaw"
     HERMES = "hermes"
 

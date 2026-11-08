@@ -6,8 +6,6 @@ from uuid import uuid4
 
 import pytest
 
-from ravn.config import Settings
-from ravn.workflow_runtime import _workflow_allowed_outcome_topics
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import workflow_document_revision
@@ -280,19 +278,6 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
             "outcome and update the ticket before re-commissioning."
         ),
         "position": {"x": 704, "y": 480},
-    }
-    delivery_settings = Settings.model_validate(
-        {
-            "workflow": {
-                "workflow_id": "tracker-delivery-flow",
-                "name": "Tracker Delivery Flow",
-                "graph": delivery_flow.graph,
-            }
-        }
-    )
-    assert _workflow_allowed_outcome_topics(delivery_settings, node_id="delivery-implement") == {
-        "code.changed",
-        "code.blocked",
     }
     delivery_resources = {
         node["label"]: node
@@ -726,7 +711,7 @@ async def test_bundled_memory_wells_provision_without_a_stored_integration(workf
 
     store = AsyncMock()
     contributor = SecretInjectionContributor(credential_store=store)
-    context = SessionContext(workload_type="ravn_flock", workload_config={"mimir": mimir})
+    context = SessionContext(workload_type="default", workload_config={"mimir": mimir})
 
     assert await contributor._build_mappings(context, "owner-without-a-volundr-integration") == []
     store.get.assert_not_called()

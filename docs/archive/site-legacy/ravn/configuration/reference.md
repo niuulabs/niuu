@@ -195,7 +195,7 @@ Semantic search via vector embeddings.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Enable embedding-based search. |
-| `adapter` | str | `"ravn.adapters.embedding.sentence_transformer.SentenceTransformerEmbeddingAdapter"` | Embedding adapter class. |
+| `adapter` | str | `"niuu.adapters.embedding.sentence_transformer.SentenceTransformerEmbeddingAdapter"` | Embedding adapter class. |
 | `kwargs` | dict | `{}` | Adapter constructor args. |
 | `secret_kwargs_env` | dict | `{}` | Env var names for secret args. |
 | `rrf_k` | int | `60` | Reciprocal Rank Fusion constant. |

@@ -220,9 +220,8 @@ class TestSkuldPreviewEnabled:
         assert all(type(port) is int for port in excluded)
         assert len(excluded) == len(set(excluded))
         assert {5432, 6000} <= set(excluded)
-        # nginx/service, broker, Envoy, its admin and authz listeners, terminal, mesh, shim.
-        assert {8080, 8081, 8444, 9901, 9000, 7681, 7480, 7481, 7482, 7483} <= set(excluded)
-        assert {7580, 7581, 7781, 18790} <= set(excluded)
+        # nginx/service, broker, Envoy, its admin and authz listeners, terminal, mesh.
+        assert {8080, 8081, 8444, 9901, 9000, 7681, 7480, 7481, 7580} <= set(excluded)
 
     def test_changed_chart_ports_follow_into_the_exclusions(self, tmp_path):
         docs = skuld(

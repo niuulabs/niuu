@@ -65,14 +65,6 @@ test.describe('Ting legacy settings redirects', () => {
         },
       ],
       [
-        '/api/v1/ravn/settings',
-        {
-          title: 'Ravn',
-          scope: 'service',
-          sections: [{ id: 'runtime', label: 'Runtime', fields: [] }],
-        },
-      ],
-      [
         '/api/v1/observatory/settings',
         {
           title: 'Observatory',

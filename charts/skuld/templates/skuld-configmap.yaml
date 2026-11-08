@@ -1,4 +1,3 @@
-{{- if not (include "skuld.roomGatewayEnabled" .) }}
 {{- if .Values.wsAuth.enforce_ownership }}
 {{- if not (or (and .Values.envoy.enabled .Values.envoy.jwt.enabled) (and .Values.gateway.enabled .Values.gateway.jwt.enabled)) }}
 {{- fail "WebSocket ownership enforcement requires a JWT-verifying Envoy sidecar or Gateway" }}
@@ -120,12 +119,8 @@ data:
     {{- end }}
     max_presented_file_bytes: {{ .Values.broker.maxPresentedFileBytes | default 52428800 }}
 
-    {{- if and .Values.volundr.apiUrl (not (include "skuld.residentEnabled" .)) }}
+    {{- if .Values.volundr.apiUrl }}
     volundr_api_url: {{ .Values.volundr.apiUrl | quote }}
-    {{- end }}
-    {{- if include "skuld.residentEnabled" . }}
-    volundr_api_url: {{ .Values.volundr.apiUrl | quote }}
-    usage_report_path: {{ printf "/api/v1/forge/resident-runtimes/%s/usage" (include "skuld.sessionId" .) | quote }}
     {{- end }}
     service_user_id: {{ .Values.volundr.serviceUserId | default "skuld-broker" | quote }}
     service_tenant_id: {{ .Values.volundr.serviceTenantId | default "default" | quote }}
@@ -174,52 +169,3 @@ data:
     secret_requests:
       poll_interval_s: {{ .Values.secretRequests.pollIntervalS | toJson }}
       wait_max_s: {{ .Values.secretRequests.waitMaxS | toJson }}
-    {{- if and (include "skuld.residentEnabled" .) .Values.resident.platform.enabled }}
-
-    # Workload identity token exchange (config-first; replaces the legacy
-    # NIUU_WORKLOAD_IDENTITY_* env vars on the broker container).
-    workload_identity:
-      token_file: "/var/run/secrets/niuu-workload/token"
-      exchange_url: {{ include "skuld.residentWorkloadExchangeUrl" . | quote }}
-    {{- end }}
-    {{- if include "skuld.residentEnabled" . }}
-    {{- $persona := include "skuld.residentPersona" . }}
-    {{- $routeId := include "skuld.routeId" . }}
-
-    # Resident: room mode — untargeted browser messages route to the resident.
-    room:
-      enabled: true
-      environment_id: {{ .Values.resident.environmentId | quote }}
-      presence_sweep_interval_s: 0
-      delivery_dedupe_max_entries: {{ .Values.resident.roomDeliveryDedupeMaxEntries | default 4096 }}
-      default_target_peer_id: {{ .Values.resident.flock.peerId | default (printf "flock-%s" $persona) | quote }}
-
-    # Resident: in-pod nng mesh between the broker and the ravn daemon.
-    mesh:
-      enabled: true
-      transport: "nng"
-      peer_id: {{ printf "skuld-%s" $routeId | quote }}
-      nng:
-        pub_sub_address: "tcp://0.0.0.0:7480"
-        req_rep_address: "tcp://0.0.0.0:7481"
-      adapters:
-        - adapter: static
-          poll_interval_s: 0
-          peers:
-            - peer_id: {{ printf "skuld-%s" $routeId | quote }}
-              persona: "Skuld"
-              pub_address: "tcp://127.0.0.1:7480"
-              rep_address: "tcp://127.0.0.1:7481"
-              handshake_port: 7580
-              consumes_event_types: []
-              emits_event_types:
-                - code.changed
-            - peer_id: {{ .Values.resident.flock.peerId | default (printf "flock-%s" $persona) | quote }}
-              persona: {{ $persona | quote }}
-              pub_address: "tcp://127.0.0.1:7482"
-              rep_address: "tcp://127.0.0.1:7483"
-              handshake_port: 7581
-              consumes_event_types: []
-              emits_event_types: []
-    {{- end }}
-{{- end }}

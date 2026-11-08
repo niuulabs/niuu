@@ -62,16 +62,3 @@ class TestMeshIdentity:
         assert identity.consumes_event_types == ["code.changed"]
         assert identity.rep_address == "tcp://127.0.0.1:6001"
         assert identity.pub_address == "tcp://127.0.0.1:6000"
-
-    def test_has_same_fields_as_ravn_identity(self):
-        """MeshIdentity must have all fields that RavnIdentity has so it can
-        substitute for it in discovery adapters (duck typing)."""
-        import dataclasses
-
-        from ravn.domain.models import RavnIdentity
-
-        mesh_fields = {f.name for f in dataclasses.fields(MeshIdentity)}
-        ravn_fields = {f.name for f in dataclasses.fields(RavnIdentity)}
-
-        missing = ravn_fields - mesh_fields
-        assert not missing, f"MeshIdentity is missing fields: {missing}"

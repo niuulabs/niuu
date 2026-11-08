@@ -60,7 +60,6 @@ class InstanceKind(StrEnum):
     TING = "ting"
     MIMIR = "mimir"
     BIFROST = "bifrost"
-    RAVN = "ravn"
     OBSERVATORY = "observatory"
     GENERIC = "generic"
 

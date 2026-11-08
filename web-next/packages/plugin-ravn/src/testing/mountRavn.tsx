@@ -40,11 +40,6 @@ export function ravnServices() {
       deletePersona: vi.fn().mockResolvedValue(undefined),
       forkPersona: vi.fn(),
     },
-    'ravn.triggers': {
-      listTriggers: vi.fn().mockResolvedValue([]),
-      createTrigger: vi.fn(),
-      deleteTrigger: vi.fn(),
-    },
     bifrost: {
       listModels: vi.fn().mockResolvedValue([]),
     },

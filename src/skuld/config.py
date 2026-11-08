@@ -90,10 +90,10 @@ class NngConfig(BaseModel):
 
 
 class MeshConfig(BaseModel):
-    """Mesh peer configuration for flock participation.
+    """Mesh peer configuration.
 
     When enabled, Skuld registers as a mesh peer and subscribes to task
-    topics. Other ravens can delegate coding work via the standard mesh
+    topics. Other peers can delegate coding work via the standard mesh
     pub/sub protocol. Disabled by default so solo sessions are unaffected.
     """
 
@@ -117,32 +117,6 @@ class MeshConfig(BaseModel):
     consumes_event_types: list[str] = Field(
         default_factory=lambda: ["code.requested"],
     )
-    flock_broker: bool = Field(
-        default=False,
-        description=(
-            "Skuld brokers a Ravn flock instead of working in it. Its CLI hands work "
-            "to the flock's Ravns over the mesh (the Forge MCP flock tools) and reports "
-            "only the outcomes they publish; Skuld never republishes its own turns as "
-            "a peer outcome, consumes no peer events, and the CLI runs without its "
-            "native sub-agents, which would otherwise stand in for the flock."
-        ),
-    )
-    flock_outcome_history: int = Field(
-        default=200,
-        ge=1,
-        description="Flock member outcomes and failures a broker keeps for its flock tools.",
-    )
-
-    @model_validator(mode="after")
-    def _broker_consumes_nothing(self) -> "MeshConfig":
-        if self.flock_broker and self.consumes_event_types:
-            raise ValueError(
-                "mesh.flock_broker is set but mesh.consumes_event_types is "
-                f"{self.consumes_event_types}: a broker that also subscribes to peer "
-                "events would take the flock's own work. Set consumes_event_types to [] "
-                "or unset flock_broker"
-            )
-        return self
 
 
 class WorkflowTriggerConfig(BaseModel):
@@ -268,7 +242,7 @@ class RoomConfig(BaseModel):
             "Declare that this broker hosts a room and owns no CLI agent of "
             "its own. The broker then never starts its own CLI transport, and "
             "untargeted browser messages go to the room's sole ravn when "
-            "default_target_peer_id is unset. Set by 'ravn room create'. "
+            "default_target_peer_id is unset. Set by the room's own configuration. "
             "Without it a room broker lazy-starts a Claude/Codex process that "
             "competes with the room's ravns for the same chat frames."
         ),
@@ -851,24 +825,6 @@ class ForgeMcpConfig(BaseModel):
         default=True,
         description="Materialize the forge-notify skill for engines with per-session skills.",
     )
-    flock_outcome_wait_max_s: float = Field(
-        default=45.0,
-        gt=0,
-        description=(
-            "Longest one flock_outcomes call waits for a flock member's outcome. Must be "
-            "shorter than broker_request_timeout_s; the broker polls again for longer work."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _flock_wait_fits_broker_call(self) -> "ForgeMcpConfig":
-        if self.flock_outcome_wait_max_s >= self.broker_request_timeout_s:
-            raise ValueError(
-                f"forge_mcp.flock_outcome_wait_max_s ({self.flock_outcome_wait_max_s}) must be "
-                f"shorter than forge_mcp.broker_request_timeout_s "
-                f"({self.broker_request_timeout_s}), or every long wait is cut off mid-call"
-            )
-        return self
 
     @field_validator("grants", mode="before")
     @classmethod
@@ -1422,28 +1378,6 @@ class SkuldSettings(BaseSettings):
         elif self.transport == "tmux-interactive":
             self.transport_adapter = "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
 
-        return self
-
-    @model_validator(mode="after")
-    def _flock_broker_can_reach_its_flock(self) -> "SkuldSettings":
-        """A broker the flock tools cannot serve would do the flock's work itself."""
-        if not self.mesh.flock_broker:
-            return self
-        missing = [
-            name
-            for name, enabled in (
-                ("mesh.enabled", self.mesh.enabled),
-                ("room.enabled", self.room.enabled),
-                ("forge_mcp.enabled", self.forge_mcp.enabled),
-            )
-            if not enabled
-        ]
-        if missing:
-            raise ValueError(
-                f"mesh.flock_broker is set but {', '.join(missing)} is off: the broker reaches "
-                "its flock through the room's mesh route via the forge MCP flock tools. "
-                "Enable them, or unset mesh.flock_broker"
-            )
         return self
 
     @model_validator(mode="after")

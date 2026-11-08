@@ -9,7 +9,6 @@
   "mimir" (dict "mode" "http" "baseUrl" "/api/v1/mimir")
   "observatory" (dict "mode" "http" "baseUrl" "/api/v1/observatory")
   "bifrost" (dict "mode" "http" "baseUrl" "/api/v1/bifrost")
-  "ravn" (dict "mode" "http" "baseUrl" "/api/v1/ravn")
   "ravn.personas" (dict "mode" "http" "baseUrl" "/api/v1/ravn/personas")
   "forge" (dict "mode" "http" "baseUrl" "/api/v1/forge")
   "forge.pty" (dict "mode" "ws" "wsUrl" "/s/{sessionId}/session")

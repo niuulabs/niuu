@@ -66,42 +66,9 @@ describe('PersonaLibrary — sheet', () => {
     expect(flow).toHaveTextContent('fan-in: all must pass → review.verdict');
     expect(flow).toHaveTextContent('verdict: string');
     expect(within(sheet).getByTitle('Forbidden')).toHaveTextContent('cascade');
-    expect(
-      await within(sheet).findByText('Nothing starts this persona on a schedule or hook.'),
-    ).toBeInTheDocument();
     expect(within(sheet).getByTestId('persona-prompt')).toHaveAttribute('data-open', 'false');
     fireEvent.click(within(sheet).getByRole('button', { name: 'Expand' }));
     expect(within(sheet).getByTestId('persona-prompt')).toHaveAttribute('data-open', 'true');
-  });
-
-  it('lists its triggers or says why it cannot', async () => {
-    const services = ravnServices();
-    services['ravn.triggers'].listTriggers = vi.fn().mockResolvedValue([
-      {
-        id: 't1',
-        kind: 'cron',
-        personaName: 'reviewer',
-        spec: '0 3 * * *',
-        enabled: false,
-        createdAt: '2026-09-01T00:00:00Z',
-      },
-    ]);
-    mountRavn('/ravn/personas?persona=reviewer', services);
-    expect(await screen.findByText('0 3 * * *')).toBeInTheDocument();
-    expect(screen.getByText('cron · paused')).toBeInTheDocument();
-  });
-
-  it('says triggers are unavailable in the server’s words', async () => {
-    const services = ravnServices();
-    services['ravn.triggers'].listTriggers = vi
-      .fn()
-      .mockRejectedValue(
-        Object.assign(new Error('x'), { detail: 'Ravn trigger persistence is unavailable' }),
-      );
-    mountRavn('/ravn/personas?persona=reviewer', services);
-    expect(await screen.findByTestId('persona-triggers-unavailable')).toHaveTextContent(
-      'Ravn trigger persistence is unavailable',
-    );
   });
 
   it('shows the YAML and the editor', async () => {

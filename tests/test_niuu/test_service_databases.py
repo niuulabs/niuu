@@ -34,7 +34,7 @@ def test_local_service_database_names_are_distinct(monkeypatch) -> None:
 
     names = local_service_database_names()
 
-    assert names == ("volundr", "shared_local", "ting", "bifrost", "ravn", "mimir")
+    assert names == ("volundr", "shared_local", "ting", "bifrost", "mimir")
 
 
 def test_bootstrap_sql_is_defined_for_split_services() -> None:

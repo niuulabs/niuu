@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from ting.domain.exceptions import WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
 from ting.domain.models import (
     PR_STATE_MERGED,
     PRStatus,
@@ -412,7 +413,7 @@ async def test_a_reconnect_catches_up_on_finished_runs() -> None:
     advancer.advance_finished.assert_awaited_once_with(OWNER)
 
 
-def test_a_failed_automatic_start_shows_blocked_and_can_be_retried() -> None:
+def test_a_failed_automatic_start_shows_blocked_and_a_retry_is_refused() -> None:
     saga = _planned_saga()
     finished = _run_of(saga, PLANNING, WorkflowCampaignStatus.COMPLETED)
     coordinators = _Coordinators(
@@ -439,9 +440,11 @@ def test_a_failed_automatic_start_shows_blocked_and_can_be_retried() -> None:
     assert task["board"]["reason"] == "Reviewed Delivery Flow could not start: no session"
     assert task["coordinator"]["startError"] == task["board"]["reason"]
 
-    assert _start(client, saga).status_code == 200
-    adapter.send_directed_room_message.assert_awaited_once()
-    assert coordinators.rows[(saga.id, "issue-1")].start_error is None
+    retried = _start(client, saga)
+    assert retried.status_code == 501
+    assert retried.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+    adapter.send_directed_room_message.assert_not_awaited()
+    assert coordinators.rows[(saga.id, "issue-1")].start_error == task["board"]["reason"]
 
 
 def test_a_blocked_stage_shows_as_blocked_with_its_reason() -> None:

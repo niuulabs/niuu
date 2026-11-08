@@ -18,7 +18,7 @@ describe('mimirRegistry', () => {
       path: '/wiki/shared',
       categories: ['docs', 'prod'],
       authRef: 'mimir-prod',
-      adapter: 'ravn.adapters.mimir.gbrain.GBrainMimirAdapter',
+      adapter: 'mimir.adapters.gbrain.GBrainMimirAdapter',
       kwargs: { mcp_url: 'https://brain.test/mcp' },
       secretKwargsEnv: { api_token: 'BRAIN_TOKEN' },
       defaultReadPriority: 7,

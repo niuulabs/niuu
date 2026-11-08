@@ -8,11 +8,16 @@ max_concurrent_runs limit.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
 
+from ting.domain.exceptions import (
+    WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE,
+    WorkflowStepsHaveNoRunnerError,
+)
 from ting.domain.models import (
     DispatcherState,
     PhaseStatus,
@@ -213,6 +218,28 @@ class TestTryAutoContinue:
         assert len(volundr.spawned) > 0
 
     @pytest.mark.asyncio
+    async def test_a_saga_running_a_workflow_is_refused_not_skipped(self):
+        """A workflow saga must raise: an empty list would read as "nothing to do"."""
+        saga_repo = MockSagaRepo()
+        saga_repo.sagas.append(
+            replace(
+                _make_saga(),
+                workflow_id=uuid4(),
+                workflow_snapshot={
+                    "name": "Reviewed Delivery",
+                    "graph": {"nodes": [], "edges": []},
+                },
+            )
+        )
+        svc, volundr, _ = _build_service(saga_repo=saga_repo)
+
+        with pytest.raises(WorkflowStepsHaveNoRunnerError) as raised:
+            await svc.try_auto_continue(OWNER, SAGA_TRACKER_ID)
+
+        assert str(raised.value) == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
+        assert volundr.spawned == []
+
+    @pytest.mark.asyncio
     async def test_noop_when_auto_continue_disabled(self):
         """auto_continue=False should return empty list without dispatching."""
         repo = ConfigurableDispatcherRepo(auto_continue=False)
@@ -316,6 +343,26 @@ class TestTryAutoContinue:
 
 class TestReviewEngineAutoContinue:
     """Verify ReviewEngine calls try_auto_continue after merge and phase unlock."""
+
+    @pytest.mark.asyncio
+    async def test_a_refused_auto_continue_is_logged_at_error_naming_the_cause(self, caplog):
+        """The event-driven path has no caller to raise to, so it must not log it as routine."""
+        from ting.domain.services.review_engine import ReviewEngine
+
+        class RefusingDispatchService:
+            async def try_auto_continue(self, owner_id: str, saga_tracker_id: str):
+                raise WorkflowStepsHaveNoRunnerError()
+
+        engine = ReviewEngine.__new__(ReviewEngine)
+        engine._dispatch_service = RefusingDispatchService()
+
+        with caplog.at_level("WARNING", logger="ting.domain.services.review_engine"):
+            await engine._try_auto_continue("owner-1234567890", "proj-1")
+
+        refusals = [r for r in caplog.records if "workflow steps have no runner" in r.getMessage()]
+        assert len(refusals) == 1
+        assert refusals[0].levelname == "ERROR"
+        assert "proj-1" in refusals[0].getMessage()
 
     @pytest.mark.asyncio
     async def test_auto_approve_triggers_auto_continue(self):

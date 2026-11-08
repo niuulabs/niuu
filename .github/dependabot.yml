@@ -80,7 +80,6 @@ updates:
       - /containers/openshell
       - /containers/gbrain
       - /containers/vscode-reh
-      - /containers/agent
       - /containers/skuld
       - /containers/devrunner
       - /containers/niuu-web

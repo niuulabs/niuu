@@ -1,4 +1,4 @@
-# Reusable: Python lint + unit-test matrix (forge + extracted services, ting, ravn).
+# Reusable: Python lint + unit-test matrix (forge + extracted services, ting, the learned-tool runner).
 # Called by ci.yaml and dev.yaml. Coverage uploaded to Codecov per package.
 name: Reusable — Python Lint + Test
 
@@ -67,9 +67,7 @@ jobs:
             cov: "--cov=src/ting"
           - name: Ravn
             flag: backend-ravn
-            # src/ravn/tui/ excluded via [tool.coverage.run] omit in pyproject.toml —
-            # Textual widgets need a real terminal and cannot run under plain pytest.
-            paths: "tests/ravn tests/test_ravn"
+            paths: "tests/test_ravn"
             cov: "--cov=src/ravn"
           - name: Bifrost
             flag: backend-bifrost
@@ -90,7 +88,7 @@ jobs:
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
 
-      # Ravn runs a learned tool that declares no network reach inside its own
+      # The learned-tool runner runs a tool that declares no network reach inside its own
       # user + network namespace, and refuses it where the host cannot create
       # one. ubuntu-24.04 blocks unprivileged user namespaces through AppArmor;
       # lift that so the boundary is exercised for real, not refused.
@@ -107,7 +105,7 @@ jobs:
           uv run pytest ${{ matrix.pkg.paths }} -v --tb=short \
             -n auto --dist loadfile \
             --override-ini="addopts=" \
-            -m 'not integration and not broker and not kind_integration and not live_cli' \
+            -m 'not integration and not broker and not live_cli' \
             ${{ matrix.pkg.cov }} \
             --cov-report=term-missing \
             --cov-report=xml \
@@ -170,7 +168,6 @@ jobs:
           uv run pytest tests/ \
             --ignore=tests/test_ting \
             --ignore=tests/test_ravn \
-            --ignore=tests/ravn \
             --ignore=tests/test_bifrost \
             --ignore=tests/test_sleipnir \
             --ignore=tests/integration \
@@ -178,10 +175,10 @@ jobs:
             -n auto --dist loadfile \
             --shard=${{ matrix.shard }}/4 \
             --override-ini="addopts=" \
-            -m 'not integration and not broker and not kind_integration and not live_cli' \
+            -m 'not integration and not broker and not live_cli' \
             --cov=src/audit --cov=src/volundr --cov=src/cli --cov=src/credentials \
             --cov=src/features --cov=src/identity --cov=src/integrations --cov=src/niuu \
-            --cov=src/tracker --cov=src/skuld --cov=src/mimir \
+            --cov=src/tracker --cov=src/skuld --cov=src/mimir --cov=src/personas \
             --cov-report= 2>&1 | tee "$output_file"
           status=${PIPESTATUS[0]}
           set -e

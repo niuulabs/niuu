@@ -1,6 +1,6 @@
 """Shared outbound transport for calls this process makes to another Guild instance.
 
-Every Guild remote call — Forge/Ravn aggregate REST requests, the Forge session
+Every Guild remote call — Forge aggregate REST requests, the Forge session
 SSE stream, the reachability probe, both WebSocket proxy legs (resident/session
 chat and Forge replay), and the Observatory/agent-directory HTTP clients —
 resolves its transport trust through this one module: it is the single choke
@@ -11,10 +11,8 @@ instead of either being reimplemented (and possibly forgotten) at each call
 site or trusted only once at registration time.
 
 Callers must always pass the *dial_url* they are actually about to connect
-to — an instance's ``base_url`` for most calls, but a split-service target's
-``config.ravn_base_url`` for the Ravn aggregate/owner-probe legs (see
-``rest_ravn._ravn_base_url``). Passing the wrong URL here would check and pin
-the wrong host's certificate.
+to. Passing the wrong URL here would check and pin the wrong host's
+certificate.
 
 Embedded/in-process transports never reach this module: callers already
 branch on ``config.transport == "embedded"`` before calling in (an embedded
@@ -133,7 +131,7 @@ class GuildTransportUnreachableError(GuildTransportError):
 
     Distinct from ``GuildTLSPinMismatchError``: this is "we could not check",
     not "we checked and it does not match". A caller iterating candidate
-    instances (e.g. the Ravn owner-probe loop) should treat this exactly like
+    instances (e.g. an owner-probe loop) should treat this exactly like
     an ordinary ``httpx.HTTPError`` — skip to the next candidate — while a
     genuine mismatch is a hard, unconditional refusal.
     """
@@ -150,10 +148,9 @@ def _require_call_time_transport_security(dial_url: str, instance: GuildTranspor
 
     The write-time check in ``services.instances`` is a fail-fast convenience
     only — this is the real enforcement boundary. A row written before that
-    validation existed (or before ``ravn_base_url`` was added, or that was
-    only ever touched by an update that didn't change its transport fields)
-    is still stopped here, on every call, never silently sent a bearer token
-    over plaintext.
+    validation existed (or that was only ever touched by an update that didn't
+    change its transport fields) is still stopped here, on every call, never
+    silently sent a bearer token over plaintext.
     """
     try:
         allow_plaintext = normalize_allow_plaintext(instance.config)

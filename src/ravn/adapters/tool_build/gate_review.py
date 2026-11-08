@@ -12,13 +12,33 @@ rather than being silently auto-approved.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Any
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any, Protocol
 
-from ravn.cap_telemetry import require_complete
+from niuu.cap_telemetry import ModelAnswer, require_complete
 from ravn.ports.tool_build_backend import ToolBuildError, ToolBuildRequest
 
 logger = logging.getLogger(__name__)
+
+
+class ReviewModel(Protocol):
+    """The model call a reviewer or answerer makes: one prompt, one complete answer.
+
+    ``max_tokens=None`` sends no cap, so the provider's own limit applies. The
+    answer carries the fields :func:`niuu.cap_telemetry.require_complete` reads,
+    so a cut-off answer raises instead of being parsed.
+    """
+
+    async def generate(
+        self,
+        messages: Sequence[dict[str, Any]],
+        *,
+        tools: Sequence[Any],
+        system: str,
+        model: str,
+        max_tokens: int | None,
+    ) -> ModelAnswer: ...
+
 
 #: (request, gate_context) -> (decision, notes); decision is
 #: "approve" | "request_changes".
@@ -62,7 +82,7 @@ REQUEST_CHANGES <required changes>."""
 
 def build_llm_gate_reviewer(
     *,
-    llm: Any,
+    llm: ReviewModel,
     model: str,
     valkyrie_id: str,
 ) -> GateReviewer:
@@ -151,7 +171,7 @@ Answer the question so they can continue. Be specific and decisive."""
 
 def build_llm_question_answerer(
     *,
-    llm: Any,
+    llm: ReviewModel,
     model: str,
     valkyrie_id: str,
 ) -> QuestionAnswerer:

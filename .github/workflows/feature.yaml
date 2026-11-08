@@ -126,7 +126,7 @@ jobs:
       attestations: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["agent","openshell","devrunner","niuu-web"]'
+      containers: '["openshell","devrunner","niuu-web"]'
       platforms: '["amd64","arm64"]'
       tag-prefix: ${{ needs.meta.outputs.tag }}
       manifest-tags: "${{ needs.meta.outputs.tag }} ${{ needs.meta.outputs.tag }}-${{ needs.meta.outputs.short_sha }}"
@@ -162,13 +162,13 @@ jobs:
           VERSION="${{ needs.meta.outputs.chart_version }}"
           TAG="${{ needs.meta.outputs.tag }}"
 
-          for CHART in agent bifrost ravn skuld volundr ting niuu-shared niuu; do
+          for CHART in bifrost skuld volundr ting niuu-shared niuu; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
 
           # Point image tags to the feature tag so the chart deploys feature images
-          for CHART in agent bifrost ravn skuld volundr ting; do
+          for CHART in bifrost skuld volundr ting; do
             if [ -f "charts/${CHART}/values.yaml" ]; then
               sed -i "s/^  tag:.*/  tag: \"${TAG}\"/" "charts/${CHART}/values.yaml" || true
             fi
@@ -177,8 +177,6 @@ jobs:
       - name: Package Helm charts
         run: |
           helm package charts/bifrost -d .helm-packages/
-          helm package charts/agent -d .helm-packages/
-          helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
           helm package charts/ting -d .helm-packages/
@@ -196,9 +194,7 @@ jobs:
 
       - name: Push Helm charts to OCI registry
         run: |
-          helm push .helm-packages/agent-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/bifrost-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/volundr-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/ting-*.tgz ${{ env.CHART_REPO }}

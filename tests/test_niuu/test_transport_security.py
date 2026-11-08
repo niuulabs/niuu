@@ -90,15 +90,6 @@ class TestInsecureTransportReasonWithTheDefaultSuffixes:
         )
         assert reason is None
 
-    def test_an_in_cluster_ravn_base_url_is_allowed_the_same_way(self) -> None:
-        """The exemption applies to every dial_url configured_dial_urls()
-        would hand back — ravn_base_url included — not only base_url."""
-        reason = insecure_transport_reason(
-            "http://niuu-ravn.volundr.svc.cluster.local",
-            allow_plaintext=False,
-        )
-        assert reason is None
-
     def test_the_short_svc_form_is_also_allowed(self) -> None:
         reason = insecure_transport_reason(
             "http://niuu-observatory.volundr.svc",

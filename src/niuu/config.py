@@ -278,13 +278,6 @@ def _default_instance_catalog() -> list[InstanceCatalogEntryConfig]:
             detail="dispatch ravens",
         ),
         InstanceCatalogEntryConfig(
-            kind=InstanceKind.RAVN,
-            label="Ravn",
-            rune="ᚱ",
-            summary="agent runtime",
-            detail="runs ravens",
-        ),
-        InstanceCatalogEntryConfig(
             kind=InstanceKind.OBSERVATORY,
             label="Observatory",
             rune="◉",
@@ -606,7 +599,7 @@ class HostIdentityConfig(BaseModel):
 
     Used by the session proxy (``niuu.session_proxy``) to resolve a verified
     caller identity for WS/HTTP attach — a header-only slot (no user
-    provisioning), the same shape as Ravn's own ``RAVN_API_AUTH``. Set from
+    provisioning), the same shape as Ting's own ``AUTH`` slot. Set from
     ``host_auth.mode`` (``cli.config.AuthConfig``) via the ``HOST_IDENTITY__*``
     env vars — a distinct name from ``IDENTITY__*`` deliberately, so this
     slot can never collide with Völundr/Identity's own ``IDENTITY__ADAPTER``

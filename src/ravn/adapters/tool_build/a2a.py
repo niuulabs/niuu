@@ -16,6 +16,11 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
+from niuu.adapters.outbound.http_json_client import (
+    AsyncJsonHttpClient,
+    client_from_workload_identity,
+)
+from niuu.domain.a2a_status import a2a_status_text
 from niuu.observability import get_observability
 from ravn.adapters.tool_build._contract import (
     CANONICAL_ARTIFACT_FILENAME,
@@ -25,8 +30,6 @@ from ravn.adapters.tool_build._contract import (
     parse_tool_build_response,
 )
 from ravn.adapters.tool_build.gate_review import GateReviewer, QuestionAnswerer
-from ravn.adapters.tool_build.http import AsyncJsonHttpClient, client_from_workload_identity
-from ravn.domain.a2a_status import a2a_status_text
 from ravn.domain.capability_catalog import (
     WorkflowCapability,
     WorkflowSelector,

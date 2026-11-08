@@ -15,12 +15,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
+from mimir.adapters.composite import CompositeMimirAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
+from mimir.domain import MimirMount, WriteRouting
+from mimir.exceptions import MimirUnavailableError
 from mimir.router import MimirRouter
 from niuu.ports.mimir import MimirPort
-from ravn.adapters.mimir.composite import CompositeMimirAdapter
-from ravn.domain.exceptions import MimirUnavailableError
-from ravn.domain.mimir import MimirMount, WriteRouting
 
 _HEADERS = {
     "x-auth-user-id": "test-user",

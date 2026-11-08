@@ -22,7 +22,7 @@ from niuu.domain.delivery import (
     WorkspaceAllocation,
 )
 from niuu.domain.models import Principal
-from ravn.domain.persona_document import PortablePersonaDefinition
+from personas.domain.persona_document import PortablePersonaDefinition
 from ting.domain.models import PRStatus
 
 

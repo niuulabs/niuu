@@ -356,53 +356,53 @@ def ensure_codex_tool_shims(
     _install_request_secret_shim(bin_dir)
 
     commands: dict[str, tuple[str, str, str]] = {
-        "tracker_issue": ("ravn.cli.tracker_bridge", "", "Search, read and update tracker issues."),
+        "tracker_issue": ("tracker.bridge", "", "Search, read and update tracker issues."),
     }
     if mimir_configured:
         commands.update(
             {
                 "mimir_ingest": (
-                    "ravn.cli.mimir_bridge",
+                    "mimir.bridge",
                     "ingest",
                     "Ingest a raw document into Mimir (assigns a source_id).",
                 ),
                 "mimir_search": (
-                    "ravn.cli.mimir_bridge",
+                    "mimir.bridge",
                     "search",
                     "Full-text search across Mimir wiki pages.",
                 ),
                 "mimir_read": (
-                    "ravn.cli.mimir_bridge",
+                    "mimir.bridge",
                     "read",
                     "Read a Mimir wiki page by path.",
                 ),
                 "mimir_read_source": (
-                    "ravn.cli.mimir_bridge",
+                    "mimir.bridge",
                     "read-source",
                     "Read a raw ingested Mimir source by source_id.",
                 ),
                 "mimir_write": (
-                    "ravn.cli.mimir_bridge",
+                    "mimir.bridge",
                     "write",
                     "Create or update a Mimir wiki page.",
                 ),
                 "mimir_publish_artifact": (
-                    "ravn.cli.mimir_bridge",
+                    "mimir.bridge",
                     "publish-artifact",
                     "Publish a JSON capability artifact to the durable artifact store.",
                 ),
                 "mimir_publish_files": (
-                    "ravn.cli.mimir_bridge",
+                    "mimir.bridge",
                     "publish-files",
                     "Publish workspace files into Mimir as wiki pages.",
                 ),
                 "mimir_list": (
-                    "ravn.cli.mimir_bridge",
+                    "mimir.bridge",
                     "list",
                     "List Mimir wiki page paths, optionally under a prefix.",
                 ),
                 "mimir_related": (
-                    "ravn.cli.mimir_bridge",
+                    "mimir.bridge",
                     "related",
                     "Traverse the Mimir wikilink graph from a page and return related "
                     "pages up to N hops away (--path <wiki path>, --depth 1-3, "

@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from identity.adapters.authorization import AllowAllAuthorizationAdapter
@@ -31,7 +31,6 @@ from ting.api.sagas import (
     _build_phase_summary,
     _can_use_workflow,
     _find_project,
-    _resolve_selected_workflow,
     _sanitize_log,
     create_sagas_router,
     resolve_git,
@@ -40,8 +39,13 @@ from ting.api.sagas import (
     resolve_volundr,
 )
 from ting.api.tracker import resolve_trackers
-from ting.api.workflows import resolve_workflow_repo
+from ting.api.workflow_runner_refusal import register_workflow_runner_refusal
+from ting.api.workflows import WorkflowLaunchExecution, resolve_workflow_repo
 from ting.config import AuthConfig, Settings
+from ting.domain.exceptions import (
+    WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE,
+    WorkflowStepsHaveNoRunnerError,
+)
 from ting.domain.models import (
     Phase,
     PhaseStatus,
@@ -57,6 +61,8 @@ from ting.domain.models import (
     WorkflowDefinition,
     WorkflowScope,
 )
+from ting.domain.utils import _slugify
+from ting.domain.workflow_snapshot import build_workflow_snapshot
 from ting.ports.volundr import VolundrSession
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
@@ -226,7 +232,6 @@ def _dev_settings() -> MagicMock:
     """Create mock settings with anonymous dev enabled for test apps."""
     s = MagicMock()
     s.auth = AuthConfig(allow_anonymous_dev=True)
-    s.dispatch.flock.default_workflow_name = "Code & Review Flow"
     return s
 
 
@@ -883,57 +888,6 @@ class TestAssignWorkflow:
 
         assert response.status_code == 200
 
-    @pytest.mark.asyncio
-    async def test_resolve_selected_workflow_uses_default_system_workflow_when_missing(
-        self,
-    ) -> None:
-        workflow = WorkflowDefinition(
-            id=uuid4(),
-            name="Code & Review Flow",
-            description="",
-            version="1.0.0",
-            scope=WorkflowScope.SYSTEM,
-            owner_id=None,
-            graph={
-                "nodes": [
-                    {
-                        "id": "stage-1",
-                        "kind": "stage",
-                        "label": "Run",
-                        "stageMembers": [
-                            {"personaId": "coordinator", "budget": 40},
-                            {"personaId": "coder", "budget": 40},
-                            {"personaId": "reviewer", "budget": 25},
-                        ],
-                    }
-                ],
-                "edges": [],
-            },
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
-        )
-        app = FastAPI()
-        app.state.authorization = AllowAllAuthorizationAdapter()
-        app.state.settings = _dev_settings()
-        app.state.workflow_repo = InMemoryWorkflowRepository([workflow])
-
-        request = Request({"type": "http", "app": app, "headers": []})
-        workflow_id, workflow_version, workflow_snapshot = await _resolve_selected_workflow(
-            request=request,
-            principal=_principal(),
-            workflow_id_value=None,
-            use_default_when_missing=True,
-        )
-
-        assert workflow_id == workflow.id
-        assert workflow_version == workflow.version
-        assert workflow_snapshot is not None
-        assert workflow_snapshot["personas"] == [
-            {"name": "coordinator", "iteration_budget": 40},
-            {"name": "coder", "iteration_budget": 40},
-            {"name": "reviewer", "iteration_budget": 25},
-        ]
-
     def test_rejects_invalid_saga_id_for_workflow_assignment(
         self,
         mock_tracker: MockTracker,
@@ -1339,6 +1293,46 @@ class TestSpawnPlanSession:
         assert [item["campaign_slug"] for item in listed] == ["plan-sdcp-operator"]
         assert listed[0]["status"] == "failed"
 
+    def test_plan_launch_is_refused_not_reported_as_a_bad_gateway(
+        self, mock_tracker: MockTracker
+    ) -> None:
+        workflow = _planning_workflow()
+        campaign_repo = InMemoryWorkflowCampaignRepository()
+        adapter = MagicMock()
+        adapter.name = "local"
+        adapter.target_id = "local"
+        adapter.list_integration_ids = AsyncMock(return_value=[])
+        adapter.spawn_session = AsyncMock()
+        volundr_factory = AsyncMock()
+        volundr_factory.for_principal.return_value = [adapter]
+        app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
+        app.include_router(create_sagas_router())
+        register_workflow_runner_refusal(app)
+        app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
+        app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
+        app.dependency_overrides[resolve_workflow_repo] = lambda: InMemoryWorkflowRepository(
+            [workflow]
+        )
+        app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
+        app.dependency_overrides[resolve_volundr_factory] = lambda: volundr_factory
+        app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=True))
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/v1/ting/sagas/plan",
+            json={
+                "spec": "Ship the dashboard",
+                "repo": "niuulabs/volundr",
+                "workflowId": str(workflow.id),
+            },
+        )
+
+        assert resp.status_code == 501
+        assert resp.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+        adapter.spawn_session.assert_not_awaited()
+        assert campaign_repo._campaigns == {}
+
     def test_defaults_base_branch_to_main(
         self, mock_tracker: MockTracker, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1405,6 +1399,24 @@ class TestSpawnPlanSession:
             ]
         )
         adapter.resolve_workflow_gate = AsyncMock(return_value={"status": "resolved"})
+
+        # Launching a workflow is refused until its steps have a runner (NIU-1198), so a
+        # launch that already produced a plan session stands in for it: everything this
+        # test pins comes after the launch.
+        launched_with = []
+
+        async def launched(*, workflow, launch, **_kwargs):
+            launched_with.append(launch)
+            return WorkflowLaunchExecution(
+                workflow=workflow,
+                workflow_snapshot=build_workflow_snapshot(workflow),
+                slug=_slugify(launch.session_name),
+                session=await adapter.spawn_session(),
+                adapter=adapter,
+                connection_id="local",
+            )
+
+        monkeypatch.setattr(sagas_api, "launch_workflow_execution", launched)
         volundr_factory = AsyncMock()
         volundr_factory.for_principal.return_value = [adapter]
         volundr_factory.primary_for_principal.return_value = adapter
@@ -1437,15 +1449,10 @@ class TestSpawnPlanSession:
         assert body["stage_state"][0]["label"] == "Clarify brief"
         assert body["questions"][0]["id"] == "planning-feedback"
         assert "constraints" in body["questions"][0]["question"]
-        spawn_request = adapter.spawn_session.await_args.args[0]
-        assert spawn_request.repo == "niuulabs/volundr"
-        assert spawn_request.branch == "main"
-        assert spawn_request.base_branch == ""
-        assert spawn_request.workload_type == "ravn_flock"
-        assert spawn_request.profile is None
-        assert spawn_request.workload_config["workflow"]["name"] == "Saga Planning"
-        assert spawn_request.workload_config["workflow"]["graph"]["tags"] == ["planning", "saga"]
-        assert spawn_request.workload_config["provenance"] == {
+        (launch,) = launched_with
+        assert launch.repo == "niuulabs/volundr"
+        assert launch.branch == "main"
+        assert launch.provenance == {
             "surface": "ting.plan",
             "repo": "niuulabs/volundr",
             "base_branch": "main",
@@ -1743,12 +1750,15 @@ class TestDeleteSaga:
 
 
 class _DispatchRecorder:
-    def __init__(self, *, should_fail: bool = False) -> None:
+    def __init__(self, *, should_fail: bool = False, refuse: bool = False) -> None:
         self.should_fail = should_fail
+        self.refuse = refuse
         self.calls: list[tuple[str, str]] = []
 
     async def try_auto_continue(self, owner_id: str, saga_tracker_id: str) -> None:
         self.calls.append((owner_id, saga_tracker_id))
+        if self.refuse:
+            raise WorkflowStepsHaveNoRunnerError()
         if self.should_fail:
             raise RuntimeError("dispatch unavailable")
 
@@ -1851,6 +1861,53 @@ class TestCommitSaga:
 
         assert response.status_code == 201
         assert "Failed to kick off initial dispatch" in response.json()["warnings"][0]
+
+    def test_a_refused_initial_dispatch_is_reported_with_the_refusal_not_as_a_failure(
+        self,
+        mock_tracker: MockTracker,
+    ) -> None:
+        repo = MockSagaRepo()
+        app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
+        app.dependency_overrides[resolve_saga_repo] = lambda: repo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plan_campaigns
+        app.dependency_overrides[resolve_git] = AsyncMock
+        app.state.settings = _dev_settings()
+        app.state.dispatch_service = _DispatchRecorder(refuse=True)
+        client = TestClient(app)
+
+        response = client.post(
+            "/api/v1/ting/sagas/commit",
+            json={
+                "name": "Proof Saga",
+                "slug": "proof-saga-refused",
+                "description": "Test refusal",
+                "repos": ["https://github.com/niuulabs/volundr.git"],
+                "base_branch": "dev",
+                "phases": [
+                    {
+                        "name": "Phase 1",
+                        "runs": [
+                            {
+                                "name": "Create proof file",
+                                "description": "Create a proof file",
+                                "acceptance_criteria": ["file exists"],
+                                "declared_files": ["proof.txt"],
+                                "estimate_hours": 1.0,
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 201
+        warnings = response.json()["warnings"]
+        assert len(warnings) == 1
+        assert "was refused" in warnings[0]
+        assert WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE in warnings[0]
 
     def test_rejects_duplicate_slug(self, mock_tracker: MockTracker) -> None:
         repo = MockSagaRepo()

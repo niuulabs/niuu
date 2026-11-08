@@ -84,7 +84,7 @@ def session(*, child: bool = False, status: SessionStatus = SessionStatus.RUNNIN
         status=status,
         owner_id="owner-1",
         tenant_id="tenant-1",
-        workload_type="ravn_flock",
+        workload_type="session",
         workload_config={"provenance": {"workflow_execution": provenance}},
     )
 

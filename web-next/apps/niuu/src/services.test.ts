@@ -47,9 +47,7 @@ const tingMocks = vi.hoisted(() => ({
 
 const ravnMocks = vi.hoisted(() => ({
   createMockPersonaStore: vi.fn(() => ({})),
-  createMockTriggerStore: vi.fn(() => ({})),
   buildRavnPersonaAdapter: vi.fn(() => ({})),
-  buildRavnTriggerAdapter: vi.fn(() => ({})),
 }));
 
 const observatoryMocks = vi.hoisted(() => ({
@@ -383,19 +381,6 @@ describe('resolveSettingsServiceBase', () => {
         'ting',
       ),
     ).toBe('http://localhost:8080/api/v1/ting');
-  });
-
-  it('resolves ravn settings from the grouped ravn base', () => {
-    expect(
-      resolveSettingsServiceBase(
-        {
-          services: {
-            ravn: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn' },
-          },
-        } as any,
-        'ravn',
-      ),
-    ).toBe('http://localhost:8080/api/v1/ravn');
   });
 
   it('resolves bifrost settings from the grouped bifrost base', () => {
@@ -734,7 +719,6 @@ describe('buildServiceBackendStatus', () => {
         'forge.metrics': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge/metrics' },
         'forge.pty': { mode: 'ws', wsUrl: 'ws://localhost:8080/api/v1/forge/pty/{sessionId}' },
         observatory: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/observatory' },
-        ravn: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn' },
       },
     } as any);
 
@@ -856,7 +840,6 @@ describe('buildServiceBackendStatus', () => {
     const status = buildServiceBackendStatus({
       services: {
         'ravn.personas': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/personas' },
-        'ravn.triggers': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/triggers' },
       },
     } as any);
 
@@ -865,12 +848,6 @@ describe('buildServiceBackendStatus', () => {
       transport: 'http',
       target: 'http://localhost:8080/api/v1',
       source: 'ravn.personas',
-    });
-    expect(status['ravn.triggers']).toEqual({
-      mode: 'live',
-      transport: 'http',
-      target: 'http://localhost:8080/api/v1/ravn',
-      source: 'ravn.triggers',
     });
   });
 
@@ -1195,23 +1172,18 @@ describe('buildServices', () => {
     expect((services.filesystem as any).kind).toBe('filesystem');
   });
 
-  it('prefers explicit Ravn domain configs over the shared ravn base', () => {
+  it('prefers the explicit Ravn persona config over the shared API base', () => {
     buildServices({
       demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
-        ravn: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn' },
         'ravn.personas': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/personas' },
-        'ravn.triggers': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/triggers' },
       },
     } as any);
 
     expect(ravnMocks.buildRavnPersonaAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1',
-    });
-    expect(ravnMocks.buildRavnTriggerAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/ravn',
     });
   });
 

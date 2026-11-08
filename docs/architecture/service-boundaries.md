@@ -141,8 +141,6 @@ It owns:
 - `/api/v1/ting/dispatch`
 - `/api/v1/ting/dispatcher`
 - `/api/v1/ting/events`
-- `/api/v1/ting/flock`
-- `/api/v1/ting/flock_flows`
 - `/api/v1/ting/pipelines`
 - `/api/v1/ting/settings`
 

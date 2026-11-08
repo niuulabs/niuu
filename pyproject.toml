@@ -102,9 +102,6 @@ otel = [
 encryption = [
     "cryptography>=50.0.1",
 ]
-browser = [
-    "playwright>=1.62.0",
-]
 infra = [
     "redis>=8.1.0",
 ]
@@ -156,11 +153,7 @@ skuld = "skuld.broker:main"
 bifrost = "bifrost.__main__:main"
 ting = "ting.main:main"
 observatory = "observatory.main:main"
-ravn = "ravn.cli.commands:app"
-ravn-api = "ravn.main:main"
-ravn-approvals = "ravn.cli.commands:approvals_main"
-ravn-gateway = "ravn.cli.commands:gateway_main"
-ravn-mimir = "ravn.cli.commands:mimir_main"
+mimir = "mimir.__main__:main"
 
 [project.entry-points."niuu.plugins"]
 niuu = "niuu.plugin:NiuuPlugin"
@@ -174,7 +167,6 @@ integrations = "integrations.plugin:IntegrationsPlugin"
 tracker = "tracker.plugin:TrackerPlugin"
 ting = "ting.plugin:TingPlugin"
 mimir = "mimir.plugin:MimirPlugin"
-ravn = "ravn.plugin:RavnPlugin"
 bifrost = "bifrost.plugin:BifrostPlugin"
 observatory = "observatory.plugin:ObservatoryPlugin"
 personas = "personas.plugin:PersonasPlugin"
@@ -210,16 +202,13 @@ testpaths = ["tests"]
 pythonpath = ["src", "vendor/envoy_authz_protos"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "-v --tb=short -m 'not integration and not broker and not kind_integration and not live_cli'"
+addopts = "-v --tb=short -m 'not integration and not broker and not live_cli'"
 markers = [
     "integration: tests that require a real PostgreSQL database",
     "tmux: tests that drive a real isolated tmux server with the fake Claude CLI",
     "live_cli: opt-in tests requiring installed provider CLIs (FORGE_LIVE_CLI=1)",
     "broker: tests that require real message broker services (NATS, RabbitMQ, Redis)",
-    "ravn: tests for the Ravn agent module",
     "e2e: end-to-end tests for full agent conversation flows",
-    "browser: tests that require a real browser (Playwright + Chromium)",
-    "kind_integration: tests that require a live kind cluster (set KIND_INTEGRATION=1 to enable)",
 ]
 
 [tool.ruff]
@@ -238,7 +227,7 @@ force-exclude = true
 select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.coverage.run]
-source = ["src/audit", "src/volundr", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/ting", "src/tracker", "src/niuu", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/yggdrasil"]
+source = ["src/audit", "src/volundr", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/ting", "src/tracker", "src/niuu", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/personas", "src/yggdrasil"]
 branch = true
 # Textual TUI widgets require a running terminal and cannot be exercised with
 # plain pytest. They are excluded from coverage measurement until Textual
@@ -246,21 +235,17 @@ branch = true
 # ting/plugin.py (CLI plugin registration with TUI imports).
 # Sleipnir transport adapters require live broker services (NATS, NNG, RabbitMQ)
 # and cannot be tested in CI without those services running.
-# Ravn infrastructure adapters that require live Kubernetes, PostgreSQL, mDNS,
-# or HTTP services are also excluded from coverage measurement.
+# Infrastructure adapters that require live Kubernetes, mDNS, or HTTP services
+# are also excluded from coverage measurement.
 omit = [
-    "src/ravn/tui/*",
     "src/ting/tui/*",
     "src/ting/plugin.py",
     "src/sleipnir/adapters/nats_transport.py",
     "src/sleipnir/adapters/nng_transport.py",
     "src/sleipnir/adapters/rabbitmq.py",
-    "src/ravn/adapters/checkpoint/postgres.py",
-    "src/ravn/adapters/checkpoint/sleipnir_trigger.py",
-    "src/ravn/adapters/discovery/mdns.py",
-    "src/ravn/adapters/mesh/webhook.py",
-    "src/ravn/adapters/mesh/composite.py",
-    "src/ravn/adapters/spawn/kubernetes_spawn.py",
+    "src/niuu/adapters/discovery/mdns.py",
+    "src/niuu/adapters/mesh/webhook.py",
+    "src/niuu/adapters/mesh/composite.py",
 ]
 
 [tool.coverage.report]

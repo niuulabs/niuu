@@ -11,8 +11,9 @@ Monorepo for the Niuu agent platform. The detailed, binding conventions live in
 | `skuld` | Runtime session gateway — runs Codex/Claude/Ravn sessions and adapts shared collaboration to channels/WebSockets |
 | `niuu` | Shared platform libraries and host/gateway — collaboration/mesh mechanics, plugin APIs, registries, aggregate routing |
 | `ting` | Autonomous dispatcher — sagas, runs, tracker integration (must never import `volundr`) |
-| `ravn` | Agent runtime — wraps models/runtimes and owns judgment, learning, tools, A2A, and resident autonomy when enabled |
+| `ravn` | Agent runtime — being rebuilt from scratch as a small agent on NOOA. Until then it holds only the learned-tool runner (`valkyrie_evolution/`) and the tool-build backends (`adapters/tool_build/`) |
 | `bifrost` | Model gateway and catalog |
+| `personas` | Personas: the roles in workflows and teams — model, built-in catalogue (`builtin/`), registry and loaders, REST routes |
 | `sleipnir` | Event bus / event-type registry |
 | `cli` | `niuu` CLI — `niuu platform up` runs the whole stack in mini mode |
 

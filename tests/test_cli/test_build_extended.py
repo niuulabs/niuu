@@ -66,11 +66,11 @@ class TestBuildCommandDataDirs:
             == "cli/migrations/ting/"
         )
 
-    def test_ravn_personas_and_ting_workflows_are_bundled(self) -> None:
+    def test_personas_and_ting_workflows_are_bundled(self) -> None:
         mappings = {src.as_posix(): dest for src, dest in DATA_DIR_MAPPINGS}
 
-        assert mappings[next(src for src in mappings if src.endswith("src/ravn/personas"))] == (
-            "ravn/personas"
+        assert mappings[next(src for src in mappings if src.endswith("src/personas/builtin"))] == (
+            "personas/builtin"
         )
         assert mappings[next(src for src in mappings if src.endswith("src/ting/workflows"))] == (
             "ting/workflows"

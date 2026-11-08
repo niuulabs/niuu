@@ -329,13 +329,14 @@ class TestCallTimeTransportPolicy:
 
     async def test_enforces_policy_against_dial_url_not_instance_base_url(self) -> None:
         """The URL actually dialled governs — not instance.base_url. This is
-        exactly the split-service (ravn_base_url) case: base_url may be
-        https while the URL a caller is really connecting to is a plain,
-        unauthorized http:// address."""
+        the case of a base_url that is https while the URL a caller is really
+        connecting to is a plain, unauthorized http:// address."""
         instance = _instance(base_url="https://node.test")
 
         with pytest.raises(GuildInsecureTransportError):
-            await resolve_guild_ssl_context(instance, dial_url="http://ravn.node.test", timeout=1.0)
+            await resolve_guild_ssl_context(
+                instance, dial_url="http://other.node.test", timeout=1.0
+            )
 
 
 class TestResolveGuildSslContext:

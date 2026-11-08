@@ -20,7 +20,9 @@ from niuu.review_widgets import ReviewWidget
 from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.sagas import resolve_saga_repo
 from ting.api.work import create_work_router, resolve_work_trackers
+from ting.api.workflow_runner_refusal import register_workflow_runner_refusal
 from ting.config import AuthConfig, Settings
+from ting.domain.exceptions import WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
 from ting.domain.models import (
     Run,
     RunStatus,
@@ -246,6 +248,7 @@ def _client(
             ),
         )
     app.include_router(create_work_router())
+    register_workflow_runner_refusal(app)
     app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
     campaign_repo = MagicMock(spec=WorkflowCampaignRepository)
     campaign_repo.list_campaigns = AsyncMock(return_value=campaigns or [])
@@ -428,7 +431,7 @@ def _start(
     )
 
 
-def test_starting_a_ticket_creates_its_coordinator_and_links_its_runs() -> None:
+def test_starting_a_ticket_is_refused_because_its_workflow_has_no_runner() -> None:
     saga = _saga(_snapshot())
     adapter = _adapter([])
     coordinators = _Coordinators()
@@ -442,20 +445,11 @@ def test_starting_a_ticket_creates_its_coordinator_and_links_its_runs() -> None:
 
     response = _start(client, saga)
 
-    assert response.status_code == 200
-    assert response.json() == {"status": "coordinating", "sessionId": "coordinator-session"}
-    request = adapter.spawn_session.await_args.args[0]
-    assert request.workload_type == "ravn_flock"
-    persona = request.workload_config["personas"][0]
-    assert persona["name"] == "ticket-coordinator"
-    assert "ISSUE-1: Ship the board" in persona["system_prompt_extra"]
-    assert "Reviewed Delivery Flow" in request.initial_prompt
-    assert saga.workflow_id.hex not in request.name
-    metadata = request.workload_config["ravn_config"]["gateway"]["platform"]["a2a_default_metadata"]
-    assert metadata["ticket"]["issueId"] == "issue-1"
-    assert metadata["ticket"]["sagaId"] == str(saga.id)
-    assert metadata["repo"] == "niuulabs/platform"
-    assert coordinators.rows[(saga.id, "issue-1")].session_id == "coordinator-session"
+    assert response.status_code == 501
+    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+    adapter.spawn_session.assert_not_awaited()
+    adapter.send_directed_room_message.assert_not_awaited()
+    assert coordinators.rows == {}
 
 
 def test_a_started_ticket_shows_as_starting_with_its_coordinator() -> None:
@@ -481,7 +475,7 @@ def test_a_started_ticket_shows_as_starting_with_its_coordinator() -> None:
     }
 
 
-def test_a_ticket_left_on_starting_can_be_asked_again() -> None:
+def test_a_ticket_left_on_starting_is_refused_when_asked_again() -> None:
     saga = _saga(_snapshot())
     adapter = _adapter([])
     client = _client(
@@ -494,12 +488,13 @@ def test_a_ticket_left_on_starting_can_be_asked_again() -> None:
 
     response = _start(client, saga)
 
-    assert response.status_code == 200
+    assert response.status_code == 501
+    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
     adapter.spawn_session.assert_not_awaited()
-    adapter.send_directed_room_message.assert_awaited_once()
+    adapter.send_directed_room_message.assert_not_awaited()
 
 
-def test_a_deleted_coordinator_session_reads_blocked_and_can_be_replaced() -> None:
+def test_a_deleted_coordinator_session_reads_blocked() -> None:
     saga = _saga(_snapshot())
     adapter = _adapter([])
     adapter.get_session.return_value = None
@@ -512,32 +507,9 @@ def test_a_deleted_coordinator_session_reads_blocked_and_can_be_replaced() -> No
     )
 
     board = _board_task(client, saga)["board"]
-    response = _start(client, saga)
 
     assert board["state"] == "blocked"
     assert board["reason"] == SESSION_GONE_REASON
-    assert response.status_code == 200
-    adapter.spawn_session.assert_awaited_once()
-    adapter.send_directed_room_message.assert_not_awaited()
-
-
-def test_a_coordinator_that_died_before_any_run_can_be_replaced() -> None:
-    saga = _saga(_snapshot())
-    adapter = _adapter([], activity_state="error")
-    client = _client(
-        saga,
-        issues=[_issue(status_type="unstarted")],
-        runs=[],
-        adapter=adapter,
-        coordinators=_Coordinators(_coordinator(saga)),
-    )
-
-    response = _start(client, saga)
-
-    assert response.status_code == 200
-    adapter.stop_session.assert_awaited_once()
-    adapter.spawn_session.assert_awaited_once()
-    adapter.send_directed_room_message.assert_not_awaited()
 
 
 def test_a_ticket_with_a_run_in_progress_cannot_start_again() -> None:
@@ -564,18 +536,6 @@ def test_a_project_without_a_workflow_cannot_start_a_ticket() -> None:
     client = _client(saga, issues=[_issue()], runs=[], adapter=_adapter([]))
 
     assert _start(client, saga).status_code == 409
-
-
-def test_a_coordinator_that_cannot_start_stays_loud() -> None:
-    saga = _saga(_snapshot())
-    adapter = _adapter([])
-    adapter.spawn_session.side_effect = httpx.ConnectError("forge down")
-    client = _client(saga, issues=[_issue(status_type="unstarted")], runs=[], adapter=adapter)
-
-    response = _start(client, saga)
-
-    assert response.status_code == 502
-    assert "could not be started" in response.json()["detail"]
 
 
 def test_a_coordinator_run_places_the_ticket_by_its_own_session() -> None:
@@ -958,7 +918,7 @@ def test_a_run_of_a_workflow_off_the_board_is_not_guessed() -> None:
     assert _board_task(client, saga)["board"]["state"] == "unknown"
 
 
-def test_the_first_start_enters_the_dropped_workflow_through_a_new_coordinator() -> None:
+def test_the_first_start_into_a_dropped_workflow_is_refused() -> None:
     saga = _planned_saga()
     adapter = _adapter([])
     coordinators = _Coordinators()
@@ -972,22 +932,25 @@ def test_the_first_start_enters_the_dropped_workflow_through_a_new_coordinator()
 
     response = _start(client, saga, column_id="planning")
 
-    assert response.status_code == 200
-    assert PLANNING in adapter.spawn_session.await_args.args[0].initial_prompt
-    saved = coordinators.rows[(saga.id, "issue-1")]
-    assert saved.requested_workflow_id == str(_bundled(PLANNING).id)
+    assert response.status_code == 501
+    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+    adapter.spawn_session.assert_not_awaited()
+    assert coordinators.rows == {}
 
 
-def test_a_start_without_a_column_enters_the_first_workflow() -> None:
+def test_a_start_without_a_column_is_refused_after_choosing_the_first_workflow() -> None:
     saga = _planned_saga()
     adapter = _adapter([])
     client = _client(saga, issues=[_issue(status_type="unstarted")], runs=[], adapter=adapter)
 
-    assert _start(client, saga).status_code == 200
-    assert PLANNING in adapter.spawn_session.await_args.args[0].initial_prompt
+    response = _start(client, saga)
+
+    assert response.status_code == 501
+    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+    adapter.spawn_session.assert_not_awaited()
 
 
-def test_the_next_workflow_goes_to_the_same_coordinator() -> None:
+def test_the_next_workflow_is_refused_too_and_asks_the_coordinator_nothing() -> None:
     saga = _planned_saga()
     adapter = _adapter([])
     coordinators = _Coordinators(_coordinator(saga))
@@ -1002,11 +965,27 @@ def test_the_next_workflow_goes_to_the_same_coordinator() -> None:
 
     response = _start(client, saga)
 
-    assert response.status_code == 200
+    assert response.status_code == 501
+    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
     adapter.spawn_session.assert_not_awaited()
-    brief = adapter.send_directed_room_message.await_args.args[2]
-    assert DELIVERY in brief
-    assert str(_bundled(DELIVERY).id) in brief
+    adapter.send_directed_room_message.assert_not_awaited()
+
+
+def test_a_ticket_with_a_pending_request_reads_as_starting() -> None:
+    saga = _planned_saga()
+    coordinators = _Coordinators(
+        replace(
+            _coordinator(saga), requested_workflow_id=str(_bundled(DELIVERY).id), requested_at=NOW
+        )
+    )
+    client = _client(
+        saga,
+        issues=[_issue()],
+        runs=[],
+        adapter=_adapter([]),
+        campaigns=[_run_of(saga, PLANNING, WorkflowCampaignStatus.COMPLETED)],
+        coordinators=coordinators,
+    )
 
     # The ticket reads as starting there, not as ready, until the run appears.
     coordinators.rows[(saga.id, "issue-1")] = replace(
@@ -1085,7 +1064,7 @@ def test_a_ticket_with_an_active_run_cannot_enter_another_workflow() -> None:
     adapter.send_directed_room_message.assert_not_awaited()
 
 
-def test_a_failed_run_can_start_again_at_a_first_column() -> None:
+def test_a_failed_run_is_not_held_back_but_the_start_is_refused() -> None:
     saga = _planned_saga()
     adapter = _adapter([])
     client = _client(
@@ -1097,8 +1076,11 @@ def test_a_failed_run_can_start_again_at_a_first_column() -> None:
         coordinators=_Coordinators(_coordinator(saga)),
     )
 
-    assert _start(client, saga, column_id="planning").status_code == 200
-    assert PLANNING in adapter.send_directed_room_message.await_args.args[2]
+    response = _start(client, saga, column_id="planning")
+
+    assert response.status_code == 501
+    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+    adapter.send_directed_room_message.assert_not_awaited()
 
 
 def test_a_done_ticket_cannot_start() -> None:
@@ -1728,7 +1710,7 @@ def test_a_widget_page_is_served_as_data_only_when_installed() -> None:
     assert "not installed" in missing.json()["detail"]
 
 
-def test_a_project_without_a_repository_starts_a_workflow_that_needs_none() -> None:
+def test_a_workflow_that_needs_no_repository_is_not_held_back_by_a_missing_one() -> None:
     snapshot = _snapshot()
     snapshot["graph"] = {**snapshot["graph"], "requiresRepository": False}
     saga = replace(_saga(snapshot), repos=[], base_branch="")
@@ -1741,8 +1723,11 @@ def test_a_project_without_a_repository_starts_a_workflow_that_needs_none() -> N
         coordinators=_Coordinators(),
     )
 
-    assert _start(client, saga).status_code == 200
-    assert adapter.spawn_session.await_args.args[0].repo == ""
+    response = _start(client, saga)
+
+    assert response.status_code == 501
+    assert response.json() == {"detail": WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE}
+    adapter.spawn_session.assert_not_awaited()
 
 
 def test_a_workflow_that_needs_a_repository_cannot_start_without_one() -> None:
@@ -1763,25 +1748,6 @@ def test_a_workflow_that_needs_a_repository_cannot_start_without_one() -> None:
     adapter.spawn_session.assert_not_awaited()
 
 
-def test_a_ticket_starts_on_the_forge_its_project_names() -> None:
-    saga = replace(_saga(_snapshot()), instance_id="forge-b")
-    primary = _adapter([], name="forge-a")
-    named = _adapter([], name="forge-b")
-    client = _client(
-        saga,
-        issues=[_issue(status_type="unstarted")],
-        runs=[],
-        adapter=primary,
-        forges=[primary, named],
-        coordinators=_Coordinators(),
-    )
-    client.app.state.volundr_factory.for_connection = AsyncMock(return_value=named)
-
-    assert _start(client, saga).status_code == 200
-    named.spawn_session.assert_awaited_once()
-    primary.spawn_session.assert_not_awaited()
-
-
 def test_a_project_whose_forge_is_gone_never_starts_on_another() -> None:
     saga = replace(_saga(_snapshot()), instance_id="forge-b")
     primary = _adapter([], name="forge-a")
@@ -1796,22 +1762,3 @@ def test_a_project_whose_forge_is_gone_never_starts_on_another() -> None:
 
     assert _start(client, saga).status_code == 503
     primary.spawn_session.assert_not_awaited()
-
-
-def test_a_forge_that_refuses_the_project_stops_the_start_loudly() -> None:
-    saga = _saga(_snapshot())
-    adapter = _adapter([])
-    adapter.ensure_project.side_effect = httpx.HTTPError("Forge could not create the project")
-    client = _client(
-        saga,
-        issues=[_issue(status_type="unstarted")],
-        runs=[],
-        adapter=adapter,
-        coordinators=_Coordinators(),
-    )
-
-    response = _start(client, saga)
-
-    assert response.status_code == 502
-    assert "could not create the project" in response.json()["detail"]
-    adapter.spawn_session.assert_not_awaited()

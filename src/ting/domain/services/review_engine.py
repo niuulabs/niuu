@@ -20,6 +20,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 
 from ting.config import ReviewConfig
+from ting.domain.exceptions import WorkflowStepsHaveNoRunnerError
 from ting.domain.models import (
     Phase,
     PhaseStatus,
@@ -744,6 +745,13 @@ class ReviewEngine:
                 )
             else:
                 await self._dispatch_service.try_auto_continue(owner_id, saga_tracker_id)
+        except WorkflowStepsHaveNoRunnerError:
+            logger.error(
+                "Auto-continue refused for owner %s (saga=%s): the saga runs a workflow and "
+                "workflow steps have no runner (NIU-1198); nothing was dispatched",
+                owner_id[:8],
+                saga_tracker_id,
+            )
         except Exception:
             logger.warning(
                 "Auto-continue failed for owner %s (saga=%s)",

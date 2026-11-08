@@ -144,10 +144,10 @@ describe('ForgePage', () => {
     const failed: Session = {
       ...base!,
       id: 'sess-failed',
-      name: 'flock-mismatch-guard',
+      name: 'provider-mismatch-guard',
       state: 'failed',
       events: [],
-      error: 'ravn_flock: skuldCodex does not accept provider anthropic',
+      error: 'skuldCodex does not accept provider anthropic',
     };
     wrap(createMockVolundrService(), createMockClusterAdapter(), {
       ...store,
@@ -155,7 +155,7 @@ describe('ForgePage', () => {
     });
 
     const strip = await screen.findByTestId('error-strip');
-    expect(within(strip).getByText('flock-mismatch-guard')).toBeInTheDocument();
+    expect(within(strip).getByText('provider-mismatch-guard')).toBeInTheDocument();
     expect(within(strip).getByTestId('error-reason')).toHaveTextContent(
       'skuldCodex does not accept provider anthropic',
     );

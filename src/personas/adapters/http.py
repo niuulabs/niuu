@@ -1,0 +1,297 @@
+"""HttpPersonaAdapter — fetches personas from the volundr REST registry.
+
+Used when workloads cannot mount ConfigMaps and need to pull persona
+definitions from a central volundr instance at runtime.
+
+Auth
+----
+The adapter uses projected workload identity by default. Non-cluster callers
+may pass ``external_token_env`` to send an already-issued bearer token.
+
+Cache
+-----
+Responses are cached in-memory with a configurable TTL (default 60 s).  This
+prevents hammering volundr on every lookup, while still allowing
+edits to propagate within one TTL window.
+
+Fail-closed
+-----------
+Network errors and 5xx responses are treated as transient failures:
+
+* ``load()`` returns the last cached value, or ``None`` if nothing is cached.
+* ``list_names()`` returns the last cached list, or ``[]`` if nothing is cached.
+
+Neither method raises on transport or server errors so the caller can
+keep running with stale data rather than crashing.
+"""
+
+from __future__ import annotations
+
+import logging
+from urllib.parse import quote
+
+import httpx
+
+from niuu.adapters.outbound.http_auth import (
+    StaticBearerTokenAuthAdapter,
+    WorkloadIdentityBearerTokenAuthAdapter,
+)
+from niuu.domain.models import CacheEntry
+from niuu.ports.http_auth import HttpAuthPort
+from personas.domain.permission_mode import PERSONA_API_PERMISSION_MODES
+from personas.domain.persona import (
+    PersonaConfig,
+    PersonaLLMConfig,
+    parse_consumes,
+    parse_fan_in,
+    parse_produces,
+)
+from personas.domain.persona_document import (
+    PortablePersonaDefinition,
+    parse_portable_persona,
+    validate_persona_identifier,
+)
+from personas.ports.persona import PersonaPort
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_TIMEOUT_SECONDS: float = 5.0
+_DEFAULT_CACHE_TTL_SECONDS: int = 60
+
+
+def _persona_auth(
+    *,
+    base_url: str,
+    external_token_env: str,
+    workload_token_file: str,
+    workload_exchange_url: str,
+    workload_audiences: list[str] | None,
+    timeout_seconds: float,
+    transport: httpx.BaseTransport | None,
+) -> HttpAuthPort:
+    if external_token_env:
+        return StaticBearerTokenAuthAdapter(token_env=external_token_env)
+    return WorkloadIdentityBearerTokenAuthAdapter(
+        base_url=base_url,
+        token_file=workload_token_file,
+        exchange_url=workload_exchange_url,
+        audiences=workload_audiences or ["volundr-api"],
+        timeout_seconds=timeout_seconds,
+        transport=transport,
+    )
+
+
+class HttpPersonaAdapter(PersonaPort):
+    """Read-only PersonaPort that fetches personas from the volundr REST registry.
+
+    Args:
+        base_url:           Base URL of the volundr service, e.g. ``http://volundr:8080``.
+        timeout_seconds:    HTTP request timeout (default 5 s).
+        cache_ttl_seconds:  Cache lifetime per persona (default 60 s).
+        external_token_env: Optional env var holding an external bearer token.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+        cache_ttl_seconds: int = _DEFAULT_CACHE_TTL_SECONDS,
+        external_token_env: str = "",
+        workload_token_file: str = "",
+        workload_exchange_url: str = "",
+        workload_audiences: list[str] | None = None,
+        # Private: injected in tests to avoid real network calls.
+        _transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._timeout = timeout_seconds
+        self._ttl = cache_ttl_seconds
+        self._transport = _transport
+        self._auth = _persona_auth(
+            base_url=self._base_url,
+            external_token_env=external_token_env,
+            workload_token_file=workload_token_file,
+            workload_exchange_url=workload_exchange_url,
+            workload_audiences=workload_audiences,
+            timeout_seconds=timeout_seconds,
+            transport=_transport,
+        )
+        self._http: httpx.Client | None = None
+
+        # Per-persona cache: name → CacheEntry(PersonaConfig | None)
+        self._persona_cache: dict[str, CacheEntry] = {}
+        # Names-list cache: CacheEntry(list[str]) | None
+        self._names_cache: CacheEntry | None = None
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _get_client(self) -> httpx.Client:
+        if self._http is None or self._http.is_closed:
+            self._http = httpx.Client(timeout=self._timeout, transport=self._transport)
+        return self._http
+
+    def _auth_headers(self) -> dict[str, str]:
+        return self._auth.headers()
+
+    def _get(self, *paths: str) -> tuple[httpx.Response, str]:
+        """GET the first successful path, falling back across known persona prefixes.
+
+        We still prefer the shared ``/api/v1/personas`` surface, but some
+        deployments and older test apps only mount the Ravn-specific
+        ``/api/v1/ravn/personas`` routes. A 404 on the primary path should not
+        make persona discovery fail if the alternate surface is available.
+        """
+        last_response: httpx.Response | None = None
+        last_url = ""
+        headers = self._auth_headers()
+        client = self._get_client()
+        for path in paths:
+            url = f"{self._base_url}{path}"
+            response = client.get(url, headers=headers)
+            if response.status_code != 404:
+                return response, url
+            last_response = response
+            last_url = url
+        assert last_response is not None
+        return last_response, last_url
+
+    @staticmethod
+    def _parse_detail(data: dict) -> PersonaConfig:
+        """Parse a PersonaDetail JSON payload into a PersonaConfig.
+
+        Reuses ``parse_produces``, ``parse_consumes``, and ``parse_fan_in``
+        from ``personas.domain.persona`` so that schema fields (``produces.schema``,
+        ``event_type_map``, etc.) are parsed identically to the filesystem
+        adapter — no data loss for personas that declare an outcome schema.
+        """
+        llm = data.get("llm") or {}
+        permission_mode = str(data.get("permission_mode") or "")
+
+        return PersonaConfig(
+            name=data["name"],
+            system_prompt_template=data.get("system_prompt_template", ""),
+            allowed_tools=list(data.get("allowed_tools") or []),
+            forbidden_tools=list(data.get("forbidden_tools") or []),
+            permission_mode=PERSONA_API_PERMISSION_MODES.get(permission_mode, permission_mode),
+            iteration_budget=int(data.get("iteration_budget") or 0),
+            llm=PersonaLLMConfig(
+                primary_alias=llm.get("primary_alias", ""),
+                thinking_enabled=bool(llm.get("thinking_enabled", False)),
+                max_tokens=int(llm.get("max_tokens") or 0),
+            ),
+            produces=parse_produces(data.get("produces")),
+            consumes=parse_consumes(data.get("consumes")),
+            fan_in=parse_fan_in(data.get("fan_in")),
+        )
+
+    # ------------------------------------------------------------------
+    # PersonaPort interface
+    # ------------------------------------------------------------------
+
+    def load(self, name: str) -> PersonaConfig | None:
+        """Return the named persona from volundr, or ``None`` if not found or on error.
+
+        Results are cached for ``cache_ttl_seconds``.  On HTTP or transport
+        errors the last cached value is returned (fail-closed: ``None`` if no
+        prior entry exists).
+        """
+        cached = self._persona_cache.get(name)
+        if cached is not None and not cached.expired:
+            return cached.value  # type: ignore[return-value]
+
+        try:
+            response, url = self._get(
+                f"/api/v1/personas/{name}",
+                f"/api/v1/ravn/personas/{name}",
+            )
+        except Exception as exc:  # network / timeout
+            logger.warning("HttpPersonaAdapter: request failed for %r: %s", name, exc)
+            return cached.value if cached is not None else None  # type: ignore[return-value]
+
+        if response.status_code == 404:
+            # Definitively missing — do not cache so that newly created
+            # personas appear within the next call rather than at TTL expiry.
+            return None
+
+        if response.status_code >= 400:
+            logger.warning(
+                "HttpPersonaAdapter: GET %s returned HTTP %d",
+                url,
+                response.status_code,
+            )
+            return cached.value if cached is not None else None  # type: ignore[return-value]
+
+        config = self._parse_detail(response.json())
+        self._persona_cache[name] = CacheEntry(config, self._ttl)
+        return config
+
+    def list_names(self) -> list[str]:
+        """Return a sorted list of all persona names from the registry.
+
+        Falls back to the last cached list on HTTP or transport errors; returns
+        ``[]`` if no cached list is available.
+        """
+        if self._names_cache is not None and not self._names_cache.expired:
+            return list(self._names_cache.value)  # type: ignore[arg-type]
+
+        try:
+            response, url = self._get("/api/v1/personas", "/api/v1/ravn/personas")
+        except Exception as exc:  # network / timeout
+            logger.warning("HttpPersonaAdapter: list_names request failed: %s", exc)
+            return list(self._names_cache.value) if self._names_cache is not None else []  # type: ignore[arg-type]
+
+        if response.status_code >= 400:
+            logger.warning(
+                "HttpPersonaAdapter: GET %s returned HTTP %d",
+                url,
+                response.status_code,
+            )
+            return list(self._names_cache.value) if self._names_cache is not None else []  # type: ignore[arg-type]
+
+        names = sorted(item["name"] for item in response.json())
+        self._names_cache = CacheEntry(names, self._ttl)
+        return list(names)
+
+    def load_portable(
+        self,
+        persona_id: str,
+        revision: str,
+    ) -> PortablePersonaDefinition | None:
+        """Fetch an exact source-authored portable revision without cached fallback."""
+        validate_persona_identifier(persona_id)
+        validate_persona_identifier(revision, field="Persona revision")
+        encoded_id = quote(persona_id, safe="")
+        encoded_revision = quote(revision, safe="")
+        response, url = self._get(
+            f"/api/v1/personas/{encoded_id}/revisions/{encoded_revision}",
+            f"/api/v1/ravn/personas/{encoded_id}/revisions/{encoded_revision}",
+        )
+        if response.status_code == 404:
+            return None
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"HttpPersonaAdapter: GET {url} returned HTTP {response.status_code}"
+            )
+        return parse_portable_persona(response.json())
+
+    def load_current_portable(
+        self,
+        persona_id: str,
+    ) -> PortablePersonaDefinition | None:
+        """Fetch the current source-authored portable definition."""
+        validate_persona_identifier(persona_id)
+        encoded_id = quote(persona_id, safe="")
+        response, url = self._get(
+            f"/api/v1/personas/{encoded_id}/portable",
+            f"/api/v1/ravn/personas/{encoded_id}/portable",
+        )
+        if response.status_code == 404:
+            return None
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"HttpPersonaAdapter: GET {url} returned HTTP {response.status_code}"
+            )
+        return parse_portable_persona(response.json())

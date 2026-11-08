@@ -190,19 +190,6 @@ def _status_from_session(status: str) -> str:
     return "unknown"
 
 
-def _status_from_valkyrie(status: str) -> str:
-    normalized = status.strip().lower()
-    if normalized in {"online", "healthy", "watching", "wakeful"}:
-        return "healthy"
-    if normalized in {"watch", "degraded", "observing"}:
-        return "observing"
-    if normalized in {"sleeping", "dreaming", "idle"}:
-        return "idle"
-    if normalized in {"offline", "failed"}:
-        return "failed"
-    return "unknown"
-
-
 def _condition_status(payload: dict[str, Any], condition_type: str) -> bool:
     status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
     conditions = status.get("conditions") if isinstance(status.get("conditions"), list) else []
@@ -1274,104 +1261,6 @@ class BifrostUsageDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
         )
 
 
-class RavnResidentsDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
-    """Discover long-running residents from Ravn's fleet projection.
-
-    This is also how residents outside Kubernetes reach the graph when the
-    Ravn that knows about them is reachable: the projection already carries
-    local and container deployments, not only cluster ones.
-
-    Only system-visible residents: the topology is one picture shown to every
-    signed-in user, so it must not carry any one user's own residents (and the
-    Observatory's site identity owns none).
-    """
-
-    warning_name = "ravn-residents"
-
-    async def collect(
-        self,
-        client: httpx.AsyncClient,
-        headers: dict[str, str],
-    ) -> DiscoveryResult:
-        payload = await self._json(
-            client, headers, "/api/v1/ravn/ravens", params={"visibility": "system"}
-        )
-        ravens = payload if isinstance(payload, list) else []
-        entities: list[DiscoveredEntity] = []
-        edges: list[ObservatoryEdge] = []
-        flock_ids: set[str] = set()
-
-        for raven in ravens:
-            if not isinstance(raven, dict) or not raven.get("id"):
-                continue
-            raven_id = str(raven["id"])
-            name = str(raven.get("resident_name") or raven.get("persona_name") or raven_id)
-            node_id = f"ravn:{_slug(self._cluster or 'unknown')}:{_slug(raven_id)}"
-            flock_id = str(raven.get("flock_id") or "")
-            endpoints = {
-                key: str(raven[field])
-                for key, field in (
-                    ("chat", "chat_endpoint"),
-                    ("a2a", "a2a_endpoint_url"),
-                    ("a2aCard", "a2a_card_url"),
-                )
-                if raven.get(field)
-            }
-            # A resident publishing an Agent Card is an A2A agent: the directory
-            # lists it to its owner, like a workflow session.
-            a2a_metadata = (
-                {
-                    "agentKind": "resident",
-                    "visibility": str(raven.get("a2a_visibility") or "user"),
-                    "ownerId": str(raven.get("owner_id") or ""),
-                    "tenantId": str(raven.get("tenant_id") or ""),
-                }
-                if "a2aCard" in endpoints
-                else {}
-            )
-            entities.append(
-                self._entity(
-                    "ravn_long",
-                    name,
-                    node_id,
-                    # A resident reports where it runs; a local or container
-                    # deployment has no cluster placement to inherit.
-                    host=str(raven.get("location") or ""),
-                    status=_status_from_valkyrie(str(raven.get("status") or "")),
-                    endpoints=endpoints,
-                    metadata={
-                        **a2a_metadata,
-                        "persona": str(raven.get("persona_name") or ""),
-                        "model": str(raven.get("model") or ""),
-                        "deployment": str(raven.get("deployment") or raven.get("backend") or ""),
-                        "engine": str(raven.get("engine") or ""),
-                        "flockId": flock_id,
-                        "flockRole": str(raven.get("flock_role") or ""),
-                        "peerId": str(raven.get("peer_id") or ""),
-                        "desiredState": raven.get("desired_state"),
-                        "observedState": raven.get("observed_state"),
-                    },
-                )
-            )
-            if flock_id:
-                flock_ids.add(flock_id)
-                # Flock membership is declared by the resident's own config,
-                # which is what makes a mesh visible as more than co-location.
-                edges.append(
-                    _edge(
-                        source_id=node_id,
-                        target_id=_flock_node_id(flock_id),
-                        relation_type="member_of",
-                        source_adapter=self.__class__.__name__,
-                        evidence_field="flock_id",
-                        confidence="observed",
-                    )
-                )
-
-        entities.extend(_flock_entities(flock_ids, self.__class__.__name__))
-        return DiscoveryResult(entities=entities, edges=edges)
-
-
 class TingWorkDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
     """Discover the dispatcher and what it currently has in flight."""
 
@@ -1463,65 +1352,6 @@ _VENDOR_LABELS = {
     "xai": "xAI",
     "deepseek": "DeepSeek",
 }
-
-
-def _flock_node_id(flock_id: str) -> str:
-    """One node per flock, shared by every adapter and cluster that sees it.
-
-    A flock is a mesh, not a place: the same flock spans clusters, so its id
-    must not be scoped by one.
-    """
-    return f"flock:{_slug(flock_id)}"
-
-
-def _flock_entities(
-    flock_ids: Iterable[str],
-    source_adapter: str,
-    described: Mapping[str, Mapping[str, Any]] | None = None,
-) -> list[DiscoveredEntity]:
-    """The flocks that anything actually belongs to.
-
-    `member_of` edges pointed at a `flock:` id that nothing emitted, so every
-    mesh edge dangled and the canvas drew no connection between agents that
-    are demonstrably on the same mesh.
-
-    `described` carries what the source knows about a flock beyond its id — its
-    name, what it is for, and the subject its members talk over. A flock named
-    from its id alone is a fallback, used only for one nothing described.
-    """
-    records = described or {}
-    entities: list[DiscoveredEntity] = []
-    for flock_id in sorted({f for f in flock_ids if f}):
-        record = records.get(flock_id, {})
-        subject = str(record.get("natsSubject") or "").strip()
-        entities.append(
-            DiscoveredEntity(
-                id=_flock_node_id(flock_id),
-                kind="flock",
-                name=str(record.get("name") or "").strip() or humanize_flock(flock_id),
-                source_adapter=source_adapter,
-                metadata={
-                    "flockId": flock_id,
-                    "purpose": str(record.get("domain") or "").strip(),
-                    # A standing flock of residents, as opposed to the flock a
-                    # workflow session runs for as long as it lasts.
-                    "meshKind": "standing",
-                    # Claimed only where there is evidence: a NATS subject is
-                    # how a Flokk mesh actually carries traffic.
-                    "meshTransport": "nats" if subject else "",
-                    "meshSubject": subject,
-                },
-            )
-        )
-    return entities
-
-
-def humanize_flock(flock_id: str) -> str:
-    """Name a flock for a human. `flock-k8s` is an id, not a name."""
-    stripped = flock_id.removeprefix("flock-").replace("-", " ").replace("_", " ").strip()
-    if not stripped:
-        return flock_id
-    return f"{stripped.title()} flock"
 
 
 def _vendor_label(vendor: str) -> str:

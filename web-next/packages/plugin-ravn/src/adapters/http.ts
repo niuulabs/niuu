@@ -16,9 +16,7 @@ import type {
   PersonaCreateRequest,
   PersonaForkRequest,
   PersonaFilter,
-  ITriggerStore,
 } from '../ports';
-import type { CreatedTrigger, Trigger, TriggerKind } from '../domain/trigger';
 
 // ---------------------------------------------------------------------------
 // Internal raw types (snake_case server responses)
@@ -211,64 +209,6 @@ export function buildRavnPersonaAdapter(client: ApiClient): IPersonaStore {
         { new_name: req.newName },
       );
       return toDetail(raw);
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Ravns, Sessions, Triggers, Budget — raw wire shapes
-// ---------------------------------------------------------------------------
-
-interface RawTrigger {
-  id: string;
-  kind: string;
-  persona_name: string;
-  spec: string;
-  repo: string;
-  enabled: boolean;
-  created_at: string;
-  /** Only present on the POST /triggers (create) response, not GET (list). */
-  execution_enabled?: boolean;
-}
-
-function toTrigger(raw: RawTrigger): Trigger {
-  return {
-    id: raw.id,
-    kind: raw.kind as TriggerKind,
-    personaName: raw.persona_name,
-    spec: raw.spec,
-    repo: raw.repo ?? '',
-    enabled: raw.enabled,
-    createdAt: raw.created_at,
-  };
-}
-
-function toCreatedTrigger(raw: RawTrigger): CreatedTrigger {
-  return { ...toTrigger(raw), executionEnabled: raw.execution_enabled ?? false };
-}
-
-/**
- * Build an ITriggerStore backed by the Ravn REST API.
- */
-export function buildRavnTriggerAdapter(client: ApiClient): ITriggerStore {
-  return {
-    async listTriggers() {
-      const raw = await client.get<RawTrigger[]>('/triggers');
-      return raw.map(toTrigger);
-    },
-    async createTrigger(t) {
-      const body = {
-        kind: t.kind,
-        persona_name: t.personaName,
-        spec: t.spec,
-        repo: t.repo,
-        enabled: t.enabled,
-      };
-      const raw = await client.post<RawTrigger>('/triggers', body);
-      return toCreatedTrigger(raw);
-    },
-    async deleteTrigger(id) {
-      await client.delete<void>(`/triggers/${encodeURIComponent(id)}`);
     },
   };
 }

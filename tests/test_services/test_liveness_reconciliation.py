@@ -100,14 +100,14 @@ class TestReconcileLiveness:
     async def test_exempt_workload_type_never_reaped(self, service, repo):
         """Exempted long-lived workloads idle by design — quiet is not dead."""
         old = datetime.now(UTC) - timedelta(seconds=3600)
-        exempted = _session(SessionStatus.RUNNING, old, workload_type="ravn_flock")
+        exempted = _session(SessionStatus.RUNNING, old, workload_type="batch")
         plain = _session(SessionStatus.RUNNING, old)
         await repo.create(exempted)
         await repo.create(plain)
 
         count = await service.reconcile_liveness(
             stale_after_seconds=600,
-            exempt_workload_types=["ravn_flock"],
+            exempt_workload_types=["batch"],
         )
 
         assert count == 1
@@ -116,8 +116,8 @@ class TestReconcileLiveness:
 
     async def test_no_exemptions_by_default_argument(self, service, repo):
         old = datetime.now(UTC) - timedelta(seconds=3600)
-        flock = _session(SessionStatus.RUNNING, old, workload_type="ravn_flock")
-        await repo.create(flock)
+        batch = _session(SessionStatus.RUNNING, old, workload_type="batch")
+        await repo.create(batch)
 
         count = await service.reconcile_liveness(stale_after_seconds=600)
 

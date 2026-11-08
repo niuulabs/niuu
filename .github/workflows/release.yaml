@@ -43,7 +43,7 @@ jobs:
     strategy:
       matrix:
         platform: [amd64, arm64]
-        container: [agent, skuld, openshell, devrunner, niuu-web, niuu, gbrain]
+        container: [skuld, openshell, devrunner, niuu-web, niuu, gbrain]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -107,7 +107,7 @@ jobs:
       id-token: write
     strategy:
       matrix:
-        container: [agent, skuld, openshell, devrunner, niuu-web, niuu, gbrain]
+        container: [skuld, openshell, devrunner, niuu-web, niuu, gbrain]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -188,7 +188,7 @@ jobs:
       packages: read
     strategy:
       matrix:
-        container: [agent, skuld, openshell, devrunner, niuu-web, niuu, gbrain]
+        container: [skuld, openshell, devrunner, niuu-web, niuu, gbrain]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -442,69 +442,6 @@ jobs:
           path: dist/niuu-${{ matrix.os }}-${{ matrix.arch }}
 
   # ---------------------------------------------------------------------------
-  # Ravn binary
-  # ---------------------------------------------------------------------------
-  build-ravn:
-    name: "Build Ravn (${{ matrix.os }}/${{ matrix.arch }})"
-    needs: [version]
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
-      id-token: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: darwin
-            arch: arm64
-            runner: macos-15
-          - os: linux
-            arch: amd64
-            runner: ubuntu-latest
-          - os: linux
-            arch: arm64
-            runner: ubuntu-24.04-arm
-    steps:
-      - name: Harden runner
-        if: runner.os == 'Linux'
-        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Linux ARM64 Nuitka toolchain
-        if: matrix.os == 'linux' && matrix.arch == 'arm64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld
-          {
-            echo "CC=clang"
-            echo "CXX=clang++"
-            echo "LDFLAGS=-fuse-ld=lld"
-          } >> "$GITHUB_ENV"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: "latest"
-
-      - name: Set up Python 3.12
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --python 3.12 --extra cli --extra dev
-
-      - name: Build
-        run: make build-ravn
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: ravn-${{ matrix.os }}-${{ matrix.arch }}
-          path: dist/ravn-${{ matrix.os }}-${{ matrix.arch }}
-
-  # ---------------------------------------------------------------------------
   # Helm charts
   # ---------------------------------------------------------------------------
   build-charts:
@@ -535,7 +472,7 @@ jobs:
         run: |
           VERSION="${{ needs.version.outputs.version }}"
 
-          for CHART in agent bifrost ravn skuld volundr ting skuld-planner niuu-shared niuu mimir gbrain; do
+          for CHART in bifrost skuld volundr ting skuld-planner niuu-shared niuu mimir gbrain; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
@@ -548,8 +485,6 @@ jobs:
           helm package charts/mimir -d .helm-packages/
           helm package charts/gbrain -d .helm-packages/
           helm package charts/bifrost -d .helm-packages/
-          helm package charts/agent -d .helm-packages/
-          helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/skuld-planner -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
@@ -570,9 +505,7 @@ jobs:
         run: |
           helm push .helm-packages/mimir-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/gbrain-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/agent-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/bifrost-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-[0-9]*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-planner-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/volundr-*.tgz ${{ env.CHART_REPO }}
@@ -604,7 +537,6 @@ jobs:
         scan-containers,
         build-charts,
         build-cli,
-        build-ravn,
         docs-check,
       ]
     runs-on: ubuntu-latest
@@ -633,16 +565,10 @@ jobs:
           path: cli-binaries
           pattern: niuu-*
 
-      - name: Download Ravn artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          path: cli-binaries
-          pattern: ravn-*
-
       - name: Prepare release assets
         run: |
           mkdir -p release-assets
-          for dir in cli-binaries/niuu-*/ cli-binaries/ravn-*/; do
+          for dir in cli-binaries/niuu-*/; do
             [ -d "$dir" ] || continue
             binary=$(basename "$dir")
             cp "${dir}${binary}" "release-assets/${binary}"
@@ -656,7 +582,7 @@ jobs:
           sed "s|NIUU_IMAGE_TAG:-latest|NIUU_IMAGE_TAG:-${VERSION}|" scripts/install.sh > release-assets/install.sh
           grep -q "NIUU_IMAGE_TAG:-${VERSION}" release-assets/install.sh
           chmod +x release-assets/install.sh
-          cd release-assets && sha256sum niuu-* ravn-* install.sh > checksums.txt
+          cd release-assets && sha256sum niuu-* install.sh > checksums.txt
           ls -lh
 
       - name: Attest build provenance
@@ -664,7 +590,6 @@ jobs:
         with:
           subject-path: |
             release-assets/niuu-*
-            release-assets/ravn-*
             release-assets/install.sh
 
       - name: Create GitHub Release
@@ -675,6 +600,5 @@ jobs:
             --title "Release v${{ needs.version.outputs.version }}" \
             --generate-notes \
             release-assets/niuu-* \
-            release-assets/ravn-* \
             release-assets/install.sh \
             release-assets/checksums.txt

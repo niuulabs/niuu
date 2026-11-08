@@ -11,8 +11,8 @@ import pytest
 import respx
 
 from niuu.domain.models import Principal
-from ravn.adapters.personas.loader import PersonaConfig
-from ravn.domain.persona_document import portable_persona_from_config
+from personas.domain.persona import PersonaConfig
+from personas.domain.persona_document import portable_persona_from_config
 from ting.adapters.volundr_http import VolundrHTTPAdapter
 from ting.ports.volundr import (
     ActivityStreamConnected,
@@ -359,7 +359,7 @@ class TestSpawnSession:
             system_prompt="",
             initial_prompt="go",
             base_branch="dev",
-            workload_type="ravn_flock",
+            workload_type="default",
         )
         session = await adapter.spawn_session(req)
 
@@ -368,7 +368,7 @@ class TestSpawnSession:
             "type": "local_mount",
             "local_path": str(local_repo.resolve()),
         }
-        assert body["workload_type"] == "ravn_flock"
+        assert body["workload_type"] == "default"
         assert session.repo == str(local_repo.resolve())
 
     @pytest.mark.asyncio

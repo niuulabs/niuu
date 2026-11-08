@@ -54,6 +54,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from mimir.compiled_truth import CompiledTruthPage
 from mimir.compiled_truth import parse_page as parse_compiled_truth_page
 from mimir.config import LiveActivityConfig
+from mimir.exceptions import MimirUnavailableError
 from mimir.live_activity import LiveActivityRecorder
 from mimir.ports.deployment import DeploymentRequest, KnowledgeDeploymentPort
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
@@ -71,8 +72,7 @@ from niuu.domain.models import Principal
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 from niuu.ports.mimir import MimirPort
-from ravn.adapters.tools._url_security import check_ssrf
-from ravn.domain.exceptions import MimirUnavailableError
+from niuu.utils.url_security import check_ssrf
 
 logger = logging.getLogger(__name__)
 _ALLOWED_INGEST_URL_SCHEMES = {"http", "https"}
@@ -1366,7 +1366,7 @@ class MimirRouter:
             raise HTTPException(
                 422, "Tenant connections cannot access host files or environment secrets"
             )
-        if request.adapter not in {"", "ravn.adapters.mimir.http.HttpMimirAdapter"}:
+        if request.adapter not in {"", "mimir.adapters.http.HttpMimirAdapter"}:
             raise HTTPException(422, "Native adapters must be provisioned by the deployment target")
         if set(request.kwargs) - {"base_url", "mount", "timeout"}:
             raise HTTPException(422, "Unsupported tenant connection settings")
@@ -1455,8 +1455,8 @@ class MimirRouter:
         if single_base_mount:
             return self._adapter
 
-        from ravn.adapters.mimir.composite import CompositeMimirAdapter
-        from ravn.domain.mimir import MimirMount, WriteRouting
+        from mimir.adapters.composite import CompositeMimirAdapter
+        from mimir.domain import MimirMount, WriteRouting
 
         return CompositeMimirAdapter(
             mounts=[
@@ -1486,7 +1486,7 @@ class MimirRouter:
         self, query: str, mount_name: str | None
     ) -> list[tuple[str, MimirPage]]:
         """Search one mount, or every mount, naming the mount each result came from."""
-        from ravn.adapters.mimir.composite import CompositeMimirAdapter
+        from mimir.adapters.composite import CompositeMimirAdapter
 
         if mount_name is not None:
             port, resolved = self._resolve_port(mount_name)
@@ -1592,7 +1592,7 @@ class MimirRouter:
                     connection = mount.get("connection")
                     if mount.get("kind") == "remote" and self._public_url:
                         connection = {
-                            "adapter": "ravn.adapters.mimir.http.HttpMimirAdapter",
+                            "adapter": "mimir.adapters.http.HttpMimirAdapter",
                             "kwargs": {"base_url": self._public_url, "mount": mount["name"]},
                             "auth_ref": "workload:mimir",
                         }

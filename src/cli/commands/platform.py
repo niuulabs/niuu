@@ -422,7 +422,6 @@ _AUTH_ADAPTER_ENV_KEYS = frozenset(
     {
         "IDENTITY__ADAPTER",
         "AUTHORIZATION__ADAPTER",
-        "RAVN_API_AUTH__ADAPTER",
         "AUTH__ADAPTER",
         "HOST_IDENTITY__ADAPTER",
         "MIMIR_AUTH__ADAPTER",
@@ -495,9 +494,6 @@ OPENSHELL_POD_MANAGER_ADAPTER = (
 LOCAL_RESIDENT_RUNTIME_ADAPTER = (
     "volundr.adapters.outbound.local_resident_runtime.LocalContainerResidentRuntimeController"
 )
-HOST_PROCESS_RESIDENT_RUNTIME_ADAPTER = (
-    "volundr.adapters.outbound.host_resident_runtime.HostProcessResidentRuntimeController"
-)
 MINI_RESIDENTS_DIR = "~/.niuu/residents"
 #: Local defaults an operator can replace by setting the variable themselves.
 _OPERATOR_OWNED_LOCAL_ENV = frozenset(
@@ -521,10 +517,6 @@ OPENCLAW_RESIDENT_SESSION_ADAPTER = (
 )
 HERMES_RESIDENT_SESSION_ADAPTER = (
     "volundr.adapters.outbound.hermes_gateway.HermesResidentSessionController"
-)
-LOCAL_RAVN_IMAGE = (
-    "ghcr.io/niuulabs/openshell@"
-    "sha256:b17395a07b7dd19798c9e424a4139e2518a8b0e0bfee2305b5352a33140f383b"
 )
 LOCAL_NEMOCLAW_IMAGE = (
     "ghcr.io/nvidia/openshell-community/sandboxes/openclaw@"
@@ -614,7 +606,7 @@ def _effective_bifrost_config(settings: CLISettings) -> BifrostConfig:
     from cli.config import auth_adapter_env
 
     # Reuse the same computed kwargs every other co-hosted service's oidc
-    # slot gets (IDENTITY__KWARGS / RAVN_API_AUTH__KWARGS / ... are all the
+    # slot gets (IDENTITY__KWARGS / AUTH__KWARGS / ... are all the
     # same JSON — see auth_adapter_env()) rather than recomputing them.
     oidc_kwargs = json.loads(auth_adapter_env(settings.host_auth)["IDENTITY__KWARGS"])
     return settings.bifrost.model_copy(
@@ -811,12 +803,8 @@ def model_server_seed_connections(settings: CLISettings) -> list[dict[str, Any]]
 
 
 def _mini_resident_runtimes_config(settings: CLISettings) -> dict[str, Any]:
-    """Resident runtime configuration for the selected local resident runtime."""
-    builders = {
-        "process": _host_process_resident_runtimes,
-        "docker": _docker_resident_runtimes,
-    }
-    return builders[settings.residents.runtime](settings)
+    """Resident runtime configuration for the local resident runtime."""
+    return _docker_resident_runtimes(settings)
 
 
 def _host_resident_platform_url(settings: CLISettings) -> str:
@@ -825,80 +813,6 @@ def _host_resident_platform_url(settings: CLISettings) -> str:
     if host in {"", "0.0.0.0", "::"}:
         host = "127.0.0.1"
     return f"http://{host}:{settings.server.port}"
-
-
-def _ravn_local_profile(
-    platform_url: str,
-    *,
-    description: str,
-    runtime_values: dict[str, Any],
-) -> dict[str, Any]:
-    """The ``ravn-local`` profile, identical across the local resident runtimes."""
-    return {
-        "id": "ravn-local",
-        "display_name": "Resident Ravn (Local)",
-        "description": description,
-        "backend": "local",
-        "engine": "ravn",
-        "capabilities": MINI_RESIDENT_CAPABILITIES,
-        "default_model": MINI_RESIDENT_CODEX_MODEL,
-        "allowed_models": [MINI_RESIDENT_CODEX_MODEL],
-        "catalog_vendors": [],
-        "labels": ["resident", "ravn", "local"],
-        "deployment": {
-            "values": {
-                **runtime_values,
-                "broker": {
-                    "cliType": "codex-ws",
-                    "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
-                    "skipPermissions": True,
-                },
-                "session": {"reasoningEffort": "high"},
-                "resident": {
-                    "persona": "product-steward",
-                    "llm": {
-                        "provider": {
-                            "adapter": "ravn.adapters.llm.bifrost.BifrostAdapter",
-                            "kwargs": {"base_url": f"{platform_url}/api/v1/bifrost"},
-                        }
-                    },
-                    "platform": {"enabled": True, "baseUrl": platform_url},
-                    "personaSource": {
-                        "adapter": "ravn.adapters.personas.http.HttpPersonaAdapter",
-                        "kwargs": {"base_url": platform_url},
-                    },
-                    "mimir": {
-                        "instances": [{"name": "local", "role": "shared", "url": platform_url}],
-                        "writeRouting": {"default": ["local"]},
-                    },
-                },
-            }
-        },
-    }
-
-
-def _host_process_resident_runtimes(settings: CLISettings) -> dict[str, Any]:
-    """Ravn residents as host processes; no container engine involved."""
-    platform_url = _host_resident_platform_url(settings)
-    return {
-        "controllers": [
-            {
-                "adapter": HOST_PROCESS_RESIDENT_RUNTIME_ADAPTER,
-                "kwargs": {
-                    "residents_dir": MINI_RESIDENTS_DIR,
-                    "volundr_api_url": platform_url,
-                },
-            }
-        ],
-        "session_controllers": [],
-        "profiles": [
-            _ravn_local_profile(
-                platform_url,
-                description="Long-lived Ravn resident running as processes on this host",
-                runtime_values={},
-            )
-        ],
-    }
 
 
 def _docker_resident_runtimes(settings: CLISettings) -> dict[str, Any]:
@@ -928,10 +842,7 @@ def _docker_resident_runtimes(settings: CLISettings) -> dict[str, Any]:
         "controllers": [
             {
                 "adapter": LOCAL_RESIDENT_RUNTIME_ADAPTER,
-                "kwargs": {
-                    "residents_dir": MINI_RESIDENTS_DIR,
-                    "volundr_api_url": local_platform_url,
-                },
+                "kwargs": {"residents_dir": MINI_RESIDENTS_DIR},
             }
         ],
         "session_controllers": [
@@ -945,14 +856,6 @@ def _docker_resident_runtimes(settings: CLISettings) -> dict[str, Any]:
             },
         ],
         "profiles": [
-            _ravn_local_profile(
-                local_platform_url,
-                description="Long-lived Ravn resident hosted by the local container engine",
-                runtime_values={
-                    "image": LOCAL_RAVN_IMAGE,
-                    "runtime": {"service": {"name": "skuld", "port": 9200}},
-                },
-            ),
             {
                 "id": "nemoclaw-local",
                 "display_name": "NemoClaw (Local)",
@@ -1306,19 +1209,5 @@ def create_platform_commands(
         from skuld.forge_mcp.stdio import main as forge_mcp_main
 
         raise typer.Exit(forge_mcp_main(list(ctx.args)))
-
-    @platform_app.command(
-        hidden=True,
-        context_settings={
-            "allow_extra_args": True,
-            "ignore_unknown_options": True,
-            "help_option_names": [],
-        },
-    )
-    def ravn(ctx: typer.Context) -> None:
-        """Run the Ravn CLI (internal, host-process residents in a compiled binary)."""
-        from ravn.cli.commands import app as ravn_app
-
-        ravn_app(args=list(ctx.args), prog_name="ravn")
 
     return platform_app

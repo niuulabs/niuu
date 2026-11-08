@@ -738,7 +738,7 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
         if spec.pod_spec:
             containers[-1]["volumeMounts"].extend(spec.pod_spec.volume_mounts)
 
-        # Append contributor-provided init containers (e.g. ravn config writers).
+        # Append contributor-provided init containers (e.g. credential writers).
         if spec.pod_spec:
             containers.extend(spec.pod_spec.init_containers)
 

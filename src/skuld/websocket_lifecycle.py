@@ -44,7 +44,7 @@ def _sanitize_log(value: object) -> str:
 
 
 class WebSocketLifecycleMixin:
-    """Own browser, CLI, and Ravn WebSocket connection handling."""
+    """Own browser and CLI WebSocket connection handling."""
 
     async def _authorize_websocket(self, websocket: WebSocket, *, endpoint: str) -> bool:
         """Enforce configured ownership using only proxy-verified identity."""
@@ -66,7 +66,7 @@ class WebSocketLifecycleMixin:
         if principal is None:
             if (
                 cfg.allow_loopback
-                and endpoint in ("handle_cli_websocket", "handle_ravn_websocket")
+                and endpoint == "handle_cli_websocket"
                 and _is_loopback_ws_client(websocket)
                 and not websocket.headers.get("x-forwarded-for")
             ):
@@ -712,78 +712,3 @@ class WebSocketLifecycleMixin:
         logger.info("handle_cli_websocket: waiting for CLI disconnect")
         await self._transport.wait_for_cli_disconnect()
         logger.info("handle_cli_websocket: CLI disconnected, handler returning")
-
-    async def handle_ravn_websocket(self, websocket: WebSocket, peer_id: str) -> None:
-        """Handle a Ravn WebSocket connection at /ws/ravn/{peer_id}.
-
-        Accepts NDJSON collaboration frames projected by Ravn and forwards
-        them to the room adapter. Only active when room mode is enabled.
-        """
-        if self._room_bridge is None:
-            logger.warning(
-                "handle_ravn_websocket: room mode disabled, rejecting peer_id=%s",
-                _sanitize_log(peer_id),
-            )
-            await websocket.close(code=1008, reason="Room mode is not enabled")
-            return
-
-        if not await self._authorize_websocket(websocket, endpoint="handle_ravn_websocket"):
-            await websocket.close(code=1008, reason="Not authorized for this session")
-            return
-
-        await websocket.accept()
-        logger.info("handle_ravn_websocket: Ravn connected peer_id=%s", _sanitize_log(peer_id))
-
-        # Register with peer_id as initial persona; enriched on first frame
-        await self._room_bridge.register(
-            peer_id=peer_id,
-            persona=peer_id,
-            websocket=websocket,
-        )
-        _registered_with_metadata = False
-
-        try:
-            while True:
-                raw = await websocket.receive_text()
-                for line in raw.splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        frame = json.loads(line)
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            "handle_ravn_websocket: invalid JSON from peer_id=%s",
-                            _sanitize_log(peer_id),
-                        )
-                        continue
-
-                    # Enrich participant on first frame with persona metadata
-                    if not _registered_with_metadata and (
-                        frame.get("persona") or frame.get("subscribes_to")
-                    ):
-                        _registered_with_metadata = True
-                        await self._room_bridge.register(
-                            peer_id=peer_id,
-                            persona=frame.get("persona", peer_id),
-                            websocket=websocket,
-                            display_name=frame.get("display_name", ""),
-                            subscribes_to=frame.get("subscribes_to"),
-                            emits=frame.get("emits"),
-                            tools=frame.get("tools"),
-                        )
-
-                    await self._room_bridge.handle_collaboration_frame(peer_id, frame)
-
-        except WebSocketDisconnect:
-            logger.info(
-                "handle_ravn_websocket: Ravn disconnected peer_id=%s",
-                _sanitize_log(peer_id),
-            )
-        except Exception:
-            logger.exception(
-                "handle_ravn_websocket: error from peer_id=%s",
-                _sanitize_log(peer_id),
-            )
-        finally:
-            await self._room_bridge.unregister(peer_id)

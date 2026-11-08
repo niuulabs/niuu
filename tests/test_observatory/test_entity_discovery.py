@@ -17,7 +17,6 @@ from observatory.entity_discovery import (
     KubernetesDiscoveryAdapter,
     LaevateinnGatewayDiscoveryAdapter,
     MimirDiscoveryAdapter,
-    RavnResidentsDiscoveryAdapter,
     StaticRelationshipDiscoveryAdapter,
     TingWorkDiscoveryAdapter,
     VolundrSessionsDiscoveryAdapter,
@@ -2076,105 +2075,6 @@ async def test_a_model_no_provider_serves_gets_no_edge() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ravn_discovers_residents_including_non_cluster_ones() -> None:
-    adapter = RavnResidentsDiscoveryAdapter(
-        base_url="http://ravn.test",
-        cluster="ymir",
-        transport=_routed(
-            {
-                "/api/v1/ravn/ravens": [
-                    {
-                        "id": "ivaldi",
-                        "resident_name": "Ivaldi",
-                        "persona_name": "Workshop Steward",
-                        "status": "online",
-                        "model": "nemotron",
-                        "deployment": "local",
-                        "location": "saehrimnir",
-                        "flock_id": "workshop",
-                    }
-                ]
-            }
-        ),
-    )
-
-    result = await adapter.discover()
-
-    resident = result.entities[0]
-    assert resident.kind == "ravn_long"
-    assert resident.name == "Ivaldi"
-    assert resident.host == "saehrimnir"
-    assert resident.status == "healthy"
-    assert resident.metadata["deployment"] == "local"
-
-
-@pytest.mark.asyncio
-async def test_a_resident_in_a_flock_gets_a_membership_edge() -> None:
-    adapter = RavnResidentsDiscoveryAdapter(
-        base_url="http://ravn.test",
-        cluster="ymir",
-        transport=_routed(
-            {"/api/v1/ravn/ravens": [{"id": "a", "resident_name": "A", "flock_id": "workshop"}]}
-        ),
-    )
-
-    result = await adapter.discover()
-
-    assert result.edges[0]["relationType"] == "member_of"
-    assert result.edges[0]["targetId"] == "flock:workshop"
-
-
-@pytest.mark.asyncio
-async def test_a_resident_publishing_an_agent_card_is_an_owner_visible_a2a_agent() -> None:
-    card = "https://guild.test/api/v1/forge/resident-runtimes/r1/a2a/.well-known/agent-card.json"
-    adapter = RavnResidentsDiscoveryAdapter(
-        base_url="http://ravn.test",
-        cluster="valhalla",
-        transport=_routed(
-            {
-                "/api/v1/ravn/ravens": [
-                    {
-                        "id": "r1",
-                        "resident_name": "Muninn",
-                        "owner_id": "user-a",
-                        "tenant_id": "tenant-a",
-                        "chat_endpoint": "/s/r1/session",
-                        "a2a_card_url": card,
-                        "a2a_endpoint_url": "https://guild.test/api/v1/forge/resident-runtimes/r1/a2a",
-                    },
-                    {"id": "r2", "resident_name": "Hugin", "owner_id": "user-a"},
-                ]
-            }
-        ),
-    )
-
-    agent, plain = (await adapter.discover()).entities
-
-    assert agent.endpoints == {
-        "chat": "/s/r1/session",
-        "a2a": "https://guild.test/api/v1/forge/resident-runtimes/r1/a2a",
-        "a2aCard": card,
-    }
-    assert agent.metadata["agentKind"] == "resident"
-    assert agent.metadata["visibility"] == "user"
-    assert agent.metadata["ownerId"] == "user-a"
-    assert agent.metadata["tenantId"] == "tenant-a"
-    assert "a2aCard" not in plain.endpoints
-    assert "agentKind" not in plain.metadata
-
-
-@pytest.mark.asyncio
-async def test_a_resident_without_a_flock_gets_no_membership_edge() -> None:
-    adapter = RavnResidentsDiscoveryAdapter(
-        base_url="http://ravn.test",
-        cluster="ymir",
-        transport=_routed({"/api/v1/ravn/ravens": [{"id": "a", "resident_name": "A"}]}),
-    )
-
-    assert (await adapter.discover()).edges == []
-
-
-@pytest.mark.asyncio
 async def test_ting_reports_what_is_in_flight() -> None:
     adapter = TingWorkDiscoveryAdapter(
         base_url="http://ting.test",
@@ -2914,26 +2814,4 @@ async def test_flock_session_mimir_mounts_are_discovered(tmp_path, monkeypatch) 
     assert sorted(mounts) == [
         ("reads", "https://mimir.yggdrasil.niuu.world/api/v1", "mimir-yggdrasil"),
         ("writes", "https://mimir.yggdrasil.niuu.world/api/v1", "mimir-yggdrasil"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_resident_discovery_asks_only_for_residents_every_member_may_see() -> None:
-    """The topology is one shared picture; it must not carry any user's own residents."""
-    seen: list[httpx.URL] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request.url)
-        return httpx.Response(200, json=[])
-
-    adapter = RavnResidentsDiscoveryAdapter(
-        base_url="http://ravn.test",
-        cluster="ymir",
-        transport=httpx.MockTransport(handler),
-    )
-
-    await adapter.discover()
-
-    assert [(url.path, dict(url.params)) for url in seen] == [
-        ("/api/v1/ravn/ravens", {"visibility": "system"})
     ]

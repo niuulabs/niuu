@@ -105,7 +105,7 @@ def test_managed_gbrain_registry_descriptor_contains_reference_not_token(tmp_pat
                 "name": "brain",
                 "initialized": True,
                 "mount": {
-                    "adapter": "ravn.adapters.mimir.gbrain.GBrainMimirAdapter",
+                    "adapter": "mimir.adapters.gbrain.GBrainMimirAdapter",
                     "kwargs": {
                         "mcp_url": "http://127.0.0.1:3000/mcp",
                         "api_token": "private-token",
@@ -128,6 +128,6 @@ def test_managed_gbrain_registry_descriptor_contains_reference_not_token(tmp_pat
         assert response.status_code == 200
         assert "private-token" not in response.text
         entry = next(item for item in response.json() if item["name"] == "brain")
-        assert entry["adapter"] == "ravn.adapters.mimir.gbrain.GBrainMimirAdapter"
+        assert entry["adapter"] == "mimir.adapters.gbrain.GBrainMimirAdapter"
         assert entry["kwargs"]["api_token_file"] == str(directory / "session-token")
     assert (directory / "session-token").stat().st_mode & 0o777 == 0o600

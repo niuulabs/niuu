@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from types import SimpleNamespace
-from uuid import uuid4
 
 import pytest
 
 from niuu.adapters.memory_credential_store import MemoryCredentialStore
-from niuu.domain.models import Realm
 from volundr.adapters.outbound import local_resident_runtime as local_runtime
 from volundr.adapters.outbound.local_resident_runtime import (
     LocalContainerResidentRuntimeController,
@@ -94,18 +91,7 @@ class _DockerClient:
         self.closed = True
 
 
-class _SkuldRegistry:
-    def __init__(self) -> None:
-        self.ports: dict[str, int] = {}
-
-    def register(self, session_id: str, port: int) -> None:
-        self.ports[session_id] = port
-
-    def unregister(self, session_id: str) -> None:
-        self.ports.pop(session_id, None)
-
-
-def _profile(engine: ResidentEngine = ResidentEngine.RAVN) -> ResidentDeploymentProfile:
+def _profile(engine: ResidentEngine = ResidentEngine.OPENCLAW) -> ResidentDeploymentProfile:
     runtime = {"service": {"name": "skuld", "port": 9200}}
     if engine is ResidentEngine.OPENCLAW:
         runtime.update(
@@ -139,7 +125,7 @@ def _profile(engine: ResidentEngine = ResidentEngine.RAVN) -> ResidentDeployment
     )
 
 
-def _runtime(engine: ResidentEngine = ResidentEngine.RAVN) -> ResidentRuntime:
+def _runtime(engine: ResidentEngine = ResidentEngine.OPENCLAW) -> ResidentRuntime:
     return ResidentRuntime(
         owner_id="local-user",
         tenant_id="local",
@@ -150,6 +136,13 @@ def _runtime(engine: ResidentEngine = ResidentEngine.RAVN) -> ResidentRuntime:
         engine=engine,
         profile_id=f"{engine.value}-local",
     )
+
+
+def _controller(tmp_path, **kwargs) -> LocalContainerResidentRuntimeController:
+    """A controller with the credential store every OpenClaw resident needs."""
+    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path), **kwargs)
+    controller.set_credential_store(MemoryCredentialStore())
+    return controller
 
 
 @pytest.fixture
@@ -165,9 +158,7 @@ async def test_local_resident_lifecycle_uses_existing_runtime_contract(
     tmp_path,
     docker_client: _DockerClient,
 ) -> None:
-    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
-    registry = _SkuldRegistry()
-    controller.set_skuld_registry(registry)
+    controller = _controller(tmp_path)
     runtime = _runtime()
     profile = _profile()
 
@@ -176,25 +167,36 @@ async def test_local_resident_lifecycle_uses_existing_runtime_contract(
     assert deployed.observed_state is ResidentObservedState.ACTIVE
     assert deployed.backend_ref["kind"] == "DockerContainer"
     assert deployed.backend_ref["host_port"] == 49152
-    assert deployed.endpoints[0].url == f"/s/{runtime.id}/session"
-    assert registry.ports[str(runtime.id)] == 49152
+    assert [
+        (endpoint.kind, endpoint.protocol, endpoint.url) for endpoint in deployed.endpoints
+    ] == [
+        (
+            "sessions",
+            "openclaw-gateway-v4",
+            f"/api/v1/forge/resident-runtimes/{runtime.id}/sessions",
+        )
+    ]
     assert docker_client.containers.container.kwargs["ports"] == {"9200/tcp": ("127.0.0.1", None)}
-    assert (tmp_path / str(runtime.id) / "sandbox" / "config" / "skuld.yaml").is_file()
-    assert (tmp_path / str(runtime.id) / "sandbox" / "config" / "ravn.yaml").is_file()
+    config_dir = tmp_path / str(runtime.id) / "sandbox" / "config"
+    assert (config_dir / "run-resident.sh").is_file()
+    assert not (config_dir / "skuld.yaml").exists()
+    assert not (config_dir / "ravn.yaml").exists()
 
     assert (
-        controller._spec_hash(runtime, await controller._materialize(runtime, profile))
+        controller._spec_hash(
+            runtime,
+            await controller._materialize(runtime, profile),
+            await controller._machine_environment(runtime),
+        )
         == (docker_client.containers.container.labels[local_runtime.SPEC_HASH_LABEL])
     )
 
     runtime = runtime.model_copy(update={"backend_ref": deployed.backend_ref})
     suspended = await controller.suspend(runtime)
     assert suspended.observed_state is ResidentObservedState.SUSPENDED
-    assert str(runtime.id) not in registry.ports
 
     resumed = await controller.resume(runtime)
     assert resumed.observed_state is ResidentObservedState.ACTIVE
-    assert registry.ports[str(runtime.id)] == 49152
 
     restarted = await controller.restart(runtime, profile)
     assert restarted.observed_state is ResidentObservedState.ACTIVE
@@ -207,7 +209,6 @@ async def test_local_resident_lifecycle_uses_existing_runtime_contract(
 
     deleted = await controller.delete(runtime)
     assert deleted is True
-    assert str(runtime.id) not in registry.ports
     assert not (tmp_path / str(runtime.id)).exists()
     await controller.close()
     assert docker_client.closed is True
@@ -286,7 +287,7 @@ async def test_reconcile_applies_the_persisted_desired_state(
     tmp_path,
     docker_client: _DockerClient,
 ) -> None:
-    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+    controller = _controller(tmp_path)
     runtime = _runtime()
     profile = _profile()
     deployed = await controller.deploy(runtime, profile)
@@ -308,17 +309,6 @@ def test_local_controller_supports_only_complete_local_profiles(
 ) -> None:
     controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
     no_image = _profile().model_copy(update={"deployment": {"values": {"runtime": {}}}})
-    flock_without_transport = _profile().model_copy(
-        update={
-            "capabilities": [ResidentCapability.FLOCK],
-            "deployment": {
-                "values": {
-                    "image": "resident",
-                    "runtime": {},
-                }
-            },
-        }
-    )
     malformed = _profile(ResidentEngine.OPENCLAW).model_copy(
         update={
             "deployment": {
@@ -335,7 +325,6 @@ def test_local_controller_supports_only_complete_local_profiles(
 
     assert controller.backend is ResidentBackend.LOCAL
     assert controller.supports(no_image) is False
-    assert controller.supports(flock_without_transport) is False
     assert controller.supports(malformed) is False
 
 
@@ -344,7 +333,7 @@ async def test_deploy_reuses_or_replaces_container_by_spec_hash(
     tmp_path,
     docker_client: _DockerClient,
 ) -> None:
-    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+    controller = _controller(tmp_path)
     runtime = _runtime()
     profile = _profile()
     await controller.deploy(runtime, profile)
@@ -366,7 +355,7 @@ async def test_reconcile_deploys_missing_and_replaces_changed_container(
     tmp_path,
     docker_client: _DockerClient,
 ) -> None:
-    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+    controller = _controller(tmp_path)
     runtime = _runtime()
     profile = _profile()
 
@@ -385,10 +374,7 @@ async def test_local_lifecycle_handles_nonrunning_and_missing_containers(
     tmp_path,
     docker_client: _DockerClient,
 ) -> None:
-    controller = LocalContainerResidentRuntimeController(
-        residents_dir=str(tmp_path),
-        retain_data_on_delete=True,
-    )
+    controller = _controller(tmp_path, retain_data_on_delete=True)
     runtime = _runtime()
     profile = _profile()
     deployed = await controller.deploy(runtime, profile)
@@ -417,10 +403,7 @@ async def test_local_readiness_reports_exit_and_timeout(
 ) -> None:
     runtime = _runtime()
     profile = _profile()
-    controller = LocalContainerResidentRuntimeController(
-        residents_dir=str(tmp_path),
-        ready_timeout=0,
-    )
+    controller = _controller(tmp_path, ready_timeout=0)
     spec = await controller._materialize(runtime, profile)
     container = _Container(docker_client.containers, {"name": "resident", "labels": {}})
 
@@ -447,6 +430,7 @@ async def test_local_device_failure_and_missing_machine_store_are_explicit(
     with pytest.raises(RuntimeError, match="require a credential store"):
         await controller._machine_environment(hermes)
 
+    controller.set_credential_store(MemoryCredentialStore())
     runtime = _runtime()
     await controller.deploy(runtime, _profile())
     container = docker_client.containers.container
@@ -471,64 +455,40 @@ def test_local_runtime_helpers_cover_container_states() -> None:
     assert local_runtime._published_port(SimpleNamespace(attrs={}), 9200) == 0
 
 
-class _FakeRealmRepository:
-    def __init__(self, realms: dict) -> None:
-        self._realms = realms
+def test_a_stopped_docker_engine_does_not_stop_the_controller_from_being_built(
+    tmp_path, monkeypatch
+) -> None:
+    def unreachable():
+        raise AssertionError("the controller must not contact the Docker Engine on construction")
 
-    async def get_realm(self, realm_ref):
-        return self._realms.get(realm_ref)
+    monkeypatch.setattr(local_runtime.docker, "from_env", unreachable)
 
-
-def _realm(slug: str) -> Realm:
-    now = datetime.now(UTC)
-    return Realm(
-        id=uuid4(),
-        slug=slug,
-        name=slug.title(),
-        sleipnir_domain=None,
-        owner_id=None,
-        instance_id=None,
-        created_at=now,
-        updated_at=now,
-    )
-
-
-async def test_resolve_realm_slug_is_empty_without_realm_id(tmp_path, docker_client) -> None:
     controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
-    runtime = _runtime()
-    assert await controller._resolve_realm_slug(runtime) == ""
+
+    assert controller.backend is ResidentBackend.LOCAL
 
 
-async def test_resolve_realm_slug_requires_a_configured_repository(tmp_path, docker_client) -> None:
-    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
-    runtime = _runtime().model_copy(update={"realm_id": uuid4()})
-    with pytest.raises(RuntimeError, match="no realm repository configured"):
-        await controller._resolve_realm_slug(runtime)
+async def test_closing_a_controller_that_never_used_docker_does_not_open_it(
+    tmp_path, monkeypatch
+) -> None:
+    def unreachable():
+        raise AssertionError("close must not open the Docker Engine client")
+
+    monkeypatch.setattr(local_runtime.docker, "from_env", unreachable)
+
+    await LocalContainerResidentRuntimeController(residents_dir=str(tmp_path)).close()
 
 
-async def test_resolve_realm_slug_fails_loudly_when_realm_is_gone(tmp_path, docker_client) -> None:
-    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
-    controller.set_realm_repository(_FakeRealmRepository({}))
-    runtime = _runtime().model_copy(update={"realm_id": uuid4()})
-    with pytest.raises(RuntimeError, match="no such realm exists"):
-        await controller._resolve_realm_slug(runtime)
-
-
-async def test_resolve_realm_slug_returns_the_bound_realms_slug(tmp_path, docker_client) -> None:
-    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
-    realm = _realm("workshop")
-    controller.set_realm_repository(_FakeRealmRepository({realm.id: realm}))
-    runtime = _runtime().model_copy(update={"realm_id": realm.id})
-    assert await controller._resolve_realm_slug(runtime) == "workshop"
-
-
-def test_unreachable_docker_engine_fails_with_a_remedy(tmp_path, monkeypatch) -> None:
+def test_an_operation_that_needs_a_stopped_docker_engine_fails_with_a_remedy(
+    tmp_path, monkeypatch
+) -> None:
     def unreachable():
         raise local_runtime.DockerException("Error while fetching server API version")
 
     monkeypatch.setattr(local_runtime.docker, "from_env", unreachable)
+    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
 
     with pytest.raises(RuntimeError, match="Start Docker") as raised:
-        LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+        controller._get_container(SimpleNamespace(id="r1"))
 
-    assert "residents.runtime: docker" in str(raised.value)
+    assert "Docker Engine" in str(raised.value)

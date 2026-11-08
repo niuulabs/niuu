@@ -1,1 +1,0 @@
-"""Ravn TUI view widgets."""

@@ -13,9 +13,9 @@ from typing import Any
 
 import pytest
 
-import ravn.adapters.tools.terminal_docker as terminal_docker
 from ravn.valkyrie_evolution import learned_tools as learned_tools_mod
 from ravn.valkyrie_evolution import tool_runtime as tool_runtime_mod
+from ravn.valkyrie_evolution.docker_shell import DockerShellConfig
 from ravn.valkyrie_evolution.learned_tools import (
     NETWORK_ALLOWED_DOCKER_NETWORK,
     NETWORK_DENIED_DOCKER_NETWORK,
@@ -1202,7 +1202,7 @@ async def test_forge_runner_scopes_container_network_to_declared_reach(
             super().__init__(**kwargs)
             created.append(self)
 
-    monkeypatch.setattr(terminal_docker, "DockerPersistentShell", _TrackingShell)
+    monkeypatch.setattr(learned_tools_mod, "DockerPersistentShell", _TrackingShell)
     tool_path = write_tool(
         tools_dir=tmp_path,
         skill_name="probe",
@@ -1591,7 +1591,7 @@ async def test_forge_runner_surfaces_shell_failures_with_enforcement(tmp_path) -
         assert result.enforcement == REACH_ENFORCEMENT_ENFORCED
 
 
-async def test_forge_runner_uses_unscopable_config_as_is(tmp_path, monkeypatch) -> None:
+async def test_forge_runner_scopes_a_custom_config_per_network_mode(tmp_path, monkeypatch) -> None:
     created: list[Any] = []
 
     class _TrackingShell(_FakeDockerShell):
@@ -1599,22 +1599,23 @@ async def test_forge_runner_uses_unscopable_config_as_is(tmp_path, monkeypatch) 
             super().__init__(**kwargs)
             created.append(self)
 
-    monkeypatch.setattr(terminal_docker, "DockerPersistentShell", _TrackingShell)
+    monkeypatch.setattr(learned_tools_mod, "DockerPersistentShell", _TrackingShell)
     tool_path = write_tool(
         tools_dir=tmp_path,
         skill_name="probe",
         tool_code="def run(signal):\n    return {'ok': True}\n",
     )
-    # A plain config object has no model_copy; it cannot be re-scoped per
-    # network mode, so the runner uses it as-is and reports its actual mode.
-    config = SimpleNamespace(network=NETWORK_DENIED_DOCKER_NETWORK, image="custom:image")
+    config = DockerShellConfig(image="custom:image", network="host", extra_mounts=("/data:/data",))
     runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path, docker_config=config)
 
     result = await runner.run(tool_path, {}, entry_point="run", timeout_seconds=5.0)
 
     assert result.ok
     assert result.enforcement == REACH_ENFORCEMENT_ENFORCED
-    assert created[0]._config is config
+    scoped = created[0]._config
+    assert scoped.network == NETWORK_DENIED_DOCKER_NETWORK
+    assert scoped.image == "custom:image"
+    assert scoped.extra_mounts == ("/data:/data",)
 
 
 # ---------------------------------------------------------------------------

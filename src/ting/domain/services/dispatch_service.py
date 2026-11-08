@@ -7,17 +7,14 @@ auto-continue and future consumers without an HTTP request context.
 from __future__ import annotations
 
 import asyncio
-import copy
-import hashlib
 import inspect
-import json
 import logging
 import random
 import re
 import string
 import uuid
 from collections import defaultdict
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,19 +24,10 @@ try:
 except ImportError:
     _catalog_saga_completed = None  # type: ignore[assignment]
 
-from mimir.connections import normalize_mimir_workload_config, resolve_mimir_registry_refs
-from niuu.config_models import default_session_definitions
-from niuu.domain.model_runtime import (
-    is_self_hosted_model,
-    session_definition_for_model,
-    transport_adapter_for_session_definition,
-    validate_session_definition_for_models,
-)
 from niuu.domain.models import Principal
 from niuu.domain.tags import matches_tags, residual_selector, satisfiable, validate_match
-from ravn.domain.persona_document import PortablePersonaSource
-from ting.config import DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS
-from ting.domain.flock_merge import build_flock_workload_config
+from personas.domain.persona_document import PortablePersonaSource
+from ting.domain.exceptions import WorkflowStepsHaveNoRunnerError
 from ting.domain.models import (
     DispatcherState,
     Phase,
@@ -55,16 +43,9 @@ from ting.domain.models import (
 from ting.domain.templates import BUNDLED_TEMPLATES_DIR, TemplatePhase, load_template
 from ting.domain.tracker_routing import select_tracker_for_saga
 from ting.domain.utils import _slugify
-from ting.domain.workflow_snapshot import (
-    workflow_mimir_from_snapshot,
-    workflow_name_from_snapshot,
-    workflow_personas_from_snapshot,
-    workflow_runtime_personas_from_snapshot,
-    workflow_stage_models_from_snapshot,
-)
+from ting.domain.workflow_snapshot import workflow_name_from_snapshot
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.event_bus import EventBusPort, TingEvent
-from ting.ports.flock_flow import FlockFlowProvider
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.tracker import TrackerFactory, TrackerPort
 from ting.ports.volundr import (
@@ -77,8 +58,6 @@ from ting.ports.workflow_repository import WorkflowRepository
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_WORKFLOW_SESSION_DEFINITION = "skuldCodex"
-
 
 # ---------------------------------------------------------------------------
 # Value objects
@@ -88,17 +67,6 @@ _READY_STATUSES = {"todo", "backlog", "triage"}
 _READY_STATUS_TYPES = {"unstarted"}
 _ACTIVE_SESSION_STATUSES = {"running", "starting", "creating"}
 _COMPLETED_LINEAR_STATES = {"completed", "cancelled"}
-_CLI_TRANSPORT_EXECUTOR = "ravn.adapters.executors.cli.CliTransportExecutor"
-# CLI transports that call their vendor's API unless pointed at the session's
-# model gateway, which is then how they serve a self-hosted model. OpenCode and
-# PI reach such a model through their own provider configuration instead.
-_MODEL_GATEWAY_TRANSPORTS = frozenset(
-    {
-        "skuld.transports.sdk.SDKTransport",
-        "skuld.transports.tmux_interactive.TmuxInteractiveTransport",
-        "skuld.transports.codex_ws.CodexWebSocketTransport",
-    }
-)
 
 
 def _sanitize_log(value: object) -> str:
@@ -111,187 +79,6 @@ def _supports_keyword_arg(method: object, keyword: str) -> bool:
         return keyword in inspect.signature(method).parameters
     except (TypeError, ValueError):
         return False
-
-
-def _workflow_persona_model_conflicts(
-    workflow_snapshot: dict[str, Any] | None,
-) -> dict[str, set[str]]:
-    if not isinstance(workflow_snapshot, dict):
-        return {}
-
-    graph = workflow_snapshot.get("graph")
-    if not isinstance(graph, dict):
-        return {}
-
-    persona_models: dict[str, set[str]] = defaultdict(set)
-    for node in list(graph.get("nodes") or []):
-        if not isinstance(node, dict) or str(node.get("kind") or "") != "stage":
-            continue
-        for member in list(node.get("stageMembers") or []):
-            if not isinstance(member, dict):
-                continue
-            persona_id = str(member.get("personaId") or "").strip()
-            model = str(member.get("model") or "").strip()
-            if persona_id and model:
-                persona_models[persona_id].add(model)
-
-    return {name: models for name, models in persona_models.items() if len(models) > 1}
-
-
-def _cli_executor(
-    transport_adapter: str,
-    model: str,
-    *,
-    workflow_cli_turn_timeout_seconds: float,
-    configured_models: list[Any] | None,
-) -> dict[str, Any]:
-    """The executor that runs a persona's turns on its session's CLI transport."""
-    executor_kwargs: dict[str, Any] = {"transport_adapter": transport_adapter}
-    if transport_adapter == "skuld.transports.sdk.SDKTransport":
-        executor_kwargs["transport_kwargs"] = {"turn_timeout_s": workflow_cli_turn_timeout_seconds}
-    elif transport_adapter == "skuld.transports.codex_ws.CodexWebSocketTransport":
-        executor_kwargs["transport_kwargs"] = {"skip_permissions": True}
-    if transport_adapter in _MODEL_GATEWAY_TRANSPORTS and is_self_hosted_model(
-        model, configured_models=configured_models
-    ):
-        # Only the persona can say its model is self-hosted: the
-        # session carries the gateway address whatever its personas
-        # run, and a cloud persona must keep its vendor's API.
-        executor_kwargs["model_gateway"] = True
-    return {"adapter": _CLI_TRANSPORT_EXECUTOR, "kwargs": executor_kwargs}
-
-
-def persona_on_model(
-    persona: dict[str, Any],
-    model: str,
-    *,
-    session_definitions: dict[str, Any],
-    workflow_cli_turn_timeout_seconds: float,
-    configured_models: list[Any] | None = None,
-) -> tuple[dict[str, Any], str | None]:
-    """Run a persona on a model, as a workflow stage does; return it and its session definition."""
-    definition, runtime_error = session_definition_for_model(
-        model,
-        session_definitions=session_definitions,
-        configured_models=configured_models,
-    )
-    if runtime_error:
-        raise ValueError(
-            f"Persona '{persona.get('name', 'unknown')}' model '{model}': {runtime_error}"
-        )
-    runtime_persona = {**persona, "llm": {**(persona.get("llm") or {}), "model": model}}
-    transport_adapter = transport_adapter_for_session_definition(
-        definition,
-        session_definitions=session_definitions,
-    )
-    if transport_adapter:
-        runtime_persona["executor"] = _cli_executor(
-            transport_adapter,
-            model,
-            workflow_cli_turn_timeout_seconds=workflow_cli_turn_timeout_seconds,
-            configured_models=configured_models,
-        )
-    return runtime_persona, definition
-
-
-def _resolve_workflow_execution(
-    workflow_snapshot: dict[str, Any] | None,
-    *,
-    fallback_model: str,
-    requested_definition: str | None,
-    session_definitions: dict[str, Any],
-    workflow_cli_turn_timeout_seconds: float,
-    configured_models: list[Any] | None = None,
-) -> tuple[str, str | None, list[dict[str, Any]]]:
-    if not workflow_snapshot:
-        return fallback_model, requested_definition, []
-
-    stage_models = workflow_stage_models_from_snapshot(workflow_snapshot)
-    if not stage_models:
-        raise ValueError("Workflow stages must declare an explicit model for each persona.")
-
-    conflicts = _workflow_persona_model_conflicts(workflow_snapshot)
-    if conflicts:
-        formatted = ", ".join(
-            f"{persona}=[{', '.join(sorted(models))}]"
-            for persona, models in sorted(conflicts.items())
-        )
-        raise ValueError(
-            "Workflow assigns multiple models to the same persona, "
-            f"which is unsupported: {formatted}"
-        )
-    requested_definition_error = validate_session_definition_for_models(
-        requested_definition,
-        stage_models,
-        session_definitions=session_definitions,
-        configured_models=configured_models,
-    )
-    if requested_definition and requested_definition_error:
-        logger.warning(
-            "Ignoring incompatible workflow session definition %s: %s",
-            _sanitize_log(requested_definition),
-            _sanitize_log(requested_definition_error),
-        )
-        requested_definition = None
-    personas: list[dict[str, Any]] = []
-    resolved_definitions: set[str] = set()
-    requested_transport_adapter = (
-        transport_adapter_for_session_definition(
-            requested_definition,
-            session_definitions=session_definitions,
-        )
-        if requested_definition
-        else None
-    )
-    for persona in workflow_runtime_personas_from_snapshot(workflow_snapshot):
-        if not isinstance(persona, dict):
-            continue
-        runtime_persona = dict(persona)
-        model = str(runtime_persona.pop("model", "")).strip()
-        if model:
-            llm = dict(runtime_persona.get("llm") or {})
-            llm["model"] = model
-            runtime_persona["llm"] = llm
-            resolved_definition = requested_definition
-            transport_adapter = requested_transport_adapter
-            if not resolved_definition:
-                resolved_definition, runtime_error = session_definition_for_model(
-                    model,
-                    session_definitions=session_definitions,
-                    configured_models=configured_models,
-                )
-                if runtime_error:
-                    raise ValueError(
-                        f"Persona '{runtime_persona.get('name', 'unknown')}' model '{model}': "
-                        f"{runtime_error}"
-                    )
-                transport_adapter = transport_adapter_for_session_definition(
-                    resolved_definition,
-                    session_definitions=session_definitions,
-                )
-            if resolved_definition:
-                resolved_definitions.add(resolved_definition)
-            if transport_adapter:
-                runtime_persona["executor"] = _cli_executor(
-                    transport_adapter,
-                    model,
-                    workflow_cli_turn_timeout_seconds=workflow_cli_turn_timeout_seconds,
-                    configured_models=configured_models,
-                )
-        personas.append(runtime_persona)
-
-    if len(resolved_definitions) == 1:
-        session_definition = next(iter(resolved_definitions))
-    else:
-        if requested_definition and resolved_definitions:
-            logger.warning(
-                "Ignoring requested session definition %s; workflow stages resolved to %s",
-                _sanitize_log(requested_definition),
-                ", ".join(_sanitize_log(definition) for definition in sorted(resolved_definitions)),
-            )
-        session_definition = None
-
-    return stage_models[0], session_definition, personas
 
 
 @dataclass(frozen=True)
@@ -413,71 +200,6 @@ def build_prompt(
         f" `{feature_branch}`, and ensure CI passes.",
     ]
     return "\n".join(parts)
-
-
-def build_flock_prompt(
-    issue: TrackerIssue,
-    repo: str,
-    feature_branch: str,
-    mimir_hosted_url: str = "",
-    workflow_snapshot: dict[str, Any] | None = None,
-) -> str:
-    """Build the initiative context for a flock session.
-
-    In flock mode we inject only the tracker ticket content here. Workflow
-    structure, persona prompts, repository bindings, and Mimir resources are
-    already conveyed structurally in the workload config and persona setup.
-    """
-    del repo, feature_branch, mimir_hosted_url, workflow_snapshot
-    parts = [
-        f"# Run: {issue.identifier} — {issue.title}",
-        "",
-        issue.description or "",
-    ]
-    return "\n".join(parts)
-
-
-def _format_persona_label(persona: dict) -> str:
-    """Return a log-friendly label for one persona dict.
-
-    Examples:
-      ``coordinator`` → ``coordinator(inherit)``
-      ``reviewer`` with ``llm.primary_alias=powerful, thinking_enabled=True``
-        → ``reviewer(powerful/thinking)``
-      ``security-auditor`` with ``llm.primary_alias=balanced``
-        → ``security-auditor(balanced)``
-    """
-    name = persona.get("name", "?")
-    llm = persona.get("llm", {})
-    alias = llm.get("primary_alias", "")
-    thinking = llm.get("thinking_enabled", False)
-    if not alias:
-        return f"{name}(inherit)"
-    suffix = "/thinking" if thinking else ""
-    return f"{name}({alias}{suffix})"
-
-
-def _snapshot_hash(personas: list[dict]) -> str:
-    """Return a short hash of the persona snapshot for log correlation."""
-    raw = json.dumps(personas, sort_keys=True, default=str)
-    return hashlib.sha256(raw.encode()).hexdigest()[:8]
-
-
-def _promote_default_ting_run_personas(personas: list[dict]) -> list[dict]:
-    """Prefer an explicit run completion authority for Ting's default flock path.
-
-    Ting's historical default was ``coordinator`` + ``reviewer``. For run
-    dispatches we want the completion-authority contract to be intentional, so
-    the legacy default pair is upgraded in-memory to ``run-executor`` +
-    ``reviewer`` unless the caller explicitly chose another flow/composition.
-    """
-    names = [str(persona.get("name") or "") for persona in personas]
-    if names != ["coordinator", "reviewer"]:
-        return personas
-
-    upgraded = copy.deepcopy(personas)
-    upgraded[0]["name"] = "run-executor"
-    return upgraded
 
 
 class TargetSelectionError(Exception):
@@ -657,13 +379,7 @@ def base_branch_for_repo(saga: Saga, repo: str) -> str:
 
 @dataclass
 class DispatchConfig:
-    """Dispatch-related config values needed by the service.
-
-    When *live_flock* is provided, flock fields are read from the live
-    settings object so that in-memory API changes take effect immediately.
-    When tests construct a ``DispatchConfig`` directly with ``flock_enabled``
-    etc., those values are used as-is (no live reference needed).
-    """
+    """Dispatch-related config values needed by the service."""
 
     default_system_prompt: str = ""
     default_model: str = "claude-sonnet-4-6"
@@ -671,46 +387,6 @@ class DispatchConfig:
     dispatch_prompt_template: str = ""
     max_cached_issues: int = 10_000
     templates_dir: Path = BUNDLED_TEMPLATES_DIR
-    flock_enabled: bool = False
-    flock_default_personas: list[dict] = field(
-        default_factory=lambda: [
-            {"name": "coordinator"},
-            {"name": "coder"},
-            {"name": "reviewer"},
-        ]
-    )
-    flock_default_workflow_name: str = ""
-    flock_mimir_hosted_url: str = ""
-    flock_mimir_registry_path: str = "~/.ravn/mimir/.mimir-registry.json"
-    flock_sleipnir_publish_urls: list[str] = field(default_factory=list)
-    flock_llm_config: dict = field(default_factory=dict)
-    flock_daily_budget_usd: float = 25.0
-    live_flock: object | None = field(default=None, repr=False)
-    session_definitions: dict[str, Any] = field(default_factory=default_session_definitions)
-    configured_models: list[Any] = field(default_factory=list)
-    workflow_cli_turn_timeout_seconds: float = DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS
-
-    def __getattribute__(self, name: str) -> object:
-        live = super().__getattribute__("live_flock")
-        if live is None:
-            return super().__getattribute__(name)
-        if name == "flock_enabled":
-            return live.enabled  # type: ignore[union-attr]
-        if name == "flock_default_personas":
-            return [p.to_dict() for p in live.default_personas]  # type: ignore[union-attr]
-        if name == "flock_default_workflow_name":
-            return live.default_workflow_name  # type: ignore[union-attr]
-        if name == "flock_mimir_hosted_url":
-            return live.mimir_hosted_url  # type: ignore[union-attr]
-        if name == "flock_mimir_registry_path":
-            return live.mimir_registry_path  # type: ignore[union-attr]
-        if name == "flock_sleipnir_publish_urls":
-            return list(live.sleipnir_publish_urls)  # type: ignore[union-attr]
-        if name == "flock_llm_config":
-            return dict(live.llm_config)  # type: ignore[union-attr]
-        if name == "flock_daily_budget_usd":
-            return float(live.daily_budget_usd)  # type: ignore[union-attr]
-        return super().__getattribute__(name)
 
 
 class DispatchService:
@@ -729,7 +405,6 @@ class DispatchService:
         config: DispatchConfig,
         sleipnir_publisher: object | None = None,
         event_bus: EventBusPort | None = None,
-        flow_provider: FlockFlowProvider | None = None,
         workflow_repo: WorkflowRepository | None = None,
         persona_source: PortablePersonaSource | None = None,
     ) -> None:
@@ -741,7 +416,6 @@ class DispatchService:
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._sleipnir_publisher = sleipnir_publisher
         self._event_bus = event_bus
-        self._flow_provider = flow_provider
         self._workflow_repo = workflow_repo
         self._persona_source = persona_source
 
@@ -885,9 +559,13 @@ class DispatchService:
         system_prompt: str = "",
         connection_id: str | None = None,
         session_definition: str | None = None,
-        persona_overrides: list[dict] | None = None,
     ) -> list[DispatchResult]:
-        """Spawn Volundr sessions for the given items."""
+        """Spawn Volundr sessions for the given items.
+
+        :raises WorkflowStepsHaveNoRunnerError: When any item belongs to a saga (or names a
+            workflow) that carries a workflow. Raised before any session is spawned, so a
+            refused batch has no side effects.
+        """
         await self._dispatcher_repo.get_or_create(owner_id)
 
         effective_model = model or self._config.default_model
@@ -923,8 +601,23 @@ class DispatchService:
         saga_map = {str(s.id): s for s in sagas}
         issue_cache = await self._build_issue_cache(adapters, sagas, self._config.max_cached_issues)
 
+        snapshots: dict[int, tuple[dict[str, Any] | None, str | None]] = {}
+        for index, item in enumerate(items):
+            known_saga = saga_map.get(item.saga_id)
+            if known_saga is None:
+                continue
+            snapshots[index] = await self._resolve_workflow_snapshot(item, known_saga)
+            if snapshots[index][0]:
+                logger.error(
+                    "Dispatch of issue %s refused: its saga %s runs a workflow and "
+                    "workflow steps have no runner",
+                    _sanitize_log(item.issue_id),
+                    _sanitize_log(known_saga.slug),
+                )
+                raise WorkflowStepsHaveNoRunnerError()
+
         results: list[DispatchResult] = []
-        for item in items:
+        for index, item in enumerate(items):
             saga = saga_map.get(item.saga_id)
             if saga is None:
                 logger.warning("Saga not found: %s", item.saga_id)
@@ -969,7 +662,7 @@ class DispatchService:
                     principal=principal,
                 )
                 integration_ids_by_target[integration_cache_key] = integration_ids
-            workflow_snapshot, workflow_error = await self._resolve_workflow_snapshot(item, saga)
+            workflow_snapshot, workflow_error = snapshots[index]
             if workflow_error:
                 logger.warning(
                     "Workflow resolution failed for issue %s: %s",
@@ -999,7 +692,6 @@ class DispatchService:
                 auth_token=auth_token,
                 principal=principal,
                 owner_id=owner_id,
-                persona_overrides=persona_overrides,
                 workflow_snapshot=workflow_snapshot,
             )
             results.append(result)
@@ -1131,12 +823,8 @@ class DispatchService:
         """
         template = load_template(template_name, self._config.templates_dir, payload)
 
-        if template.flock_flow and self._flow_provider is not None:
-            if self._flow_provider.get(template.flock_flow) is None:
-                raise ValueError(
-                    f"flock_flow '{template.flock_flow}' not found — "
-                    "register the flow before referencing it in a pipeline"
-                )
+        if template.flock_flow:
+            raise WorkflowStepsHaveNoRunnerError()
 
         now = datetime.now(UTC)
         saga_id = uuid.uuid4()
@@ -1229,7 +917,6 @@ class DispatchService:
                 first_runs,
                 first_tpl,
                 owner_id,
-                flock_flow_name=template.flock_flow or "",
             )
 
         return str(saga_id)
@@ -1241,15 +928,8 @@ class DispatchService:
         runs: list[Run],
         tpl_phase: TemplatePhase,
         owner_id: str,
-        flock_flow_name: str = "",
     ) -> None:
-        """Spawn Volundr sessions for all runs in a template phase.
-
-        When *flock_flow_name* is provided and a matching flow is registered,
-        each run is dispatched as a flock session with the flow's personas.
-        Per-run ``persona_overrides`` from the template YAML are merged onto
-        the matching flow persona before dispatch.
-        """
+        """Spawn one plain Volundr session for each run in a template phase."""
         all_volundr = await self._volundr_factory.for_owner(owner_id)
         if not all_volundr:
             logger.error(
@@ -1326,16 +1006,6 @@ class DispatchService:
                 )
             integration_ids = integration_ids_by_target[id(volundr)]
             session_name = re.sub(r"[^a-z0-9]+", "-", run.name.lower()).strip("-")[:48]
-            workload_config = build_flock_workload_config(
-                flock_flow_name,
-                tpl_run,
-                self._flow_provider,
-                tpl_run.prompt,
-            )
-            if workload_config and workload_config.get("mimir"):
-                workload_config["mimir"] = resolve_mimir_registry_refs(
-                    workload_config["mimir"], registry_path=self._config.flock_mimir_registry_path
-                )
             request = SpawnRequest(
                 name=session_name,
                 repo=repo,
@@ -1348,8 +1018,6 @@ class DispatchService:
                 initial_prompt=tpl_run.prompt,
                 profile=tpl_run.persona or None,
                 integration_ids=integration_ids,
-                workload_type="ravn_flock" if workload_config else "default",
-                workload_config=workload_config or {},
             )
             request = with_host_selector(request, volundr, saga.target_tags, saga.target_match)
             try:
@@ -1375,12 +1043,10 @@ class DispatchService:
                 )
                 await self._saga_repo.save_run(updated)
                 logger.info(
-                    "DispatchService: dispatched template run %s → session %s"
-                    " (persona=%s, flock=%s)",
+                    "DispatchService: dispatched template run %s → session %s (persona=%s)",
                     run.name,
                     session.id,
                     tpl_run.persona or "(none)",
-                    flock_flow_name or "(none)",
                 )
             except Exception:
                 logger.exception(
@@ -1544,173 +1210,33 @@ class DispatchService:
         effective_prompt: str,
         integration_ids: list[str],
         session_definition: str | None = None,
-        flock_flow: str = "",
-        persona_overrides: list[dict] | None = None,
         workflow_snapshot: dict[str, Any] | None = None,
     ) -> SpawnRequest:
-        """Build a SpawnRequest — flock or solo — based on config.
+        """Build the SpawnRequest for one plain Forge session working on *issue*.
 
-        When *flock_flow* names a registered flow, the flow is resolved via the
-        ``FlockFlowProvider`` and **snapshotted** inline into the workload config.
-        Per-dispatch *persona_overrides* take precedence over flow-level overrides
-        which in turn take precedence over persona defaults.
+        A workflow is not a plain session: its steps need a runner, and there is
+        none until they run on harness sessions, so a workflow snapshot is refused.
+
+        :raises WorkflowStepsHaveNoRunnerError: When *workflow_snapshot* is set.
         """
-        session_name = issue.identifier.lower()
-        workflow_personas = workflow_personas_from_snapshot(workflow_snapshot)
-        use_workflow_flock = bool(workflow_snapshot and workflow_personas)
-        resolved_effective_model = effective_model
-        resolved_session_definition = session_definition
-
-        if not self._config.flock_enabled and not use_workflow_flock:
-            return SpawnRequest(
-                name=session_name,
-                repo=item.repo,
-                branch=saga.feature_branch,
-                base_branch=base_branch_for_repo(saga, item.repo),
-                model=resolved_effective_model,
-                tracker_issue_id=issue.identifier,
-                tracker_issue_url=issue.url,
-                system_prompt=effective_prompt,
-                initial_prompt=build_prompt(
-                    issue,
-                    item.repo,
-                    saga.feature_branch,
-                    template=self._config.dispatch_prompt_template,
-                ),
-                definition=resolved_session_definition,
-                workload_config={"workflow": workflow_snapshot} if workflow_snapshot else {},
-                integration_ids=integration_ids,
-            )
-
-        # Resolve personas — flow snapshot takes precedence over config defaults
-        personas = copy.deepcopy(self._config.flock_default_personas)
-        flow_name_for_log = ""
-        mimir_url = self._config.flock_mimir_hosted_url
-        mimir_registry_path = self._config.flock_mimir_registry_path
-        sleipnir_urls = list(self._config.flock_sleipnir_publish_urls)
-        mimir_cfg = normalize_mimir_workload_config(hosted_url=mimir_url)
-        mesh_transport = "nng"
-
-        if use_workflow_flock:
-            workflow_definition = session_definition
-            if validate_session_definition_for_models(
-                workflow_definition,
-                workflow_stage_models_from_snapshot(workflow_snapshot),
-                session_definitions=self._config.session_definitions,
-                configured_models=self._config.configured_models,
-            ):
-                workflow_definition = None
-            workflow_definition = workflow_definition or _DEFAULT_WORKFLOW_SESSION_DEFINITION
-            (
-                resolved_effective_model,
-                resolved_session_definition,
-                workflow_persona_overrides,
-            ) = _resolve_workflow_execution(
-                workflow_snapshot,
-                fallback_model=effective_model,
-                requested_definition=workflow_definition,
-                session_definitions=self._config.session_definitions,
-                workflow_cli_turn_timeout_seconds=self._config.workflow_cli_turn_timeout_seconds,
-                configured_models=self._config.configured_models,
-            )
-            personas = copy.deepcopy(workflow_persona_overrides)
-            flow_name_for_log = str(workflow_snapshot.get("name") or "")
-            mimir_cfg = resolve_mimir_registry_refs(
-                normalize_mimir_workload_config(workflow_mimir_from_snapshot(workflow_snapshot)),
-                registry_path=mimir_registry_path,
-            )
-        else:
-            flow = (
-                self._flow_provider.get(flock_flow) if flock_flow and self._flow_provider else None
-            )
-            if flow is None and flock_flow:
-                logger.warning("Flock flow '%s' not found, using default personas", flock_flow)
-            if flow is not None:
-                flow_name_for_log = flow.name
-                personas = [p.to_dict() for p in flow.personas]
-                mimir_url = flow.mimir_hosted_url or mimir_url
-                mimir_cfg = resolve_mimir_registry_refs(
-                    normalize_mimir_workload_config(flow.mimir, hosted_url=mimir_url),
-                    registry_path=mimir_registry_path,
-                )
-                mesh_transport = flow.mesh_transport or mesh_transport
-                if flow.sleipnir_publish_urls:
-                    sleipnir_urls = list(flow.sleipnir_publish_urls)
-            else:
-                personas = _promote_default_ting_run_personas(personas)
-
-        # Apply per-dispatch persona overrides (precedence: dispatch > flow > defaults)
-        if persona_overrides:
-            override_map = {o["name"]: o for o in persona_overrides}
-            merged: list[dict] = []
-            for p in personas:
-                name = p.get("name", p) if isinstance(p, dict) else p
-                if name in override_map:
-                    base = dict(p) if isinstance(p, dict) else {"name": p}
-                    base.update(override_map.pop(name))
-                    merged.append(base)
-                else:
-                    merged.append(p if isinstance(p, dict) else {"name": p})
-            # Append any overrides that aren't already in the list
-            for remaining in override_map.values():
-                merged.append(remaining)
-            personas = merged
-
-        # Snapshot hash for log correlation
-        snapshot_hash = _snapshot_hash(personas)
-        if flow_name_for_log:
-            logger.info(
-                "flock dispatch session=%s flow=%s snapshot=%s personas=[%s]",
-                _sanitize_log(session_name),
-                _sanitize_log(flow_name_for_log),
-                _sanitize_log(snapshot_hash),
-                ", ".join(_sanitize_log(_format_persona_label(p)) for p in personas),
-            )
-        else:
-            logger.info(
-                "flock dispatch session=%s personas=[%s]",
-                _sanitize_log(session_name),
-                ", ".join(_sanitize_log(_format_persona_label(p)) for p in personas),
-            )
-
-        initiative_context = build_flock_prompt(
-            issue,
-            item.repo,
-            saga.feature_branch,
-            mimir_hosted_url=mimir_url,
-            workflow_snapshot=workflow_snapshot,
-        )
-        workload_config: dict = {
-            "personas": personas,
-            "initiative_context": initiative_context,
-            "mesh_transport": mesh_transport,
-        }
-        if self._config.flock_daily_budget_usd > 0:
-            workload_config["daily_budget_usd"] = self._config.flock_daily_budget_usd
         if workflow_snapshot:
-            workload_config["workflow"] = workflow_snapshot
-        if sleipnir_urls:
-            workload_config["sleipnir_publish_urls"] = sleipnir_urls
-        if mimir_cfg:
-            workload_config["mimir"] = mimir_cfg
-        if mimir_url:
-            workload_config["mimir_hosted_url"] = mimir_url
-        if self._config.flock_llm_config:
-            workload_config["llm_config"] = self._config.flock_llm_config
-
+            raise WorkflowStepsHaveNoRunnerError()
         return SpawnRequest(
-            name=session_name,
+            name=issue.identifier.lower(),
             repo=item.repo,
             branch=saga.feature_branch,
             base_branch=base_branch_for_repo(saga, item.repo),
-            model=resolved_effective_model,
+            model=effective_model,
             tracker_issue_id=issue.identifier,
             tracker_issue_url=issue.url,
             system_prompt=effective_prompt,
-            initial_prompt=workload_config["initiative_context"],
-            definition=resolved_session_definition,
-            workload_type="ravn_flock",
-            workload_config=workload_config,
+            initial_prompt=build_prompt(
+                issue,
+                item.repo,
+                saga.feature_branch,
+                template=self._config.dispatch_prompt_template,
+            ),
+            definition=session_definition,
             integration_ids=integration_ids,
         )
 
@@ -1729,10 +1255,13 @@ class DispatchService:
         auth_token: str | None,
         principal: Principal | None,
         owner_id: str,
-        persona_overrides: list[dict] | None = None,
         workflow_snapshot: dict[str, Any] | None = None,
     ) -> DispatchResult:
-        """Spawn a single session and update run progress."""
+        """Spawn a single session and update run progress.
+
+        :raises WorkflowStepsHaveNoRunnerError: When the item carries a workflow. Never
+            reported as a ``failed`` result: that would read as a transient failure.
+        """
         try:
             request = self._build_spawn_request(
                 item=item,
@@ -1742,7 +1271,6 @@ class DispatchService:
                 effective_prompt=effective_prompt,
                 integration_ids=integration_ids,
                 session_definition=session_definition,
-                persona_overrides=persona_overrides,
                 workflow_snapshot=workflow_snapshot,
             )
             request = with_host_selector(
@@ -1817,6 +1345,8 @@ class DispatchService:
                 status="spawned",
                 cluster_name=session.cluster_name,
             )
+        except WorkflowStepsHaveNoRunnerError:
+            raise
         except Exception:
             logger.error("Failed to spawn session for %s", issue.identifier, exc_info=True)
             return DispatchResult(
@@ -1832,9 +1362,7 @@ class DispatchService:
         saga: Saga,
     ) -> tuple[dict[str, Any] | None, str | None]:
         if item.workflow_id is None:
-            if saga.workflow_snapshot is not None:
-                return saga.workflow_snapshot, None
-            return await self._resolve_default_workflow_snapshot(saga)
+            return saga.workflow_snapshot, None
 
         if self._workflow_repo is None:
             return None, "workflow repository not configured"
@@ -1855,38 +1383,4 @@ class DispatchService:
             snapshot = build_workflow_snapshot(workflow, persona_source=self._persona_source)
         except ValueError as exc:
             return None, str(exc)
-        return snapshot, None
-
-    async def _resolve_default_workflow_snapshot(
-        self,
-        saga: Saga,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        workflow_name = str(self._config.flock_default_workflow_name or "").strip()
-        if not workflow_name or self._workflow_repo is None:
-            return None, None
-
-        workflows = await self._workflow_repo.list_workflows(
-            owner_id=saga.owner_id,
-            scope=WorkflowScope.SYSTEM,
-        )
-        workflow = next(
-            (candidate for candidate in workflows if candidate.name == workflow_name),
-            None,
-        )
-        if workflow is None:
-            return None, None
-
-        from ting.domain.workflow_snapshot import build_workflow_snapshot  # noqa: PLC0415
-
-        try:
-            snapshot = build_workflow_snapshot(workflow, persona_source=self._persona_source)
-        except ValueError as exc:
-            return None, str(exc)
-        await self._saga_repo.update_saga_workflow(
-            saga.id,
-            workflow_id=workflow.id,
-            workflow_version=workflow.version,
-            workflow_snapshot=snapshot,
-            owner_id=saga.owner_id,
-        )
         return snapshot, None

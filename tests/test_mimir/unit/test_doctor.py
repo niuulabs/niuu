@@ -563,8 +563,8 @@ def test_doctor_endpoint_returns_report(tmp_path: Path) -> None:
 
 
 def test_doctor_endpoint_requires_filesystem_adapter(tmp_path: Path) -> None:
-    from ravn.adapters.mimir.composite import CompositeMimirAdapter
-    from ravn.domain.mimir import MimirMount
+    from mimir.adapters.composite import CompositeMimirAdapter
+    from mimir.domain import MimirMount
 
     local = MarkdownMimirAdapter(root=tmp_path / "local")
     adapter = CompositeMimirAdapter(

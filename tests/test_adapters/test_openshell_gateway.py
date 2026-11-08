@@ -21,7 +21,6 @@ from uuid import uuid4
 
 import jwt
 import pytest
-import yaml
 
 from niuu.ports.workload_identity import IssuedWorkloadToken
 from volundr.adapters.outbound.hermes_gateway import (
@@ -387,8 +386,8 @@ class _FakeOpenShellGatewayClient:
                     level="OCSF",
                     source="sandbox",
                     target="ocsf",
-                    message="PROC:LAUNCH ravn",
-                    fields={"process": "ravn"},
+                    message="PROC:LAUNCH openclaw",
+                    fields={"process": "openclaw"},
                 )
             ],
             buffer_total=1,
@@ -695,8 +694,8 @@ def _resident_runtime() -> ResidentRuntime:
         persona_name="product-steward",
         model="gpt-5.6-sol",
         backend=ResidentBackend.OPENSHELL,
-        engine=ResidentEngine.RAVN,
-        profile_id="ravn-openshell",
+        engine=ResidentEngine.OPENCLAW,
+        profile_id="nemoclaw-openshell",
         capabilities=[
             ResidentCapability.CHAT,
             ResidentCapability.RUNTIME_RESTART,
@@ -708,10 +707,10 @@ def _resident_runtime() -> ResidentRuntime:
 
 def _resident_profile() -> ResidentDeploymentProfile:
     return ResidentDeploymentProfile(
-        id="ravn-openshell",
-        display_name="Resident Ravn on OpenShell",
+        id="nemoclaw-openshell",
+        display_name="NemoClaw on OpenShell",
         backend=ResidentBackend.OPENSHELL,
-        engine=ResidentEngine.RAVN,
+        engine=ResidentEngine.OPENCLAW,
         capabilities=[
             ResidentCapability.CHAT,
             ResidentCapability.RUNTIME_RESTART,
@@ -732,101 +731,40 @@ def _resident_profile() -> ResidentDeploymentProfile:
                     "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
                     "skipPermissions": True,
                 },
-                "session": {"reasoningEffort": "high"},
-                "openshell": {},
                 "resident": {
-                    "dailyBudgetUsd": "100.0",
                     "platform": {
                         "enabled": True,
                         "baseUrl": "https://yggdrasil.example.test",
-                        "workflowAliases": {"planning": {"name": "Saga Planning"}},
                     },
-                    "llm": {
-                        "provider": {
-                            "adapter": "ravn.adapters.llm.bifrost.BifrostAdapter",
-                            "kwargs": {"base_url": "http://bifrost.example.test"},
-                        }
-                    },
-                    "wakefulness": {"enabled": True},
                 },
-                "mimir": {
-                    "instances": [
+                "openshell": {
+                    "processMode": "replace",
+                    "service": {"name": "openclaw", "port": 18789},
+                    "processes": [
                         {
-                            "name": "mimir-yggdrasil",
-                            "role": "shared",
-                            "url": "https://mimir.example.test/api/v1",
-                            "auth": {"type": "workload", "audiences": ["mimir"]},
+                            "name": "openclaw",
+                            "command": ["openclaw", "gateway", "run"],
+                            "logPath": "/sandbox/.volundr/openclaw.log",
                         }
-                    ]
+                    ],
                 },
             }
         },
     )
 
 
-def test_resident_ravn_config_uses_profile_selected_flock_transport(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    flock_id = uuid4()
-    member_id = uuid4()
-    runtime = _resident_runtime().model_copy(
-        update={
-            "flock_id": flock_id,
-            "flock_member_id": member_id,
-            "flock_role": "coordinator",
-            "flock_peer_id": f"ravn-{member_id}",
-            "capabilities": [*_resident_runtime().capabilities, ResidentCapability.FLOCK],
+def _openclaw_credential_store() -> _FakeCredentialStore:
+    """A credential store that already holds a resident's OpenClaw machine identity."""
+    return _FakeCredentialStore(
+        {
+            "openclaw-gateway": {
+                "gateway_token": "gateway-token",
+                "device_id": "device-1",
+                "public_key": "public-key",
+                "private_key_pem": "private-key",
+            }
         }
     )
-    values = _resident_profile().deployment["values"]
-    values["resident"]["flock"] = {
-        "mesh": {
-            "adapters": [{"adapter": "sleipnir", "transport": "nats"}],
-            "nats": {
-                "servers": ["tls://nats.example.test:4222"],
-                "user_env": "RAVN_NATS_USER",
-                "password_env": "RAVN_NATS_PASSWORD",
-                "tls_ca_pem": "-----BEGIN CERTIFICATE-----\nproof\n-----END CERTIFICATE-----\n",
-            },
-        },
-        "discovery": {
-            "adapters": [{"adapter": "event_bus", "transport": "nats"}],
-        },
-    }
-    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
-    missing_transport = _resident_profile().model_copy(
-        update={"capabilities": [*_resident_profile().capabilities, ResidentCapability.FLOCK]}
-    )
-    configured = missing_transport.model_copy(update={"deployment": {"values": values}})
-
-    config = adapter._resident_ravn_config(runtime, values, 9200)
-    skuld_config = adapter._resident_skuld_config(
-        runtime,
-        values,
-        9200,
-        "https://volundr.example.test",
-    )
-
-    assert manager.supports(missing_transport) is False
-    assert manager.supports(configured) is True
-    assert config["mesh"]["own_peer_id"] == f"ravn-{member_id}"
-    assert config["mesh"]["adapters"] == [{"adapter": "sleipnir", "transport": "nats"}]
-    assert config["mesh"]["nats"]["user_env"] == "RAVN_NATS_USER"
-    assert config["mesh"]["nats"]["tls_ca_pem"].startswith("-----BEGIN CERTIFICATE-----")
-    assert config["discovery"]["realm_id"] == str(flock_id)
-    assert config["discovery"]["adapters"][-1] == {
-        "adapter": "event_bus",
-        "transport": "nats",
-    }
-    assert skuld_config["mesh"]["realm_id"] == str(flock_id)
-    assert skuld_config["mesh"]["adapters"] == [{"adapter": "sleipnir", "transport": "nats"}]
-    assert skuld_config["mesh"]["discovery_adapters"][-1] == {
-        "adapter": "event_bus",
-        "transport": "nats",
-    }
-    assert skuld_config["mesh"]["nats"]["user_env"] == "RAVN_NATS_USER"
-    assert "max_participants" not in skuld_config["room"]
 
 
 def _hermes_runtime() -> ResidentRuntime:
@@ -1203,9 +1141,7 @@ def test_openclaw_profile_requires_complete_process_and_service_plan(
         }
     )
     assert manager.supports(complete) is True
-    assert adapter._resident_platform_binaries(
-        _resident_runtime().model_copy(update={"engine": ResidentEngine.OPENCLAW})
-    ) == ("/usr/bin/node",)
+    assert adapter._resident_platform_binaries(_resident_runtime()) == ("/usr/bin/node",)
 
 
 def test_hermes_profile_requires_complete_replace_process_and_service_plan(
@@ -1356,95 +1292,6 @@ async def test_hermes_rollback_and_delete_cleanup_machine_credential(
 
 
 @pytest.mark.asyncio
-async def test_resolve_realm_slug_is_empty_without_realm_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
-    assert await manager._resolve_realm_slug(_resident_runtime()) == ""
-
-
-@pytest.mark.asyncio
-async def test_resolve_realm_slug_requires_a_configured_repository(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
-    runtime = _resident_runtime().model_copy(update={"realm_id": uuid4()})
-    with pytest.raises(RuntimeError, match="no realm repository configured"):
-        await manager._resolve_realm_slug(runtime)
-
-
-@pytest.mark.asyncio
-async def test_resolve_realm_slug_returns_the_bound_realms_slug(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
-    realm_id = uuid4()
-
-    class _FakeRealm:
-        slug = "workshop"
-
-    class _FakeRealmRepository:
-        async def get_realm(self, realm_ref):
-            return _FakeRealm() if realm_ref == realm_id else None
-
-    manager.set_realm_repository(_FakeRealmRepository())
-    runtime = _resident_runtime().model_copy(update={"realm_id": realm_id})
-    assert await manager._resolve_realm_slug(runtime) == "workshop"
-
-
-def test_resident_mimir_config_preserves_local_role_default(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    values = {
-        "mimir": {
-            "instances": [
-                {"name": "hub-a", "role": "local"},
-                {"name": "hub-b", "role": "shared"},
-            ]
-        }
-    }
-    config = adapter._resident_mimir_config(values, "workshop")
-    assert config["write_routing"] == {"rules": [], "default": ["hub-a"]}
-
-
-def test_resident_mimir_config_routes_to_the_realm_mount_when_present(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    values = {
-        "mimir": {
-            "instances": [
-                {"name": "hub-a", "role": "shared"},
-                {"name": "realm-workshop", "role": "shared"},
-            ]
-        }
-    }
-    config = adapter._resident_mimir_config(values, "workshop")
-    assert config["write_routing"]["default"] == ["realm-workshop"]
-    assert config["write_routing"]["rules"] == [["realms/workshop/", ["realm-workshop"]]]
-
-
-def test_resident_mimir_config_raises_when_no_write_target_resolves(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    values = {
-        "mimir": {
-            "instances": [
-                {"name": "hub-a", "role": "shared"},
-                {"name": "hub-b", "role": "shared"},
-            ]
-        }
-    }
-    with pytest.raises(RuntimeError, match="no write target resolves"):
-        adapter._resident_mimir_config(values, "workshop")
-
-
-@pytest.mark.asyncio
 async def test_hermes_logs_default_to_hermes_process_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1484,7 +1331,7 @@ def test_dynamic_provider_accepts_configured_tcp_route(
 
     profile = adapter._provider_profile(
         profile_id="resident-nats",
-        env_name="RAVN_NATS_PASSWORD",
+        env_name="NATS_PASSWORD",
         token_endpoint="https://volundr.example.test/token",
         target_config={
             "endpoints": [
@@ -1538,14 +1385,19 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     expected_name = f"r-{runtime.id.hex[:17]}"
     assert observation.backend_ref["name"] == expected_name
     assert len(expected_name) == adapter.MAX_SANDBOX_ROUTING_NAME_LENGTH
-    assert observation.endpoints[0].url == f"/s/{runtime.id}/session"
+    assert observation.endpoints[0].protocol == "openclaw-gateway-v4"
+    assert observation.endpoints[0].url == (
+        f"/api/v1/forge/resident-runtimes/{runtime.id}/sessions"
+    )
     assert client.created is not None
     assert client.created["image"] == ("ghcr.io/niuulabs/openshell:niu-1099-openshell-resident")
     assert client.created["labels"] == {
         "app.kubernetes.io/managed-by": "volundr",
         "volundr.niuu.io/resident": str(runtime.id),
-        "volundr.niuu.io/runtime": "ravn",
+        "volundr.niuu.io/runtime": "openclaw",
     }
+    assert "pod_labels" not in client.created
+    assert "pod_annotations" not in client.created
     assert len(client.provider_grants) == 1
     assert all(
         grant["config"]["volundr_subject_kind"] == "resident"
@@ -1554,33 +1406,23 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     )
     assert len(client.written_files) == 1
     projected = client.written_files[0]["files"]
-    assert "/sandbox/.volundr/skuld.yaml" in projected
-    assert "/sandbox/.volundr/ravn.yaml" in projected
     assert _codex_auth_document().encode() not in projected.values()
-    ravn_config = projected["/sandbox/.volundr/ravn.yaml"].decode()
-    skuld_config = projected["/sandbox/.volundr/skuld.yaml"].decode()
-    assert "gpt-5.6-sol" in ravn_config
-    assert "mimir-yggdrasil" in ravn_config
-    assert "token_env: NIUU_VOLUNDR_ACCESS_TOKEN" in ravn_config
-    assert "Saga Planning" in ravn_config
-    assert "skip_permissions: true" in skuld_config
-    assert "event_log_enabled: false" in skuld_config
-    assert "activity_reporting_enabled: false" in skuld_config
     assert [process["pid_path"] for process in client.execs] == [
-        "/sandbox/.volundr/skuld.pid",
-        "/sandbox/.volundr/ravn.pid",
+        "/sandbox/.volundr/openclaw.pid",
     ]
-    assert client.execs[0]["env"]["SKULD_BOOTSTRAP_FOREGROUND"] == "true"
-    assert client.execs[0]["env"]["NIUU_CONFIG"] == "/sandbox/.volundr/skuld.yaml"
+    machine_token = store.values["openclaw-gateway"]["gateway_token"]
+    assert "OPENCLAW_GATEWAY_TOKEN" not in client.created["env"]
+    assert client.execs[0]["env"]["OPENCLAW_GATEWAY_TOKEN"] == machine_token
+    assert client.execs[0]["env"]["OPENCLAW_STATE_DIR"] == "/sandbox/workspace/.openclaw"
     assert client.execs[0]["env"]["SKULD__CODEX_AUTH__ADAPTER"] == (
         "skuld.codex_auth.VolundrCodexAuthProvider"
     )
     assert client.execs[0]["env"]["SKULD__CODEX_AUTH__KWARGS"] == "{}"
     assert "SKULD_CONFIG" not in client.execs[0]["env"]
-    assert client.execs[1]["env"]["SKULD__TRANSPORT_ADAPTER"] == (
+    assert client.execs[0]["env"]["SKULD__TRANSPORT_ADAPTER"] == (
         "skuld.transports.codex_ws.CodexWebSocketTransport"
     )
-    assert client.execs[1]["env"]["SKULD__SKIP_PERMISSIONS"] == "true"
+    assert client.execs[0]["env"]["SKULD__SKIP_PERMISSIONS"] == "true"
 
 
 @pytest.mark.asyncio
@@ -1592,7 +1434,7 @@ async def test_resident_deploy_resumes_owned_sandbox_and_launches_missing_proces
     profile = _resident_profile()
     client = _FakeOpenShellGatewayClient(adapter)
     client.sandbox_labels = {"volundr.niuu.io/resident": str(runtime.id)}
-    health_results = iter((0, 1, 0))
+    health_results = iter((1, 0))
 
     def exec_script(**kwargs):
         client.bootstrap_execs.append(kwargs)
@@ -1605,16 +1447,16 @@ async def test_resident_deploy_resumes_owned_sandbox_and_launches_missing_proces
         workload_audiences=["volundr-api", "mimir", "guild"],
         ready_timeout=0.1,
     )
-    manager.set_credential_store(
-        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
-    )
+    store = _openclaw_credential_store()
+    store.values["codex-credentials"] = {"auth.json": _codex_auth_document()}
+    manager.set_credential_store(store)
     manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
 
     observation = await manager.deploy(runtime, profile)
 
     assert observation.observed_state is ResidentObservedState.ACTIVE
     assert client.created is None
-    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/ravn.pid"]
+    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/openclaw.pid"]
 
 
 def _store_locked_error(adapter):
@@ -1813,11 +1655,13 @@ async def test_resident_reconcile_recovers_missing_service_endpoint(
 
     assert client.exposed == {
         "sandbox_name": "resident-existing",
-        "target_port": 9200,
-        "service": "skuld",
+        "target_port": 18789,
+        "service": "openclaw",
     }
     assert observation.backend_ref["service_url"] == client.service_url
-    assert observation.endpoints[0].url == f"/s/{runtime.id}/session"
+    assert observation.endpoints[0].url == (
+        f"/api/v1/forge/resident-runtimes/{runtime.id}/sessions"
+    )
 
 
 @pytest.mark.asyncio
@@ -1870,9 +1714,9 @@ def _deployed_resident_manager(adapter, client, runtime):
         volundr_api_url="https://volundr.example.test",
         workload_audiences=["volundr-api", "mimir", "guild"],
     )
-    manager.set_credential_store(
-        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
-    )
+    store = _openclaw_credential_store()
+    store.values["codex-credentials"] = {"auth.json": _codex_auth_document()}
+    manager.set_credential_store(store)
     manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
     return manager
 
@@ -1895,12 +1739,12 @@ def _deployed_resident(runtime):
 async def test_resident_reconcile_starts_processes_that_stopped_after_deployment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A fresh Volundr starts the skuld an interrupted deployment left stopped."""
+    """A fresh Volundr starts the process an interrupted deployment left stopped."""
     adapter = _import_adapter(monkeypatch)
     runtime = _deployed_resident(_resident_runtime())
     client = _FakeOpenShellGatewayClient(adapter)
-    # All processes healthy? no. skuld running? no. ravn running? yes.
-    health_results = iter((1, 1, 0))
+    # All processes healthy? no. openclaw running? no.
+    health_results = iter((1, 1))
 
     def exec_script(**kwargs):
         client.bootstrap_execs.append(kwargs)
@@ -1911,8 +1755,8 @@ async def test_resident_reconcile_starts_processes_that_stopped_after_deployment
 
     observation = await manager.reconcile(runtime, _resident_profile())
 
-    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/skuld.pid"]
-    assert "/sandbox/.volundr/skuld.yaml" in client.written_files[0]["files"]
+    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/openclaw.pid"]
+    assert client.execs[0]["env"]["OPENCLAW_GATEWAY_TOKEN"] == "gateway-token"
     assert client.created is None
     assert client.deleted == []
     assert observation.observed_state is ResidentObservedState.DEPLOYING
@@ -2005,10 +1849,7 @@ async def test_resident_reconcile_starts_a_sandbox_that_stopped_under_it(
     await manager.reconcile(runtime, _resident_profile())
 
     client.start_sandbox.assert_called_once()
-    assert [process["pid_path"] for process in client.execs] == [
-        "/sandbox/.volundr/skuld.pid",
-        "/sandbox/.volundr/ravn.pid",
-    ]
+    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/openclaw.pid"]
 
 
 @pytest.mark.asyncio
@@ -2086,7 +1927,7 @@ async def test_resident_materializes_raw_protocol_credential_from_openbao(
     values["openshell"]["credentialMappings"] = [
         {
             "credentialName": "nats-flock-noatun",
-            "envMappings": {"RAVN_NATS_PASSWORD": "password"},
+            "envMappings": {"NATS_PASSWORD": "password"},
             "materializeEnvironment": True,
             "provider": {
                 "endpoints": [
@@ -2116,8 +1957,8 @@ async def test_resident_materializes_raw_protocol_credential_from_openbao(
     await manager.deploy(runtime, profile)
 
     assert client.created is not None
-    assert "RAVN_NATS_PASSWORD" not in client.created["env"]
-    assert client.execs[1]["env"]["RAVN_NATS_PASSWORD"] == "nats-from-openbao"
+    assert "NATS_PASSWORD" not in client.created["env"]
+    assert client.execs[0]["env"]["NATS_PASSWORD"] == "nats-from-openbao"
     # The value is materialized by Völundr, so the provider carries only the
     # raw-protocol endpoint policy: OpenShell rejects a token grant on a
     # tls: skip endpoint.
@@ -2132,7 +1973,7 @@ async def test_resident_materializes_raw_protocol_credential_from_openbao(
 
     await manager.restart(runtime, profile)
 
-    assert client.execs[-1]["env"]["RAVN_NATS_PASSWORD"] == "nats-from-openbao"
+    assert client.execs[-1]["env"]["NATS_PASSWORD"] == "nats-from-openbao"
 
 
 @pytest.mark.parametrize(
@@ -2190,32 +2031,28 @@ async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
     client = _FakeOpenShellGatewayClient(adapter)
     client.created = {"providers": ()}
     manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
-    manager.set_credential_store(
-        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
-    )
+    store = _openclaw_credential_store()
+    store.values["codex-credentials"] = {"auth.json": _codex_auth_document()}
+    manager.set_credential_store(store)
     profile = _resident_profile()
     values = profile.deployment["values"]
     values["env"] = {"RESIDENT_MODE": "active"}
-    values["openshell"]["processes"] = [
+    values["openshell"]["processes"].append(
         {
             "name": "sidecar",
             "command": ["sleep", "3600"],
             "logPath": "/sandbox/.volundr/sidecar.log",
         }
-    ]
+    )
 
     observation = await manager.restart(runtime, profile)
 
     assert observation.observed_state is ResidentObservedState.ACTIVE
     assert client.deleted == []
     assert client.bootstrap_execs[0]["script"] == adapter._resident_stop_script(
-        ("skuld", "ravn", "sidecar")
+        ("openclaw", "sidecar")
     )
     assert len(client.written_files) == 1
-    assert set(client.written_files[0]["files"]) == {
-        "/sandbox/.volundr/ravn.yaml",
-        "/sandbox/.volundr/skuld.yaml",
-    }
     assert client.execs[-1]["env"]["SKULD__CODEX_AUTH__ADAPTER"] == (
         "skuld.codex_auth.VolundrCodexAuthProvider"
     )
@@ -2226,8 +2063,7 @@ async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
     )
     assert client.execs[-1]["env"]["SKULD__SKIP_PERMISSIONS"] == "true"
     assert [process["pid_path"] for process in client.execs] == [
-        "/sandbox/.volundr/skuld.pid",
-        "/sandbox/.volundr/ravn.pid",
+        "/sandbox/.volundr/openclaw.pid",
         "/sandbox/.volundr/sidecar.pid",
     ]
 
@@ -2237,11 +2073,11 @@ def test_resident_process_lifecycle_uses_in_sandbox_process_identity(
 ) -> None:
     adapter = _import_adapter(monkeypatch)
 
-    health = adapter._resident_health_script()
-    stop = adapter._resident_stop_script()
+    health = adapter._resident_health_script(("openclaw", "sidecar"))
+    stop = adapter._resident_stop_script(("openclaw", "sidecar"))
 
-    assert "/sandbox/.volundr/skuld.pid" in health
-    assert "/sandbox/.volundr/ravn.pid" in health
+    assert "/sandbox/.volundr/openclaw.pid" in health
+    assert "/sandbox/.volundr/sidecar.pid" in health
     assert 'kill -0 "$(cat ' in health
     assert 'kill -9 "$(cat "$pid_file")"' in stop
 
@@ -2385,7 +2221,7 @@ async def test_resident_logs_use_native_gateway_log_buffer(
     )
 
     assert page.buffer_total == 1
-    assert page.entries[0].message == "PROC:LAUNCH ravn"
+    assert page.entries[0].message == "PROC:LAUNCH openclaw"
 
 
 @pytest.mark.asyncio
@@ -2400,7 +2236,7 @@ async def test_resident_logs_merge_process_files_through_gateway_exec(
         0,
         "\n".join(
             (
-                "__VOLUNDR_LOG_SOURCE__=ravn",
+                "__VOLUNDR_LOG_SOURCE__=openclaw",
                 '{"time":"2026-07-11T10:00:00Z","level":"INFO","message":"turn started"}',
                 '{"time":"2026-07-11T10:00:01Z","level":"ERROR","message":"turn failed"}',
             )
@@ -2411,13 +2247,13 @@ async def test_resident_logs_merge_process_files_through_gateway_exec(
     page = await manager.logs(
         runtime,
         lines=50,
-        sources=("ravn",),
+        sources=("openclaw",),
         min_level="ERROR",
     )
 
     assert [(entry.source, entry.level, entry.message) for entry in page.entries] == [
-        ("sandbox", "OCSF", "PROC:LAUNCH ravn"),
-        ("ravn", "ERROR", "turn failed"),
+        ("sandbox", "OCSF", "PROC:LAUNCH openclaw"),
+        ("openclaw", "ERROR", "turn failed"),
     ]
 
 
@@ -2454,10 +2290,10 @@ def test_l4_credentials_require_explicit_opt_in(monkeypatch):
         "endpoints": [{"host": "10.191.72.34", "port": 4222, "tls": "skip"}],
         "binaries": ["/opt/niuu/bin/python"],
     }
-    target = adapter._provider_target("RAVN_NATS_PASSWORD", config)
+    target = adapter._provider_target("NATS_PASSWORD", config)
     assert target["endpoints"][0].allow_uninspected_credentials is False
     config["endpoints"][0]["allow_uninspected_credentials"] = True
-    target = adapter._provider_target("RAVN_NATS_PASSWORD", config)
+    target = adapter._provider_target("NATS_PASSWORD", config)
     assert target["endpoints"][0].allow_uninspected_credentials is True
 
 
@@ -4284,249 +4120,66 @@ def _openshell_resident_manager(monkeypatch: pytest.MonkeyPatch):
         workload_audiences=["volundr-api", "mimir", "guild"],
         ready_timeout=0.1,
     )
-    manager.set_credential_store(
-        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
-    )
+    store = _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
+    manager.set_credential_store(store)
     manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
-    return adapter, client, manager
-
-
-def _bind_ravn_sessions(manager, store=None):
-    """Wire the Ravn session controller as composition does; returns its store."""
-    from niuu.adapters.memory_credential_store import MemoryCredentialStore
-    from volundr.adapters.outbound.ravn_gateway import RavnResidentSessionController
-
-    store = store or MemoryCredentialStore()
-    RavnResidentSessionController(manager, store)
-    return store
-
-
-async def _kept_shim_token(store, runtime) -> str | None:
-    kept = await store.get_value("resident", str(runtime.id), "ravn-openclaw")
-    return kept["token"] if kept else None
+    return adapter, client, manager, store
 
 
 @pytest.mark.asyncio
-async def test_ravn_resident_runs_its_openclaw_shim_with_its_own_token(
+async def test_a_resident_profile_that_does_not_replace_the_processes_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _, client, manager = _openshell_resident_manager(monkeypatch)
-    store = _bind_ravn_sessions(manager)
-    runtime = _resident_runtime()
-
-    await manager.deploy(runtime, _resident_profile())
-
-    ravn_config = yaml.safe_load(
-        client.written_files[0]["files"]["/sandbox/.volundr/ravn.yaml"].decode()
-    )
-    assert ravn_config["gateway"]["channels"]["openclaw"] == {
-        "enabled": True,
-        "host": "0.0.0.0",
-        "port": 18790,
-        "token_env": "RAVN_OPENCLAW_TOKEN",
-        "agent_id": "main",
-        "max_live_sessions": 64,
-        "store_path": "/sandbox/workspace/.ravn/openclaw/state.db",
-    }
-    token = await _kept_shim_token(store, runtime)
-    assert token and len(token) >= 32
-    assert {process["env"]["RAVN_OPENCLAW_TOKEN"] for process in client.execs} == {token}
-    # The token reaches the processes only: never the sandbox's own environment.
-    assert "RAVN_OPENCLAW_TOKEN" not in client.created["env"]
-
-
-@pytest.mark.asyncio
-async def test_ravn_resident_has_no_shim_without_ravn_sessions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _, client, manager = _openshell_resident_manager(monkeypatch)
-
-    await manager.deploy(_resident_runtime(), _resident_profile())
-
-    ravn_config = yaml.safe_load(
-        client.written_files[0]["files"]["/sandbox/.volundr/ravn.yaml"].decode()
-    )
-    assert "openclaw" not in ravn_config["gateway"]["channels"]
-    assert all("RAVN_OPENCLAW_TOKEN" not in process["env"] for process in client.execs)
-
-
-@pytest.mark.asyncio
-async def test_a_profile_asking_for_the_shim_without_ravn_sessions_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _, _, manager = _openshell_resident_manager(monkeypatch)
+    """OpenShell runs only the processes a profile declares; there is no default process."""
+    _, client, manager, _ = _openshell_resident_manager(monkeypatch)
     profile = _resident_profile()
-    profile.deployment["values"]["resident"]["openclaw"] = {"enabled": True}
+    del profile.deployment["values"]["openshell"]["processMode"]
 
-    with pytest.raises(ValueError, match="enables resident.openclaw"):
+    assert manager.supports(profile) is False
+    with pytest.raises(RuntimeError, match="does not support resident profile"):
         await manager.deploy(_resident_runtime(), profile)
-
-
-@pytest.mark.asyncio
-async def test_restarting_missing_processes_keeps_the_shim_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The kept token survives a Volundr restart: relaunched processes get the same one."""
-    _, _, manager = _openshell_resident_manager(monkeypatch)
-    store = _bind_ravn_sessions(manager)
-    runtime = _resident_runtime()
-    first = await manager.resident_openclaw_token(runtime)
-    _bind_ravn_sessions(manager, store)  # a restarted Volundr, same credential store
-    values = manager._with_brokered_credential_values(
-        dict(_resident_profile().deployment["values"])
-    )
-
-    _, env = await manager._resident_launch_inputs(
-        runtime, values, manager._resident_processes(runtime, values)
-    )
-
-    assert env["RAVN_OPENCLAW_TOKEN"] == first
-
-
-@pytest.mark.asyncio
-async def test_a_running_ravn_process_keeps_its_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Migration: the token the Ravn process was started with is read back and adopted."""
-    adapter = _import_adapter(monkeypatch)
-    runtime = _deployed_resident(_resident_runtime())
-    client = _FakeOpenShellGatewayClient(adapter)
-    scripts: list[str] = []
-
-    def exec_script(**kwargs):
-        scripts.append(kwargs["script"])
-        return 0, "running-process-token\n"
-
-    client.exec_script = exec_script
-    manager = _deployed_resident_manager(adapter, client, runtime)
-    store = _bind_ravn_sessions(manager)
-
-    assert await manager.resident_openclaw_token(runtime) == "running-process-token"
-    assert await _kept_shim_token(store, runtime) == "running-process-token"
-    assert "/sandbox/.volundr/ravn.pid" in scripts[0] and "RAVN_OPENCLAW_TOKEN" in scripts[0]
-    # Kept from now on: never read back again.
-    assert await manager.resident_openclaw_token(runtime) == "running-process-token"
-    assert len(scripts) == 1
-
-
-@pytest.mark.asyncio
-async def test_a_ravn_process_without_a_token_gets_a_new_one(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    runtime = _deployed_resident(_resident_runtime())
-    client = _FakeOpenShellGatewayClient(adapter)
-    client.exec_script = lambda **_kwargs: (0, "")
-    manager = _deployed_resident_manager(adapter, client, runtime)
-    store = _bind_ravn_sessions(manager)
-
-    token = await manager.resident_openclaw_token(runtime)
-
-    assert token and token == await _kept_shim_token(store, runtime)
-
-
-@pytest.mark.asyncio
-async def test_reconcile_restarts_a_ravn_resident_once_to_start_its_shim(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A resident deployed before Ravn sessions were on runs without the shim."""
-    adapter = _import_adapter(monkeypatch)
-    runtime = _deployed_resident(_resident_runtime())
-    client = _FakeOpenShellGatewayClient(adapter)
-    client.sandbox_exists = True
-    scripts: list[str] = []
-
-    def exec_script(**kwargs):
-        script = kwargs["script"]
-        scripts.append(script)
-        if ":4966" in script and "kill -0" not in script:  # the shim port 18790, in hex
-            return 1, ""  # not listening
-        if "/proc/$pid/environ" in script:
-            return 0, ""  # started without a token
-        return 0, ""
-
-    client.exec_script = exec_script
-    manager = _deployed_resident_manager(adapter, client, runtime)
-    store = _bind_ravn_sessions(manager)
-
-    await manager.reconcile(runtime, _resident_profile())
-
-    token = await _kept_shim_token(store, runtime)
-    assert token
-    assert {process["env"]["RAVN_OPENCLAW_TOKEN"] for process in client.execs} == {token}
-    ravn_yaml = yaml.safe_load(
-        client.written_files[-1]["files"]["/sandbox/.volundr/ravn.yaml"].decode()
-    )
-    assert ravn_yaml["gateway"]["channels"]["openclaw"]["port"] == 18790
-
-    # Never again from this Volundr, so a shim that cannot start never loops.
-    launched = len(client.execs)
-    await manager.reconcile(runtime, _resident_profile())
-    assert len(client.execs) == launched
-
-
-@pytest.mark.asyncio
-async def test_reconcile_leaves_a_ravn_resident_whose_shim_is_up(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    runtime = _deployed_resident(_resident_runtime())
-    client = _FakeOpenShellGatewayClient(adapter)
-    client.sandbox_exists = True
-    client.exec_script = lambda **_kwargs: (0, "")
-    manager = _deployed_resident_manager(adapter, client, runtime)
-    _bind_ravn_sessions(manager)
-
-    await manager.reconcile(runtime, _resident_profile())
-    await manager.reconcile(runtime, _resident_profile())
+    with pytest.raises(RuntimeError, match="does not declare openshell.processMode: replace"):
+        manager._resident_processes(_resident_runtime(), profile.deployment["values"])
 
     assert client.execs == []
-    assert client.written_files == []
 
 
 @pytest.mark.asyncio
-async def test_deleting_a_ravn_resident_forgets_its_token(
+async def test_a_flock_member_resident_carries_its_flock_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _, _, manager = _openshell_resident_manager(monkeypatch)
-    store = _bind_ravn_sessions(manager)
-    runtime = _resident_runtime()
-    await manager.deploy(runtime, _resident_profile())
-    assert await _kept_shim_token(store, runtime)
-
-    await manager.delete(runtime)
-
-    assert await _kept_shim_token(store, runtime) is None
-
-
-@pytest.mark.asyncio
-async def test_ravn_sessions_reach_the_shim_over_the_native_tcp_tunnel(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The path Hermes residents already use, on the shim's own port."""
-    _, client, manager = _openshell_resident_manager(monkeypatch)
-    runtime = _resident_runtime()
-    assert manager.resident_openclaw_target(runtime, 18790) is None
-
-    runtime = runtime.model_copy(update={"backend_ref": {"id": "sandbox-id", "name": "r-resident"}})
-    target = manager.resident_openclaw_target(runtime, 18790)
-    again = manager.resident_openclaw_target(runtime, 18790)
-
-    assert target is not None and again is not None
-    assert (target.connect_host, target.connect_port) == ("127.0.0.1", 43210)
-    assert target.service_url == "http://ravn-openclaw.internal:18790/"
-    # The gateway resolves the forward by name; the id tells a new sandbox apart.
-    assert client.forwarded == [{"sandbox": "r-resident", "target_port": 18790}]
-
-    redeployed = runtime.model_copy(
-        update={"backend_ref": {"id": "sandbox-2", "name": "r-resident"}}
+    _, client, manager, _ = _openshell_resident_manager(monkeypatch)
+    flock_id = uuid4()
+    member_id = uuid4()
+    runtime = _resident_runtime().model_copy(
+        update={
+            "flock_id": flock_id,
+            "flock_member_id": member_id,
+            "flock_role": "coordinator",
+            "flock_peer_id": f"peer-{member_id}",
+            "capabilities": [*_resident_runtime().capabilities, ResidentCapability.FLOCK],
+        }
     )
-    manager.resident_openclaw_target(redeployed, 18790)
-    assert client.closed_forwarders == [{"sandbox": "r-resident", "target_port": 18790}]
-    assert len(client.forwarded) == 2
 
-    await manager.delete(redeployed)
-    assert client.closed_forwarders.count({"sandbox": "r-resident", "target_port": 18790}) == 2
+    await manager.deploy(runtime, _resident_profile())
+
+    assert client.created["labels"] == {
+        "app.kubernetes.io/managed-by": "volundr",
+        "volundr.niuu.io/resident": str(runtime.id),
+        "volundr.niuu.io/runtime": "openclaw",
+        "volundr.niuu.io/flock-id": str(flock_id),
+        "volundr.niuu.io/flock-member-id": str(member_id),
+        "volundr.niuu.io/flock-role": "coordinator",
+        "volundr.niuu.io/flock-peer-id": f"peer-{member_id}",
+    }
+    expected = {
+        "NIUU_FLOCK_ID": str(flock_id),
+        "NIUU_FLOCK_MEMBER_ID": str(member_id),
+        "NIUU_FLOCK_ROLE": "coordinator",
+        "NIUU_FLOCK_PEER_ID": f"peer-{member_id}",
+    }
+    assert expected.items() <= client.created["env"].items()
+    assert expected.items() <= client.execs[0]["env"].items()
 
 
 _CURRENT_SANDBOX_IMAGE = "ghcr.io/niuulabs/openshell:niu-1099-openshell-resident"
@@ -4547,16 +4200,14 @@ def _persisted_profile(tag: str = "niu-1099-openshell-resident") -> ResidentDepl
 
 
 async def _resident_on_old_image(monkeypatch: pytest.MonkeyPatch):
-    """A deployed Ravn resident whose sandbox an older Völundr created, with its token."""
+    """A deployed resident whose sandbox an older Völundr created, with its machine identity."""
     adapter = _import_adapter(monkeypatch)
     runtime = _deployed_resident(_resident_runtime())
     client = _FakeOpenShellGatewayClient(adapter)
     client.sandbox_image = _OLD_SANDBOX_IMAGE
     client.exec_script = lambda **_kwargs: (0, "")
     manager = _deployed_resident_manager(adapter, client, runtime)
-    store = _bind_ravn_sessions(manager)
-    await store.store("resident", str(runtime.id), "ravn-openclaw", "generic", {"token": "kept"})
-    return adapter, runtime, client, manager, store
+    return adapter, runtime, client, manager, manager._credential_store
 
 
 def _redeploying(runtime: ResidentRuntime, state=ResidentObservedState.PENDING) -> ResidentRuntime:
@@ -4598,9 +4249,11 @@ async def test_reconcile_recreates_a_persisted_residents_sandbox_on_the_current_
     }
     assert deployed.observed_state is ResidentObservedState.ACTIVE
     assert deployed.backend_ref["image"] == _CURRENT_SANDBOX_IMAGE
-    # Same resident, same shim token: its channels keep working.
-    assert await _kept_shim_token(store, runtime) == "kept"
-    assert {process["env"]["RAVN_OPENCLAW_TOKEN"] for process in client.execs} == {"kept"}
+    # Same resident, same machine identity: its sessions keep working.
+    assert store.values["openclaw-gateway"]["gateway_token"] == "gateway-token"
+    assert {process["env"]["OPENCLAW_GATEWAY_TOKEN"] for process in client.execs} == {
+        "gateway-token"
+    }
 
     # Once: the new sandbox runs the current image.
     upgraded = runtime.model_copy(update={"backend_ref": deployed.backend_ref})
@@ -4652,15 +4305,15 @@ async def test_restart_of_an_unpersisted_resident_restarts_in_place_and_never_re
     assert client.created is None
     # The processes restarted in the existing sandbox, as before.
     assert [process["pid_path"] for process in client.execs] == [
-        "/sandbox/.volundr/skuld.pid",
-        "/sandbox/.volundr/ravn.pid",
+        "/sandbox/.volundr/openclaw.pid",
     ] * 2
     assert {process["sandbox"] for process in client.execs} == {runtime.backend_ref["name"]}
     for restarted in (observation, again):
         assert restarted.observed_state is ResidentObservedState.ACTIVE
         assert restarted.backend_ref["image"] == _OLD_SANDBOX_IMAGE
         _assert_held(restarted.conditions[-1])
-    assert await _kept_shim_token(store, runtime) == "kept"
+    assert store.deletes == []
+    assert store.values["openclaw-gateway"]["gateway_token"] == "gateway-token"
 
 
 @pytest.mark.asyncio
@@ -4675,7 +4328,7 @@ async def test_restart_moves_a_persisted_resident_onto_the_current_image(
     assert client.created["image"] == _CURRENT_SANDBOX_IMAGE
     assert observation.backend_ref["image"] == _CURRENT_SANDBOX_IMAGE
     assert all(condition.type != "PlatformUpgrade" for condition in observation.conditions)
-    assert await _kept_shim_token(store, runtime) == "kept"
+    assert store.values["openclaw-gateway"]["gateway_token"] == "gateway-token"
 
 
 @pytest.mark.asyncio
@@ -4689,10 +4342,7 @@ async def test_restart_on_the_current_image_restarts_processes_in_place(
 
     assert client.deleted == []
     assert client.created is None
-    assert [process["pid_path"] for process in client.execs] == [
-        "/sandbox/.volundr/skuld.pid",
-        "/sandbox/.volundr/ravn.pid",
-    ]
+    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/openclaw.pid"]
 
 
 @pytest.mark.asyncio
@@ -4710,10 +4360,7 @@ async def test_restart_brings_back_a_sandbox_that_stopped_under_the_resident(
     client.start_sandbox.assert_called_once_with(runtime.backend_ref["name"])
     assert client.deleted == []
     assert client.created is None
-    assert [process["pid_path"] for process in client.execs] == [
-        "/sandbox/.volundr/skuld.pid",
-        "/sandbox/.volundr/ravn.pid",
-    ]
+    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/openclaw.pid"]
 
 
 @pytest.mark.asyncio
@@ -4742,8 +4389,9 @@ async def test_a_failed_upgrade_is_reported_without_redeploying_in_a_loop(
     with pytest.raises(RuntimeError, match="image pull failed"):
         await manager.deploy(_redeploying(runtime), profile)
 
-    # A failed upgrade keeps the resident's identity: its token is still kept.
-    assert await _kept_shim_token(store, runtime) == "kept"
+    # A failed upgrade keeps the resident's identity: its machine credential is still kept.
+    assert store.deletes == []
+    assert store.values["openclaw-gateway"]["gateway_token"] == "gateway-token"
     failed = _redeploying(runtime, ResidentObservedState.FAILED)
     for _ in range(2):
         observation = await manager.reconcile(failed, profile)

@@ -9,14 +9,7 @@ from uuid import uuid4
 
 import pytest
 
-from ravn.adapters.personas.loader import FilesystemPersonaAdapter
-from ravn.config import Settings
-from ravn.drive_loop import FanInBuffer, _parse_outcome_for_persona
-from ravn.workflow_runtime import (
-    _workflow_allowed_outcome_topics,
-    _workflow_runtime_for_persona,
-)
-from skuld.workflow_runtime import _workflow_gate_nodes, _workflow_terminal_nodes
+from personas.adapters.loader import FilesystemPersonaAdapter
 from ting.adapters.parent_workflow_continuation import VolundrParentWorkflowContinuation
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDependency
@@ -81,14 +74,16 @@ def test_developer_workflows_pin_current_integration_reviewer_content() -> None:
 
 def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_is_bounded() -> None:
     files = [
-        *Path("src/ravn/personas").glob("developer-*.yaml"),
+        *Path("src/personas/builtin").glob("developer-*.yaml"),
         *BUNDLED_SYSTEM_WORKFLOWS_PATH.glob("developer-*.yaml"),
     ]
     rendered = "\n".join(path.read_text(encoding="utf-8").casefold() for path in files)
     assert "github" not in rendered
     assert "gitlab" not in rendered
 
-    coordinator = Path("src/ravn/personas/developer-coordinator.yaml").read_text(encoding="utf-8")
+    coordinator = Path("src/personas/builtin/developer-coordinator.yaml").read_text(
+        encoding="utf-8"
+    )
     for tool in (
         "delivery_expand_workstreams",
         "workflow_execution_reconcile",
@@ -139,64 +134,15 @@ def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_i
         coordinator_persona.system_prompt_template
     )
 
-    integration_reviewer = Path("src/ravn/personas/developer-integration-verifier.yaml").read_text(
-        encoding="utf-8"
-    )
+    integration_reviewer = Path(
+        "src/personas/builtin/developer-integration-verifier.yaml"
+    ).read_text(encoding="utf-8")
     assert "delivery_workspace.inspect" in integration_reviewer
     assert "bounded exact-candidate patch" in integration_reviewer
     assert "allowed_tools: [delivery_workspace]" in integration_reviewer
     assert "delivery_forge, delivery_evidence" in integration_reviewer
     assert "final delivery evidence policy" in integration_reviewer
     assert "Remote CI and full-policy" in integration_reviewer
-
-
-@pytest.mark.parametrize(
-    ("outcome", "expected_verdict"),
-    [
-        (
-            """---outcome---
-verdict: verify
-attempt_id: attempt-1
-candidate_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-candidate_tree: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-verification_receipts: []
-rationale: trusted child verification completed
-result: {}
----end---""",
-            "verify",
-        ),
-        (
-            """---outcome---
-verdict: accept
-rationale: all candidate-bound reviews passed
-result:
-  attemptId: attempt-1
-  candidateSha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  candidateTree: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-  verificationReceipts: []
-  reviewReceipts: []
-  requirementEvidence: []
----end---""",
-            "accept",
-        ),
-    ],
-)
-def test_child_coordinator_outcomes_do_not_require_parent_stage_fields(
-    outcome: str,
-    expected_verdict: str,
-) -> None:
-    coordinator = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
-        "developer-coordinator"
-    )
-    assert coordinator is not None
-
-    parsed = _parse_outcome_for_persona(outcome, coordinator)
-
-    assert parsed is not None
-    assert parsed.valid is True
-    assert parsed.fields["verdict"] == expected_verdict
-    for absent in ("plan_revision", "generation", "workstreams", "task_handles"):
-        assert absent not in parsed.fields
 
 
 @pytest.mark.parametrize(
@@ -301,187 +247,6 @@ def test_delivery_pins_current_workstream_content() -> None:
         "required": ["producer_id", "key_id", "signature"],
         "additionalProperties": False,
     }
-
-
-def test_integration_and_ci_failures_compile_to_durable_generation_repair() -> None:
-    graph = build_workflow_snapshot(_developer_workflows()["Developer Delivery"])["graph"]
-    edges = {edge["id"]: edge for edge in graph["edges"]}
-
-    assert edges["delivery-integrate-repair"] == {
-        "id": "delivery-integrate-repair",
-        "source": "delivery-integrate",
-        "target": "delivery-repair",
-        "label": ("developer.workstream.repair_requested -> developer.workstream.repair_requested"),
-    }
-    assert edges["delivery-tests-repair"] == {
-        "id": "delivery-tests-repair",
-        "source": "delivery-integration-tests",
-        "target": "delivery-repair",
-        "label": ("developer.workstream.repair_requested -> developer.workstream.repair_requested"),
-    }
-    assert edges["delivery-integration-repair"] == {
-        "id": "delivery-integration-repair",
-        "source": "delivery-integration-review",
-        "target": "delivery-repair",
-        "label": "delivery.repair.required -> delivery.repair.required",
-    }
-    assert edges["delivery-publish-repair"] == {
-        "id": "delivery-publish-repair",
-        "source": "delivery-publish",
-        "target": "delivery-repair",
-        "label": ("developer.workstream.repair_requested -> developer.workstream.repair_requested"),
-    }
-    assert edges["delivery-repair-workstreams"] == {
-        "id": "delivery-repair-workstreams",
-        "source": "delivery-repair",
-        "target": "delivery-workstreams",
-        "label": "developer.children.waiting -> developer.children.waiting",
-    }
-
-    settings = Settings.model_validate(
-        {
-            "workflow": {
-                "workflow_id": "developer-delivery",
-                "name": "Developer Delivery",
-                "graph": graph,
-            }
-        }
-    )
-    runtime = _workflow_runtime_for_persona(settings, "developer-coordinator")
-    assert runtime is not None
-    groups = {group["id"]: group for group in runtime["consumer_groups"]}
-    assert groups["delivery-repair"] == {
-        "id": "delivery-repair",
-        "label": "Replace a rejected integration generation",
-        "event_types": ["delivery.repair.required", "developer.workstream.repair_requested"],
-        "fan_in_strategy": "any_pass",
-    }
-    assert groups["delivery-publish"]["event_types"] == [
-        "developer.integration.approved",
-        "developer.delivery.observed",
-    ]
-    assert groups["delivery-publish"]["fan_in_strategy"] == "any_pass"
-    assert _workflow_allowed_outcome_topics(settings, node_id="delivery-integrate") == {
-        "developer.integration.requested",
-        "developer.workstream.repair_requested",
-    }
-    assert _workflow_allowed_outcome_topics(settings, node_id="delivery-integration-tests") == {
-        "developer.integration.verified",
-        "developer.workstream.repair_requested",
-    }
-
-
-@pytest.mark.parametrize(
-    "event_type",
-    ["developer.integration.approved", "developer.delivery.observed"],
-)
-def test_delivery_publish_inputs_independently_activate_publish_stage(event_type: str) -> None:
-    graph = _developer_workflows()["Developer Delivery"].graph
-    settings = Settings.model_validate(
-        {
-            "workflow": {
-                "workflow_id": "developer-delivery",
-                "name": "Developer Delivery",
-                "graph": graph,
-            }
-        }
-    )
-    runtime = _workflow_runtime_for_persona(settings, "developer-coordinator")
-    assert runtime is not None
-    group = next(item for item in runtime["consumer_groups"] if item["id"] == "delivery-publish")
-
-    accepted = FanInBuffer().try_accept_consumer(
-        event_type=event_type,
-        event_payload={"event_type": event_type, "valid": True},
-        root_correlation_id="delivery-run-1",
-        persona_name="developer-coordinator",
-        consumes_event_types=group["event_types"],
-        strategy=group["fan_in_strategy"],
-        consumer_key=group["id"],
-        cycle_correlation_id=f"{event_type}-1",
-    )
-
-    assert accepted is not None
-    assert accepted.consumer_key == "delivery-publish"
-    assert accepted.triggered_by == f"mesh:outcome:{event_type}"
-
-
-def test_workstream_verification_failure_compiles_to_in_task_repair() -> None:
-    graph = _developer_workflows()["Developer Workstream"].graph
-    edges = {edge["id"]: edge for edge in graph["edges"]}
-    assert edges["workstream-verify-repair"] == {
-        "id": "workstream-verify-repair",
-        "source": "workstream-verify",
-        "target": "workstream-code",
-        "label": ("developer.workstream.repair_requested -> developer.workstream.repair_requested"),
-    }
-
-    settings = Settings.model_validate(
-        {
-            "workflow": {
-                "workflow_id": "developer-workstream",
-                "name": "Developer Workstream",
-                "graph": graph,
-            }
-        }
-    )
-    runtime = _workflow_runtime_for_persona(settings, "developer-coordinator")
-    assert runtime is not None
-    assert "developer.workstream.repair_requested" in (
-        _workflow_allowed_outcome_topics(settings, node_id="workstream-verify") or set()
-    )
-    coder_runtime = _workflow_runtime_for_persona(settings, "developer-coder")
-    assert coder_runtime is not None
-    groups = {group["id"]: group for group in coder_runtime["consumer_groups"]}
-    assert groups["workstream-code"]["event_types"] == [
-        "developer.workstream.requested",
-        "developer.workstream.repair_requested",
-    ]
-
-
-def test_delivery_observation_wait_is_passive_and_reenters_publication() -> None:
-    graph = _developer_workflows()["Developer Delivery"].graph
-    wait = next(node for node in graph["nodes"] if node["id"] == "delivery-publication-wait")
-    assert wait == {
-        "id": "delivery-publication-wait",
-        "kind": "wait",
-        "label": "Await authoritative delivery observation",
-        "conditions": ["forge.checks", "forge.merge"],
-    }
-    edges = {edge["id"]: edge for edge in graph["edges"]}
-    assert edges["delivery-publish-wait"] == {
-        "id": "delivery-publish-wait",
-        "source": "delivery-publish",
-        "target": "delivery-publication-wait",
-        "label": "developer.delivery.waiting -> developer.delivery.waiting",
-    }
-    assert edges["delivery-wait-publish"] == {
-        "id": "delivery-wait-publish",
-        "source": "delivery-publication-wait",
-        "target": "delivery-publish",
-        "label": "developer.delivery.observed -> developer.delivery.observed",
-    }
-
-    settings = Settings.model_validate(
-        {
-            "workflow": {
-                "workflow_id": "developer-delivery",
-                "name": "Developer Delivery",
-                "graph": graph,
-            }
-        }
-    )
-    runtime = _workflow_runtime_for_persona(settings, "developer-coordinator")
-    assert runtime is not None
-    assert "developer.delivery.observed" in runtime["event_types"]
-    assert all(group["id"] != "delivery-publication-wait" for group in runtime["consumer_groups"])
-    assert all(node.node_id != "delivery-publication-wait" for node in _workflow_gate_nodes(graph))
-    assert all(
-        node.node_id != "delivery-publication-wait" for node in _workflow_terminal_nodes(graph)
-    )
-    assert "developer.delivery.waiting" in (
-        _workflow_allowed_outcome_topics(settings, node_id="delivery-publish") or set()
-    )
 
 
 def test_workflow_revision_ignores_transport_paths_for_both_dependency_kinds() -> None:

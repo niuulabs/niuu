@@ -27,6 +27,8 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from mimir.adapters.composite import CompositeMimirAdapter
+from mimir.domain import MimirMount, WriteRouting
 from niuu.domain.mimir import (
     MimirLintReport,
     MimirPage,
@@ -36,11 +38,9 @@ from niuu.domain.mimir import (
     MimirSourceMeta,
     ThreadState,
 )
+from niuu.mesh.events import MeshEvent
+from niuu.ports.mesh import MeshPort
 from niuu.ports.mimir import MimirPort
-from ravn.adapters.mimir.composite import CompositeMimirAdapter
-from ravn.domain.events import RavnEvent
-from ravn.domain.mimir import MimirMount, WriteRouting
-from ravn.ports.mesh import MeshPort
 from skuld.config import MeshConfig
 from skuld.mesh_adapter import SkuldMeshAdapter
 from skuld.transports import CLITransport, TransportCapabilities
@@ -160,7 +160,7 @@ class InProcessMesh(MeshPort):
 
     def __init__(self) -> None:
         self._rpc_handler: Callable[[dict], Awaitable[dict]] | None = None
-        self._subscriptions: dict[str, list[Callable[[RavnEvent], Awaitable[None]]]] = {}
+        self._subscriptions: dict[str, list[Callable[[MeshEvent], Awaitable[None]]]] = {}
 
     def set_rpc_handler(self, handler: Callable[[dict], Awaitable[dict]]) -> None:
         self._rpc_handler = handler
@@ -172,7 +172,7 @@ class InProcessMesh(MeshPort):
         self._rpc_handler = None
         self._subscriptions.clear()
 
-    async def publish(self, event: RavnEvent, topic: str) -> None:
+    async def publish(self, event: MeshEvent, topic: str) -> None:
         handlers = list(self._subscriptions.get(topic, []))
         for h in handlers:
             await h(event)
@@ -180,7 +180,7 @@ class InProcessMesh(MeshPort):
     async def subscribe(
         self,
         topic: str,
-        handler: Callable[[RavnEvent], Awaitable[None]],
+        handler: Callable[[MeshEvent], Awaitable[None]],
     ) -> None:
         self._subscriptions.setdefault(topic, []).append(handler)
 

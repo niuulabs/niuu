@@ -30,7 +30,6 @@ from ting.domain.services.review_list import ReviewKind, ReviewState, review_lis
 from ting.domain.services.ticket_coordinator import (
     TicketCoordinatorService,
     TicketWorkflow,
-    coordinator_ravn_config,
 )
 from ting.domain.services.ticket_review import RunReview, campaign_reviews
 from ting.domain.services.work_read import (
@@ -593,11 +592,6 @@ def _coordinator_repo(request: Request) -> TicketCoordinatorRepository | None:
     return getattr(request.app.state, "ticket_coordinator_repo", None)
 
 
-def _public_origin(request: Request) -> str:
-    configured = request.app.state.settings.a2a.public_base_url
-    return (configured or str(request.base_url)).rstrip("/")
-
-
 def _coordinator_service(
     request: Request,
     *,
@@ -607,24 +601,11 @@ def _coordinator_service(
     repo = _coordinator_repo(request)
     if repo is None:
         raise HTTPException(status_code=503, detail="Ticket coordinators are not configured")
-    settings = request.app.state.settings.ticket_coordinator
     return TicketCoordinatorService(
         repo=repo,
         volundr=adapter,
         principal=principal,
         auth_token=extract_bearer_token(request),
-        persona=settings.persona,
-        model=settings.model,
-        session_definitions=request.app.state.settings.session_definitions,
-        configured_models=list(request.app.state.settings.bifrost.models),
-        cli_turn_timeout_seconds=(
-            request.app.state.settings.dispatch.workflow_cli_turn_timeout_seconds
-        ),
-        ravn_config=coordinator_ravn_config(
-            request.app.state.settings.dispatch.flock.ravn_config, settings.ravn_config
-        ),
-        platform_origin=_public_origin(request),
-        anonymous_platform=request.app.state.settings.auth.allow_anonymous_dev,
     )
 
 

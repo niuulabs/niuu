@@ -55,8 +55,8 @@ def _runtime(**overrides: Any) -> ResidentRuntime:
         "name": "Muninn",
         "persona_name": "product-steward",
         "backend": ResidentBackend.HELMRELEASE,
-        "engine": ResidentEngine.RAVN,
-        "profile_id": "ravn-k8s",
+        "engine": ResidentEngine.OPENCLAW,
+        "profile_id": "openclaw-k8s",
         "capabilities": _A2A_CAPABILITIES,
     }
     values.update(overrides)
@@ -211,7 +211,7 @@ def test_card_projects_resident_and_persona_onto_a2a_card() -> None:
         }
     ]
     assert [skill["id"] for skill in card["skills"]] == ["product-steward"]
-    assert card["skills"][0]["tags"] == ["resident", "ravn", "product-steward"]
+    assert card["skills"][0]["tags"] == ["resident", "openclaw", "product-steward"]
     assert card["capabilities"].get("pushNotifications", False) is False
     assert "platformBearer" in card["securitySchemes"]
     persona_provider.get.assert_awaited_once_with("user-a", "product-steward")

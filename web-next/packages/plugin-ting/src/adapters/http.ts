@@ -1421,7 +1421,6 @@ export function buildDispatchBusHttpAdapter(client: ApiClient): IDispatchBus {
           ? { connection_id: options.instanceId ?? options.connectionId }
           : {}),
         ...(options.sessionDefinition ? { session_definition: options.sessionDefinition } : {}),
-        ...(options.workloadType ? { workload_type: options.workloadType } : {}),
         ...(options.workloadConfig ? { workload_config: options.workloadConfig } : {}),
       });
       return results.map(toDispatchApprovalResult);

@@ -1,8 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { ArrowRight } from 'lucide-react';
 import type { PersonaDetail } from '../../ports';
-import { useTriggers } from '../hooks/useTriggers';
-import { errorText } from './errorText';
 
 function Section({
   title,
@@ -40,31 +38,6 @@ export function describeFanIn(fanIn: PersonaDetail['fanIn']): string | null {
   const strategy = fanIn.strategy.replace(/_/g, ' ');
   const target = fanIn.params.contributes_to;
   return typeof target === 'string' ? `${strategy} → ${target}` : strategy;
-}
-
-function Triggers({ persona }: { persona: PersonaDetail }) {
-  const triggers = useTriggers();
-  if (triggers.isLoading) return <p className="rw-muted">Loading triggers…</p>;
-  if (triggers.isError) {
-    return (
-      <p className="rw-muted" data-testid="persona-triggers-unavailable">
-        Triggers can’t be listed: {errorText(triggers.error, 'the trigger service did not answer')}.
-      </p>
-    );
-  }
-  const mine = (triggers.data ?? []).filter((trigger) => trigger.personaName === persona.name);
-  if (mine.length === 0) {
-    return <p className="rw-muted">Nothing starts this persona on a schedule or hook.</p>;
-  }
-  return (
-    <div className="rw-kv">
-      {mine.map((trigger) => (
-        <Field key={trigger.id} label={`${trigger.kind}${trigger.enabled ? '' : ' · paused'}`}>
-          <span className="rw-kv__v--mono">{trigger.spec}</span>
-        </Field>
-      ))}
-    </div>
-  );
 }
 
 /** A persona read as a character sheet: what it does, how it fits the flow, what it may use. */
@@ -170,10 +143,6 @@ export function PersonaSheet({ persona }: { persona: PersonaDetail }) {
         <pre className="rw-prompt" data-open={promptOpen} data-testid="persona-prompt">
           {persona.systemPromptTemplate || 'No system prompt.'}
         </pre>
-      </Section>
-
-      <Section title="Triggers">
-        <Triggers persona={persona} />
       </Section>
 
       <p className="rw-muted">

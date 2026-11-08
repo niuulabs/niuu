@@ -1,1 +1,0 @@
-"""Permission and security adapters."""
