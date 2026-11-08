@@ -192,6 +192,19 @@ def _claude_headers(server: dict[str, Any]) -> dict[str, str]:
     return headers
 
 
+def _claude_timeout(server: dict[str, Any]) -> dict[str, Any]:
+    """Claude Code's per-server ``timeout`` (milliseconds) from ``tool_timeout_sec``.
+
+    It is a hard wall-clock limit on one tool call of that server, and it replaces
+    ``MCP_TOOL_TIMEOUT`` (about 28 hours by default) for that server only. Setting the
+    environment variable instead would shorten every other MCP server's calls too.
+    """
+    seconds = server.get("tool_timeout_sec")
+    if seconds is None:
+        return {}
+    return {"timeout": round(seconds * 1000)}
+
+
 def _claude_server_entry(server: dict[str, Any]) -> dict[str, Any]:
     """One server in the shape Claude Code and the Agent SDK accept."""
     if server.get("url"):
@@ -202,9 +215,11 @@ def _claude_server_entry(server: dict[str, Any]) -> dict[str, Any]:
         if _has_credential_source(server):
             # Claude merges the helper's output over the static headers per connection.
             entry["headersHelper"] = _header_helper(server)
+        entry.update(_claude_timeout(server))
         return entry
 
     entry = {"command": server.get("command") or ""}
+    entry.update(_claude_timeout(server))
     if server.get("type") == "stdio":
         entry["type"] = "stdio"
     if server.get("args"):

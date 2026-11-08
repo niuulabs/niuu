@@ -119,6 +119,16 @@ class _Ended:
     detail: str
 
 
+def _blocked(who: str, kind: object) -> _Ended:
+    return _Ended(
+        AskOutcome.BLOCKED,
+        f"{who} is waiting on a person"
+        + (f" ({kind})" if isinstance(kind, str) and kind else "")
+        + " (an approval or a question) and cannot read or answer until they respond. "
+        "Tell the user, or call ask again with the same request_id later.",
+    )
+
+
 @dataclass(frozen=True)
 class _RecipientState:
     """Forge's view of an ask's recipient: ``ended`` when it can never answer for now, else the
@@ -126,6 +136,8 @@ class _RecipientState:
 
     ended: _Ended | None
     unread: frozenset[str] = frozenset()
+    #: Why the state could not be read this time (a peer that did not answer); empty otherwise.
+    error: str = ""
 
 
 class BrokerForgeMcpHost(ForgeMcpHost):
@@ -274,6 +286,7 @@ class BrokerForgeMcpHost(ForgeMcpHost):
         request_id: str,
         delivery_confirmed: bool,
         deadline_s: float,
+        mesh_peer: str | None = None,
     ) -> dict[str, Any]:
         """Wait for the recipient's reply to ``message_id`` and say how the wait ended.
 
@@ -294,7 +307,7 @@ class BrokerForgeMcpHost(ForgeMcpHost):
                     return self._ask_answered(recipient_id, taken)
                 now = time.monotonic()
                 if now >= next_check:
-                    state = await self._recipient_state(recipient_id, instance_id)
+                    state = await self._recipient_state(recipient_id, instance_id, mesh_peer)
                     if state.ended is not None:
                         return self._ask_ended(recipient_id, state.ended)
                     next_check = time.monotonic() + poll_s
@@ -302,7 +315,7 @@ class BrokerForgeMcpHost(ForgeMcpHost):
                 if remaining <= 0:
                     return await self._ask_deadline(
                         wait, recipient_id, instance_id, message_id, request_id,
-                        delivery_confirmed, deadline_s,
+                        delivery_confirmed, deadline_s, mesh_peer,
                     )  # fmt: skip
                 pause = min(remaining, max(next_check - time.monotonic(), 0.0))
                 with contextlib.suppress(TimeoutError):
@@ -317,12 +330,13 @@ class BrokerForgeMcpHost(ForgeMcpHost):
         request_id: str,
         delivery_confirmed: bool,
         deadline_s: float,
+        mesh_peer: str | None,
     ) -> dict[str, Any]:
         """The deadline passed: one last look at the inbox and at Forge, then say which kind."""
         taken = await self._broker.take_peer_answer(wait)
         if taken is not None:
             return self._ask_answered(recipient_id, taken)
-        state = await self._recipient_state(recipient_id, instance_id)
+        state = await self._recipient_state(recipient_id, instance_id, mesh_peer)
         if state.ended is not None:
             return self._ask_ended(recipient_id, state.ended)
         again = (
@@ -337,16 +351,21 @@ class BrokerForgeMcpHost(ForgeMcpHost):
                 f"yet picking the message up). {again}"
             )  # fmt: skip
         elif not delivery_confirmed:
+            unconfirmed = (
+                "the recipient's Skuld did not answer the send within mesh.rpc_timeout_s"
+                if mesh_peer
+                else "Forge did not confirm the send as delivered (it is pending or unconfirmed)"
+            )
             outcome, detail = AskOutcome.DELIVERY_UNKNOWN, (
-                "Forge did not confirm the message as delivered (the send is still pending or "
-                f"unconfirmed), and no answer came within {deadline_s:g}s. Whether the "
-                f"recipient has it is unknown, not failed. {again}"
+                f"{unconfirmed}, and no answer came within {deadline_s:g}s. Whether the "
+                f"recipient has the message is unknown, not failed. {again}"
             )  # fmt: skip
         else:
             outcome, detail = AskOutcome.DEADLINE, (
                 f"the recipient had not answered within deadline_s={deadline_s:g} "
                 f"(ceiling ask.wait_max_s={self._broker._settings.ask.wait_max_s:g}, the longest "
                 f"one MCP tool call may run). {again}"
+                + (f" The peer's state could not be read: {state.error}." if state.error else "")
             )  # fmt: skip
         if deadline_s >= self._broker._settings.ask.wait_max_s:
             # Only the ceiling is a cap; a shorter deadline the caller chose is its own decision,
@@ -354,7 +373,54 @@ class BrokerForgeMcpHost(ForgeMcpHost):
             record_cap_hit("ask.wait_max_s", f"ask {request_id} ended {outcome.value}: {detail}")
         return self._ask_ended(recipient_id, _Ended(outcome, detail))
 
-    async def _recipient_state(self, recipient_id: str, instance_id: str | None) -> _RecipientState:
+    async def _recipient_state(
+        self, recipient_id: str, instance_id: str | None, mesh_peer: str | None
+    ) -> _RecipientState:
+        """The recipient's state: from its own Skuld over the mesh for a peer, else from Forge."""
+        if mesh_peer is not None:
+            return await self._mesh_peer_state(mesh_peer)
+        return await self._forge_recipient_state(recipient_id, instance_id)
+
+    async def _mesh_peer_state(self, peer_id: str) -> _RecipientState:
+        """Gone when the peer left the table, else what its Skuld says about itself (RPC)."""
+        adapter = self._mesh_adapter_or_raise()
+        if peer_id not in adapter.peers():
+            return _RecipientState(
+                _Ended(
+                    AskOutcome.GONE,
+                    f"mesh peer {peer_id!r} is no longer in this session's peer table (it left "
+                    "the flock or stopped announcing), so it cannot answer.",
+                )
+            )
+        try:
+            answer = await adapter.request_peer_state(peer_id)
+        except PeerNotFoundError:
+            return _RecipientState(
+                _Ended(
+                    AskOutcome.GONE,
+                    f"mesh peer {peer_id!r} dropped from the peer table while its state was "
+                    "being read, so it cannot answer.",
+                )
+            )
+        except TimeoutError:
+            return _RecipientState(None, error="its Skuld did not answer within mesh.rpc_timeout_s")
+        if answer.get("status") != "ok":
+            return _RecipientState(None, error=str(answer.get("error") or answer))
+        activity = str(answer.get("activity_state") or "")
+        if activity == _ACTIVITY_STOPPED:
+            return _RecipientState(
+                _Ended(AskOutcome.GONE, f"mesh peer {peer_id!r} reports its transport stopped.")
+            )
+        if activity == _ACTIVITY_AWAITING_INPUT:
+            return _RecipientState(_blocked(peer_id, answer.get("kind")))
+        waiting = answer.get("waiting")
+        return _RecipientState(
+            None, frozenset(waiting) if isinstance(waiting, list) else frozenset()
+        )
+
+    async def _forge_recipient_state(
+        self, recipient_id: str, instance_id: str | None
+    ) -> _RecipientState:
         """Ask Forge about the recipient: gone, blocked on a person, and what it has not read."""
         try:
             session = await self._client.get_session(recipient_id, instance_id=instance_id)
@@ -381,16 +447,7 @@ class BrokerForgeMcpHost(ForgeMcpHost):
         metadata = session.get("activity_metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
         if activity == _ACTIVITY_AWAITING_INPUT:
-            controls = metadata.get("kind")
-            return _RecipientState(
-                _Ended(
-                    AskOutcome.BLOCKED,
-                    f"session {recipient_id} is waiting on a person"
-                    + (f" ({controls})" if isinstance(controls, str) and controls else "")
-                    + " (an approval or a question) and cannot read or answer until they respond. "
-                    "Tell the user, or call ask again with the same request_id later.",
-                )
-            )
+            return _RecipientState(_blocked(recipient_id, metadata.get("kind")))
         peers = metadata.get("peer_messages")
         waiting = peers.get("waiting") if isinstance(peers, dict) else None
         unread = frozenset(waiting) if isinstance(waiting, list) else frozenset()
@@ -430,8 +487,50 @@ class BrokerForgeMcpHost(ForgeMcpHost):
     def mesh_host(self) -> bool:
         return self._broker._settings.mesh.enabled
 
+    def _mesh_adapter_or_raise(self) -> Any:
+        adapter = self._broker._mesh_adapter
+        if adapter is None:
+            raise ForgeApiError(
+                "this session's mesh is not running (mesh.enabled is set but the adapter did "
+                "not start); check the broker log, or set mesh.enabled to false. Messages to "
+                "other sessions are not rerouted through Forge while the mesh is down",
+                status=503,
+            )
+        return adapter
+
+    async def mesh_peer_for(self, *, session_id: str | None, name: str | None) -> str | None:
+        """The mesh peer id a recipient is, or ``None`` when it is not in the peer table.
+
+        Looked up by session id or by name against the verified peer table: a peer's id, or
+        for a session its display name (the session name it announces). A name two peers
+        carry is an error that lists them. With the mesh enabled but not running, this raises:
+        whether the recipient is a peer cannot be known, and the answer is never "use Forge".
+        """
+        if not self._broker._settings.mesh.enabled:
+            return None
+        peers = self._mesh_adapter_or_raise().peers()
+        if session_id is not None:
+            return session_id if session_id in peers else None
+        if name in peers:
+            return name
+        matches = [peer.peer_id for peer in peers.values() if peer.display_name == name]
+        if len(matches) > 1:
+            raise ForgeApiError(
+                f"{len(matches)} mesh peers are named {name!r}: {', '.join(sorted(matches))}. "
+                "Address one by its peer id (send again with `to` set to the peer id).",
+                status=409,
+            )
+        return matches[0] if matches else None
+
     async def send_mesh_message(
-        self, peer: str, content: str, *, expect_reply: bool, request_id: str, in_reply_to: str
+        self,
+        peer: str,
+        content: str,
+        *,
+        expect_reply: bool,
+        request_id: str,
+        in_reply_to: str,
+        urgent: bool = False,
     ) -> dict[str, Any]:
         """Send a peer message envelope to a mesh peer, stamped with this session's identity.
 
@@ -463,6 +562,7 @@ class BrokerForgeMcpHost(ForgeMcpHost):
             content=content,
             reply=ReplyRoute(kind=ReplyKind.MESH, target=adapter.peer_id) if expect_reply else None,
             in_reply_to=in_reply_to,
+            urgent=urgent,
         )
         try:
             answer = await adapter.send_peer_message(peer, message)
@@ -483,7 +583,12 @@ class BrokerForgeMcpHost(ForgeMcpHost):
         )
         if failure:
             raise ForgeApiError(f"mesh peer {peer!r} refused the message: {failure}", status=502)
-        return {"message_id": message.message_id, "status": answer.get("status") or "sent"}
+        return {
+            "message_id": message.message_id,
+            "status": answer.get("status") or "sent",
+            "path": "mesh",
+            "peer": peer,
+        }
 
     async def close_workflow_step(self, args: WorkflowStepCloseArgs) -> dict[str, Any]:
         """Close the session's open workflow step; a close the step does not allow raises."""
