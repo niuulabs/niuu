@@ -30,6 +30,7 @@ const RUN: RunRef = {
   workflowId: 'wf-1',
   workflowVersion: '1.0.1',
   updatedAt: '2026-11-02T23:44:00Z',
+  sessions: [{ sessionId: 'session-1', instanceId: 'valhalla', member: '' }],
 };
 
 const NONE = new Set<string>();

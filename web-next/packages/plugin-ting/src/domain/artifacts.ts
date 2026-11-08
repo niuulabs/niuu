@@ -52,6 +52,15 @@ export interface RunRef {
   workflowId: string | null;
   workflowVersion: string | null;
   updatedAt: string | null;
+  /** Every session the run worked in: one per member of a step-engine run. */
+  sessions: readonly RunSession[];
+}
+
+/** A session a run worked in, and the member whose steps it ran (empty for the run's own). */
+export interface RunSession {
+  sessionId: string;
+  instanceId: string | null;
+  member: string;
 }
 
 /** The Forge session that presented an artifact. */
@@ -115,17 +124,30 @@ export function artifactStatus(run: RunRef, waitingSlugs: ReadonlySet<string>): 
 
 export function runRef(item: WorkSummary): RunRef | null {
   if (!item.session || !item.campaignSlug) return null;
+  return runWithSessions(item, [
+    { sessionId: item.session.id, instanceId: item.session.connectionId, member: '' },
+  ]);
+}
+
+/**
+ * A run with the sessions its review read from its ledger. A step-engine run has no
+ * session of its own, so its first session stands for it where one session is asked for.
+ */
+export function runWithSessions(item: WorkSummary, sessions: readonly RunSession[]): RunRef | null {
+  if (!item.campaignSlug) return null;
+  const first = sessions[0] ?? null;
   return {
     slug: item.campaignSlug,
     title: item.title,
     status: item.rawState.status,
     condition: item.condition,
     attention: item.attention,
-    sessionId: item.session.id,
-    instanceId: item.session.connectionId,
+    sessionId: first?.sessionId ?? '',
+    instanceId: first?.instanceId ?? null,
     workflowId: item.workflow?.id ?? null,
     workflowVersion: item.workflow?.version ?? null,
     updatedAt: item.updatedAt,
+    sessions,
   };
 }
 
@@ -137,22 +159,25 @@ function artifactKey(publication: Publication): { key: string; keyed: boolean } 
     : { key: publication.providerKey, keyed: false };
 }
 
-function runSession(run: RunRef): SessionRef {
+function runSession(run: RunRef, session: RunSession): SessionRef {
   return {
-    sessionId: run.sessionId,
-    instanceId: run.instanceId,
-    title: run.title,
+    sessionId: session.sessionId,
+    instanceId: session.instanceId,
+    title: session.member ? `${run.title} (${session.member})` : run.title,
     running: !RUN_ENDED.has(run.condition),
   };
 }
 
-/** Every artifact a run's agents presented, versions oldest first. */
+/** Every artifact a run's agents presented, in every session it worked in, oldest first. */
 export function artifactsFromPublications(
   run: RunRef,
   publications: readonly Publication[],
   waitingSlugs: ReadonlySet<string>,
 ): Artifact[] {
-  return collect(runSession(run), run, artifactStatus(run, waitingSlugs), publications);
+  const status = artifactStatus(run, waitingSlugs);
+  return run.sessions.flatMap((session) =>
+    collect(runSession(run, session), run, status, publications),
+  );
 }
 
 /** Every artifact a session that is no workflow run presented, versions oldest first. */

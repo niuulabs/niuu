@@ -86,6 +86,14 @@ describe('Work HTTP read adapter', () => {
     expect(http.get).toHaveBeenCalledWith('/work/runs/a2a%2F1/reviews');
   });
 
+  it('reads a run by its slug', async () => {
+    const http = client();
+
+    await buildWorkHttpAdapter(http).run('a2a/1');
+
+    expect(http.get).toHaveBeenCalledWith('/work/runs/a2a%2F1');
+  });
+
   it('starts a ticket through its coordinator', async () => {
     const http = client();
 

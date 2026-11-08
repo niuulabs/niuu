@@ -2523,6 +2523,11 @@ export function createMockWorkService(): IWorkService {
     async reviews() {
       return mockReviewList(tasks, runGateStatus === 'pending');
     },
+    async run(slug): Promise<WorkDetail> {
+      const item = MOCK_WORK.find((entry) => entry.campaignSlug === slug);
+      if (!item) throw new Error(`Run not found: ${slug}`);
+      return { item, tasks: [], coverage: [], board: null };
+    },
     async runReviews(slug) {
       if (slug !== MOCK_RUN_SLUG) throw new Error(`Run not found: ${slug}`);
       return mockRunReviews(runGateStatus);

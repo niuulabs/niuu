@@ -45,6 +45,9 @@ export function buildWorkHttpAdapter(client: ApiClient): IWorkService {
         `/work/project/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(issueId)}/reviews`,
       );
     },
+    run(slug) {
+      return client.get<WorkDetail>(`/work/runs/${encodeURIComponent(slug)}`);
+    },
     runReviews(slug) {
       return client.get<RunReviews>(`/work/runs/${encodeURIComponent(slug)}/reviews`);
     },

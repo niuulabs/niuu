@@ -61,6 +61,16 @@ export interface ReviewRun {
   startedBy?: string | null;
   /** The ticket the run was started for, when a coordinator started it. */
   ticket?: { projectId: string; issueId: string } | null;
+  /** Every session the run worked in: one per member of a step-engine run. */
+  sessions?: ReviewRunSession[];
+}
+
+/** A Forge session a run worked in; `member` is empty for a run's own session. */
+export interface ReviewRunSession {
+  sessionId: string;
+  member: string;
+  /** The Forge connection the session is on. */
+  connectionId: string | null;
 }
 
 export interface RunReviews {

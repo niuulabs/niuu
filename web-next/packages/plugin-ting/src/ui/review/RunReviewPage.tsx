@@ -49,6 +49,11 @@ function pendingGate(reviews: readonly RunReview[]) {
   return revision ? { id: revision.gateId, activationId: revision.activationId } : null;
 }
 
+/** A member's session is named by its role in the run: `reviewer` reads as Reviewer. */
+function memberLabel(member: string): string {
+  return member.charAt(0).toUpperCase() + member.slice(1);
+}
+
 function runEnded(run: RunRef): boolean {
   return RUN_ENDED.has(run.condition);
 }
@@ -121,7 +126,7 @@ function RunWorkspace({
   const navigate = useNavigate();
   const waiting = useWaiting();
   const decide = useRunGateDecision(record.run.slug);
-  const message = useSendToRun(run);
+  const message = useSendToRun();
   const revise = useStartRevision();
   const gate = pendingGate(record.reviews);
   const brief = record.run.prompt;
@@ -130,7 +135,7 @@ function RunWorkspace({
     () => artifactsFromPublications(run, publications, waiting),
     [run, publications, waiting],
   );
-  const read = useArtifactTexts(run, presented);
+  const read = useArtifactTexts(presented);
   // A gate that shows an artifact reads it in its own panel; the rest get a tab each.
   const shownByGates = artifactKeysShown(record.reviews, presented);
   const artifacts = presented.filter((artifact) => !shownByGates.has(artifact.key));
@@ -145,11 +150,15 @@ function RunWorkspace({
     if (!runEnded(run)) {
       return {
         title: 'Send back to the run',
-        hint: 'The run is still working. Your notes arrive in its chat as your next message.',
+        hint: 'The run is still working. Your notes arrive in the chat of the session that presented this, as your next message.',
         label: 'Send to the run',
         busy: message.isPending,
         failure: message.error,
-        onSend: (notes, onSuccess) => message.mutate(noteForRun(artifact, notes), { onSuccess }),
+        onSend: (notes, onSuccess) =>
+          message.mutate(
+            { session: artifact.session, content: noteForRun(artifact, notes) },
+            { onSuccess },
+          ),
       };
     }
     const latest = artifact.versions[artifact.versions.length - 1];
@@ -217,12 +226,15 @@ function RunWorkspace({
             state={ticket.coordinator.status === 'active' ? 'Active' : 'Closed'}
           />
         ) : null}
-        <SessionLink
-          sessionId={record.run.sessionId}
-          instanceId={run.instanceId}
-          label={`${record.run.workflowName} run`}
-          state={CONDITION_LABEL[run.condition]}
-        />
+        {run.sessions.map((session) => (
+          <SessionLink
+            key={session.sessionId}
+            sessionId={session.sessionId}
+            instanceId={session.instanceId}
+            label={session.member ? memberLabel(session.member) : `${record.run.workflowName} run`}
+            state={CONDITION_LABEL[run.condition]}
+          />
+        ))}
       </ul>
       {record.run.branch ? <span>On {record.run.branch}</span> : null}
       {record.run.startedBy ? <span>Started by {record.run.startedBy}</span> : null}
@@ -312,7 +324,7 @@ export function RunReviewPage() {
   const { slug } = useParams({ strict: false }) as { slug: string };
   const search = useSearch({ strict: false }) as { artifact?: string; returnTo?: string };
   const record = useRunReviews(slug);
-  const runs = useRun(slug);
+  const runs = useRun(slug, record.data?.run.sessions);
   const run = runs.run;
   const publications = useRunPublications(run);
   const ticketRef = record.data?.run.ticket ?? null;
@@ -343,9 +355,7 @@ export function RunReviewPage() {
   if (!run) {
     return (
       <p className="ting-review__state" role="alert">
-        {runs.error instanceof Error
-          ? runs.error.message
-          : `Run ${slug} is not among the runs Work lists, so its session cannot be found.`}
+        {runs.error instanceof Error ? runs.error.message : `Run ${slug} could not be read.`}
       </p>
     );
   }
@@ -391,9 +401,9 @@ function SessionWorkspace({
   initialReview: string | null;
   back: ReviewBack;
 }) {
-  const message = useSendToRun(session);
+  const message = useSendToRun();
   const artifacts = useMemo(() => sessionArtifacts(session, publications), [session, publications]);
-  const read = useArtifactTexts(session, artifacts);
+  const read = useArtifactTexts(artifacts);
   const reviews = artifacts.map((artifact) => artifactReview(artifact, [], read.texts));
 
   // Notes reach a session only as a message while it runs; a session starts no revision run.
@@ -406,7 +416,8 @@ function SessionWorkspace({
       label: 'Send to the session',
       busy: message.isPending,
       failure: message.error,
-      onSend: (notes, onSuccess) => message.mutate(noteForRun(artifact, notes), { onSuccess }),
+      onSend: (notes, onSuccess) =>
+        message.mutate({ session, content: noteForRun(artifact, notes) }, { onSuccess }),
     };
   }
 

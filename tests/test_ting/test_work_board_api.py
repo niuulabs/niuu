@@ -1557,6 +1557,82 @@ def test_another_owners_run_is_not_found() -> None:
     assert repo.get_campaign_by_slug.await_args.kwargs == {"owner_id": "owner-1"}
 
 
+def _member_step(campaign: WorkflowCampaign, member: str, session_id: str, at) -> WorkflowStep:
+    return WorkflowStep(
+        id=uuid4(),
+        run_id=campaign.id,
+        node_id=f"{member}-node",
+        member=member,
+        kind=StepKind.STAGE_MEMBER,
+        attempt=1,
+        generation=0,
+        state=StepState.DONE,
+        created_at=at,
+        session_id=session_id,
+    )
+
+
+def test_a_run_names_every_session_its_members_worked_in() -> None:
+    saga = _planned_saga()
+    run = _ticketless_run(saga, connection_id="forge-a")
+    client = _run_client(run, _adapter([]))
+    later = NOW + timedelta(minutes=5)
+    _engine(client).ledger = RunState(
+        run_id=run.id,
+        steps=(
+            _member_step(run, "reviewer", "session-review", later),
+            _member_step(run, "coder", "session-code", NOW),
+            # A rework step goes back to the coder's own session.
+            _member_step(run, "coder", "session-code", later + timedelta(minutes=5)),
+        ),
+    )
+
+    body = client.get("/api/v1/ting/work/runs/a2a-run/reviews", headers=HEADERS).json()
+
+    assert body["run"]["sessions"] == [
+        {"sessionId": "session-code", "member": "coder", "connectionId": "forge-a"},
+        {"sessionId": "session-review", "member": "reviewer", "connectionId": "forge-a"},
+    ]
+
+
+def test_a_run_with_its_own_session_lists_it_before_its_members() -> None:
+    saga = _planned_saga()
+    run = _ticketless_run(saga, session_id="session-run")
+    client = _run_client(run, _adapter([]))
+    _engine(client).ledger = RunState(
+        run_id=run.id, steps=(_member_step(run, "coder", "session-code", NOW),)
+    )
+
+    body = client.get("/api/v1/ting/work/runs/a2a-run/reviews", headers=HEADERS).json()
+
+    assert body["run"]["sessions"] == [
+        {"sessionId": "session-run", "member": "", "connectionId": None},
+        {"sessionId": "session-code", "member": "coder", "connectionId": None},
+    ]
+
+
+def test_a_run_is_read_by_its_slug_whatever_page_of_work_it_is_on() -> None:
+    saga = _planned_saga()
+    run = _ticketless_run(saga, status=WorkflowCampaignStatus.COMPLETED)
+    client = _run_client(run, _adapter([]))
+    repo = client.app.dependency_overrides[resolve_workflow_campaign_repo]()
+    repo.get_campaign = AsyncMock(return_value=run)
+
+    response = client.get("/api/v1/ting/work/runs/a2a-run", headers=HEADERS)
+
+    assert response.status_code == 200
+    item = response.json()["item"]
+    assert item["campaignSlug"] == run.slug
+    assert item["condition"] == "completed"
+    assert repo.get_campaign_by_slug.await_args.kwargs == {"owner_id": "owner-1"}
+
+
+def test_reading_another_owners_run_by_its_slug_is_not_found() -> None:
+    client = _run_client(None, _adapter([]))
+
+    assert client.get("/api/v1/ting/work/runs/a2a-run", headers=HEADERS).status_code == 404
+
+
 def test_a_run_with_no_open_gate_has_nothing_to_answer() -> None:
     saga = _planned_saga()
     client = _run_client(_ticketless_run(saga), _adapter([]))

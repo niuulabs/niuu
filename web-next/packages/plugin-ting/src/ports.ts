@@ -54,6 +54,8 @@ export interface IWorkService {
   /** What this ticket's runs have put in front of a person, read from their session logs. */
   ticketReviews(projectId: string, issueId: string): Promise<TicketReviews>;
   runReviews(slug: string): Promise<RunReviews>;
+  /** One run by its slug, whatever page of Work it is on, finished or not. */
+  run(slug: string): Promise<WorkDetail>;
   decideRunGate(slug: string, decision: GateDecision): Promise<void>;
   /** Every run a person reviews, across their projects. */
   reviews(): Promise<ReviewList>;

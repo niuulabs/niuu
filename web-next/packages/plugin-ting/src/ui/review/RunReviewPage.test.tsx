@@ -65,6 +65,7 @@ function record(overrides: Partial<RunReviews> = {}): RunReviews {
       repo: 'https://github.com/niuulabs/niuu',
       branch: 'regin',
       startedBy: 'regin',
+      sessions: [{ sessionId: 'session-9', member: '', connectionId: 'valhalla' }],
     },
     reviews: [
       {
@@ -148,14 +149,13 @@ function setup({
     runReviews,
     decideRunGate,
     get,
-    reviews: vi.fn().mockResolvedValue({ items: [] }),
-    list: vi.fn().mockResolvedValue({
-      projects: [],
-      campaigns: [campaign(...status)],
-      executions: [],
-      executionNextCursor: null,
+    run: vi.fn().mockResolvedValue({
+      item: campaign(...status),
+      tasks: [],
       coverage: [],
-    }),
+      board: null,
+    } satisfies WorkDetail),
+    reviews: vi.fn().mockResolvedValue({ items: [] }),
   } as unknown as IWorkService;
   const runLog = {
     publications,
@@ -539,30 +539,117 @@ describe('RunReviewPage', () => {
     expect(screen.queryByRole('tab', { name: 'Plan' })).not.toBeInTheDocument();
   });
 
-  it('says so when Work does not list the run', async () => {
+  it('reads the run by its slug, not from the pages of Work already loaded', async () => {
     const work = {
       runReviews: vi.fn().mockResolvedValue(record()),
       reviews: vi.fn().mockResolvedValue({ items: [] }),
-      list: vi.fn().mockResolvedValue({
-        projects: [],
-        campaigns: [],
-        executions: [],
-        executionNextCursor: null,
+      run: vi.fn().mockResolvedValue({
+        item: campaign('completed', 'completed'),
+        tasks: [],
         coverage: [],
-      }),
+        board: null,
+      } satisfies WorkDetail),
+      list: vi.fn(),
     } as unknown as IWorkService;
     render(
       <QueryClientProvider
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
-        <ServicesProvider services={{ 'ting.work': work, 'ting.runLog': {} }}>
+        <ServicesProvider
+          services={{
+            'ting.work': work,
+            'ting.runLog': { publications: vi.fn().mockResolvedValue([]) },
+            'ting.workflows': {},
+          }}
+        >
           <RunReviewPage />
         </ServicesProvider>
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Run a2a-9 is not among the runs Work lists',
+    expect(await screen.findByRole('heading', { name: 'Plan NIU-1125 only' })).toBeInTheDocument();
+    expect(work.run).toHaveBeenCalledWith('a2a-9');
+    expect(work.list).not.toHaveBeenCalled();
+  });
+
+  it('says why the run cannot be read', async () => {
+    const work = {
+      runReviews: vi.fn().mockResolvedValue(record()),
+      reviews: vi.fn().mockResolvedValue({ items: [] }),
+      run: vi.fn().mockRejectedValue(new Error('Run not found: a2a-9')),
+    } as unknown as IWorkService;
+    render(
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <ServicesProvider services={{ 'ting.work': work, 'ting.runLog': {}, 'ting.workflows': {} }}>
+          <RunReviewPage />
+        </ServicesProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Run not found: a2a-9');
+  });
+
+  it('reads every session of a run, one per member, and sends notes to the one that presented', async () => {
+    const twoMembers = record({
+      run: {
+        ...record().run,
+        sessionId: '',
+        sessions: [
+          { sessionId: 'session-coder', member: 'coder', connectionId: 'valhalla' },
+          { sessionId: 'session-reviewer', member: 'reviewer', connectionId: 'valhalla' },
+        ],
+      },
+      reviews: [],
+    });
+    const publications = vi.fn(
+      async (_host: string | null, options?: { sessionId?: string }): Promise<Publication[]> =>
+        options?.sessionId === 'session-reviewer'
+          ? [
+              presented(2, {
+                sessionId: 'session-reviewer',
+                providerKey: 'session-reviewer:review',
+                title: 'review.md',
+              }),
+            ]
+          : [],
+    );
+    const { sendMessage } = setup({
+      runReviews: vi.fn().mockResolvedValue(twoMembers),
+      status: ['running', 'active'],
+      publications: publications as unknown as IRunLogService['publications'],
+    });
+
+    expect(await screen.findByRole('link', { name: 'Coder' })).toHaveAttribute(
+      'href',
+      '/volundr/session/session-coder',
+    );
+    expect(screen.getByRole('link', { name: 'Reviewer' })).toHaveAttribute(
+      'href',
+      '/volundr/session/session-reviewer',
+    );
+    expect(publications).toHaveBeenCalledWith(
+      'valhalla',
+      expect.objectContaining({ sessionId: 'session-coder' }),
+    );
+    // The reviewer's file is read from the reviewer's own session.
+    expect(await screen.findByText(/Step one, better/)).toBeInTheDocument();
+    expect(presentedText).toHaveBeenCalledWith(
+      'session-reviewer',
+      'valhalla',
+      'pf_2',
+      expect.anything(),
+    );
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Tighten step two.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send to the run' }));
+    await waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith(
+        'session-reviewer',
+        'valhalla',
+        expect.stringContaining('Tighten step two.'),
+      ),
     );
   });
 });
