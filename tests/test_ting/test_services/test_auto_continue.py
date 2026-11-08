@@ -14,10 +14,6 @@ from uuid import uuid4
 
 import pytest
 
-from ting.domain.exceptions import (
-    WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE,
-    WorkflowStepsHaveNoRunnerError,
-)
 from ting.domain.models import (
     DispatcherState,
     PhaseStatus,
@@ -32,7 +28,9 @@ from ting.domain.models import (
 from ting.domain.services.dispatch_service import (
     DispatchConfig,
     DispatchService,
+    WorkflowRunsNotConfiguredError,
 )
+from ting.domain.workflow_steps import RunState
 
 from ..test_dispatch_api import (
     MockDispatcherRepo,
@@ -40,6 +38,7 @@ from ..test_dispatch_api import (
     MockVolundr,
     MockVolundrFactory,
 )
+from ..test_research_api import InMemoryWorkflowCampaignRepository
 from ..test_tracker_api import MockSagaRepo, MockTracker
 
 NOW = datetime.now(UTC)
@@ -184,6 +183,8 @@ def _build_service(
     volundr: MockVolundr | None = None,
     dispatcher_repo: MockDispatcherRepo | None = None,
     saga_repo: MockSagaRepo | None = None,
+    workflow_runs: object | None = None,
+    campaign_repo: InMemoryWorkflowCampaignRepository | None = None,
 ) -> tuple[DispatchService, MockVolundr, RunAwareTracker]:
     t = tracker or _make_tracker_with_issues()
     v = volundr or MockVolundr()
@@ -198,6 +199,8 @@ def _build_service(
         saga_repo=repo,
         dispatcher_repo=d_repo,
         config=DispatchConfig(default_system_prompt="Be helpful."),
+        workflow_runs=workflow_runs,
+        campaign_repo=campaign_repo,
     )
     return svc, v, t
 
@@ -218,8 +221,44 @@ class TestTryAutoContinue:
         assert len(volundr.spawned) > 0
 
     @pytest.mark.asyncio
-    async def test_a_saga_running_a_workflow_is_refused_not_skipped(self):
-        """A workflow saga must raise: an empty list would read as "nothing to do"."""
+    async def test_a_saga_running_a_workflow_starts_runs_not_sessions(self):
+        saga_repo = MockSagaRepo()
+        saga_repo.sagas.append(
+            replace(
+                _make_saga(),
+                workflow_id=uuid4(),
+                workflow_snapshot={
+                    "name": "Reviewed Delivery",
+                    "graph": {"nodes": [], "edges": []},
+                },
+            )
+        )
+
+        class _Launcher:
+            def __init__(self) -> None:
+                self.launched = []
+
+            async def launch(self, campaign, payload=None, *, trigger_node_id=None):
+                self.launched.append(campaign)
+                return RunState(run_id=campaign.id)
+
+        launcher = _Launcher()
+        campaigns = InMemoryWorkflowCampaignRepository()
+        svc, volundr, _ = _build_service(
+            saga_repo=saga_repo, workflow_runs=launcher, campaign_repo=campaigns
+        )
+
+        results = await svc.try_auto_continue(OWNER, SAGA_TRACKER_ID)
+
+        assert [r.status for r in results] == ["spawned", "spawned"]
+        assert volundr.spawned == []
+        assert len(launcher.launched) == 2
+        assert {c.workflow_name for c in launcher.launched} == {"Reviewed Delivery"}
+        assert len(campaigns._campaigns) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_saga_running_a_workflow_without_a_launcher_raises_not_skips(self):
+        """An empty list would read as "nothing to do"; a dispatcher that cannot launch says so."""
         saga_repo = MockSagaRepo()
         saga_repo.sagas.append(
             replace(
@@ -233,10 +272,9 @@ class TestTryAutoContinue:
         )
         svc, volundr, _ = _build_service(saga_repo=saga_repo)
 
-        with pytest.raises(WorkflowStepsHaveNoRunnerError) as raised:
+        with pytest.raises(WorkflowRunsNotConfiguredError):
             await svc.try_auto_continue(OWNER, SAGA_TRACKER_ID)
 
-        assert str(raised.value) == WORKFLOW_STEPS_HAVE_NO_RUNNER_MESSAGE
         assert volundr.spawned == []
 
     @pytest.mark.asyncio
@@ -345,28 +383,27 @@ class TestReviewEngineAutoContinue:
     """Verify ReviewEngine calls try_auto_continue after merge and phase unlock."""
 
     @pytest.mark.asyncio
-    async def test_a_refused_auto_continue_is_logged_at_error_naming_the_cause(self, caplog):
+    async def test_a_dispatcher_that_cannot_start_runs_is_logged_at_error(self, caplog):
         """The event-driven path has no caller to raise to, so it must not log it as routine."""
         from ting.domain.services.review_engine import ReviewEngine
 
-        class RefusingDispatchService:
+        class UnconfiguredDispatchService:
             async def try_auto_continue(self, owner_id: str, saga_tracker_id: str):
-                raise WorkflowStepsHaveNoRunnerError()
+                raise WorkflowRunsNotConfiguredError("no launcher")
 
         engine = ReviewEngine.__new__(ReviewEngine)
-        engine._dispatch_service = RefusingDispatchService()
+        engine._dispatch_service = UnconfiguredDispatchService()
 
         with caplog.at_level("WARNING", logger="ting.domain.services.review_engine"):
             await engine._try_auto_continue("owner-1234567890", "proj-1")
 
-        refusals = [r for r in caplog.records if "workflow steps have no runner" in r.getMessage()]
-        assert len(refusals) == 1
-        assert refusals[0].levelname == "ERROR"
-        assert "proj-1" in refusals[0].getMessage()
+        [record] = [r for r in caplog.records if "no workflow run launcher" in r.getMessage()]
+        assert record.levelname == "ERROR"
+        assert "proj-1" in record.getMessage()
 
     @pytest.mark.asyncio
     async def test_auto_approve_triggers_auto_continue(self):
-        """After _handle_auto_approve, try_auto_continue should be called."""
+        """After a workflow completes, try_auto_continue should be called."""
         from ting.adapters.memory_event_bus import InMemoryEventBus
         from ting.config import ReviewConfig
         from ting.domain.services.review_engine import ReviewEngine
@@ -375,7 +412,6 @@ class TestReviewEngineAutoContinue:
             StubTracker,
             StubTrackerFactory,
             StubVolundr,
-            _authoritative_approval,
             _make_run,
             _make_saga,
         )
@@ -412,10 +448,7 @@ class TestReviewEngineAutoContinue:
             dispatch_service=TrackingDispatchService(),
         )
 
-        decision = await engine.handle_ravn_outcome(
-            run.tracker_id, "user-1", _authoritative_approval()
-        )
-        assert decision.action == "auto_approved"
+        await engine.handle_workflow_completion(run.tracker_id, "user-1")
         assert len(auto_continue_calls) == 1
         assert auto_continue_calls[0] == ("user-1", saga.tracker_id)
 
@@ -431,7 +464,6 @@ class TestReviewEngineAutoContinue:
             StubTracker,
             StubTrackerFactory,
             StubVolundr,
-            _authoritative_approval,
             _make_phase,
             _make_run,
             _make_saga,
@@ -475,12 +507,9 @@ class TestReviewEngineAutoContinue:
             dispatch_service=TrackingDispatchService(),
         )
 
-        decision = await engine.handle_ravn_outcome(
-            run.tracker_id, "user-1", _authoritative_approval()
-        )
-        assert decision.action == "auto_approved"
-        assert decision.phase_gate_unlocked is True
-        # Called twice: once from phase unlock, once from merge in _handle_auto_approve
+        unlocked = await engine.handle_workflow_completion(run.tracker_id, "user-1")
+        assert unlocked is True
+        # Called twice: once from the phase unlock, once from the completion itself
         assert len(auto_continue_calls) == 2
 
     @pytest.mark.asyncio
@@ -493,7 +522,6 @@ class TestReviewEngineAutoContinue:
             StubTracker,
             StubTrackerFactory,
             StubVolundr,
-            _authoritative_approval,
             _make_run,
             _make_saga,
         )
@@ -520,10 +548,7 @@ class TestReviewEngineAutoContinue:
             # No dispatch_service passed
         )
 
-        decision = await engine.handle_ravn_outcome(
-            run.tracker_id, "user-1", _authoritative_approval()
-        )
-        assert decision.action == "auto_approved"
+        await engine.handle_workflow_completion(run.tracker_id, "user-1")
 
     @pytest.mark.asyncio
     async def test_dispatch_service_error_does_not_break_merge(self):
@@ -536,7 +561,6 @@ class TestReviewEngineAutoContinue:
             StubTracker,
             StubTrackerFactory,
             StubVolundr,
-            _authoritative_approval,
             _make_run,
             _make_saga,
         )
@@ -569,7 +593,4 @@ class TestReviewEngineAutoContinue:
         )
 
         # Should not raise
-        decision = await engine.handle_ravn_outcome(
-            run.tracker_id, "user-1", _authoritative_approval()
-        )
-        assert decision.action == "auto_approved"
+        await engine.handle_workflow_completion(run.tracker_id, "user-1")
