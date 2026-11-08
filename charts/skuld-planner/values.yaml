@@ -278,13 +278,20 @@ mesh:
   # session pods of the realm by listing pods (see `nng`). false leaves such a mesh without
   # discovery, which Skuld refuses to start.
   discoverPods: true
+  rbac:
+    # -- Create the namespaced Role and RoleBinding that let the session's ServiceAccount
+    # `get`, `list` and `watch` pods, which `k8s` discovery needs. Created only when the mesh
+    # uses `k8s` discovery of this release's namespace (the cluster default, or a
+    # `discoveryAdapters` entry naming `k8s` and this namespace). Nothing is cluster-wide.
+    # false leaves the grant to you.
+    create: true
   # -- NNG transport settings (mesh.nng) when `transport` is nng.
   # With `enabled: true` and nothing else set (no `discoveryAdapters`, no `adapters`) the chart
   # runs the mesh for a cluster: `k8s` discovery of the pods of the realm, a PUB socket on
   # `tcp://0.0.0.0:<port>` announced at the pod's own IP, and the pod labelled and annotated
-  # for that discovery. The session's ServiceAccount must be allowed to `list` pods in the
-  # release namespace, and a NetworkPolicy must let session pods reach each other on <port>
-  # (this chart adds that rule when networkPolicy.enabled). Setting `discoveryAdapters`
+  # for that discovery. The chart also creates the Role that lets the session's ServiceAccount
+  # read pods (`rbac` above), and, when networkPolicy.enabled, the rule that lets session pods
+  # reach each other on <port>. Setting `discoveryAdapters`
   # turns all of that off: you then choose the addresses yourself.
   nng:
     # -- Port of the PUB socket in the cluster default above. Null keeps 7480.

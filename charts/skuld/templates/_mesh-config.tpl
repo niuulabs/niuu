@@ -14,6 +14,28 @@ gives the pod its IP, its realm label and its peer id (`skuld.meshPodLabels`, `s
 {{- if and .Values.mesh.discoverPods .Values.mesh.enabled (eq (.Values.mesh.transport | default "nng") "nng") (not .Values.mesh.discoveryAdapters) (not .Values.mesh.adapters) -}}true{{- end -}}
 {{- end }}
 
+{{- /*
+"true" when this release's sessions list pods to find their peers in the release namespace: the
+cluster default above, or a discovery entry the operator wrote that names `k8s` and this
+namespace. The chart then gives the session's ServiceAccount a namespaced Role that can
+get, list and watch pods and nothing else (mesh-rbac.yaml). A `k8s` entry for another
+namespace, or for every namespace, is the operator's to grant: nothing here is cluster-wide.
+`mesh.rbac.create: false` leaves the grant to the operator.
+*/ -}}
+{{- define "skuld.meshUsesK8sDiscovery" -}}
+{{- if and .Values.mesh.enabled .Values.mesh.rbac.create -}}
+{{- if include "skuld.meshK8sDiscovery" . -}}
+true
+{{- else -}}
+{{- range (.Values.mesh.discoveryAdapters | default list) -}}
+{{- if and (kindIs "map" .) (eq (.adapter | default "") "k8s") (eq (.namespace | default "") $.Release.Namespace) -}}
+true
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
 {{- define "skuld.meshNngPort" -}}
 {{- .Values.mesh.nng.port | default 7480 -}}
 {{- end }}

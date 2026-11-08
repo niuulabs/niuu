@@ -1464,3 +1464,123 @@ class TestMeshOnNngInACluster:
         assert pod["metadata"]["labels"]["ravn.niuu.world/role"] == "agent"
         assert "ravn.niuu.world/peer-id" in pod["metadata"]["annotations"]
         assert "POD_IP" in [e["name"] for e in skuld["env"]]
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestMeshDiscoveryRbac:
+    """Listing pods needs a namespaced Role; the chart creates it only when the mesh does."""
+
+    @staticmethod
+    def _docs(chart: str = "skuld", *extra: str) -> list[dict]:
+        command = [
+            "helm",
+            "template",
+            "rbac-test",
+            str(CHART_DIR.parent / chart),
+            "--namespace",
+            "sessions",
+            *extra,
+        ]
+        return [d for d in yaml.safe_load_all(subprocess.check_output(command)) if d]
+
+    @staticmethod
+    def _rbac(docs: list[dict]) -> list[dict]:
+        return [
+            d
+            for d in docs
+            if d["kind"] in ("Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding")
+        ]
+
+    @pytest.mark.parametrize("chart", MESH_CHARTS)
+    def test_the_cluster_default_gets_a_role_that_reads_pods_and_nothing_else(self, chart):
+        rbac = self._rbac(self._docs(chart, "--set", "mesh.enabled=true"))
+
+        assert sorted(d["kind"] for d in rbac) == ["Role", "RoleBinding"]
+        role = next(d for d in rbac if d["kind"] == "Role")
+        binding = next(d for d in rbac if d["kind"] == "RoleBinding")
+        assert role["metadata"]["namespace"] == "sessions"
+        assert role["rules"] == [
+            {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch"]}
+        ]
+        assert binding["roleRef"] == {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "Role",
+            "name": role["metadata"]["name"],
+        }
+        assert binding["subjects"] == [
+            {"kind": "ServiceAccount", "name": "default", "namespace": "sessions"}
+        ]
+
+    def test_the_binding_follows_the_service_account_a_contributor_set(self):
+        rbac = self._rbac(
+            self._docs(
+                "skuld", "--set", "mesh.enabled=true", "--set", "serviceAccountName=openbao-s1"
+            )
+        )
+        binding = next(d for d in rbac if d["kind"] == "RoleBinding")
+        assert binding["subjects"][0]["name"] == "openbao-s1"
+
+    def test_an_operator_k8s_entry_for_this_namespace_gets_the_same_role(self):
+        rbac = self._rbac(
+            self._docs(
+                "skuld",
+                "--set",
+                "mesh.enabled=true",
+                "--set-json",
+                'mesh.discoveryAdapters=[{"adapter":"k8s","namespace":"sessions"}]',
+            )
+        )
+        assert sorted(d["kind"] for d in rbac) == ["Role", "RoleBinding"]
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            [],
+            ["--set", "mesh.enabled=true", "--set", "mesh.rbac.create=false"],
+            ["--set", "mesh.enabled=true", "--set", "mesh.discoverPods=false"],
+            ["--set", "mesh.enabled=true", "--set", "mesh.transport=nats"],
+            [
+                "--set",
+                "mesh.enabled=true",
+                "--set-json",
+                'mesh.discoveryAdapters=[{"adapter":"static","peers":[]}]',
+            ],
+            [
+                "--set",
+                "mesh.enabled=true",
+                "--set-json",
+                'mesh.discoveryAdapters=[{"adapter":"k8s","namespace":"elsewhere"}]',
+            ],
+            [
+                "--set",
+                "mesh.enabled=true",
+                "--set-json",
+                'mesh.discoveryAdapters=[{"adapter":"k8s"}]',
+            ],
+        ],
+        ids=[
+            "mesh-off",
+            "rbac-switched-off",
+            "pods-not-discovered",
+            "nats",
+            "static-discovery",
+            "k8s-for-another-namespace",
+            "k8s-for-every-namespace",
+        ],
+    )
+    @pytest.mark.parametrize("chart", MESH_CHARTS)
+    def test_no_role_unless_the_mesh_lists_pods_of_this_namespace(self, chart, extra):
+        assert self._rbac(self._docs(chart, *extra)) == []
+
+    def test_nothing_is_ever_cluster_wide(self):
+        for extra in (
+            ["--set", "mesh.enabled=true"],
+            [
+                "--set-json",
+                'mesh.discoveryAdapters=[{"adapter":"k8s"}]',
+                "--set",
+                "mesh.enabled=true",
+            ],
+        ):
+            kinds = {d["kind"] for d in self._rbac(self._docs("skuld", *extra))}
+            assert not kinds & {"ClusterRole", "ClusterRoleBinding"}
