@@ -1196,10 +1196,52 @@ class StepSessionsConfig(BaseModel):
     )
 
 
+class StuckDetectionConfig(BaseModel):
+    """The sweep that flags workflow steps that stopped making progress (NIU-1181).
+
+    One pass looks at every open step of every active run, and asks each step's session
+    what it holds (one Forge read and one step read per open stage-member step). A flagged
+    step reaches the owner through the notification feed once per kind; the sweep itself
+    only acts to finish an interrupted start or to fail a step whose session is gone.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Run the stuck-step sweep. False is a decision to go without it: stuck steps "
+            "are then neither flagged nor recovered automatically, and nothing says so."
+        ),
+    )
+    sweep_interval_seconds: float = Field(
+        default=120.0,
+        gt=0.0,
+        description=(
+            "Seconds between sweeps. Bounds how long a stuck step can go unflagged, and so "
+            "how soon an automatic start or re-delivery happens; every pass costs two Forge "
+            "reads per open stage-member step, so it should stay well above the time one "
+            "pass takes. A pass that is slower than the interval delays the next one; "
+            "passes of one Ting process never overlap."
+        ),
+    )
+    start_grace_seconds: float = Field(
+        default=600.0,
+        gt=0.0,
+        description=(
+            "Seconds a step may be active before a missing session (not started) or a "
+            "session that does not know the activation (undelivered) counts as stuck. Real "
+            "bound: how long Forge takes to create a session and accept the step; a plain "
+            "session boots in about three minutes at the median, so the default allows "
+            "several times that. A step flagged inside the grace would be restarted while "
+            "its first delivery is still on its way."
+        ),
+    )
+
+
 class WorkflowStepsConfig(BaseModel):
     """The step engine that runs workflow graphs on harness sessions."""
 
     sessions: StepSessionsConfig = Field(default_factory=StepSessionsConfig)
+    stuck: StuckDetectionConfig = Field(default_factory=StuckDetectionConfig)
 
     step_deadline_seconds: float = Field(
         default=4 * 3600.0,

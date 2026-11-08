@@ -19,9 +19,14 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
 
+from niuu.observability import get_observability
 from ting.domain.campaign_run_projection import RunProjection, open_gates, project_run, run_gates
 from ting.domain.models import WorkflowCampaign
-from ting.domain.services.workflow_step_engine import StepRunRequest, WorkflowStepEngine
+from ting.domain.services.workflow_step_engine import (
+    Recovered,
+    StepRunRequest,
+    WorkflowStepEngine,
+)
 from ting.domain.workflow_steps import (
     ActorKind,
     Ending,
@@ -36,6 +41,7 @@ from ting.domain.workflow_steps import (
     StepState,
     WaitingOn,
     WaitingOnKind,
+    WorkflowStep,
 )
 from ting.ports.volundr import VolundrFactory
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
@@ -188,11 +194,67 @@ class WorkflowRuns:
         await self._project(campaign.id, state)
         return state
 
-    async def cancel(self, campaign: WorkflowCampaign, reason: str) -> RunState:
-        """Cancel the run: its open steps are canceled and its sessions stopped."""
-        state = await self._engine.cancel(campaign.id, reason)
+    async def cancel(
+        self, campaign: WorkflowCampaign, reason: str, *, by: GateActor | None = None
+    ) -> RunState:
+        """Cancel the run: its open steps are canceled and its sessions stopped.
+
+        With ``by``, the run's log records who aborted it, and why.
+        """
+        state = await self._engine.cancel(campaign.id, reason, by)
         await self._project(campaign.id, state)
         return state
+
+    async def retry_step(
+        self, campaign: WorkflowCampaign, activation_id: UUID, *, by: GateActor, reason: str
+    ) -> Recovered:
+        """Replace a failed or stuck step by a new attempt on the member's session."""
+        recovered = await self._engine.retry_step(campaign.id, activation_id, by=by, reason=reason)
+        await self._project(campaign.id, recovered.state)
+        return recovered
+
+    async def reassign_step(
+        self, campaign: WorkflowCampaign, activation_id: UUID, *, by: GateActor, reason: str
+    ) -> Recovered:
+        """Move an open or failed step to a fresh session of the same member."""
+        recovered = await self._engine.reassign_step(
+            campaign.id, activation_id, by=by, reason=reason
+        )
+        await self._project(campaign.id, recovered.state)
+        return recovered
+
+    async def refresh(self, run_id: UUID) -> RunState:
+        """Project the run's ledger onto its campaign again, and return it."""
+        state = await self._steps.load(run_id)
+        await self._project(run_id, state)
+        return state
+
+    async def apply_reported_close(
+        self, run_id: UUID, step: WorkflowStep, reported: Mapping[str, Any] | None
+    ) -> bool:
+        """Record the ending a step's session holds for it, if it has one; True if applied.
+
+        ``reported`` is the session's durable record of the step. A step it closed (or
+        parked as waiting, when the ledger has it active) is recorded exactly as a
+        close report from the activity stream would be, fenced the same way; a fencing or
+        ending rejection has been logged and counted by the engine and applies nothing.
+        """
+        report = _closed_report(reported)
+        if reported is None or report is None:
+            return False
+        if step.state is StepState.WAITING and report.get("kind") == EndingKind.WAITING.value:
+            return False
+        try:
+            await self.record_step_closed(
+                run_id=run_id,
+                activation_id=step.id,
+                session_id=step.session_id or "",
+                attempt=int(reported.get("attempt", step.attempt)),
+                report=report,
+            )
+        except (StepFencingError, InvalidEndingError):
+            return False
+        return True
 
     async def close_wait(
         self,
@@ -252,9 +314,22 @@ class WorkflowRuns:
                 continue
             try:
                 await self._reconcile_run(campaign)
-            except Exception:
+            except Exception as exc:
+                # One broken run must not stop the others being caught up, but it is seen:
+                # logged at error with the run and the exception, and counted.
                 logger.error(
-                    "Reconciling the open steps of run %s failed", campaign.slug, exc_info=True
+                    "Reconciling the open steps of run %s failed: %s: %s",
+                    campaign.slug,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
+                get_observability().count(
+                    "ting_workflow_run_reconcile_errors_total",
+                    description=(
+                        "Workflow runs whose open steps could not be reconciled with their "
+                        "sessions after the activity stream reconnected."
+                    ),
                 )
 
     async def _reconcile_run(self, campaign: WorkflowCampaign) -> None:
@@ -273,22 +348,7 @@ class WorkflowRuns:
         forge = await self._forge(campaign)
         for step in steps:
             reported = await forge.get_workflow_step(step.session_id or "", str(step.id))
-            report = _closed_report(reported)
-            if reported is None or report is None:
-                continue
-            if step.state is StepState.WAITING and report.get("kind") == EndingKind.WAITING.value:
-                continue
-            try:
-                await self.record_step_closed(
-                    run_id=campaign.id,
-                    activation_id=step.id,
-                    session_id=step.session_id or "",
-                    attempt=int(reported.get("attempt", step.attempt)),
-                    report=report,
-                )
-            except (StepFencingError, InvalidEndingError):
-                # The engine has logged and counted the rejection.
-                continue
+            await self.apply_reported_close(campaign.id, step, reported)
 
     async def _forge(self, campaign: WorkflowCampaign):
         if campaign.connection_id:

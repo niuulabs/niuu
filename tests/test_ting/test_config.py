@@ -41,6 +41,40 @@ class TestWorkflowStepsConfig:
         assert "NIU-1181" in description
 
 
+class TestStuckDetectionConfig:
+    def test_it_is_on_by_default_with_bounded_intervals(self) -> None:
+        stuck = Settings().workflow_steps.stuck
+
+        assert stuck.enabled is True
+        assert stuck.sweep_interval_seconds == 120.0
+        assert stuck.start_grace_seconds == 600.0
+
+    def test_it_is_set_from_config(self) -> None:
+        config = Settings(
+            workflow_steps={
+                "stuck": {"enabled": False, "sweep_interval_seconds": 30, "start_grace_seconds": 45}
+            }
+        )
+
+        assert config.workflow_steps.stuck.enabled is False
+        assert config.workflow_steps.stuck.sweep_interval_seconds == 30.0
+        assert config.workflow_steps.stuck.start_grace_seconds == 45.0
+
+    @pytest.mark.parametrize("field", ["sweep_interval_seconds", "start_grace_seconds"])
+    @pytest.mark.parametrize("value", [0, -5])
+    def test_the_intervals_must_be_positive(self, field: str, value: float) -> None:
+        with pytest.raises(ValueError, match="greater than 0"):
+            Settings(workflow_steps={"stuck": {field: value}})
+
+    @pytest.mark.parametrize("field", ["sweep_interval_seconds", "start_grace_seconds"])
+    def test_each_interval_says_what_bounds_it(self, field: str) -> None:
+        from ting.config import StuckDetectionConfig
+
+        description = StuckDetectionConfig.model_fields[field].description or ""
+
+        assert "Bounds" in description or "bound" in description
+
+
 class TestDatabaseConfig:
     def test_defaults(self) -> None:
         config = DatabaseConfig()

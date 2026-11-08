@@ -274,6 +274,29 @@ def cancel_actions(state: RunState, *, reason: str) -> list[Action]:
     return actions
 
 
+def plan_retry(
+    graph: StepGraph,
+    state: RunState,
+    step: WorkflowStep,
+    *,
+    reason: str,
+    now: datetime,
+    settings: EngineSettings,
+) -> list[Action]:
+    """Replace a stage member's step by a new attempt of the same node and member.
+
+    The new attempt consumes the inputs the old one did and belongs to the same
+    generation. A step that is still open is canceled first, so a late close from its
+    session finds a step that is no longer ``active`` and is fenced out; a failed step
+    is already closed. The attempt starts at once unless the node's concurrency holds
+    it back, in which case it is queued like any other and starts when a slot frees.
+    """
+    planner = _Planner(graph, state, now=now, settings=settings)
+    planner.supersede(step, reason)
+    planner.reactivate(step)
+    return planner.actions
+
+
 @dataclass(frozen=True)
 class ClosePlan:
     """What closing a step changes: the step as it ends and the events that records.
@@ -1111,6 +1134,19 @@ class _Planner:
     def _open_steps(self) -> list[WorkflowStep]:
         return [step for step in self._steps.values() if step.is_open]
 
+    def supersede(self, step: WorkflowStep, reason: str) -> None:
+        """Cancel ``step`` if it is still open; a closed step is left as it ended."""
+        if not step.is_open:
+            return
+        self.actions.extend(_cancel(step, reason))
+        self._steps[step.id] = step.with_state(StepState.CANCELED)
+
+    def reactivate(self, step: WorkflowStep) -> None:
+        """Activate the next attempt of ``step``'s node and member on the same inputs."""
+        self._create_step(
+            self._graph.nodes[step.node_id], StepKind.STAGE_MEMBER, step.member, step.inputs
+        )
+
     def promote_pending(self) -> None:
         if self._ended:
             return
@@ -1200,5 +1236,6 @@ __all__ = [
     "next_actions",
     "plan_close",
     "plan_gate_resolution",
+    "plan_retry",
     "review_join",
 ]

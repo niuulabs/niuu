@@ -237,6 +237,23 @@ workflowSteps:
     # -- Plain kwargs for the adapter, e.g. name_prefix, or default_model for members whose
     # stage names none (when unset, dispatch.default_model).
     kwargs: {}
+  # Stuck detection: a sweep over the open steps of running workflows. It flags an
+  # overdue step, one that never started or was never delivered to its session, one whose
+  # turn ended without closing it, and one whose session is gone; each flag is raised once
+  # per step, counted on ting_workflow_step_flags_raised_total{kind}, and sent to the
+  # run's owner through the notification feed. It also starts or re-delivers a step that
+  # never reached its session and fails a step whose session is gone; an overdue or
+  # unclosed step is only flagged.
+  stuckDetection:
+    # -- Run the sweep. false is a decision to go without it, and nothing then says so.
+    enabled: true
+    # -- Seconds between sweeps. Bounds how long a stuck step goes unflagged; each pass
+    # asks Forge about every open stage-member step.
+    sweepIntervalSeconds: 120
+    # -- Seconds a step may be active before a missing session or an undelivered
+    # activation counts as stuck. A plain session boots in about three minutes at the
+    # median; this must outlast creating a session and delivering the step.
+    startGraceSeconds: 600
 
 workflowExecution:
   # Domain-neutral fan-out/join, durable waits, and the A2A gateway.

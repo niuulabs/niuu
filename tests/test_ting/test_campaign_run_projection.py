@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from ting.adapters.campaign_step_definitions import definition_of_snapshot
 from ting.domain.campaign_run_projection import (
     CANCELED_KEY,
     PENDING_GATES_KEY,
+    STUCK_STEPS_KEY,
     open_gates,
     project_run,
     run_gates,
@@ -22,8 +24,10 @@ from ting.domain.workflow_steps import (
     EVENT_RUN_COMPLETED,
     EVENT_RUN_FAILED,
     EVENT_RUN_LAUNCHED,
+    FlagKind,
     RunEvent,
     RunState,
+    StepFlag,
     StepKind,
     StepState,
     WaitingOn,
@@ -92,11 +96,47 @@ def _step(
     return WorkflowStep(**values)
 
 
-def _state(steps=(), events=()) -> RunState:
-    return RunState(run_id=RUN, steps=tuple(steps), events=tuple(events))
+def _state(steps=(), events=(), flags=()) -> RunState:
+    return RunState(run_id=RUN, steps=tuple(steps), events=tuple(events), flags=tuple(flags))
 
 
 LAUNCHED = _event(1, EVENT_RUN_LAUNCHED)
+
+
+def test_open_stuck_flags_are_on_the_campaign_until_their_step_closes() -> None:
+    stuck = _step("implement", StepState.ACTIVE, session_id="ses-1")
+    flag = StepFlag(
+        run_id=RUN,
+        activation_id=stuck.id,
+        kind=FlagKind.OVERDUE,
+        since=NOW,
+        raised_at=NOW,
+        detail="past its deadline",
+    )
+
+    flagged = project_run(_campaign(), _state([stuck], [LAUNCHED], [flag]), now=NOW)
+    [entry] = flagged.metadata[STUCK_STEPS_KEY]
+
+    assert entry == {
+        "activation_id": str(stuck.id),
+        "node_id": "implement",
+        "member": "coder",
+        "attempt": 1,
+        "session_id": "ses-1",
+        "kind": "overdue",
+        "since": NOW.isoformat(),
+        "raised_at": NOW.isoformat(),
+        "detail": "past its deadline",
+    }
+    closed = replace(stuck, state=StepState.DONE)
+    resolved = replace(flag, resolved_at=NOW, resolution="step is done")
+    for state in (
+        _state([closed], [LAUNCHED], [flag]),  # the step closed
+        _state([stuck], [LAUNCHED], [resolved]),  # the flag was resolved
+    ):
+        assert STUCK_STEPS_KEY not in project_run(_campaign(), state, now=NOW).metadata
+    # A projection that carried the flag differs from a campaign that does not.
+    assert flagged.differs_from(_campaign())
 
 
 def test_a_run_that_was_never_launched_is_pending() -> None:

@@ -16,7 +16,12 @@ from ting.adapters.forge_step_sessions import (
     step_session_tag,
 )
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
-from ting.ports.workflow_steps import DeliveredEvent, PersonaRef, StepActivation
+from ting.ports.workflow_steps import (
+    DeliveredEvent,
+    PersonaRef,
+    SessionLiveness,
+    StepActivation,
+)
 
 from . import workflow_step_contract as contract
 from .fake_forge import FakeForge, FakeForgeFactory
@@ -384,3 +389,161 @@ def test_session_names_are_forge_labels_within_the_limit() -> None:
         assert name == name.lower()
         assert not name.startswith("-") and not name.endswith("-")
         assert all(ch.isalnum() or ch == "-" for ch in name)
+
+
+# --- observing a step's session (stuck detection) ------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("status", "liveness"),
+    [
+        ("running", SessionLiveness.RUNNING),
+        ("starting", SessionLiveness.STARTING),
+        ("provisioning", SessionLiveness.STARTING),
+        ("stopped", SessionLiveness.STOPPED),
+        ("stopping", SessionLiveness.STOPPED),
+        ("archived", SessionLiveness.STOPPED),
+        ("failed", SessionLiveness.FAILED),
+    ],
+)
+async def test_a_session_is_observed_by_the_status_forge_reports(
+    status: str, liveness: SessionLiveness
+) -> None:
+    campaign = _campaign()
+    forge = FakeForge()
+    session_id = forge.add_session("wf-add-endpoint-abc123-coder", "workflow:x", status=status)
+    sessions, _ = _sessions(campaign, forge)
+
+    observed = await sessions.observe(campaign.id, session_id, uuid4())
+
+    assert observed.liveness is liveness
+    assert observed.reported is None
+
+
+async def test_a_session_forge_no_longer_has_is_gone() -> None:
+    campaign = _campaign()
+    sessions, _ = _sessions(campaign)
+
+    observed = await sessions.observe(campaign.id, "ses-404", uuid4())
+
+    assert observed.liveness is SessionLiveness.GONE
+
+
+async def test_a_running_session_reports_what_it_holds_of_the_step() -> None:
+    campaign = _campaign()
+    forge = FakeForge()
+    session_id = forge.add_session("wf-add-endpoint-abc123-coder", "workflow:x")
+    activation_id = uuid4()
+    held = {"state": "closed", "attempt": 1, "ending": {"kind": "done"}}
+    forge.step_states[(session_id, str(activation_id))] = held
+    sessions, _ = _sessions(campaign, forge)
+
+    known = await sessions.observe(campaign.id, session_id, activation_id)
+    unknown = await sessions.observe(campaign.id, session_id, uuid4())
+
+    assert known.reported == held
+    assert unknown.liveness is SessionLiveness.RUNNING and unknown.reported is None
+
+
+# --- replacing a member's session ----------------------------------------------------
+
+
+def test_a_replacement_name_is_unique_and_fits_forge_limit_however_long_the_slug() -> None:
+    run_id = uuid4()
+    slug = "a-very-long-run-slug-" * 4
+
+    names = {
+        step_session_name(slug, "developer-coder", run_id, epoch=epoch) for epoch in range(1, 12)
+    }
+
+    assert len(names) == 11
+    assert all(len(name) <= FORGE_SESSION_NAME_MAX for name in names)
+    assert step_session_name("add-endpoint-abc123", "coder", run_id, epoch=2) == (
+        "wf-add-endpoint-abc123-coder-r2"
+    )
+    assert step_session_name("add-endpoint-abc123", "coder", run_id) == (
+        "wf-add-endpoint-abc123-coder"
+    )
+
+
+async def test_a_replacement_session_stops_the_old_one_and_becomes_the_members_session() -> None:
+    campaign = _campaign()
+    sessions, forge = _sessions(campaign)
+    old = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    forge.set_status(old, "running")
+
+    new = await sessions.replace_session(campaign.id, "coder", PERSONA_REF, old)
+
+    assert new != old
+    assert forge.stopped == [old]
+    assert [r.name for r in forge.create_requests] == [
+        "wf-add-endpoint-abc123-coder",
+        "wf-add-endpoint-abc123-coder-r2",
+    ]
+    assert forge.create_requests[1].persona_definition == PERSONA_DOCUMENT
+    assert forge.create_requests[1].tracker_issue_id == "workflow:add-endpoint-abc123"
+    forge.set_status(new, "running")
+    assert await sessions.ensure_session(campaign.id, "coder", PERSONA_REF) == new
+    # And again: the chain of replacements continues from the highest epoch.
+    third = await sessions.replace_session(campaign.id, "coder", PERSONA_REF, new)
+    assert forge.create_requests[2].name.endswith("-coder-r3")
+    forge.set_status(third, "running")
+    assert await sessions.ensure_session(campaign.id, "coder", PERSONA_REF) == third
+
+
+async def test_replacing_a_session_that_is_already_down_stops_nothing() -> None:
+    campaign = _campaign()
+    sessions, forge = _sessions(campaign)
+    old = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    forge.set_status(old, "failed")
+
+    new = await sessions.replace_session(campaign.id, "coder", PERSONA_REF, old)
+
+    assert new != old and forge.stopped == []
+
+
+async def test_asking_to_replace_a_session_that_was_replaced_returns_the_replacement() -> None:
+    campaign = _campaign()
+    sessions, forge = _sessions(campaign)
+    old = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    forge.set_status(old, "running")
+    new = await sessions.replace_session(campaign.id, "coder", PERSONA_REF, old)
+    forge.set_status(new, "running")
+
+    again = await sessions.replace_session(campaign.id, "coder", PERSONA_REF, old)
+
+    assert again == new
+    assert len(forge.create_requests) == 2
+
+
+async def test_a_session_that_cannot_be_stopped_is_not_replaced() -> None:
+    campaign = _campaign()
+    sessions, forge = _sessions(campaign)
+    old = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    forge.set_status(old, "running")
+    forge.fail_stop.add(old)
+
+    with pytest.raises(StepSessionError, match="could not be stopped"):
+        await sessions.replace_session(campaign.id, "coder", PERSONA_REF, old)
+
+    assert len(forge.create_requests) == 1
+
+
+async def test_a_member_with_no_session_gets_its_first_one_when_asked_to_replace() -> None:
+    campaign = _campaign()
+    sessions, forge = _sessions(campaign)
+
+    new = await sessions.replace_session(campaign.id, "coder", PERSONA_REF, None)
+
+    assert forge.create_requests[0].name == "wf-add-endpoint-abc123-coder"
+    assert new == "ses-1"
+
+
+async def test_a_replacement_over_a_foreign_session_is_refused() -> None:
+    campaign = _campaign()
+    forge = FakeForge()
+    forge.add_session("wf-add-endpoint-abc123-coder", "workflow:someone-else")
+    sessions, _ = _sessions(campaign, forge)
+
+    with pytest.raises(StepSessionError, match="not run add-endpoint-abc123's session"):
+        await sessions.replace_session(campaign.id, "coder", PERSONA_REF, "ses-1")
