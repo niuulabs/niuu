@@ -113,6 +113,22 @@ class _FakeTransaction(LedgerTransaction):
                 flag, resolved_at=at, resolution=resolution
             )
 
+    async def claim_flag_action(self, activation_id: UUID, kind: FlagKind, *, at: datetime) -> bool:
+        key = (activation_id, kind)
+        flag = self._repository.flags[key]
+        if flag.action_at is not None:
+            return False
+        self._repository.flags[key] = replace(flag, action_at=at)
+        return True
+
+    async def finish_flag_action(
+        self, activation_id: UUID, kind: FlagKind, *, at: datetime, error: str
+    ) -> None:
+        key = (activation_id, kind)
+        self._repository.flags[key] = replace(
+            self._repository.flags[key], action_done_at=at, action_error=error
+        )
+
     async def mark_flag_notified(
         self, activation_id: UUID, kind: FlagKind, *, at: datetime
     ) -> None:

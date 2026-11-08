@@ -83,6 +83,19 @@ SET resolved_at = $3, resolution = $4
 WHERE activation_id = $1 AND kind = $2 AND resolved_at IS NULL
 """
 
+_CLAIM_FLAG_ACTION = """
+UPDATE workflow_step_flags
+SET action_at = $3
+WHERE activation_id = $1 AND kind = $2 AND action_at IS NULL
+RETURNING activation_id
+"""
+
+_FINISH_FLAG_ACTION = """
+UPDATE workflow_step_flags
+SET action_done_at = $3, action_error = $4
+WHERE activation_id = $1 AND kind = $2 AND action_at IS NOT NULL
+"""
+
 _NOTIFY_FLAG = """
 UPDATE workflow_step_flags
 SET notified_at = $3
@@ -92,7 +105,8 @@ WHERE activation_id = $1 AND kind = $2
 _SELECT_STEPS = "SELECT * FROM workflow_steps WHERE run_id = $1 ORDER BY created_at, id"
 _SELECT_FLAGS = (
     "SELECT run_id, activation_id, kind, since, raised_at, detail, notified_at, resolved_at, "
-    "resolution FROM workflow_step_flags WHERE run_id = $1 ORDER BY raised_at, activation_id, kind"
+    "resolution, action_at, action_done_at, action_error FROM workflow_step_flags "
+    "WHERE run_id = $1 ORDER BY raised_at, activation_id, kind"
 )
 _SELECT_EVENTS = (
     "SELECT run_id, seq, event_type, payload, source_activation_id, generation, created_at "
@@ -196,6 +210,15 @@ class _PostgresLedgerTransaction(LedgerTransaction):
     ) -> None:
         await self._conn.execute(_RESOLVE_FLAG, activation_id, kind.value, at, resolution)
 
+    async def claim_flag_action(self, activation_id: UUID, kind: FlagKind, *, at: datetime) -> bool:
+        row = await self._conn.fetchrow(_CLAIM_FLAG_ACTION, activation_id, kind.value, at)
+        return row is not None
+
+    async def finish_flag_action(
+        self, activation_id: UUID, kind: FlagKind, *, at: datetime, error: str
+    ) -> None:
+        await self._conn.execute(_FINISH_FLAG_ACTION, activation_id, kind.value, at, error)
+
     async def mark_flag_notified(
         self, activation_id: UUID, kind: FlagKind, *, at: datetime
     ) -> None:
@@ -224,6 +247,9 @@ def _flag_from_row(row: Any) -> StepFlag:
         notified_at=row["notified_at"],
         resolved_at=row["resolved_at"],
         resolution=row["resolution"],
+        action_at=row["action_at"],
+        action_done_at=row["action_done_at"],
+        action_error=row["action_error"],
     )
 
 

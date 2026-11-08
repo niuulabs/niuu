@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
 from uuid import UUID
@@ -54,13 +54,28 @@ _NEXT_BY_KIND = {
         "Ting only flags a step whose turn ended without a close. Retry or reassign it, or "
         "abort the run."
     ),
-    FlagKind.NOT_STARTED: "Ting is starting the step on its session again.",
-    FlagKind.UNDELIVERED: "Ting is delivering the step to its session again.",
+    FlagKind.NOT_STARTED: "Ting started the step on its session again.",
+    FlagKind.UNDELIVERED: "Ting delivered the step to its session again.",
     FlagKind.SESSION_GONE: (
         "Ting is failing the step; the run's other branches carry on. Retry or reassign "
         "it if the run is still open."
     ),
 }
+
+
+#: The flags whose one automatic action is to start or re-deliver the step.
+_RESUME_KINDS = (FlagKind.NOT_STARTED, FlagKind.UNDELIVERED)
+
+
+def _next_for(flag: StepFlag) -> str:
+    """What happens next to a flagged step, as the notification tells the owner."""
+    if flag.kind not in _RESUME_KINDS:
+        return _NEXT_BY_KIND[flag.kind]
+    if flag.action_error:
+        return f"Automatic restart failed: {flag.action_error}; retry or reassign it."
+    if flag.action_done_at is None:
+        return "Ting's automatic restart was interrupted before it finished; retry or reassign it."
+    return _NEXT_BY_KIND[flag.kind]
 
 
 def _utc_now() -> datetime:
@@ -158,9 +173,15 @@ class StuckStepSweeper:
                 return ()
         conditions = detect_stuck(state, observations, now=self._clock(), settings=self._settings)
         await self._engine.raise_flags(campaign.id, conditions)
+        for condition in conditions:
+            if condition.kind in _RESUME_KINDS:
+                await self._resume(campaign, condition)
+        # Told after the start was tried, so the message says how it went; and before a
+        # step whose session is gone is failed, which would close it and its flag.
         await self._notify(campaign, await self._steps.load(campaign.id))
         for condition in conditions:
-            await self._act(campaign, condition)
+            if condition.kind is FlagKind.SESSION_GONE:
+                await self._fail_gone(campaign, condition)
         await self._engine.resolve_flags(
             campaign.id,
             {(condition.step.id, condition.kind) for condition in conditions},
@@ -260,7 +281,7 @@ class StuckStepSweeper:
                         "kind": flag.kind.value,
                         "since": flag.since.isoformat(),
                         "detail": flag.detail,
-                        "next": _NEXT_BY_KIND[flag.kind],
+                        "next": _next_for(flag),
                         "ui_path": f"/ting/review/run/{campaign.slug}",
                     },
                 )
@@ -270,45 +291,74 @@ class StuckStepSweeper:
 
     # -- the safe automatic actions ---------------------------------------------
 
-    async def _act(self, campaign: WorkflowCampaign, condition: Condition) -> None:
-        step = condition.step
-        if condition.kind in (FlagKind.NOT_STARTED, FlagKind.UNDELIVERED):
-            await self._recover(
-                campaign,
-                condition,
-                "resume_start",
-                self._engine.resume_start(
-                    campaign.id, step.id, f"stuck sweep: {condition.kind.value}: {condition.detail}"
-                ),
-            )
-            return
-        if condition.kind is FlagKind.SESSION_GONE:
-            await self._recover(
-                campaign,
-                condition,
-                "fail_step",
-                self._engine.fail_step(
-                    campaign.id,
-                    step.id,
-                    f"session gone: {condition.detail}; Ting failed the step because nothing "
-                    "can close it",
-                ),
-            )
+    async def _resume(self, campaign: WorkflowCampaign, condition: Condition) -> None:
+        """Start or re-deliver the step, once per flag.
 
-    async def _recover(
-        self,
-        campaign: WorkflowCampaign,
-        condition: Condition,
-        action: str,
-        attempt: Awaitable[bool],
-    ) -> None:
+        The attempt is claimed on the flag before it runs and its outcome recorded on the
+        flag after, so a failure is not retried: the step stays flagged, the failure is
+        in the notification, and a person retries or reassigns it.
+        """
+        step = condition.step
+        flag = (await self._steps.load(campaign.id)).flag(step.id, condition.kind)
+        if flag is None or flag.is_resolved or flag.action_attempted:
+            return
+        if not await self._engine.claim_flag_action(campaign.id, flag):
+            return
+        error = ""
+        try:
+            await self._engine.resume_start(
+                campaign.id,
+                step.id,
+                f"stuck sweep: {condition.kind.value}: {condition.detail}",
+            )
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            logger.error(
+                "Automatic restart of step %s (%s/%s) of run %s failed (%s): %s; it stays "
+                "flagged and is not tried again, retry or reassign it",
+                step.id,
+                step.node_id,
+                step.member,
+                campaign.slug,
+                condition.kind.value,
+                error,
+                exc_info=True,
+            )
+            get_observability().count(
+                "ting_workflow_step_auto_recovery_failures_total",
+                attributes={"action": "resume_start"},
+                description="Automatic recoveries of stuck workflow steps that failed.",
+            )
+        await self._engine.finish_flag_action(campaign.id, flag, error)
+        if error:
+            return
+        logger.warning(
+            "Stuck step %s (%s/%s) of run %s (%s): resume_start done",
+            step.id,
+            step.node_id,
+            step.member,
+            campaign.slug,
+            condition.kind.value,
+        )
+        get_observability().count(
+            "ting_workflow_step_auto_recoveries_total",
+            attributes={"action": "resume_start", "kind": condition.kind.value},
+            description="Automatic recoveries of stuck workflow steps, by action and flag kind.",
+        )
+
+    async def _fail_gone(self, campaign: WorkflowCampaign, condition: Condition) -> None:
         step = condition.step
         try:
-            done = await attempt
+            failed = await self._engine.fail_step(
+                campaign.id,
+                step.id,
+                f"session gone: {condition.detail}; Ting failed the step because nothing "
+                "can close it",
+            )
         except Exception:
             logger.error(
-                "Could not %s step %s (%s/%s) of run %s; it stays flagged %s",
-                action,
+                "Could not fail step %s (%s/%s) of run %s whose session is gone; it stays "
+                "flagged %s",
                 step.id,
                 step.node_id,
                 step.member,
@@ -318,24 +368,23 @@ class StuckStepSweeper:
             )
             get_observability().count(
                 "ting_workflow_step_auto_recovery_failures_total",
-                attributes={"action": action},
+                attributes={"action": "fail_step"},
                 description="Automatic recoveries of stuck workflow steps that failed.",
             )
             return
-        if not done:
+        if not failed:
             return
         logger.warning(
-            "Stuck step %s (%s/%s) of run %s (%s): %s done",
+            "Stuck step %s (%s/%s) of run %s (%s): fail_step done",
             step.id,
             step.node_id,
             step.member,
             campaign.slug,
             condition.kind.value,
-            action,
         )
         get_observability().count(
             "ting_workflow_step_auto_recoveries_total",
-            attributes={"action": action, "kind": condition.kind.value},
+            attributes={"action": "fail_step", "kind": condition.kind.value},
             description="Automatic recoveries of stuck workflow steps, by action and flag kind.",
         )
 

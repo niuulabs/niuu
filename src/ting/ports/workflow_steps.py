@@ -200,6 +200,16 @@ class LedgerTransaction(ABC):
         """Mark the step's flag of this kind resolved, with how it ended."""
 
     @abstractmethod
+    async def claim_flag_action(self, activation_id: UUID, kind: FlagKind, *, at: datetime) -> bool:
+        """Claim the flag's one automatic action; False if it was already claimed."""
+
+    @abstractmethod
+    async def finish_flag_action(
+        self, activation_id: UUID, kind: FlagKind, *, at: datetime, error: str
+    ) -> None:
+        """Record how the claimed automatic action ended; ``error`` is "" if it worked."""
+
+    @abstractmethod
     async def mark_flag_notified(
         self, activation_id: UUID, kind: FlagKind, *, at: datetime
     ) -> None:

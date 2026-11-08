@@ -521,6 +521,22 @@ class WorkflowStepEngine:
             for flag in flags:
                 await tx.mark_flag_notified(flag.activation_id, flag.kind, at=now)
 
+    async def claim_flag_action(self, run_id: UUID, flag: StepFlag) -> bool:
+        """Claim the flag's one automatic action; False if it was already claimed.
+
+        The claim is recorded before the action runs, so an action that crashes or fails
+        is not tried again for this flag.
+        """
+        async with self._repository.transaction(run_id) as tx:
+            return await tx.claim_flag_action(flag.activation_id, flag.kind, at=self._clock())
+
+    async def finish_flag_action(self, run_id: UUID, flag: StepFlag, error: str) -> None:
+        """Record how the flag's claimed automatic action ended; ``error`` "" means it worked."""
+        async with self._repository.transaction(run_id) as tx:
+            await tx.finish_flag_action(
+                flag.activation_id, flag.kind, at=self._clock(), error=error
+            )
+
     async def resume_start(self, run_id: UUID, activation_id: UUID, reason: str) -> bool:
         """Finish starting a step whose start was interrupted; True if it was resumed.
 

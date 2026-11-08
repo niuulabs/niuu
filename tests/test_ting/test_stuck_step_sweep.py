@@ -290,32 +290,146 @@ async def test_the_flag_of_a_started_step_clears_on_the_next_sweep(run: StuckHar
     assert len(run.forge.deliveries) == 2  # bravo's first delivery and alpha's restart
 
 
-async def test_a_start_that_fails_again_is_loud_and_leaves_the_step_flagged_and_active(
-    run: StuckHarness, recorder: Recorder, caplog: pytest.LogCaptureFixture
+def count_resume_starts(run: StuckHarness, monkeypatch: pytest.MonkeyPatch) -> list:
+    """Record every ``resume_start`` the sweep makes, still running the real one."""
+    calls: list = []
+    real = run.engine.resume_start
+
+    async def counting(run_id, activation_id, reason):
+        calls.append(activation_id)
+        return await real(run_id, activation_id, reason)
+
+    monkeypatch.setattr(run.engine, "resume_start", counting)
+    return calls
+
+
+async def test_a_start_that_fails_is_loud_and_is_not_tried_again_for_the_same_flag(
+    run: StuckHarness,
+    recorder: Recorder,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    calls = count_resume_starts(run, monkeypatch)
     await _crash_before_the_session(run)
+    alpha_id = run.step("alpha").id
     run.forge.fail_deliver = ConnectionError("forge is down")
     run.advance(START_GRACE_SECONDS + 1)
 
     with caplog.at_level(logging.ERROR):
         await run.sweep()
-        first = run.kinds()
-        await run.sweep()
 
-    alpha = run.step("alpha")
-    # The step is not failed by the sweep: its outcome is not the sweep's to change.
-    assert alpha.state is StepState.ACTIVE
-    # The first attempt found it a session but could not deliver; the next sweep sees the
-    # step as it now is, bound but undelivered, and tries again.
-    assert first == ["not_started"]
-    assert alpha.session_id
-    assert run.kinds() == ["undelivered"]
+    # One attempt, recorded on the flag with why it failed.
+    assert calls == [alpha_id]
+    flag = run.state.flag(alpha_id, FlagKind.NOT_STARTED)
+    assert flag is not None and flag.action_attempted and flag.action_done_at is not None
+    assert flag.action_error == "ConnectionError: forge is down"
     assert (
         recorder.counted("ting_workflow_step_auto_recovery_failures_total", action="resume_start")
-        == 2
+        == 1
     )
-    assert any("Could not resume_start" in record.getMessage() for record in caplog.records)
-    assert sorted(e.data["kind"] for e in run.notifications()) == ["not_started", "undelivered"]
+    assert any(
+        record.levelno == logging.ERROR and "forge is down" in record.getMessage()
+        for record in caplog.records
+    )
+    # The step is not failed by the sweep: its outcome is not the sweep's to change.
+    assert run.step("alpha").state is StepState.ACTIVE
+    # The owner is told it failed and what to do.
+    [told] = run.notifications()
+    assert told.data["kind"] == "not_started"
+    assert told.data["next"] == (
+        "Automatic restart failed: ConnectionError: forge is down; retry or reassign it."
+    )
+
+
+async def test_a_second_sweep_does_not_start_the_same_flag_again(
+    run: StuckHarness, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = count_resume_starts(run, monkeypatch)
+    await _crash_before_the_session(run)
+    run.forge.fail_deliver = ConnectionError("forge is down")
+    run.advance(START_GRACE_SECONDS + 1)
+
+    await run.sweep()
+    after_first = len(calls)
+    deliveries = len(run.forge.deliveries)
+    run.forge.fail_deliver = None  # even though Forge is back, the flag's one attempt is spent
+    await run.sweep()
+    await run.sweep()
+
+    # The first sweep's attempt bound the step to its session without delivering; that is
+    # a different condition, so it is a new flag with its single attempt of its own.
+    assert after_first == 1
+    assert len(calls) == 2
+    assert run.state.flag(run.step("alpha").id, FlagKind.UNDELIVERED) is not None
+    # And nothing is tried again after that.
+    await run.sweep()
+    assert len(calls) == 2
+    assert (
+        recorder.counted("ting_workflow_step_auto_recovery_failures_total", action="resume_start")
+        == 1
+    )
+    assert len(run.forge.deliveries) == deliveries + 1
+
+
+async def test_each_new_flag_gets_one_attempt_and_the_message_says_how_it_went(
+    run: StuckHarness, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = count_resume_starts(run, monkeypatch)
+    await _crash_before_the_session(run)
+    run.forge.fail_deliver = ConnectionError("forge is down")
+    run.advance(START_GRACE_SECONDS + 1)
+    await run.sweep()  # not_started: the attempt binds a session but cannot deliver
+    run.forge.fail_deliver = None
+
+    await run.sweep()  # undelivered: a fresh flag, its own attempt, which now works
+
+    assert len(calls) == 2
+    assert sorted(f.kind.value for f in run.flags(live=False)) == ["not_started", "undelivered"]
+    undelivered = run.state.flag(run.step("alpha").id, FlagKind.UNDELIVERED)
+    assert undelivered is not None and undelivered.action_error == ""
+    assert undelivered.action_done_at is not None
+    told = {e.data["kind"]: e.data["next"] for e in run.notifications()}
+    assert told["not_started"].startswith("Automatic restart failed:")
+    assert told["undelivered"] == "Ting delivered the step to its session again."
+    assert (
+        recorder.counted(
+            "ting_workflow_step_auto_recoveries_total", action="resume_start", kind="undelivered"
+        )
+        == 1
+    )
+    await run.sweep()
+    assert run.flags() == []
+    assert len(calls) == 2
+
+
+async def test_an_attempt_that_never_finished_is_not_repeated_and_the_message_says_so(
+    run: StuckHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = count_resume_starts(run, monkeypatch)
+
+    async def never_recorded(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(run.engine, "finish_flag_action", never_recorded)
+    await _crash_before_the_session(run)
+    run.advance(START_GRACE_SECONDS + 1)
+
+    await run.sweep()
+    await run.sweep()
+
+    assert len(calls) == 1
+    [told] = run.notifications()
+    assert "interrupted before it finished; retry or reassign it" in told.data["next"]
+
+
+async def test_the_flags_action_is_claimed_once_whoever_asks(run: StuckHarness) -> None:
+    await _crash_before_the_session(run)
+    run.advance(START_GRACE_SECONDS + 1)
+    await run.sweep()
+    flag = run.state.flag(run.step("alpha").id, FlagKind.NOT_STARTED)
+    assert flag is not None
+
+    assert await run.engine.claim_flag_action(run.campaign.id, flag) is False
 
 
 # --- undelivered ---------------------------------------------------------------

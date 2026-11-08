@@ -329,10 +329,19 @@ class StepFlag:
     notified_at: datetime | None = None
     resolved_at: datetime | None = None
     resolution: str = ""
+    #: The one automatic action tried for this flag: when it was claimed, when it finished
+    #: and why it failed ("" if it did not). It is never tried twice for one flag.
+    action_at: datetime | None = None
+    action_done_at: datetime | None = None
+    action_error: str = ""
 
     @property
     def is_resolved(self) -> bool:
         return self.resolved_at is not None
+
+    @property
+    def action_attempted(self) -> bool:
+        return self.action_at is not None
 
 
 @dataclass(frozen=True)

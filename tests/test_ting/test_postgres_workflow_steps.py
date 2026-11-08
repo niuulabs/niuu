@@ -122,6 +122,9 @@ def _flag_row(run_id: Any, activation_id: Any, **changes: Any) -> dict[str, Any]
         "notified_at": None,
         "resolved_at": None,
         "resolution": "",
+        "action_at": None,
+        "action_done_at": None,
+        "action_error": "",
     }
     row.update(changes)
     return row
@@ -363,6 +366,9 @@ async def test_load_reads_the_runs_flags_with_their_resolution(
                 notified_at=NOW,
                 resolved_at=resolved,
                 resolution="step is done",
+                action_at=NOW,
+                action_done_at=resolved,
+                action_error="ConnectionError: forge is down",
             ),
         ],
     ]
@@ -380,6 +386,9 @@ async def test_load_reads_the_runs_flags_with_their_resolution(
         resolved,
         "step is done",
     )
+    assert not overdue.action_attempted
+    assert unclosed.action_attempted and unclosed.action_done_at == resolved
+    assert unclosed.action_error == "ConnectionError: forge is down"
     assert "FROM workflow_step_flags" in connection.executed[2][0]
     assert connection.executed[2][1] == (run_id,)
 
@@ -425,3 +434,24 @@ async def test_resolving_and_notifying_a_flag_touch_only_that_flag(
     assert resolve_args == (activation_id, "overdue", NOW, "step is done")
     assert "SET notified_at = $3" in notify_query
     assert notify_args == (activation_id, "overdue", NOW)
+
+
+async def test_a_flags_automatic_action_is_claimed_once_and_its_outcome_recorded(
+    repository: PostgresWorkflowStepRepository, connection: _Connection
+) -> None:
+    run_id, activation_id = uuid4(), uuid4()
+
+    async with repository.transaction(run_id) as tx:
+        connection.fetchrow_result = {"activation_id": activation_id}
+        first = await tx.claim_flag_action(activation_id, FlagKind.NOT_STARTED, at=NOW)
+        connection.fetchrow_result = None
+        second = await tx.claim_flag_action(activation_id, FlagKind.NOT_STARTED, at=NOW)
+        await tx.finish_flag_action(activation_id, FlagKind.NOT_STARTED, at=NOW, error="boom")
+
+    claim_query, claim_args = connection.executed[1]
+    finish_query, finish_args = connection.executed[3]
+    assert "action_at IS NULL" in claim_query and "RETURNING" in claim_query
+    assert claim_args == (activation_id, "not_started", NOW)
+    assert (first, second) == (True, False)
+    assert "SET action_done_at = $3, action_error = $4" in finish_query
+    assert finish_args == (activation_id, "not_started", NOW, "boom")
