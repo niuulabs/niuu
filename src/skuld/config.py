@@ -84,8 +84,33 @@ _DEFAULT_MESH_TOOLS = [
 class NngConfig(BaseModel):
     """NNG transport addresses for mesh communication."""
 
-    pub_sub_address: str = Field(default="tcp://127.0.0.1:0")
+    pub_sub_address: str = Field(
+        default="tcp://127.0.0.1:0",
+        description=(
+            "Where this session's PUB socket listens. Port 0 takes a free port, announced as "
+            "the port it got. Loopback reaches the sessions on the same machine; a session "
+            "other machines must reach listens on every interface (`tcp://0.0.0.0:7480`) and "
+            "sets `advertise_host`."
+        ),
+    )
     req_rep_address: str = Field(default="tcp://127.0.0.1:0")
+    advertise_host: str = Field(
+        default="",
+        description=(
+            "The host or IP other machines dial this session at. Needed when "
+            "`pub_sub_address` listens on every interface, which has no address of its own to "
+            "announce; empty announces the listen address as it is."
+        ),
+    )
+    rediscover_interval_s: float = Field(
+        default=1.0,
+        gt=0,
+        description=(
+            "Seconds between re-reads of the peers discovery found, to dial the ones that "
+            "joined and hang up on the ones that left. A discovery join or leave refreshes "
+            "at once; this is the backstop, and bounds how long a new peer can be unheard."
+        ),
+    )
 
 
 class MeshConfig(BaseModel):

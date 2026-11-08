@@ -485,7 +485,14 @@ class TestBroker:
         broker = Broker(
             settings=SkuldSettings(
                 session={"id": "mesh-build-failed", "workspace_dir": str(tmp_path)},
-                mesh={"enabled": True, "transport": "nng", "peer_id": "skuld-wf"},
+                mesh={
+                    "enabled": True,
+                    "transport": "nng",
+                    "peer_id": "skuld-wf",
+                    "discovery_adapters": [
+                        {"adapter": "registry", "path": str(tmp_path / "peers.json")}
+                    ],
+                },
             )
         )
 

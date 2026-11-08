@@ -68,6 +68,10 @@ class PeerMessageReceiver(Protocol):
         """Hold ``envelope`` for the next turn boundary; raises when it is refused."""
 
 
+class MeshConfigurationError(RuntimeError):
+    """The mesh is enabled and its configuration cannot work; the message says what to set."""
+
+
 class MeshPeerIdError(RuntimeError):
     """The session's mesh peer id is missing, or two parts of the mesh disagree about it."""
 
