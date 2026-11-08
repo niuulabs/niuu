@@ -75,10 +75,15 @@ logger = logging.getLogger(__name__)
 def _sanitize_for_event_type(s: str) -> str:
     """Sanitize a string for use in Sleipnir event types.
 
-    Sleipnir event type segments require lowercase alphanumeric + underscores only.
-    Converts hyphens to underscores inside a segment.
+    Sleipnir event type segments require lowercase alphanumeric + underscores only, and
+    must start with a letter. Converts hyphens to underscores inside a segment, and puts
+    a ``p`` in front of one that starts with a digit (a session's UUID peer id does in 10
+    of 16 cases). Both ends of an address are built here, so they agree.
     """
-    return s.lower().replace("-", "_")
+    segment = s.lower().replace("-", "_")
+    if segment[:1].isdigit():
+        return f"p{segment}"
+    return segment
 
 
 def _sanitize_topic(topic: str) -> str:
