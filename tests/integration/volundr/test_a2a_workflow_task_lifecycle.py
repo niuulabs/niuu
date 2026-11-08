@@ -260,7 +260,8 @@ async def test_a2a_task_lifecycle_runs_on_the_step_engine_over_postgres(
 
     stored = await campaign_repo.get_campaign(campaign.id)
     assert stored is not None
-    assert stored.status is WorkflowCampaignStatus.FAILED
+    # An A2A cancel is an operator ending, not a failure.
+    assert stored.status is WorkflowCampaignStatus.CANCELED
     assert stored.metadata["a2a_canceled"] is True
     ledger = await PostgresWorkflowStepRepository(txn_pool).load(campaign.id)
     assert "engine.run.canceled" in [event.event_type for event in ledger.events]
