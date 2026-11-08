@@ -109,7 +109,7 @@ from skuld.forge_mcp.integration import ForgeSessionMixin
 from skuld.history_hydration import fetch_durable_history, merge_history_turns
 from skuld.mesh_follows import MeshFollowMixin
 from skuld.mesh_topics import MeshTopics, mesh_topics
-from skuld.peer_inbox import PEER_STATE_RPC_TYPE, PeerInboxMixin
+from skuld.peer_inbox import PEER_STATE_RPC_TYPE, PeerInboxMixin, PeerMessageUnconfirmedError
 from skuld.preview import PreviewForwarder, PreviewPortWatcher
 from skuld.room_delivery import RoomDelivery, RoomDeliveryError
 from skuld.service_manager import (  # noqa: F401
@@ -871,7 +871,6 @@ class Broker(
         from niuu.mesh import (
             build_in_process_mesh,
             build_mesh_from_adapters_list,
-            resolve_peer_id,
         )
         from niuu.mesh.participant import MeshParticipant
         from niuu.mesh.transport_builder import (
@@ -879,10 +878,12 @@ class Broker(
             build_transport,
             resolve_transport_kwargs,
         )
-        from skuld.mesh_adapter import SkuldMeshAdapter
+        from skuld.mesh_adapter import MeshPeerIdError, SkuldMeshAdapter, resolve_mesh_peer_id
 
         mesh_cfg = self._settings.mesh
-        own_peer_id = resolve_peer_id(mesh_cfg.peer_id)
+        # The one id of this session on the mesh: the transport, the certificate Forge signs,
+        # discovery and every reply route use it.
+        own_peer_id = resolve_mesh_peer_id(mesh_cfg.peer_id, self.session_id)
 
         def _sleipnir_transport(entry: dict[str, Any]) -> Any:
             transport_name = str(entry.get("transport") or mesh_cfg.transport or "nng")
@@ -962,7 +963,7 @@ class Broker(
 
         # Build discovery adapter using shared niuu.mesh.discovery_builder
         own_identity = MeshIdentity(
-            peer_id=mesh_cfg.peer_id or self.session_id or "skuld",
+            peer_id=own_peer_id,
             realm_id=mesh_cfg.realm_id,
             persona=topics.persona_id or mesh_cfg.persona,
             # The session's name, so a peer can address this session by it.
@@ -1038,6 +1039,12 @@ class Broker(
                 PEER_STATE_RPC_TYPE: self.peer_state_rpc,
             },
         )
+
+        if self._mesh_adapter.peer_id != own_identity.peer_id:
+            raise MeshPeerIdError(
+                f"the mesh runs as {self._mesh_adapter.peer_id!r} but discovery announces "
+                f"{own_identity.peer_id!r}; one session has one mesh peer id"
+            )
 
         try:
             await self._mesh_adapter.start()
@@ -3266,6 +3273,11 @@ class Broker(
         try:
             envelope = PeerMessage.from_wire(raw)
             acceptance = await self.accept_peer_message(envelope, request_id)
+        except PeerMessageUnconfirmedError as exc:
+            # Forge may have stored it: "pending", never "failed", so the sender is told to
+            # retry with the same request_id instead of sending it again as a new message.
+            await self._emit_delivery_ack(request_id, message_id, "pending", error=str(exc))
+            return
         except PeerMessageError as exc:
             await self._emit_delivery_ack(request_id, message_id, "failed", error=str(exc))
             return

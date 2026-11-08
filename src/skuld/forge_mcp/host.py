@@ -605,6 +605,12 @@ class BrokerForgeMcpHost(ForgeMcpHost):
                 "or may not have arrived: retry with the same request_id",
                 status=504,
             ) from exc
+        if answer.get("status") == "unconfirmed":
+            # The recipient's Forge did not confirm in time: it may have stored the message.
+            raise ForgeApiError(
+                f"mesh peer {peer!r} did not confirm the message: {answer.get('error')}",
+                status=504,
+            )
         failure = answer.get("error") or (
             answer.get("status") if answer.get("status") == "error" else None
         )

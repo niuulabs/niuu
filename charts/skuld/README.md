@@ -268,7 +268,7 @@ A session joins a flock as a mesh peer when `mesh.enabled` is true: it announces
 | `mesh.enabled` | bool | `false` | Join the flock as a mesh peer (`mesh.enabled`) |
 | `mesh.transport` | string | `"nng"` | Mesh transport: `nng`, `nats`, `in_process` or a Sleipnir transport class path (`mesh.transport`) |
 | `mesh.peerPorts` | list | `[]` | Container ports to expose for direct mesh peers; not a Skuld setting |
-| `mesh.peerId` | string | `""` | This peer's id (`mesh.peer_id`); empty uses the pod's host name |
+| `mesh.peerId` | string | `""` | This peer's id (`mesh.peer_id`); empty uses the session id (transport, discovery, certificate and reply routes share it) |
 | `mesh.realmId` | string | `""` | Realm the peer announces in and discovers within (`mesh.realm_id`) |
 | `mesh.persona` | string | `null` | Persona name announced when no persona is pinned (`mesh.persona`); null keeps `coder` |
 | `mesh.role` | string | `""` | What the session is for, announced so peers can choose (`mesh.role`); empty announces the pinned persona's id |

@@ -84,6 +84,15 @@ class PeerMessageRefusedError(PeerMessageError):
     """This session will not take the message; the reason says why and what to do."""
 
 
+class PeerMessageUnconfirmedError(PeerMessageRefusedError):
+    """Forge did not confirm the message in time: it may or may not be stored.
+
+    Not a refusal of the message itself. The sender must be told it *may have been
+    delivered*, and that retrying with the same ``request_id`` (so the same ``message_id``)
+    delivers it once.
+    """
+
+
 @dataclass(frozen=True)
 class PeerAcceptance:
     """What accepting a message came to: it is durably held, new or already there."""
@@ -333,7 +342,8 @@ class PeerInboxMixin:
 
     def _own_peer_identities(self) -> set[str]:
         """The ids a message to this session may carry: its session id, and on the mesh its
-        mesh peer id (configured or the host name, not the session id)."""
+        mesh peer id (``mesh.peer_id``, else the session id: one id, see
+        ``resolve_mesh_peer_id``)."""
         identities = {str(self.session_id)}
         if self._mesh_adapter is not None:
             identities.add(self._mesh_adapter.peer_id)
@@ -401,10 +411,11 @@ class PeerInboxMixin:
                     "send it again"
                 )
             if stored is None:
-                raise PeerMessageRefusedError(
+                raise PeerMessageUnconfirmedError(
                     f"Forge did not confirm the peer message {entry.envelope.message_id} "
-                    f"within forge_mcp.notify_confirm_timeout_s ({timeout_s}s); send it again "
-                    "(the message id makes that safe)"
+                    f"within forge_mcp.notify_confirm_timeout_s ({timeout_s}s); it may have "
+                    "been stored. Retry with the same request_id: the same message id is "
+                    "delivered once"
                 )
 
     # -- delivery at a turn boundary

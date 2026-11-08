@@ -259,9 +259,31 @@ Agents in the same flock talk directly, without Forge in the middle.
   through Forge. A name two peers carry is an error that lists them; send to the peer id.
 - **Stamping is unchanged.** The sending Skuld stamps itself as the sender (session id, name,
   node); the reply route is its own mesh peer id.
-- **Caveat.** A Skuld announces `mesh.peer_id` when configured, else its session id, as its
-  peer id. A name matches only the display name a Skuld announces, the session name; Ravn
+- **One peer id.** A Skuld has one mesh peer id: `mesh.peer_id` when configured, else its
+  session id (a hostname is not unique across pods, VMs or slots, so it is never used). That
+  one id is the transport's RPC and subscribe identity, the id discovery announces, the
+  `mesh_peer_id` Forge certifies for message signing, and the target of every mesh reply route.
+  A mesh that cannot settle on one id does not start: a session with neither `mesh.peer_id`
+  nor a session id, a participant that runs as another id than `mesh.peer_id`, or discovery
+  announcing another id than the transport is a startup error naming the ids. Nothing falls
+  back to a second id.
+- **Caveat.** A name matches only the display name a Skuld announces, the session name; Ravn
   residents are addressed by peer id.
+
+### A send that was not confirmed may have arrived
+
+The message id derives from the sender, the recipient and the `request_id`, so the
+`request_id` is the message's identity. When a send is not confirmed, the message may already
+be delivered: Forge did not confirm the recipient's durable log in
+`forge_mcp.notify_confirm_timeout_s`, the mesh RPC got no answer in `mesh.rpc_timeout_s`, or
+Forge could not be reached. The tool then does not say "failed". It says **delivery not
+confirmed, the message may have been delivered**, names the `request_id` (the one it generated
+if you gave none), and tells you to retry with that same `request_id`. The retry carries the
+same message id; the recipient's inbox holds it once and reports the second arrival as a
+duplicate. A retry with a different `request_id` is a different message and is delivered
+again. A send Forge accepted but could not confirm comes back as `status: pending` with a
+`note` that says the same. A plain refusal (unknown session, no grant, inbox off) is a 4xx and
+says the message was not delivered.
 
 ### Who may message whom
 

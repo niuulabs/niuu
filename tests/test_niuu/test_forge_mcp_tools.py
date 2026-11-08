@@ -1836,3 +1836,101 @@ class TestPeerToolArguments:
 
         assert result.is_error and "Forge session UUID" in result.text
         assert client.calls == []
+
+
+class TestUnconfirmedSends:
+    """A send that Forge or the mesh could not confirm may still have been delivered."""
+
+    @pytest.mark.parametrize("status", [None, 408, 502, 504])
+    async def test_a_forge_send_that_was_not_confirmed_says_it_may_have_been_delivered(
+        self, status
+    ) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.fail = ForgeApiError("no answer", status=status)
+
+        result = await toolbox.call("send_message", {"session_id": PEER, "content": "hi"})
+
+        sent_request_id = client.calls[0][1][2]
+        assert result.is_error
+        assert "may have been delivered" in result.text
+        assert "same request_id" in result.text and sent_request_id in result.text
+        assert "failed" not in result.text.lower().split("(")[0]
+
+    async def test_a_definitive_refusal_is_not_reported_as_maybe_delivered(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.fail = ForgeApiError("no such session", status=404)
+
+        result = await toolbox.call("send_message", {"session_id": PEER, "content": "hi"})
+
+        assert result.is_error and "may have been delivered" not in result.text
+        assert "404" in result.text
+
+    async def test_a_retry_with_the_request_id_from_the_error_reuses_it(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.fail = ForgeApiError("no answer", status=504)
+        first = await toolbox.call("send_message", {"session_id": PEER, "content": "hi"})
+        request_id = client.calls[0][1][2]
+        assert request_id in first.text
+        client.fail = None
+
+        second = await toolbox.call(
+            "send_message", {"session_id": PEER, "content": "hi", "request_id": request_id}
+        )
+
+        assert not second.is_error and second.structured["request_id"] == request_id
+        assert [call[1][2] for call in client.calls] == [request_id, request_id]
+
+    async def test_a_pending_forge_send_carries_the_retry_note_with_its_request_id(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.MESSAGE)
+
+        async def pending(*args, **kwargs):
+            return {"status": "pending", "delivery": "pending"}
+
+        client.send_message = pending
+
+        result = await toolbox.call(
+            "send_message", {"session_id": PEER, "content": "hi", "request_id": "r-7"}
+        )
+
+        assert not result.is_error and result.structured["status"] == "pending"
+        assert "may have been" in result.structured["note"]
+        assert "'r-7'" in result.structured["note"]
+
+    async def test_a_mesh_send_the_recipient_did_not_confirm_is_maybe_delivered(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.mesh_peer_ids = {PEER: "peer-9"}
+        host.mesh_send_error = ForgeApiError("did not confirm the message", status=504)
+
+        for tool, args in (
+            ("send_message", {"session_id": PEER, "content": "hi", "request_id": "r-1"}),
+            ("mesh_send", {"peer": "peer-9", "content": "hi", "request_id": "r-1"}),
+        ):
+            result = await toolbox.call(tool, args)
+            assert result.is_error and "may have been delivered" in result.text
+            assert "'r-1'" in result.text
+        assert client.calls == []
+
+    async def test_a_reply_that_was_not_confirmed_says_so_on_every_route(self) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        host.inbox["m-1"] = _envelope()
+        client.fail = ForgeApiError("no answer", status=504)
+
+        result = await toolbox.call(
+            "reply", {"message_id": "m-1", "content": "done", "request_id": "r-2"}
+        )
+
+        assert result.is_error and "may have been delivered" in result.text
+        assert "'r-2'" in result.text
+
+    async def test_an_ask_whose_send_was_not_confirmed_names_the_request_id_to_retry_with(
+        self,
+    ) -> None:
+        toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
+        client.fail = ForgeApiError("no answer", status=504)
+
+        result = await toolbox.call(
+            "ask", {"session_id": PEER, "content": "hi", "request_id": "r-3"}
+        )
+
+        assert result.is_error and "may have been delivered" in result.text
+        assert "'r-3'" in result.text and host.asks == []
