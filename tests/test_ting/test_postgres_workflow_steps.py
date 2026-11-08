@@ -455,3 +455,40 @@ async def test_a_flags_automatic_action_is_claimed_once_and_its_outcome_recorded
     assert (first, second) == (True, False)
     assert "SET action_done_at = $3, action_error = $4" in finish_query
     assert finish_args == (activation_id, "not_started", NOW, "boom")
+
+
+async def test_claiming_a_delivery_is_one_conditional_update(
+    repository: PostgresWorkflowStepRepository, connection: _Connection
+) -> None:
+    activation_id = uuid4()
+    connection.fetchrow_result = {"id": activation_id}
+
+    assert await repository.claim_delivery(activation_id, "session-1", at=NOW) is True
+    query, args = connection.executed[0]
+    assert "UPDATE workflow_steps SET delivered_at = $3" in query
+    for condition in ("session_id = $2", "state = 'active'", "delivered_at IS NULL"):
+        assert condition in query
+    assert args == (activation_id, "session-1", NOW)
+
+    connection.fetchrow_result = None
+    assert await repository.claim_delivery(activation_id, "session-1", at=NOW) is False
+
+
+async def test_undelivered_steps_are_the_active_bound_stage_members_not_delivered(
+    repository: PostgresWorkflowStepRepository, connection: _Connection
+) -> None:
+    run_id = uuid4()
+    row = _step_row(run_id)
+    connection.fetch_results.append([row])
+
+    steps = await repository.undelivered_steps()
+
+    assert [step.id for step in steps] == [row["id"]]
+    query = connection.executed[0][0]
+    for condition in (
+        "state = 'active'",
+        "kind = 'stage_member'",
+        "session_id IS NOT NULL",
+        "delivered_at IS NULL",
+    ):
+        assert condition in query

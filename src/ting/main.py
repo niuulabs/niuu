@@ -1561,6 +1561,9 @@ def create_app(
             app.state.subscriber = subscriber
             await subscriber.start()
 
+            # Steps a previous process left bound to a booting session but undelivered.
+            await step_engine.resume_deliveries()
+
             # Stuck detection for workflow steps (NIU-1181)
             stuck_cfg = settings.workflow_steps.stuck
             stuck_sweeper: StuckStepSweeper | None = None

@@ -10,13 +10,16 @@ from uuid import uuid4
 import pytest
 
 from tests.test_ting.step_support import (
+    SESSION_POLL_SECONDS,
     STEP_DEADLINE_SECONDS,
+    FixedDefinitions,
     Recorder,
     Run,
     bundled,
     make_run,
 )
-from ting.domain.step_engine import GATE_FEEDBACK_KEY
+from ting.domain.services.workflow_step_engine import WorkflowStepEngine
+from ting.domain.step_engine import GATE_FEEDBACK_KEY, EngineSettings
 from ting.domain.workflow_steps import (
     ActorKind,
     Ending,
@@ -545,6 +548,64 @@ async def test_restarting_a_step_whose_session_is_still_starting_waits_instead_o
     assert resumed is True
     assert run.sessions.delivered[0].activation_id == coder.id
     await run.engine.aclose()
+
+
+def second_worker(run: Run) -> WorkflowStepEngine:
+    """Another Ting process over the same ledger and sessions (a restart, or worker 2)."""
+    return WorkflowStepEngine(
+        repository=run.repository,
+        sessions=run.sessions,
+        definitions=FixedDefinitions(run.definition),
+        settings=EngineSettings(
+            step_deadline_seconds=STEP_DEADLINE_SECONDS, session_poll_seconds=SESSION_POLL_SECONDS
+        ),
+    )
+
+
+async def test_a_restart_during_the_wait_delivers_the_step_once_the_session_is_up() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    run.sessions.liveness[CODER_SESSION] = SessionLiveness.STARTING
+    await run.launch()
+    coder = run.current("workstream-code")
+    await run.engine.aclose()  # the process dies while it waits
+
+    restarted = second_worker(run)
+    assert await restarted.resume_deliveries() == 1
+    run.sessions.liveness[CODER_SESSION] = SessionLiveness.RUNNING
+    await wait_for(lambda: run.sessions.delivered, what="the step to be delivered")
+
+    assert [d.activation_id for d in run.sessions.delivered] == [coder.id]
+    assert coder.id in run.repository.delivered
+    assert await second_worker(run).resume_deliveries() == 0
+    await restarted.aclose()
+
+
+async def test_two_workers_waiting_on_the_same_step_deliver_it_once() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    run.sessions.liveness[CODER_SESSION] = SessionLiveness.STARTING
+    await run.launch()
+    other = second_worker(run)
+    assert await other.resume_deliveries() == 1
+
+    run.sessions.liveness[CODER_SESSION] = SessionLiveness.RUNNING
+    await wait_for(
+        lambda: not run.engine._deferred and not other._deferred,  # noqa: SLF001
+        what="both waits to end",
+    )
+
+    assert len(run.sessions.delivered) == 1
+    await other.aclose()
+
+
+async def test_a_step_delivered_at_once_is_recorded_and_not_waited_for_again() -> None:
+    run = make_run(bundled("Developer Workstream"))
+
+    await run.launch()
+
+    coder = run.current("workstream-code")
+    assert [d.activation_id for d in run.sessions.delivered] == [coder.id]
+    assert coder.id in run.repository.delivered
+    assert await second_worker(run).resume_deliveries() == 0
 
 
 async def test_a_step_that_closed_while_its_delivery_waited_is_not_delivered() -> None:

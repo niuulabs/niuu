@@ -26,6 +26,8 @@ from ting.domain.workflow_steps import (
     RunEvent,
     RunState,
     StepFlag,
+    StepKind,
+    StepState,
     WorkflowStep,
 )
 from ting.ports.workflow_steps import (
@@ -144,6 +146,8 @@ class InMemoryStepRepository(WorkflowStepRepository):
         self.steps: dict[UUID, WorkflowStep] = {}
         self.events: dict[UUID, list[RunEvent]] = {}
         self.flags: dict[tuple[UUID, FlagKind], StepFlag] = {}
+        #: activation id -> when it was delivered (``delivered_at``).
+        self.delivered: dict[UUID, datetime] = {}
         self._locks: dict[UUID, asyncio.Lock] = {}
 
     def snapshot(self, run_id: UUID) -> RunState:
@@ -186,6 +190,28 @@ class InMemoryStepRepository(WorkflowStepRepository):
 
     async def load(self, run_id: UUID) -> RunState:
         return self.snapshot(run_id)
+
+    async def claim_delivery(self, activation_id: UUID, session_id: str, *, at: datetime) -> bool:
+        step = self.steps.get(activation_id)
+        if (
+            step is None
+            or step.state is not StepState.ACTIVE
+            or step.session_id != session_id
+            or activation_id in self.delivered
+        ):
+            return False
+        self.delivered[activation_id] = at
+        return True
+
+    async def undelivered_steps(self) -> list[WorkflowStep]:
+        return [
+            step
+            for step in sorted(self.steps.values(), key=lambda s: (s.created_at, str(s.id)))
+            if step.state is StepState.ACTIVE
+            and step.kind is StepKind.STAGE_MEMBER
+            and step.session_id
+            and step.id not in self.delivered
+        ]
 
 
 class FakeSessions(StepSessionPort):

@@ -239,6 +239,23 @@ class WorkflowStepEngine:
         #: Deliveries waiting for their session to come up (see ``_defer_delivery``).
         self._deferred: set[asyncio.Task[None]] = set()
 
+    async def resume_deliveries(self) -> int:
+        """Wait again for every step a previous process left bound but undelivered.
+
+        A step whose session was still booting is delivered by a background wait that a
+        restart ends. The ledger records which steps were delivered (``delivered_at``), so
+        on start every active, bound, undelivered step gets its wait back. Every worker
+        does this; the delivery claim lets only one of them hand a step over. Returns how
+        many waits were started.
+        """
+        steps = await self._repository.undelivered_steps()
+        for step in steps:
+            definition, graph = await self._definition(step.run_id)
+            self._defer_delivery(step, graph, definition)
+        if steps:
+            logger.info("Resumed the delivery of %d undelivered workflow step(s)", len(steps))
+        return len(steps)
+
     async def aclose(self) -> None:
         """Stop waiting for sessions to come up.
 
@@ -586,7 +603,7 @@ class WorkflowStepEngine:
         bound = await self._bind_session(step, session_id)
         if bound is None:
             return False
-        await self._deliver_or_defer(bound, graph, definition)
+        await self._deliver_or_defer(bound, graph, definition, redeliver=True)
         return True
 
     async def fail_step(self, run_id: UUID, activation_id: UUID, reason: str) -> bool:
@@ -811,7 +828,12 @@ class WorkflowStepEngine:
             )
 
     async def _deliver_or_defer(
-        self, bound: WorkflowStep, graph: StepGraph, definition: StepRunDefinition
+        self,
+        bound: WorkflowStep,
+        graph: StepGraph,
+        definition: StepRunDefinition,
+        *,
+        redeliver: bool = False,
     ) -> None:
         """Hand the step to its session if the session is up; wait for it if it is coming up.
 
@@ -820,6 +842,10 @@ class WorkflowStepEngine:
         still starting is not delivered and not failed: the engine waits for the session in
         the background (``_deliver_when_up``) and the caller is not held for the boot.
         Raises when the session cannot be asked, has ended, or refuses the step.
+
+        ``redeliver`` is the stuck sweep handing over a step again that may already have
+        been delivered: it sends without the delivery claim (delivery is idempotent by
+        activation id at the session) and records the delivery afterwards.
         """
         liveness = await self._sessions.session_liveness(bound.run_id, bound.session_id or "")
         if liveness is SessionLiveness.STARTING:
@@ -829,11 +855,34 @@ class WorkflowStepEngine:
             raise StepEngineError(
                 f"session {bound.session_id} is {liveness.value}, so it cannot take the step"
             )
-        await self._deliver(bound, graph, definition)
+        await self._deliver(bound, graph, definition, claim=not redeliver)
 
     async def _deliver(
-        self, bound: WorkflowStep, graph: StepGraph, definition: StepRunDefinition
-    ) -> None:
+        self,
+        bound: WorkflowStep,
+        graph: StepGraph,
+        definition: StepRunDefinition,
+        *,
+        claim: bool = True,
+    ) -> bool:
+        """Hand the step to its session; False when another worker claimed it first.
+
+        The claim is set before the send. A send that fails fails the step (the caller's
+        ``_fail_start``); a process that dies between the claim and the send leaves the
+        step claimed but undelivered, which the stuck sweep finds (its session runs and
+        does not know the activation) and delivers again.
+        """
+        session_id = bound.session_id or ""
+        claimed = await self._repository.claim_delivery(bound.id, session_id, at=self._clock())
+        if claim and not claimed:
+            logger.info(
+                "Step %s (%s/%s) was already delivered to session %s; not sending it again",
+                bound.id,
+                bound.node_id,
+                bound.member,
+                session_id,
+            )
+            return False
         activation = self._activation(
             bound,
             graph,
@@ -841,6 +890,7 @@ class WorkflowStepEngine:
             definition.workflow_name,
         )
         await self._sessions.deliver(activation)
+        return True
 
     def _defer_delivery(
         self, bound: WorkflowStep, graph: StepGraph, definition: StepRunDefinition

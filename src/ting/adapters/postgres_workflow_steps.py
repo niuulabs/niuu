@@ -103,6 +103,17 @@ WHERE activation_id = $1 AND kind = $2
 """
 
 _SELECT_STEPS = "SELECT * FROM workflow_steps WHERE run_id = $1 ORDER BY created_at, id"
+_CLAIM_DELIVERY = """
+UPDATE workflow_steps SET delivered_at = $3
+WHERE id = $1 AND session_id = $2 AND state = 'active' AND delivered_at IS NULL
+RETURNING id
+"""
+_SELECT_UNDELIVERED = """
+SELECT * FROM workflow_steps
+WHERE state = 'active' AND kind = 'stage_member' AND session_id IS NOT NULL
+  AND delivered_at IS NULL
+ORDER BY created_at, id
+"""
 _SELECT_FLAGS = (
     "SELECT run_id, activation_id, kind, since, raised_at, detail, notified_at, resolved_at, "
     "resolution, action_at, action_done_at, action_error FROM workflow_step_flags "
@@ -136,6 +147,13 @@ class PostgresWorkflowStepRepository(WorkflowStepRepository):
         event_rows = await self._pool.fetch(_SELECT_EVENTS, run_id)
         flag_rows = await self._pool.fetch(_SELECT_FLAGS, run_id)
         return _state_from_rows(run_id, step_rows, event_rows, flag_rows)
+
+    async def claim_delivery(self, activation_id: UUID, session_id: str, *, at: datetime) -> bool:
+        row = await self._pool.fetchrow(_CLAIM_DELIVERY, activation_id, session_id, at)
+        return row is not None
+
+    async def undelivered_steps(self) -> list[WorkflowStep]:
+        return [_step_from_row(row) for row in await self._pool.fetch(_SELECT_UNDELIVERED)]
 
 
 class _PostgresLedgerTransaction(LedgerTransaction):

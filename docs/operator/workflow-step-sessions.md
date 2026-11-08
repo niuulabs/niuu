@@ -38,8 +38,14 @@ step stays active and bound to the session, and Ting delivers it once Forge repo
 session running, polling every `workflow_steps.session_poll_seconds`. The caller (a launch,
 or the close of the step before it) is not held for the boot. The wait ends when the
 session is running, when it is stopped, failed or gone (the step fails and says so), or at
-the step's deadline (the step fails naming `workflow_steps.step_deadline_seconds`). If Ting
-restarts while it waits, the stuck sweep delivers the step once the session answers.
+the step's deadline (the step fails naming `workflow_steps.step_deadline_seconds`).
+
+The wait survives a restart: the ledger records when each step was delivered
+(`workflow_steps.delivered_at`), and on start every Ting process waits again for each
+active, bound, undelivered step. Setting `delivered_at` is a conditional update, so of
+several workers or replicas waiting on the same step only one hands it over. A process
+that dies between that claim and the send leaves the step claimed but undelivered; the
+stuck sweep finds it (its session runs and does not know the activation) and delivers it.
 
 ## What a session is told, and how it answers
 

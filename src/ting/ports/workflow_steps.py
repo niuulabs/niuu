@@ -239,3 +239,16 @@ class WorkflowStepRepository(ABC):
     @abstractmethod
     async def load(self, run_id: UUID) -> RunState:
         """The run's ledger (steps, events and flags), without locking it."""
+
+    @abstractmethod
+    async def claim_delivery(self, activation_id: UUID, session_id: str, *, at: datetime) -> bool:
+        """Mark the step delivered to ``session_id`` if it is still active, bound to that
+        session and undelivered; True for the one caller that set it.
+
+        The conditional write is the claim: of several workers waiting on the same step,
+        only the one that gets True hands it to the session.
+        """
+
+    @abstractmethod
+    async def undelivered_steps(self) -> list[WorkflowStep]:
+        """Every active stage-member step bound to a session but not yet delivered to it."""
