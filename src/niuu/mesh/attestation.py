@@ -164,6 +164,17 @@ class VerifiedSender:
     memberships: tuple[str, ...]
     signed_at_ms: int
 
+    def summary(self) -> dict[str, str]:
+        """What a handler is told about a verified sender: the certified peer and session."""
+        return {"peer_id": self.peer_id, "session_id": self.session_id}
+
+
+#: Where a handler finds who verified a message. The mesh layer sets it after verification and
+#: overwrites anything the sender put there, so a handler may trust it only when the mesh
+#: verifies senders at all (``mesh.attestation.required``): in an unverified deployment the
+#: key is whatever the sender wrote.
+VERIFIED_SENDER_KEY = "verified_sender"
+
 
 def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")

@@ -51,10 +51,17 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from niuu.adapters.discovery._failures import (
+    DiscoveryError,
+    notify,
+    refuse_message,
+    report_failure,
+)
 from niuu.adapters.discovery._identity import (
     load_or_create_realm_key,
     realm_id_hash,
 )
+from niuu.cap_telemetry import record_retry
 from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer, unannounced_facts
 from niuu.ports.discovery import PeerCallback
 
@@ -86,15 +93,23 @@ def _hmac_hex(key: bytes, *parts: str) -> str:
 
 
 def _local_ip() -> str:
-    """Best-effort LAN IP address detection (falls back to 127.0.0.1)."""
+    """The LAN IP address this host announces.
+
+    Raises :class:`DiscoveryError` when there is no route to find it from: announcing
+    loopback instead would tell every other host to connect to itself.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.connect(("8.8.8.8", 80))
-        ip = sock.getsockname()[0]
+        return sock.getsockname()[0]
+    except OSError as exc:
+        raise DiscoveryError(
+            f"mdns discovery cannot find this host's LAN address ({exc}): it has no route "
+            "to a network, so there is no address to announce. Connect to a network, or "
+            "use static discovery"
+        ) from exc
+    finally:
         sock.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
 
 
 class MdnsDiscoveryAdapter:
@@ -174,9 +189,12 @@ class MdnsDiscoveryAdapter:
 
     async def start(self) -> None:
         """Register mDNS service and start background loops."""
-        if AsyncZeroconf is None:  # pragma: no cover
-            logger.warning("mdns_discovery: zeroconf not installed — discovery disabled")
-            return
+        if AsyncZeroconf is None or pynng is None:  # pragma: no cover
+            missing = "zeroconf" if AsyncZeroconf is None else "pynng"
+            raise DiscoveryError(
+                f"mdns discovery needs the {missing} package and it is not installed: install "
+                "it, or remove the mdns entry from the discovery adapters"
+            )
 
         self._loop = asyncio.get_running_loop()
         self._zc = AsyncZeroconf()
@@ -208,10 +226,14 @@ class MdnsDiscoveryAdapter:
 
         if self._zc is not None:
             if self._service_info is not None:
-                with suppress(Exception):
+                try:
                     await self._zc.async_unregister_service(self._service_info)
-            with suppress(Exception):
+                except Exception as exc:  # stopping goes on; peers age this service out
+                    report_failure("mdns", "unregister", f"{type(exc).__name__}: {exc}")
+            try:
                 await self._zc.async_close()
+            except Exception as exc:
+                report_failure("mdns", "close", f"{type(exc).__name__}: {exc}")
             self._zc = None
 
         logger.info("mdns_discovery: stopped peer=%s", self._identity.peer_id)
@@ -237,11 +259,15 @@ class MdnsDiscoveryAdapter:
         Returns a verified ``MeshPeer`` on success, ``None`` on realm mismatch.
         """
         if pynng is None:  # pragma: no cover
-            logger.debug("mdns_discovery: pynng not installed — handshake skipped")
-            return None
+            raise DiscoveryError("mdns discovery cannot handshake: the pynng package is missing")
 
         if candidate.handshake_port is None:
-            logger.debug("mdns_discovery: candidate %s has no handshake_port", candidate.peer_id)
+            refuse_message(
+                "mdns",
+                "no_handshake_port",
+                candidate.peer_id,
+                "the peer announced no handshake port, so it cannot be verified",
+            )
             return None
 
         addr = f"tcp://{candidate.host}:{candidate.handshake_port}"
@@ -255,8 +281,11 @@ class MdnsDiscoveryAdapter:
                 addr,
                 timeout_ms,
             )
-        except Exception as exc:
-            logger.debug("mdns_discovery: handshake with %s failed: %s", candidate.peer_id, exc)
+        except Exception as exc:  # the socket work of one attempt; the caller retries
+            record_retry(
+                "niuu.discovery.mdns.handshake",
+                f"handshake with {candidate.peer_id} failed: {type(exc).__name__}: {exc}",
+            )
             return None
 
     def peers(self) -> dict[str, MeshPeer]:
@@ -330,12 +359,15 @@ class MdnsDiscoveryAdapter:
         )
         try:
             await self._zc.async_register_service(info, ttl=60)
-            self._service_info = info
-            logger.debug(
-                "mdns_discovery: registered %s at %s:%d", service_name, ip, self._handshake_port
-            )
-        except Exception as exc:
-            logger.debug("mdns_discovery: service registration failed: %s", exc)
+        except Exception as exc:  # the one registration; without it peers never see this host
+            raise DiscoveryError(
+                f"mdns discovery could not register {service_name} ({type(exc).__name__}: "
+                f"{exc}); until it does, peers do not see this session"
+            ) from exc
+        self._service_info = info
+        logger.info(
+            "mdns_discovery: registered %s at %s:%d", service_name, ip, self._handshake_port
+        )
 
     async def _start_browser(self) -> None:
         if self._zc is None:
@@ -398,10 +430,12 @@ class MdnsDiscoveryAdapter:
         info = ServiceInfo(type_=service_type, name=name)  # type: ignore[call-arg]
         try:
             await info.async_request(zeroconf, timeout=2000)  # type: ignore[attr-defined]
-        except Exception as exc:
-            # Silently dropping this hid a total browse failure, so it is
-            # reported even though a single miss is not fatal.
-            logger.debug("mdns_discovery: service request for %s failed: %s", name, exc)
+        except Exception as exc:  # this peer's details are lost until its next update
+            report_failure(
+                "mdns",
+                "service_request",
+                f"service request for {name} failed: {type(exc).__name__}: {exc}",
+            )
             return
 
         props = info.decoded_properties  # type: ignore[attr-defined]
@@ -465,9 +499,7 @@ class MdnsDiscoveryAdapter:
         self._candidates.pop(peer_id, None)
         peer = self._peers.pop(peer_id, None)
         if peer is not None:
-            for cb in self._on_leave:
-                with suppress(Exception):
-                    cb(peer)
+            notify("mdns", "leave", self._on_leave, peer)
 
     # ------------------------------------------------------------------
     # Internal — handshake initiator (side A)
@@ -499,19 +531,18 @@ class MdnsDiscoveryAdapter:
                 if attempt < max_retries - 1:
                     # Exponential backoff with jitter: 0.5s, 1s, 2s base
                     backoff = (0.5 * (2**attempt)) + (secrets.randbelow(300) / 1000.0)
-                    logger.debug(
-                        "mdns_discovery: handshake attempt %d/%d failed for %s, retrying in %.2fs",
-                        attempt + 1,
-                        max_retries,
-                        candidate.peer_id,
-                        backoff,
+                    record_retry(
+                        "niuu.discovery.mdns.handshake",
+                        f"handshake attempt {attempt + 1}/{max_retries} failed for "
+                        f"{candidate.peer_id}, retrying in {backoff:.2f}s",
                     )
                     await asyncio.sleep(backoff)
 
-            logger.debug(
-                "mdns_discovery: handshake with %s failed after %d attempts",
-                candidate.peer_id,
-                max_retries,
+            report_failure(
+                "mdns",
+                "handshake",
+                f"handshake with {candidate.peer_id} failed after {max_retries} attempts; "
+                "it is not in the peer table",
             )
         finally:
             self._pending_handshakes.discard(candidate.peer_id)
@@ -537,6 +568,9 @@ class MdnsDiscoveryAdapter:
             reply = sock.recv().decode()
             parts = reply.split(" ", 2)
             if len(parts) != 3 or parts[0] != "CHALLENGE":
+                refuse_message(
+                    "mdns", "malformed", peer_id, f"expected CHALLENGE, got {reply[:40]!r}"
+                )
                 return None
             hmac_b, nonce_b = parts[1], parts[2]
 
@@ -548,7 +582,9 @@ class MdnsDiscoveryAdapter:
                 peer_id,
             )
             if not hmac.compare_digest(hmac_b, expected):
-                logger.debug("mdns_discovery: CHALLENGE HMAC mismatch from %s", peer_id)
+                refuse_message(
+                    "mdns", "hmac_mismatch", peer_id, "its CHALLENGE did not prove the realm key"
+                )
                 return None
 
             # A → B: VERIFY <hmac_a> + identity JSON
@@ -565,9 +601,11 @@ class MdnsDiscoveryAdapter:
             # B → A: ACCEPT <identity_json>  OR  REJECT
             final = sock.recv().decode()
             if final.startswith("REJECT"):
+                refuse_message("mdns", "rejected", peer_id, "the peer rejected our VERIFY")
                 return None
 
             if not final.startswith("ACCEPT "):
+                refuse_message("mdns", "malformed", peer_id, f"expected ACCEPT, got {final[:40]!r}")
                 return None
 
             peer_identity_raw = json.loads(final[len("ACCEPT ") :])
@@ -594,8 +632,8 @@ class MdnsDiscoveryAdapter:
                     await loop.run_in_executor(None, self._handle_handshake_responder, sock, data)
                 except asyncio.CancelledError:
                     return
-                except Exception as exc:
-                    logger.debug("mdns_discovery: handshake_listener error: %s", exc)
+                except Exception as exc:  # the listener must keep listening
+                    report_failure("mdns", "listener", f"{type(exc).__name__}: {exc}")
                     await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             return
@@ -608,6 +646,7 @@ class MdnsDiscoveryAdapter:
             msg = data.decode()
             parts = msg.split(" ", 2)
             if len(parts) != 3 or parts[0] != "HELLO":
+                refuse_message("mdns", "malformed", "", f"expected HELLO, got {msg[:40]!r}")
                 return
 
             peer_id_a, nonce_a = parts[1], parts[2]
@@ -626,6 +665,9 @@ class MdnsDiscoveryAdapter:
             reply = sock.recv().decode()  # type: ignore[attr-defined]
             reply_parts = reply.split(" ", 2)
             if len(reply_parts) < 3 or reply_parts[0] != "VERIFY":
+                refuse_message(
+                    "mdns", "malformed", peer_id_a, f"expected VERIFY, got {reply[:40]!r}"
+                )
                 sock.send(b"REJECT")  # type: ignore[attr-defined]
                 return
 
@@ -640,13 +682,16 @@ class MdnsDiscoveryAdapter:
                 peer_id_a,
             )
             if not hmac.compare_digest(hmac_a_recv, expected_a):
-                logger.debug("mdns_discovery: VERIFY HMAC mismatch from %s", peer_id_a)
+                refuse_message(
+                    "mdns", "hmac_mismatch", peer_id_a, "its VERIFY did not prove the realm key"
+                )
                 sock.send(b"REJECT")  # type: ignore[attr-defined]
                 return
 
             try:
                 peer_identity_raw = json.loads(identity_json)
-            except Exception:
+            except ValueError as exc:
+                refuse_message("mdns", "malformed", peer_id_a, f"its identity is not JSON: {exc}")
                 sock.send(b"REJECT")  # type: ignore[attr-defined]
                 return
 
@@ -657,8 +702,8 @@ class MdnsDiscoveryAdapter:
             peer = self._peer_from_identity_dict(peer_identity_raw, candidate)
             # Runs on an executor thread — hand the peer back to the loop.
             self._schedule(self._add_peer, peer)
-        except Exception as exc:
-            logger.debug("mdns_discovery: responder error: %s", exc)
+        except Exception as exc:  # one handshake on the listener's thread; the listener goes on
+            report_failure("mdns", "responder", f"{type(exc).__name__}: {exc}")
 
     # ------------------------------------------------------------------
     # Internal — peer table management
@@ -668,9 +713,7 @@ class MdnsDiscoveryAdapter:
         is_new = peer.peer_id not in self._peers
         self._peers[peer.peer_id] = peer
         if is_new:
-            for cb in self._on_join:
-                with suppress(Exception):
-                    cb(peer)
+            notify("mdns", "join", self._on_join, peer)
 
     def _peer_from_identity_dict(
         self,
@@ -713,14 +756,14 @@ class MdnsDiscoveryAdapter:
 
     async def _heartbeat_loop(self) -> None:
         while True:
+            await asyncio.sleep(self._heartbeat_interval_s)
             try:
-                await asyncio.sleep(self._heartbeat_interval_s)
                 await self.announce()
-                self._evict_stale_peers()
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:
-                logger.debug("mdns_discovery: heartbeat_loop error: %s", exc)
+            except DiscoveryError as exc:
+                # The loop goes on: the next interval may succeed. Until one does, peers
+                # age this session out.
+                report_failure("mdns", "heartbeat", str(exc))
+            self._evict_stale_peers()
 
     def _evict_stale_peers(self) -> None:
         now = datetime.now(UTC)
@@ -733,10 +776,8 @@ class MdnsDiscoveryAdapter:
         for peer_id in to_evict:
             peer = self._peers.pop(peer_id, None)
             if peer is not None:
-                logger.debug("mdns_discovery: evicted stale peer %s", peer_id)
-                for cb in self._on_leave:
-                    with suppress(Exception):
-                        cb(peer)
+                logger.info("mdns_discovery: evicted stale peer %s", peer_id)
+                notify("mdns", "leave", self._on_leave, peer)
 
     def update_peer_heartbeat(
         self,

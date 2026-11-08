@@ -36,6 +36,7 @@ from niuu.mesh.attestation import (
     PURPOSE_EVENT,
     PURPOSE_RPC,
     PURPOSE_RPC_REPLY,
+    VERIFIED_SENDER_KEY,
     AttestationReason,
     AttestationRefusedError,
     MeshAttestationVerifier,
@@ -323,13 +324,14 @@ class AttestedMesh:
     async def subscribe(self, topic: str, handler: Callable[[MeshEvent], Awaitable[None]]) -> None:
         async def verified(event: MeshEvent) -> None:
             try:
-                self._verify_event(event, topic)
+                sender = self._verify_event(event, topic)
             except AttestationRefusedError as error:
                 # Acknowledged, not redelivered: a refusal is deterministic, so a retry
                 # would fail identically. It is counted and logged at error.
                 self._refused(error, DIRECTION_EVENT, topic)
                 return
-            await handler(event)
+            # The proof has done its work; the handler is told who it proved, in place of it.
+            await handler(replace(event, attestation={VERIFIED_SENDER_KEY: sender.summary()}))
 
         await self._inner.subscribe(topic, verified)
 
@@ -440,7 +442,7 @@ class AttestedMesh:
                 }
                 return self._sign_reply(subject, response)
             try:
-                response = await handler(body)
+                response = await handler({**body, VERIFIED_SENDER_KEY: sender.summary()})
             except Exception as exc:
                 logger.warning("mesh rpc handler failed: %s", exc)
                 response = {"error": str(exc)}

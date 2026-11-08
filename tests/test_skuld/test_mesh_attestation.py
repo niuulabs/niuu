@@ -261,7 +261,9 @@ class TestSpoofingAtTheInbox:
         def __init__(self) -> None:
             self.accepted: list[PeerMessage] = []
 
-        async def accept_peer_message(self, envelope, request_id=None, *, channel=None):
+        async def accept_peer_message(
+            self, envelope, request_id=None, *, channel=None, verified=None
+        ):
             self.accepted.append(envelope)
             return PeerAcceptance(envelope.message_id, duplicate=False)
 

@@ -92,6 +92,33 @@ class PeerAcceptance:
     duplicate: bool
 
 
+@dataclass(frozen=True)
+class SenderIdentity:
+    """Who the mesh verified a message came from: the certified peer and its session.
+
+    A message names its sender as a session (a ``reply``) or as a mesh peer (an event), and the
+    same peer may do either. The certificate ties the two together, so this is what tells
+    that they are one sender.
+    """
+
+    peer_id: str
+    session_id: str = ""
+
+    def to_wire(self) -> dict[str, str]:
+        return {"peer_id": self.peer_id, "session_id": self.session_id}
+
+    @classmethod
+    def from_wire(cls, raw: Any) -> SenderIdentity:
+        if (
+            not isinstance(raw, dict)
+            or not isinstance(raw.get("peer_id"), str)
+            or not raw["peer_id"]
+            or not isinstance(raw.get("session_id", ""), str)
+        ):
+            raise PeerMessageError("a verified sender needs a peer_id and a text session_id")
+        return cls(peer_id=raw["peer_id"], session_id=raw.get("session_id", ""))
+
+
 @dataclass
 class PeerInboxEntry:
     """One accepted message as this session holds it. This is what the durable frame carries."""
@@ -103,6 +130,16 @@ class PeerInboxEntry:
     #: The ``ask`` call that took this message as its answer (``ask:<message id>``); empty when
     #: nothing did. A consumed message is never handed to the harness.
     consumed_by: str = ""
+    #: Who the mesh verified sent it; ``None`` when the mesh verified nothing (signing is off,
+    #: or the message did not come over the mesh), in which case the sender is only claimed.
+    verified: SenderIdentity | None = None
+
+    @property
+    def identity(self) -> tuple[str, str]:
+        """The sender as one id, and whether that id was verified or only claimed."""
+        if self.verified is not None:
+            return self.verified.peer_id, "verified"
+        return self.envelope.sender.id, "claimed"
 
     @property
     def pending(self) -> bool:
@@ -117,6 +154,7 @@ class PeerInboxEntry:
             "accepted_at": self.accepted_at,
             "injected": self.injected,
             "consumed_by": self.consumed_by,
+            **({"verified": self.verified.to_wire()} if self.verified is not None else {}),
         }
 
     @classmethod
@@ -130,11 +168,13 @@ class PeerInboxEntry:
         consumed_by = payload.get("consumed_by", "")  # absent in frames written before asks
         if not isinstance(consumed_by, str):
             raise PeerMessageError("a durable peer message frame's 'consumed_by' must be text")
+        verified = payload.get("verified")  # absent in frames written before signing
         return cls(
             envelope=PeerMessage.from_wire(payload.get("envelope")),
             accepted_at=accepted_at,
             injected=injected,
             consumed_by=consumed_by,
+            verified=None if verified is None else SenderIdentity.from_wire(verified),
         )
 
 
@@ -215,6 +255,8 @@ class TakenAnswer:
 
     envelope: PeerMessage
     already_delivered: bool
+    #: The sender as one id, and whether it was ``verified`` or only ``claimed``.
+    identity: tuple[str, str] = ("", "claimed")
 
 
 class PeerInboxMixin:
@@ -244,6 +286,7 @@ class PeerInboxMixin:
         request_id: str | None = None,
         *,
         channel: str | None = None,
+        verified: SenderIdentity | None = None,
     ) -> PeerAcceptance:
         """Hold the message durably, then trigger its delivery. Raises when it is refused.
 
@@ -270,7 +313,10 @@ class PeerInboxMixin:
                 self._count_peer_message(envelope, via, OUTCOME_DUPLICATE)
                 return PeerAcceptance(envelope.message_id, duplicate=True)
             entry = PeerInboxEntry(
-                envelope=envelope, accepted_at=datetime.now(UTC).isoformat(), injected=False
+                envelope=envelope,
+                accepted_at=datetime.now(UTC).isoformat(),
+                injected=False,
+                verified=verified,
             )
             try:
                 await self._record_peer_entries([entry])
@@ -557,6 +603,20 @@ class PeerInboxMixin:
             self._peer_answer_waits.pop(question_id, None)
             self._spawn_boundary_injection(f"peer-inbox-question-ended-{question_id}")
 
+    def question_answerers(self, wait: QuestionWait) -> set[str]:
+        """Who has answered the question so far, one id per sender.
+
+        A sender the mesh verified counts once however it answered (a ``reply`` names its
+        session, an event its mesh peer); a sender that is only claimed counts by the id it
+        gave.
+        """
+        consumer = f"ask:{wait.message_id}"
+        return {
+            entry.identity[0]
+            for entry in self._peer_inbox.values()
+            if wait.matches(entry.envelope) and entry.consumed_by in ("", consumer)
+        }
+
     async def take_question_answers(self, wait: QuestionWait) -> list[TakenAnswer]:
         """Every answer to the question that is in the inbox, taken durably, oldest first.
 
@@ -572,7 +632,7 @@ class PeerInboxMixin:
                 if not wait.matches(entry.envelope) or entry.consumed_by not in ("", consumer):
                     continue
                 if entry.injected:
-                    taken.append(TakenAnswer(entry.envelope, already_delivered=True))
+                    taken.append(TakenAnswer(entry.envelope, True, entry.identity))
                     continue
                 if not entry.consumed_by:
                     entry.consumed_by = consumer
@@ -581,7 +641,7 @@ class PeerInboxMixin:
                     except PeerMessageError:
                         entry.consumed_by = ""
                         raise
-                taken.append(TakenAnswer(entry.envelope, already_delivered=False))
+                taken.append(TakenAnswer(entry.envelope, False, entry.identity))
         return taken
 
     async def take_peer_answer(self, wait: AnswerWait) -> TakenAnswer | None:

@@ -1787,7 +1787,8 @@ class TestEventsAndQuestionsAreTwoUseCases:
             "refused with the reason",
             "silence is never the outcome",
             "nothing waits",
-            "does not stop at the first answer",
+            "all_asked_answered",
+            "never end the wait early",
         ):
             assert phrase in text
 
