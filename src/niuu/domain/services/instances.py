@@ -18,7 +18,6 @@ from niuu.domain.models import (
 from niuu.domain.tags import matches_tags
 from niuu.domain.tls_fingerprint import normalize_tls_fingerprint
 from niuu.domain.transport_security import (
-    configured_dial_urls,
     insecure_transport_reason,
     normalize_allow_plaintext,
 )
@@ -48,22 +47,20 @@ class InstanceTransportSecurityError(InstanceValidationError):
     not permitted).
 
     This write-time check is a fail-fast convenience, not the enforcement
-    boundary: a row that predates this validation (or was written before a
-    ``ravn_base_url`` was added) is still stopped at every outbound call by
+    boundary: a row that predates this validation is still stopped at every outbound call by
     ``niuu.adapters.outbound.guild_transport`` — see that module's own
     enforcement of the same policy against whichever URL is actually dialled.
     """
 
 
 def _require_secure_transport(base_url: str, config: dict) -> None:
-    """Enforce https:// for every URL this instance may be dialled on.
+    """Enforce https:// for the URL this instance is dialled on.
 
-    A write-time fail-fast check covering both ``base_url`` and a configured
-    ``ravn_base_url`` — see ``InstanceTransportSecurityError`` for why this
-    alone is not the enforcement boundary. A configured ``tls_fingerprint``
-    is validated here too (well-formed, and only meaningful over https) so a
-    malformed or unusable pin is rejected at registration, not discovered at
-    the first outbound call.
+    A write-time fail-fast check on ``base_url`` — see
+    ``InstanceTransportSecurityError`` for why this alone is not the enforcement
+    boundary. A configured ``tls_fingerprint`` is validated here too (well-formed,
+    and only meaningful over https) so a malformed or unusable pin is rejected
+    at registration, not discovered at the first outbound call.
     """
     try:
         allow_plaintext = normalize_allow_plaintext(config)
@@ -75,15 +72,14 @@ def _require_secure_transport(base_url: str, config: dict) -> None:
             normalize_tls_fingerprint(str(fingerprint))
         except ValueError as exc:
             raise InstanceTransportSecurityError(str(exc)) from exc
-    for url in configured_dial_urls(base_url, config):
-        reason = insecure_transport_reason(url, allow_plaintext=allow_plaintext)
-        if reason:
-            raise InstanceTransportSecurityError(reason)
-        if fingerprint is not None and urlsplit(url).scheme != "https":
-            raise InstanceTransportSecurityError(
-                f"{url}: config.tls_fingerprint requires https:// on every "
-                "URL this instance may be dialled on"
-            )
+    reason = insecure_transport_reason(base_url, allow_plaintext=allow_plaintext)
+    if reason:
+        raise InstanceTransportSecurityError(reason)
+    if fingerprint is not None and urlsplit(base_url).scheme != "https":
+        raise InstanceTransportSecurityError(
+            f"{base_url}: config.tls_fingerprint requires https:// on the URL this "
+            "instance is dialled on"
+        )
 
 
 def _touches_transport_fields(base_url: str | None, config: dict | None) -> bool:
@@ -248,7 +244,7 @@ class InstanceService:
             base_url.strip().rstrip("/") if base_url is not None else existing.base_url
         )
         resolved_config = dict(config) if config is not None else existing.config
-        # A row can predate this validation (or predate ravn_base_url), so an
+        # A row can predate this validation, so an
         # update that does not touch base_url/config, or that disables the
         # instance, must not be trapped behind a security check it isn't
         # asking to change — the caller may be trying to turn the insecure

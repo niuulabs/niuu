@@ -48,7 +48,6 @@ the real backend through either ingress shape:
 | `ting` | `/api/v1/ting/health` |
 | `mimir` | `/api/v1/mimir/health` |
 | `bifrost` | `/api/v1/bifrost/health` |
-| `ravn` | `/api/v1/ravn/health` |
 | `observatory` | `/api/v1/observatory/health` |
 | `generic`, or any kind not listed above | `/health` |
 
@@ -90,7 +89,7 @@ check.
 
 ## What crosses the wire to a remote instance
 
-Every Guild aggregate call (Forge/Ravn REST, the session event stream, the
+Every Guild aggregate call (Forge REST, the session event stream, the
 resident chat and Forge replay WebSockets, the health probe, and the
 Observatory/agent-directory lookups) forwards only the caller's `Authorization`
 bearer token to a remote instance. A client-supplied `x-auth-*` header or
@@ -118,8 +117,7 @@ authentication in front of it instead.
 
 ### Transport security
 
-A remote instance's `base_url` — and its `config.ravn_base_url`, when a
-split-service target configures one — must use `https://` unless the instance
+A remote instance's `base_url` must use `https://` unless the instance
 explicitly opts out. This is enforced twice: once at registration/update time
 (a 422 with the remedy in the message, so a mistake is caught immediately),
 and again on every single outbound call this process makes to that instance
@@ -138,9 +136,8 @@ full DNS-label boundary (`niuu-volundr.volundr.svc.cluster.local` matches;
 `notreallyasvc.cluster.local` and `evil-svc.cluster.local.example.com` do
 not) skips the https-unless-allow_plaintext requirement without
 `config.allow_plaintext` set on every in-cluster seed — a live cluster's
-Guild routinely seeds `http://niuu-volundr.volundr.svc.cluster.local` and a
-`ravn_base_url` on the same in-cluster suffix, and neither needs an opt-in
-for this. Set the list to `[]` to require the explicit `allow_plaintext`
+Guild routinely seeds `http://niuu-volundr.volundr.svc.cluster.local`, which
+needs no opt-in for this. Set the list to `[]` to require the explicit `allow_plaintext`
 opt-in everywhere, including in-cluster addresses — this is checked at the
 same two enforcement points (registration/seed time and every outbound
 call), and a suffix the operator adds is honoured identically at both. It
@@ -153,7 +150,7 @@ soon as this hardening is deployed — set `config.allow_plaintext: true` on it
 (or move it to `https://`) before or immediately after upgrading. No database
 migration is needed for that change: `allow_plaintext` and `tls_fingerprint`
 both live in the instance's existing `config` JSON column. An update that
-doesn't touch `base_url`/`ravn_base_url`/`config` at all, or that disables the
+doesn't touch `base_url`/`config` at all, or that disables the
 instance, is never blocked by the write-time check either way, so you can
 always disable a broken instance while you fix its transport settings.
 Re-enabling a previously-disabled, insecure instance re-runs the same
@@ -182,12 +179,7 @@ refused the moment it stops matching, even though it might otherwise still
 chain to a trusted CA. Rotating a pinned instance's certificate means
 updating `config.tls_fingerprint` to the new value as part of that rotation
 — there is no separate warning window before the old pin starts failing.
-A single `tls_fingerprint` also covers only the certificate presented at
-`base_url`; a split-service instance whose `config.ravn_base_url` points at
-a *different* host (and therefore a different certificate) is not covered by
-that same fingerprint — the Ravn-side connection is checked against the
-identical pin, so a split-service instance with two different leaf
-certificates cannot be pinned with a single fingerprint today.
+A single `tls_fingerprint` covers the certificate presented at `base_url`.
 
 **Pinned instances bypass `HTTP_PROXY`/`HTTPS_PROXY` entirely**, including
 the certificate pre-fetch used to check the pin: pinning requires seeing the
@@ -201,7 +193,7 @@ directly (a tailnet, a direct route, a proxy exception) before pinning it, or
 rely on ordinary CA-verified `https://` instead.
 
 - **In-cluster Kubernetes service DNS needs nothing at all, by default.** A
-  `base_url`/`ravn_base_url` ending in `.svc.cluster.local` or `.svc`
+  `base_url` ending in `.svc.cluster.local` or `.svc`
   already matches `guildTransport.trustedPlaintextHostSuffixes`'s default —
   no `config.allow_plaintext` and no chart change required. Only tighten
   this (narrow or empty the list) if the operator wants every in-cluster

@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 # endpoint never leaves the machine, so there is no wire to harden.
 LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 
-# The scheme a same-process embedded target's base_url/ravn_base_url uses —
+# The scheme a same-process embedded target's base_url uses —
 # dispatched over httpx.ASGITransport, never the network, so it is not a
 # separate trust domain and this policy does not apply to it at all.
 EMBEDDED_SCHEME = "embedded"
@@ -109,21 +109,6 @@ def normalize_allow_plaintext(config: dict) -> bool:
     if isinstance(value, bool):
         return value
     raise ValueError(f"config.allow_plaintext must be a boolean (true or false), got {value!r}")
-
-
-def configured_dial_urls(base_url: str, config: dict) -> list[str]:
-    """Every URL this instance's config says a Guild caller may dial.
-
-    ``base_url`` is always one; a split-service target's ``ravn_base_url``
-    (or the legacy ``ravnBaseUrl`` alias) is another when configured — see
-    ``rest_ravn._ravn_base_url``, which is what a caller actually connects to
-    for Ravn reads instead of ``base_url``.
-    """
-    urls = [base_url]
-    ravn_base_url = config.get("ravn_base_url") or config.get("ravnBaseUrl")
-    if ravn_base_url:
-        urls.append(str(ravn_base_url).strip())
-    return urls
 
 
 def insecure_transport_reason(url: str, *, allow_plaintext: bool) -> str | None:

@@ -49,16 +49,12 @@ _AUTH_FAILED = "Node authentication failed"
 class OfferedInstanceRequest(BaseModel):
     kind: str = Field(default=InstanceKind.GENERIC.value)
     base_url: str = Field(serialization_alias="baseUrl", validation_alias="baseUrl")
-    ravn_base_url: str = Field(
-        default="", serialization_alias="ravnBaseUrl", validation_alias="ravnBaseUrl"
-    )
     config: dict[str, Any] = Field(default_factory=dict)
 
     def to_domain(self) -> OfferedInstance:
         return OfferedInstance(
             kind=InstanceKind(self.kind),
             base_url=self.base_url,
-            ravn_base_url=self.ravn_base_url,
             config=self.config,
         )
 

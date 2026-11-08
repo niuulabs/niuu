@@ -324,7 +324,18 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
         )
     );
     """,
-    # Matches migration 000041, for databases this bootstrap created first.
+    # Matches migrations 000041 and 000114, for databases this bootstrap created first.
+    # Runs on every start, so the rows of the removed 'ravn' kind go before the constraint
+    # that refuses them is added.
+    """
+    DELETE FROM niuu_instances WHERE kind = 'ravn';
+    """,
+    """
+    UPDATE niuu_instances
+    SET config = config - 'ravn_base_url' - 'ravnBaseUrl'
+    WHERE config ? 'ravn_base_url'
+       OR config ? 'ravnBaseUrl';
+    """,
     """
     ALTER TABLE niuu_instances
         DROP CONSTRAINT IF EXISTS niuu_instances_kind_check;
@@ -332,7 +343,7 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
     """
     ALTER TABLE niuu_instances
         ADD CONSTRAINT niuu_instances_kind_check
-        CHECK (kind IN ('volundr', 'ting', 'mimir', 'bifrost', 'ravn', 'observatory', 'generic'));
+        CHECK (kind IN ('volundr', 'ting', 'mimir', 'bifrost', 'observatory', 'generic'));
     """,
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_niuu_instances_scope_slug
