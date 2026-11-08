@@ -103,6 +103,21 @@ const LIVE_POLL_MS = 2_000;
 
 interface VolundrHttpAdapterOptions {
   niuuBasePath?: string | null;
+  /**
+   * `guild` (default): the Forge base is the Guild facade and the UI covers every
+   * Forge in the registry. `node`: the Forge base is one Forge node; the UI covers
+   * only that node, which names its own registry entry at `GET /guild`.
+   */
+  forgeScope?: ForgeScope;
+}
+
+export type ForgeScope = 'guild' | 'node';
+
+interface GuildMembershipPayload {
+  guild_url: string;
+  instance_id: string;
+  instance_name: string;
+  instance_slug: string;
 }
 
 /** The Forge service plus its shared fleet stream, for features that need raw events. */
@@ -2184,10 +2199,23 @@ export function buildVolundrHttpAdapter(
 
     getTargets: async () => {
       const targetClient = niuuClient ?? sharedClient;
-      const payload = await targetClient.get<InstanceTargetPayload[]>(
-        '/instances?kind=volundr&enabledOnly=true',
-      );
-      return payload.map(normalizeTarget);
+      const [payload, membership] = await Promise.all([
+        targetClient.get<InstanceTargetPayload[]>('/instances?kind=volundr&enabledOnly=true'),
+        options.forgeScope === 'node'
+          ? forgeClient.get<GuildMembershipPayload>('/guild')
+          : Promise.resolve(null),
+      ]);
+      if (!membership) return payload.map(normalizeTarget);
+      const own = payload.find((target) => target.id === membership.instance_id);
+      if (!own) {
+        throw new Error(
+          `This Forge node is ${membership.instance_name} (${membership.instance_id}) in the ` +
+            `Guild at ${membership.guild_url}, but that Guild lists no enabled Forge with ` +
+            "this id. Enable the instance in the Guild registry, or correct the node's " +
+            'guild.instanceId.',
+        );
+      }
+      return [normalizeTarget(own)];
     },
 
     subscribe: (callback, options) => {

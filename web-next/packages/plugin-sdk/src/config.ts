@@ -48,6 +48,12 @@ export const serviceConfigSchema = z
      * host's name, a parent session's Guild id), can lag a registry change.
      */
     sessionListFullResyncMs: z.number().int().positive().optional(),
+    /**
+     * Forge only. `guild` (default): `baseUrl` is the Guild's Forge facade and the
+     * UI covers every Forge in the registry. `node`: `baseUrl` is one Forge node's
+     * own API and the UI covers only that node.
+     */
+    scope: z.enum(['guild', 'node']).optional(),
   })
   .catchall(z.unknown());
 

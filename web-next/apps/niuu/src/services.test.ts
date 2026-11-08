@@ -601,6 +601,31 @@ describe('buildServices live base selection', () => {
     );
   });
 
+  it('passes the configured Forge scope to the Forge runtime adapter only', () => {
+    buildServices({
+      demoMode: true,
+      services: {
+        forge: {
+          mode: 'http',
+          baseUrl: 'https://niuu.noatun.example/api/v1/forge',
+          scope: 'node',
+        },
+        volundr: { mode: 'http', baseUrl: 'https://niuu.noatun.example/api/v1/volundr' },
+      },
+    } as any);
+
+    expect(volundrMocks.buildVolundrHttpAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({ basePath: 'https://niuu.noatun.example/api/v1/forge' }),
+      undefined,
+      expect.objectContaining({ forgeScope: 'node' }),
+    );
+    expect(volundrMocks.buildVolundrHttpAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({ basePath: 'https://niuu.noatun.example/api/v1/volundr' }),
+      undefined,
+      expect.not.objectContaining({ forgeScope: 'node' }),
+    );
+  });
+
   it('normalizes explicit Ting sub-service bases back to /api/v1/ting', () => {
     buildServices({
       demoMode: true,

@@ -81,7 +81,10 @@ from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_push import create_push_router
 from volundr.adapters.inbound.rest_resident_a2a import create_resident_a2a_router
 from volundr.adapters.inbound.rest_resident_runtimes import create_resident_runtimes_router
-from volundr.adapters.inbound.rest_resources import create_resources_router
+from volundr.adapters.inbound.rest_resources import (
+    create_forge_cluster_resources_router,
+    create_resources_router,
+)
 from volundr.adapters.inbound.rest_secret_requests import create_secret_requests_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
@@ -1955,6 +1958,10 @@ def create_app(
                 prefix="/api/v1/volundr",
             )
             app.include_router(resources_router)
+            # The same discovery in the Guild facade's shape, for a UI scoped to this node.
+            app.include_router(
+                create_forge_cluster_resources_router(resource_provider, guild_membership)
+            )
             app.state.resource_provider = resource_provider
 
             # Saved prompts
