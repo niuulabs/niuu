@@ -19,6 +19,13 @@ where mDNS multicast doesn't work (cross-VPC, cross-cluster, cloud functions).
         webhook_url: http://10.0.1.50:7490/ravn/mesh
         consumes_event_types:
           - code.changed
+        role: reviewer                        # optional
+        description: Reviews pull requests.   # optional
+        emits_event_types: [review.completed] # optional
+
+A list is a file: it can say what a peer is (role, description, topics) but not what it is
+doing, so ``activity_state`` and ``busy`` are reported as not announced for every static
+peer, and so is any fact an entry leaves out.
 
 **Trust**: Peers in the file are implicitly trusted — no handshake is performed.
 The file author is responsible for ensuring only trusted peers are listed.
@@ -38,13 +45,16 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer
+from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer, unannounced_facts
 from niuu.ports.discovery import PeerCallback
 
 if TYPE_CHECKING:
     from niuu.mesh.config import DiscoveryConfig
 
 logger = logging.getLogger(__name__)
+
+#: The chooser facts a cluster file entry can carry; what a peer is doing it cannot.
+_CARRIED_FACTS = ("role", "description", "consumes_event_types", "emits_event_types")
 
 
 class StaticDiscoveryAdapter:
@@ -201,6 +211,9 @@ class StaticDiscoveryAdapter:
                 version=entry.get("version", "0.0.0"),
                 consumes_event_types=entry.get("consumes_event_types", []),
                 emits_event_types=entry.get("emits_event_types", []),
+                role=str(entry.get("role") or ""),
+                description=str(entry.get("description") or ""),
+                not_announced=unannounced_facts(entry, carries=_CARRIED_FACTS),
                 rep_address=entry.get("rep_address"),
                 pub_address=entry.get("pub_address"),
                 spiffe_id=entry.get("spiffe_id"),

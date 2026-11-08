@@ -2,12 +2,12 @@ schema_version: 2
 id: bf5f97dd-d89b-4f3e-a8fc-ea61a42685a5
 name: Research Thread — Depth
 description: Run the depth explorer over the framed research question and produce a structured finding for the parent research campaign.
-version: 1.0.3
+version: 1.0.4
 persona_dependencies:
   research-explorer-depth:
     id: research-explorer-depth
-    revision: content-b5a94e763dd17a29
-    digest: sha256:b5a94e763dd17a29d2a082d95f7bdbc2d04e393c44e6ee2a846538a7d997ac5d
+    revision: content-0b2d29827b9cc345
+    digest: sha256:0b2d29827b9cc345184996e45a6d00cb046f5b6ffa093a8e41e5cb377549c6af
     path: personas/research-explorer-depth.yaml
 workflow_dependencies: {}
 graph:

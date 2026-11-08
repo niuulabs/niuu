@@ -33,7 +33,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer
+from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer, unannounced_facts
 from niuu.ports.discovery import PeerCallback
 
 if TYPE_CHECKING:
@@ -217,11 +217,13 @@ class SleipnirDiscoveryAdapter:
         self,
         action: str,
         *,
-        status: str = "idle",
+        status: str | None = None,
         task_count: int = 0,
     ) -> None:
         if self._exchange is None:
             return
+        if status is None:
+            status = "busy" if getattr(self._identity, "busy", False) else "idle"
         announcement: dict[str, Any] = {
             "identity": self._identity_dict(),
             "action": action,
@@ -293,18 +295,30 @@ class SleipnirDiscoveryAdapter:
         status = payload.get("status", "idle")
         task_count = int(payload.get("task_count", 0))
 
+        # A peer's busy flag travels with its activity state; an older peer announced a
+        # constant "idle" status, which says nothing about it.
+        not_announced = unannounced_facts(identity_raw, keys={"busy": "activity_state"})
+
         if peer_id in self._peers:
             peer = self._peers[peer_id]
             peer.last_seen = now
             peer.last_heartbeat = now
             peer.status = status  # type: ignore[assignment]
             peer.task_count = task_count
+            peer.role = str(identity_raw.get("role") or "")
+            peer.description = str(identity_raw.get("description") or "")
+            peer.activity_state = str(identity_raw.get("activity_state") or "")
+            peer.consumes_event_types = list(identity_raw.get("consumes_event_types") or [])
+            peer.emits_event_types = list(identity_raw.get("emits_event_types") or [])
+            peer.not_announced = not_announced
             return
 
         peer = MeshPeer(
             peer_id=peer_id,
             realm_id=identity_raw.get("realm_id", ""),
             persona=identity_raw.get("persona", ""),
+            display_name=str(identity_raw.get("display_name") or ""),
+            participant_type=str(identity_raw.get("participant_type") or "ravn"),
             capabilities=identity_raw.get("capabilities", []),
             permission_mode=identity_raw.get("permission_mode", ""),
             version=identity_raw.get("version", ""),
@@ -312,6 +326,12 @@ class SleipnirDiscoveryAdapter:
             pub_address=identity_raw.get("pub_address"),
             spiffe_id=identity_raw.get("spiffe_id"),
             sleipnir_routing_key=identity_raw.get("sleipnir_routing_key"),
+            consumes_event_types=list(identity_raw.get("consumes_event_types") or []),
+            emits_event_types=list(identity_raw.get("emits_event_types") or []),
+            role=str(identity_raw.get("role") or ""),
+            description=str(identity_raw.get("description") or ""),
+            activity_state=str(identity_raw.get("activity_state") or ""),
+            not_announced=not_announced,
             trust_level="verified",
             first_seen=now,
             last_seen=now,
@@ -373,6 +393,13 @@ class SleipnirDiscoveryAdapter:
             "pub_address": self._identity.pub_address,
             "spiffe_id": self._identity.spiffe_id,
             "sleipnir_routing_key": self._identity.sleipnir_routing_key,
+            "display_name": getattr(self._identity, "display_name", ""),
+            "participant_type": getattr(self._identity, "participant_type", "ravn"),
+            "consumes_event_types": list(getattr(self._identity, "consumes_event_types", [])),
+            "emits_event_types": list(getattr(self._identity, "emits_event_types", [])),
+            "role": getattr(self._identity, "role", ""),
+            "description": getattr(self._identity, "description", ""),
+            "activity_state": getattr(self._identity, "activity_state", ""),
         }
 
     async def _heartbeat_loop(self) -> None:

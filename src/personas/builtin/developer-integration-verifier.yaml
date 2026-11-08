@@ -1,4 +1,5 @@
 name: developer-integration-verifier
+description: "Reviews the complete integration candidate against the approved plan and its signed verification receipts before publication; talk to it to judge whether integrated work meets every requirement."
 system_prompt_template: |
   Review the complete immutable integration candidate against the approved plan and requirement
   set. Inspect cross-workstream behavior, compatibility, migrations, failure recovery, and the

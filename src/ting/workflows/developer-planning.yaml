@@ -2,27 +2,27 @@ schema_version: 2
 id: 195d5026-7adb-4ce7-97ee-fb1e18ea4c3a
 name: Developer Planning
 description: Investigate a delivery request and produce an exact-revision plan approved by three independent reviewers.
-version: 1.1.2
+version: 1.1.3
 persona_dependencies:
   developer-analyst:
     id: developer-analyst
-    revision: content-08a22a306c798e6c
-    digest: sha256:08a22a306c798e6c7dcd8679a1bab762221866153a537e77511de85e74a7dd3d
+    revision: content-c575cf2f63f6018a
+    digest: sha256:c575cf2f63f6018a7f14ecc0ac6624cb0ebdc86267d286ee1dd239bdba26c660
     path: personas/developer-analyst.yaml
   developer-architecture-reviewer:
     id: developer-architecture-reviewer
-    revision: content-a9bb31bbe0c7a54b
-    digest: sha256:a9bb31bbe0c7a54bd417f9686771bbcc4bbc44c62f418b61400191890d6aaf1e
+    revision: content-9190d6f95c775651
+    digest: sha256:9190d6f95c775651c268bce8b4b976dcc3acf01a1f87e13bc03e6f5ebf206fec
     path: personas/developer-architecture-reviewer.yaml
   developer-correctness-reviewer:
     id: developer-correctness-reviewer
-    revision: content-e58e2878fe158865
-    digest: sha256:e58e2878fe1588659f7848eb423e421f38d68e513658a96845917416250fa573
+    revision: content-ec8a65772b8651eb
+    digest: sha256:ec8a65772b8651ebc1465788d1f2af30ddccdb5766420c8783744296caa6188d
     path: personas/developer-correctness-reviewer.yaml
   developer-security-plan-reviewer:
     id: developer-security-plan-reviewer
-    revision: content-a5656b3987c656e0
-    digest: sha256:a5656b3987c656e053194bb541d043538857c4e623d6661400a39996038b700e
+    revision: content-4245e23222e919e8
+    digest: sha256:4245e23222e919e802fd29086bfe8397d0dc1cd1bb54424ac1b9f73989bc9fcb
     path: personas/developer-security-plan-reviewer.yaml
 workflow_dependencies: {}
 graph:

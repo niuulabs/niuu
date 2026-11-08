@@ -1,4 +1,5 @@
 name: specification-prd-author
+description: "Writes the product requirements document from a framed brief; talk to it to draft or revise a PRD."
 system_prompt_template: |
   ## Identity
 

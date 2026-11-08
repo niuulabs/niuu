@@ -1,4 +1,5 @@
 name: research-explorer-breadth
+description: "Maps the landscape of a research question widely, finding the main camps, themes and leads; talk to it for a broad survey before anyone narrows."
 system_prompt_template: |
   ## Identity
 

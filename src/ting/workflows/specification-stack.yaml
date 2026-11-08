@@ -3,57 +3,57 @@ id: 96ecf5df-18a0-542b-9df6-aef6aef6a5db
 name: Specification Stack
 description: End-to-end specification workflow that produces a PRD, SRD, SDD, and delivery breakdown with
   explicit review and approval gates between each artifact.
-version: 1.1.2
+version: 1.1.3
 persona_dependencies:
   specification-breakdown-critic:
     id: specification-breakdown-critic
-    revision: content-51079438b13bc46e
-    digest: sha256:51079438b13bc46eb7d36406239c05605032499ee036616b4737e05b142bac96
+    revision: content-293f50db5fcb2ff3
+    digest: sha256:293f50db5fcb2ff347d1982b757564f48759d17eda4cf921e54d5abe9645c3a6
     path: personas/specification-breakdown-critic.yaml
   specification-breakdown-planner:
     id: specification-breakdown-planner
-    revision: content-e30d75668cf52095
-    digest: sha256:e30d75668cf52095ecd2b2c14b1ab13ec4aa47ed440c6ecfc6f4a17f054cdb89
+    revision: content-c17eb8efcbf851f8
+    digest: sha256:c17eb8efcbf851f8225ac3959010c14ebe2f424ff59c3214171fdb63dd41fc31
     path: personas/specification-breakdown-planner.yaml
   specification-framer:
     id: specification-framer
-    revision: content-9536c710d0ee55ba
-    digest: sha256:9536c710d0ee55ba04f603543b0feb10aa2f726f95bd9d59d183356dfebf0019
+    revision: content-44af1901d85eb1be
+    digest: sha256:44af1901d85eb1befe7da012d57d87d23d6451624227b7bc475dea4e8ce26f80
     path: personas/specification-framer.yaml
   specification-prd-author:
     id: specification-prd-author
-    revision: content-4b27b5aae26c93da
-    digest: sha256:4b27b5aae26c93daef9606d748f5af6b25b0a9a24197fe1f8711d0499a7a7b99
+    revision: content-21801fa32f129867
+    digest: sha256:21801fa32f1298678412b35719d5a9ba796e77970fcf2785c2a1cafc1bbfa898
     path: personas/specification-prd-author.yaml
   specification-prd-critic:
     id: specification-prd-critic
-    revision: content-00d7e2b8d279bb5e
-    digest: sha256:00d7e2b8d279bb5eb7f1a9fac98fc38e7236a770de90d049c7234c5dab5dfc7b
+    revision: content-d7baa8c5122893d1
+    digest: sha256:d7baa8c5122893d1222b7e4c83e018d104c894e9299366c5a259b1c271d99b5b
     path: personas/specification-prd-critic.yaml
   specification-publisher:
     id: specification-publisher
-    revision: content-289a25af1b945578
-    digest: sha256:289a25af1b94557834bf5e406dc92a3f378aa3bb89562ac3efb77ab3b96ab7dc
+    revision: content-bace0c0ca927ab86
+    digest: sha256:bace0c0ca927ab86d610785e71812c209e97ab4fd13d00a22824ca8ac063cc21
     path: personas/specification-publisher.yaml
   specification-sdd-author:
     id: specification-sdd-author
-    revision: content-df083b61c9f34aa9
-    digest: sha256:df083b61c9f34aa9891cf40d9bc6c007d8230bc74c7783e5c897891533c68e1e
+    revision: content-af48b1dab0bf70c0
+    digest: sha256:af48b1dab0bf70c00841a8fbc70c7753f598a2a4fb9d9665813fcc9964baa3e4
     path: personas/specification-sdd-author.yaml
   specification-sdd-critic:
     id: specification-sdd-critic
-    revision: content-47a2fb3be1607ef8
-    digest: sha256:47a2fb3be1607ef8bf1a6c8481bc78fe40e3d0cc18fb8fd6344aea6d01a11dc7
+    revision: content-ac42c3587bfe1644
+    digest: sha256:ac42c3587bfe16443c866d67938ec4d232527182f6bf135f2d6d12f19bc71f3b
     path: personas/specification-sdd-critic.yaml
   specification-srd-author:
     id: specification-srd-author
-    revision: content-9d2fac045335237b
-    digest: sha256:9d2fac045335237bcf3cbf3d1bd3d59332c82c586e27d7a5ec20a84cef4a935b
+    revision: content-e79ec7264fba56b3
+    digest: sha256:e79ec7264fba56b306e2e22f0f4ebe85002e666aa1eb937c3679559d859ae60c
     path: personas/specification-srd-author.yaml
   specification-srd-critic:
     id: specification-srd-critic
-    revision: content-1635154e3a4ea455
-    digest: sha256:1635154e3a4ea455875b52cc165b6a74b8fad39fde11152cd7588d922b2ec438
+    revision: content-af0def427cc622af
+    digest: sha256:af0def427cc622afdfec156a6484c07174d11011af3882614b2fc1ab95c278c0
     path: personas/specification-srd-critic.yaml
 graph:
   nodes:

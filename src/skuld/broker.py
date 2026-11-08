@@ -107,6 +107,7 @@ from skuld.file_routes import (  # noqa: F401
 )
 from skuld.forge_mcp.integration import ForgeSessionMixin
 from skuld.history_hydration import fetch_durable_history, merge_history_turns
+from skuld.mesh_follows import MeshFollowMixin
 from skuld.mesh_topics import MeshTopics, mesh_topics
 from skuld.peer_inbox import PEER_STATE_RPC_TYPE, PeerInboxMixin
 from skuld.preview import PreviewForwarder, PreviewPortWatcher
@@ -482,6 +483,7 @@ class Broker(
     ChronicleMixin,
     WorkflowStepMixin,
     PeerInboxMixin,
+    MeshFollowMixin,
 ):
     """WebSocket broker for Claude Code sessions.
 
@@ -497,6 +499,7 @@ class Broker(
         self._settings = settings or SkuldSettings()
         self._init_workflow_steps()
         self._init_peer_inbox()
+        self._init_mesh_follows()
         self._ws_identity = None
         self._ws_authorization = None
         if self._settings.ws_auth.enforce_ownership:
@@ -1042,6 +1045,8 @@ class Broker(
                 "Mesh adapter started (peer_id=%s)",
                 self._mesh_adapter.peer_id,
             )
+            # Listen again to what the session followed before a restart.
+            await self.apply_restored_follows()
 
             # Register Skuld + discovered mesh peers as room participants
             # so the browser UI shows them without a direct WebSocket.
@@ -4469,6 +4474,7 @@ class Broker(
         self._restore_durable_controls(frames)
         self._restore_durable_workflow_steps(frames)
         self._restore_durable_peer_inbox(frames)
+        self._restore_durable_mesh_follows(frames)
         self._restore_durable_room_members(frames)
 
     def _restore_durable_room_members(self, frames: list) -> None:

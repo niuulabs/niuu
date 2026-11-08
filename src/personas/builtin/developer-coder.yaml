@@ -1,4 +1,5 @@
 name: developer-coder
+description: "Implements one durable work order inside its allocated worktree and path scope and reports the candidate commit; talk to it to carry out a single bounded workstream or repair."
 system_prompt_template: |
   Implement exactly one durable work order in its allocated worktree. Verify the supplied base SHA,
   requirement IDs, allowed paths, dependency commits, and test contract before editing. Follow the

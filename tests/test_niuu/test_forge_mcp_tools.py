@@ -174,6 +174,8 @@ class FakeHost(ForgeMcpHost):
         self.mesh_sends: list[dict[str, Any]] = []
         self.mesh_publishes: list[dict[str, Any]] = []
         self.mesh_peer_queries: list[dict[str, str]] = []
+        self.follows: list[tuple[str, dict[str, str]]] = []
+        self.asks_made: list[dict[str, Any]] = []
         self.inbox: dict[str, PeerMessage] = {}
         self.mesh_peer_ids: dict[str, str] = {}
         self.mesh_down = False
@@ -201,11 +203,12 @@ class FakeHost(ForgeMcpHost):
         return self.mesh_peer_ids.get(session_id or name)
 
     async def send_mesh_message(
-        self, peer, content, *, expect_reply, request_id, in_reply_to, urgent=False
+        self, peer, content, *, expect_reply, request_id, in_reply_to, urgent=False, thread=""
     ):
         self.mesh_sends.append(
             {
                 "peer": peer,
+                "thread": thread,
                 "content": content,
                 "expect_reply": expect_reply,
                 "request_id": request_id,
@@ -216,6 +219,26 @@ class FakeHost(ForgeMcpHost):
         if self.mesh_send_error is not None:
             raise self.mesh_send_error
         return {"message_id": "mesh-msg-1", "status": "accepted"}
+
+    async def mesh_ask(self, content, *, producers_of, peers, request_id, wait_s):
+        self.asks_made.append(
+            {
+                "content": content,
+                "producers_of": producers_of,
+                "peers": peers,
+                "request_id": request_id,
+                "wait_s": wait_s,
+            }
+        )
+        return {"question_id": "q-1", "delivered": [{"peer": "p-1"}], "failed": []}
+
+    async def mesh_subscribe(self, *, topic, correlation_id):
+        self.follows.append(("subscribe", {"topic": topic, "correlation_id": correlation_id}))
+        return {"status": "followed", "topic": topic or "thread.t1"}
+
+    async def mesh_unsubscribe(self, *, topic, correlation_id):
+        self.follows.append(("unsubscribe", {"topic": topic, "correlation_id": correlation_id}))
+        return {"status": "unfollowed", "topic": topic or "thread.t1"}
 
     async def mesh_peers(self, *, role, capability, consumes, produces):
         self.mesh_peer_queries.append(
@@ -294,6 +317,9 @@ class TestToolList:
             "mesh_send",
             "mesh_publish",
             "mesh_peers",
+            "mesh_subscribe",
+            "mesh_unsubscribe",
+            "mesh_ask",
             "create_session",
             "start_session",
             "stop_session",
@@ -1238,13 +1264,16 @@ class TestReply:
     async def test_a_mesh_reply_goes_back_over_the_mesh(self) -> None:
         toolbox, client, host = _toolbox()
         host.inbox["m-2"] = _envelope(
-            message_id="m-2", reply=ReplyRoute(kind=ReplyKind.MESH, target="peer-7")
+            message_id="m-2",
+            reply=ReplyRoute(kind=ReplyKind.MESH, target="peer-7"),
+            thread="question-1",
         )
 
         result = await toolbox.call("reply", {"message_id": "m-2", "content": "done"})
 
         assert not result.is_error and result.structured["via"] == "mesh"
         assert host.mesh_sends[0]["peer"] == "peer-7"
+        assert host.mesh_sends[0]["thread"] == "question-1"  # the answer joins the thread
         assert host.mesh_sends[0]["in_reply_to"] == "m-2" and not host.mesh_sends[0]["expect_reply"]
         assert client.calls == []
 
@@ -1575,6 +1604,208 @@ class TestMeshPeers:
 
         with pytest.raises(ForgeApiError, match="mesh_peers"):
             await Bare().mesh_peers(role="", capability="", consumes="", produces="")
+
+
+class TestMeshFollowing:
+    async def test_a_topic_or_a_thread_is_followed_and_unfollowed_through_the_host(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        followed = await toolbox.call("mesh_subscribe", {"topic": " help.needed "})
+        thread = await toolbox.call("mesh_subscribe", {"correlation_id": "pr-12"})
+        gone = await toolbox.call("mesh_unsubscribe", {"topic": "help.needed"})
+
+        assert not (followed.is_error or thread.is_error or gone.is_error)
+        assert host.follows == [
+            ("subscribe", {"topic": "help.needed", "correlation_id": ""}),
+            ("subscribe", {"topic": "", "correlation_id": "pr-12"}),
+            ("unsubscribe", {"topic": "help.needed", "correlation_id": ""}),
+        ]
+        assert followed.structured["status"] == "followed"
+
+    @pytest.mark.parametrize(
+        "arguments", [{}, {"topic": "a.b", "correlation_id": "c"}, {"topic": " "}]
+    )
+    @pytest.mark.parametrize("tool", ["mesh_subscribe", "mesh_unsubscribe"])
+    async def test_exactly_one_of_topic_and_correlation_id_is_required(
+        self, tool, arguments
+    ) -> None:
+        toolbox, _, host = _toolbox()
+
+        result = await toolbox.call(tool, arguments)
+
+        assert result.is_error and "exactly one of topic or correlation_id" in result.text
+        assert host.follows == []
+
+    def test_they_are_listed_only_when_the_mesh_is_enabled(self) -> None:
+        toolbox, _, host = _toolbox()
+        names = [tool["name"] for tool in toolbox.list_tools()]
+        assert "mesh_subscribe" in names and "mesh_unsubscribe" in names
+        host.mesh = False
+        names = [tool["name"] for tool in toolbox.list_tools()]
+        assert "mesh_subscribe" not in names and "mesh_unsubscribe" not in names
+
+    async def test_the_hosts_refusal_reaches_the_agent(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        async def refuse(**_kwargs):
+            raise ForgeApiError("'thread.x' is a platform topic", status=409)
+
+        host.mesh_subscribe = refuse  # type: ignore[method-assign]
+
+        result = await toolbox.call("mesh_subscribe", {"topic": "thread.x"})
+
+        assert result.is_error and "platform topic" in result.text
+
+    async def test_the_default_host_has_no_mesh(self) -> None:
+        class Bare(ForgeMcpHost):
+            session_id = None
+
+            async def environment(self):
+                return {}
+
+            async def notify(self, draft):
+                return {}
+
+        for call in (Bare().mesh_subscribe, Bare().mesh_unsubscribe):
+            with pytest.raises(ForgeApiError, match="needs a Forge session's own MCP"):
+                await call(topic="a.b", correlation_id="")
+
+
+class TestMeshAsk:
+    async def test_a_question_to_the_producers_of_a_topic_goes_through_the_host(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        result = await toolbox.call(
+            "mesh_ask", {"content": "did it finish?", "producers_of": " deploy.status "}
+        )
+
+        assert not result.is_error
+        asked = host.asks_made[0]
+        assert (asked["producers_of"], asked["peers"], asked["wait_s"]) == ("deploy.status", [], 0)
+        assert asked["request_id"].startswith("fmcp-")
+        assert result.structured["request_id"] == asked["request_id"]
+        assert result.structured["question_id"] == "q-1"
+
+    async def test_a_question_to_chosen_peers_names_them(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        await toolbox.call("mesh_ask", {"content": "q", "peers": ["a", "b"], "wait_s": 3})
+
+        assert host.asks_made[0]["peers"] == ["a", "b"] and host.asks_made[0]["wait_s"] == 3
+
+    @pytest.mark.parametrize(
+        ("arguments", "text"),
+        [
+            ({"content": "q"}, "exactly one of producers_of or peers"),
+            ({"content": "q", "producers_of": "t", "peers": ["a"]}, "exactly one"),
+            ({"content": "q", "peers": ["a", "a"]}, "must not repeat"),
+            ({"content": "q", "peers": [" "]}, "must be peer ids"),
+            ({"content": " ", "producers_of": "t"}, "must not be blank"),
+            ({"content": "q", "producers_of": "t", "wait_s": -1}, "wait_s"),
+        ],
+    )
+    async def test_an_unclear_audience_or_argument_is_refused_before_anything_is_sent(
+        self, arguments, text
+    ) -> None:
+        toolbox, _, host = _toolbox()
+
+        result = await toolbox.call("mesh_ask", arguments)
+
+        assert result.is_error and text in result.text and host.asks_made == []
+
+    async def test_a_wait_above_the_ceiling_is_a_named_refusal_that_sends_nothing(self) -> None:
+        from niuu import cap_telemetry
+
+        toolbox, _, host = _toolbox()
+        cap_telemetry.reset_cap_hits()
+
+        result = await toolbox.call(
+            "mesh_ask", {"content": "q", "producers_of": "t", "wait_s": host.ask_max_s + 1}
+        )
+
+        assert result.is_error and "ask.wait_max_s" in result.text
+        assert "Nothing was sent" in result.text
+        assert host.asks_made == [] and cap_telemetry.cap_hit_counts()["ask.wait_max_s"] == 1
+
+    def test_it_is_listed_only_when_the_mesh_is_enabled(self) -> None:
+        toolbox, _, host = _toolbox()
+        assert "mesh_ask" in [tool["name"] for tool in toolbox.list_tools()]
+        host.mesh = False
+        assert "mesh_ask" not in [tool["name"] for tool in toolbox.list_tools()]
+
+    async def test_the_hosts_refusal_reaches_the_agent(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        async def refuse(*_args, **_kwargs):
+            raise ForgeApiError("no peer announces that it produces 't'", status=409)
+
+        host.mesh_ask = refuse  # type: ignore[method-assign]
+
+        result = await toolbox.call("mesh_ask", {"content": "q", "producers_of": "t"})
+
+        assert result.is_error and "no peer announces" in result.text
+
+    async def test_the_default_host_has_no_mesh(self) -> None:
+        class Bare(ForgeMcpHost):
+            session_id = None
+
+            async def environment(self):
+                return {}
+
+            async def notify(self, draft):
+                return {}
+
+        with pytest.raises(ForgeApiError, match="mesh_ask needs"):
+            await Bare().mesh_ask("q", producers_of="t", peers=[], request_id="r", wait_s=0)
+
+
+class TestEventsAndQuestionsAreTwoUseCases:
+    """Events go to a topic's consumers; questions go to the peers that produce a topic."""
+
+    def _descriptions(self) -> dict[str, str]:
+        toolbox, _, _ = _toolbox()
+        return {tool["name"]: tool["description"] for tool in toolbox.list_tools()}
+
+    def test_publishing_announces_on_a_declared_topic_and_points_questions_to_mesh_ask(
+        self,
+    ) -> None:
+        text = self._descriptions()["mesh_publish"]
+
+        assert text.startswith("Publish an EVENT")
+        assert "your persona declares it produces" in text
+        assert "no subscribers is normal" in text.lower()
+        assert "not how you ask a question" in text and "`mesh_ask`" in text
+        assert "help.needed" not in text
+
+    def test_asking_goes_to_producers_or_chosen_peers_and_never_to_silence(self) -> None:
+        text = self._descriptions()["mesh_ask"]
+
+        assert text.startswith("Ask a QUESTION")
+        for phrase in (
+            "not to the topic's consumers",
+            "your own `produces` list does not limit a question",
+            "refused with the reason",
+            "silence is never the outcome",
+            "nothing waits",
+            "does not stop at the first answer",
+        ):
+            assert phrase in text
+
+    def test_listing_peers_is_for_choosing_them_yourself(self) -> None:
+        text = self._descriptions()["mesh_peers"]
+
+        assert "not a step before every message" in text and "mesh_ask(producers_of=" in text
+
+    @pytest.mark.parametrize("tool", ["send_message", "ask", "mesh_send"])
+    def test_direct_messages_say_they_are_for_one_specific_peer(self, tool) -> None:
+        text = self._descriptions()[tool]
+
+        assert "ONE specific" in text and "`mesh_ask`" in text
+
+    def test_reply_says_it_is_direct_and_points_at_publishing_for_the_thread(self) -> None:
+        text = self._descriptions()["reply"]
+
+        assert "directly to its sender" in text and "mesh_publish" in text
 
 
 class TestPeerToolArguments:

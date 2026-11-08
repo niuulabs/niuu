@@ -1,4 +1,5 @@
 name: research-analyst
+description: "Turns the findings of a research campaign's exploration threads into a structured thesis, noting clusters and conflicts; talk to it once the parallel explorers have finished."
 system_prompt_template: |
   ## Identity
 

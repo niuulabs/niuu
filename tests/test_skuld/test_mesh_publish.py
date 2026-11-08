@@ -338,10 +338,12 @@ class TestAdapterPublish:
         assert [call.args[0] for call in mesh.subscribe.await_args_list] == [
             "code.requested",
             "review.requested",
+            adapter.inbox_topic,
         ]
         assert [call.args[0] for call in mesh.unsubscribe.await_args_list] == [
             "code.requested",
             "review.requested",
+            adapter.inbox_topic,
         ]
 
 
@@ -404,7 +406,7 @@ class TestFanOutAndLateAnswers:
                     PeerKind.MESH_PEER, "skuld-pub", name="skuld-pub"
                 )
                 assert envelope.reply == ReplyRoute(ReplyKind.MESH, "skuld-pub")
-                assert "[Correlation pr-12]" in envelope.content
+                assert envelope.thread == "pr-12"
                 assert "please review PR 12" in envelope.content
                 assert envelope.in_reply_to == ""
             assert mesh.inboxes.bystander.accepted == []
@@ -529,7 +531,7 @@ class TestConsumerEnvelope:
         await adapter._handle_outcome_event(event)
 
         [(envelope, _)] = inbox.accepted
-        assert envelope.in_reply_to == "" and "[Correlation" not in envelope.content
+        assert envelope.in_reply_to == "" and envelope.thread == event.event_id
         assert envelope.content == "[Request for event type t]\nwork"
         assert envelope.recipient == PeerAddress(PeerKind.SESSION, "session-of-c")
         assert envelope.reply == ReplyRoute(ReplyKind.MESH, "pub")

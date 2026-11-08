@@ -1,4 +1,5 @@
 name: ticket-worker
+description: "Does the work a tracker ticket asks for, which need not be software (research, writing, a decision), and hands the result to a review gate; talk to it to carry out a ticket that is not a code change."
 system_prompt_template: |
   ## Identity
 

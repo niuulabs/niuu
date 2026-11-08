@@ -1,15 +1,197 @@
 # Agent messaging: sessions, rooms and the mesh
 
-Agents start conversations with each other directly. Ting never relays them. The platform
-stamps who sent every message, so an agent cannot pass as the user, as another agent or as
-a room participant.
+The mesh is publish/subscribe first, and it carries two use cases that share the same
+mechanics (events in, answers as events, threads):
 
-## The envelope
+| | **Events** | **Questions** |
+|---|---|---|
+| Tool | `mesh_publish` | `mesh_ask` |
+| What it is | the publisher announces something: a result, a hand-off, a status | the asker needs something answered |
+| Who may send | only on a topic the sender's own persona declares it **produces** | anyone; the asker's `produces` does not limit a question |
+| Who receives | everyone who **consumes** (follows) the topic: any number, or nobody | the peers that announce they **produce** the topic, or peers the asker chose by description |
+| No receivers | normal: no subscribers is not an error | refused with the reason: a question is never published into silence |
+| Answers | events too, from any number of peers or none, grouped by thread; nothing waits | the same; `mesh_ask` can optionally wait |
+
+Direct messages (`send_message`, `ask`, `mesh_send`) are for when an agent knows it needs one
+specific peer; they are not the default.
+
+Agents start these conversations themselves. Ting never relays them. The platform stamps who
+sent every message, so an agent cannot pass as the user, as another agent or as a room
+participant.
+
+## Events: publish and subscribe
+
+```
+mesh_publish(topic="review.done", content="PR 12 is approved")
+  -> {"event_id": "...", "topic": "review.done", "correlation_id": "<event_id>",
+      "status": "published", "request_id": "..."}
+```
+
+Publishing is how an agent announces something: a result, a hand-off, a status. The event
+goes straight from the session's Skuld onto its mesh: no Forge round trip. The answer is the
+transport accepting the event; nothing waits for a consumer and none is promised.
+`request_id` makes a retry the same event (the event id derives from the publisher's mesh peer
+id, the topic and the `request_id`), and a consumer's inbox deduplicates on it. Putting a
+question to the peers who can answer it is a different use case: see "Asking a question".
+
+**Who listens is declared or chosen by the listener, never named by the sender.** A session
+listens to the topics its pinned persona lists under `consumes.event_types` (plus
+`mesh.consumes_event_types`, default `code.requested`): its standing subscription. It can also
+start following a topic or a thread while it works (see "Following topics and threads").
+Every session that follows the topic gets the event in its inbox as a peer message from the
+publisher's mesh peer, with the event id as the message id. A topic with nobody on it is not
+an error the mesh can see: pub/sub cannot tell it from a topic everyone is slow to read.
+
+**Publishing is limited to declared topics.** A session may publish the topics its persona
+lists under `produces` (`event_type` and every value of `event_type_map`) and
+`mesh.publish_event_types`. Any other topic is refused with 403 naming what the session
+declared and the remedy. Refusing rather than allowing is deliberate: a mistyped topic would
+otherwise publish to nobody and still answer "published", and `produces` is the contract
+workflows wire consumers against and the contract `mesh_ask` resolves producers from. Asking a
+question is not limited this way (below), so this limit never stops an agent from asking.
+
+### Answers are events
+
+A consumer answers an event, or a recipient answers a question, by publishing:
+`mesh_publish(topic=<a topic it may publish>, in_reply_to=<the message id it received>,
+content=...)`. One publication goes to:
+
+1. its topic, for whoever follows it;
+2. the **thread's topic**, so everyone following the thread sees the answer, not only the
+   asker (see "Threads");
+3. the **inbox topic of the peer it answers**, so the asker receives it without having
+   subscribed to anything in advance. Every Skuld always listens on its own inbox topic.
+
+Any number of consumers answer, or none. Answers reach the asker's inbox as they come and are
+handed to the harness at its turn boundaries, **grouped by thread** in the rendered turn
+(`[Thread <id>: 3 messages]`, then each answer, in the order they arrived). An unanswered
+question stays silent: no error, no wait, nothing to count. A consumer may also start
+something unprompted later, as its own event ("make changes"): a publication with no
+`in_reply_to` is a new conversation. `reply(message_id, content)` stays the direct answer, to
+the sender only; use it when nobody else should see the answer.
+
+### Threads
+
+Every event belongs to a thread, its `correlation_id`: the one the publisher names, else the
+event it answers (`in_reply_to`), else its own id (a new conversation). A message carries it
+as `thread`, and the harness sees `[Thread <id>]` in its header when the thread is not just
+that message. An event that names a thread or answers one is also published to the thread's
+topic (`thread.t<hash of the id>`; hashed so ids that differ only in punctuation never share
+a topic). A session follows a thread with `mesh_subscribe(correlation_id=...)`. A consumer
+answering an event that named `correlation_id` X echoes X (the header shows it); answering
+with only `in_reply_to` lands in the thread of the event it answers.
+
+**Who is the sender.** Skuld stamps the event: the source is this session's mesh peer id,
+and a `publisher` block (session id, name, node, peer id) rides in the payload for the
+audit trail. Nothing about the sender is taken from the content, and the tool has no
+argument for it. The mesh itself does not yet authenticate a source, so a consumer trusts
+the event's source as far as it trusts the mesh; sender authentication on the mesh is a
+separate change.
+
+**Failures are loud.** A mesh that is not running (503), a transport that refuses the event
+(502, naming how many of its destinations it had reached, with the retry remedy: consumers
+drop the repeat) and an undeclared topic (403) are tool errors and are logged at error. A
+published event increments `skuld.peer.messages` with `channel="mesh"`,
+`recipient=<topic>` and `outcome="published"`; a refusal or failure counts as
+`outcome="refused"` or `"failed"`. There are no caps on topics, events, answers or fan-out; the
+counters and the session status are the visibility. Config: `mesh.publish_event_types`,
+`mesh.published_event_urgency` (the attention hint, 0.0-1.0,
+default 0.8).
+
+## Asking a question
+
+`mesh_ask` puts a question to the peers that can answer it. It is not a publication: the
+question goes to the recipients directly, not to a topic's consumers, and the asker's own
+`produces` does not limit it. The asker names the audience one of two ways:
+
+```
+mesh_ask(content="did the deploy finish?", producers_of="deploy.status")
+mesh_ask(content="is staging healthy?", peers=["source-b"])
+```
+
+- **`producers_of`: every peer that announces it produces the topic**, because it is the source
+  of that kind of knowledge or work. The platform only resolves this from the peer table as a
+  fact lookup (`mesh_peers(produces=<topic>)` shows the same set); whether those are the right
+  peers to ask is the asker's judgment, made when it picked the topic. A peer that did not
+  announce what it produces is not matched, and is counted in the result
+  (`peers_not_announcing_produces`) so the asker knows the match may be incomplete.
+- **`peers`: peers the asker chose**, for example by their `description` from `mesh_peers`.
+  Every id must be in the peer table; one that is not refuses the whole question by name.
+
+Each recipient gets the question as a peer message from the asker (same message id and thread
+for all of them), prefixed with why it was asked ("because you announce that you produce
+'deploy.status'" or "because you were chosen to answer"), with the usual header saying who
+asked and how to answer. It is acknowledged by each recipient's Skuld like any direct message.
+
+**No recipients is loud.** A question to a topic no peer produces is refused (409) with the
+reason, how many peers are known and how many did not announce what they produce; nothing is
+sent. This is unlike an event, where no subscribers is normal. A recipient that could not be
+reached (gone, timed out, refused) is listed under `failed` with its error and counted on
+`skuld.peer.messages` (`outcome="failed"`; `"asked"` for each delivery); the rest still get the
+question. If it reached none of them the call is an error naming every failure (502).
+
+**Answers** are events correlated to the question: a recipient answers with `reply` (to the
+asker alone) or by publishing with `in_reply_to` set to the question's message id, which also
+puts the answer on the thread's topic and in the asker's inbox (see "Answers are events"). Any
+number of recipients answer, or none. They reach the asker's inbox as they come, at its turn
+boundaries, grouped by thread. Nothing waits by default.
+
+**Waiting is optional.** With `wait_s`, `mesh_ask` also waits that long (at most
+`ask.wait_max_s`, the longest one MCP tool call may run; a larger value is refused and counted
+as a cap hit) and **returns every answer so far**, taken by the call so they are not handed to
+the harness again. It does not return at the first answer, and it does not stop at a count of
+answers. The reasons: the first answer hides the others that arrive moments later and makes a
+partial picture look settled; a count of answers is the "done" condition this design avoids,
+since answers can come from any number of peers, including ones that were not asked; and the
+asker chose how long it is willing to wait. The result carries `answers` and `answered` (the
+number of distinct senders) so the asker sees how many of those asked responded. An answer that
+arrives after the wait is delivered as a message at the next turn boundary. `ask` keeps its own,
+different meaning: one session, one answer, with the outcomes it reports.
+
+## Following topics and threads
+
+| Tool | What it does |
+|---|---|
+| `mesh_subscribe(topic)` | start listening to a topic |
+| `mesh_subscribe(correlation_id)` | follow a thread: see every answer published into it |
+| `mesh_unsubscribe(topic \| correlation_id)` | stop following something followed at runtime |
+
+The persona's `consumes` stays the standing subscription; a runtime follow adds to it.
+
+- **Durable.** Each change is written to the session's event log (a `mesh_subscription` frame)
+  and stored before the call returns, like the peer inbox. A restart replays the log and
+  follows again what the session followed, and not what it unsubscribed. A follow the log
+  could not store is refused and not started; a session with no durable log cannot follow
+  anything. A restored follow the mesh cannot subscribe to fails the start.
+- **Announced.** The topics followed at runtime are announced beside the persona's, so peers
+  and `mesh_peers` see them. A thread is one conversation and is not announced.
+- **Any topic may be followed.** Listening is harmless to everyone else: a session is in one
+  realm, where every member already sees every announcement and can be messaged, so listening
+  discloses nothing a member cannot learn. What it can do is fill the follower's own inbox,
+  which the follower decides, sees (counters, inbox status) and can stop. Only publishing is
+  limited to declared topics. Two kinds of name are refused: one that is not a topic, and the
+  platform's own `thread.*` and `inbox.*` topics (follow a thread by `correlation_id`; a peer's
+  inbox topic carries answers addressed to that peer).
+- **Idempotent and loud.** Following what is already followed (including a standing topic)
+  answers `already`. Unsubscribing a standing topic, or something not followed, is an error
+  that says what is followed. Changes count on `skuld.mesh.follows`.
+- **What arrives.** An event is delivered when it carries a prompt (what `mesh_publish`
+  sends); events of other shapes on a followed topic are ignored by the inbox.
+- **Threads add up.** A followed thread stays followed until unfollowed; there is no expiry
+  and no cap.
+
+## Direct messages
+
+Use these when you know you need one specific peer. For a question to whoever is listening,
+publish.
+
+### The envelope
 
 Every message from one agent to another travels as a **peer message**
 (`niuu.domain.peer_message.PeerMessage`): message id, sender, recipient, send time,
 content, a reply route, an optional `in_reply_to`, a `room_id` when it was said in a room,
-`relayed_by` when a room host passed it on, and `urgent`.
+`relayed_by` when a room host passed it on, `urgent`, and a `thread` (a mesh publication's
+correlation id; messages of one thread are rendered together).
 
 The recipient's Skuld shows the harness a header the platform wrote (who sent it, when,
 how to answer) and the content. A peer message waits for the end of the recipient's
@@ -23,6 +205,7 @@ still interrupts.
 | Room message to a member session | the hosting session (`relayed_by`, stamped by Forge from its credential); the participant who spoke is the sender | the room, via the host |
 | Session MCP `mesh_send` | the sending Skuld: this session and its mesh peer id | the sender's mesh peer (only when `expect_reply`) |
 | Session MCP `mesh_publish` | the publishing Skuld: the event's source is this session's mesh peer id | the publisher's mesh peer, always: a consumer may answer later |
+| Session MCP `mesh_ask` | the asking Skuld: this session; one message id and thread for every recipient | the asker's mesh peer |
 
 The request body can add `in_reply_to` and `urgent`. A session that sends `sender`,
 `recipient`, `relayed_by`, `sent_at` or `message_id` is refused with 400: Forge stamps all
@@ -30,16 +213,16 @@ of them. The message id derives from the sender, the recipient and the `request_
 retry with the same `request_id` carries the same id and is never delivered twice. A person
 calling the same route (a PAT or login) keeps the plain user-turn path.
 
-## The default pattern: send, end your turn, the reply wakes you
+### Send, end your turn, the reply wakes you
 
-Most conversations between agents need no waiting. Send the message (`send_message`, or
+Most direct conversations need no waiting. Send the message (`send_message`, or
 `mesh_send`), say what you need back, **end your turn**, and do other work or stop. The
 recipient answers with `reply`, which lands in your inbox. If your harness is idle the inbox
 hands it the reply at once as a new turn; if it is mid-turn the reply waits for the turn
 boundary. Nothing polls and nothing blocks. Use `ask` (below) only as a convenience for a short
 question you want answered inside the current turn.
 
-## Direct routing: the mesh first, Forge for the rest
+### Direct routing: the mesh first, Forge for the rest
 
 Agents in the same flock talk directly, without Forge in the middle.
 
@@ -63,7 +246,7 @@ Agents in the same flock talk directly, without Forge in the middle.
   peer id. A name matches only the display name a Skuld announces, the session name; Ravn
   residents are addressed by peer id.
 
-## Who may message whom
+### Who may message whom
 
 **A session may message any session its owner owns, on any node of its Guild** (decided
 2026-11-08). Other owners' sessions are refused with the reason. A session never messages
@@ -76,6 +259,125 @@ itself.
   start or stop sessions.
 - Loops between agents are made visible, not capped. Every message is an envelope in the
   recipient's log with its sender and `in_reply_to`, and there is no hop or rate limit.
+
+### Address by name
+
+`send_message` takes `to` (a session name) instead of `session_id`. The name is looked up
+among the sessions the caller can see: its owner's, on every node of the Guild, not
+archived.
+
+- An unknown name is an error that names it.
+- A name two or more sessions carry is an error that lists them (name, id, node, status).
+  Nothing is picked; send again with `session_id`, or add `instance_id` to name the node.
+- `get_session` and `list_sessions` show each session's `name`.
+
+## Session MCP tools
+
+The first rows are the default for the two use cases; the direct tools after them are for one specific peer.
+
+| Tool | Needs | What it does |
+|---|---|---|
+| `mesh_publish(topic, content, correlation_id?, in_reply_to?)` | mesh enabled on this session | **announce an event** on a topic your persona declares it produces, for whoever consumes it; answer a message the same way (see "Events: publish and subscribe"). Listed only when `mesh.enabled` is true |
+| `mesh_ask(content, producers_of \| peers, wait_s?)` | mesh enabled on this session | **ask a question** of the peers that produce a topic, or of chosen peers (see "Asking a question"). Listed only when `mesh.enabled` is true |
+| `mesh_subscribe(topic \| correlation_id)` / `mesh_unsubscribe(...)` | mesh enabled on this session | follow or stop following a topic or a thread (see "Following topics and threads") |
+| `send_message` | `message` grant | send to a session by `to` or `session_id`; optional `urgent` |
+| `ask(to / session_id, content, deadline_s?)` | `message` grant | send to a session and **wait for its answer** (see "Asking and waiting") |
+| `reply(message_id, content)` | the route's own need | answer a message you received, by the route its sender gave: session, mesh peer or room. A message sent as a notice (no reply route) is refused with the reason |
+| `room_post(room_id, host_session_id, content)` | `message` grant | speak in a room another session hosts. The host records the message in the room as said by this session, and refuses it when the session is not seated in that room |
+| `mesh_send(peer, content, expect_reply)` | mesh enabled on this session | send a peer message to a mesh peer id. Listed only when `mesh.enabled` is true |
+| `mesh_peers(role?, capability?, consumes?, produces?)` | mesh enabled on this session | list the peers on the mesh with what each announced: name, persona, role, description, capabilities, topics consumed and produced, activity state. Facts only (see "Finding a peer"). Listed only when `mesh.enabled` is true |
+
+`room_post` takes the hosting session explicitly: the "Relayed by" line of a message from
+the room names the host, and the "Said in room" line names the room. Forge proxies the
+call to the host as `POST /sessions/{host}/room/session-message` and stamps the calling
+session itself; the room host trusts only that stamp. `reply` to a room message uses the
+same call.
+
+## Finding a peer
+
+When an agent needs a specific peer it chooses; the platform does not route for it. Each Skuld announces
+itself on the mesh with facts taken from its persona and its mesh config, never typed by the
+agent, and `mesh_peers` returns the table of what the session's discovery has heard.
+
+| Field | Where it comes from |
+|---|---|
+| `peer_id`, `name`, `kind` | the peer's mesh id; the session name (what `send_message` and `ask` take as `to`); `skuld`, `ravn`, ... |
+| `persona` | the pinned persona's id, else `mesh.persona` |
+| `role` | `mesh.role`, else the pinned persona's id |
+| `description` | the pinned persona's `description` (a new optional persona field, a sentence or two on what it does), else `mesh.description` |
+| `capabilities` | `mesh.capabilities` |
+| `consumes`, `produces` | the pinned persona's `consumes` / `produces` on top of `mesh.consumes_event_types` / `mesh.publish_event_types` |
+| `activity_state`, `status`, `last_heartbeat` | the peer's own activity state (`idle`, `active`, `tool_executing`, `awaiting_input`, ...), whether it is working (`busy`), and when it last announced |
+
+The filters (`role`, `capability`, `consumes`, `produces`) are exact matches on one announced
+fact and all must hold. The result is in peer id order, which is not a preference: nothing is
+ranked, scored or routed, and the choice is the agent's judgment. A field a peer did not
+announce is `null` (see below). A session with no
+discovery configured gets an error that names the remedy, never an empty table, which would
+read as "nobody is there".
+
+**Activity is as fresh as the last heartbeat.** The Skuld updates its announced state when its
+activity changes and the next heartbeat carries it, so `activity_state` can lag by a heartbeat
+interval. Check `last_heartbeat` before relying on it. A peer that is `awaiting_input` is
+blocked on a person.
+
+**What a discovery could not tell you is `null`, not empty.** A fact a peer's announcement
+did not carry comes back as `null` and is named in that peer's `not_announced` list. That is
+different from a peer announcing an empty role or no topics (`""` and `[]`): it means unknown.
+A filter never matches a fact that was not announced. The facts are `role`, `description`,
+`activity_state`, `busy` (shown as `status`), `consumes_event_types` and `emits_event_types`
+(shown as `consumes` and `produces`).
+
+| Discovery | What it carries | Not announced by its nature |
+|---|---|---|
+| `event_bus` (over NATS or nng) | everything, refreshed on every heartbeat | nothing; an older peer's missing keys are named |
+| `sleipnir` (AMQP) | everything, refreshed on every heartbeat | nothing; an older peer's missing keys are named |
+| `mdns` | everything in the handshake, as a snapshot: role, description, display name, topics, activity. After it, the activity state, busy flag and topics follow the peer's re-registered TXT records | description and role are never in TXT (a record is limited to 255 bytes), so they stay as of the handshake |
+| `k8s` | role, description and topics, from the pod annotations `ravn.niuu.world/role`, `/description`, `/consumes`, `/emits`, read when the peer is first seen | `activity_state` and `busy` (a pod's annotations are written by its deployer, not by the running peer); and any fact whose annotation is absent |
+| `static` | role, description and topics, from the cluster file entry | `activity_state` and `busy` (a file cannot say what a peer is doing); and any fact the entry leaves out |
+
+Announcements from older and newer participants both parse: unknown keys are ignored and
+missing ones are `not_announced`.
+
+**When to look a peer up.** Not before every message. To ask whoever produces a kind of
+knowledge or work, `mesh_ask(producers_of=<topic>)` finds them for you; to announce something,
+`mesh_publish`. Use `mesh_peers` when you want to choose peers yourself, or need a specific
+one:
+
+1. `mesh_peers(role="reviewer")` (or by `capability`, or by a topic it `produces` or `consumes`).
+2. Read `description` and `activity_state` and pick.
+3. Then either ask the ones you picked, `mesh_ask(peers=[...])` (the question goes to
+   them and answers come back correlated), or reach one directly: `ask(to=<name>)` to wait for
+   its answer, `send_message(to=<name>)` to hand it work without waiting, or
+   `mesh_send(peer=<peer_id>)` for a mesh peer that is not a Forge session.
+
+## Configuring the mesh
+
+Everything under Skuld's `mesh` settings (`skuld.config.MeshConfig`) is a value of the skuld
+chart's `mesh` block (`charts/skuld/values.yaml`, documented in its README) and renders
+into the broker's config file. Forge reaches a session pod through the same Helm values
+as for every other setting: the pod manager's `session_defaults`
+(`podManager.kwargs.session_defaults` in the volundr chart) is merged under what the session
+contributors add, and the result is the session's release values. There is no mesh
+contributor: the mesh settings that differ per session (topics, role, description) come from
+the session's pinned persona, which Skuld reads itself, so one set of `session_defaults`
+serves every session of a flock. Set at least `mesh.enabled`, a `mesh.realmId` shared by the
+flock, a transport and a discovery adapter:
+
+```yaml
+podManager:
+  kwargs:
+    session_defaults:
+      mesh:
+        enabled: true
+        realmId: flock-a
+        transport: nats
+        nats: {servers: ["nats://nats:4222"]}
+        discoveryAdapters: [{adapter: event_bus}]
+```
+
+Before the chart rendered these values, `mesh.enabled` and `mesh.transport` did nothing in a
+chart-deployed session.
 
 ## Who sent a mesh message
 
@@ -203,174 +505,9 @@ uses; a session without one cannot start its mesh unless attestation is off):
 | Docker container pod manager | delivered as a read-only 0600 file mount (needs `run_as_host_user`; a launch that cannot read it is refused with the remedy) |
 | Direct Kubernetes pod manager | delivered through the per-session Secret; `volundr_api_url` must be set (the launch is refused with the remedy otherwise) |
 
-## Address by name
+## Asking and waiting (`ask`)
 
-`send_message` takes `to` (a session name) instead of `session_id`. The name is looked up
-among the sessions the caller can see: its owner's, on every node of the Guild, not
-archived.
-
-- An unknown name is an error that names it.
-- A name two or more sessions carry is an error that lists them (name, id, node, status).
-  Nothing is picked; send again with `session_id`, or add `instance_id` to name the node.
-- `get_session` and `list_sessions` show each session's `name`.
-
-## Session MCP tools
-
-| Tool | Needs | What it does |
-|---|---|---|
-| `send_message` | `message` grant | send to a session by `to` or `session_id`; optional `urgent` |
-| `ask(to / session_id, content, deadline_s?)` | `message` grant | send to a session and **wait for its answer** (see "Asking and waiting") |
-| `reply(message_id, content)` | the route's own need | answer a message you received, by the route its sender gave: session, mesh peer or room. A message sent as a notice (no reply route) is refused with the reason |
-| `room_post(room_id, host_session_id, content)` | `message` grant | speak in a room another session hosts. The host records the message in the room as said by this session, and refuses it when the session is not seated in that room |
-| `mesh_send(peer, content, expect_reply)` | mesh enabled on this session | send a peer message to a mesh peer id. Listed only when `mesh.enabled` is true |
-| `mesh_peers(role?, capability?, consumes?, produces?)` | mesh enabled on this session | list the peers on the mesh with what each announced: name, persona, role, description, capabilities, topics consumed and produced, activity state. Facts only (see "Finding a peer"). Listed only when `mesh.enabled` is true |
-| `mesh_publish(topic, content, correlation_id?, in_reply_to?)` | mesh enabled on this session | publish on a declared topic for whoever consumes it (see "Publishing to a topic"). Listed only when `mesh.enabled` is true |
-
-`room_post` takes the hosting session explicitly: the "Relayed by" line of a message from
-the room names the host, and the "Said in room" line names the room. Forge proxies the
-call to the host as `POST /sessions/{host}/room/session-message` and stamps the calling
-session itself; the room host trusts only that stamp. `reply` to a room message uses the
-same call.
-
-## Publishing to a topic
-
-`mesh_send` reaches one named peer. `mesh_publish` is the other half of the mesh: put a
-message on a **topic** and let whoever is declared to listen receive it, so a workflow never
-hard-codes which agents are called and the consumers run in parallel. There may be no
-answer, only the transport's acknowledgement, or a consumer may answer later with changes.
-
-```
-mesh_publish(topic="review.requested", content="please review PR 12", correlation_id="pr-12")
-  -> {"event_id": "...", "topic": "review.requested", "correlation_id": "pr-12",
-      "status": "published", "request_id": "..."}
-```
-
-The event goes straight from the session's Skuld onto its mesh: no Forge round trip. The
-answer is the transport accepting the event; nothing waits for a consumer and none is
-promised. `request_id` makes a retry the same event (the event id derives from the
-publisher's mesh peer id, the topic and the `request_id`), and a consumer's inbox
-deduplicates on it.
-
-**Consumers are declared, not named.** A session subscribes to the topics its pinned
-persona lists under `consumes.event_types`, plus `mesh.consumes_event_types` (default
-`code.requested`). Every subscribed session's inbox receives the event as a peer message
-from the publisher's mesh peer, with the same message id (the event id). No sender names a
-recipient, and a topic with no subscribers is not an error the mesh can see: pub/sub cannot
-tell it from a topic everyone is slow to read.
-
-**Producers are declared too, and an undeclared topic is refused.** A session may publish
-the topics its persona lists under `produces` (`event_type` and every value of
-`event_type_map`), plus `mesh.publish_event_types` for a session without that persona. Any
-other topic is refused with 403 naming what the session declared and the remedy. The reason
-for refusing rather than allowing: a mistyped topic would otherwise publish to nobody and
-still answer "published", which is exactly the failure that cannot be seen later; and the
-`produces` declaration is the contract workflows wire consumers against. With nothing
-declared, every topic is refused. Add the topic to the persona, or list it in
-`mesh.publish_event_types`.
-
-**Linking a later answer.** The event id is the message id the consumer sees. A consumer
-answers in either of two ways, and the publisher's inbox holds the answer with
-`in_reply_to` set to the event id:
-
-- `reply(message_id, content)` on the mesh route the envelope carries (back to the
-  publisher's mesh peer); or
-- `mesh_publish` of its own topic with `in_reply_to` set to the event id, when the original
-  publisher consumes that topic.
-
-`correlation_id` is an optional thread tag, not an identity: consumers see it as a
-`[Correlation ...]` line at the top of the message and may echo it on their own
-publications. It defaults to the event id.
-
-**Who is the sender.** Skuld stamps the event: the source is this session's mesh peer id,
-and a `publisher` block (session id, name, node, peer id) rides in the payload for the
-audit trail. Nothing about the sender is taken from the content, and the tool has no
-argument for it. The mesh itself does not yet authenticate a source, so a consumer trusts
-the event's source as far as it trusts the mesh; sender authentication on the mesh is a
-separate change.
-
-**Failures are loud.** A mesh that is not running (503), a transport that refuses the event
-(502, with the retry remedy), and an undeclared topic (403) are tool errors and are logged at
-error. A published event increments `skuld.peer.messages` with `channel="mesh"`,
-`recipient=<topic>` and `outcome="published"`; a refusal or failure counts as
-`outcome="refused"` or `"failed"`. There are no caps on topics, events or fan-out; the
-counter and the session status are the visibility. Config: `mesh.publish_event_types`,
-`mesh.published_event_urgency` (the attention hint, 0.0-1.0, default 0.8).
-
-## Finding a peer
-
-An agent chooses whom to talk to; the platform does not route for it. Each Skuld announces
-itself on the mesh with facts taken from its persona and its mesh config, never typed by the
-agent, and `mesh_peers` returns the table of what the session's discovery has heard.
-
-| Field | Where it comes from |
-|---|---|
-| `peer_id`, `name`, `kind` | the peer's mesh id; the session name (what `send_message` and `ask` take as `to`); `skuld`, `ravn`, ... |
-| `persona` | the pinned persona's id, else `mesh.persona` |
-| `role` | `mesh.role`, else the pinned persona's id |
-| `description` | the pinned persona's `description` (a new optional persona field, a sentence or two on what it does), else `mesh.description` |
-| `capabilities` | `mesh.capabilities` |
-| `consumes`, `produces` | the pinned persona's `consumes` / `produces` on top of `mesh.consumes_event_types` / `mesh.publish_event_types` |
-| `activity_state`, `status`, `last_heartbeat` | the peer's own activity state (`idle`, `active`, `tool_executing`, `awaiting_input`, ...), whether it is working (`busy`), and when it last announced |
-
-The filters (`role`, `capability`, `consumes`, `produces`) are exact matches on one announced
-fact and all must hold. The result is in peer id order, which is not a preference: nothing is
-ranked, scored or routed, and the choice is the agent's judgment. A field a peer did not
-announce is empty (an older Skuld, a Ravn that sets no role, an mDNS peer). A session with no
-discovery configured gets an error that names the remedy, never an empty table, which would
-read as "nobody is there".
-
-**Activity is as fresh as the last heartbeat.** The Skuld updates its announced state when its
-activity changes and the next heartbeat carries it, so `activity_state` can lag by a heartbeat
-interval. Check `last_heartbeat` before relying on it. A peer that is `awaiting_input` is
-blocked on a person.
-
-**Which discovery adapters carry the new fields.** `event_bus` (the transport-neutral
-adapter used over NATS and nng) carries role, description and activity state, along with the
-display name, capabilities and topics it already carried. The mDNS, Kubernetes, static and
-AMQP adapters announce what they announced before; their peers show those fields empty.
-Announcements from older and newer participants both parse: unknown fields are ignored and
-missing ones are empty.
-
-**The default flow.**
-
-1. `mesh_peers(role="reviewer")` (or by `capability`, or by a topic it `consumes`).
-2. Read `description` and `activity_state` and pick.
-3. Then one of:
-   - `ask(to=<name>)` to hand it a question and wait for the answer;
-   - `send_message(to=<name>)` to hand it work without waiting;
-   - `mesh_send(peer=<peer_id>)` for a mesh peer that is not a Forge session;
-   - `mesh_publish(topic=<a topic it consumes>)` when the work should reach every peer that
-     consumes the topic, not just the one.
-
-## Configuring the mesh
-
-Everything under Skuld's `mesh` settings (`skuld.config.MeshConfig`) is a value of the skuld
-chart's `mesh` block (`charts/skuld/values.yaml`, documented in its README) and renders
-into the broker's config file. Forge reaches a session pod through the same Helm values
-as for every other setting: the pod manager's `session_defaults`
-(`podManager.kwargs.session_defaults` in the volundr chart) is merged under what the session
-contributors add, and the result is the session's release values. There is no mesh
-contributor: the mesh settings that differ per session (topics, role, description) come from
-the session's pinned persona, which Skuld reads itself, so one set of `session_defaults`
-serves every session of a flock. Set at least `mesh.enabled`, a `mesh.realmId` shared by the
-flock, a transport and a discovery adapter:
-
-```yaml
-podManager:
-  kwargs:
-    session_defaults:
-      mesh:
-        enabled: true
-        realmId: flock-a
-        transport: nats
-        nats: {servers: ["nats://nats:4222"]}
-        discoveryAdapters: [{adapter: event_bus}]
-```
-
-Before the chart rendered these values, `mesh.enabled` and `mesh.transport` did nothing in a
-chart-deployed session.
-
-## Asking and waiting
+`ask` is for one specific session. To put a question to several peers, see "Asking a question".
 
 `ask` is `send_message` that blocks until the recipient answers with `reply`. Addressing
 (`to` or `session_id`), the sender stamp, the `message` grant and who may be reached are

@@ -1,4 +1,5 @@
 name: research-publisher
+description: "Publishes a research campaign's notebook into Mimir as verified durable artifacts; talk to it at the end of a campaign."
 system_prompt_template: |
   ## Identity
 

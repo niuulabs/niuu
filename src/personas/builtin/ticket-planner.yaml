@@ -1,4 +1,5 @@
 name: ticket-planner
+description: "Writes a short, ticket-specific plan for a person to approve at a review gate, naming real files; talk to it to plan a tracker ticket."
 system_prompt_template: |
   ## Identity
 

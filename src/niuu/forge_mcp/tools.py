@@ -308,6 +308,47 @@ class _MeshPeersArgs(_Args):
     produces: str = Field(default="", max_length=200)
 
 
+class _MeshAskArgs(_Args):
+    content: str = Field(min_length=1)
+    producers_of: str = Field(default="", max_length=200)
+    peers: list[str] = Field(default_factory=list)
+    wait_s: float = Field(default=0, ge=0)
+    request_id: str | None = Field(default=None, pattern=_REQUEST_ID_PATTERN)
+
+    @field_validator("content")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("content must not be blank")
+        return value
+
+    @field_validator("peers")
+    @classmethod
+    def _peers_named_once(cls, value: list[str]) -> list[str]:
+        if any(not peer.strip() for peer in value):
+            raise ValueError("peers must be peer ids")
+        if len(set(value)) != len(value):
+            raise ValueError("peers must not repeat a peer")
+        return value
+
+    @model_validator(mode="after")
+    def _exactly_one_audience(self) -> _MeshAskArgs:
+        if bool(self.producers_of.strip()) == bool(self.peers):
+            raise ValueError("give exactly one of producers_of or peers")
+        return self
+
+
+class _MeshFollowArgs(_Args):
+    topic: str = Field(default="", max_length=200)
+    correlation_id: str = Field(default="", max_length=200)
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> _MeshFollowArgs:
+        if bool(self.topic.strip()) == bool(self.correlation_id.strip()):
+            raise ValueError("give exactly one of topic or correlation_id")
+        return self
+
+
 class _MessageStatusArgs(_SessionRef):
     request_id: str = Field(pattern=_REQUEST_ID_PATTERN)
 
@@ -1044,19 +1085,22 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="send_message",
         description=(
-            "Send a message to ANOTHER session. The recipient reads it with a header the "
-            "platform wrote: your session name and id, your node, the time and how to answer, "
-            "so you cannot be mistaken for the user and nobody can forge who sent it. Name the "
-            "recipient with `to` (its session name, resolved among your owner's sessions on every "
-            "node of the Guild) or `session_id` (+ `instance_id`) from list_sessions. An unknown "
-            "name is an error that names it; a name two sessions carry is an error that lists "
-            "them (name, id, node): pick by id then. The message waits for the end of the "
-            "recipient's current turn unless you pass `urgent`. The recipient answers with its "
-            "`reply` tool, so ask a question when you want one and tell it what you need. Reuse "
-            "the same request_id when retrying so it is never delivered twice (one is generated "
-            "and returned if you omit it); check delivery with message_status. Who you can "
-            "reach: any session your owner owns, on any node of your Guild (a message to another "
-            "node is relayed by your node). Sessions of other owners are refused with the reason."
+            "Send a message to ONE specific other session that you already know you need. To "
+            "put a question to whoever can answer it use `mesh_ask`, and to announce something "
+            "use `mesh_publish`; this is for when only that session will do. The recipient "
+            "reads it with a header the platform wrote: your session name and id, your node, "
+            "the time and how to answer, so you cannot be mistaken for the user and nobody can "
+            "forge who sent it. Name the recipient with `to` (its session name, resolved among "
+            "your owner's sessions on every node of the Guild) or `session_id` (+ "
+            "`instance_id`) from list_sessions. An unknown name is an error that names it; a "
+            "name two sessions carry is an error that lists them (name, id, node): pick by id "
+            "then. The message waits for the end of the recipient's current turn unless you "
+            "pass `urgent`. The recipient answers with its `reply` tool, so ask a question when "
+            "you want one and tell it what you need. Reuse the same request_id when retrying so "
+            "it is never delivered twice (one is generated and returned if you omit it); check "
+            "delivery with message_status. Who you can reach: any session your owner owns, on "
+            "any node of your Guild (a message to another node is relayed by your node). "
+            "Sessions of other owners are refused with the reason."
         ),
         input_schema=_object(
             {
@@ -1083,22 +1127,24 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="ask",
         description=(
-            "Send a message to ANOTHER session and wait for its answer, instead of polling or "
-            "saying you will wait. Addressing, the sender header and who you can reach are those "
-            "of send_message. The recipient answers with its `reply` tool; the answer is the "
-            "result of this call and is consumed by it, so it is not also delivered to you as "
-            "a message later. Every other way the call can end is named in `outcome`, with "
+            "Send a message to ONE specific other session and wait for its answer, instead of "
+            "polling or saying you will wait. Use it only when you cannot go on without that "
+            "session's answer; to put a question to the peers who can answer it and carry on, "
+            "use `mesh_ask`. Addressing, the sender header and who you can reach are those of "
+            "send_message. The recipient answers with its `reply` tool; the answer is the "
+            "result of this call and is consumed by it, so it is not also delivered to you as a "
+            "message later. Every other way the call can end is named in `outcome`, with "
             "isError set, and never an empty answer: `blocked` (the recipient waits on an "
             "approval or a question to a person), `gone` (it stopped, failed or was deleted), "
             "`not_started` (delivered, but it took no turn that read the message), "
             "`delivery_unknown` (Forge did not confirm the send; it may or may not have "
             "arrived) and `deadline` (it had not answered in time). The message stays sent in "
             "every case, and an answer that comes later is delivered to you at your next turn "
-            "boundary as usual. To keep waiting, call ask again with the SAME request_id (it "
-            "is returned in every result): the message is not sent twice. `deadline_s` is how "
-            "long to wait; it defaults to, and may not exceed, ask.wait_max_s (the longest an "
-            "MCP tool call may run here), and a larger one is refused with that named. A mesh "
-            "peer is asked directly over the mesh, and its own state is read from it."
+            "boundary as usual. To keep waiting, call ask again with the SAME request_id (it is "
+            "returned in every result): the message is not sent twice. `deadline_s` is how long "
+            "to wait; it defaults to, and may not exceed, ask.wait_max_s (the longest an MCP "
+            "tool call may run here), and a larger one is refused with that named. A mesh peer "
+            "is asked directly over the mesh, and its own state is read from it."
         ),
         input_schema=_object(
             {
@@ -1152,12 +1198,16 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name=REPLY_TOOL,
         description=(
-            "Answer a message another agent sent you. Give the `message_id` from the message's "
-            "header and your `content`. The answer goes to whoever sent that message, by the "
-            "route the sender gave: back to their session, to their mesh peer, or into the room "
-            "it was said in. Text you write in your own turn does not reach the sender. A "
-            "message sent as a notice takes no reply and this tool refuses it with the reason. "
-            "Retries with the same request_id are never delivered twice."
+            "Answer a message another agent sent you, directly to its sender. Give the "
+            "`message_id` from the message's header and your `content`. The answer goes to "
+            "whoever sent that message, by the route the sender gave: back to their session, to "
+            "their mesh peer, or into the room it was said in; nobody else sees it. When the "
+            "message came from a mesh publication and others should see your answer too, "
+            "publish it instead with `mesh_publish` and `in_reply_to` set to the message id: "
+            "the asker receives it as well and everyone following the thread sees it. Text you "
+            "write in your own turn does not reach the sender. A message sent as a notice takes "
+            "no reply and this tool refuses it with the reason. Retries with the same "
+            "request_id are never delivered twice."
         ),
         input_schema=_object(
             {
@@ -1199,8 +1249,10 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="mesh_send",
         description=(
-            "Send a message to a peer on the mesh (a Valkyrie or another agent in your flock) "
-            "by its peer id. The platform stamps you as the sender: this session and your mesh "
+            "Send a message directly to ONE specific mesh peer by its peer id, when you know "
+            "you need that peer (a Valkyrie or another agent in your flock). To put a question "
+            "to whoever can answer it use `mesh_ask`, and to announce something use "
+            "`mesh_publish`. The platform stamps you as the sender: this session and your mesh "
             "peer id. Set `expect_reply` when you want an answer: the peer is then told how to "
             "reach you, and answers with its `reply` tool. Retries with the same request_id are "
             "never delivered twice. Listed only on a session whose mesh is enabled."
@@ -1219,16 +1271,19 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="mesh_peers",
         description=(
-            "List the peers on your mesh with what each announced about itself: its name, "
+            "Look up the peers on your mesh and what each announced about itself: its name, "
             "persona, role, a description of what it does, capabilities, the topics it consumes "
-            "and produces, and its current activity state. Use it to choose who to talk to, "
-            "then `send_message` / `ask` (by its name), `mesh_send` (by peer_id) or "
-            "`mesh_publish` (to a topic it consumes). It returns facts and nothing ranks them: "
-            "the choice is yours. Optional filters are exact matches on one announced fact "
-            "(role, capability, a topic consumed or produced); all given filters must match. A "
-            "field a peer did not announce is empty. Peers are announced on a heartbeat, so check "
-            "last_heartbeat before relying on activity_state. Listed only on a session whose "
-            "mesh is enabled."
+            "and produces, and its current activity state. Use it when you want to choose peers "
+            "yourself (for example to pick the `peers` of a `mesh_ask` by their description, or "
+            "one specific peer to message); it is not a step before every message. To ask "
+            "whoever produces a kind of knowledge or work, `mesh_ask(producers_of=<topic>)` "
+            "resolves them for you, and `mesh_peers(produces=<topic>)` shows who that would be. "
+            "It returns facts and nothing ranks them: the choice is yours. Optional filters are "
+            "exact matches on one announced fact (role, capability, a topic consumed or "
+            "produced); all given filters must match. A fact a peer's discovery did not carry "
+            "is null and listed in `not_announced`: that is unknown, not an empty role. Peers "
+            "are announced on a heartbeat, so check last_heartbeat before relying on "
+            "activity_state. Listed only on a session whose mesh is enabled."
         ),
         input_schema=_object(
             {
@@ -1251,22 +1306,124 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         args_model=_MeshPeersArgs,
     ),
     ToolSpec(
+        name="mesh_ask",
+        description=(
+            "Ask a QUESTION of the peers best placed to answer it, instead of publishing an "
+            "event. Name them one of two ways: `producers_of` a topic (the question goes to "
+            "every peer that announces it produces that topic, because it is the source of that "
+            "kind of knowledge or work; not to the topic's consumers, and your own `produces` "
+            "list does not limit a question), or `peers`, a set of peer ids you chose from "
+            "`mesh_peers` by their description. Matching is your judgment; the platform only "
+            "resolves 'producers of X' from the peer table as facts. Each recipient gets the "
+            "question directly, with a header saying who asked and how to answer. A question "
+            "nobody can receive is refused with the reason: unlike an event, silence is never "
+            "the outcome. A recipient that could not be reached is listed in the result. "
+            "Answers are events correlated to the question: they come back as they come, from "
+            "any number of recipients or from none, to your inbox at your turn boundaries, "
+            "grouped by thread, and nothing waits. A recipient answers with `reply` (to you "
+            "alone) or by publishing with `in_reply_to` (everyone following the thread sees it "
+            "too). Pass `wait_s` to also wait: the call returns after wait_s seconds with every "
+            "answer so far (taken by the call, not delivered to you again), at most "
+            "ask.wait_max_s. It does not stop at the first answer or at a count, because "
+            "answers can come from any number of peers. Retries with the same request_id ask "
+            "once. Listed only on a session whose mesh is enabled."
+        ),
+        input_schema=_object(
+            {
+                "content": {"type": "string", "minLength": 1, "description": "The question."},
+                "producers_of": {
+                    "type": "string",
+                    "description": "Ask every peer that announces it produces this topic.",
+                },
+                "peers": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "description": "Ask exactly these peers (ids chosen from mesh_peers).",
+                },
+                "wait_s": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": (
+                        "Also wait this many seconds and return the answers so far. 0 (the "
+                        "default) waits for nothing."
+                    ),
+                },
+                "request_id": _REQUEST_ID_SCHEMA,
+            },
+            required=("content",),
+        ),
+        args_model=_MeshAskArgs,
+    ),
+    ToolSpec(
+        name="mesh_subscribe",
+        description=(
+            "Start listening to a mesh topic, or follow a thread, without a persona change. "
+            "Give a `topic` (what you want to hear, for example review.requested) or a "
+            "`correlation_id` (the thread of a published question: you then see every answer "
+            "published into it). It adds to your persona's `consumes`, which stays your "
+            "standing subscription. What you follow survives a restart and is announced to your "
+            "peers. Any topic may be followed; only publishing is limited to declared topics. "
+            "What arrives lands in your inbox at your turn boundaries, so follow what you will "
+            "act on. Following something you already follow is not an error. Listed only on a "
+            "session whose mesh is enabled."
+        ),
+        input_schema=_object(
+            {
+                "topic": {
+                    "type": "string",
+                    "description": "A topic to listen to, e.g. review.requested.",
+                },
+                "correlation_id": {
+                    "type": "string",
+                    "description": "The thread to follow: its correlation id.",
+                },
+            },
+            required=(),
+        ),
+        args_model=_MeshFollowArgs,
+    ),
+    ToolSpec(
+        name="mesh_unsubscribe",
+        description=(
+            "Stop following a topic or thread you started following with `mesh_subscribe`. "
+            "Give the same `topic` or `correlation_id`. Your persona's `consumes` is a standing "
+            "subscription and cannot be unsubscribed this way; something you do not follow is an "
+            "error that lists what you do. Listed only on a session whose mesh is enabled."
+        ),
+        input_schema=_object(
+            {
+                "topic": {"type": "string", "description": "The topic to stop listening to."},
+                "correlation_id": {
+                    "type": "string",
+                    "description": "The thread to stop following.",
+                },
+            },
+            required=(),
+        ),
+        args_model=_MeshFollowArgs,
+    ),
+    ToolSpec(
         name="mesh_publish",
         description=(
-            "Publish a message on a mesh topic for whoever is declared to listen to it, "
-            "without naming them: every session whose persona consumes the topic receives it "
-            "in its inbox, however many there are. Use this to start parallel work or announce "
-            "a result when the consumers are decided by the workflow, not by you; use "
-            "`mesh_send` to reach one named peer. The topic must be one your persona declares "
-            "it produces (or the session's mesh.publish_event_types); any other topic is "
-            "refused with the declared list. The platform stamps you as the publisher. You get "
-            "the event id back and nothing waits: the answer is only that the mesh accepted the "
-            "event. Consumers may answer later: with `reply` (it arrives in your inbox "
-            "marked as a reply to the event id) or by publishing with in_reply_to set to the "
-            "event id. `correlation_id` is an optional thread tag the consumers see and can "
-            "echo; `in_reply_to` names the message or event this one answers. Retries with the "
-            "same request_id publish the event once. Listed only on a session whose mesh is "
-            "enabled."
+            "Publish an EVENT: announce something (a result, a hand-off, a status) on a topic "
+            "your persona declares it produces, for whoever consumes that topic. Every session "
+            "that follows the topic (its persona's `consumes`, or `mesh_subscribe`) receives it "
+            "in its inbox: any number of them, or nobody. Having no subscribers is normal, not "
+            "an error. You name no recipient and nothing waits: you get the event id back, and "
+            "the answer is only that the mesh accepted the event. The topic must be one your "
+            "persona declares it produces (or the session's mesh.publish_event_types); any "
+            "other topic is refused with the declared list. This is not how you ask a question: "
+            "to put a question to the peers who can answer it, use `mesh_ask`. Consumers may "
+            "answer an event, and may also start something of their own later, as events too. "
+            "An answer reaches your inbox as it comes, at your turn boundaries, grouped by "
+            "thread. Answer an event or a question the same way: publish with `in_reply_to` set "
+            "to its message id (and a topic you may publish); the asker receives it without "
+            "having subscribed to anything, and everyone following the thread sees it. "
+            "`correlation_id` names the thread; it defaults to the thread of the message you "
+            "answer, else to the new event. The platform stamps you as the publisher. Retries "
+            "with the same request_id publish the event once. For one specific peer you know "
+            "you need, use `send_message`, `ask` or `mesh_send`. Listed only on a session whose "
+            "mesh is enabled."
         ),
         input_schema=_object(
             {
@@ -1380,7 +1537,7 @@ FEED_NOTIFY_SPEC = ToolSpec(
 #: Tools that write the caller's own durable transcript (or, for ``request_secret``, put a
 #: card in it and a file in the session's runtime), or that act through the caller's own broker
 #: (``reply`` reads its inbox, ``room_post`` speaks as the session, ``mesh_send``,
-#: ``mesh_publish`` and ``mesh_peers`` use its mesh),
+#: ``mesh_publish``, ``mesh_peers`` and ``mesh_subscribe`` use its mesh),
 #: so only a session's own broker (transcript mode) can serve them.
 TRANSCRIPT_ONLY_TOOLS = frozenset(
     {
@@ -1393,6 +1550,9 @@ TRANSCRIPT_ONLY_TOOLS = frozenset(
         "mesh_send",
         "mesh_publish",
         "mesh_peers",
+        "mesh_subscribe",
+        "mesh_unsubscribe",
+        "mesh_ask",
     }
 )
 
@@ -1413,6 +1573,18 @@ _HOST_GATES: dict[str, tuple[Callable[[ForgeMcpHost], bool], str]] = {
         "this session has no mesh (mesh.enabled is false)",
     ),
     "mesh_peers": (
+        lambda host: host.mesh_host(),
+        "this session has no mesh (mesh.enabled is false)",
+    ),
+    "mesh_ask": (
+        lambda host: host.mesh_host(),
+        "this session has no mesh (mesh.enabled is false)",
+    ),
+    "mesh_subscribe": (
+        lambda host: host.mesh_host(),
+        "this session has no mesh (mesh.enabled is false)",
+    ),
+    "mesh_unsubscribe": (
         lambda host: host.mesh_host(),
         "this session has no mesh (mesh.enabled is false)",
     ),
@@ -1578,6 +1750,9 @@ class ForgeMcpToolbox:
             "mesh_send": self._mesh_send,
             "mesh_publish": self._mesh_publish,
             "mesh_peers": self._mesh_peers,
+            "mesh_ask": self._mesh_ask,
+            "mesh_subscribe": self._mesh_subscribe,
+            "mesh_unsubscribe": self._mesh_unsubscribe,
             "create_session": self._create_session,
             "start_session": self._start_session,
             "stop_session": self._stop_session,
@@ -1968,6 +2143,7 @@ class ForgeMcpToolbox:
                     expect_reply=False,
                     request_id=request_id,
                     in_reply_to=args.message_id,
+                    thread=original.thread,
                 )
         return self._ok(
             {
@@ -2000,6 +2176,42 @@ class ForgeMcpToolbox:
             in_reply_to="",
         )
         return self._ok({"peer": args.peer, "request_id": request_id, **answer})
+
+    async def _mesh_ask(self, args: _MeshAskArgs) -> ToolResult:
+        ceiling_s = self._host.ask_wait_max_s()
+        if args.wait_s > ceiling_s:
+            message = (
+                f"mesh_ask: wait_s={args.wait_s:g} is above ask.wait_max_s={ceiling_s:g}, the "
+                "longest one MCP tool call may run here (it must stay shorter than the engine's "
+                "tool timeout, or the engine would end the call before it could answer). "
+                f"Nothing was sent. Pass wait_s of at most {ceiling_s:g}, or none: answers "
+                "arrive in your inbox either way."
+            )
+            record_cap_hit("ask.wait_max_s", message)
+            return ToolResult.error(message)
+        request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
+        answer = await self._host.mesh_ask(
+            args.content,
+            producers_of=args.producers_of.strip(),
+            peers=args.peers,
+            request_id=request_id,
+            wait_s=args.wait_s,
+        )
+        return self._ok({"request_id": request_id, **answer})
+
+    async def _mesh_subscribe(self, args: _MeshFollowArgs) -> ToolResult:
+        return self._ok(
+            await self._host.mesh_subscribe(
+                topic=args.topic.strip(), correlation_id=args.correlation_id.strip()
+            )
+        )
+
+    async def _mesh_unsubscribe(self, args: _MeshFollowArgs) -> ToolResult:
+        return self._ok(
+            await self._host.mesh_unsubscribe(
+                topic=args.topic.strip(), correlation_id=args.correlation_id.strip()
+            )
+        )
 
     async def _mesh_peers(self, args: _MeshPeersArgs) -> ToolResult:
         answer = await self._host.mesh_peers(

@@ -153,9 +153,11 @@ class TestSkuldMeshAdapterLifecycle:
         await adapter.start()
 
         mock_mesh.start.assert_awaited_once()
-        mock_mesh.subscribe.assert_awaited_once_with(
-            "code.requested", adapter._handle_outcome_event
-        )
+        # The standing topic, and the inbox topic answers to this peer arrive on.
+        assert [call.args for call in mock_mesh.subscribe.await_args_list] == [
+            ("code.requested", adapter._handle_outcome_event),
+            (adapter.inbox_topic, adapter._handle_outcome_event),
+        ]
         assert adapter.is_running is True
 
     @pytest.mark.asyncio
@@ -185,7 +187,10 @@ class TestSkuldMeshAdapterLifecycle:
         await adapter.start()
         await adapter.stop()
 
-        mock_mesh.unsubscribe.assert_awaited_once_with("code.requested")
+        assert [call.args[0] for call in mock_mesh.unsubscribe.await_args_list] == [
+            "code.requested",
+            adapter.inbox_topic,
+        ]
         mock_mesh.stop.assert_awaited_once()
         assert adapter.is_running is False
 
@@ -272,9 +277,9 @@ class TestSkuldMeshAdapterLifecycle:
         )
         await adapter.start()
 
-        assert mock_mesh.subscribe.await_count == 2
+        assert mock_mesh.subscribe.await_count == 3  # two declared topics and the inbox topic
         await adapter.stop()
-        assert mock_mesh.unsubscribe.await_count == 2
+        assert mock_mesh.unsubscribe.await_count == 3
 
 
 # ---------------------------------------------------------------------------

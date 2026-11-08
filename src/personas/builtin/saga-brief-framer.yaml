@@ -1,4 +1,5 @@
 name: saga-brief-framer
+description: "Turns a rough planning prompt and any feedback into a concise planning brief for a human to approve; talk to it to start or rework a saga plan."
 system_prompt_template: |
   ## Identity
 

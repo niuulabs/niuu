@@ -218,6 +218,7 @@ class ForgeMcpHost(ABC):
         request_id: str,
         in_reply_to: str,
         urgent: bool = False,
+        thread: str = "",
     ) -> dict[str, Any]:
         """Send a peer message to a mesh peer, stamped with this session's identity.
 
@@ -254,6 +255,39 @@ class ForgeMcpHost(ABC):
         raise ForgeApiError(
             "mesh_publish needs a Forge session's own MCP (the mesh belongs to that session's "
             "broker)",
+            status=501,
+        )
+
+    async def mesh_ask(
+        self,
+        content: str,
+        *,
+        producers_of: str,
+        peers: list[str],
+        request_id: str,
+        wait_s: float,
+    ) -> dict[str, Any]:
+        """Put a question to the peers that produce a topic, or to chosen peers.
+
+        Only a session's own broker has the mesh; other hosts refuse."""
+        raise ForgeApiError(
+            "mesh_ask needs a Forge session's own MCP (the mesh belongs to that session's broker)",
+            status=501,
+        )
+
+    async def mesh_subscribe(self, *, topic: str, correlation_id: str) -> dict[str, Any]:
+        """Start listening to a mesh topic or follow a thread. Only a session's own broker."""
+        raise ForgeApiError(
+            "mesh_subscribe needs a Forge session's own MCP (the mesh belongs to that session's "
+            "broker)",
+            status=501,
+        )
+
+    async def mesh_unsubscribe(self, *, topic: str, correlation_id: str) -> dict[str, Any]:
+        """Stop following a topic or thread followed at runtime. Only a session's own broker."""
+        raise ForgeApiError(
+            "mesh_unsubscribe needs a Forge session's own MCP (the mesh belongs to that "
+            "session's broker)",
             status=501,
         )
 

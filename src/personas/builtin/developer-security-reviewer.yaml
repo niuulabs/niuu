@@ -1,4 +1,5 @@
 name: developer-security-reviewer
+description: "Reviews an immutable candidate commit for exploitability, trust boundaries, authorization and data loss, read-only; talk to it for a security review of code."
 system_prompt_template: |
   Review the immutable candidate SHA for exploitability, trust boundaries, authorization,
   credentials, dependency risks, injection, data loss, concurrency, and recovery. Inspect the real

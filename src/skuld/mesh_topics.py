@@ -19,6 +19,8 @@ they answer, is theirs and the workflow's.
 
 from __future__ import annotations
 
+import hashlib
+import re
 import socket
 import uuid
 from collections.abc import Iterable
@@ -27,6 +29,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from niuu.mesh.events import MeshEvent, MeshEventType
+from niuu.mesh.identity import CHOOSER_FACTS
 from personas.domain.persona_document import (
     PortablePersonaDefinition,
     consumed_event_types,
@@ -41,6 +44,51 @@ _PUBLICATION_ID_NAMESPACE = uuid.UUID("5d1c8f7a-2b3e-4f6a-9c0d-7e4a1b2c3d4e")
 IN_REPLY_TO_KEY = "in_reply_to"
 #: The payload key that carries an explicit thread tag the publisher chose.
 CORRELATION_KEY = "correlation_id"
+
+
+#: Topics the platform uses for threads and for answers addressed to one peer. Nobody
+#: publishes or subscribes to them by name.
+THREAD_TOPIC_PREFIX = "thread"
+INBOX_TOPIC_PREFIX = "inbox"
+_RESERVED_PREFIXES = (f"{THREAD_TOPIC_PREFIX}.", f"{INBOX_TOPIC_PREFIX}.")
+_SEGMENT = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+
+
+class InvalidTopicError(ValueError):
+    """A topic name the mesh cannot carry, or one reserved for the platform."""
+
+
+def thread_topic(correlation_id: str) -> str:
+    """The topic that carries one thread: every publication that belongs to it.
+
+    The correlation id is hashed so ids that differ only in punctuation or case never share
+    a topic and the result is always a valid topic segment.
+    """
+    digest = hashlib.sha256(correlation_id.encode()).hexdigest()[:32]
+    return f"{THREAD_TOPIC_PREFIX}.t{digest}"
+
+
+def inbox_topic(peer_id: str) -> str:
+    """The topic a peer always listens on: answers published to it by name of its own event."""
+    digest = hashlib.sha256(peer_id.encode()).hexdigest()[:32]
+    return f"{INBOX_TOPIC_PREFIX}.p{digest}"
+
+
+def validate_subscribable_topic(topic: str) -> str:
+    """The topic, or :class:`InvalidTopicError` naming what is wrong and the remedy."""
+    cleaned = topic.strip()
+    if not cleaned or any(not _SEGMENT.fullmatch(segment) for segment in cleaned.split(".")):
+        raise InvalidTopicError(
+            f"{topic!r} is not a topic: it is dot-separated segments that each start with a "
+            "letter and hold only letters, digits, '_' and '-' (for example review.requested)"
+        )
+    if cleaned.startswith(_RESERVED_PREFIXES):
+        raise InvalidTopicError(
+            f"{cleaned!r} is a platform topic. Follow a thread with mesh_subscribe "
+            "correlation_id; a peer's inbox topic carries answers addressed to that peer and "
+            "is not subscribable"
+        )
+    return cleaned
 
 
 class UndeclaredTopicError(ValueError):
@@ -137,7 +185,8 @@ def build_publication(
 
     ``source`` is this session's mesh peer id, which is the address a consumer's ``reply``
     goes to. The ``publisher`` block names the session for the audit trail. The event's
-    ``correlation_id`` is the publisher's thread tag, or the event's own id.
+    ``correlation_id`` is the thread it belongs to: the one the publisher named, else the
+    event it answers (``in_reply_to``), else its own id.
     """
     event_id = publication_event_id(peer_id, topic, request_id)
     payload: dict[str, Any] = {
@@ -153,10 +202,13 @@ def build_publication(
         },
         "trigger_source": "mesh_publish",
     }
+    # The thread an event belongs to: the one the publisher named, else the one it answers,
+    # else its own (a new conversation).
+    thread = correlation_id or in_reply_to or event_id
     if in_reply_to:
         payload[IN_REPLY_TO_KEY] = in_reply_to
-    if correlation_id:
-        payload[CORRELATION_KEY] = correlation_id
+    if thread != event_id:
+        payload[CORRELATION_KEY] = thread
     return MeshEvent(
         event_id=event_id,
         type=MeshEventType.OUTCOME,
@@ -164,20 +216,40 @@ def build_publication(
         payload=payload,
         timestamp=now or datetime.now(UTC),
         urgency=urgency,
-        correlation_id=correlation_id or event_id,
+        correlation_id=thread,
         session_id=session_id,
         root_correlation_id=session_id,
         trace_context=dict(trace_context or {}),
     )
 
 
+def publication_topics(event: MeshEvent, topic: str, reply_peer_id: str = "") -> list[str]:
+    """Every topic one publication goes to, the declared topic first.
+
+    * its declared topic, for whoever consumes it;
+    * its thread's topic when it belongs to a thread that is not just itself (an answer, or
+      an event that names a thread), so everyone following the thread sees it;
+    * the inbox topic of the peer it answers, so that peer receives the answer without having
+      subscribed to anything in advance.
+    """
+    topics = [topic]
+    if event.correlation_id != event.event_id:
+        topics.append(thread_topic(event.correlation_id))
+    if reply_peer_id:
+        topics.append(inbox_topic(reply_peer_id))
+    return list(dict.fromkeys(topics))
+
+
 def describe_peer(peer: Any) -> dict[str, Any]:
     """The facts a discovered peer announced, as a chooser reads them.
 
-    Nothing here is ranked or scored. A field a peer's announcement did not carry (an older
-    Skuld, a Ravn, an mDNS peer) is empty, which says only that it did not announce it.
+    Nothing here is ranked or scored. A fact the peer's announcement did not carry (an older
+    Skuld, a Kubernetes or static discovery that cannot say it) is ``null`` and named in
+    ``not_announced``: that is not the same as the peer announcing an empty role or no
+    topics, and it is never rendered as an empty string.
     """
-    return {
+    missing = set(getattr(peer, "not_announced", ()))
+    facts: dict[str, Any] = {
         "peer_id": peer.peer_id,
         "name": getattr(peer, "display_name", ""),
         "kind": getattr(peer, "participant_type", ""),
@@ -193,6 +265,41 @@ def describe_peer(peer: Any) -> dict[str, Any]:
         "trust_level": peer.trust_level,
         "last_heartbeat": peer.last_heartbeat.isoformat(),
     }
+    for fact, field in _FACT_FIELDS.items():
+        if fact in missing:
+            facts[field] = None
+    facts["not_announced"] = [fact for fact in CHOOSER_FACTS if fact in missing]
+    return facts
+
+
+#: The tool-output field each chooser fact fills when the peer announced it.
+_FACT_FIELDS = {
+    "role": "role",
+    "description": "description",
+    "activity_state": "activity_state",
+    "busy": "status",
+    "consumes_event_types": "consumes",
+    "emits_event_types": "produces",
+}
+
+
+def producers_of(peers: Iterable[Any], topic: str) -> tuple[list[Any], int]:
+    """The peers that announce they produce ``topic``, in peer id order, and how many peers
+    did not announce what they produce at all.
+
+    That is a fact lookup in the peer table and nothing more: whether a peer is the right one
+    to ask is the asker's judgment. A peer that did not announce its topics is not matched
+    (it is unknown, not "no"), and is counted so the asker knows the match may be incomplete.
+    """
+    matched: list[Any] = []
+    unknown = 0
+    for peer in sorted(peers, key=lambda candidate: candidate.peer_id):
+        if "emits_event_types" in getattr(peer, "not_announced", ()):
+            unknown += 1
+            continue
+        if topic in peer.emits_event_types:
+            matched.append(peer)
+    return matched, unknown
 
 
 def peer_table(

@@ -69,6 +69,7 @@ _OUTCOMES = (OUTCOME_ACCEPTED, OUTCOME_DUPLICATE, OUTCOME_REFUSED, OUTCOME_DELIV
 #: Outcomes of a message this session *published* to a mesh topic (the sending side of the
 #: same counter): the transport took it, or it was refused (an undeclared topic) or failed.
 OUTCOME_PUBLISHED = "published"
+OUTCOME_ASKED = "asked"
 OUTCOME_FAILED = "failed"
 
 CHANNEL_SESSION = "session"
@@ -153,12 +154,34 @@ def peer_turn_id(session_id: str, message_ids: list[str]) -> str:
 
 
 def render_peer_turn(entries: list[PeerInboxEntry]) -> str:
-    """The text of one turn: each message as the contract renders it, oldest first."""
+    """The text of one turn: each message as the contract renders it, oldest first.
+
+    Messages of one thread (a mesh publication and the answers to it) are rendered together
+    under a thread header, in the order they arrived; threads and single messages follow
+    the order of their first message. Any number of answers may be in one turn, and none
+    is waited for.
+    """
     if len(entries) == 1:
         return render_for_harness(entries[0].envelope)
+    groups: dict[str, list[PeerInboxEntry]] = {}
+    for entry in entries:
+        # A message with no thread is its own group.
+        key = entry.envelope.thread or f"\0{entry.envelope.message_id}"
+        groups.setdefault(key, []).append(entry)
+    blocks = []
+    for key, members in groups.items():
+        body = _BATCH_SEPARATOR.join(render_for_harness(member.envelope) for member in members)
+        if len(members) == 1:
+            blocks.append(body)
+            continue
+        blocks.append(f"[Thread {key}: {len(members)} messages]\n\n{body}")
     header = f"[{len(entries)} messages arrived while you were working, oldest first]"
-    body = _BATCH_SEPARATOR.join(render_for_harness(entry.envelope) for entry in entries)
-    return f"{header}\n\n{body}"
+    if any(len(members) > 1 for members in groups.values()):
+        header = (
+            f"[{len(entries)} messages arrived while you were working, grouped by thread; "
+            "oldest first]"
+        )
+    return f"{header}\n\n" + _BATCH_SEPARATOR.join(blocks)
 
 
 @dataclass
@@ -171,6 +194,18 @@ class AnswerWait:
 
     def matches(self, envelope: PeerMessage) -> bool:
         return envelope.in_reply_to == self.message_id and envelope.sender.id == self.from_id
+
+
+@dataclass
+class QuestionWait(AnswerWait):
+    """A ``mesh_ask`` call waiting for the answers to one question, from whoever answers.
+
+    A question goes to several peers and anyone may answer it, so any message that answers
+    the question counts, whoever it comes from.
+    """
+
+    def matches(self, envelope: PeerMessage) -> bool:
+        return envelope.in_reply_to == self.message_id
 
 
 @dataclass(frozen=True)
@@ -506,6 +541,48 @@ class PeerInboxMixin:
         finally:
             self._peer_answer_waits.pop(message_id, None)
             self._spawn_boundary_injection(f"peer-inbox-ask-ended-{message_id}")
+
+    @asynccontextmanager
+    async def awaiting_question_answers(self, question_id: str) -> AsyncIterator[QuestionWait]:
+        """Hold every answer to ``question_id`` back from the harness while the caller waits.
+
+        Whatever the caller did not take is handed to the harness at the next boundary once
+        the wait ends, however it ended.
+        """
+        wait = QuestionWait(message_id=question_id, from_id="")
+        self._peer_answer_waits[question_id] = wait
+        try:
+            yield wait
+        finally:
+            self._peer_answer_waits.pop(question_id, None)
+            self._spawn_boundary_injection(f"peer-inbox-question-ended-{question_id}")
+
+    async def take_question_answers(self, wait: QuestionWait) -> list[TakenAnswer]:
+        """Every answer to the question that is in the inbox, taken durably, oldest first.
+
+        Taking records each as consumed in the session log before returning it, so a restart
+        cannot hand it to the harness. An answer the harness was already handed is returned
+        marked ``already_delivered``. A log that does not store one raises
+        (:class:`PeerMessageRefusedError`) and leaves it in the inbox for normal delivery.
+        """
+        consumer = f"ask:{wait.message_id}"
+        taken: list[TakenAnswer] = []
+        async with self._peer_inbox_lock:
+            for entry in self._peer_inbox.values():
+                if not wait.matches(entry.envelope) or entry.consumed_by not in ("", consumer):
+                    continue
+                if entry.injected:
+                    taken.append(TakenAnswer(entry.envelope, already_delivered=True))
+                    continue
+                if not entry.consumed_by:
+                    entry.consumed_by = consumer
+                    try:
+                        await self._record_peer_entries([entry])
+                    except PeerMessageError:
+                        entry.consumed_by = ""
+                        raise
+                taken.append(TakenAnswer(entry.envelope, already_delivered=False))
+        return taken
 
     async def take_peer_answer(self, wait: AnswerWait) -> TakenAnswer | None:
         """The reply the wait is for, if it is in the inbox, taken durably; ``None`` if not yet.
