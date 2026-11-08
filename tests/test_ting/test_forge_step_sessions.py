@@ -276,6 +276,43 @@ async def test_the_configured_default_model_is_the_last_resort_and_none_is_an_er
         await bare.ensure_session(campaign.id, "coder", PERSONA_REF)
 
 
+async def test_the_members_extra_prompt_reaches_the_session_create() -> None:
+    campaign = _campaign()
+    member = campaign.workflow_snapshot["graph"]["nodes"][0]["stageMembers"][0]
+    member["systemPromptExtra"] = "Only touch probe/."
+    sessions, forge = _sessions(campaign)
+
+    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+
+    assert forge.create_requests[0].system_prompt == "Only touch probe/."
+
+
+async def test_a_member_without_an_extra_prompt_sends_none() -> None:
+    campaign = _campaign()
+    sessions, forge = _sessions(campaign)
+
+    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+
+    assert forge.create_requests[0].system_prompt == ""
+
+
+async def test_a_member_given_two_extra_prompts_is_refused() -> None:
+    campaign = _campaign()
+    nodes = campaign.workflow_snapshot["graph"]["nodes"]
+    nodes[0]["stageMembers"][0]["systemPromptExtra"] = "one"
+    nodes.append(
+        {
+            "id": "fix",
+            "kind": "stage",
+            "stageMembers": [{"personaId": "coder", "system_prompt_extra": "two"}],
+        }
+    )
+    sessions, _ = _sessions(campaign)
+
+    with pytest.raises(StepSessionError, match="different systemPromptExtra"):
+        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+
+
 async def test_a_member_given_two_models_is_refused() -> None:
     snapshot = _campaign().workflow_snapshot
     snapshot["graph"]["nodes"].append(

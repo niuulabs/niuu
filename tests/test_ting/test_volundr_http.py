@@ -1568,8 +1568,32 @@ class TestStepSessions:
         assert body["model"] == "claude-sonnet-4-6"
         assert "persona_name" not in body
         assert body["source"]["branch"] == "feat/x"
+        assert "system_prompt" not in body  # the member has no extra prompt
         assert session.id == "ses-9"
         assert session.tracker_issue_id == "workflow:run"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_members_extra_prompt_is_sent_as_the_sessions_system_prompt(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        route = respx.post(SESSIONS_URL).mock(
+            return_value=httpx.Response(201, json={"id": "ses-9", "name": "n", "status": "created"})
+        )
+
+        await adapter.create_step_session(
+            StepSessionRequest(
+                name="n",
+                model="m",
+                persona_definition={},
+                tracker_issue_id="workflow:run",
+                run_id=contract.RUN_ID,
+                member="coder",
+                system_prompt="Only touch probe/.",
+            )
+        )
+
+        assert json.loads(route.calls[0].request.content)["system_prompt"] == "Only touch probe/."
 
     @pytest.mark.asyncio
     @respx.mock

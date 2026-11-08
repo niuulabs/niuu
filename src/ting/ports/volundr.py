@@ -121,6 +121,9 @@ class StepSessionRequest:
     repo: str = ""
     branch: str = ""
     base_branch: str = ""
+    #: The stage member's ``systemPromptExtra``: appended after the persona's own
+    #: instructions, in the form each harness takes (Forge's ``system_prompt``).
+    system_prompt: str = ""
 
 
 @dataclass(frozen=True)

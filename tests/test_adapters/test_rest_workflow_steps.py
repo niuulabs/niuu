@@ -22,6 +22,10 @@ from tests.conftest import (
     make_session_participant_service,
 )
 from volundr.adapters.inbound.rest import create_router
+from volundr.adapters.outbound.contributors.prompt import PromptContributor
+from volundr.adapters.outbound.contributors.workflow_step_host import (
+    WorkflowStepHostContributor,
+)
 from volundr.adapters.outbound.k8s_storage import InMemoryStorageAdapter
 from volundr.config import LocalMountsConfig
 from volundr.domain.models import GitSource, Session, SessionStatus
@@ -129,6 +133,50 @@ class TestWorkflowStepSessionCreate:
         assert stored.workload_config["workflow_step_host"] is True
         assert stored.workload_config["workflow_run_id"] == run_id
         assert stored.workload_config["workflow_member"] == "coder"
+
+    def test_a_members_extra_prompt_reaches_the_session_spec_with_the_step_host_setting(
+        self, repository: InMemorySessionRepository, pod_manager: MockPodManager
+    ) -> None:
+        """Ting's system_prompt rides the step-host create into the spec Skuld is given:
+        values.session.systemPrompt, which Skuld appends after the pinned persona."""
+        service = SessionService(
+            repository,
+            pod_manager,
+            contributors=[WorkflowStepHostContributor(), PromptContributor()],
+        )
+        app = FastAPI()
+        app.include_router(
+            create_router(
+                service,
+                StatsService(InMemoryStatsRepository(), service),
+                pricing_provider=InMemoryPricingProvider(),
+                session_participant_service=make_session_participant_service(service),
+            )
+        )
+
+        class _SettingsStub:
+            local_mounts = LocalMountsConfig()
+
+        app.state.settings = _SettingsStub()
+        app.state.admin_settings = {}
+        app.state.storage = InMemoryStorageAdapter()
+        with TestClient(app) as local_client:
+            response = local_client.post(
+                "/api/v1/forge/sessions",
+                json={
+                    **_SESSION_BODY,
+                    "persona_definition": _persona_document(),
+                    "workflow_step_host": True,
+                    "workflow_run_id": STEP_ACTIVATION["run_id"],
+                    "workflow_member": "coder",
+                    "system_prompt": "Only touch probe/.",
+                },
+            )
+
+        assert response.status_code == 201, response.text
+        _, spec = pod_manager.start_calls[-1]
+        assert spec.values["session"]["systemPrompt"] == "Only touch probe/."
+        assert spec.values["workflowSteps"] == {"enabled": True}
 
     def test_an_ordinary_session_has_no_step_identity(self, client: TestClient) -> None:
         response = client.post("/api/v1/forge/sessions", json=_SESSION_BODY)

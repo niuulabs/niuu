@@ -259,6 +259,7 @@ class VolundrHTTPAdapter(VolundrPort):
                     "issue_id": request.tracker_issue_id,
                     "workflow_run_id": request.run_id,
                     "workflow_member": request.member,
+                    **({"system_prompt": request.system_prompt} if request.system_prompt else {}),
                 },
             )
             if resp.status_code >= 400:

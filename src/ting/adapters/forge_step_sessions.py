@@ -273,6 +273,7 @@ class ForgeStepSessions(StepSessionPort):
                 repo=str(campaign.metadata.get("repo") or ""),
                 branch=str(campaign.metadata.get("branch") or ""),
                 base_branch=str(campaign.metadata.get("base_branch") or ""),
+                system_prompt=self._extra_prompt_of(campaign, member),
             )
         )
         logger.info(
@@ -333,6 +334,21 @@ class ForgeStepSessions(StepSessionPort):
         return model
 
     @staticmethod
+    def _extra_prompt_of(campaign: WorkflowCampaign, member: str) -> str:
+        """The member's ``systemPromptExtra``; one per member, as its session is one."""
+        snapshot = campaign.workflow_snapshot
+        # Both spellings, as the workflow snapshot reads them.
+        extras = _member_values(snapshot, member, "systemPromptExtra") | _member_values(
+            snapshot, member, "system_prompt_extra"
+        )
+        if len(extras) > 1:
+            raise StepSessionError(
+                f"member {member!r} is given different systemPromptExtra by different stages "
+                "but a run has one session per member; give the member one extra prompt"
+            )
+        return next(iter(extras), "")
+
+    @staticmethod
     def _persona_document(
         campaign: WorkflowCampaign, member: str, persona_ref: PersonaRef
     ) -> dict[str, Any]:
@@ -386,15 +402,20 @@ def activation_body(activation: StepActivation) -> dict[str, Any]:
 
 
 def _member_models(snapshot: Mapping[str, Any], member: str) -> set[str]:
+    return _member_values(snapshot, member, "model")
+
+
+def _member_values(snapshot: Mapping[str, Any], member: str, key: str) -> set[str]:
+    """The distinct non-empty values of ``key`` the member's stages give it."""
     graph = snapshot.get("graph")
     nodes = graph.get("nodes") if isinstance(graph, Mapping) else None
-    models: set[str] = set()
+    values: set[str] = set()
     for node in nodes or []:
         if not isinstance(node, Mapping) or node.get("kind") != "stage":
             continue
         for raw in node.get("stageMembers") or []:
             if isinstance(raw, Mapping) and str(raw.get("personaId") or "") == member:
-                model = str(raw.get("model") or "").strip()
-                if model:
-                    models.add(model)
-    return models
+                value = str(raw.get(key) or "").strip()
+                if value:
+                    values.add(value)
+    return values
