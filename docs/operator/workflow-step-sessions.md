@@ -23,6 +23,16 @@ agents; it activates steps and records how they end.
 - When the run ends (completed, failed or canceled) Ting stops every session that
   carries the run's tag.
 
+The members of a run talk to each other over the mesh (see
+[agent messaging](agent-messaging.md)). Forge's `workflow_step_host` session contributor
+gives every step session of a run `mesh.enabled: true` and the realm `workflow-{run id}`,
+so the run's members find each other and no other run's; each announces and follows the
+topics its pinned persona `produces` and `consumes`. In a cluster the skuld chart derives
+the rest on nng (discovery of the realm's pods, the pod's own address). The chart-rendered
+(Flux) runtime reads these values; the others keep the mesh their pod manager's `mesh`
+setting gives every session. Configure the contributor with `join_mesh: false` to run step
+sessions without the mesh.
+
 The persona a session runs is the pinned portable document of the run's workflow
 snapshot, sent to Forge whole; Forge checks it against its digest. The model is the stage
 member's `model`, else the model the run was launched with, else `dispatch.default_model`
