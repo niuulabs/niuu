@@ -257,3 +257,6 @@ references*
 ting.yaml
 # Local Forge stability reports (JUnit, manifests, traces).
 .forge-results/
+
+# Native launcher and compiler caches
+.build-cache/

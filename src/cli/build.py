@@ -6,7 +6,7 @@ into a single portable ``--onefile`` binary.
 
 Usage::
 
-    python -m cli.build                 # default: niuu binary
+    uv run --extra nuitka python -m cli.build  # optional native compilation
     python -m cli.build --name niuu-agent --entry src/cli/__main__.py
 
 Parameterised via BINARY_NAME / ENTRY_POINT for future targets

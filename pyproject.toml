@@ -108,9 +108,6 @@ infra = [
 cli = [
     "typer>=0.27.2",
     "textual>=8.2.8",
-    "nuitka[onefile]>=4.2.1",
-    "ordered-set>=4.1",
-    "patchelf>=0.19.1.0; sys_platform == 'linux'",
     # `niuu platform up` (mini mode) calls configure_observability itself —
     # enabling observability.enabled: true without this extra would raise
     # (no-fallbacks), turning on tracing into a broken local platform. The
@@ -119,6 +116,12 @@ cli = [
     # Likewise git.provenance.enabled defaults to true in the platform the CLI
     # hosts, and enabled without sigstore is fatal.
     "volundr[provenance]",
+]
+nuitka = [
+    "volundr[cli]",
+    "nuitka[onefile]>=4.2.1",
+    "ordered-set>=4.1",
+    "patchelf>=0.19.1.0; sys_platform == 'linux'",
 ]
 tui = [
     "textual>=8.2.8",

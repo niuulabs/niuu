@@ -1,4 +1,4 @@
-name: Compile Niuu binaries
+name: Package Niuu executables
 
 on:
   workflow_call:
@@ -74,11 +74,7 @@ jobs:
     env:
       UV_PYTHON: "3.12"
       UV_FROZEN: "true"
-      NUITKA_CACHE_DIR: ${{ github.workspace }}/.build-cache/nuitka
-      CCACHE_DIR: ${{ github.workspace }}/.build-cache/ccache
-      CCACHE_BASEDIR: ${{ github.workspace }}
-      CCACHE_MAXSIZE: 2G
-      NIUU_NUITKA_EXTRA_ARGS: --assume-yes-for-downloads --report=dist/compilation-report.xml
+      PYAPP_INSTALL_DIR_NIUU: ${{ github.workspace }}/.build-cache/niuu-runtime
     permissions:
       contents: read
     strategy:
@@ -161,100 +157,67 @@ jobs:
           path: build/pginstall
           key: ${{ steps.pg-cache.outputs.cache-primary-key }}
 
-      - name: Install compiler cache
-        shell: bash
+      - name: Install payload tools
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
-            brew install ccache
+            brew install zstd
           else
             sudo apt-get update
-            sudo apt-get install -y ccache
+            sudo apt-get install -y patchelf zstd
           fi
-
-      - name: Install Linux ARM64 Nuitka toolchain
-        if: matrix.os == 'linux' && matrix.arch == 'arm64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld
-          {
-            echo "CC=clang"
-            echo "CXX=clang++"
-            echo "LDFLAGS=-fuse-ld=lld"
-          } >> "$GITHUB_ENV"
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
         with:
-          extras: --frozen --extra cli --extra dev
+          extras: --frozen --extra cli --no-dev
 
-      - name: Identify compiler cache
+      - name: Identify launcher toolchain
         id: toolchain
-        shell: bash
         run: |
           mkdir -p dist/timings
           {
-            uv run --frozen python -c 'import sys; from importlib.metadata import version; print(sys.version); print("Nuitka", version("nuitka"))'
-            "${CC:-cc}" --version
-            ccache --version
+            rustc --version
+            cargo --version
+            cc --version
             if [ "$RUNNER_OS" = "macOS" ]; then xcrun --show-sdk-version; fi
           } > dist/toolchain.txt
-          cat dist/toolchain.txt
           echo "digest=$(shasum -a 256 dist/toolchain.txt | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          uv run --frozen --no-dev python --version >> dist/toolchain.txt
+          zstd --version >> dist/toolchain.txt
+          cat dist/toolchain.txt
 
-      - name: Restore Nuitka and C compiler caches
+      - name: Restore Rust dependencies
         id: compiler-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4
         with:
-          path: .build-cache
-          # Caches are immutable: a new key saves newly compiled objects every run.
-          key: nuitka-v1-${{ matrix.runner }}-${{ matrix.arch }}-${{ steps.toolchain.outputs.digest }}-${{ hashFiles('uv.lock', 'src/cli/build.py', 'src/cli/*.yml', 'scripts/postgres_nuitka_plugin.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .build-cache/pyapp-target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: pyapp-deps-v1-${{ matrix.runner }}-${{ matrix.arch }}-${{ steps.toolchain.outputs.digest }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            nuitka-v1-${{ matrix.runner }}-${{ matrix.arch }}-${{ steps.toolchain.outputs.digest }}-${{ hashFiles('uv.lock', 'src/cli/build.py', 'src/cli/*.yml', 'scripts/postgres_nuitka_plugin.py') }}-
-            nuitka-v1-${{ matrix.runner }}-${{ matrix.arch }}-${{ steps.toolchain.outputs.digest }}-
+            pyapp-deps-v1-${{ matrix.runner }}-${{ matrix.arch }}-${{ steps.toolchain.outputs.digest }}-
 
-      - name: Compile and time the onefile binary
+      - name: Package and time the single executable
         id: compile
         env:
           BUILD_TARGET: ${{ matrix.os }}-${{ matrix.arch }}
           COMPILER_CACHE_MATCH: ${{ steps.compiler-cache.outputs.cache-matched-key }}
           POSTGRES_CACHE_HIT: ${{ steps.pg-cache.outputs.cache-hit }}
-        shell: bash
-        run: |
-          ccache --zero-stats
-          uv run --frozen python scripts/measure_compilation.py -- make build-cli-bin
+        run: uv run --frozen --no-dev python scripts/measure_binary_build.py -- make build-cli-bin
 
-      - name: Record compiler cache statistics
-        if: always() && steps.compile.outcome != 'skipped'
-        shell: bash
-        run: |
-          ccache --show-stats | tee dist/ccache-stats.txt
-          ccache --print-stats > dist/ccache-stats.tsv
-          {
-            python3 scripts/measure_compilation.py --summary dist/timings
-            echo '```text'
-            cat dist/ccache-stats.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Measure first and warm startup; verify niuu subcommands
+        run: uv run --frozen --no-dev python scripts/measure_binary_build.py --startup dist/niuu-${{ matrix.os }}-${{ matrix.arch }}
 
-      - name: Save updated compiler caches
+      - name: Save Rust dependencies
         if: always() && steps.compiler-cache.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4
         with:
-          path: .build-cache
-          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
-
-      - name: Upload compilation diagnostics
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: compilation-${{ matrix.os }}-${{ matrix.arch }}
-          overwrite: true
           path: |
-            dist/timings/
-            dist/toolchain.txt
-            dist/ccache-stats.*
-            dist/compilation-report.xml
-          if-no-files-found: warn
+            .build-cache/pyapp-target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
 
       - name: Set up Node.js for the real agent runtime
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -266,10 +229,10 @@ jobs:
           npm ci --prefix containers/volundr/npm-tools
           echo "$GITHUB_WORKSPACE/containers/volundr/npm-tools/node_modules/.bin" >> "$GITHUB_PATH"
 
-      - name: Verify quick start against the compiled binary
+      - name: Verify quick start against the packaged executable
         env:
           TMPDIR: ${{ runner.temp }}
-        run: uv run python scripts/check_quickstart.py --niuu dist/niuu-${{ matrix.os }}-${{ matrix.arch }}
+        run: uv run --frozen --no-dev python scripts/check_quickstart.py --niuu dist/niuu-${{ matrix.os }}-${{ matrix.arch }} --timings-output dist/timings/platform.json
 
       - name: Verify live quick-start inference when credentials are configured
         env:
@@ -278,7 +241,7 @@ jobs:
         shell: bash
         run: |
           if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-            uv run python scripts/check_quickstart.py \
+            uv run --frozen --no-dev python scripts/check_quickstart.py \
               --niuu dist/niuu-${{ matrix.os }}-${{ matrix.arch }} --live
             echo "Live quick-start inference passed." >> "$GITHUB_STEP_SUMMARY"
           else
@@ -304,3 +267,18 @@ jobs:
           path: dist/niuu-${{ matrix.os }}-${{ matrix.arch }}
           if-no-files-found: error
 
+      - name: Summarize build and startup measurements
+        if: always()
+        run: python3 scripts/measure_binary_build.py --summary dist/timings >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: binary-build-${{ matrix.os }}-${{ matrix.arch }}
+          overwrite: true
+          path: |
+            dist/timings/
+            dist/toolchain.txt
+            dist/launcher-timing.html
+          if-no-files-found: warn

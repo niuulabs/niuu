@@ -1,73 +1,114 @@
-# Niuu single-binary builds
+# Niuu single-executable builds
 
-`Niuu binary benchmarks` (`.github/workflows/cli-binaries.yaml`) compiles the
-existing `cli.build` Nuitka onefile distribution on four native GitHub runners:
+The distributed executable is `niuu`, with the existing subcommands. PyApp
+launches `niuu.__main__:main`, the same entry point as the installed Python
+command. Niuu remains Python; only the small PyApp launcher is compiled to native
+code. The executable embeds Python, locked application dependencies, the Niuu
+wheel, web assets, migrations and PostgreSQL with its extensions.
 
-| Artifact | Runner |
+No Python installation, package installer or network download is needed at
+launch. The first invocation unpacks the embedded Zstandard archive into
+PyApp's per-user installation directory. Subsequent invocations reuse that
+installation. PyApp identifies the embedded distribution by its contents, so a
+changed payload gets a separate installation. User configuration and databases
+continue to use Niuu's existing paths.
+
+External provider tools, including the Claude CLI used by the quick-start
+check, retain their existing prerequisites. This does not install provider
+credentials or authenticate to a model service.
+
+## Building and running
+
+Install Rust/Cargo, uv and Zstandard on the build host. Linux also needs
+`patchelf`. The normal commands are:
+
+```bash
+make build                 # web, PostgreSQL, then the executable
+make build-cli-bin         # package with web/PostgreSQL assets already prepared
+./dist/niuu-darwin-arm64 --version
+./dist/niuu-darwin-arm64 platform --help
+```
+
+The executable's installed name is `niuu`; artifact names add the target suffix.
+The Python wheel's existing service entry points are internal to the embedded
+runtime and are not installed as global commands. Sessions launch Skuld through
+that bundled Python interpreter.
+
+The old Nuitka builder remains available with
+`uv run --extra nuitka python -m cli.build`. It is not the default build path:
+native compilation of thousands of Python modules did not meet the build-time
+priority for this distribution.
+
+## GitHub Actions
+
+`Niuu binary benchmarks` (`.github/workflows/cli-binaries.yaml`) is manually
+dispatched. Routine `dev` pushes do not trigger binary builds. Releases call the
+same reusable build workflow.
+
+| Artifact | Native runner |
 | --- | --- |
 | `niuu-linux-amd64` | `ubuntu-24.04` |
 | `niuu-linux-arm64` | `ubuntu-24.04-arm` |
 | `niuu-darwin-amd64` | `macos-15-intel` |
 | `niuu-darwin-arm64` | `macos-15` |
 
-The workflow is opt-in: dispatch it manually from Actions when a binary or
-benchmark is needed. Release builds call the same reusable workflow. Routine
-`dev` pushes do not trigger native compilation.
+The web build runs once and feeds all four jobs. Each job measures packaging,
+first CLI launch with an empty installation cache, and three warm launches of
+`niuu --version`. It also checks `niuu platform --help` and
+`niuu platform up --help`, then runs the existing isolated quick-start check:
+real PostgreSQL, HTTP APIs, served web assets, session launch/stop and shutdown.
+The platform-to-health measurement uses the warmed launcher installation and
+a new database, including initialization and migrations.
 
-The web UI builds once and is downloaded by all four compilation jobs. Each
-binary bundles the existing package/resource selection, including migrations,
-web assets and embedded PostgreSQL with pgvector. The existing quick-start
-test runs against each compiled binary. Successfully compiled binaries remain
-available as CI artifacts even if a smoke test fails; check the overall job
-result before using them. A failed smoke test blocks release publication.
-`quickstart-<os>-<arch>` artifacts preserve the platform startup logs.
-An optional release secret, `NIUU_QUICKSTART_CLAUDE_TOKEN`, also enables the
-existing live inference check; benchmark runs do not receive that secret.
-These are OS-specific binaries, not a universal executable: external runtimes
-such as the Claude CLI remain separate prerequisites.
+Successfully built executables remain downloadable even if a smoke check
+fails. Check the overall job result before using them; a failed check blocks
+release publication. Benchmark runs receive no provider credentials. The
+existing optional release secret `NIUU_QUICKSTART_CLAUDE_TOKEN` enables the
+additional live inference check on release builds.
 
-## Reading timings
+## Where caches are used
 
-The `Compilation timing comparison` job summary lists elapsed seconds for each
-target, the compilation exit code, whether a compiler cache was restored, and
-whether PostgreSQL came from cache. Each build job also has its own timing and
-ccache statistics in its summary.
+| Cache | Contents | Location / invalidation |
+| --- | --- | --- |
+| uv | Downloaded Python packages | Existing setup action; lockfile, Python and selected extras |
+| PostgreSQL | Built database/extension bundle | `build/pginstall`; runner, architecture, version definitions and build script |
+| Rust build | Compiled PyApp dependencies | `.build-cache/pyapp-target`; runner, architecture and actual Rust/C/SDK toolchain |
+| Cargo downloads | Registry and Git sources | `~/.cargo/registry`, `~/.cargo/git`, saved with the Rust build cache |
+| Runtime installation | Unpacked Python and Niuu | PyApp's per-user directory; separate from all CI/build caches |
 
-Elapsed time wraps `make build-cli-bin`: Python analysis, generated C compilation,
-linking, native dependency collection and onefile compression. It excludes
-runner queues, setup, dependency installation, web/PostgreSQL builds and runtime
-smoke tests. The Actions job duration includes those additional phases. Native
-runner hardware differs, so these are CI measurements, not controlled CPU
-benchmarks.
+Each CI run restores the latest matching Rust snapshot and saves an updated
+snapshot under a new run/attempt key, including after a failed build. Cargo
+validates its locked dependency graph. The PyApp package itself is cleaned and
+rebuilt for every payload; only its dependencies are reused. Full executables
+and runtime installations are not saved in the CI build cache.
 
-The `compilation-<os>-<arch>` artifacts retain `timing.json`, the toolchain
-fingerprint, human-readable and machine-readable ccache statistics, and Nuitka's
-XML compilation report. Compilation failures still produce timings and
-diagnostics; a failure during setup has no compilation timing.
+This is what "warm Rust cache" means: it saves compiling the launcher's
+third-party Rust dependencies. It does not refer to compiling Niuu or to the
+user's startup cache. A cold Rust build still compiles those dependencies once.
 
-To compare cold and warm runs, run the workflow once, download its compilation
-diagnostics, then rerun all jobs on the same commit after completion. Reruns
-replace the artifacts under their existing names. Compare the compilation seconds and ccache
-hits/misses. A restored cache alone does not prove useful hits. Run attempts
-have distinct immutable cache keys. A first run may already reuse `dev`'s
-caches; inspect the recorded cache match before calling it cold.
+## Measurements
 
-## Cache behavior
+The comparison job and each target's summary show build seconds, first/warm CLI
+seconds, platform-to-health seconds, exit code and whether a launcher cache was
+restored. Build time covers runtime assembly, locked wheel installation,
+bytecode generation, resource copying, archive creation and launcher compilation.
+It excludes web/PostgreSQL compilation, runner setup, queueing and smoke checks.
+Compare Actions job duration separately for total CI cost.
 
-- The existing setup action caches uv downloads keyed by dependencies, Python
-  version and selected extras. Dependencies install from the frozen lockfile
-  with Python 3.12.
-- PostgreSQL bundles are cached separately by runner, architecture, version
-  definitions and build script. Application changes do not rebuild PostgreSQL.
-- Nuitka's cache directory and ccache objects are restored by runner,
-  architecture and toolchain fingerprint. The preferred prefix also includes
-  the lockfile and packaging configuration; the toolchain prefix can reuse
-  unchanged objects after dependency changes. ccache validates individual
-  compiler inputs.
-- Compiler caches save under a new run/attempt key, including after a failed
-  compilation, so later runs can reuse completed work. Full binaries and
-  generated build directories are not cached. Each ccache is limited to 2 GiB;
-  GitHub's repository cache quota and eviction policy still apply.
+`binary-build-<os>-<arch>` artifacts retain raw JSON, toolchain information and
+Cargo's HTML timing report. `quickstart-<os>-<arch>` artifacts retain platform
+logs. Build failures retain their measured elapsed time; setup failures have no
+build measurement. Reruns replace artifacts with the same name, so download
+results first when preserving a before/after comparison.
 
-For local builds, use the existing `make build` target. To compile only after
-preparing web assets and PostgreSQL, use `make build-cli-bin`.
+Local Apple Silicon prototype, using existing web/PostgreSQL assets and a warm
+Rust dependency cache:
+
+| Packaging | First CLI invocation | Warm CLI median | Platform healthy (new DB) |
+| ---: | ---: | ---: | ---: |
+| 21.01 s | 8.04 s | 0.72 s | 11.61 s |
+
+These are local observations, not four-platform CI results. First launch still
+pays the one-time extraction cost. The prototype executable was about 274 MB;
+its payload includes the Claude Agent SDK's bundled CLI. Live provider inference
+was not tested.

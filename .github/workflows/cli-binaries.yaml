@@ -15,7 +15,7 @@ jobs:
     uses: ./.github/workflows/reusable-cli-build.yaml
 
   timings:
-    name: Compilation timing comparison
+    name: Build and startup comparison
     needs: build
     if: always()
     runs-on: ubuntu-24.04
@@ -25,7 +25,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          pattern: compilation-*
-          path: compilation-results
-      - name: Compare compilation times
-        run: python3 scripts/measure_compilation.py --summary compilation-results >> "$GITHUB_STEP_SUMMARY"
+          pattern: binary-build-*
+          path: binary-results
+      - name: Compare build and startup times
+        run: python3 scripts/measure_binary_build.py --summary binary-results >> "$GITHUB_STEP_SUMMARY"
