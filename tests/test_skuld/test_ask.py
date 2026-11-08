@@ -393,7 +393,7 @@ class TestEndings:
         self, tmp_path, outcomes
     ) -> None:
         row = _row(peer_messages={"pairs": [], "waiting": [QUESTION]})
-        host, _ = _host(tmp_path, ScriptedForge(row))
+        host, _ = _host(tmp_path, ScriptedForge(row), wait_max_s=0.05)
 
         result = await _ask(host, deadline_s=0.05)
 
@@ -421,6 +421,15 @@ class TestEndings:
         assert result["outcome"] == "deadline"
         assert "ask.wait_max_s=5" in result["detail"] and "deadline_s=0.05" in result["detail"]
         assert "req-1" in result["detail"]
+        assert _asks(outcomes) == ["deadline"]
+        assert cap_telemetry.cap_hit_counts().get("ask.wait_max_s", 0) == 0
+
+    async def test_running_into_the_ceiling_is_a_counted_cap_hit(self, tmp_path, outcomes) -> None:
+        host, _ = _host(tmp_path, ScriptedForge(), wait_max_s=0.05)
+
+        result = await _ask(host, deadline_s=0.05)
+
+        assert result["outcome"] == "deadline"
         assert _asks(outcomes) == ["deadline"]
         assert cap_telemetry.cap_hit_counts()["ask.wait_max_s"] == 1
 

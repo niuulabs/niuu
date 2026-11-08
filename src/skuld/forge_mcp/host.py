@@ -348,7 +348,10 @@ class BrokerForgeMcpHost(ForgeMcpHost):
                 f"(ceiling ask.wait_max_s={self._broker._settings.ask.wait_max_s:g}, the longest "
                 f"one MCP tool call may run). {again}"
             )  # fmt: skip
-        record_cap_hit("ask.wait_max_s", f"ask {request_id} ended {outcome.value}: {detail}")
+        if deadline_s >= self._broker._settings.ask.wait_max_s:
+            # Only the ceiling is a cap; a shorter deadline the caller chose is its own decision,
+            # still named and counted in skuld.ask.outcomes.
+            record_cap_hit("ask.wait_max_s", f"ask {request_id} ended {outcome.value}: {detail}")
         return self._ask_ended(recipient_id, _Ended(outcome, detail))
 
     async def _recipient_state(self, recipient_id: str, instance_id: str | None) -> _RecipientState:

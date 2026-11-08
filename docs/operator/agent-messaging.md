@@ -127,8 +127,10 @@ has: `GET /sessions/{id}` (`forge:session:read`) for the recipient's lifecycle s
 `POST /sessions/{id}/messages` (`forge:session:message`). No new Forge route was needed.
 
 **Observability.** Every call increments `skuld.ask.outcomes` once (`outcome`, `recipient`).
-A wait that reaches its deadline (`deadline`, `not_started`, `delivery_unknown`) and a refused
-over-long `deadline_s` also count as a hit of `ask.wait_max_s` (`ravn.cap.hits`).
+A wait that runs into the ceiling itself (`deadline`, `not_started` or `delivery_unknown` with
+`deadline_s` at `ask.wait_max_s`) and a refused over-long `deadline_s` also count as a hit of
+`ask.wait_max_s` (`ravn.cap.hits`). A shorter deadline the caller chose is its own decision and
+counts only on `skuld.ask.outcomes`.
 
 **Mesh peers.** A wait on a mesh peer would need the same three things on the mesh path:
 `mesh_send` to return the derived `message_id`, the answer to arrive as a peer message whose
