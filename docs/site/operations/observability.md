@@ -69,7 +69,7 @@ data after pointing a service at it.
 A single W3C trace id follows one piece of work end to end:
 
 1. **Resident judgment (Ravn)** — the case/run span, tool calls, and each
-   model request. `src/ravn/adapters/llm/{anthropic,openai}.py` inject the
+   model request. The model adapters inject the
    active `traceparent`/`tracestate` onto every model HTTP request.
 2. **Bifröst** — once the gateway's own FastAPI app is instrumented
    (`niuu.observability.instrument_fastapi_app`), the inbound completion

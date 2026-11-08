@@ -1,8 +1,8 @@
-"""Mímir domain models — shared between the Mímir service and Ravn adapters.
+"""Mímir domain models — shared between the Mímir service and its clients.
 
 These types define the wire contract for all Mímir operations.  Both
-``src/mimir/`` (the standalone service) and ``src/ravn/`` (adapters that call
-the service) import from here so that neither module depends on the other.
+``src/mimir/`` (the standalone service) and the clients that call the service
+import from here so that neither module depends on the other.
 """
 
 from __future__ import annotations

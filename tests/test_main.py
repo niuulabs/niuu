@@ -1240,14 +1240,11 @@ class TestStartupReconcilePasses:
         service = MagicMock()
         service.reconcile_all = AsyncMock(side_effect=lambda: order.append("reconcile"))
         flock = MagicMock(sync=AsyncMock(side_effect=lambda: order.append("flock")))
-        relay = MagicMock(sync=AsyncMock(side_effect=lambda: order.append("relay")))
         monkeypatch.setattr("volundr.main.asyncio.sleep", self._stop_at_first_sleep(order))
 
-        await _reconcile_resident_runtimes_loop(
-            service, interval_seconds=10.0, flock_adapter=flock, notification_relay=relay
-        )
+        await _reconcile_resident_runtimes_loop(service, interval_seconds=10.0, flock_adapter=flock)
 
-        assert order == ["reconcile", "flock", "relay", "sleep"]
+        assert order == ["reconcile", "flock", "sleep"]
 
     async def test_resident_loop_failure_is_logged_and_retried_next_interval(
         self, monkeypatch, caplog
