@@ -42,6 +42,7 @@ from ting.ports.volundr import (
     PublicSessionLogPage,
     SessionMembership,
     SpawnRequest,
+    StepSessionRequest,
     VolundrPort,
     VolundrSession,
 )
@@ -56,8 +57,6 @@ FORGE_FEATURE_FLAGS_PATH = "/api/v1/forge/feature-flags"
 FORGE_HOST_TAG_SETS_PATH = "/api/v1/forge/compute/hosts/tag-sets"
 REPO_PULL_REQUESTS_PATH = "/api/v1/niuu/repos/prs"
 INTEGRATIONS_PATH = "/api/v1/integrations"
-WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
-WORKFLOW_GATE_INTENT_RESOLVE = "resolve"
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 
 
@@ -205,14 +204,16 @@ class VolundrHTTPAdapter(VolundrPort):
             headers["x-auth-roles"] = ",".join(principal.roles)
         return headers
 
-    async def spawn_session(
+    async def _source_payload(
         self,
-        request: SpawnRequest,
+        repo: str,
         *,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> VolundrSession:
-        repo = request.repo
+        branch: str,
+        base_branch: str,
+        auth_token: str | None,
+        principal: Principal | None,
+    ) -> dict[str, str]:
+        """The workspace source a new session gets: a local mount, or a git repo."""
         local_path = _local_mount_path(repo)
         # Resolve bare org/repo shorthands to full URLs so Volundr's
         # GitContributor can produce an authenticated clone URL.
@@ -225,18 +226,129 @@ class VolundrHTTPAdapter(VolundrPort):
             if resolved:
                 logger.info("Resolved repo shorthand %s → %s", repo, resolved)
                 repo = resolved
-        source_payload = (
-            {
-                "type": "local_mount",
-                "local_path": local_path,
-            }
-            if local_path is not None
-            else {
-                "type": "git",
-                "repo": repo,
-                "branch": request.branch,
-                "base_branch": request.base_branch,
-            }
+        if local_path is not None:
+            return {"type": "local_mount", "local_path": local_path}
+        return {"type": "git", "repo": repo, "branch": branch, "base_branch": base_branch}
+
+    async def create_step_session(
+        self,
+        request: StepSessionRequest,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> VolundrSession:
+        source_payload = await self._source_payload(
+            request.repo,
+            branch=request.branch,
+            base_branch=request.base_branch,
+            auth_token=auth_token,
+            principal=principal,
+        )
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.post(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}",
+                headers=self._headers(auth_token, principal),
+                json={
+                    "name": request.name,
+                    "model": request.model,
+                    "source": source_payload,
+                    "persona_definition": request.persona_definition,
+                    "workflow_step_host": True,
+                    "issue_id": request.tracker_issue_id,
+                    "metadata": {
+                        "workflow_run_id": request.run_id,
+                        "workflow_member": request.member,
+                    },
+                },
+            )
+            if resp.status_code >= 400:
+                logger.error("create_step_session %d: %s", resp.status_code, resp.text[:500])
+                raise httpx.HTTPStatusError(
+                    f"Forge could not start the step session: {_error_detail(resp)}",
+                    request=resp.request,
+                    response=resp,
+                )
+            return self._session_from(resp.json())
+
+    async def deliver_workflow_step(
+        self,
+        session_id: str,
+        activation: dict,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.post(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/workflow/steps",
+                headers=self._headers(auth_token, principal),
+                json=activation,
+            )
+            if resp.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    f"Forge session {session_id} did not accept the step: {_error_detail(resp)}",
+                    request=resp.request,
+                    response=resp,
+                )
+
+    async def get_workflow_step(
+        self,
+        session_id: str,
+        activation_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> dict | None:
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.get(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/workflow/steps/"
+                f"{quote(activation_id, safe='')}",
+                headers=self._headers(auth_token, principal),
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, dict):
+                raise ValueError(
+                    f"Forge returned {type(data).__name__} for step {activation_id} of "
+                    f"session {session_id}; expected an object"
+                )
+            return data
+
+    def _session_from(self, data: dict[str, Any]) -> VolundrSession:
+        source = data.get("source") or {}
+        return VolundrSession(
+            id=data["id"],
+            name=data["name"],
+            status=data["status"],
+            tracker_issue_id=data.get("tracker_issue_id"),
+            chat_endpoint=_public_chat_endpoint(data.get("chat_endpoint"), self._base_url),
+            cluster_name=self._name,
+            repo=source.get("repo") or source.get("local_path", ""),
+            branch=source.get("branch", ""),
+            base_branch=source.get("base_branch", ""),
+            workload_type=data.get("workload_type", "default"),
+            activity_state=data.get("activity_state"),
+            activity_metadata=data.get("activity_metadata") or {},
+        )
+
+    async def spawn_session(
+        self,
+        request: SpawnRequest,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> VolundrSession:
+        source_payload = await self._source_payload(
+            request.repo,
+            branch=request.branch,
+            base_branch=request.base_branch,
+            auth_token=auth_token,
+            principal=principal,
         )
 
         client = await self._client(timeout=self._timeout)
@@ -588,6 +700,10 @@ class VolundrHTTPAdapter(VolundrPort):
             )
             resp.raise_for_status()
 
+    def _room_url(self, session_id: str, operation: str) -> str:
+        """A room operation, through Forge: a session's own origin may be browser-only."""
+        return f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/room/{operation}"
+
     async def send_directed_room_message(
         self,
         session_id: str,
@@ -610,53 +726,6 @@ class VolundrHTTPAdapter(VolundrPort):
                     "metadata": metadata or {},
                 },
             )
-            resp.raise_for_status()
-
-    async def join_room(
-        self,
-        session_id: str,
-        *,
-        participant_id: str,
-        display_name: str,
-        member_session_id: str,
-        notice_context: str,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> None:
-        client = await self._client(timeout=self._timeout)
-        async with client:
-            resp = await client.post(
-                self._room_url(session_id, "join"),
-                headers=self._headers(auth_token, principal),
-                json={
-                    "participant_id": participant_id,
-                    "display_name": display_name,
-                    "environment_id": session_id,
-                    "participant_type": "ravn",
-                    "session_id": member_session_id,
-                    "notice_context": notice_context,
-                },
-            )
-            resp.raise_for_status()
-
-    async def leave_room(
-        self,
-        session_id: str,
-        participant_id: str,
-        *,
-        reason: str,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> None:
-        client = await self._client(timeout=self._timeout)
-        async with client:
-            resp = await client.post(
-                self._room_url(session_id, "leave"),
-                headers=self._headers(auth_token, principal),
-                json={"participant_id": participant_id, "reason": reason},
-            )
-            if resp.status_code == httpx.codes.NOT_FOUND:
-                raise LookupError(f"Session {session_id} has no room to leave")
             resp.raise_for_status()
 
     @property
@@ -777,130 +846,6 @@ class VolundrHTTPAdapter(VolundrPort):
                 },
             )
             resp.raise_for_status()
-
-    def _room_url(self, session_id: str, operation: str) -> str:
-        """A room operation, through Forge: a session's own origin may be browser-only."""
-        return f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/room/{operation}"
-
-    async def publish_workflow_event(
-        self,
-        session_id: str,
-        event_type: str,
-        content: str,
-        *,
-        payload: dict | None = None,
-        request_id: str,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> None:
-        client = await self._client(timeout=self._timeout)
-        async with client:
-            resp = await client.post(
-                self._room_url(session_id, "workflow-events"),
-                headers=self._headers(auth_token, principal),
-                json={
-                    "event_type": event_type,
-                    "content": content,
-                    "payload": dict(payload or {}),
-                    "request_id": request_id,
-                    "source": "ting",
-                },
-            )
-            resp.raise_for_status()
-
-    async def get_workflow_gates(
-        self,
-        session_id: str,
-        *,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> list[dict]:
-        client = await self._client(timeout=self._timeout)
-        async with client:
-            resp = await client.get(
-                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/workflow/gates",
-                headers=self._headers(auth_token, principal),
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if isinstance(data, dict):
-                gates = data.get("gates", [])
-                return gates if isinstance(gates, list) else []
-            return data if isinstance(data, list) else []
-
-    async def resolve_workflow_gate(
-        self,
-        session_id: str,
-        gate_id: str,
-        decision: str,
-        *,
-        notes: str = "",
-        source: str = "ting",
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> dict:
-        headers = self._headers(auth_token, principal)
-        headers[WORKFLOW_GATE_INTENT_HEADER] = WORKFLOW_GATE_INTENT_RESOLVE
-        encoded_gate_id = quote(gate_id, safe="")
-        client = await self._client(timeout=self._timeout)
-        async with client:
-            resp = await client.post(
-                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/workflow/gates/"
-                f"{encoded_gate_id}/resolve",
-                headers=headers,
-                json={
-                    "decision": decision,
-                    "notes": notes,
-                    "source": source,
-                    # Sent explicitly: a scoped caller's token stays here, so the Forge
-                    # would otherwise see the owner's credential and no agent behind it.
-                    "actor": principal.actor if principal else "",
-                },
-            )
-            resp.raise_for_status()
-            return resp.json()
-
-    async def get_help_requests(
-        self,
-        session_id: str,
-        *,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> list[dict]:
-        client = await self._client(timeout=self._timeout)
-        async with client:
-            resp = await client.get(
-                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/help/requests",
-                headers=self._headers(auth_token, principal),
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if isinstance(data, dict):
-                requests = data.get("requests", [])
-                return requests if isinstance(requests, list) else []
-            return data if isinstance(data, list) else []
-
-    async def answer_help_request(
-        self,
-        session_id: str,
-        request_id: str,
-        answer: str,
-        *,
-        source: str = "ting",
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> dict:
-        encoded_request_id = quote(request_id, safe="")
-        client = await self._client(timeout=self._timeout)
-        async with client:
-            resp = await client.post(
-                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/help/requests/"
-                f"{encoded_request_id}/answer",
-                headers=self._headers(auth_token, principal),
-                json={"answer": answer, "source": source},
-            )
-            resp.raise_for_status()
-            return resp.json()
 
     async def start_session(
         self,

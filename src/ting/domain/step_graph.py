@@ -86,6 +86,8 @@ class PersonaContract:
     produces_map: Mapping[str, str] = field(default_factory=dict)
     produces_event: str = ""
     consumes: tuple[str, ...] = ()
+    #: The persona's ``produces.schema`` exactly as its document states it; ``None`` when absent.
+    outcome_schema: Mapping[str, Any] | None = None
 
     @property
     def produced_events(self) -> frozenset[str]:
@@ -115,12 +117,14 @@ def persona_contract_of(definition: Mapping[str, Any]) -> PersonaContract:
         else {}
     )
     raw_consumes = consumes.get("event_types")
+    raw_schema = produces.get("schema")
     return PersonaContract(
         produces_map=event_map,
         produces_event=str(produces.get("event_type") or ""),
         consumes=tuple(str(item) for item in raw_consumes)
         if isinstance(raw_consumes, list)
         else (),
+        outcome_schema=dict(raw_schema) if isinstance(raw_schema, Mapping) and raw_schema else None,
     )
 
 

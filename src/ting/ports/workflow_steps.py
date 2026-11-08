@@ -41,6 +41,7 @@ class StepRunDefinition:
     graph: Mapping[str, Any]
     persona_definitions: Mapping[str, Mapping[str, Any]]
     persona_refs: Mapping[str, PersonaRef]
+    workflow_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,15 @@ class StepActivation:
     inputs: tuple[DeliveredEvent, ...]
     deadline_at: datetime | None
     valid_verdicts: tuple[str, ...] = field(default=())
+    #: The endings the step may close with.
+    valid_endings: tuple[str, ...] = field(default=("verdict", "waiting", "done", "failed"))
+    #: The persona's ``produces.schema`` verbatim, or ``None`` when it declares none.
+    outcome_schema: Mapping[str, Any] | None = None
+    #: What each valid verdict hands off: verdict -> the event it produces.
+    verdict_events: Mapping[str, str] = field(default_factory=dict)
+    #: The event every verdict produces when the persona names no per-verdict map.
+    default_event: str = ""
+    workflow_name: str = ""
 
 
 class StepSessionPort(ABC):

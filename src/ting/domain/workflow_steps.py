@@ -44,6 +44,7 @@ EVENT_REWORK_TAKEN = "engine.rework.taken"
 EVENT_DELIVERY_COALESCED = "engine.delivery.coalesced"
 EVENT_END_REJECTED = "engine.end.rejected"
 EVENT_CLOSE_REJECTED = "engine.close.rejected"
+EVENT_STEP_UNCLOSED = "engine.step.unclosed"
 
 TERMINAL_RUN_EVENTS = frozenset({EVENT_RUN_COMPLETED, EVENT_RUN_FAILED, EVENT_RUN_CANCELED})
 
