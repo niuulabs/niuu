@@ -18,6 +18,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from volundr.adapters.outbound.vm_hosted_unit import FORGE_SESSIONS_DIRECTORY
 from volundr.adapters.outbound.vm_slot_supervisor import ALLOCATION_LABEL, SLOT_LABEL
 
 #: Guest paths of a VM's single session, before slots (and without slot isolation).
@@ -218,6 +219,8 @@ class SlotLayout(SlotPlace):
             (SESSION_LAUNCH, f"{etc}/session-launch.json"),
             (SESSION_SECRETS, f"{etc}/session-secrets"),
             (FORGE_SESSION_DIRECTORY, f"{etc}/forge-session"),
+            # The members of a run's unit keep their credentials here, one directory each.
+            (FORGE_SESSIONS_DIRECTORY, f"{etc}/forge-sessions"),
             # Never under the slot's own directories: a slot that could rewrite the
             # agent's configuration could make it fetch another slot's credentials.
             (GUEST_AGENT_DIRECTORY, f"{self.agent_root}/guest-agent"),
@@ -275,12 +278,22 @@ class SlotLayout(SlotPlace):
             if group:
                 container["user"] = f"{user}:{self.uid}"
         tunnel = f"127.0.0.1:{platform_port}"
-        environment = {
-            key: value.replace(tunnel, f"{self.gateway}:{platform_port}")
-            for key, value in placed["environment"].items()
-        }
-        environment["SKULD__HOST"] = "0.0.0.0"
-        placed["environment"] = environment
+
+        def placed_environment(source: dict[str, str]) -> dict[str, str]:
+            environment = {
+                key: value.replace(tunnel, f"{self.gateway}:{platform_port}")
+                for key, value in source.items()
+            }
+            environment["SKULD__HOST"] = "0.0.0.0"
+            return environment
+
+        placed["environment"] = placed_environment(placed["environment"])
+        # A run's members sit in the same slot: their brokers listen on its address too, and
+        # their directories and credentials move into the slot like the root's.
+        for member in placed.get("members", []):
+            member["environment"] = placed_environment(member["environment"])
+            for mount in member["volume_mounts"]:
+                mount["source"] = self.relocate(mount["source"])
         placed["slot"] = {
             "index": self.slot,
             "uid": self.uid,
