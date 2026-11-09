@@ -1877,6 +1877,29 @@ class TestUnitMembers:
         assert _env(containers["member-0"])["MEMBER_NAME"] == "coder"
         assert _env(containers["member-1"])["MEMBER_NAME"] == "reviewer"
 
+    def test_the_roots_secret_injection_reaches_every_member_container(self, tmp_path):
+        """The injector renders into the containers it is told about; members are in the pod."""
+        annotations = {
+            "vault.hashicorp.com/agent-inject": "true",
+            "vault.hashicorp.com/agent-inject-containers": "skuld,devrunner",
+        }
+
+        pod = _of_kind(_render_unit(tmp_path, podAnnotations=annotations), "Deployment")[0]["spec"][
+            "template"
+        ]["metadata"]["annotations"]
+
+        assert pod["vault.hashicorp.com/agent-inject-containers"].split(",") == [
+            "skuld",
+            "devrunner",
+            "member-0",
+            "member-1",
+        ]
+
+    def test_a_pod_without_injection_gets_no_injector_annotations(self, tmp_path):
+        pod = _of_kind(_render_unit(tmp_path), "Deployment")[0]["spec"]["template"]["metadata"]
+
+        assert "vault.hashicorp.com/agent-inject-containers" not in pod.get("annotations", {})
+
     def test_each_member_has_its_own_configuration_that_skuld_accepts(self, tmp_path):
         from skuld.config import SkuldSettings
 

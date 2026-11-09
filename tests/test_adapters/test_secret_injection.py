@@ -133,6 +133,9 @@ class TestInfisicalAgentInjectionAdapter:
             token_ttl_seconds=300,
         )
 
+    def test_the_injector_works_on_the_pod_not_the_session(self, adapter):
+        assert adapter.injects_per_pod is True
+
     @pytest.mark.asyncio()
     async def test_pod_spec_additions_returns_annotations(self, adapter):
         result = await adapter.pod_spec_additions("alice", "s-123")

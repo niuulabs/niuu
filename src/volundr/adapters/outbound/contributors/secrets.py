@@ -108,6 +108,45 @@ def _codex_auth_values(
     return {}
 
 
+def _render_sources(mappings: list[CredentialMapping]) -> dict[tuple[str, str], tuple[str, str]]:
+    """Where each env var and file the mappings render comes from: (credential, field)."""
+    sources: dict[tuple[str, str], tuple[str, str]] = {}
+    for mapping in mappings:
+        for env_var, field in mapping.env_mappings.items():
+            sources[("env var", env_var)] = (mapping.credential_name, field)
+        for path, field in mapping.file_mappings.items():
+            sources[("file", path)] = (mapping.credential_name, field)
+    return sources
+
+
+def _claim_render_targets(
+    sources: dict[tuple[str, str], tuple[str, str]],
+    mapping: CredentialMapping,
+    member_id: str,
+    unit_id: object,
+) -> None:
+    """Record what ``mapping`` renders; an env var or file already rendered from elsewhere raises.
+
+    A unit's pod renders into one directory every member reads, so a name two members want
+    from different credentials has no right answer.
+    """
+    wanted = {
+        **{("env var", name): field for name, field in mapping.env_mappings.items()},
+        **{("file", path): field for path, field in mapping.file_mappings.items()},
+    }
+    for target, field in wanted.items():
+        source = (mapping.credential_name, field)
+        taken = sources.setdefault(target, source)
+        if taken != source:
+            kind, name = target
+            raise ValueError(
+                f"Member {member_id} of unit {unit_id} wants {kind} {name!r} from "
+                f"{source[0]!r} ({source[1]!r}), but the unit already renders it from "
+                f"{taken[0]!r} ({taken[1]!r}): a unit's pod renders its credentials once for "
+                "all its members, so attach the same integrations to every member of the run"
+            )
+
+
 class SecretInjectionContributor(SessionContributor):
     """Returns PodSpecAdditions for secret injection (agent injector, hostPath, etc.).
 
@@ -349,6 +388,59 @@ class SecretInjectionContributor(SessionContributor):
             file_mappings=file_mappings,
         )
 
+    def _unit_shares_injection(self, context: SessionContext) -> bool:
+        """Whether a unit's pod carries one injection that covers its root and its members.
+
+        True for an injector that works on the pod (``injects_per_pod``), unless the unit
+        runs on a VM, where each member's agent is explicit containers of its own.
+        """
+        if self._secret_injection is None or not self._secret_injection.injects_per_pod:
+            return False
+        return not (
+            context.runtime_backend == "vm" and self._secret_injection.supports_guest_agents
+        )
+
+    async def _with_unit_members(
+        self,
+        root: Session,
+        context: SessionContext,
+        mappings: list[CredentialMapping],
+    ) -> list[CredentialMapping]:
+        """``mappings`` of a unit root plus what its hosted members need rendered.
+
+        A member is a container of the root's pod, so the pod's one injection (the root's
+        role, ServiceAccount and agent config) has to cover them. Every member has the root's
+        owner and tenant, so one role reading the union of their credentials grants nothing
+        any of them lacked. A credential two members both need is rendered once; two
+        members asking for the same env var or file from different credential fields is an
+        error, because the unit shares one rendered directory.
+        """
+        if not context.unit_members or not self._unit_shares_injection(context):
+            return mappings
+        merged = list(mappings)
+        sources = _render_sources(mappings)
+        for member in context.unit_members:
+            if member.owner_id != root.owner_id or member.tenant_id != root.tenant_id:
+                raise ValueError(
+                    f"Member {member.session_id} of unit {root.id} belongs to another owner or "
+                    "tenant than its unit; a unit's members share its owner"
+                )
+            member_context = replace(
+                context,
+                credential_names=member.credential_names,
+                integration_ids=member.integration_ids,
+                integration_connections=member.integration_connections,
+                workload_config=member.workload_config,
+                unit_members=(),
+            )
+            _, member_mappings = await self._prepare(root, member_context)
+            for mapping in member_mappings:
+                if mapping in merged:
+                    continue
+                _claim_render_targets(sources, mapping, member.session_id, root.id)
+                merged.append(mapping)
+        return merged
+
     async def contribute(
         self,
         session: Session,
@@ -357,9 +449,59 @@ class SecretInjectionContributor(SessionContributor):
         if not session.owner_id:
             return SessionContribution()
 
+        values, mappings = await self._prepare(session, context)
+        if session.hosted_by is not None and self._unit_shares_injection(context):
+            # A member is a container of its unit root's pod: the pod's injection is the
+            # root's, which renders what the members need (see ``_with_unit_members``).
+            # Its own ServiceAccount, role or annotations would be pod-level parts it
+            # cannot add. Its values and the checks above are still its own.
+            return SessionContribution(values=values)
+        mappings = await self._with_unit_members(session, context, mappings)
+        if not mappings:
+            return SessionContribution(values=values)
+
+        if not self._secret_injection:
+            raise ValueError("Attached credentials require configured secret injection")
+
+        await self._secret_injection.ensure_secret_provider_class(
+            session.owner_id,
+            mappings,
+            session_id=str(session.id),
+            tenant_id=session.tenant_id,
+        )
+
+        if context.runtime_backend == "vm" and self._secret_injection.supports_guest_agents:
+            # A VM has no injector to mutate the pod: the adapter describes its agent as
+            # explicit init/sidecar containers the VM runtime runs on the guest.
+            pod_spec = await self._secret_injection.guest_agent_pod_spec_additions(
+                session.owner_id,
+                str(session.id),
+                mappings,
+            )
+            return SessionContribution(values=values, pod_spec=pod_spec)
+
+        # Get pod spec additions (annotations, volumes, mounts)
+        pod_spec = await self._secret_injection.pod_spec_additions(
+            session.owner_id,
+            str(session.id),
+        )
+
+        return SessionContribution(values=values, pod_spec=pod_spec)
+
+    async def _prepare(
+        self,
+        session: Session,
+        context: SessionContext,
+    ) -> tuple[dict, list[CredentialMapping]]:
+        """The values a session's credentials add, and the mappings to render for them.
+
+        Validates every credential the session attaches. The mappings are empty when
+        nothing is rendered into the session's pod (none attached, or OpenShell, which
+        carries them as provider values).
+        """
         mappings = await self._build_mappings(context, session.owner_id)
         if not mappings:
-            return SessionContribution()
+            return {}, []
 
         codex_values = _codex_auth_values(context, self._registry)
         brokered_name = (
@@ -450,7 +592,7 @@ class SecretInjectionContributor(SessionContributor):
         if codex_values:
             values.update(codex_values)
         if context.runtime_backend == "openshell":
-            return SessionContribution(values=values)
+            return values, []
 
         # Brokered providers such as Codex fetch access tokens through Skuld's
         # existing authenticated client; there is nothing to mount in the guest.
@@ -461,36 +603,7 @@ class SecretInjectionContributor(SessionContributor):
             or mapping.env_mappings
             or mapping.file_mappings
         ]
-        if not mappings:
-            return SessionContribution(values=values)
-
-        if not self._secret_injection:
-            raise ValueError("Attached credentials require configured secret injection")
-
-        await self._secret_injection.ensure_secret_provider_class(
-            session.owner_id,
-            mappings,
-            session_id=str(session.id),
-            tenant_id=session.tenant_id,
-        )
-
-        if context.runtime_backend == "vm" and self._secret_injection.supports_guest_agents:
-            # A VM has no injector to mutate the pod: the adapter describes its agent as
-            # explicit init/sidecar containers the VM runtime runs on the guest.
-            pod_spec = await self._secret_injection.guest_agent_pod_spec_additions(
-                session.owner_id,
-                str(session.id),
-                mappings,
-            )
-            return SessionContribution(values=values, pod_spec=pod_spec)
-
-        # Get pod spec additions (annotations, volumes, mounts)
-        pod_spec = await self._secret_injection.pod_spec_additions(
-            session.owner_id,
-            str(session.id),
-        )
-
-        return SessionContribution(values=values, pod_spec=pod_spec)
+        return values, mappings
 
     async def cleanup(
         self,
@@ -498,6 +611,9 @@ class SecretInjectionContributor(SessionContributor):
         context: SessionContext,
     ) -> None:
         if self._secret_injection is None:
+            return
+        if session.hosted_by is not None and self._unit_shares_injection(context):
+            # The injection of a member's pod is its unit root's, removed with the root.
             return
         await self._secret_injection.cleanup_session(str(session.id))
 

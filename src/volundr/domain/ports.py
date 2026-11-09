@@ -1959,6 +1959,19 @@ class SecretInjectionPort(ABC):
         return False
 
     @property
+    def injects_per_pod(self) -> bool:
+        """Whether the injection is a property of the pod, not of the session.
+
+        An injector that mutates the pod from its annotations and runs it under a
+        ServiceAccount of its own (the OpenBao agent injector, Infisical's) gives one
+        pod one injection. A session hosted in another session's unit is a container of
+        that pod, so it cannot have an injection of its own: the unit root's covers the
+        members' credentials (``SessionContext.unit_members``) and the members add nothing
+        to the pod.
+        """
+        return False
+
+    @property
     def supports_guest_agents(self) -> bool:
         """Whether this adapter can run its own agent containers on a VM guest.
 
@@ -2185,6 +2198,26 @@ from niuu.ports.pat_repository import PATRepository  # noqa: F401, E402
 
 
 @dataclass(frozen=True)
+class UnitMemberContext:
+    """What a unit root's pipeline knows of one member that is hosted in its pod.
+
+    A member is a container of its unit root's pod, so whatever the pod itself carries (an
+    injector's annotations and ServiceAccount) is the root's, and has to cover what the
+    members need. The root's contributors read this to see those needs. It is the part of a
+    member's launch that decides what it is given: the member's own session pipeline still
+    builds the member's spec.
+    """
+
+    session_id: str
+    owner_id: str
+    tenant_id: str | None
+    credential_names: tuple[str, ...] = ()
+    integration_ids: tuple[str, ...] = ()
+    integration_connections: tuple[IntegrationConnection, ...] = ()
+    workload_config: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class SessionContext:
     """Read-only context for contributors."""
 
@@ -2203,6 +2236,9 @@ class SessionContext:
     initial_prompt: str = ""
     workload_type: str = "session"
     workload_config: dict = field(default_factory=dict)
+    #: For a unit root: the members its pod hosts (see ``UnitMemberContext``). Empty for
+    #: every other session.
+    unit_members: tuple[UnitMemberContext, ...] = ()
 
 
 @dataclass(frozen=True)

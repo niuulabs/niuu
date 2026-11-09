@@ -69,6 +69,7 @@ from volundr.domain.ports import (
     SessionRepository,
     SessionSpanRepository,
     StoragePort,
+    UnitMemberContext,
 )
 from volundr.domain.presented_files import PresentedFileStore
 from volundr.domain.projects import SessionCoordination
@@ -1575,30 +1576,18 @@ class SessionService:
         await self._startup.handing_off(session.id)
         return await self._pod_manager.start(session, spec=spec)
 
-    async def _build_spec(
+    async def _resolve_connections(
         self,
         session: Session,
         principal: Principal | None,
-        definition: str | None,
-        launch_spec: str | None,
-        terminal_restricted: bool,
-        credential_names: list[str] | None = None,
-        integration_ids: list[str] | None = None,
-        resource_config: dict | None = None,
-        system_prompt: str = "",
-        initial_prompt: str = "",
-        workload_type: str = "session",
-        workload_config: dict | None = None,
-    ) -> tuple[Session, SessionSpec]:
-        """Run the contributor pipeline for a launch; the session as launched, and its spec.
+        integration_ids: list[str] | None,
+        workload_config: dict,
+    ) -> list[IntegrationConnection]:
+        """The integration connections a launch of ``session`` attaches.
 
-        The spec carries the session's Forge credential (or the Secret mount that projects
-        it), minted for the launch id the session row holds.
+        The ids the caller named, or every enabled connection of the principal when it named
+        none. The fetched connections are kept so contributors don't fetch them again.
         """
-        workload_config = {**session.workload_config, **(workload_config or {})}
-        # A caller cannot change the internally persisted execution during contribution.
-        if "_compute_execution" in session.workload_config:
-            workload_config["_compute_execution"] = session.workload_config["_compute_execution"]
         # Auto-include all enabled integrations when none are specified.
         # Keep the fetched connections so contributors don't re-fetch by ID.
         resolved_connections: list[IntegrationConnection] = []
@@ -1643,13 +1632,42 @@ class SessionService:
             )
             resolved_connections.extend(c for c in source_connections if c.enabled)
 
-        workflow_child_local_mount = _is_workflow_child_local_mount(session, workload_config)
-        if workflow_child_local_mount:
+        if _is_workflow_child_local_mount(session, workload_config):
             resolved_connections = [
                 connection
                 for connection in resolved_connections
                 if connection.integration_type != IntegrationType.SOURCE_CONTROL
             ]
+        return resolved_connections
+
+    async def _build_spec(
+        self,
+        session: Session,
+        principal: Principal | None,
+        definition: str | None,
+        launch_spec: str | None,
+        terminal_restricted: bool,
+        credential_names: list[str] | None = None,
+        integration_ids: list[str] | None = None,
+        resource_config: dict | None = None,
+        system_prompt: str = "",
+        initial_prompt: str = "",
+        workload_type: str = "session",
+        workload_config: dict | None = None,
+    ) -> tuple[Session, SessionSpec]:
+        """Run the contributor pipeline for a launch; the session as launched, and its spec.
+
+        The spec carries the session's Forge credential (or the Secret mount that projects
+        it), minted for the launch id the session row holds.
+        """
+        workload_config = {**session.workload_config, **(workload_config or {})}
+        # A caller cannot change the internally persisted execution during contribution.
+        if "_compute_execution" in session.workload_config:
+            workload_config["_compute_execution"] = session.workload_config["_compute_execution"]
+        resolved_connections = await self._resolve_connections(
+            session, principal, integration_ids, workload_config
+        )
+        workflow_child_local_mount = _is_workflow_child_local_mount(session, workload_config)
 
         if resolved_connections or workflow_child_local_mount:
             workload_config = {
@@ -1675,6 +1693,7 @@ class SessionService:
             # Contributors never see the credential bookkeeping: an otherwise
             # empty workload config must still read as empty to them.
             workload_config=without_forge_mcp(workload_config),
+            unit_members=await self._unit_member_contexts(session, principal),
         )
 
         contributions: list[SessionContribution] = []
@@ -1767,6 +1786,38 @@ class SessionService:
             )
             launches.append(HostedMemberLaunch(session=built, spec=spec))
         return launches
+
+    async def _unit_member_contexts(
+        self, session: Session, principal: Principal | None
+    ) -> tuple[UnitMemberContext, ...]:
+        """What the members of ``session`` need, when it is a unit root; else nothing.
+
+        The members are fixed when the unit starts, so the root's pipeline sees all of them.
+        The pod is the root's, so the injection the pod carries (secrets, for one) is the
+        root's and has to cover them: each member's connections are resolved exactly as
+        its own launch resolves them.
+        """
+        if not session.is_unit_root:
+            return ()
+        contexts: list[UnitMemberContext] = []
+        for member in await self._repository.list_hosted(session.id):
+            launch = HostedLaunch.model_validate(member.workload_config.get(HOSTED_LAUNCH_KEY))
+            member_config = without_forge_mcp(member.workload_config)
+            connections = await self._resolve_connections(
+                member, principal, launch.integration_ids or None, member_config
+            )
+            contexts.append(
+                UnitMemberContext(
+                    session_id=str(member.id),
+                    owner_id=member.owner_id,
+                    tenant_id=member.tenant_id,
+                    credential_names=tuple(launch.credential_names),
+                    integration_ids=tuple(c.id for c in connections),
+                    integration_connections=tuple(connections),
+                    workload_config=member_config,
+                )
+            )
+        return tuple(contexts)
 
     async def _placed_with(self, unit: Session, member: Session) -> Session:
         """``member`` carrying the placement of ``unit``, stored: it runs where its unit does."""

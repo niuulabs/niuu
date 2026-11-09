@@ -67,10 +67,14 @@ spec:
         checksum/authz: {{ include (print $.Template.BasePath "/authz-configmap.yaml") . | sha256sum }}
         {{- end }}
         {{- $annotations := deepCopy (.Values.podAnnotations | default dict) }}
-        {{- if and .Values.git.credentials.tokenFile (hasKey $annotations "vault.hashicorp.com/agent-inject") }}
-        {{- $names := concat (list "git-clone" "skuld" "devrunner") $memberNames }}
+        {{- /* A unit's members are containers of this pod and read what the pod's one injection renders. */}}
+        {{- if and (or .Values.git.credentials.tokenFile $memberNames) (hasKey $annotations "vault.hashicorp.com/agent-inject") }}
+        {{- $names := $memberNames }}
+        {{- if .Values.git.credentials.tokenFile }}
+        {{- $names = concat (list "git-clone" "skuld" "devrunner") $memberNames }}
         {{- range .Values.extraContainers }}
         {{- $names = append $names .name }}
+        {{- end }}
         {{- end }}
         {{- $existing := splitList "," (index $annotations "vault.hashicorp.com/agent-inject-containers" | default "") }}
         {{- $_ := set $annotations "vault.hashicorp.com/agent-inject-containers" (join "," (uniq (compact (concat $existing $names)))) }}

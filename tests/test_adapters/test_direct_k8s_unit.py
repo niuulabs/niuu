@@ -455,6 +455,26 @@ class TestRefusals:
         with pytest.raises(ValueError, match="pod annotation"):
             _pod(manager, root, spec)
 
+    def test_the_roots_secret_injection_is_the_pods_and_reaches_every_member(self, manager) -> None:
+        """OpenBao injection is the root's; its members add nothing and are injected too."""
+        root, launches, spec = _unit()
+        spec.pod_spec = replace(
+            spec.pod_spec,
+            service_account=f"openbao-session-{root.id}",
+            annotations={
+                "vault.hashicorp.com/agent-inject": "true",
+                "vault.hashicorp.com/agent-inject-containers": "skuld,devrunner",
+            },
+        )
+
+        manifest, pod = _pod(manager, root, spec)
+
+        assert pod["serviceAccountName"] == f"openbao-session-{root.id}"
+        injected = manifest["spec"]["template"]["metadata"]["annotations"][
+            "vault.hashicorp.com/agent-inject-containers"
+        ].split(",")
+        assert injected == ["skuld", "devrunner", "member-8082", "member-8083"]
+
     def test_annotations_the_unit_has_are_accepted(self, manager) -> None:
         root, launches, spec = _unit()
         spec.pod_spec = replace(spec.pod_spec, annotations={"a": "b"})

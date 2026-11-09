@@ -300,6 +300,11 @@ class InfisicalAgentInjectionAdapter(SecretInjectionPort):
     # SecretInjectionPort implementation
     # ------------------------------------------------------------------
 
+    @property
+    def injects_per_pod(self) -> bool:
+        # The injector is triggered by the pod's annotations: one injection per pod.
+        return True
+
     async def pod_spec_additions(
         self,
         user_id: str,
