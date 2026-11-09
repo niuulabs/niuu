@@ -83,8 +83,8 @@ class _InMemoryWorkflowRepository(WorkflowRepository):
         return self._workflows.pop(workflow_id, None) is not None
 
 
-def test_the_shipped_catalogue_is_the_tool_and_skill_builder() -> None:
-    assert {workflow.name for workflow in load_system_workflows()} == {"Tool & Skill Builder"}
+def test_the_shipped_catalogue_is_code_review_and_merge() -> None:
+    assert {workflow.name for workflow in load_system_workflows()} == {"Code, Review and Merge"}
 
 
 def test_the_full_archived_catalogue_still_loads_with_its_graph_shapes() -> None:
@@ -106,6 +106,7 @@ def test_the_full_archived_catalogue_still_loads_with_its_graph_shapes() -> None
         "Ticket Work Flow",
         "Code & Review Flow",
         "Infra Change Flow",
+        "Code, Review and Merge",
         "Tool & Skill Builder",
         "Developer Delivery",
         "Developer Planning",
@@ -352,7 +353,7 @@ async def test_seed_system_workflows_preserves_authored_and_obsolete_entries() -
 
     saved = await seed_system_workflows(repo)
     names = {workflow.name for workflow in saved}
-    assert names == {"Tool & Skill Builder"}
+    assert names == {"Code, Review and Merge"}
 
     current_catalog = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
     assert {workflow.name for workflow in current_catalog} == names | {obsolete.name}

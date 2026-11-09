@@ -1,8 +1,9 @@
 # Bundled catalogue
 
 What ships in the box: the Ting workflows in `src/ting/workflows` and the built-in
-personas in `src/personas/builtin`. One workflow ships, and the personas it pins.
-Everything marked **archived** lives in `archive/` and is not shipped (`archive/README.md`).
+personas in `src/personas/builtin`. One workflow ships, **Code, Review and Merge**, with
+the three personas it uses. Everything marked **archived** lives in `archive/` and is not
+shipped (`archive/README.md`).
 
 A bundled workflow pins the exact persona documents it uses, so a persona stays shipped
 for as long as a shipped workflow names it. Checked by `tests/test_catalog_archive.py`.
@@ -11,7 +12,7 @@ for as long as a shipped workflow names it. Checked by `tests/test_catalog_archi
 
 | Workflow | What it is for | Personas | Status | Why |
 |---|---|---|---|---|
-| `tool-skill-builder` | Resident capability workflow that designs, implements, reviews, canaries, and publishes a missing Valkyrie/Ravn tool or skill. | `capability-publisher`, `coder`, `reviewer`, `security-auditor`, `specification-framer` | **kept** | the one shipped workflow: coder builds, reviewer and security-auditor review in parallel, then it is published; what resident tool-building commissions (307 runs on ymir, latest 2026-11-07) |
+| `code-review-merge` | The coder implements a change, the reviewer and the security auditor check it in parallel, and the coder merges it once both pass. | `coder`, `reviewer`, `security-auditor` | **kept** | the one shipped workflow: coder implements, reviewer and security-auditor check in parallel, coder merges once both pass |
 | `code-review-flow` | Tracker-driven developer workflow that implements a ticket, iterates through code review, and merges the branch without publishing a delivery record. | `closer`, `coder`, `reviewer` | **archived** | tests only (catalogue list, one fixture) |
 | `developer-delivery` | Plan, delegate, verify, integrate, publish, and merge one repository change using durable child workflows and typed evidence. | `developer-coordinator`, `developer-analyst`, `developer-architecture-reviewer`, `developer-correctness-reviewer`, `developer-security-plan-reviewer`, `developer-integration-verifier` | **archived** | Ting delivery subsystem (chart `delivery.*`, `scripts/prepare_delivery_proof.py`, web e2e); parent of three |
 | `developer-integration` | Verify and review the complete integration candidate against the approved delivery plan. | `developer-coordinator`, `developer-integration-verifier` | **archived** | child of Developer Delivery; chart `integrationPolicyId` |
@@ -28,17 +29,17 @@ for as long as a shipped workflow names it. Checked by `tests/test_catalog_archi
 | `specification-stack` | End-to-end specification workflow that produces a PRD, SRD, SDD, and delivery breakdown with explicit review and approval gates between each artifact. | `specification-breakdown-critic`, `specification-breakdown-planner`, `specification-framer`, `specification-prd-author`, `specification-prd-critic`, `specification-publisher`, `specification-sdd-author`, `specification-sdd-critic`, `specification-srd-author`, `specification-srd-critic` | **archived** | `ting/api/specs.py` launches it by name (Specs pages) |
 | `ticket-planning-flow` | Plans one tracker ticket, has an agent review the plan, then waits for a person to approve it before recording the approved plan for the work that follows. | `ticket-plan-publisher`, `ticket-plan-reviewer`, `ticket-planner` | **archived** | ticket board + ticket coordinator; one of two bundled board workflows |
 | `ticket-work-flow` | Does the work one tracker ticket asks for, with or without a repository, then waits for a person to approve the result. | `ticket-worker` | **archived** | ticket board; the only bundled workflow with no repository |
+| `tool-skill-builder` | Resident capability workflow that designs, implements, reviews, canaries, and publishes a missing Valkyrie/Ravn tool or skill. | `capability-publisher`, `coder`, `reviewer`, `security-auditor`, `specification-framer` | **archived** | what `build_tool` commissions over A2A (tags tool-builder/skill-builder); 307 runs |
 | `tracker-delivery-flow` | Tracker-driven developer workflow that implements a ticket, iterates through code review, updates the tracker, merges the branch, and publishes a durable delivery record. | `closer`, `coder`, `publisher`, `reviewer` | **archived** | tests only (catalogue list, one fixture); no infra trigger names it |
 
 ## Personas
 
 | Persona | What it is for | Used by | Status | Other references |
 |---|---|---|---|---|
-| `capability-publisher` | Publishes a finished capability build's learned_tool.json to Mimir after review and security have passed, or reports it blocked; talk to it only as the last step of a capability build. | `tool-skill-builder` | **kept** | pinned by the shipped workflow (last stage), not otherwise kept |
-| `coder` | Implements features and bug fixes, with tests, in a repository workspace; talk to it to get code written or to answer review and security change requests. | `tool-skill-builder`, `code-review-flow`, `infra-change-flow`, `reviewed-delivery-flow`, `tracker-delivery-flow` | **kept** | builds in the shipped workflow; default mesh.persona; the Claude Code coder of the live end-to-end run |
-| `reviewer` | Reviews a code change for correctness, maintainability and project conventions, leaves a review artifact and tracker comments, and returns a pass or changes-requested verdict; talk to it for a general code review. | `tool-skill-builder`, `code-review-flow`, `infra-change-flow`, `reviewed-delivery-flow`, `tracker-delivery-flow` | **kept** | reviews in the shipped workflow; the Codex reviewer of the live end-to-end run |
-| `security-auditor` | Audits a code change for exploitable weaknesses and returns a security verdict, read-only; talk to it for a security check on changes. | `tool-skill-builder` | **kept** | the security reviewer of the shipped workflow; also ting/templates/review.yaml |
-| `specification-framer` | Turns a rough initiative prompt into a decision-useful brief to start a specification, without writing the PRD; talk to it to begin a specification. | `tool-skill-builder`, `specification-stack` | **kept** | pinned by the shipped workflow (first stage), not otherwise kept |
+| `coder` | Implements features and bug fixes, with tests, in a repository workspace; talk to it to get code written or to answer review and security change requests. | `code-review-merge`, `code-review-flow`, `infra-change-flow`, `reviewed-delivery-flow`, `tool-skill-builder`, `tracker-delivery-flow` | **kept** | implements and merges in the shipped workflow; default mesh.persona; the Claude Code coder of the live end-to-end run |
+| `reviewer` | Reviews a code change for correctness, maintainability and project conventions, leaves a review artifact and tracker comments, and returns a pass or changes-requested verdict; talk to it for a general code review. | `code-review-merge`, `code-review-flow`, `infra-change-flow`, `reviewed-delivery-flow`, `tool-skill-builder`, `tracker-delivery-flow` | **kept** | reviews in the shipped workflow; the Codex reviewer of the live end-to-end run |
+| `security-auditor` | Audits a code change for exploitable weaknesses and returns a security verdict, read-only; talk to it for a security check on changes. | `code-review-merge`, `tool-skill-builder` | **kept** | the security reviewer of the shipped workflow; also ting/templates/review.yaml |
+| `capability-publisher` | Publishes a finished capability build's learned_tool.json to Mimir after review and security have passed, or reports it blocked; talk to it only as the last step of a capability build. | `tool-skill-builder` | **archived** |  |
 | `closer` | Merges reviewed code into the target branch, updates the tracker ticket and writes the closure record; talk to it once a review has passed and the change is ready to land. | `code-review-flow`, `infra-change-flow`, `reviewed-delivery-flow`, `tracker-delivery-flow` | **archived** |  |
 | `developer-adversarial-reviewer` | Tries to break an immutable candidate commit with counterexamples, boundary inputs and failure cases without changing it; talk to it for a hostile read of a verified candidate. | `developer-workstream` | **archived** |  |
 | `developer-analyst` | Turns a ticket and the current code into a revisioned delivery plan with requirement IDs and acceptance tests, and revises it against reviewer findings; talk to it to plan or re-plan developer work. | `developer-delivery`, `developer-planning` | **archived** |  |
@@ -70,6 +71,7 @@ for as long as a shipped workflow names it. Checked by `tests/test_catalog_archi
 | `saga-planner` | Turns an approved planning brief into the bounded saga structure Ting accepts, naming real files in the repository; talk to it to draft or revise a saga plan. | `saga-planning` | **archived** |  |
 | `specification-breakdown-critic` | Challenges a specification's delivery breakdown for missing work, bad sequencing and hidden dependencies; talk to it to review a breakdown draft. | `specification-stack` | **archived** |  |
 | `specification-breakdown-planner` | Turns an approved design into an actionable delivery breakdown; talk to it to draft or revise the breakdown of a specification. | `specification-stack` | **archived** |  |
+| `specification-framer` | Turns a rough initiative prompt into a decision-useful brief to start a specification, without writing the PRD; talk to it to begin a specification. | `specification-stack`, `tool-skill-builder` | **archived** |  |
 | `specification-prd-author` | Writes the product requirements document from a framed brief; talk to it to draft or revise a PRD. | `specification-stack` | **archived** |  |
 | `specification-prd-critic` | Challenges a PRD for weak product thinking, missing user value and unacknowledged risk before approval; talk to it to review a PRD draft. | `specification-stack` | **archived** |  |
 | `specification-publisher` | Makes an approved specification pack durable in Mimir with a manifest of what landed; talk to it after the breakdown is approved. | `specification-stack` | **archived** |  |

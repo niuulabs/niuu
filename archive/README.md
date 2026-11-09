@@ -15,10 +15,11 @@ keeps the lists, the archive and the packaging in step.
 
 ### What still ships
 
-* Workflow: `tool-skill-builder` (Tool & Skill Builder), the code, review and security
-  review flow that resident tool-building commissions over A2A.
-* Personas: `coder`, `reviewer`, `security-auditor` (the three it is built from), plus
-  `specification-framer` and `capability-publisher`, which its first and last stage pin.
+* Workflow: `code-review-merge` (Code, Review and Merge). The coder implements, the
+  reviewer and the security auditor check the change in parallel, and the coder merges
+  once both pass. Either check can send the work back to the coder, with no round limit.
+* Personas: `coder`, `reviewer`, `security-auditor`.
+
 
 ### `workflows/`
 
@@ -40,12 +41,14 @@ keeps the lists, the archive and the packaging in step.
 | `specification-stack.yaml` | End-to-end specification workflow that produces a PRD, SRD, SDD, and delivery breakdown with explicit review and approval gates between each artifact. |
 | `ticket-planning-flow.yaml` | Plans one tracker ticket, has an agent review the plan, then waits for a person to approve it before recording the approved plan for the work that follows. |
 | `ticket-work-flow.yaml` | Does the work one tracker ticket asks for, with or without a repository, then waits for a person to approve the result. |
+| `tool-skill-builder.yaml` | Resident capability workflow that designs, implements, reviews, canaries, and publishes a missing Valkyrie/Ravn tool or skill. |
 | `tracker-delivery-flow.yaml` | Tracker-driven developer workflow that implements a ticket, iterates through code review, updates the tracker, merges the branch, and publishes a durable delivery record. |
 
 ### `personas/`
 
 | File | What it was for |
 |---|---|
+| `capability-publisher.yaml` | Publishes a finished capability build's learned_tool.json to Mimir after review and security have passed, or reports it blocked; talk to it only as the last step of a capability build. |
 | `closer.yaml` | Merges reviewed code into the target branch, updates the tracker ticket and writes the closure record; talk to it once a review has passed and the change is ready to land. |
 | `developer-adversarial-reviewer.yaml` | Tries to break an immutable candidate commit with counterexamples, boundary inputs and failure cases without changing it; talk to it for a hostile read of a verified candidate. |
 | `developer-analyst.yaml` | Turns a ticket and the current code into a revisioned delivery plan with requirement IDs and acceptance tests, and revises it against reviewer findings; talk to it to plan or re-plan developer work. |
@@ -77,6 +80,7 @@ keeps the lists, the archive and the packaging in step.
 | `saga-planner.yaml` | Turns an approved planning brief into the bounded saga structure Ting accepts, naming real files in the repository; talk to it to draft or revise a saga plan. |
 | `specification-breakdown-critic.yaml` | Challenges a specification's delivery breakdown for missing work, bad sequencing and hidden dependencies; talk to it to review a breakdown draft. |
 | `specification-breakdown-planner.yaml` | Turns an approved design into an actionable delivery breakdown; talk to it to draft or revise the breakdown of a specification. |
+| `specification-framer.yaml` | Turns a rough initiative prompt into a decision-useful brief to start a specification, without writing the PRD; talk to it to begin a specification. |
 | `specification-prd-author.yaml` | Writes the product requirements document from a framed brief; talk to it to draft or revise a PRD. |
 | `specification-prd-critic.yaml` | Challenges a PRD for weak product thinking, missing user value and unacknowledged risk before approval; talk to it to review a PRD draft. |
 | `specification-publisher.yaml` | Makes an approved specification pack durable in Mimir with a manifest of what landed; talk to it after the breakdown is approved. |
@@ -110,6 +114,11 @@ that names this archive, and `tests/test_catalog_archive.py` allows exactly thes
 * `src/ting/api/sagas.py`, `src/ting/domain/services/review_list.py`: saga planning
   launches the system workflow named "Saga Planning". With it archived, `POST .../plan`
   returns 404 naming this archive.
+* Resident tool-building: `build_tool` (`src/ravn/adapters/tool_build/a2a.py`) commissions the
+  workflow that carries the `tool-builder` tag, which was Tool & Skill Builder. Ting's A2A card
+  projects system workflows only, so with it archived a resident's build finds no builder
+  and fails at request time. (ymir also holds a user copy of it; a user workflow is not on
+  the card.)
 * The ticket board and coordinator have no bundled workflow to offer any more; boards take
   system workflows only.
 * The delivery feature (`workflowExecution.delivery`) has no default producers or policies;

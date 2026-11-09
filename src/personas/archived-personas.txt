@@ -1,5 +1,6 @@
 # Built-in personas moved to archive/personas (see archive/README.md), one per line.
 # tests/test_catalog_archive.py keeps this equal to the files there.
+capability-publisher
 closer
 developer-adversarial-reviewer
 developer-analyst
@@ -31,6 +32,7 @@ saga-plan-reviewer
 saga-planner
 specification-breakdown-critic
 specification-breakdown-planner
+specification-framer
 specification-prd-author
 specification-prd-critic
 specification-publisher

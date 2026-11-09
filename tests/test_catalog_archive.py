@@ -320,7 +320,7 @@ def test_a_shipped_workflow_file_with_an_archived_id_is_refused(tmp_path: Path) 
 
 
 def test_a_workflow_pinning_an_archived_persona_is_refused(tmp_path: Path) -> None:
-    source = yaml.safe_load((SHIPPED_WORKFLOWS / "tool-skill-builder.yaml").read_text())
+    source = yaml.safe_load((SHIPPED_WORKFLOWS / "code-review-merge.yaml").read_text())
     alias, dependency = next(iter(source["persona_dependencies"].items()))
     dependency["id"] = sorted(ARCHIVED_BUILTIN_PERSONAS)[0]
     bundle = tmp_path / "workflows"
@@ -337,7 +337,7 @@ def test_a_workflow_pinning_an_archived_persona_is_refused(tmp_path: Path) -> No
 def test_a_workflow_depending_on_an_archived_workflow_is_refused(tmp_path: Path) -> None:
     child = yaml.safe_load((ARCHIVE / "workflows" / "research-thread.yaml").read_text())
     assert UUID(child["id"]) in ARCHIVED_SYSTEM_WORKFLOW_IDS
-    source = yaml.safe_load((SHIPPED_WORKFLOWS / "tool-skill-builder.yaml").read_text())
+    source = yaml.safe_load((SHIPPED_WORKFLOWS / "code-review-merge.yaml").read_text())
     revision = workflow_document_revision(load_workflow_document(yaml.safe_dump(child)))
     source["schema_version"] = 2
     source["workflow_dependencies"] = {

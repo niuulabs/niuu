@@ -321,7 +321,7 @@ class TestListBuiltinNames:
         assert "coder" in names
         assert "reviewer" in names
         assert "security-auditor" in names
-        assert "capability-publisher" in names
+        assert "security-auditor" in names
         assert "sidekick" not in names
 
 
@@ -374,7 +374,7 @@ class TestBuiltinPersonas:
             assert cfg.iteration_budget > 0, f"{p.stem} has non-positive iteration_budget"
 
     def test_specification_framer_leaves_publication_to_workflow_runtime(self) -> None:
-        cfg = self._load("specification-framer")
+        cfg = _ARCHIVED_PERSONAS["specification-framer"]
 
         assert "workflow runtime owns durable artifact publication" in (
             cfg.system_prompt_template.lower()
@@ -540,7 +540,7 @@ def test_every_built_in_persona_says_what_it_does_and_when_to_talk_to_it() -> No
     adapter = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
     names = adapter.list_builtin_names()
 
-    assert len(names) == 5
+    assert len(names) == 3
     for name in names:
         persona = adapter.load(name)
         assert persona.description, f"built-in persona {name!r} has no description"

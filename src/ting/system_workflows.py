@@ -68,6 +68,8 @@ ARCHIVED_SYSTEM_WORKFLOW_IDS: frozenset[UUID] = frozenset(
         UUID("3f0e6a14-9b2d-5c47-8e61-4d7a2c91b5e3"),
         # "Ticket Work Flow"
         UUID("9a41d7c6-3e52-5b08-a7f4-6c1e0d2b8f37"),
+        # "Tool & Skill Builder"
+        UUID("3c217e0a-1ff0-56d6-ba27-54cd43bff8e6"),
         # "Tracker Delivery Flow"
         UUID("3f444455-6b63-53c2-b057-3205345a56da"),
     }

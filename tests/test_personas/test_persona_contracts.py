@@ -624,7 +624,14 @@ class TestBuiltinSpecialistContracts:
         assert cfg.fan_in.strategy == "all_must_pass"
 
     def test_capability_publisher_uses_json_artifact_publisher(self) -> None:
-        cfg = self._load("capability-publisher")
+        # Archived with Tool & Skill Builder; its document stays valid.
+        cfg = self._loader.load_from_file(
+            Path(__file__).resolve().parents[2]
+            / "archive"
+            / "personas"
+            / "capability-publisher.yaml"
+        )
+        assert cfg is not None
 
         assert "mimir:publish_artifact" in cfg.allowed_tools
         assert "mimir_write" not in cfg.allowed_tools
