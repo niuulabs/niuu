@@ -1,3 +1,29 @@
+{{- /*
+A unit root hosts its members as containers of this pod: each is rendered from its own values
+(skuld.memberValues) as a context `$members` of the same shape as the release's own.
+*/}}
+{{- $unit := .Values.unit | default dict }}
+{{- $members := list }}
+{{- $memberNames := list }}
+{{- range $i, $m := .Values.members }}
+{{- $name := include "skuld.memberContainerName" (dict "index" $i) }}
+{{- $memberNames = append $memberNames $name }}
+{{- $members = append $members (dict "Values" (include "skuld.memberValues" (dict "root" $ "index" $i) | fromJson) "Release" $.Release "Chart" $.Chart "Files" $.Files "Template" $.Template "Capabilities" $.Capabilities "containerName" $name "configVolume" "skuld-members" "configKey" (printf "%s.yaml" $m.id)) }}
+{{- end }}
+{{- if and $members (not $unit.meshDir) }}
+{{- fail "members need unit.meshDir: the directory every Skuld of the unit shares for its local mesh" }}
+{{- end }}
+{{- /* The context the unit's one checkout is cloned in: the release's own, or one member's. */}}
+{{- $checkout := . }}
+{{- if and $members (not .Values.git.repoUrl) $unit.checkoutFrom }}
+{{- $found := false }}
+{{- range $members }}
+{{- if eq .Values.session.id $unit.checkoutFrom }}{{- $checkout = . }}{{- $found = true }}{{- end }}
+{{- end }}
+{{- if not $found }}
+{{- fail (printf "unit.checkoutFrom %q is not one of the members" $unit.checkoutFrom) }}
+{{- end }}
+{{- end }}
 {{- if and .Values.homeVolume.enabled .Values.homeVolume.persistentTmp }}
 {{- $id := include "skuld.sessionId" . }}
 {{- if not (regexMatch "^[a-zA-Z0-9][a-zA-Z0-9._-]*$" $id) }}
@@ -42,7 +68,7 @@ spec:
         {{- end }}
         {{- $annotations := deepCopy (.Values.podAnnotations | default dict) }}
         {{- if and .Values.git.credentials.tokenFile (hasKey $annotations "vault.hashicorp.com/agent-inject") }}
-        {{- $names := list "git-clone" "skuld" "devrunner" }}
+        {{- $names := concat (list "git-clone" "skuld" "devrunner") $memberNames }}
         {{- range .Values.extraContainers }}
         {{- $names = append $names .name }}
         {{- end }}
@@ -82,7 +108,7 @@ spec:
         fsGroup: {{ .Values.securityContext.fsGroup }}
         fsGroupChangePolicy: {{ .Values.securityContext.fsGroupChangePolicy }}
       {{- include "skuld.imagePullSecrets" . | nindent 6 }}
-      {{- if or .Values.git.repoUrl .Values.homeVolume.enabled .Values.extraInitContainers (and .Values.localServices.enabled .Values.persistence.enabled) }}
+      {{- if or $checkout.Values.git.repoUrl .Values.homeVolume.enabled .Values.extraInitContainers (and .Values.localServices.enabled .Values.persistence.enabled) }}
       initContainers:
         {{- if .Values.homeVolume.enabled }}
         - name: home-setup
@@ -159,6 +185,24 @@ spec:
                 chown -R "$TARGET_UID:$TARGET_GID" "$CODEX_STATE_DIR" 2>/dev/null || true
                 echo "Codex auth/config seeded into session-local CODEX_HOME"
               fi
+              {{- range $members }}
+
+              # A member of the unit keeps its own CODEX_HOME beside, not inside, the shared
+              # workspace: two Codex processes must not write the same state.
+              if [ "$DEST_DIR" = ".codex" ]; then
+                MEMBER_STATE_DIR="{{ include "skuld.codexHome" . }}"
+                mkdir -p "$MEMBER_STATE_DIR"
+                chown "$TARGET_UID:$TARGET_GID" "$(dirname "$MEMBER_STATE_DIR")" "$(dirname "$(dirname "$MEMBER_STATE_DIR")")" 2>/dev/null || true
+                for name in auth.json config.toml version.json models_cache.json; do
+                  if [ -f "$HOME_DIR/$DEST_DIR/$name" ]; then
+                    cp -f "$HOME_DIR/$DEST_DIR/$name" "$MEMBER_STATE_DIR/$name"
+                    chmod 600 "$MEMBER_STATE_DIR/$name" 2>/dev/null || true
+                  fi
+                done
+                chown -R "$TARGET_UID:$TARGET_GID" "$MEMBER_STATE_DIR" 2>/dev/null || true
+                echo "Codex auth/config seeded into member {{ .containerName }}'s CODEX_HOME"
+              fi
+              {{- end }}
 
               echo "Home directory initialized at $HOME_DIR"
           volumeMounts:
@@ -190,7 +234,7 @@ spec:
               TARGET_OWNER="{{ .Values.securityContext.runAsUser }}:{{ .Values.securityContext.fsGroup }}"
               mkdir -p /home/tmp/cache "/home/tmp/sessions/{{ include "skuld.sessionId" . }}"
               chown -h "$TARGET_OWNER" /home/tmp /home/tmp/cache /home/tmp/sessions "/home/tmp/sessions/{{ include "skuld.sessionId" . }}"
-              {{- $names := list "skuld" "devrunner" }}
+              {{- $names := concat (list "skuld" "devrunner") $memberNames }}
               {{- range .Values.extraContainers }}
               {{- $names = append $names .name }}
               {{- end }}
@@ -203,119 +247,8 @@ spec:
             - name: home
               mountPath: /home
         {{- end }}
-        {{- if .Values.git.repoUrl }}
-        - name: git-clone
-          image: "{{ .Values.git.image.repository }}:{{ .Values.git.image.tag }}"
-          imagePullPolicy: {{ .Values.git.image.pullPolicy }}
-          securityContext:
-            runAsUser: {{ .Values.securityContext.runAsUser }}
-            allowPrivilegeEscalation: false
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -e
-              export GIT_TERMINAL_PROMPT=0
-              WORKSPACE="{{ include "skuld.workspacePath" . }}"
-              REPO_URL={{ .Values.git.repoUrl | replace "'" "'\\''" | squote }}
-              BRANCH={{ .Values.git.branch | default "main" | replace "'" "'\\''" | squote }}
-              BASE_BRANCH={{ .Values.git.baseBranch | default "" | replace "'" "'\\''" | squote }}
-              if ! git -C "$WORKSPACE" rev-parse --git-dir >/dev/null 2>&1; then
-                mkdir -p "$WORKSPACE"
-                git init "$WORKSPACE"
-              fi
-              if git -C "$WORKSPACE" remote get-url origin >/dev/null 2>&1; then
-                git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
-              else
-                git -C "$WORKSPACE" remote add origin "$REPO_URL"
-              fi
-              {{- if .Values.git.credentials.tokenFile }}
-              # Persist references, never tokens. Every Git process reads the mounted secret.
-              test -s {{ .Values.git.credentials.tokenFile | replace "'" "'\\''" | squote }} || {
-                echo "Selected Git integration token was not injected" >&2; exit 1;
-              }
-              git -C "$WORKSPACE" config niuu.gitTokenFile {{ .Values.git.credentials.tokenFile | replace "'" "'\\''" | squote }}
-              git -C "$WORKSPACE" config niuu.gitUsername {{ .Values.git.credentials.username | replace "'" "'\\''" | squote }}
-              git -C "$WORKSPACE" config credential.helper ''
-              git -C "$WORKSPACE" config credential.useHttpPath true
-              git -C "$WORKSPACE" config "credential.$REPO_URL.helper" \
-                '!f() { [ "$1" = get ] || return 0; token=$(cat "$(git config niuu.gitTokenFile)") || return 1; [ -n "$token" ] || return 1; printf "username=%s\npassword=%s\n" "$(git config niuu.gitUsername)" "$token"; }; f'
-              {{- else if .Values.git.credentials.secretName }}
-              git -C "$WORKSPACE" config credential.helper \
-                '!f() { [ "$1" = get ] || return 0; printf "username=%s\npassword=%s\n" "${GIT_USERNAME:-x-access-token}" "$GIT_TOKEN"; }; f'
-              {{- end }}
-              {{- if .Values.git.userName }}
-              if ! git -C "$WORKSPACE" config user.name >/dev/null; then
-                git -C "$WORKSPACE" config user.name {{ .Values.git.userName | replace "'" "'\\''" | squote }}
-              fi
-              {{- end }}
-              {{- if .Values.git.userEmail }}
-              if ! git -C "$WORKSPACE" config user.email >/dev/null; then
-                git -C "$WORKSPACE" config user.email {{ .Values.git.userEmail | replace "'" "'\\''" | squote }}
-              fi
-              {{- end }}
-              if git -C "$WORKSPACE" rev-parse HEAD >/dev/null 2>&1; then
-                echo "Workspace already contains a valid git repository, skipping clone"
-                if [ -n "$BASE_BRANCH" ] && ! git -C "$WORKSPACE" config --get niuu.baseBranch >/dev/null; then
-                  git -C "$WORKSPACE" config niuu.baseBranch "$BASE_BRANCH"
-                fi
-              else
-                git -C "$WORKSPACE" fetch origin
-                if git -C "$WORKSPACE" rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
-                  git -C "$WORKSPACE" checkout -B "$BRANCH" "origin/$BRANCH"
-                  echo "Checked out existing branch $BRANCH"
-                else
-                  if [ -n "$BASE_BRANCH" ] && git -C "$WORKSPACE" rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
-                    FALLBACK="$BASE_BRANCH"
-                  else
-                    FALLBACK=$(git -C "$WORKSPACE" remote show origin | sed -n 's/.*HEAD branch: //p')
-                    FALLBACK=${FALLBACK:-main}
-                  fi
-                  echo "Branch $BRANCH not found on remote, creating from $FALLBACK"
-                  git -C "$WORKSPACE" checkout -B "$FALLBACK" "origin/$FALLBACK"
-                  git -C "$WORKSPACE" checkout -b "$BRANCH"
-                fi
-                # Record where this branch started, so the session's changes can be shown against it.
-                RECORDED_BASE="${FALLBACK:-}"
-                if [ -z "$RECORDED_BASE" ]; then
-                  if [ -n "$BASE_BRANCH" ] && \
-                    git -C "$WORKSPACE" rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
-                    RECORDED_BASE="$BASE_BRANCH"
-                  else
-                    RECORDED_BASE=$(git -C "$WORKSPACE" remote show origin | sed -n 's/.*HEAD branch: //p')
-                  fi
-                fi
-                if [ -n "$RECORDED_BASE" ]; then
-                  git -C "$WORKSPACE" config niuu.baseBranch "$RECORDED_BASE"
-                fi
-                echo "Repository cloned successfully"
-              fi
-          {{- if or .Values.homeVolume.enabled (and .Values.git.credentials.secretName (not .Values.git.credentials.tokenFile)) }}
-          env:
-            {{- if .Values.homeVolume.enabled }}
-            - name: HOME
-              value: {{ .Values.homeVolume.mountPath | quote }}
-            {{- end }}
-            {{- if and .Values.git.credentials.secretName (not .Values.git.credentials.tokenFile) }}
-            - name: GIT_USERNAME
-              value: {{ .Values.git.credentials.username | default "x-access-token" | quote }}
-            - name: GIT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.git.credentials.secretName }}
-                  key: {{ .Values.git.credentials.tokenKey | default "token" }}
-            {{- end }}
-          {{- end }}
-          volumeMounts:
-            - name: sessions
-              mountPath: {{ .Values.persistence.mountPath }}
-            {{- if .Values.homeVolume.enabled }}
-            - name: home
-              mountPath: {{ .Values.homeVolume.mountPath }}
-              readOnly: true
-            {{- end }}
-            {{- range .Values.extraVolumeMounts }}
-            - {{- toYaml . | nindent 14 }}
-            {{- end }}
+        {{- if $checkout.Values.git.repoUrl }}
+        {{- include "skuld.gitCloneInit" $checkout | nindent 8 }}
         {{- end }}
         {{- if and .Values.localServices.enabled .Values.persistence.enabled }}
         # nginx includes the devrunner-generated services config at startup.
@@ -385,112 +318,7 @@ spec:
             - name: sessions
               mountPath: {{ .Values.persistence.mountPath }}
             {{- end }}
-        # Skuld broker - Claude Code CLI + REST API
-        - name: skuld
-          image: {{ include "skuld.image" . | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          securityContext:
-            runAsUser: {{ .Values.securityContext.runAsUser }}
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
-          ports:
-            - name: broker
-              containerPort: 8081
-              protocol: TCP
-            {{- range .Values.mesh.peerPorts }}
-            - {{- toYaml . | nindent 14 }}
-            {{- end }}
-            {{- if include "skuld.meshK8sDiscovery" . }}
-            - name: mesh-pub
-              containerPort: {{ include "skuld.meshNngPort" . }}
-              protocol: TCP
-            {{- end }}
-          env:
-            {{- include "skuld.scratchEnv" . | nindent 12 }}
-            {{- if include "skuld.meshK8sDiscovery" . }}
-            {{- include "skuld.meshEnv" . | nindent 12 }}
-            {{- end }}
-            - name: SKULD__SESSION__WORKSPACE_DIR
-              value: {{ include "skuld.workspacePath" . | quote }}
-            {{- if .Values.volundr.apiUrl }}
-            - name: SKULD__VOLUNDR_API_URL
-              value: {{ .Values.volundr.apiUrl | quote }}
-            {{- end }}
-            - name: SKULD__SERVICE_USER_ID
-              value: {{ .Values.volundr.serviceUserId | default "skuld-broker" | quote }}
-            - name: SKULD__SERVICE_TENANT_ID
-              value: {{ .Values.volundr.serviceTenantId | default "default" | quote }}
-            {{- if .Values.volundr.externalApiTokenSecret.name }}
-            - name: SKULD__EXTERNAL_API_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.volundr.externalApiTokenSecret.name | quote }}
-                  key: {{ .Values.volundr.externalApiTokenSecret.key | default "token" | quote }}
-            {{- end }}
-            {{- if .Values.homeVolume.enabled }}
-            - name: HOME
-              value: {{ .Values.homeVolume.mountPath | quote }}
-            - name: CLAUDE_CONFIG_DIR
-              value: "{{ .Values.homeVolume.mountPath }}/{{ .Values.homeVolume.credentialFiles.destDir }}"
-            - name: CODEX_HOME
-              value: {{ printf "%s/.codex" (include "skuld.workspacePath" .) | quote }}
-            {{- end }}
-            {{- range .Values.envSecrets }}
-            - name: {{ .envVar }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .secretName }}
-                  key: {{ .secretKey }}
-            {{- end }}
-            {{- range .Values.envVars }}
-            - name: {{ .name }}
-              value: {{ .value | quote }}
-            {{- end }}
-            {{- if .Values.claude.disableAutoUpdate }}
-            # The CLI in the image is pinned: a self-update at start-up restarts it
-            # inside the session (and fails without write access to the npm prefix).
-            - name: DISABLE_AUTOUPDATER
-              value: "1"
-            {{- end }}
-            {{- include "skuld.gitCredentialEnv" . | nindent 12 }}
-            {{- if .Values.session.systemPrompt }}
-            - name: SKULD__SESSION__SYSTEM_PROMPT
-              value: {{ .Values.session.systemPrompt | quote }}
-            {{- end }}
-            {{- if .Values.session.initialPrompt }}
-            - name: SKULD__SESSION__INITIAL_PROMPT
-              value: {{ .Values.session.initialPrompt | quote }}
-            {{- end }}
-          resources:
-            {{- toYaml .Values.resources | nindent 12 }}
-          volumeMounts:
-            {{- include "skuld.scratchMounts" (dict "root" . "container" "skuld") | nindent 12 }}
-            - name: skuld-config
-              mountPath: /etc/skuld/config.yaml
-              subPath: config.yaml
-              readOnly: true
-            {{- if .Values.persistence.enabled }}
-            - name: sessions
-              mountPath: {{ .Values.persistence.mountPath }}
-            {{- end }}
-            {{- if .Values.homeVolume.enabled }}
-            - name: home
-              mountPath: {{ .Values.homeVolume.mountPath }}
-            {{- if .Values.homeVolume.credentialFiles.secretName }}
-            - name: credential-files
-              mountPath: {{ .Values.homeVolume.credentialFiles.secretMountPath }}
-              readOnly: true
-            {{- end }}
-            {{- end }}
-            {{- if .Values.secretManifest }}
-            - name: secret-manifest
-              mountPath: /run/secrets/manifest.json
-              subPath: manifest.json
-              readOnly: true
-            {{- end }}
-            {{- range .Values.extraVolumeMounts }}
-            - {{- toYaml . | nindent 14 }}
-            {{- end }}
+        {{- include "skuld.brokerContainer" . | nindent 8 }}
         {{- range .Values.extraContainers }}
         {{- $container := deepCopy . }}
         {{- if and $.Values.homeVolume.enabled $.Values.homeVolume.persistentTmp }}
@@ -525,6 +353,10 @@ spec:
         {{- $_ := set $container "volumeMounts" $mounts }}
         {{- end }}
         - {{- toYaml $container | nindent 10 }}
+        {{- end }}
+        {{- /* The unit's members: one Skuld container each, started with the pod. */}}
+        {{- range $members }}
+        {{- include "skuld.brokerContainer" . | nindent 8 }}
         {{- end }}
         {{- if .Values.localServices.enabled }}
         # Devrunner - minimal runtime for local service testing
@@ -594,6 +426,16 @@ spec:
         - name: skuld-config
           configMap:
             name: {{ include "skuld.fullname" . }}-config
+        {{- if $members }}
+        - name: skuld-members
+          configMap:
+            name: {{ include "skuld.fullname" . }}-members
+        {{- end }}
+        {{- if $unit.meshDir }}
+        # The unit's local mesh: every Skuld of the pod registers here and finds the others.
+        - name: mesh
+          emptyDir: {}
+        {{- end }}
         - name: nginx-config
           configMap:
             name: {{ include "skuld.fullname" . }}-nginx

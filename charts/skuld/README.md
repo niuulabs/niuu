@@ -50,6 +50,16 @@ Skuld is **not installed manually**. It is deployed automatically by the Volundr
 
 The session definitions in the Volundr chart define default values for Skuld deployments. Per-session overrides (model, repo, resources) are merged at deployment time.
 
+### A unit: one pod for a whole workflow run
+
+A workflow run is one **unit**: its root session's release hosts every member as a container of the same pod, all started together.
+
+- **One Skuld per member.** `members` lists them; each member's container runs the same image with its own configuration (`<release>-members` ConfigMap, a key per member session id), its own broker port and, through Forge, its own credential Secret mounted into that container only. The chart renders a member from `members[].values` over the chart defaults (`files/defaults.yaml` is `values.yaml`), so a member's configuration is exactly what it would have been on its own.
+- **A local mesh.** `unit.meshDir` is an `emptyDir` mounted into every Skuld of the pod; the Skulds use nng on loopback and `registry` discovery on a file in it, so they find each other without listing pods. Nothing outside the pod can reach a mesh port.
+- **One checkout, one home each.** Every member works in the root's workspace (`<persistence.mountPath>/<root id>/workspace`), cloned once by the `git-clone` init container from the root's repository or, when the root names none, from `unit.checkoutFrom`. Each member keeps its own `CODEX_HOME` (`<persistence.mountPath>/<root id>/members/<member id>/.codex`, seeded from the home volume) and its own scratch directory; the user's home volume is the one every session of the user mounts.
+- **One address each.** With `gateway.enabled`, every member has its own `HTTPRoute` and `SecurityPolicy` at `/s/<member id>`; the pod's nginx sends `/m/<member id>/` to that member's Skuld, behind the same Envoy and owner check as the root's.
+- **Pod-level settings are the root's.** Scheduling (`nodeSelector`, `tolerations`, `affinity`, `runtimeClassName`), `serviceAccountName`, `securityContext`, and the home and sessions volumes belong to the pod. The pod's resources are the sum of its containers'; nothing is shrunk to fit.
+
 ## Installation (Manual / Development)
 
 For development or testing, you can deploy Skuld directly:
@@ -101,6 +111,18 @@ These values are typically set by Volundr at deployment time, not by the user.
 | `session.id` | string | `""` | Session identifier (UUID, set by Volundr) |
 | `session.name` | string | `""` | Human-readable session name |
 | `session.model` | string | `"claude-sonnet-4-20250514"` | AI model to use for the session |
+
+### Unit (a workflow run's pod)
+
+These values are set by Volundr's Flux pod manager for a unit root, not by the user.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `brokerPort` | int | `8081` | Port of this release's broker (config `port`); a member of a unit is given its own |
+| `unit.sessionId` | string | `""` | Id of the unit's root session; set on a member's values by the chart, empty for the root |
+| `unit.meshDir` | string | `""` | Directory every Skuld of the unit shares for its local mesh (an `emptyDir`) |
+| `unit.checkoutFrom` | string | `""` | Member whose repository, branch and Git credential the unit's checkout is cloned from, when the root names no repository |
+| `members` | list | `[]` | The sessions this pod hosts besides its own: `id`, `port` and the complete `values` of each member |
 
 ### Image (Skuld Broker)
 
