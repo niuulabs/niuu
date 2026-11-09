@@ -543,16 +543,28 @@ class WorkflowStepMixin:
                 reason=REFUSED_BROKER_FAILED,
                 detail=f"this session's broker failed to start: {self._startup_failure}",
             )
-        contract = offer.contract_for(self._settings.workflow_steps.persona_alias)
+        alias = self._settings.workflow_steps.persona_alias
+        contract = offer.contract_for(alias)
+        if contract is None:
+            # The engine addresses an offer to the members it names a contract for; another
+            # member that listens on the same topic (a reviewer hearing code.requested) is not
+            # asked, so it neither takes, passes nor refuses it.
+            logger.info(
+                "workflow offer %s (%s) is for [%s], not this member's persona %r",
+                offer.offer_id,
+                offer.node_id,
+                ", ".join(c.persona.alias for c in offer.contracts),
+                alias,
+            )
+            return OFFER_IGNORED
         own = self._own_contract
-        if contract is None or own is None:
-            named = ", ".join(c.persona.alias for c in offer.contracts)
+        if own is None:
             return await self._refuse_offer(
                 offer=offer,
                 reason=REFUSED_PIN,
                 detail=(
-                    f"offer names contracts for [{named}] and none for this member's persona "
-                    f"{self._settings.workflow_steps.persona_alias!r}"
+                    f"offer names a contract for this member's persona {alias!r}, but this "
+                    "member derives no contract of its own from its pinned persona"
                 ),
             )
         if contract.persona != own.persona:
