@@ -244,8 +244,13 @@ class ChronicleMixin:
         Called after the session completes.  The reviewer ravn subscribes
         to ``code.changed`` and will trigger a review when it receives this.
 
+        A workflow step host publishes none: its run's step engine hands the work on, and
+        the member's outcome is its step close (shared with the run's room as its verdict
+        and note), not every turn it ends, whatever its persona.
         """
         if self._mesh_adapter is None:
+            return
+        if self._settings.workflow_steps.enabled:
             return
 
         from niuu.mesh.events import MeshEvent, MeshEventType

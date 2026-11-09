@@ -3054,6 +3054,26 @@ class TestPublishMeshOutcome:
         assert "2 files" in payload["summary"]
 
     @pytest.mark.asyncio
+    async def test_a_workflow_step_host_publishes_no_turn_outcome(self, tmp_path):
+        """A run member's outcome is its step close; its turns announce nothing."""
+        settings = SkuldSettings(
+            session={"id": "test-mesh-step-host", "workspace_dir": str(tmp_path)},
+            volundr_api_url="http://forge.test",
+            workflow_steps={"enabled": True},
+        )
+        b = Broker(settings=settings)
+        mock_mesh = AsyncMock()
+        mock_adapter = MagicMock()
+        mock_adapter.peer_id = "peer-3"
+        mock_adapter._mesh = mock_mesh
+        b._mesh_adapter = mock_adapter
+
+        await b._on_result_publish_mesh()
+        await b._publish_mesh_outcome()
+
+        mock_mesh.publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_no_mesh_adapter_returns_early(self, test_broker):
         test_broker._mesh_adapter = None
         # Should not raise
