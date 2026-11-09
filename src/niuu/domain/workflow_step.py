@@ -171,8 +171,10 @@ def json_block(value: Any) -> str:
 def render_close_howto(activation_id: str, valid_verdicts: Sequence[str]) -> str:
     """The "Closing the step" section: how a member closes the step it holds.
 
-    The same text whoever puts it in front of the harness: it names this activation's id and
-    uses the first valid verdict as the example.
+    The same text whoever puts it in front of the harness. It states this activation's id as
+    the step's id, apart from the call, and says the run id is not it: shown only inside an
+    example, the id read as a placeholder, and the run id named in the step's header was
+    passed in its place. The call uses the first valid verdict.
     """
     call = {
         "activation_id": activation_id,
@@ -183,8 +185,10 @@ def render_close_howto(activation_id: str, valid_verdicts: Sequence[str]) -> str
     }
     return (
         "## Closing the step\n\n"
-        f"When you are done, call the `{WORKFLOW_STEP_CLOSE_TOOL}` tool exactly once, with this "
-        "activation's id. For example:\n\n"
+        f"This step's activation id is `{activation_id}`. It is the `activation_id` the "
+        f"`{WORKFLOW_STEP_CLOSE_TOOL}` tool takes; the run id is not it.\n\n"
+        f"When you are done, call `{WORKFLOW_STEP_CLOSE_TOOL}` exactly once with that id, "
+        "filling in your own verdict, outcome and note:\n\n"
         f"{json_block(call)}\n\n"
         "`evidence` (a list of `{kind, ref, summary}`) and `note` are optional on every ending. "
         "If the call is refused, the error says why and nothing was recorded; fix the call "

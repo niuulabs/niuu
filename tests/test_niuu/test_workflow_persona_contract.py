@@ -172,8 +172,11 @@ def test_the_offered_contract_of_a_bundled_persona_matches_what_ting_activates_w
 
 
 _CLOSE_HOWTO = (
-    "## Closing the step\n\nWhen you are done, call the `workflow_step_close` tool exactly once, "
-    "with this activation's id. For example:\n\n```json\n{\n"
+    "## Closing the step\n\n"
+    "This step's activation id is `0b6ac9e6-0a5e-4b49-9b0e-7a3f4d6f4a10`. It is the "
+    "`activation_id` the `workflow_step_close` tool takes; the run id is not it.\n\n"
+    "When you are done, call `workflow_step_close` exactly once with that id, filling in your "
+    "own verdict, outcome and note:\n\n```json\n{\n"
     '  "activation_id": "0b6ac9e6-0a5e-4b49-9b0e-7a3f4d6f4a10",\n'
     '  "ending": "verdict",\n'
     '  "note": "<what you did, in a sentence or two>",\n'
@@ -188,8 +191,9 @@ _CLOSE_HOWTO = (
 _ACTIVATION = "0b6ac9e6-0a5e-4b49-9b0e-7a3f4d6f4a10"
 
 
-def test_close_howto_is_the_text_ting_always_gave() -> None:
-    """Captured from ``step_instructions._closing`` before it moved."""
+def test_close_howto_names_the_steps_activation_id_as_a_fact_not_an_example() -> None:
+    """Shown only inside an example, members took the id for a placeholder and passed the
+    run id instead: the section states it as this step's id before the call."""
     assert render_close_howto(_ACTIVATION, ("blocked", "implemented")) == _CLOSE_HOWTO % "blocked"
     assert render_close_howto(_ACTIVATION, ()) == _CLOSE_HOWTO % "<verdict>"
 
