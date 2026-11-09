@@ -16,7 +16,7 @@ use: `allowed_tools` and `forbidden_tools` were removed because per-harness tool
 are not available yet (restricting tools per harness is future work). A persona, a persona API
 request, a portable document or a `persona_overrides` block that still carries either key is
 refused with an error naming it, never read with the key dropped. Saved personas had both keys
-stripped by migration `000116_strip_persona_tool_restrictions`.
+stripped by migration `000117_strip_persona_tool_restrictions`.
 
 ## How a persona and a request prompt combine
 
