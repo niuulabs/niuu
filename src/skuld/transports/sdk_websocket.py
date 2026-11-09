@@ -66,7 +66,7 @@ class SdkWebSocketTransport(CLITransport):
         self._broker_session_id = session_id
         self._model = model
         self._tool_policy = claude_tool_policy
-        bounded = claude_tool_policy is not None and claude_tool_policy.sets_permission_mode
+        bounded = claude_tool_policy is not None
         self._skip_permissions = skip_permissions and not bounded
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams and not bounded

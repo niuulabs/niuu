@@ -21,7 +21,6 @@ def _document(name: str = "reviewer") -> dict:
         "definition": {
             "name": name,
             "system_prompt_template": "Review carefully",
-            "allowed_tools": ["file_read", "git_read"],
             "permission_mode": "read_only",
         },
     }

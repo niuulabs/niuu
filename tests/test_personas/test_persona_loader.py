@@ -6,6 +6,7 @@ import dataclasses
 from pathlib import Path
 
 import pytest
+import yaml
 
 from personas.adapters.loader import (
     _BUILTIN_PERSONAS_DIR,
@@ -24,8 +25,6 @@ name: test-agent
 system_prompt_template: |
   You are a test agent.
   Do tests.
-allowed_tools: [file_read, git]
-forbidden_tools: [web_search]
 permission_mode: workspace-write
 llm:
   primary_alias: balanced
@@ -39,7 +38,6 @@ name: minimal-agent
 
 _NO_NAME_YAML = """\
 system_prompt_template: missing a name
-allowed_tools: [file_read]
 """
 
 _INVALID_YAML = """\
@@ -59,10 +57,15 @@ for _p in _BUILTIN_PERSONAS_DIR.glob("*.yaml"):
     if _cfg is not None:
         _BUILTIN_PERSONAS[_p.stem] = _cfg
 
-# The archived personas are not shipped; their documents stay valid and tested.
+# The archived personas are not shipped and predate the removal of tool lists, so the files
+# (which must stay as released) still carry ``allowed_tools`` / ``forbidden_tools``, which a
+# persona loader refuses. Their other content is tested with those two keys left out.
 _ARCHIVED_PERSONAS: dict[str, PersonaConfig] = {}
 for _p in (Path(__file__).resolve().parents[2] / "archive" / "personas").glob("*.yaml"):
-    _cfg = _loader.load_from_file(_p)
+    _document = yaml.safe_load(_p.read_text(encoding="utf-8"))
+    _document.pop("allowed_tools", None)
+    _document.pop("forbidden_tools", None)
+    _cfg = parse_persona(yaml.safe_dump(_document))
     if _cfg is not None:
         _ARCHIVED_PERSONAS[_p.stem] = _cfg
 
@@ -131,8 +134,6 @@ class TestFilesystemPersonaAdapterParse:
         assert cfg is not None
         assert cfg.name == "test-agent"
         assert "test agent" in cfg.system_prompt_template
-        assert cfg.allowed_tools == ["file_read", "git"]
-        assert cfg.forbidden_tools == ["web_search"]
         assert cfg.permission_mode == "workspace-write"
         assert cfg.llm.primary_alias == "balanced"
         assert cfg.llm.thinking_enabled is True
@@ -143,8 +144,6 @@ class TestFilesystemPersonaAdapterParse:
         assert cfg is not None
         assert cfg.name == "minimal-agent"
         assert cfg.system_prompt_template == ""
-        assert cfg.allowed_tools == []
-        assert cfg.forbidden_tools == []
         assert cfg.permission_mode == ""
         assert cfg.llm.primary_alias == ""
         assert cfg.llm.thinking_enabled is False
@@ -165,17 +164,35 @@ class TestFilesystemPersonaAdapterParse:
     def test_non_dict_yaml_returns_none(self) -> None:
         assert parse_persona(_NOT_A_DICT_YAML) is None
 
-    def test_allowed_tools_non_list_becomes_empty(self) -> None:
-        yaml = "name: x\nallowed_tools: not-a-list\n"
-        cfg = parse_persona(yaml)
-        assert cfg is not None
-        assert cfg.allowed_tools == []
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "name: x\nallowed_tools: [file_read]\n",
+            "name: x\nforbidden_tools: [shell]\n",
+            "name: x\nallowed_tools: []\nforbidden_tools: []\n",
+            "name: x\nallowed_tools: not-a-list\n",
+        ],
+    )
+    def test_a_persona_with_a_tool_restriction_is_refused(self, text: str) -> None:
+        with pytest.raises(PersonaDocumentError) as raised:
+            parse_persona(text)
 
-    def test_forbidden_tools_non_list_becomes_empty(self) -> None:
-        yaml = "name: x\nforbidden_tools: not-a-list\n"
-        cfg = parse_persona(yaml)
-        assert cfg is not None
-        assert cfg.forbidden_tools == []
+        message = str(raised.value)
+        assert "persona x:" in message
+        assert "is not supported" in message or "are not supported" in message
+        assert "per-harness tool restrictions are not available yet" in message
+        assert "remove allowed_tools (and forbidden_tools) from the persona" in message
+
+    def test_a_persona_file_with_a_tool_restriction_is_refused_naming_the_file(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "restricted.yaml"
+        path.write_text("name: restricted\nallowed_tools: [file_read]\n", encoding="utf-8")
+
+        with pytest.raises(PersonaDocumentError, match=r"restricted\.yaml.*allowed_tools"):
+            FilesystemPersonaAdapter(persona_dirs=[str(tmp_path)], include_builtin=False).load(
+                "restricted"
+            )
 
     def test_llm_non_dict_uses_defaults(self) -> None:
         yaml = "name: x\nllm: some-string\n"
@@ -379,7 +396,6 @@ class TestBuiltinPersonas:
         assert "workflow runtime owns durable artifact publication" in (
             cfg.system_prompt_template.lower()
         )
-        assert "mimir:publish_files" not in cfg.allowed_tools
 
     # ------------------------------------------------------------------
     # Specialist personas (NIU-586)
@@ -392,19 +408,6 @@ class TestBuiltinPersonas:
         assert cfg.iteration_budget == 25
         assert cfg.llm.thinking_enabled is True
         assert cfg.llm.primary_alias == ""
-
-    def test_reviewer_allowed_tools(self) -> None:
-        cfg = _BUILTIN_PERSONAS["reviewer"]
-        assert "file_read" in cfg.allowed_tools
-        assert "file_write" in cfg.allowed_tools
-        assert "git" in cfg.allowed_tools
-        assert "shell" in cfg.allowed_tools
-        assert "web_fetch" in cfg.allowed_tools
-        assert "tracker" in cfg.allowed_tools
-
-    def test_reviewer_forbids_only_what_a_harness_session_has(self) -> None:
-        cfg = _BUILTIN_PERSONAS["reviewer"]
-        assert cfg.forbidden_tools == []
 
     def test_reviewer_system_prompt_mentions_sql_safety(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
@@ -435,14 +438,6 @@ class TestBuiltinPersonas:
         assert cfg.iteration_budget == 25
         assert cfg.llm.thinking_enabled is True
         assert cfg.llm.primary_alias == ""
-
-    def test_security_auditor_allowed_tools(self) -> None:
-        cfg = _BUILTIN_PERSONAS["security-auditor"]
-        assert cfg.allowed_tools == ["file_read", "git_read", "web_fetch", "web_search"]
-
-    def test_security_auditor_forbidden_tools(self) -> None:
-        cfg = _BUILTIN_PERSONAS["security-auditor"]
-        assert cfg.forbidden_tools == ["shell"]
 
     def test_security_auditor_system_prompt_mentions_owasp(self) -> None:
         cfg = _BUILTIN_PERSONAS["security-auditor"]

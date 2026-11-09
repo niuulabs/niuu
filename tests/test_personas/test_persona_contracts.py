@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from niuu.domain.outcome import OutcomeField
 from personas.adapters.loader import (
@@ -34,7 +35,6 @@ _REVIEWER_YAML = """\
 name: reviewer
 system_prompt_template: |
   You are a code reviewer.
-allowed_tools: [file_read, git]
 permission_mode: read-only
 produces:
   event_type: review.completed
@@ -141,7 +141,6 @@ consumes:
 _NO_CONTRACT_YAML = """\
 name: simple-agent
 system_prompt_template: You are a simple agent.
-allowed_tools: [file_read]
 permission_mode: read-only
 """
 
@@ -440,7 +439,6 @@ class TestApplyOutcomeInstruction:
     def test_other_fields_unchanged(self) -> None:
         persona = PersonaConfig(
             name="x",
-            allowed_tools=["file_read"],
             permission_mode="read-only",
             produces=PersonaProduces(
                 event_type="x.done",
@@ -448,7 +446,6 @@ class TestApplyOutcomeInstruction:
             ),
         )
         result = apply_outcome_instruction(persona)
-        assert result.allowed_tools == ["file_read"]
         assert result.permission_mode == "read-only"
 
 
@@ -510,12 +507,14 @@ class TestFilesystemPersonaAdapterLoadInjection:
 
 
 class TestPersonaContractE2E:
-    def test_persona_without_contract_unchanged(self) -> None:
-        """Loading ticket-coordinator (no produces) → no outcome block in system prompt."""
-        loader = FilesystemPersonaAdapter(
-            persona_dirs=[str(Path(__file__).resolve().parents[2] / "archive" / "personas")]
+    def test_persona_without_contract_unchanged(self, tmp_path: Path) -> None:
+        """Loading a persona with no produces → no outcome block in system prompt."""
+        (tmp_path / "coordinator.yaml").write_text(
+            "name: coordinator\nsystem_prompt_template: Coordinate the work.\n",
+            encoding="utf-8",
         )
-        persona = loader.load("ticket-coordinator")
+        loader = FilesystemPersonaAdapter(persona_dirs=[str(tmp_path)], include_builtin=False)
+        persona = loader.load("coordinator")
         assert persona is not None
         assert "---outcome---" not in persona.system_prompt_template
 
@@ -625,18 +624,20 @@ class TestBuiltinSpecialistContracts:
 
     def test_capability_publisher_uses_json_artifact_publisher(self) -> None:
         # Archived with Tool & Skill Builder; its document stays valid.
-        cfg = self._loader.load_from_file(
-            Path(__file__).resolve().parents[2]
-            / "archive"
-            / "personas"
-            / "capability-publisher.yaml"
+        # The archived file predates the removal of tool lists, so it is read as plain YAML
+        # rather than loaded as a persona (which refuses the tool lists it still carries).
+        archived = yaml.safe_load(
+            (
+                Path(__file__).resolve().parents[2]
+                / "archive"
+                / "personas"
+                / "capability-publisher.yaml"
+            ).read_text(encoding="utf-8")
         )
-        assert cfg is not None
 
-        assert "mimir:publish_artifact" in cfg.allowed_tools
-        assert "mimir_write" not in cfg.allowed_tools
-        assert "mimir_publish_artifact capabilities/{slug}/learned_tool.json" in (
-            cfg.system_prompt_template
+        assert (
+            "mimir_publish_artifact capabilities/{slug}/learned_tool.json"
+            in (archived["system_prompt_template"])
         )
 
     def test_all_specialist_personas_have_system_prompts(self) -> None:

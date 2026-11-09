@@ -25,8 +25,6 @@ export function buildDraftPersona(name: string): PersonaCreateRequest {
     summary: label,
     description: `${label} persona.`,
     systemPromptTemplate: `# ${name}\nYou are the ${name} persona.`,
-    allowedTools: [],
-    forbiddenTools: [],
     permissionMode: 'default',
     iterationBudget: 20,
     llmThinkingEnabled: false,

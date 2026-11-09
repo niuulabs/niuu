@@ -52,18 +52,6 @@ def test_to_dict_omits_empty_system_prompt() -> None:
     assert "system_prompt_template" not in d
 
 
-def test_to_dict_omits_empty_allowed_tools() -> None:
-    p = PersonaConfig(name="minimal")
-    d = p.to_dict()
-    assert "allowed_tools" not in d
-
-
-def test_to_dict_omits_empty_forbidden_tools() -> None:
-    p = PersonaConfig(name="minimal")
-    d = p.to_dict()
-    assert "forbidden_tools" not in d
-
-
 def test_to_dict_omits_empty_permission_mode() -> None:
     p = PersonaConfig(name="minimal")
     d = p.to_dict()
@@ -282,15 +270,11 @@ def test_to_yaml_includes_all_non_zero_fields() -> None:
     p = PersonaConfig(
         name="full",
         system_prompt_template="Do something.",
-        allowed_tools=["file_read"],
-        forbidden_tools=["shell"],
         permission_mode="read-only",
         llm=PersonaLLMConfig(primary_alias="balanced", thinking_enabled=True, max_tokens=1000),
         iteration_budget=25,
     )
     d = p.to_dict()
-    assert d["allowed_tools"] == ["file_read"]
-    assert d["forbidden_tools"] == ["shell"]
     assert d["permission_mode"] == "read-only"
     assert d["llm"]["primary_alias"] == "balanced"
     assert d["llm"]["thinking_enabled"] is True

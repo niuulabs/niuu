@@ -362,10 +362,6 @@ class CodexWebSocketTransport(CLITransport):
     managed access-only ChatGPT tokens supplied by Völundr.
     """
 
-    #: ``read_only_mcp_only`` isolates the MCP servers to the given list (no connectors,
-    #: plugins or suggestions) and verifies each connected: a persona's MCP boundary.
-    supports_read_only_mcp_boundary = True
-
     def __init__(
         self,
         workspace_dir: str,

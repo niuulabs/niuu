@@ -27,8 +27,8 @@ from personas.domain.persona_document import (
     PersonaDocumentError,
     PortablePersonaDefinition,
     portable_persona_from_config,
+    refuse_tool_restrictions,
 )
-from personas.domain.tool_vocabulary import validate_tool_names
 
 _ROLE_DEFAULT = "build"
 _COLOR_BY_ROLE = {
@@ -146,10 +146,6 @@ class PostgresPersonaRegistry:
 
     async def save_persona(self, owner_id: str, payload: dict[str, Any]) -> None:
         normalized = _normalize_payload(payload)
-        # A new save must speak the neutral vocabulary; a row saved before it existed still
-        # lists and edits, and is refused at launch by the portable document's validation.
-        validate_tool_names("allowed_tools", normalized["allowed_tools"])
-        validate_tool_names("forbidden_tools", normalized["forbidden_tools"])
         config = _payload_to_config(normalized)
         now = datetime.now(UTC)
         await self._pool.execute(
@@ -315,6 +311,7 @@ def _normalize_payload(
         raise ValueError("Persona name is required")
     if "executor" in payload:
         raise PersonaDocumentError(EXECUTOR_REMOVED_MESSAGE.format(name=name))
+    refuse_tool_restrictions(name, payload)
 
     base = _config_to_payload(fallback) if fallback is not None else _default_payload(name)
     normalized = dict(base)
@@ -328,8 +325,6 @@ def _normalize_payload(
     normalized["system_prompt_template"] = str(
         payload.get("system_prompt_template") or base["system_prompt_template"]
     )
-    normalized["allowed_tools"] = _normalize_str_list(payload.get("allowed_tools"))
-    normalized["forbidden_tools"] = _normalize_str_list(payload.get("forbidden_tools"))
     normalized["permission_mode"] = _normalize_permission_mode(
         payload.get("permission_mode") or base["permission_mode"]
     )
@@ -379,8 +374,6 @@ def _config_to_payload(config: PersonaConfig | None) -> dict[str, Any]:
         "summary": summary,
         "description": description,
         "system_prompt_template": config.system_prompt_template,
-        "allowed_tools": list(config.allowed_tools),
-        "forbidden_tools": list(config.forbidden_tools),
         "permission_mode": _normalize_permission_mode(config.permission_mode),
         "iteration_budget": config.iteration_budget,
         "llm_primary_alias": "",
@@ -437,8 +430,6 @@ def _payload_to_config(payload: dict[str, Any]) -> PersonaConfig:
     return PersonaConfig(
         name=str(payload["name"]),
         system_prompt_template=str(payload["system_prompt_template"]),
-        allowed_tools=list(payload["allowed_tools"]),
-        forbidden_tools=list(payload["forbidden_tools"]),
         permission_mode=PERSONA_API_PERMISSION_MODES.get(
             str(payload["permission_mode"]),
             str(payload["permission_mode"]),
@@ -482,8 +473,6 @@ def _default_payload(name: str) -> dict[str, Any]:
         "summary": summary,
         "description": summary,
         "system_prompt_template": "",
-        "allowed_tools": [],
-        "forbidden_tools": [],
         "permission_mode": "default",
         "iteration_budget": 0,
         "llm_primary_alias": "",

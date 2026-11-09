@@ -86,8 +86,6 @@ system_prompt_template: |
   - [ ] [Check 2]
   - [ ] [Check 3]
 
-allowed_tools: [...]
-forbidden_tools: [...]
 permission_mode: read-only | workspace-write | full-access
 llm:
   primary_alias: balanced | powerful | fast
@@ -103,6 +101,10 @@ consumes:
   event_types: [event.type.one, event.type.two]
   injects: [context_key_one, context_key_two]
 ```
+
+> **Tool restrictions are not supported yet.** A persona has no `allowed_tools` or
+> `forbidden_tools`; a persona that carries either key is refused. Restricting tools per
+> harness is future work. `permission_mode` still applies.
 
 ## Escalation Protocol
 
@@ -235,8 +237,6 @@ system_prompt_template: |
   - [ ] Searched at least 3 sources
   - [ ] Confidence level is calibrated
 
-allowed_tools: [web, file, mimir]
-forbidden_tools: [git, terminal, cascade]
 permission_mode: read-only
 llm:
   primary_alias: balanced
@@ -293,8 +293,6 @@ system_prompt_template: |
   - [ ] All critical findings are truly blocking
   - [ ] Each finding has a file:line reference
 
-allowed_tools: [file, git, web, ravn]
-forbidden_tools: [terminal, cascade]
 permission_mode: read-only
 llm:
   primary_alias: balanced

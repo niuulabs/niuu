@@ -77,12 +77,10 @@ class ProjectionContext:
     runtime_dir: Path
     request_prompt: str = ""
     mcp_servers: tuple[Mapping[str, Any], ...] = ()
-    platform_mcp_servers: tuple[str, ...] = ()
     node_skip_permissions: bool = False
     node_claude_permission_mode: str = ""
     node_approval_policy: str = ""
     node_sandbox: str = ""
-    supports_read_only_mcp_boundary: bool = False
 
     def mcp_server_names(self) -> list[str]:
         return [str(server.get("name") or "") for server in self.mcp_servers if server.get("name")]
@@ -113,7 +111,7 @@ class HarnessProjection:
         raise PersonaProjectionError(
             f"Persona {persona_id!r} cannot run on {self.engine} ({transport}): {reasons}. "
             "Launch it on a harness that can enforce this, or change the persona's "
-            "allowed_tools, forbidden_tools or permission_mode."
+            "permission_mode."
         )
 
 

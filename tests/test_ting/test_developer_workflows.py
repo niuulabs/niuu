@@ -60,7 +60,7 @@ def test_developer_workflows_pin_current_integration_reviewer_content() -> None:
         assert pin.digest == reviewer.digest
 
 
-def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_is_bounded() -> None:
+def test_developer_personas_and_templates_are_provider_neutral() -> None:
     files = [
         *(ARCHIVE / "personas").glob("developer-*.yaml"),
         *full_catalogue_root().glob("developer-*.yaml"),
@@ -68,14 +68,6 @@ def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_i
     rendered = "\n".join(path.read_text(encoding="utf-8").casefold() for path in files)
     assert "github" not in rendered
     assert "gitlab" not in rendered
-
-    # The coordinator's retired-runtime tools have no counterpart in a harness session, so it
-    # is closed to the plan tool and cannot touch files, a shell or a repository.
-    coordinator = full_catalogue_personas().load("developer-coordinator")
-    assert coordinator is not None
-    assert coordinator.allowed_tools == ["plan"]
-    for forbidden in ("shell", "file_write", "file_read", "git"):
-        assert forbidden in coordinator.forbidden_tools
 
     coordinator_persona = full_catalogue_personas().load("developer-coordinator")
     assert coordinator_persona is not None
@@ -114,7 +106,6 @@ def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_i
     )
     assert "delivery_workspace.inspect" in integration_reviewer
     assert "bounded exact-candidate patch" in integration_reviewer
-    assert "allowed_tools: [plan]" in integration_reviewer
     assert "final delivery evidence policy" in integration_reviewer
     assert "Remote CI and full-policy" in integration_reviewer
 

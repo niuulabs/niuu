@@ -18,8 +18,6 @@ function makeReq(overrides: Partial<PersonaCreateRequest> = {}): PersonaCreateRe
     summary: 'Test persona',
     description: 'A test persona for unit tests',
     systemPromptTemplate: '# my-persona',
-    allowedTools: ['read', 'write'],
-    forbiddenTools: [],
     permissionMode: 'default',
     iterationBudget: 20,
     llmThinkingEnabled: false,
@@ -92,39 +90,6 @@ describe('validatePersona', () => {
     });
   });
 
-  describe('tool allow/deny disjoint validation', () => {
-    it('returns no error when allow and deny are disjoint', () => {
-      const errors = validatePersona(
-        makeReq({ allowedTools: ['read'], forbiddenTools: ['write'] }),
-        CATALOG,
-      );
-      expect(errors.some((e) => e.field === 'tools')).toBe(false);
-    });
-
-    it('returns an error when allow and deny overlap', () => {
-      const errors = validatePersona(
-        makeReq({ allowedTools: ['read', 'write'], forbiddenTools: ['write', 'bash'] }),
-        CATALOG,
-      );
-      const toolError = errors.find((e) => e.field === 'tools');
-      expect(toolError).toBeDefined();
-      expect(toolError?.message).toContain('write');
-    });
-
-    it('lists all overlapping tools in the message', () => {
-      const errors = validatePersona(
-        makeReq({
-          allowedTools: ['read', 'write', 'bash'],
-          forbiddenTools: ['write', 'bash'],
-        }),
-        CATALOG,
-      );
-      const msg = errors.find((e) => e.field === 'tools')?.message ?? '';
-      expect(msg).toContain('write');
-      expect(msg).toContain('bash');
-    });
-  });
-
   describe('produces event validation', () => {
     it('returns no error when produces event exists in catalog', () => {
       const errors = validatePersona(makeReq({ producesEventType: 'code.changed' }), CATALOG);
@@ -180,8 +145,6 @@ describe('validatePersona', () => {
         makeReq({
           name: '',
           role: 'bad-role' as never,
-          allowedTools: ['shared'],
-          forbiddenTools: ['shared'],
           producesEventType: 'no.such.event',
         }),
         CATALOG,

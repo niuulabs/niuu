@@ -9,7 +9,6 @@ const SEED_PERSONAS: TingPersonaSummary[] = [
   {
     name: 'coder',
     permissionMode: 'workspace_write',
-    allowedTools: ['Bash', 'Read', 'Write', 'Edit'],
     iterationBudget: 40,
     isBuiltin: true,
     hasOverride: false,
@@ -20,7 +19,6 @@ const SEED_PERSONAS: TingPersonaSummary[] = [
   {
     name: 'custom-agent',
     permissionMode: 'read_only',
-    allowedTools: ['Read'],
     iterationBudget: 10,
     isBuiltin: false,
     hasOverride: true,
@@ -86,7 +84,6 @@ describe('PersonasSection', () => {
           {
             name: 'reviewer',
             permissionMode: 'read_only',
-            allowedTools: ['Read'],
             iterationBudget: 25,
             isBuiltin: true,
             hasOverride: true,

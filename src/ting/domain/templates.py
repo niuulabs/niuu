@@ -54,8 +54,7 @@ Supports two template formats:
 A template used to name a ``flock_flow``, a flock of Ravn personas that ``persona_overrides``
 merged onto. Flocks are gone, so a template that names one is refused when it is loaded.
 The keys ``allowed_tools`` and ``forbidden_tools`` are rejected at parse
-time — they are a security boundary that cannot be overridden at the
-pipeline layer.
+time: per-harness tool restrictions are not available yet.
 """
 
 from __future__ import annotations
@@ -87,7 +86,8 @@ class TemplateRun:
     estimate_hours: float
     prompt: str
     persona: str = ""
-    persona_overrides: dict | None = None  # per-stage overrides, checked against the security keys
+    # Per-stage overrides, checked against the tool-restriction keys.
+    persona_overrides: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -269,25 +269,24 @@ def _parse_phases(data: dict) -> list[TemplatePhase]:
 
 
 # ---------------------------------------------------------------------------
-# Security boundary keys that cannot be overridden at the pipeline layer
+# Tool restrictions are not available yet
 # ---------------------------------------------------------------------------
 
-_SECURITY_OVERRIDE_KEYS = frozenset({"allowed_tools", "forbidden_tools"})
+_TOOL_RESTRICTION_KEYS = ("allowed_tools", "forbidden_tools")
 
 
-def _check_persona_overrides_security(overrides: dict, path: str) -> None:
-    """Reject security-boundary keys inside a persona_overrides block.
+def _check_persona_overrides_tool_restrictions(overrides: dict, path: str) -> None:
+    """Reject tool-restriction keys inside a persona_overrides block.
 
     :raises ValueError: When ``allowed_tools`` or ``forbidden_tools`` appear
         in *overrides*.  The error message cites the offending path so the
         caller can quickly locate the problem in their YAML.
     """
-    for key in _SECURITY_OVERRIDE_KEYS:
+    for key in _TOOL_RESTRICTION_KEYS:
         if key in overrides:
             raise ValueError(
-                f"persona_overrides at '{path}' sets '{key}', which is a "
-                "security boundary and cannot be overridden at the pipeline "
-                "layer. Remove it from the YAML."
+                f"persona_overrides at '{path}' sets '{key}', which is not supported: "
+                "per-harness tool restrictions are not available yet. Remove it from the YAML."
             )
 
 
@@ -300,7 +299,7 @@ def _validate_template(data: dict) -> None:
     """Validate parsed (and interpolated) template data.
 
     :raises ValueError: When mandatory fields are missing or the template
-        structure is invalid, including security-boundary violations in
+        structure is invalid, including tool restrictions in
         ``persona_overrides`` blocks.
     """
     if not data.get("name"):
@@ -326,7 +325,7 @@ def _validate_template(data: dict) -> None:
                 raise ValueError(
                     f"Stage '{stage_name}' must have 'parallel', 'sequential', or 'gate: human'"
                 )
-            # Validate persona_overrides security boundaries in all participants
+            # Refuse tool restrictions in persona_overrides in all participants
             for participant_list_key in ("parallel", "sequential"):
                 for p_idx, p in enumerate(stage.get(participant_list_key) or []):
                     overrides = p.get("persona_overrides")
@@ -334,7 +333,7 @@ def _validate_template(data: dict) -> None:
                         path = (
                             f"stages.{stage_name}.{participant_list_key}[{p_idx}].persona_overrides"
                         )
-                        _check_persona_overrides_security(overrides, path)
+                        _check_persona_overrides_tool_restrictions(overrides, path)
         return
 
     if not has_phases:
@@ -363,7 +362,7 @@ def _validate_template(data: dict) -> None:
             overrides = run.get("persona_overrides")
             if overrides:
                 path = f"phases.{phase_name}.runs[{run_idx}].persona_overrides"
-                _check_persona_overrides_security(overrides, path)
+                _check_persona_overrides_tool_restrictions(overrides, path)
 
 
 # ---------------------------------------------------------------------------

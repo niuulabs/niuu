@@ -711,11 +711,10 @@ class WorkflowTaskHandler(RequestHandler):
         """Reserve the parent execution required by a fan-out A2A skill.
 
         The A2A task surface launches the same workflow documents as the
-        research API. A coordinator with ``workflow_execution_*`` tools must
-        therefore receive the owner-bound runtime context that only a durable
-        parent execution can mint.
+        research API, so a fan-out skill needs the durable parent execution
+        its ``subworkflow`` node expands.
         """
-        parent_node_id = durable_parent_node_id(workflow, workflow_snapshot)
+        parent_node_id = durable_parent_node_id(workflow)
         if parent_node_id is None:
             return None
         execution_repo = self._workflow_execution_repo()

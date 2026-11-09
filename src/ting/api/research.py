@@ -624,7 +624,7 @@ async def _durable_research_launch(
     the ``research/campaigns/<slug>/`` Mímir prefix the workflow writes to and the
     campaign slug callers address, is unchanged.
     """
-    parent_node_id = durable_parent_node_id(workflow, workflow_snapshot)
+    parent_node_id = durable_parent_node_id(workflow)
     if parent_node_id is None:
         return None
     if execution_repo is None:

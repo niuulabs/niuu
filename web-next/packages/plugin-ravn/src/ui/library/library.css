@@ -709,28 +709,6 @@ button.rw-chip:hover {
   font-weight: 500;
 }
 
-.rw-tools-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.rw-tool {
-  padding: 3px 8px;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 6px;
-  background: var(--color-bg-tertiary);
-  font-family: var(--font-mono);
-  font-size: 12px;
-}
-
-.rw-tool--forbidden {
-  border-color: var(--color-critical-bo);
-  background: var(--color-critical-bg);
-  color: var(--color-critical-fg);
-  text-decoration: line-through;
-}
-
 .rw-prompt {
   position: relative;
   max-height: 220px;

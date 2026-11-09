@@ -9,7 +9,6 @@ So the pairing is checked here, with the same projector Skuld runs at startup.
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 from typing import Any
 
@@ -41,11 +40,6 @@ def _broker_of(model: str) -> dict[str, Any]:
     definitions = _session_definitions()
     assert definition in definitions, f"no session definition {definition!r} in the Forge chart"
     return definitions[definition]["defaults"]["broker"]
-
-
-def _transport_class(adapter: str) -> type:
-    module, name = adapter.rsplit(".", 1)
-    return getattr(importlib.import_module(module), name)
 
 
 def _members() -> list[tuple[str, str, str, dict[str, Any]]]:
@@ -90,9 +84,6 @@ def test_the_harness_of_each_members_model_can_play_its_persona(
         node_claude_permission_mode=str(broker.get("claudePermissionMode") or ""),
         node_approval_policy=str(broker.get("approvalPolicy") or ""),
         node_sandbox=str(broker.get("sandbox") or ""),
-        supports_read_only_mcp_boundary=bool(
-            getattr(_transport_class(adapter), "supports_read_only_mcp_boundary", False)
-        ),
     )
 
     projection = projector_for(adapter).project(

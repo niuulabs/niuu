@@ -47,7 +47,6 @@ function wrapWithServices(
                 color: 'blue',
                 summary: 'Reviews changes',
                 permissionMode: 'safe',
-                allowedTools: [],
                 iterationBudget: 10,
                 isBuiltin: true,
                 hasOverride: false,

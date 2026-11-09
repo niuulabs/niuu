@@ -664,7 +664,6 @@ export interface IDispatchBus {
 export interface TingPersonaSummary {
   name: string;
   permissionMode: string;
-  allowedTools: string[];
   iterationBudget: number;
   isBuiltin: boolean;
   hasOverride: boolean;
@@ -681,7 +680,6 @@ export interface TingPersonaSummary {
  */
 export interface TingPersonaDetail extends TingPersonaSummary {
   systemPromptTemplate: string;
-  forbiddenTools: string[];
   yamlSource: string;
 }
 

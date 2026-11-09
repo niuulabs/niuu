@@ -44,7 +44,6 @@ export type { PersonaFilter, PersonaSummary } from '@niuulabs/domain';
 export interface PersonaDetail extends PersonaSummary {
   description: string;
   systemPromptTemplate: string;
-  forbiddenTools: string[];
   llm: PersonaLLM;
   produces: PersonaProduces;
   consumes: PersonaConsumes;
@@ -62,8 +61,6 @@ export interface PersonaCreateRequest {
   summary: string;
   description: string;
   systemPromptTemplate: string;
-  allowedTools: string[];
-  forbiddenTools: string[];
   permissionMode: string;
   iterationBudget: number;
   llmThinkingEnabled: boolean;

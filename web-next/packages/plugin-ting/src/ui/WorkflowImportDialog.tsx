@@ -254,14 +254,6 @@ export function WorkflowImportDialog({
                                   {String(persona.definition.permission_mode ?? 'default')}
                                 </span>
                               </div>
-                              <div>
-                                Requested tools:{' '}
-                                <span className="niuu:font-mono">
-                                  {Array.isArray(persona.definition.allowed_tools)
-                                    ? persona.definition.allowed_tools.join(', ') || 'none'
-                                    : 'none'}
-                                </span>
-                              </div>
                               {typeof persona.definition.system_prompt_template === 'string' ? (
                                 <pre className="niuu:m-0 niuu:max-h-48 niuu:overflow-auto niuu:whitespace-pre-wrap niuu:rounded niuu:bg-bg-secondary niuu:p-2 niuu:font-mono niuu:text-[11px]">
                                   {persona.definition.system_prompt_template}

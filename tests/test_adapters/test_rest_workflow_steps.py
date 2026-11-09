@@ -101,7 +101,6 @@ def _persona_document(name: str = "coder") -> dict:
     definition = {
         "name": name,
         "system_prompt_template": "Write the change.",
-        "allowed_tools": ["file_read", "file_write"],
         "permission_mode": "read_only",
     }
     return {
@@ -247,7 +246,7 @@ class TestWorkflowStepSessionCreate:
 
     def test_a_document_outside_the_persona_schema_is_refused(self, client: TestClient) -> None:
         document = _persona_document()
-        document["definition"] = {**document["definition"], "allowed_tools": ["not_a_tool"]}
+        document["definition"] = {**document["definition"], "allowed_tools": ["file_read"]}
         document["revision"] = "r1"
 
         response = client.post(
@@ -256,6 +255,7 @@ class TestWorkflowStepSessionCreate:
 
         assert response.status_code == 422
         assert "not a valid persona document" in response.text
+        assert "allowed_tools is not supported" in response.text
 
     def test_a_persona_name_beside_a_persona_definition_is_refused(
         self, client: TestClient, pod_manager: MockPodManager

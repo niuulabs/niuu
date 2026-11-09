@@ -183,8 +183,6 @@ system_prompt_template: |
   - [ ] Critical findings are truly exploitable
   - [ ] Verdict matches severity of findings
 
-allowed_tools: [file_read, git_read, web_fetch, web_search]
-forbidden_tools: [shell]
 permission_mode: read_only
 
 llm:

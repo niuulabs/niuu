@@ -3,7 +3,7 @@
 Covers the full matrix of persona_overrides application:
 - system_prompt_extra concatenation (order asserted)
 - iteration_budget override
-- security key dropping with WARN
+- tool restrictions refused
 - merge precedence validation
 - startup log assertions
 """
@@ -157,28 +157,22 @@ class TestConsumesEventTypes:
 
 
 # ---------------------------------------------------------------------------
-# Security key dropping
+# Tool restrictions are refused
 # ---------------------------------------------------------------------------
 
 
-class TestSecurityKeyDropping:
-    def test_allowed_tools_dropped_with_warn(self, base_persona, caplog):
-        with caplog.at_level(logging.WARNING):
-            result = apply_config_overrides(base_persona, {"allowed_tools": ["bash", "read"]})
-        assert "allowed_tools" in caplog.text
-        # Persona's own allowed_tools list is unchanged
-        assert result.allowed_tools == base_persona.allowed_tools
+class TestToolRestrictionsRefused:
+    @pytest.mark.parametrize("key", ["allowed_tools", "forbidden_tools"])
+    def test_a_tool_restriction_override_raises_with_the_remedy(self, base_persona, key):
+        with pytest.raises(
+            ValueError,
+            match=rf"reviewer.*set {key}.*per-harness tool restrictions are not available yet",
+        ):
+            apply_config_overrides(base_persona, {key: ["bash"]})
 
-    def test_forbidden_tools_dropped_with_warn(self, base_persona, caplog):
-        with caplog.at_level(logging.WARNING):
-            result = apply_config_overrides(base_persona, {"forbidden_tools": ["rm"]})
-        assert "forbidden_tools" in caplog.text
-        assert result.forbidden_tools == base_persona.forbidden_tools
-
-    def test_security_keys_dropped_other_keys_applied(self, base_persona, caplog):
-        """Security keys are dropped but other overrides in the same dict still apply."""
-        with caplog.at_level(logging.WARNING):
-            result = apply_config_overrides(
+    def test_a_tool_restriction_is_refused_even_next_to_valid_overrides(self, base_persona):
+        with pytest.raises(ValueError, match="allowed_tools"):
+            apply_config_overrides(
                 base_persona,
                 {
                     "allowed_tools": ["bash"],
@@ -186,10 +180,6 @@ class TestSecurityKeyDropping:
                     "iteration_budget": 30,
                 },
             )
-        assert "allowed_tools" in caplog.text
-        assert "Extra instructions." in result.system_prompt_template
-        assert result.iteration_budget == 30
-        assert result.allowed_tools == base_persona.allowed_tools
 
 
 # ---------------------------------------------------------------------------

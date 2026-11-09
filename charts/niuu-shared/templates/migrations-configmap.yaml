@@ -680,4 +680,22 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_ravn_budget_ledger_tenant_day
         ON ravn_budget_ledger (tenant_id, day);
+  000116_strip_persona_tool_restrictions.up.sql: |
+    -- Restricting a persona's tools per harness is not available yet: allowed_tools and
+    -- forbidden_tools are gone from the persona model, and the registry refuses a stored or
+    -- submitted document that still carries either. Every stored registry row (written by the
+    -- API, including rows forked from built-in personas) holds both keys in config_json, and
+    -- runtime_config_json holds them when the persona listed a tool, so the keys are removed
+    -- from both before the new code reads them.
+    UPDATE ravn_personas
+    SET config_json = config_json - 'allowed_tools' - 'forbidden_tools',
+        runtime_config_json = runtime_config_json - 'allowed_tools' - 'forbidden_tools'
+    WHERE config_json ?| array['allowed_tools', 'forbidden_tools']
+       OR runtime_config_json ?| array['allowed_tools', 'forbidden_tools'];
+  000116_strip_persona_tool_restrictions.down.sql: |
+    -- The up migration removed the `allowed_tools` and `forbidden_tools` keys from stored
+    -- persona documents. The tool lists are not recorded anywhere else, so they cannot be
+    -- restored, and the persona model no longer has the fields to read them back. This
+    -- migration is deliberately a no-op.
+    SELECT 1;
 {{- end }}
