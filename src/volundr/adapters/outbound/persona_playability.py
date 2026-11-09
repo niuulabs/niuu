@@ -10,7 +10,6 @@ with the harness's own reasons.
 
 from __future__ import annotations
 
-import importlib
 import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -80,8 +79,6 @@ class SkuldPersonaPlayability(PersonaPlayabilityPort):
 
     @staticmethod
     def _context(transport: str, broker: Mapping[str, Any]) -> ProjectionContext:
-        module, _, name = transport.rpartition(".")
-        transport_class = getattr(importlib.import_module(module), name)
         skip = broker.get("skipPermissions")
         return ProjectionContext(
             transport=transport,
@@ -97,7 +94,4 @@ class SkuldPersonaPlayability(PersonaPlayabilityPort):
                 broker.get("approvalPolicy") or _node_default("approval_policy")
             ),
             node_sandbox=str(broker.get("sandbox") or _node_default("sandbox")),
-            supports_read_only_mcp_boundary=bool(
-                getattr(transport_class, "supports_read_only_mcp_boundary", False)
-            ),
         )
