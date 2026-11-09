@@ -121,6 +121,15 @@ config from the values the chart renders), and static peer lists (the registry d
 OpenShell's fork admits at most 16 peer workloads per sandbox; that is the real bound on a
 run's members there, and a larger run is refused at launch naming it.
 
+On OpenShell the checkout stays inside the sandbox; it needs no workspace claim (noatun runs
+without one on purpose). With a claim, the claim's mount is the shared checkout. Without
+one, the checkout is an `emptyDir` of the sandbox (`UNIT_WORKSPACE_DIRECTORY`,
+`/niuu-workspace`, outside `/sandbox` where the gateway keeps its own volume) that the
+primary and every peer mount. The primary's workspace path is a link to it, so the root's
+clone and every member's work are the same files; the sandbox is deleted, not retained,
+when the run stops. A claim that does not cover the workspace path is refused at launch
+naming the fix.
+
 ### Workspace
 
 The workspace is shared wherever the runtime allows it (decision 1). The flock shared one

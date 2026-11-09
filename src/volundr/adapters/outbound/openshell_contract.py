@@ -186,6 +186,14 @@ def _reserved_metadata_key(key: str) -> bool:
 UNIT_MESH_DIRECTORY = "/tmp/niuu-mesh"
 UNIT_MESH_REGISTRY = f"{UNIT_MESH_DIRECTORY}/peers.json"
 UNIT_MESH_VOLUME = "niuu-mesh"
+#: Where a unit with no workspace claim shares its checkout: an ``emptyDir`` mounted at
+#: this path in the primary and in every member's peer workload, so the run has one
+#: checkout that lives and ends with its sandbox. Outside ``/sandbox`` on purpose: as soon
+#: as a driver mount sits under ``/sandbox`` the gateway drops its own writable ``/sandbox``
+#: volume. The primary's workspace path (``/sandbox/workspace``) is a link to it; the
+#: members use this path itself.
+UNIT_WORKSPACE_DIRECTORY = "/niuu-workspace"
+UNIT_WORKSPACE_VOLUME = "niuu-workspace"
 #: One ``emptyDir`` per member is mounted at ``UNIT_MEMBER_ROOT/<index>``, in the primary
 #: (which writes into it) and in that member's peer workload only: the member's Forge
 #: session credential, its environment file and its home live there, so no other member's

@@ -322,11 +322,13 @@ class TestRefusals:
             await unit.start()
         assert unit.client.created is None
 
-    async def test_no_shared_workspace_volume_is_refused(self, unit) -> None:
-        spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+    async def test_a_claim_that_does_not_cover_the_workspace_is_refused(self, unit) -> None:
+        spec = unit.spec()
+        spec.values["persistence"] = {"existingClaim": "workspace", "mountPath": "/sandbox/other"}
 
-        with pytest.raises(ValueError, match="workspace volume"):
+        with pytest.raises(ValueError, match="would each get a copy") as error:
             await unit.manager.start(unit.root, spec)
+        assert "values.persistence.mountPath" in str(error.value)
         assert unit.client.created is None
 
     async def test_peer_workloads_declared_by_the_root_are_refused(self, unit) -> None:
@@ -374,6 +376,154 @@ class TestRefusals:
         with pytest.raises(ValueError, match="materializeEnvironment"):
             await unit.start()
         assert unit.client.created is None
+
+
+class TestUnitWorkspace:
+    """One checkout for the run, with or without a workspace claim."""
+
+    @staticmethod
+    def _claimless(unit) -> SessionSpec:
+        spec = unit.spec()
+        del spec.values["persistence"]
+        for launch in unit.launches:
+            del launch.spec.values["persistence"]
+        return spec
+
+    async def test_a_unit_without_a_claim_launches_on_a_volume_of_the_sandbox(self, unit) -> None:
+        await unit.manager.start(unit.root, self._claimless(unit))
+
+        config = unit.client.created["driver_config"]
+        volumes = {v["name"]: v for v in config["volumes"]}
+        assert volumes["niuu-workspace"] == {"name": "niuu-workspace", "empty_dir": {}}
+        assert not any("persistent_volume_claim" in v for v in volumes.values())
+        workspace = {"name": "niuu-workspace", "mount_path": "/niuu-workspace", "read_only": False}
+        assert workspace in config["containers"]["agent"]["volume_mounts"]
+        assert len(unit.workloads) == 2
+        for workload in unit.workloads:
+            assert workspace in workload["volume_mounts"]
+
+    async def test_the_volume_is_outside_sandbox_where_the_gateway_keeps_its_own(
+        self, unit
+    ) -> None:
+        await unit.manager.start(unit.root, self._claimless(unit))
+
+        config = unit.client.created["driver_config"]
+        mounts = [m["mount_path"] for m in config["containers"]["agent"]["volume_mounts"]]
+        mounts += [m["mount_path"] for w in unit.workloads for m in w["volume_mounts"]]
+        assert "/niuu-workspace" in mounts
+        assert not any(path.startswith("/sandbox") for path in mounts)
+
+    async def test_every_member_works_in_the_one_checkout(self, unit) -> None:
+        await unit.manager.start(unit.root, self._claimless(unit))
+
+        for index in range(2):
+            env_file = unit.files[f"/tmp/niuu-members/{index}/env"].decode()
+            assert "SKULD__SESSION__WORKSPACE_DIR=/niuu-workspace" in env_file
+            assert "SKULD__PERSISTENCE_MOUNT_PATH=/niuu-workspace" in env_file
+        # The primary reaches the same files through its workspace path.
+        assert unit.client.created["env"]["SKULD__SESSION__WORKSPACE_DIR"] == "/sandbox/workspace"
+
+    async def test_the_primarys_workspace_path_links_to_the_volume_before_it_is_used(
+        self, unit
+    ) -> None:
+        events: list[str] = []
+        exec_script, write_files = unit.client.exec_script, unit.client.write_files
+
+        def recording_exec(**kwargs):
+            events.append("link" if "ln -s" in kwargs["script"] else "bootstrap")
+            return exec_script(**kwargs)
+
+        def recording_write(**kwargs):
+            events.append("write")
+            return write_files(**kwargs)
+
+        unit.client.exec_script = recording_exec
+        unit.client.write_files = recording_write
+
+        await unit.manager.start(unit.root, self._claimless(unit))
+
+        assert events[0] == "link"
+        assert events.index("link") < events.index("write") < events.index("bootstrap")
+        link = unit.client.bootstrap_execs[0]["script"]
+        assert "link=/sandbox/workspace" in link
+        assert "target=/niuu-workspace" in link
+
+    async def test_a_link_that_cannot_be_made_fails_the_launch_and_removes_the_sandbox(
+        self, unit
+    ) -> None:
+        exec_script = unit.client.exec_script
+
+        def failing_link(**kwargs):
+            if "ln -s" in kwargs["script"]:
+                return 1, "the workspace volume is not mounted at /niuu-workspace"
+            return exec_script(**kwargs)
+
+        unit.client.exec_script = failing_link
+
+        with pytest.raises(RuntimeError, match="not mounted at /niuu-workspace"):
+            await unit.manager.start(unit.root, self._claimless(unit))
+
+        assert unit.client.deleted == [f"forge-{unit.root.id.hex[:13]}"]
+        assert unit.client.execs == []  # no Skuld started on a workspace that is not shared
+
+    async def test_the_peers_wait_for_the_marker_where_they_see_the_checkout(self, unit) -> None:
+        await unit.manager.start(unit.root, self._claimless(unit))
+
+        marker = unit.workloads[0]["command"][3]
+        assert marker.startswith("/niuu-workspace/.volundr/start-")
+        assert all(w["command"][3] == marker for w in unit.workloads)
+        name = marker.rsplit("/", 1)[1]
+        # Völundr writes it through the primary's workspace path: the same file.
+        assert [p for p in unit.files if p.endswith(name)] == [
+            f"/sandbox/workspace/.volundr/{name}"
+        ]
+
+    async def test_the_primary_may_write_the_volume(self, monkeypatch) -> None:
+        adapter = _import_adapter(monkeypatch)
+        unit = UnitFixture(adapter)
+        unit.manager = adapter.OpenShellGatewayPodManager(
+            client=unit.client,
+            mesh={"enabled": True},
+            sandbox_policy={
+                "version": 1,
+                "filesystem": {"read_write": ["/sandbox", "/tmp"]},
+            },
+        )
+
+        async def source(unit_id, only):
+            return [m for m in unit.launches if only is None or m.session.id == only]
+
+        unit.manager.configure_hosted_members(source)
+
+        await unit.manager.start(unit.root, self._claimless(unit))
+
+        assert list(unit.client.created["policy"].filesystem.read_write) == [
+            "/sandbox",
+            "/tmp",
+            "/niuu-workspace",
+        ]
+
+    async def test_the_claim_is_the_shared_checkout_when_there_is_one(self, unit) -> None:
+        await unit.start()
+
+        config = unit.client.created["driver_config"]
+        assert "niuu-workspace" not in {v["name"] for v in config["volumes"]}
+        assert config["volumes"][0]["persistent_volume_claim"]["claim_name"] == "workspace"
+        for workload in unit.workloads:
+            assert workload["volume_mounts"][0]["mount_path"] == "/sandbox/workspace"
+        assert unit.workloads[0]["command"][3].startswith("/sandbox/workspace/.volundr/start-")
+        assert unit.client.created["labels"]["volundr.niuu.io/storage"] == "forge"
+        assert not any("ln -s" in call["script"] for call in unit.client.bootstrap_execs)
+
+    async def test_the_sandbox_of_a_unit_without_a_claim_ends_with_the_run(self, unit) -> None:
+        await unit.manager.start(unit.root, self._claimless(unit))
+        assert unit.client.created["labels"]["volundr.niuu.io/storage"] == "unit"
+
+        await unit.manager.stop(unit.root)
+
+        # Nothing outlives it to retain: a stop would otherwise leave a stopped sandbox
+        # whose checkout is gone and whose peers belong to the run that ended.
+        assert unit.client.deleted == [f"forge-{unit.root.id.hex[:13]}"]
 
 
 class TestMemberStatus:
@@ -573,6 +723,83 @@ class TestMemberHarness:
         await unit.manager.stop_hosted_member(unit.members[1])
 
         assert seen == [("POST", "/api/harness/stop", "skuld.internal")]
+
+    @staticmethod
+    def _sandbox_in(unit, phase_name: str | None) -> None:
+        """Make the unit's sandbox read as ``phase_name`` (None: gone) to the controller."""
+        import dataclasses
+
+        original = unit.client.get_sandbox
+        pb2 = unit.adapter.openshell_pb2
+
+        def get(name):
+            if phase_name is None:
+                return None
+            return dataclasses.replace(
+                original(name), phase=getattr(pb2, f"SANDBOX_PHASE_{phase_name}"), ready=False
+            )
+
+        unit.client.get_sandbox = get
+
+    @staticmethod
+    def _asked(unit) -> list[str]:
+        """Wire the harness to a transport that records every call it makes."""
+        import httpx
+
+        from volundr.adapters.outbound.hosted_member_harness import MemberHarnessControl
+
+        asked: list[str] = []
+
+        def handler(request):
+            asked.append(request.url.path)
+            return httpx.Response(200, json={"status": "stopped"})
+
+        unit.manager._harness = MemberHarnessControl(
+            restart_wait_seconds=5,
+            poll_seconds=0.001,
+            request_seconds=5,
+            transport=httpx.MockTransport(handler),
+        )
+        return asked
+
+    async def test_stopping_a_member_of_a_sandbox_that_is_gone_is_a_clean_answer(
+        self, unit
+    ) -> None:
+        await unit.start()
+        await unit.manager.broker_target(unit.members[0])
+        asked = self._asked(unit)
+        self._sandbox_in(unit, None)
+
+        await unit.manager.stop_hosted_member(unit.members[0])
+
+        assert asked == []  # no Skuld to ask
+        assert len(unit.client.closed_forwarders) == 1  # the tunnel to it is closed
+        assert str(unit.members[0].id) not in unit.manager._resident_forwarders
+
+    async def test_stopping_a_member_of_a_stopped_or_ending_sandbox_is_a_clean_answer(
+        self, unit
+    ) -> None:
+        await unit.start()
+        asked = self._asked(unit)
+        for phase in ("STOPPED", "SUSPENDED", "STOPPING", "DELETING"):
+            self._sandbox_in(unit, phase)
+
+            await unit.manager.stop_hosted_member(unit.members[0])
+
+        assert asked == []
+
+    async def test_stopping_a_member_of_a_sandbox_that_is_not_up_raises_and_names_why(
+        self, unit
+    ) -> None:
+        await unit.start()
+        asked = self._asked(unit)
+        for phase in ("PROVISIONING", "ERROR"):
+            self._sandbox_in(unit, phase)
+
+            with pytest.raises(HostedUnitError, match="process may still be running"):
+                await unit.manager.stop_hosted_member(unit.members[0])
+
+        assert asked == []
 
     async def test_restart_writes_the_new_credential_then_asks_and_records_the_launch(
         self, unit
