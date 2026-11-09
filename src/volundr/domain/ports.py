@@ -154,6 +154,24 @@ class SessionRepository(ABC):
         """Update an existing session."""
 
     @abstractmethod
+    async def attach_to_unit(
+        self, session_id: UUID, unit_id: UUID, base_port: int
+    ) -> Session | None:
+        """Make ``session_id`` a member of the unit rooted at ``unit_id``, atomically.
+
+        The unit row is locked while the member is attached, so a unit cannot start
+        between the check and the write. The member's port is one above the unit's highest
+        member port (``base_port`` for the first) and is unique within the unit. Returns
+        the stored member, or ``None`` when the unit does not exist or has already
+        started (its status is not ``created``). Hosting is never written by an
+        ordinary ``update``.
+        """
+
+    @abstractmethod
+    async def list_hosted(self, unit_id: UUID) -> list[Session]:
+        """The members of the unit rooted at ``unit_id``, ordered by port."""
+
+    @abstractmethod
     async def update_coordination(
         self, session: Session, coordination: SessionCoordination | None
     ) -> Session | None:

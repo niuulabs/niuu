@@ -245,8 +245,8 @@ async def test_postgres_create_persists_usage_json_without_exposing_it():
     pool.execute = AsyncMock()
     repo = PostgresSessionRepository(pool)
     await repo.create(session(session_usage=USAGE))
-    # session_usage precedes coordination and actor_id, which stay last.
-    assert json.loads(pool.execute.call_args.args[-3]) == USAGE
+    # session_usage precedes coordination, actor_id and the hosting columns, which stay last.
+    assert json.loads(pool.execute.call_args.args[-5]) == USAGE
 
 
 async def test_postgres_read_decodes_usage_for_status_and_list():

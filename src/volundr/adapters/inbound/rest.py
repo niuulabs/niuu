@@ -751,6 +751,25 @@ class SessionCreate(BaseModel):
             "The workflow stage member (persona id) this session serves. Requires workflow_run_id."
         ),
     )
+    hosts_members: bool = Field(
+        default=False,
+        description=(
+            "Make the session the unit root of a workflow run: it is created and held, not "
+            "started, so the run's member sessions can be created hosted by it. Starting it "
+            "(POST /sessions/{id}/start) starts the unit with every member together; "
+            "members cannot be added after that."
+        ),
+    )
+    hosted_by: UUID | None = Field(
+        default=None,
+        description=(
+            "The unit root (created with hosts_members) that runs this session as a member "
+            "of its unit. The member is created and held, not started: it has no pod of its "
+            "own and starts with its unit. Refused with 409 once the unit has started, and "
+            "when the unit is another owner's or another run's. The member keeps its own "
+            "transcript, credential and outcome."
+        ),
+    )
     source: SessionSource = Field(
         default_factory=GitSource,
         description="Workspace source (git repo or local mount)",
@@ -864,6 +883,11 @@ class SessionCreate(BaseModel):
             raise ValueError(
                 "persona_name and persona_definition are mutually exclusive: send the persona "
                 "to look up by name, or the exact pinned document to play, not both"
+            )
+        if self.hosted_by is not None and (self.hosts_members or self.workflow_run_room):
+            raise ValueError(
+                "a session hosted by a unit cannot itself be a unit root or a run's room: "
+                "hosted_by is sent without hosts_members or workflow_run_room"
             )
         if self.workflow_run_room:
             if self.workflow_run_id is None:

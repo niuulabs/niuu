@@ -47,11 +47,11 @@ class PostgresSessionRepository(SessionRepository):
                  workload_config, turn_started_at,
                  short_description, description,
                  short_description_updated_at, description_updated_at, session_usage,
-                 coordination, actor_id)
+                 coordination, actor_id, hosted_by, hosted_port)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
                     $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
                     $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32,
-                    $33, $34, $35, $36, $37)
+                    $33, $34, $35, $36, $37, $38, $39)
             """,
             session.id,
             session.name,
@@ -90,6 +90,8 @@ class PostgresSessionRepository(SessionRepository):
             json.dumps(session.session_usage) if session.session_usage is not None else None,
             session.coordination.model_dump_json() if session.coordination else None,
             session.actor_id,
+            session.hosted_by,
+            session.hosted_port,
         )
         return session
 
@@ -181,7 +183,8 @@ class PostgresSessionRepository(SessionRepository):
                       turn_started_at, last_active,
                       short_description, description,
                       short_description_updated_at, description_updated_at,
-                      last_work_at, open_tool_count, session_usage, startup
+                      last_work_at, open_tool_count, session_usage, startup,
+                      hosted_by, hosted_port
             """,
             session.id,
             session.name,
@@ -235,8 +238,46 @@ class PostgresSessionRepository(SessionRepository):
                 "session_usage": self._parse_json_dict(row.get("session_usage")) or None,
                 # Recorder-owned: a lifecycle update never moves a launch's stages.
                 "startup": self._parse_startup(row.get("startup")),
+                # Attach-owned: hosting never changes through a lifecycle update.
+                "hosted_by": row.get("hosted_by"),
+                "hosted_port": row.get("hosted_port"),
             }
         )
+
+    async def attach_to_unit(
+        self, session_id: UUID, unit_id: UUID, base_port: int
+    ) -> Session | None:
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                # The unit row is the lock: a start of the unit updates it, so it waits
+                # for this attach, and two attaches take their ports one after the other.
+                unit_status = await conn.fetchval(
+                    "SELECT status FROM sessions WHERE id = $1 FOR UPDATE", unit_id
+                )
+                if unit_status != SessionStatus.CREATED.value:
+                    return None
+                row = await conn.fetchrow(
+                    """UPDATE sessions SET
+                           hosted_by = $2,
+                           hosted_port = COALESCE(
+                               (SELECT max(hosted_port) + 1 FROM sessions WHERE hosted_by = $2),
+                               $3
+                           ),
+                           updated_at = $4
+                       WHERE id = $1 AND hosted_by IS NULL
+                       RETURNING *""",
+                    session_id,
+                    unit_id,
+                    base_port,
+                    datetime.now(UTC),
+                )
+                return self._row_to_session(row) if row is not None else None
+
+    async def list_hosted(self, unit_id: UUID) -> list[Session]:
+        rows = await self._pool.fetch(
+            "SELECT * FROM sessions WHERE hosted_by = $1 ORDER BY hosted_port", unit_id
+        )
+        return [self._row_to_session(row) for row in rows]
 
     async def update_coordination(
         self, session: Session, coordination: SessionCoordination | None
@@ -506,6 +547,8 @@ class PostgresSessionRepository(SessionRepository):
             activity_metadata=activity_metadata,
             session_usage=self._parse_json_dict(row.get("session_usage")) or None,
             startup=self._parse_startup(row.get("startup")),
+            hosted_by=row.get("hosted_by"),
+            hosted_port=row.get("hosted_port"),
             **self._description_fields(row),
             **self._work_fact_fields(row),
         )
