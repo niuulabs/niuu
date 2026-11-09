@@ -6,6 +6,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import pytest
+
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.run_room_notices import RunRoomNotifier, run_notices
 from ting.domain.workflow_steps import (
@@ -96,26 +98,55 @@ def _with_room(forge: FakeForge, campaign: WorkflowCampaign) -> str:
     return "room-1"
 
 
-def test_a_run_reads_as_its_steps_gates_and_end_in_order() -> None:
+def _offer(run_id: UUID, node: str, at: datetime, **changes) -> WorkflowStep:
+    offer_id = uuid4()
+    values = {
+        "id": offer_id,
+        "run_id": run_id,
+        "node_id": node,
+        "member": None,
+        "kind": StepKind.OFFER,
+        "attempt": 1,
+        "generation": 0,
+        "state": StepState.ACTIVE,
+        "created_at": at,
+        "activated_at": at,
+        "offer_id": str(offer_id),
+    }
+    values.update(changes)
+    return WorkflowStep(**values)
+
+
+def test_a_run_reads_as_its_gates_and_end_in_order_and_its_steps_are_not_told() -> None:
     campaign = _campaign()
+    offer = _offer(campaign.id, "code", NOW, state=StepState.DONE)
     code = _member(
         campaign.id, "code", "coder", NOW, state=StepState.DONE, verdict="pass", note="Tests pass."
     )
     review = _member(campaign.id, "review", "reviewer", NOW + timedelta(minutes=5))
     gate = _gate(campaign.id, StepState.WAITING, NOW + timedelta(minutes=9))
-    state = RunState(campaign.id, steps=(gate, review, code))
+    state = RunState(campaign.id, steps=(gate, review, code, offer))
 
     texts = [n.text for n in run_notices(campaign, state, WorkflowCampaignStatus.BLOCKED)]
 
-    assert texts == [
-        "coder started Write the code.",
-        "coder closed Write the code: pass. Tests pass.",
-        "reviewer started Review it.",
-        "Approve the merge is waiting for a decision.",
-    ]
+    # The mesh events show the offer, the pickups and the closes; Ting tells only the gate.
+    assert texts == ["Approve the merge is waiting for a decision."]
 
 
-def test_a_decided_gate_a_rework_and_the_runs_end_are_told() -> None:
+def test_steps_alone_raise_no_notice() -> None:
+    campaign = _campaign()
+    steps = (
+        _offer(campaign.id, "code", NOW),
+        _member(campaign.id, "code", "coder", NOW, attempt=2, generation=1),
+    )
+
+    assert (
+        run_notices(campaign, RunState(campaign.id, steps=steps), WorkflowCampaignStatus.RUNNING)
+        == []
+    )
+
+
+def test_a_decided_gate_and_the_runs_end_are_told() -> None:
     campaign = _campaign()
     rework = _member(campaign.id, "code", "coder", NOW, attempt=2, generation=1)
     gate = _gate(campaign.id, StepState.DONE, NOW + timedelta(minutes=1), verdict="approve")
@@ -123,12 +154,28 @@ def test_a_decided_gate_a_rework_and_the_runs_end_are_told() -> None:
 
     texts = [n.text for n in run_notices(campaign, state, WorkflowCampaignStatus.COMPLETED)]
 
-    assert texts[0] == "coder started Write the code (attempt 2), rework 1."
-    assert texts[1:3] == [
+    assert texts == [
         "Approve the merge is waiting for a decision.",
         "Approve the merge approved.",
+        "The run completed.",
     ]
-    assert texts[-1] == "The run completed."
+
+
+@pytest.mark.parametrize(
+    "status, text",
+    [
+        (WorkflowCampaignStatus.FAILED, "The run failed."),
+        (WorkflowCampaignStatus.CANCELED, "The run was canceled."),
+    ],
+)
+def test_a_run_that_failed_or_was_canceled_says_so(
+    status: WorkflowCampaignStatus, text: str
+) -> None:
+    campaign = _campaign()
+
+    notices = run_notices(campaign, RunState(campaign.id, steps=()), status)
+
+    assert [notice.text for notice in notices] == [text]
 
 
 async def test_notices_go_to_the_runs_room_once_each() -> None:
@@ -136,19 +183,19 @@ async def test_notices_go_to_the_runs_room_once_each() -> None:
     forge = FakeForge()
     room = _with_room(forge, campaign)
     notifier = RunRoomNotifier(volundr_factory=FakeForgeFactory(forge))
-    step = _member(campaign.id, "code", "coder", NOW)
-    state = RunState(campaign.id, steps=(step,))
+    gate = _gate(campaign.id, StepState.WAITING, NOW)
+    state = RunState(campaign.id, steps=(gate,))
 
-    await notifier.sync(campaign, state, WorkflowCampaignStatus.RUNNING)
-    await notifier.sync(campaign, state, WorkflowCampaignStatus.RUNNING)
-    closed = replace(step, state=StepState.DONE, verdict="pass")
+    await notifier.sync(campaign, state, WorkflowCampaignStatus.BLOCKED)
+    await notifier.sync(campaign, state, WorkflowCampaignStatus.BLOCKED)
+    decided = replace(gate, state=StepState.DONE, verdict="approve", waiting_on=None)
     await notifier.sync(
-        campaign, RunState(campaign.id, steps=(closed,)), WorkflowCampaignStatus.RUNNING
+        campaign, RunState(campaign.id, steps=(decided,)), WorkflowCampaignStatus.RUNNING
     )
 
     assert forge.room_notices == [
-        (room, "coder started Write the code.", f"{step.id}:started"),
-        (room, "coder closed Write the code: pass.", f"{step.id}:closed"),
+        (room, "Approve the merge is waiting for a decision.", f"{gate.id}:open"),
+        (room, "Approve the merge approved.", f"{gate.id}:decided"),
     ]
 
 
@@ -157,26 +204,28 @@ async def test_a_notice_forge_refused_is_posted_again_on_the_next_change() -> No
     forge = FakeForge()
     _with_room(forge, campaign)
     notifier = RunRoomNotifier(volundr_factory=FakeForgeFactory(forge))
-    state = RunState(campaign.id, steps=(_member(campaign.id, "code", "coder", NOW),))
+    state = RunState(campaign.id, steps=(_gate(campaign.id, StepState.WAITING, NOW),))
     forge.fail_notice = RuntimeError("room not up")
 
-    await notifier.sync(campaign, state, WorkflowCampaignStatus.RUNNING)
+    await notifier.sync(campaign, state, WorkflowCampaignStatus.BLOCKED)
     forge.fail_notice = None
-    await notifier.sync(campaign, state, WorkflowCampaignStatus.RUNNING)
+    await notifier.sync(campaign, state, WorkflowCampaignStatus.BLOCKED)
 
-    assert [text for _, text, _ in forge.room_notices] == ["coder started Write the code."]
+    assert [text for _, text, _ in forge.room_notices] == [
+        "Approve the merge is waiting for a decision."
+    ]
 
 
 async def test_a_run_without_a_room_posts_nothing_and_keeps_its_notices() -> None:
     campaign = _campaign()
     forge = FakeForge()
     notifier = RunRoomNotifier(volundr_factory=FakeForgeFactory(forge))
-    state = RunState(campaign.id, steps=(_member(campaign.id, "code", "coder", NOW),))
+    state = RunState(campaign.id, steps=(_gate(campaign.id, StepState.WAITING, NOW),))
 
-    await notifier.sync(campaign, state, WorkflowCampaignStatus.RUNNING)
+    await notifier.sync(campaign, state, WorkflowCampaignStatus.BLOCKED)
     assert forge.room_notices == []
 
-    # The room comes up with the run's first member; the notice is posted then.
+    # The room comes up with the run's unit; the notice is posted then.
     _with_room(forge, campaign)
-    await notifier.sync(campaign, state, WorkflowCampaignStatus.RUNNING)
+    await notifier.sync(campaign, state, WorkflowCampaignStatus.BLOCKED)
     assert len(forge.room_notices) == 1

@@ -171,7 +171,17 @@ class StuckStepSweeper:
         state = await self._steps.load(campaign.id)
         if not state.launched or state.finished:
             return ()
-        await self._runs.catch_up_run(campaign)
+        try:
+            await self._runs.catch_up_run(campaign)
+        except Exception:
+            # An unreadable session log must not hide the other conditions of the run
+            # (a deleted session, a passed deadline): it is seen, counted, and tried again.
+            logger.error(
+                "Reading the session logs of run %s failed; judging its steps without them",
+                campaign.slug,
+                exc_info=True,
+            )
+            self._count_error("catch_up")
         await self._engine.publish_ready_offers(campaign.id)
         state = await self._steps.load(campaign.id)
         if state.finished:

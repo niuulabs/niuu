@@ -4,18 +4,21 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import httpx
 import jwt
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from niuu.domain.services.token_scope import VALKYRIE_BUILD_TOKEN_USE
+from ting.adapters.forge_step_sessions import StepSessionError
 from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.run_recovery import create_run_recovery_router
 from ting.config import AuthConfig, Settings
 from ting.domain.workflow_steps import (
     EVENT_RECOVERY,
     EVENT_RUN_CANCELED,
+    StepKind,
     StepState,
 )
 
@@ -87,8 +90,14 @@ async def test_a_reassign_moves_the_step_and_answers_with_the_new_attempt(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["status"] == "reassigned" and body["attempt"] == 2 and body["state"] == "active"
-    assert body["activation_id"] == str(stuck.step("alpha", attempt=2).id)
+    # the new attempt is an offer to the node's members; bravo still holds its step, so
+    # the offer waits to go out
+    assert body["status"] == "reassigned" and body["attempt"] == 2 and body["state"] == "pending"
+    [offer] = [
+        step for step in stuck.state.steps if step.kind is StepKind.OFFER and step.attempt == 2
+    ]
+    assert body["activation_id"] == str(offer.id)
+    assert stuck.sessions.replaced == [(stuck.campaign.id, "alpha", old.session_id)]
     assert stuck.step("alpha", attempt=1).state is StepState.CANCELED
     [recovery] = [e.payload for e in stuck.events(EVENT_RECOVERY)]
     assert recovery["by"] == {"kind": "person", "id": "user-1"}
@@ -106,11 +115,6 @@ async def test_a_retry_of_a_failed_step_answers_with_the_new_attempt(
         attempt=1,
         report={"kind": "failed", "failure_reason": "could not build"},
     )
-    stuck.forge.step_states[(alpha.session_id, str(alpha.id))] = {
-        "state": "closed",
-        "attempt": 1,
-        "ending": {"kind": "failed", "failure_reason": "could not build"},
-    }
 
     response = api.retry(alpha.id, reason="retry after the outage")
 
@@ -124,7 +128,7 @@ async def test_a_retry_the_session_cannot_take_is_a_conflict_that_says_why(
     response = api.retry(stuck.step("alpha").id)
 
     assert response.status_code == 409
-    assert "reassign the step to a fresh session" in response.json()["detail"]
+    assert "reassign the step to restart the member" in response.json()["detail"]
     assert stuck.step("alpha").state is StepState.ACTIVE
 
 
@@ -150,24 +154,34 @@ async def test_a_recovery_that_cannot_reach_forge_is_a_bad_gateway(
     api: Harness, stuck: StuckHarness
 ) -> None:
     old = stuck.step("alpha")
-    stuck.forge.fail_stop.add(old.session_id)
+
+    async def refuse(*args, **kwargs):
+        raise StepSessionError("Forge refused to stop the member")
+
+    stuck.sessions.replace_session = refuse
 
     response = api.reassign(old.id)
 
     assert response.status_code == 502
-    assert "could not be stopped" in response.json()["detail"]
+    assert "Forge refused to stop the member" in response.json()["detail"]
     assert stuck.step("alpha").state is StepState.ACTIVE
 
 
-async def test_an_attempt_that_could_not_start_is_a_bad_gateway_naming_why(
+async def test_a_restart_forge_cannot_start_is_a_bad_gateway_naming_why(
     api: Harness, stuck: StuckHarness
 ) -> None:
-    stuck.forge.fail_deliver = ConnectionError("forge is down")
+    async def down(*args, **kwargs):
+        raise httpx.ConnectError("forge is down")
+
+    stuck.sessions.replace_session = down
 
     response = api.reassign(stuck.step("alpha").id)
 
     assert response.status_code == 502
-    assert "could not be started" in response.json()["detail"]
+    assert (
+        "could not be reached" in response.json()["detail"]
+        or "forge is down" in (response.json()["detail"])
+    )
     assert "forge is down" in response.json()["detail"]
 
 

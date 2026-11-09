@@ -379,8 +379,9 @@ class SessionActivitySubscriber:
                         # same attempt.
                         await self._reconcile_running_runs(owner_id, exempt_cluster_key=key)
                         if self._workflow_runs is not None:
-                            # Closes reported while the stream was down are read back
-                            # from the sessions now that it is open, so none is missed.
+                            # Pickups, passes and closes reported while the stream was
+                            # down are read back from the sessions' durable logs now that
+                            # it is open, so none is missed.
                             await self._workflow_runs.reconcile_owner(owner_id)
                         logger.info(
                             "SSE subscription started for owner %s cluster=%s", owner_id[:8], label

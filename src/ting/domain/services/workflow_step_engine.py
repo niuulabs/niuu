@@ -112,6 +112,7 @@ from ting.ports.workflow_steps import (
     LedgerTransaction,
     OfferSigner,
     PersonaRef,
+    RunUnit,
     SessionLiveness,
     StepRunDefinition,
     StepRunDefinitions,
@@ -309,7 +310,7 @@ class WorkflowStepEngine:
 
     async def _launch_unit(
         self, run_id: UUID, graph: StepGraph, definition: StepRunDefinition
-    ) -> Any:
+    ) -> RunUnit | None:
         """Start the run's root and every stage member together; ``None`` for a run with none."""
         members: dict[str, PersonaRef] = {}
         for node in graph.nodes.values():

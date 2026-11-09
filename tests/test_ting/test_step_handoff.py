@@ -283,7 +283,7 @@ async def test_rework_offers_the_stage_again_in_a_new_generation_and_refuses_the
 
     # the first round's review offer no longer stands: a late pickup is refused
     unit = run.sessions.units[run.run_id]
-    with pytest.raises(HandoffRefusedError, match="rework replaced it|is "):
+    with pytest.raises(HandoffRefusedError, match="rework replaced it"):
         await run.engine.note_picked_up(
             run_id=run.run_id,
             session_id=unit.members["r1"],

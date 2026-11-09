@@ -36,9 +36,57 @@ class TestWorkflowStepsConfig:
     def test_the_description_says_what_bounds_it_and_what_a_hit_does(self) -> None:
         description = WorkflowStepsConfig.model_fields["step_deadline_seconds"].description or ""
 
-        assert "bound" in description
-        assert "never acts on it" in description
-        assert "NIU-1181" in description
+        assert "Real bound" in description
+        assert "hard stop" in description
+        assert "naming this setting" in description
+
+    def test_pickup_grace_defaults_to_five_minutes(self) -> None:
+        assert WorkflowStepsConfig().pickup_grace_seconds == 300.0
+        assert Settings().workflow_steps.pickup_grace_seconds == 300.0
+
+    def test_pickup_grace_is_set_from_config(self) -> None:
+        config = Settings(workflow_steps={"pickup_grace_seconds": 45})
+
+        assert config.workflow_steps.pickup_grace_seconds == 45.0
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_pickup_grace_must_be_positive(self, value: float) -> None:
+        with pytest.raises(ValueError, match="greater than 0"):
+            WorkflowStepsConfig(pickup_grace_seconds=value)
+
+    def test_pickup_grace_says_what_bounds_it_and_that_it_is_not_a_cap(self) -> None:
+        description = WorkflowStepsConfig.model_fields["pickup_grace_seconds"].description or ""
+
+        assert "Real bound" in description
+        assert "never a cap" in description
+        assert "step_deadline_seconds" in description
+
+    def test_catch_up_page_size_defaults_to_two_hundred_frames(self) -> None:
+        assert WorkflowStepsConfig().catch_up_page_size == 200
+        assert Settings().workflow_steps.catch_up_page_size == 200
+
+    def test_catch_up_page_size_is_set_from_config(self) -> None:
+        config = Settings(workflow_steps={"catch_up_page_size": 25})
+
+        assert config.workflow_steps.catch_up_page_size == 25
+
+    @pytest.mark.parametrize("value", [0, -3])
+    def test_catch_up_page_size_must_be_at_least_one(self, value: int) -> None:
+        with pytest.raises(ValueError, match="greater than or equal to 1"):
+            WorkflowStepsConfig(catch_up_page_size=value)
+
+    def test_catch_up_page_size_says_it_bounds_nothing(self) -> None:
+        description = WorkflowStepsConfig.model_fields["catch_up_page_size"].description or ""
+
+        assert "bounds nothing" in description
+
+    def test_session_poll_seconds_was_removed_and_is_rejected_loudly(self) -> None:
+        with pytest.raises(ValueError, match=r"workflow_steps\.session_poll_seconds was removed"):
+            Settings(workflow_steps={"session_poll_seconds": 5})
+
+    def test_the_rejection_of_a_removed_key_names_the_remedy(self) -> None:
+        with pytest.raises(ValueError, match="Remove session_poll_seconds"):
+            WorkflowStepsConfig(session_poll_seconds=5)
 
 
 class TestStuckDetectionConfig:
@@ -47,32 +95,36 @@ class TestStuckDetectionConfig:
 
         assert stuck.enabled is True
         assert stuck.sweep_interval_seconds == 120.0
-        assert stuck.start_grace_seconds == 600.0
 
     def test_it_is_set_from_config(self) -> None:
         config = Settings(
-            workflow_steps={
-                "stuck": {"enabled": False, "sweep_interval_seconds": 30, "start_grace_seconds": 45}
-            }
+            workflow_steps={"stuck": {"enabled": False, "sweep_interval_seconds": 30}}
         )
 
         assert config.workflow_steps.stuck.enabled is False
         assert config.workflow_steps.stuck.sweep_interval_seconds == 30.0
-        assert config.workflow_steps.stuck.start_grace_seconds == 45.0
 
-    @pytest.mark.parametrize("field", ["sweep_interval_seconds", "start_grace_seconds"])
     @pytest.mark.parametrize("value", [0, -5])
-    def test_the_intervals_must_be_positive(self, field: str, value: float) -> None:
+    def test_the_sweep_interval_must_be_positive(self, value: float) -> None:
         with pytest.raises(ValueError, match="greater than 0"):
-            Settings(workflow_steps={"stuck": {field: value}})
+            Settings(workflow_steps={"stuck": {"sweep_interval_seconds": value}})
 
-    @pytest.mark.parametrize("field", ["sweep_interval_seconds", "start_grace_seconds"])
-    def test_each_interval_says_what_bounds_it(self, field: str) -> None:
+    def test_the_sweep_interval_says_what_bounds_it(self) -> None:
         from ting.config import StuckDetectionConfig
 
-        description = StuckDetectionConfig.model_fields[field].description or ""
+        description = StuckDetectionConfig.model_fields["sweep_interval_seconds"].description or ""
 
         assert "Bounds" in description or "bound" in description
+
+    def test_start_grace_seconds_was_removed_and_is_rejected_loudly(self) -> None:
+        with pytest.raises(
+            ValueError, match=r"workflow_steps\.stuck\.start_grace_seconds was removed"
+        ):
+            Settings(workflow_steps={"stuck": {"start_grace_seconds": 45}})
+
+    def test_the_rejection_points_at_the_pickup_grace(self) -> None:
+        with pytest.raises(ValueError, match=r"workflow_steps\.pickup_grace_seconds"):
+            Settings(workflow_steps={"stuck": {"start_grace_seconds": 45}})
 
 
 class TestDatabaseConfig:

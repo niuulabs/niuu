@@ -49,6 +49,11 @@ STEP_DEADLINE_SECONDS = 600.0
 _ACTIVATION_NAMESPACE = UUID("6f1c9a52-0d3e-4c7b-9a41-2b8e5d7f1c30")
 
 
+def minted_activation_id(offer_id: str, session_id: str, attempt: int) -> UUID:
+    """The activation id Skuld mints for a pickup: one offer, session and attempt, one id."""
+    return uuid5(_ACTIVATION_NAMESPACE, f"{offer_id}:{session_id}:{attempt}")
+
+
 def bundled(name: str) -> WorkflowDefinition:
     """A shipped workflow by its display name, exactly as the package loads it."""
     for workflow in load_system_workflows():
