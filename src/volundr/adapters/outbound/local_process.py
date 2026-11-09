@@ -9,7 +9,7 @@ Constructor accepts plain kwargs (dynamic adapter pattern):
     adapter: "volundr.adapters.outbound.local_process.LocalProcessPodManager"
     workspaces_dir: "~/.niuu/workspaces"
     claude_binary: "claude"
-    max_concurrent: 4
+    max_concurrent: (unset: no limit)
     sdk_port_start: 9100
     stop_timeout: 10
     state_file: "~/.niuu/forge-state.json"
@@ -72,17 +72,9 @@ DEFAULT_WORKSPACES_DIR = "~/.niuu/workspaces"
 # Broker-owned present-file staging for local sessions, under the workspaces dir.
 LOCAL_PRESENTED_FILES_DIR = ".forge-presented"
 
-#: Under the workspaces directory, one directory per member of a unit holding that member's
-#: own agent state (its CODEX_HOME and CLAUDE_CONFIG_DIR): two members never share a Codex
-#: database or a Claude session store, though they share the checkout and the host HOME.
-LOCAL_MEMBER_HOMES_DIR = ".forge-members"
 # Where a local session's ephemeral Mimir mounts live, under its workspace.
 LOCAL_MIMIR_DIR = ".mimir-local"
 DEFAULT_CLAUDE_BINARY = "claude"
-# Capable hosts run many sessions comfortably (each ~0.5 GB); the practical
-# ceiling is the Claude/Codex *subscription* concurrency, not the box. Deployments
-# override this via pod_manager.max_concurrent in config.yaml.
-DEFAULT_MAX_CONCURRENT = 16
 DEFAULT_SDK_PORT_START = 9100
 DEFAULT_STOP_TIMEOUT = 10
 DEFAULT_STATE_FILE = "~/.niuu/forge-state.json"
@@ -342,7 +334,7 @@ class LocalProcessPodManager(PodManager):
         *,
         workspaces_dir: str = DEFAULT_WORKSPACES_DIR,
         claude_binary: str = DEFAULT_CLAUDE_BINARY,
-        max_concurrent: int = DEFAULT_MAX_CONCURRENT,
+        max_concurrent: int | None = None,
         sdk_port_start: int = DEFAULT_SDK_PORT_START,
         stop_timeout: int = DEFAULT_STOP_TIMEOUT,
         state_file: str = DEFAULT_STATE_FILE,
@@ -377,7 +369,9 @@ class LocalProcessPodManager(PodManager):
             },
         )
         self._claude_binary = str(claude_binary)
-        self._max_concurrent = int(max_concurrent)
+        # No limit unless the operator sets one: the machine's memory and the model
+        # subscriptions' own concurrency are the real bounds, and they refuse on their own.
+        self._max_concurrent = None if max_concurrent is None else int(max_concurrent)
         self._stop_timeout = int(stop_timeout)
         self._state_file = Path(str(state_file)).expanduser()
         self._server_public_host = str(server_public_host)
@@ -476,7 +470,7 @@ class LocalProcessPodManager(PodManager):
             return await self._start_unit(session, spec)
 
         active = self._reconcile_active()
-        if len(active) >= self._max_concurrent:
+        if self._max_concurrent is not None and len(active) >= self._max_concurrent:
             detail = ", ".join(
                 f"{sid[:8]}:{self._processes[sid].state.value}(pid={self._processes[sid].pid})"
                 for sid in active
@@ -490,7 +484,7 @@ class LocalProcessPodManager(PodManager):
             )
             raise SessionCapacityError(self._capacity_snapshot(active))
         logger.info(
-            "Provisioning session %s (%d/%d concurrent slots in use)",
+            "Provisioning session %s (%d concurrent sessions, limit %s)",
             session_id[:8],
             len(active),
             self._max_concurrent,
@@ -855,7 +849,7 @@ class LocalProcessPodManager(PodManager):
 
         active = self._reconcile_active()
         needed = 1 + len(members)
-        if len(active) + needed > self._max_concurrent:
+        if self._max_concurrent is not None and len(active) + needed > self._max_concurrent:
             logger.warning(
                 "Max concurrent reached: %d/%d slots in use, unit %s needs %d",
                 len(active),
@@ -875,7 +869,7 @@ class LocalProcessPodManager(PodManager):
                 )
             )
         logger.info(
-            "Provisioning unit %s: the root and %d member(s) (%d/%d concurrent slots in use)",
+            "Provisioning unit %s: the root and %d member(s) (%d concurrent sessions, limit %s)",
             root_id[:8],
             len(members),
             len(active),
@@ -1373,10 +1367,6 @@ class LocalProcessPodManager(PodManager):
         env["SKULD__PRESENTED_FILES_DIR"] = str(
             self._workspaces_dir / LOCAL_PRESENTED_FILES_DIR / session_id
         )
-        if session.hosted_by is not None:
-            member_home = self._workspaces_dir / LOCAL_MEMBER_HOMES_DIR / session_id
-            env["CODEX_HOME"] = str(member_home / ".codex")
-            env["CLAUDE_CONFIG_DIR"] = str(member_home / ".claude")
 
         # Volundr API URL so Skuld can post chronicles/timeline events back
         server_host = self._server_host
@@ -1798,8 +1788,10 @@ class LocalProcessPodManager(PodManager):
             remedy=self._capacity_remedy(),
         )
 
-    async def capacity(self) -> SessionCapacity:
-        """The concurrent-session cap and how much of it is in use right now."""
+    async def capacity(self) -> SessionCapacity | None:
+        """The concurrent-session limit and how much of it is in use; None with no limit."""
+        if self._max_concurrent is None:
+            return None
         return self._capacity_snapshot(self._reconcile_active())
 
     def _reconcile_active(self) -> list[str]:

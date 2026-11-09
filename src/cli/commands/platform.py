@@ -716,6 +716,9 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
         )
     else:
         for key, value in kwargs.items():
+            if value is None:
+                # Unset keeps the adapter's own default (max_concurrent unset: no limit).
+                continue
             env[f"POD_MANAGER__KWARGS__{key.upper()}"] = (
                 json.dumps(value) if isinstance(value, dict) else str(value)
             )

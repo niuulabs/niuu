@@ -619,14 +619,15 @@ class TestMemberHomes:
             await fx.manager._spawn_skuld(session, _spec(), workspace, 9100)
         return spawn.call_args.kwargs["env"]
 
-    async def test_each_member_has_its_own_agent_state(self, fx, tmp_path) -> None:
-        first = await self._env(fx, fx.members[0], tmp_path)
-        second = await self._env(fx, fx.members[1], tmp_path)
+    async def test_a_member_runs_on_the_hosts_model_logins(self, fx, tmp_path) -> None:
+        """A member is a local session: it reaches the host's Codex and Claude logins."""
+        for member in fx.members:
+            env = await self._env(fx, member, tmp_path)
 
-        assert first["CODEX_HOME"] != second["CODEX_HOME"]
-        assert first["CLAUDE_CONFIG_DIR"] != second["CLAUDE_CONFIG_DIR"]
-        assert first["CODEX_HOME"].endswith(f"{fx.members[0].id}/.codex")
-        assert first["CLAUDE_CONFIG_DIR"].endswith(f"{fx.members[0].id}/.claude")
+            assert "CODEX_HOME" not in env or ".forge-members" not in env["CODEX_HOME"]
+            assert "CLAUDE_CONFIG_DIR" not in env or ".forge-members" not in env.get(
+                "CLAUDE_CONFIG_DIR", ""
+            )
 
     async def test_an_ordinary_session_keeps_the_hosts_homes(self, fx, tmp_path) -> None:
         env = await self._env(fx, Session(id=uuid4(), name="plain"), tmp_path)

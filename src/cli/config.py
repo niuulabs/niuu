@@ -115,9 +115,15 @@ class PodManagerConfig(BaseModel):
         default="claude",
         description="Path or name of the claude binary (mini mode).",
     )
-    max_concurrent: int = Field(
-        default=4,
-        description="Maximum concurrent sessions.",
+    max_concurrent: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Most sessions that may run at once on this machine. Unset runs as many as the "
+            "machine takes: the real bounds are its memory and the model subscriptions' own "
+            "concurrency, which refuse on their own. A launch over a limit that is set is "
+            "refused, naming this key."
+        ),
     )
     sdk_port_start: int = Field(
         default=9100,

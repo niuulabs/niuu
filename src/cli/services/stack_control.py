@@ -263,7 +263,11 @@ def stack_settings_view(settings: CLISettings, external_host: str) -> StackSetti
             max_model_len=vllm.max_model_len,
             gpu_memory_utilization=vllm.gpu_memory_utilization,
         ),
-        max_sessions=settings.pod_manager.max_concurrent,
+        **(
+            {"max_sessions": settings.pod_manager.max_concurrent}
+            if settings.pod_manager.max_concurrent is not None
+            else {}
+        ),
         model_server=ModelServerSettings(
             enabled=server.enabled,
             base_url=server.base_url,

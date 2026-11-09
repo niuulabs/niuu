@@ -154,7 +154,8 @@ class TestPodManagerConfig:
         assert "LocalProcessPodManager" in config.adapter
         assert config.workspaces_dir == "~/.niuu/workspaces"
         assert config.claude_binary == "claude"
-        assert config.max_concurrent == 4
+        # No session limit unless the operator sets one.
+        assert config.max_concurrent is None
 
     def test_custom_adapter(self) -> None:
         config = PodManagerConfig(adapter="custom.adapter.PodManager")
