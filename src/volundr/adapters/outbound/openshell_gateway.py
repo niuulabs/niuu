@@ -170,7 +170,7 @@ from volundr.domain.ports import (
 )
 from volundr.domain.services.forge_session_launch import launch_id_of
 from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
-from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
+from volundr.domain.workflow_session import workflow_steps_environment
 
 logger = logging.getLogger(__name__)
 
@@ -2407,8 +2407,7 @@ class OpenShellGatewayPodManager(
         }
         if persona := session_values.get("persona"):
             prompts["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
-        if workflow_steps_enabled(spec.values):
-            prompts[WORKFLOW_STEPS_ENABLED_ENV] = "true"
+        prompts.update(workflow_steps_environment(spec.values))
         return prompts
 
     def _member_proxy_target(self, member: Session) -> SessionProxyTarget | None:

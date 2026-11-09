@@ -238,11 +238,29 @@ git:
     pullPolicy: IfNotPresent
 
 # Broker configuration (Skuld application settings)
-# -- Workflow step hosting. Forge sets enabled for a session a workflow run launched as a step
-# host (the create request's workflow_step_host). Skuld then takes the run's offers from the mesh
-# and offers the workflow_step_close tool; an ordinary session leaves both off.
+# -- Workflow step hosting. Forge sets these for a session a workflow run launched: a member
+# (the create request's workflow_step_host) or the run's root (the run's room). A member takes the
+# run's offers from the mesh and offers the workflow_step_close tool; the root publishes them.
+# An ordinary session leaves everything off and empty. Skuld refuses to start a member or root
+# that lacks a field it needs (a member: runId, member, personaAlias, orchestratorPeerId; the
+# root: runId).
 workflowSteps:
+  # -- This session is a member of a workflow run
   enabled: false
+  # -- This session is the root of a workflow run (exclusive with enabled)
+  root: false
+  # -- The workflow run the session belongs to
+  runId: ""
+  # -- The member's name in the workflow stage
+  member: ""
+  # -- The alias the workflow gives the member's pinned persona
+  personaAlias: ""
+  # -- The mesh peer id of the run's root; a member takes offers published by this peer only
+  orchestratorPeerId: ""
+  # -- The member's eventFilters from the workflow; empty takes every offer of its topics
+  eventFilters: {}
+  # -- Who decides the run's next step: engine or session. Empty keeps Skuld's default (engine)
+  orchestration: ""
 
 broker:
   conversationRecentMaxTurns: 15

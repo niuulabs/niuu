@@ -281,6 +281,21 @@ An agent asks the user for a secret with `request-secret` or the Forge MCP `requ
 | `forgeMcp.brokerRequestTimeoutS` | number | `null` | Seconds the engine allows one stdio-server to broker tool call (`forge_mcp.broker_request_timeout_s`); null keeps the broker default of 60 |
 | `forgeMcp.toolTimeoutS` | number | `null` | Seconds the engine allows one MCP tool call (`forge_mcp.tool_timeout_s`), set for both Codex (`tool_timeout_sec`) and Claude Code (per-server `timeout`); null keeps the broker default of 120 |
 
+### Workflow steps
+
+A workflow run's sessions take part in the run's mesh: each **member** takes the offers of the topics its pinned persona consumes and closes its steps, and the run's **root** (the run's room, a Skuld with no agent) publishes the offers Ting hands it. Forge sets these values when it launches a run's session (the `workflow_step_host` session contributor); an ordinary session leaves them off and empty. Each renders into the `workflow_steps` section of the broker's config file under the key shown. Skuld refuses to start a member or root that lacks a field it needs, so none is defaulted.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `workflowSteps.enabled` | bool | `false` | This session is a member of a workflow run (`workflow_steps.enabled`). Needs `runId`, `member`, `personaAlias` and `orchestratorPeerId`, the mesh and a pinned persona |
+| `workflowSteps.root` | bool | `false` | This session is the root of a workflow run (`workflow_steps.root`); exclusive with `enabled`. Needs `runId` and the mesh |
+| `workflowSteps.runId` | string | `""` | The workflow run the session belongs to (`workflow_steps.run_id`); offers of any other run are refused |
+| `workflowSteps.member` | string | `""` | The member's name in the workflow stage (`workflow_steps.member`) |
+| `workflowSteps.personaAlias` | string | `""` | The alias the workflow gives the member's pinned persona (`workflow_steps.persona_alias`); the offer carries one contract per alias and the member finds its own by this |
+| `workflowSteps.orchestratorPeerId` | string | `""` | The mesh peer id of the run's root (`workflow_steps.orchestrator_peer_id`), which is the root session's id; a member takes offers published by this peer and no other |
+| `workflowSteps.eventFilters` | object | `{}` | The member's `eventFilters` from the workflow (`workflow_steps.event_filters`); each key must equal the value in the offered inputs' payload, else the member passes the offer. Empty takes every offer of its topics |
+| `workflowSteps.orchestration` | string | `""` | Who decides the run's next step, `engine` or `session` (`workflow_steps.orchestration`); empty keeps Skuld's default, `engine` |
+
 ### Mesh
 
 A session joins a flock as a mesh peer when `mesh.enabled` is true: it announces itself (persona, role, description, capabilities, the topics it consumes and produces, its activity), receives what peers send into its inbox, and gets the `mesh_send`, `mesh_publish` and `mesh_peers` session tools. Every value below renders into the `mesh` section of the broker's config file under the key shown; a value left `null` (or empty) keeps Skuld's own default, so a chart that sets none of them renders `enabled: false` and `transport: "nng"` exactly as Skuld defaults. Forge hands these to a session pod as it does every other value of this chart: the pod manager's `session_defaults` (the volundr chart's `podManager.kwargs`) and the session contributors merge into the release values.

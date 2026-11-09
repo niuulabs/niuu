@@ -16,6 +16,7 @@ def _root_body(name: str = "wf-run") -> dict:
         "hosts_members": True,
         "workflow_run_id": RUN,
         "workflow_run_room": True,
+        "workflow_orchestration": "engine",
     }
 
 

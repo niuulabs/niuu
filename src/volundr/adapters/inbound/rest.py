@@ -770,6 +770,33 @@ class SessionCreate(BaseModel):
             "The workflow stage member (persona id) this session serves. Requires workflow_run_id."
         ),
     )
+    workflow_persona_alias: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        description=(
+            "The alias the workflow gives the member's pinned persona: an offer carries one "
+            "contract per alias and the member finds its own by this. Required with "
+            "workflow_step_host."
+        ),
+    )
+    workflow_event_filters: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "The member's eventFilters from the workflow: each key must equal the value found "
+            "in the offered inputs' payload, else the member passes the offer. An empty mapping "
+            "takes every offer of the member's topics. Required with workflow_step_host, "
+            "because only the workflow knows whether the member has filters."
+        ),
+    )
+    workflow_orchestration: Literal["engine", "session"] | None = Field(
+        default=None,
+        description=(
+            "Who decides the run's next step: engine (Ting's engine) or session (a coordinator "
+            "agent in the run's root). Required with workflow_step_host and with "
+            "workflow_run_room; every session of a run is told the same."
+        ),
+    )
     hosts_members: bool = Field(
         default=False,
         description=(
@@ -916,15 +943,55 @@ class SessionCreate(BaseModel):
                 or self.workflow_step_host
                 or self.persona_definition is not None
                 or self.persona_name.strip()
+                or self.workflow_persona_alias is not None
+                or self.workflow_event_filters is not None
             ):
                 raise ValueError(
-                    "a workflow run's room runs no agent: send no workflow_member, persona or "
-                    "workflow_step_host with workflow_run_room"
+                    "a workflow run's room runs no agent: send no workflow_member, persona, "
+                    "workflow_persona_alias, workflow_event_filters or workflow_step_host with "
+                    "workflow_run_room"
+                )
+            if self.workflow_orchestration is None:
+                raise ValueError(
+                    "workflow_run_room needs workflow_orchestration (engine or session): the "
+                    "run's root tells its members who decides the next step"
                 )
             return self
         if (self.workflow_run_id is None) != (self.workflow_member is None):
             raise ValueError("workflow_run_id and workflow_member must be sent together")
+        if self.workflow_step_host:
+            self._require_step_host_fields()
+            return self
+        if (
+            self.workflow_persona_alias is not None
+            or self.workflow_event_filters is not None
+            or self.workflow_orchestration is not None
+        ):
+            raise ValueError(
+                "workflow_persona_alias, workflow_event_filters and workflow_orchestration "
+                "belong to a workflow step host: send them with workflow_step_host"
+            )
         return self
+
+    def _require_step_host_fields(self) -> None:
+        """A step host is refused unless it carries everything Skuld needs to take its steps."""
+        needed = {
+            "workflow_run_id and workflow_member": self.workflow_run_id is not None,
+            "workflow_persona_alias": self.workflow_persona_alias is not None,
+            "workflow_event_filters (an empty mapping takes every offer)": (
+                self.workflow_event_filters is not None
+            ),
+            "workflow_orchestration": self.workflow_orchestration is not None,
+            "hosted_by (the run's root, whose mesh peer the member takes offers from)": (
+                self.hosted_by is not None
+            ),
+        }
+        missing = [name for name, present in needed.items() if not present]
+        if missing:
+            raise ValueError(
+                f"workflow_step_host needs {', '.join(missing)}: Skuld refuses to start a "
+                "run's member without them"
+            )
 
     @model_validator(mode="before")
     @classmethod

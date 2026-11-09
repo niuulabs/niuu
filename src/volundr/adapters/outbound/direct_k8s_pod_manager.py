@@ -54,7 +54,7 @@ from volundr.domain.ports import (
     PodStartResult,
 )
 from volundr.domain.services.forge_session_launch import launch_id_of
-from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
+from volundr.domain.workflow_session import workflow_steps_environment
 
 logger = logging.getLogger(__name__)
 
@@ -522,8 +522,10 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
                     "value": json.dumps(session_config["persona"], separators=(",", ":")),
                 }
             )
-        if workflow_steps_enabled(spec.values):
-            env.append({"name": WORKFLOW_STEPS_ENABLED_ENV, "value": "true"})
+        env.extend(
+            {"name": name, "value": value}
+            for name, value in workflow_steps_environment(spec.values).items()
+        )
         if session_config.get("reasoningEffort"):
             env.append(
                 {

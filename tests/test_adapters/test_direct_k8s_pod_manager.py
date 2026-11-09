@@ -12,6 +12,12 @@ from uuid import uuid4
 import pytest
 
 from tests.conftest import make_spec
+from tests.support.workflow_steps import (
+    MEMBER_STEPS_ENV,
+    MEMBER_STEPS_VALUES,
+    ROOT_STEPS_ENV,
+    ROOT_STEPS_VALUES,
+)
 from volundr.adapters.outbound.direct_k8s_pod_manager import (
     DEFAULT_POLL_INTERVAL,
     DEFAULT_READINESS_TIMEOUT,
@@ -255,11 +261,21 @@ class TestEnvironment:
         assert "SKULD__WORKFLOW_STEPS__ENABLED" not in plain
 
         spec = make_spec()
-        spec.values["workflowSteps"] = {"enabled": True}
+        spec.values["workflowSteps"] = MEMBER_STEPS_VALUES
         env = pod_manager._build_env(sample_session, spec)
 
         env_dict = {e["name"]: e["value"] for e in env if "value" in e}
-        assert env_dict["SKULD__WORKFLOW_STEPS__ENABLED"] == "true"
+        assert MEMBER_STEPS_ENV.items() <= env_dict.items()
+
+        root = make_spec()
+        root.values["workflowSteps"] = ROOT_STEPS_VALUES
+        root_env = {
+            e["name"]: e["value"]
+            for e in pod_manager._build_env(sample_session, root)
+            if "value" in e
+        }
+        assert ROOT_STEPS_ENV.items() <= root_env.items()
+        assert "SKULD__WORKFLOW_STEPS__ENABLED" not in root_env
 
     def test_build_env_with_initial_prompt(
         self,

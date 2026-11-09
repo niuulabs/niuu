@@ -112,6 +112,15 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
     port: {{ .Values.brokerPort | default 8081 }}
     workflow_steps:
       enabled: {{ .Values.workflowSteps.enabled | toJson }}
+      root: {{ .Values.workflowSteps.root | toJson }}
+      run_id: {{ .Values.workflowSteps.runId | toJson }}
+      member: {{ .Values.workflowSteps.member | toJson }}
+      persona_alias: {{ .Values.workflowSteps.personaAlias | toJson }}
+      orchestrator_peer_id: {{ .Values.workflowSteps.orchestratorPeerId | toJson }}
+      event_filters: {{ .Values.workflowSteps.eventFilters | toJson }}
+      {{- with .Values.workflowSteps.orchestration }}
+      orchestration: {{ . | toJson }}
+      {{- end }}
     persistence_mount_path: {{ .Values.persistence.mountPath | default "/volundr/sessions" | quote }}
     {{- if .Values.homeVolume.enabled }}
     persistent_home_path: {{ .Values.homeVolume.mountPath | quote }}

@@ -28,7 +28,10 @@ from volundr.domain.session_broker import broker_base_url
 from volundr.domain.workflow_session import (
     PERSONA_DEFINITION_KEY,
     PERSONA_NAME_KEY,
+    WORKFLOW_EVENT_FILTERS_KEY,
     WORKFLOW_MEMBER_KEY,
+    WORKFLOW_ORCHESTRATION_KEY,
+    WORKFLOW_PERSONA_ALIAS_KEY,
     WORKFLOW_RUN_ID_KEY,
     WORKFLOW_RUN_ROOM_KEY,
     WORKFLOW_STEP_HOST_KEY,
@@ -294,6 +297,17 @@ class ForgeService:
         elif workflow_run_id is not None:
             workload_config[WORKFLOW_RUN_ID_KEY] = str(workflow_run_id)
             workload_config[WORKFLOW_MEMBER_KEY] = data.workflow_member
+        # What Skuld needs to serve the run's steps: kept as sent, so a request that left one
+        # out stays without it and the workflow_step_host contributor refuses it by name.
+        persona_alias = getattr(data, "workflow_persona_alias", None)
+        if isinstance(persona_alias, str):
+            workload_config[WORKFLOW_PERSONA_ALIAS_KEY] = persona_alias
+        event_filters = getattr(data, "workflow_event_filters", None)
+        if isinstance(event_filters, dict):
+            workload_config[WORKFLOW_EVENT_FILTERS_KEY] = dict(event_filters)
+        orchestration = getattr(data, "workflow_orchestration", None)
+        if isinstance(orchestration, str):
+            workload_config[WORKFLOW_ORCHESTRATION_KEY] = orchestration
         if requested_grants:
             workload_config[FORGE_MCP_KEY] = {
                 GRANTS_KEY: [grant.value for grant in normalize_grants(requested_grants)]

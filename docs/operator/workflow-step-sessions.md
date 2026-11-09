@@ -46,6 +46,19 @@ find each other and no other run's; each announces and follows the topics its pi
 file in a directory the unit's Skulds share. Configure the contributor with `join_mesh: false`
 to run step sessions without the mesh.
 
+Skuld cannot serve a run's steps without knowing which run it is in, so Ting sends each member's
+create request the settings only the workflow knows, and Forge's contributor turns them into
+`values.workflowSteps` (the `workflow_steps` section of Skuld's config; `SKULD__WORKFLOW_STEPS__...`
+for the process, container, VM and sandbox runtimes). A member gets `runId`, `member`,
+`personaAlias` (the alias the workflow gives its persona, which the offer's contracts are keyed
+by), `eventFilters` (the stage member's, empty for none), `orchestration` (`engine` or `session`)
+and `orchestratorPeerId`, the run root's mesh peer id, which is the root's session id. The root
+gets `root: true`, `runId` and `orchestration`. Forge refuses a create that lacks any of them
+(`workflow_persona_alias`, `workflow_event_filters`, `workflow_orchestration` and `hosted_by` on
+a member; `workflow_orchestration` on the run's room) rather than starting a session Skuld
+would refuse. A member whose stages give it different `eventFilters` is refused at launch,
+because a run has one session per member.
+
 The persona a session runs is the pinned portable document of the run's workflow snapshot,
 sent to Forge whole; Forge checks it against its digest. The model is the stage member's
 `model`, else the model the run was launched with, else `dispatch.default_model` (or the

@@ -1639,6 +1639,9 @@ class TestStepSessions:
                 tracker_issue_id="workflow:run",
                 run_id=contract.RUN_ID,
                 member="coder",
+                persona_alias="coder",
+                orchestration="engine",
+                event_filters={"area": "backend"},
                 repo="https://github.com/niuulabs/volundr.git",
                 branch="feat/x",
                 base_branch="main",
@@ -1651,6 +1654,9 @@ class TestStepSessions:
         assert body["issue_id"] == "workflow:run"
         assert body["workflow_run_id"] == contract.RUN_ID
         assert body["workflow_member"] == "coder"
+        assert body["workflow_persona_alias"] == "coder"
+        assert body["workflow_event_filters"] == {"area": "backend"}
+        assert body["workflow_orchestration"] == "engine"
         assert "metadata" not in body
         assert body["model"] == "claude-sonnet-4-6"
         assert "persona_name" not in body
@@ -1677,6 +1683,8 @@ class TestStepSessions:
                 tracker_issue_id="workflow:run",
                 run_id=contract.RUN_ID,
                 member="coder",
+                persona_alias="coder",
+                orchestration="engine",
                 system_prompt="Only touch probe/.",
             )
         )
@@ -1780,6 +1788,8 @@ class TestStepSessions:
             tracker_issue_id="workflow:run",
             run_id=contract.RUN_ID,
             member="coder",
+            persona_alias="coder",
+            orchestration="engine",
             hosted_by="room-1",
         )
 
@@ -1803,6 +1813,8 @@ class TestStepSessions:
                 tracker_issue_id="workflow:run",
                 run_id=contract.RUN_ID,
                 member="coder",
+                persona_alias="coder",
+                orchestration="engine",
             )
         )
 
@@ -1829,6 +1841,8 @@ class TestStepSessions:
                     tracker_issue_id="workflow:run",
                     run_id=contract.RUN_ID,
                     member="coder",
+                    persona_alias="coder",
+                    orchestration="engine",
                     hosted_by="room-1",
                 )
             )
@@ -1852,12 +1866,14 @@ class TestStepSessions:
                 model="m",
                 tracker_issue_id="workflow:run",
                 run_id=contract.RUN_ID,
+                orchestration="engine",
                 hosts_members=True,
             )
         )
 
         body = json.loads(route.calls[0].request.content)
         assert body["workflow_run_room"] is True
+        assert body["workflow_orchestration"] == "engine"
         assert body["hosts_members"] is True
         assert "coordination" not in body  # the run is in no project
         assert session.status == "created"
@@ -1879,6 +1895,7 @@ class TestStepSessions:
                 model="m",
                 tracker_issue_id="workflow:run",
                 run_id=contract.RUN_ID,
+                orchestration="engine",
                 membership=SessionMembership(project_id="p-1", role="coordinator"),
             )
         )
@@ -1930,6 +1947,8 @@ class TestStepSessions:
                 tracker_issue_id="workflow:run",
                 run_id=contract.RUN_ID,
                 member="reviewer",
+                persona_alias="reviewer",
+                orchestration="engine",
                 membership=SessionMembership(
                     project_id="11111111-1111-1111-1111-111111111111",
                     role="reviewer",
@@ -1962,6 +1981,8 @@ class TestStepSessions:
                     tracker_issue_id="workflow:run",
                     run_id=contract.RUN_ID,
                     member="coder",
+                    persona_alias="coder",
+                    orchestration="engine",
                 )
             )
 

@@ -412,6 +412,61 @@ async def test_a_member_given_two_models_is_refused() -> None:
         await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
 
 
+async def test_a_member_and_the_root_are_told_the_alias_filters_and_orchestration() -> None:
+    snapshot = _campaign().workflow_snapshot
+    snapshot["graph"]["nodes"][0]["stageMembers"][0]["eventFilters"] = {"area": "backend"}
+    snapshot["orchestration"] = {"mode": "session"}
+    campaign = _campaign(workflow_snapshot=snapshot)
+
+    _, forge, _ = await _launched(campaign)
+
+    [member] = forge.create_requests
+    assert member.persona_alias == PERSONA_REF.alias
+    assert dict(member.event_filters) == {"area": "backend"}
+    assert member.orchestration == "session"
+    [root] = forge.run_room_requests
+    assert root.orchestration == "session"
+
+
+async def test_a_workflow_that_names_no_orchestration_runs_on_the_engine() -> None:
+    _, forge, _ = await _launched(_campaign())
+
+    [member] = forge.create_requests
+    assert member.orchestration == "engine"
+    assert dict(member.event_filters) == {}
+    assert forge.run_room_requests[0].orchestration == "engine"
+
+
+async def test_a_workflow_with_an_unknown_orchestration_creates_nothing() -> None:
+    snapshot = _campaign().workflow_snapshot
+    snapshot["orchestration"] = {"mode": "mystery"}
+    campaign = _campaign(workflow_snapshot=snapshot)
+    sessions, forge = _sessions(campaign)
+
+    with pytest.raises(StepSessionError, match="orchestration"):
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
+
+    assert forge.run_room_requests == []
+    assert forge.create_requests == []
+
+
+async def test_a_member_given_two_sets_of_event_filters_is_refused() -> None:
+    snapshot = _campaign().workflow_snapshot
+    snapshot["graph"]["nodes"][0]["stageMembers"][0]["eventFilters"] = {"area": "backend"}
+    snapshot["graph"]["nodes"].append(
+        {
+            "id": "polish",
+            "kind": "stage",
+            "stageMembers": [{"personaId": "coder", "eventFilters": {"area": "frontend"}}],
+        }
+    )
+    campaign = _campaign(workflow_snapshot=snapshot)
+    sessions, _ = _sessions(campaign)
+
+    with pytest.raises(StepSessionError, match="different eventFilters"):
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
+
+
 async def test_a_connection_that_no_longer_resolves_is_an_error() -> None:
     campaign = _campaign(connection_id="gone")
     sessions, _ = _sessions(campaign)
@@ -526,6 +581,7 @@ async def test_stopping_a_run_skips_sessions_that_never_started_or_already_stopp
             model="m",
             tracker_issue_id=step_session_tag(campaign.slug),
             run_id=str(campaign.id),
+            orchestration="engine",
             hosts_members=True,
         )
     )

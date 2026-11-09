@@ -66,7 +66,32 @@ def test_no_persona_key_is_rendered_without_a_persona(chart):
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 def test_workflow_steps_are_off_unless_forge_marks_the_session_a_step_host():
-    assert _rendered_skuld_config("skuld")["workflow_steps"] == {"enabled": False}
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config("skuld")
+
+    assert config["workflow_steps"] == {
+        "enabled": False,
+        "root": False,
+        "run_id": "",
+        "member": "",
+        "persona_alias": "",
+        "orchestrator_peer_id": "",
+        "event_filters": {},
+    }
+    steps = SkuldSettings(**config).workflow_steps
+    assert not steps.enabled and not steps.root
+
+
+STEP_MEMBER_VALUES = {
+    "enabled": True,
+    "runId": "run-1",
+    "member": "reviewer",
+    "personaAlias": "reviewer-alias",
+    "orchestratorPeerId": "root-session-1",
+    "eventFilters": {"language": "python"},
+    "orchestration": "session",
+}
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
@@ -74,19 +99,81 @@ def test_a_step_host_session_reaches_runtime_configuration():
     from skuld.config import SkuldSettings
 
     config = _rendered_skuld_config(
-        "skuld", "--set-json", "workflowSteps=" + json.dumps({"enabled": True})
+        "skuld", "--set-json", "workflowSteps=" + json.dumps(STEP_MEMBER_VALUES)
     )
 
-    assert config["workflow_steps"] == {"enabled": True}
-    assert SkuldSettings(**config).workflow_steps.enabled is True
+    assert config["workflow_steps"] == {
+        "enabled": True,
+        "root": False,
+        "run_id": "run-1",
+        "member": "reviewer",
+        "persona_alias": "reviewer-alias",
+        "orchestrator_peer_id": "root-session-1",
+        "event_filters": {"language": "python"},
+        "orchestration": "session",
+    }
+    steps = SkuldSettings(**config).workflow_steps
+    assert steps.enabled is True
+    assert steps.run_id == "run-1"
+    assert steps.member == "reviewer"
+    assert steps.persona_alias == "reviewer-alias"
+    assert steps.orchestrator_peer_id == "root-session-1"
+    assert steps.event_filters == {"language": "python"}
+    assert steps.orchestration == "session"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_run_root_reaches_runtime_configuration():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld",
+        "--set-json",
+        "workflowSteps=" + json.dumps({"root": True, "runId": "run-1", "orchestration": "engine"}),
+    )
+
+    steps = SkuldSettings(**config).workflow_steps
+    assert steps.root is True
+    assert steps.enabled is False
+    assert steps.run_id == "run-1"
+    assert steps.orchestration == "engine"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_step_host_missing_a_field_is_refused_when_skuld_reads_its_configuration():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld", "--set-json", "workflowSteps=" + json.dumps({"enabled": True, "runId": "run-1"})
+    )
+
+    with pytest.raises(ValueError, match="orchestrator_peer_id"):
+        SkuldSettings(**config)
 
 
 def test_step_host_flag_survives_the_environment_a_local_broker_is_started_with(monkeypatch):
     from skuld.config import SkuldSettings
 
-    monkeypatch.setenv("SKULD__WORKFLOW_STEPS__ENABLED", "true")
+    for name, value in {
+        "ENABLED": "true",
+        "RUN_ID": "run-1",
+        "MEMBER": "reviewer",
+        "PERSONA_ALIAS": "reviewer-alias",
+        "ORCHESTRATOR_PEER_ID": "root-session-1",
+        "EVENT_FILTERS": json.dumps({"language": "python"}),
+        "ORCHESTRATION": "session",
+    }.items():
+        monkeypatch.setenv(f"SKULD__WORKFLOW_STEPS__{name}", value)
 
-    assert SkuldSettings().workflow_steps.enabled is True
+    steps = SkuldSettings().workflow_steps
+
+    assert steps.enabled is True
+    assert steps.run_id == "run-1"
+    assert steps.member == "reviewer"
+    assert steps.persona_alias == "reviewer-alias"
+    assert steps.orchestrator_peer_id == "root-session-1"
+    assert steps.event_filters == {"language": "python"}
+    assert steps.orchestration == "session"
 
 
 def test_persona_document_survives_the_environment_a_local_broker_is_started_with(monkeypatch):

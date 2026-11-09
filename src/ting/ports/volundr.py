@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
@@ -119,6 +119,14 @@ class StepSessionRequest:
     tracker_issue_id: str
     run_id: str
     member: str
+    #: The alias the workflow gives the member's pinned persona: the offer carries one contract
+    #: per alias, and the member finds its own by this.
+    persona_alias: str
+    #: Who decides the run's next step: ``engine`` (Ting) or ``session`` (a coordinator agent).
+    orchestration: str
+    #: The stage member's ``eventFilters``: each key must equal the value in the offered
+    #: inputs' payload. Empty takes every offer of the member's topics.
+    event_filters: Mapping[str, str] = field(default_factory=dict)
     repo: str = ""
     branch: str = ""
     base_branch: str = ""
@@ -164,6 +172,9 @@ class RunRoomRequest:
     model: str
     tracker_issue_id: str
     run_id: str
+    #: Who decides the run's next step: ``engine`` (Ting) or ``session`` (a coordinator agent).
+    #: The room is the run's root, and tells its members whose offers to take.
+    orchestration: str
     #: The run's project and the room's role in it; ``None`` for a run in no project.
     membership: SessionMembership | None = None
     repo: str = ""

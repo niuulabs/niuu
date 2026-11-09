@@ -37,6 +37,7 @@ from skuld.transports import (
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry as event_registry
 from sleipnir.testing import EventCapture
+from tests.test_skuld.workflow_support import MEMBER_MESH, MEMBER_STEPS, PERSONA
 
 
 class TestBroker:
@@ -3069,9 +3070,15 @@ class TestPublishMeshOutcome:
     async def test_a_workflow_step_host_publishes_no_turn_outcome(self, tmp_path):
         """A run member's outcome is its step close; its turns announce nothing."""
         settings = SkuldSettings(
-            session={"id": "test-mesh-step-host", "workspace_dir": str(tmp_path)},
+            session={
+                "id": "test-mesh-step-host",
+                "workspace_dir": str(tmp_path),
+                "persona": PERSONA,
+            },
             volundr_api_url="http://forge.test",
-            workflow_steps={"enabled": True},
+            transport="subprocess",
+            mesh=MEMBER_MESH,
+            workflow_steps=MEMBER_STEPS,
         )
         b = Broker(settings=settings)
         mock_mesh = AsyncMock()

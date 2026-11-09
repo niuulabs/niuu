@@ -41,7 +41,13 @@ from uuid import UUID
 import httpx
 
 from ting.domain.models import WorkflowCampaign
-from ting.domain.run_members import RunMemberError, member_model, member_values
+from ting.domain.run_members import (
+    RunMemberError,
+    member_event_filters,
+    member_model,
+    member_values,
+    run_orchestration,
+)
 from ting.domain.services.run_thread import (
     RunProject,
     run_label,
@@ -136,6 +142,7 @@ class _MemberPlan:
     model: str
     document: dict[str, Any]
     extra_prompt: str
+    event_filters: dict[str, str]
 
 
 class ForgeStepSessions(StepSessionPort):
@@ -175,6 +182,7 @@ class ForgeStepSessions(StepSessionPort):
         # Everything a member's session needs is checked before the first create, so a run
         # with a bad model or persona pin creates nothing.
         plans = [self._plan(campaign, member, ref) for member, ref in members.items()]
+        orchestration = self._orchestration_of(campaign)
         async with self._run_locks.setdefault(run_id, asyncio.Lock()):
             listed = {session.name: session for session in await forge.list_sessions()}
             root = self._existing_root(listed, campaign)
@@ -192,11 +200,13 @@ class ForgeStepSessions(StepSessionPort):
                 )
             project = await self._project_ref(forge, campaign)
             if root is None:
-                root = await self._create_root(forge, campaign, plans[0].model, project)
+                root = await self._create_root(
+                    forge, campaign, plans[0].model, project, orchestration
+                )
             session_ids = {member: session.id for member, session in existing.items()}
             for plan in missing:
                 session_ids[plan.member] = await self._create_member(
-                    forge, campaign, plan, members[plan.member], root, project
+                    forge, campaign, plan, members[plan.member], root, project, orchestration
                 )
             if not started:
                 await self._start_unit(forge, campaign, root)
@@ -373,6 +383,7 @@ class ForgeStepSessions(StepSessionPort):
             model=self._model_of(campaign, member),
             document=document,
             extra_prompt=self._extra_prompt_of(campaign, member),
+            event_filters=self._event_filters_of(campaign, member),
         )
 
     async def _project_ref(
@@ -400,6 +411,7 @@ class ForgeStepSessions(StepSessionPort):
         campaign: WorkflowCampaign,
         model: str,
         project: tuple[RunProject, ForgeProjectRef] | None,
+        orchestration: str,
     ) -> VolundrSession:
         """The run's root: its room, a Skuld with no agent, held as the unit root."""
         name = run_room_name(campaign.slug, campaign.id, prefix=self._prefix)
@@ -409,6 +421,7 @@ class ForgeStepSessions(StepSessionPort):
                 model=model,
                 tracker_issue_id=step_session_tag(campaign.slug),
                 run_id=str(campaign.id),
+                orchestration=orchestration,
                 membership=(
                     SessionMembership(
                         project_id=project[0].id,
@@ -436,6 +449,7 @@ class ForgeStepSessions(StepSessionPort):
         persona_ref: PersonaRef,
         root: VolundrSession,
         project: tuple[RunProject, ForgeProjectRef] | None,
+        orchestration: str,
     ) -> str:
         """A member's session, hosted by the root and held until the unit starts."""
         membership = (
@@ -459,6 +473,9 @@ class ForgeStepSessions(StepSessionPort):
                     tracker_issue_id=step_session_tag(campaign.slug),
                     run_id=str(campaign.id),
                     member=plan.member,
+                    persona_alias=persona_ref.alias,
+                    orchestration=orchestration,
+                    event_filters=plan.event_filters,
                     repo=str(campaign.metadata.get("repo") or ""),
                     branch=str(campaign.metadata.get("branch") or ""),
                     base_branch=str(campaign.metadata.get("base_branch") or ""),
@@ -546,6 +563,20 @@ class ForgeStepSessions(StepSessionPort):
             )
         except RunMemberError as exc:
             raise StepSessionError(str(exc)) from exc
+
+    @staticmethod
+    def _event_filters_of(campaign: WorkflowCampaign, member: str) -> dict[str, str]:
+        try:
+            return member_event_filters(campaign.workflow_snapshot, member)
+        except RunMemberError as exc:
+            raise StepSessionError(str(exc)) from exc
+
+    @staticmethod
+    def _orchestration_of(campaign: WorkflowCampaign) -> str:
+        try:
+            return run_orchestration(campaign.workflow_snapshot)
+        except RunMemberError as exc:
+            raise StepSessionError(f"run {campaign.slug}: {exc}") from exc
 
     @staticmethod
     def _extra_prompt_of(campaign: WorkflowCampaign, member: str) -> str:

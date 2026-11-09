@@ -13,6 +13,12 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from tests.support.workflow_steps import (
+    MEMBER_STEPS_ENV,
+    MEMBER_STEPS_VALUES,
+    ROOT_STEPS_ENV,
+    ROOT_STEPS_VALUES,
+)
 from volundr.adapters.outbound import ssh_vm_runtime as module
 from volundr.adapters.outbound.ssh_host_preparation import SshHostPreparation
 from volundr.adapters.outbound.ssh_vm_runtime import SshContainerVmRuntime
@@ -146,9 +152,15 @@ def test_bootstrap_enables_workflow_steps_only_for_a_step_host(setup):
 
     assert "SKULD__WORKFLOW_STEPS__ENABLED" not in environment()
 
-    spec.values["workflowSteps"] = {"enabled": True}
+    spec.values["workflowSteps"] = MEMBER_STEPS_VALUES
 
-    assert environment()["SKULD__WORKFLOW_STEPS__ENABLED"] == "true"
+    assert MEMBER_STEPS_ENV.items() <= environment().items()
+
+    spec.values["workflowSteps"] = ROOT_STEPS_VALUES
+    root_environment = environment()
+
+    assert ROOT_STEPS_ENV.items() <= root_environment.items()
+    assert "SKULD__WORKFLOW_STEPS__ENABLED" not in root_environment
 
 
 def test_bootstrap_unique_host_identity_and_no_host_environment(setup, monkeypatch):

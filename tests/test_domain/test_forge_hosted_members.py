@@ -53,7 +53,7 @@ class Unit:
                 hosts_members=True,
                 workflow_run_id=run,
                 workflow_run_room=True,
-                **extra,
+                **{"workflow_orchestration": "engine", **extra},
             ),
             principal=PRINCIPAL,
         )
@@ -262,6 +262,97 @@ class TestRefusals:
             SessionCreate(name="x", hosted_by=uuid4(), hosts_members=True)
         with pytest.raises(ValueError, match="cannot itself be a unit root"):
             SessionCreate(name="x", hosted_by=uuid4(), workflow_run_id=RUN, workflow_run_room=True)
+
+
+STEP_HOST = {
+    "workflow_step_host": True,
+    "workflow_run_id": RUN,
+    "workflow_member": "coder",
+    "workflow_persona_alias": "coder-alias",
+    "workflow_event_filters": {"language": "python"},
+    "workflow_orchestration": "session",
+    "hosted_by": uuid4(),
+}
+
+
+class TestWorkflowStepSettings:
+    """A member Skuld cannot start without these, so Forge refuses the create without them."""
+
+    def test_a_step_host_with_every_setting_is_accepted(self):
+        data = SessionCreate(name="x", **STEP_HOST)
+
+        assert data.workflow_persona_alias == "coder-alias"
+        assert data.workflow_event_filters == {"language": "python"}
+        assert data.workflow_orchestration == "session"
+
+    def test_a_step_host_without_filters_names_an_empty_mapping_not_a_default(self):
+        fields = {**STEP_HOST, "workflow_event_filters": {}}
+
+        assert SessionCreate(name="x", **fields).workflow_event_filters == {}
+
+    @pytest.mark.parametrize(
+        "missing",
+        [
+            "workflow_run_id",
+            "workflow_member",
+            "workflow_persona_alias",
+            "workflow_event_filters",
+            "workflow_orchestration",
+            "hosted_by",
+        ],
+    )
+    def test_a_step_host_missing_a_setting_is_refused_naming_it(self, missing: str):
+        fields = {key: value for key, value in STEP_HOST.items() if key != missing}
+
+        with pytest.raises(ValueError, match="workflow_step_host needs|must be sent together"):
+            SessionCreate(name="x", **fields)
+
+    def test_a_step_host_of_no_run_is_refused(self):
+        with pytest.raises(ValueError, match="workflow_run_id and workflow_member"):
+            SessionCreate(name="x", workflow_step_host=True)
+
+    def test_the_settings_belong_to_a_step_host(self):
+        for field, value in (
+            ("workflow_persona_alias", "coder"),
+            ("workflow_event_filters", {}),
+            ("workflow_orchestration", "engine"),
+        ):
+            with pytest.raises(ValueError, match="belong to a workflow step host"):
+                SessionCreate(name="x", **{field: value})
+
+    def test_an_unknown_orchestration_mode_is_refused(self):
+        with pytest.raises(ValueError, match="workflow_orchestration"):
+            SessionCreate(name="x", **{**STEP_HOST, "workflow_orchestration": "mystery"})
+
+    def test_a_run_room_needs_the_orchestration_and_no_member_settings(self):
+        with pytest.raises(ValueError, match="workflow_run_room needs workflow_orchestration"):
+            SessionCreate(name="x", workflow_run_id=RUN, workflow_run_room=True)
+        with pytest.raises(ValueError, match="runs no agent"):
+            SessionCreate(
+                name="x",
+                workflow_run_id=RUN,
+                workflow_run_room=True,
+                workflow_orchestration="engine",
+                workflow_persona_alias="coder",
+            )
+
+    async def test_the_settings_are_kept_on_the_members_and_the_roots_workload(self, unit: Unit):
+        root = await unit.root(workflow_orchestration="session")
+        member = await unit.forge.create_and_start_session(
+            SessionCreate(
+                name="coder-1",
+                definition="skuldClaude",
+                **{**STEP_HOST, "hosted_by": root.id},
+            ),
+            principal=PRINCIPAL,
+        )
+
+        kept = (await unit.stored(member)).workload_config
+        assert kept["workflow_persona_alias"] == "coder-alias"
+        assert kept["workflow_event_filters"] == {"language": "python"}
+        assert kept["workflow_orchestration"] == "session"
+        assert kept["workflow_step_host"] is True
+        assert (await unit.stored(root)).workload_config["workflow_orchestration"] == "session"
 
 
 class TestStart:
