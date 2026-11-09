@@ -49,6 +49,22 @@ class TransportLifecycleMixin:
         self._startup_failure = f"{type(exc).__name__}: {message}"[:2000]
         self._set_activity_state("error")
 
+    def _report_startup_failure(self) -> None:
+        """Tell Forge the broker cannot start, so a session still coming up fails now.
+
+        Without it Forge sees only a pod that never turns ready, and a run waiting on the
+        session learns of the failure when the platform gives up on the install. Fire-and-
+        forget like the provisioning report: the diagnostics listener must still bind.
+        """
+        if not self.volundr_api_url:
+            return
+        asyncio.create_task(
+            self._report_activity_state(
+                "error",
+                extra_metadata={"error": self._startup_failure, "startup_failed": True},
+            )
+        )
+
     def _build_transport_kwargs(self) -> dict:
         """Return superset of kwargs that any transport constructor might need."""
         return {
@@ -333,6 +349,7 @@ class TransportLifecycleMixin:
                 self._startup_failure,
                 exc_info=True,
             )
+            self._report_startup_failure()
             return
         self._transport.on_event(self._handle_cli_event)
 
@@ -410,6 +427,7 @@ class TransportLifecycleMixin:
                     self._startup_failure,
                     exc_info=True,
                 )
+                self._report_startup_failure()
                 # Keep the HTTP diagnostics surface alive so the pod manager can
                 # observe the exact terminal failure through /ready, persist it,
                 # and tear down the runtime.  Nothing below this point should

@@ -573,9 +573,19 @@ class SessionService:
             else turn_started_at or (previous_turn if same_bucket else None)
         )
         session.activity_metadata = metadata
+        startup_failed = False
         if state is SessionActivityState.ERROR:
             message = str(metadata.get("error") or metadata.get("message") or "").strip()
             session.error = message or "Workflow agent failed"
+            # A broker that cannot start (its harness refuses the session's persona, its
+            # configured mesh never came up) says so: a session still coming up has then
+            # failed, as its readiness wait would conclude only at its deadline.
+            startup_failed = metadata.get("startup_failed") is True and stored.status in (
+                SessionStatus.PROVISIONING,
+                SessionStatus.STARTING,
+            )
+            if startup_failed:
+                session.status = SessionStatus.FAILED
         # Treat each activity report as a liveness heartbeat so the reconciler can
         # tell a live-but-idle session from one whose broker has died.
         session.last_active = datetime.now(UTC)
@@ -596,6 +606,15 @@ class SessionService:
             session.activity_state_since,
         ):
             return updated
+        if startup_failed:
+            logger.error(
+                "Session %s failed to start: its broker reported %s",
+                session_id,
+                session.error,
+            )
+            if self._broadcaster is not None:
+                await self._broadcaster.publish_session_updated(updated)
+            await self._emit_session_failed(updated, session.error or "")
 
         if self._broadcaster is not None:
             await self._broadcaster.publish(

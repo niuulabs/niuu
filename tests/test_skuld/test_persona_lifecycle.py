@@ -7,6 +7,7 @@ harness cannot enforce stops the session from starting.
 
 from __future__ import annotations
 
+import asyncio
 import stat
 from pathlib import Path
 from typing import Any
@@ -556,6 +557,38 @@ async def test_a_refused_persona_fails_startup_and_leaves_the_diagnostics_up(
     assert "permission_mode:prompt" in status["error"]
     assert "PersonaProjectionError" in status["error"]
     assert node._transport is None
+
+
+async def test_a_refused_persona_is_reported_to_forge_as_a_failed_start(
+    tmp_path: Path,
+) -> None:
+    node = broker(tmp_path, "persistent", {**OPEN, "permission_mode": "prompt"})
+    node.volundr_api_url = "http://forge.test"
+    node._post_activity_payload = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    await node.startup()
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    reports = [call.args[0] for call in node._post_activity_payload.await_args_list]
+    (failed,) = [report for report in reports if report["state"] == "error"]
+    assert failed["metadata"]["startup_failed"] is True
+    assert failed["metadata"]["error"] == node.startup_status()["error"]
+    assert "permission_mode:prompt" in failed["metadata"]["error"]
+
+
+async def test_a_started_broker_reports_no_failed_start(tmp_path: Path) -> None:
+    node = broker(tmp_path, "persistent", OPEN)
+    node.volundr_api_url = "http://forge.test"
+    node._post_activity_payload = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    with patch.object(node, "_auto_start_transport", AsyncMock()):
+        await node.startup()
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    reports = [call.args[0] for call in node._post_activity_payload.await_args_list]
+    assert not [r for r in reports if r["metadata"].get("startup_failed")]
 
 
 async def test_a_tampered_persona_document_fails_startup(tmp_path: Path) -> None:
