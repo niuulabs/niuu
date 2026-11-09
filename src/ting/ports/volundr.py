@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
@@ -24,6 +24,7 @@ from niuu.domain.delivery import (
 from niuu.domain.models import Principal
 from personas.domain.persona_document import PortablePersonaDefinition
 from ting.domain.models import PRStatus
+from ting.domain.run_members import RunMember
 
 
 class HostTagSetsUnreadableError(Exception):
@@ -127,6 +128,20 @@ class StepSessionRequest:
     #: The run's project, the member's role in it, the run as objective and its label,
     #: so Forge shows the run's sessions together; ``None`` for a run in no project.
     membership: SessionMembership | None = None
+
+
+@dataclass(frozen=True)
+class MemberPlayability:
+    """Whether a run member's persona can be played on the harness its model runs."""
+
+    member: str
+    model: str
+    transport: str
+    reasons: tuple[str, ...]
+
+    @property
+    def playable(self) -> bool:
+        return not self.reasons
 
 
 @dataclass(frozen=True)
@@ -417,6 +432,16 @@ class VolundrPort(ABC):
     ) -> VolundrSession:
         """Create the harness session that hosts a run's steps for one stage member."""
         raise NotImplementedError(f"{type(self).__name__} cannot create workflow step sessions")
+
+    async def check_playability(
+        self,
+        members: Sequence[RunMember],
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[MemberPlayability]:
+        """For each member, whether this Forge's harness for its model can play its persona."""
+        raise NotImplementedError(f"{type(self).__name__} cannot check persona playability")
 
     async def create_run_room(
         self,

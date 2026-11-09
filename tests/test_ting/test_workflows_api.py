@@ -213,6 +213,18 @@ class RecordingVolundrPort(VolundrPort):
     def name(self) -> str:
         return self._name
 
+    async def check_playability(self, members, *, auth_token=None, principal=None):
+        from ting.ports.volundr import MemberPlayability
+
+        self.playability_checks = [*getattr(self, "playability_checks", []), list(members)]
+        refusals = getattr(self, "playability_refusals", {})
+        return [
+            MemberPlayability(
+                member.member, member.model, "test-harness", tuple(refusals.get(member.member, ()))
+            )
+            for member in members
+        ]
+
     async def get_project(self, project_id, *, auth_token=None, principal=None):
         return self.projects.get(project_id)
 
@@ -1655,7 +1667,7 @@ class TestWorkflowCatalogAPI:
             },
         )
 
-        assert response.status_code == 201
+        assert response.status_code == 201, response.text
         body = response.json()
         assert "sessionId" not in body
         assert body["workflowId"] == str(workflow.id)
@@ -2045,8 +2057,14 @@ class TestPrepareWorkflowLaunch:
     def _principal() -> Principal:
         return Principal(user_id="user-1", email="", roles=["ting:admin"], tenant_id="")
 
-    async def _prepare(self, request: Request, workflow: WorkflowDefinition, **kwargs):
-        adapter = RecordingVolundrPort(name="cpu", target_id="cpu-1")
+    async def _prepare(
+        self,
+        request: Request,
+        workflow: WorkflowDefinition,
+        adapter: RecordingVolundrPort | None = None,
+        **kwargs,
+    ):
+        adapter = adapter or RecordingVolundrPort(name="cpu", target_id="cpu-1")
         launch = kwargs.pop("launch", WorkflowLaunchBody(prompt="run it"))
         execution = await prepare_workflow_launch(
             request=request,
@@ -2075,6 +2093,92 @@ class TestPrepareWorkflowLaunch:
         execution = await self._prepare(self._request(), workflow, pinned_workflow_snapshot=pinned)
 
         assert execution.workflow_snapshot == pinned
+
+    @staticmethod
+    def _members_snapshot(name: str, *, auditor_model: str = "gpt-5.6-terra") -> dict:
+        def document(persona: str) -> dict:
+            return {"id": persona, "revision": "content-0123456789abcdef", "definition": {}}
+
+        return {
+            "name": name,
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "code",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "coder", "model": "claude-opus-5-5"}],
+                    },
+                    {
+                        "id": "checks",
+                        "kind": "stage",
+                        "stageMembers": [
+                            {"personaId": "security-auditor", "model": auditor_model},
+                            {"personaId": "reviewer"},
+                        ],
+                    },
+                ],
+                "edges": [],
+            },
+            "persona_definitions": {
+                persona: document(persona) for persona in ("coder", "security-auditor", "reviewer")
+            },
+        }
+
+    async def test_every_member_is_checked_on_its_models_harness_before_the_run(self) -> None:
+        workflow = _make_research_workflow()
+        adapter = RecordingVolundrPort(name="cpu", target_id="cpu-1")
+
+        await self._prepare(
+            self._request(),
+            workflow,
+            adapter,
+            launch=WorkflowLaunchBody(prompt="run it", model="claude-fable-5-1"),
+            pinned_workflow_snapshot=self._members_snapshot(workflow.name),
+        )
+
+        [checked] = adapter.playability_checks
+        assert [(m.member, m.model) for m in checked] == [
+            ("coder", "claude-opus-5-5"),
+            ("security-auditor", "gpt-5.6-terra"),
+            ("reviewer", "claude-fable-5-1"),
+        ]
+
+    async def test_a_member_its_harness_cannot_play_refuses_the_launch_with_why(self) -> None:
+        workflow = _make_research_workflow()
+        adapter = RecordingVolundrPort(name="cpu", target_id="cpu-1")
+        adapter.playability_refusals = {
+            "security-auditor": ("allowed_tools:file_read: Codex reads files only through shell",)
+        }
+
+        with pytest.raises(HTTPException) as caught:
+            await self._prepare(
+                self._request(),
+                workflow,
+                adapter,
+                launch=WorkflowLaunchBody(prompt="run it", model="claude-fable-5-1"),
+                pinned_workflow_snapshot=self._members_snapshot(workflow.name),
+            )
+
+        assert caught.value.status_code == 422
+        assert caught.value.detail == (
+            "This workflow cannot run on this Forge: security-auditor on gpt-5.6-terra "
+            "(test-harness): allowed_tools:file_read: Codex reads files only through shell."
+        )
+
+    async def test_a_member_with_no_model_refuses_the_launch(self) -> None:
+        workflow = _make_research_workflow()
+        request = self._request()
+        request.app.state.settings.dispatch.default_model = ""
+
+        with pytest.raises(HTTPException) as caught:
+            await self._prepare(
+                request,
+                workflow,
+                pinned_workflow_snapshot=self._members_snapshot(workflow.name),
+            )
+
+        assert caught.value.status_code == 422
+        assert "no model for member 'reviewer'" in caught.value.detail
 
     async def test_a_denied_launch_is_a_403(self) -> None:
         with pytest.raises(HTTPException) as caught:

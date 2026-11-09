@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 from niuu.domain.session_description import DESCRIPTION_FIELDS, SessionDescriptionPatch
 from niuu.forge_mcp.credentials import normalize_grants
+from volundr.domain.ports import PersonaNotPlayableError
 from volundr.domain.services.forge_session_launch import FORGE_MCP_KEY, GRANTS_KEY
 from volundr.domain.session_broker import broker_base_url
 from volundr.domain.workflow_session import (
@@ -34,7 +36,7 @@ if TYPE_CHECKING:
         TimelineEventType,
         WorkspaceStatus,
     )
-    from volundr.domain.ports import PricingProvider
+    from volundr.domain.ports import PersonaPlayabilityPort, Playability, PricingProvider
     from volundr.domain.services.chronicle import ChronicleService
     from volundr.domain.services.repo import ProviderInfo, RepoService
     from volundr.domain.services.session_archive import SessionArchiveService
@@ -65,6 +67,7 @@ class ForgeService:
         workspace_service: WorkspaceService | None = None,
         project_service=None,
         session_participant_service: SessionParticipantService,
+        persona_playability: PersonaPlayabilityPort | None = None,
     ) -> None:
         self._session_service = session_service
         self._stats_service = stats_service
@@ -76,6 +79,7 @@ class ForgeService:
         self._workspace_service = workspace_service
         self._project_service = project_service
         self._session_participant_service = session_participant_service
+        self._persona_playability = persona_playability
 
     @property
     def has_broadcaster(self) -> bool:
@@ -93,6 +97,7 @@ class ForgeService:
             workspace_service=workspace_service,
             project_service=self._project_service,
             session_participant_service=self._session_participant_service,
+            persona_playability=self._persona_playability,
         )
 
     async def list_sessions(
@@ -167,6 +172,9 @@ class ForgeService:
 
     async def _launch_session(self, data, principal, existing=None, project_options=None):
         resolved_definition = self._resolve_session_definition(data.model, data.definition)
+        self.require_playable(
+            data.model, getattr(data, "persona_definition", None), data.definition
+        )
         forge_mcp = getattr(data, "forge_mcp", None)
         requested_grants = tuple(forge_mcp.grants) if forge_mcp is not None else ()
         # No slot, no record: a session created only to fail would sit in the
@@ -227,17 +235,33 @@ class ForgeService:
     ) -> str | None:
         if explicit_definition:
             return explicit_definition
-        if self._pricing_provider is None:
-            return None
-        normalized_model = str(model or "").strip()
-        if not normalized_model:
-            return None
-        for candidate in self._pricing_provider.list_models():
-            if str(getattr(candidate, "id", "") or "").strip() != normalized_model:
-                continue
-            definition = str(getattr(candidate, "session_definition", "") or "").strip()
-            return definition or None
-        return None
+        return catalog_session_definition(self._pricing_provider, model)
+
+    def check_playable(
+        self, model: str, persona: Mapping[str, Any], *, definition: str | None = None
+    ) -> Playability:
+        """Whether ``persona`` can be played on the harness a session of ``model`` runs."""
+        if self._persona_playability is None:
+            raise PersonaNotPlayableError(
+                "this Forge cannot check personas against harnesses: no persona playability "
+                "checker is configured"
+            )
+        return self._persona_playability.check(model, persona, definition=definition)
+
+    def require_playable(
+        self, model: str, persona: Mapping[str, Any] | None, definition: str | None
+    ) -> None:
+        """Refuse a session whose persona its harness would refuse to start, before it exists."""
+        if persona is None:
+            return
+        verdict = self.check_playable(model, persona, definition=definition)
+        if verdict.playable:
+            return
+        raise PersonaNotPlayableError(
+            f"persona {persona.get('id')!r} cannot run on model {model!r} "
+            f"({verdict.transport or verdict.definition or 'no harness'}): "
+            + "; ".join(verdict.reasons)
+        )
 
     async def with_read_states(
         self, sessions: list[Session], principal: Principal | None
@@ -662,3 +686,18 @@ def _seeded_description(data) -> SessionDescriptionPatch | None:
     if not values:
         return None
     return SessionDescriptionPatch.model_validate(values)
+
+
+def catalog_session_definition(pricing_provider: PricingProvider | None, model: str) -> str | None:
+    """The session definition the model catalog gives ``model``, if it names one."""
+    if pricing_provider is None:
+        return None
+    normalized_model = str(model or "").strip()
+    if not normalized_model:
+        return None
+    for candidate in pricing_provider.list_models():
+        if str(getattr(candidate, "id", "") or "").strip() != normalized_model:
+            continue
+        definition = str(getattr(candidate, "session_definition", "") or "").strip()
+        return definition or None
+    return None

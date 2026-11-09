@@ -108,6 +108,7 @@ from volundr.adapters.outbound.notification_image_fetcher import (
     BrokerTargetLookup,
     SessionLookup,
 )
+from volundr.adapters.outbound.persona_playability import SkuldPersonaPlayability
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_message_delivery import PostgresMessageDelivery
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
@@ -215,6 +216,7 @@ from volundr.domain.services.communication_ingress import CommunicationIngressSe
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.credential_enrollment import CredentialEnrollmentService
 from volundr.domain.services.event_ingestion import EventIngestionService
+from volundr.domain.services.forge import catalog_session_definition
 from volundr.domain.services.mesh_identity import MeshIdentityService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 from volundr.domain.services.notification_images import NotificationImageWorker
@@ -1940,6 +1942,11 @@ def create_app(
                 session_participant_service=session_participant_service,
                 presented_file_store=presented_file_store,
                 guild_membership=guild_membership,
+                persona_playability=SkuldPersonaPlayability(
+                    definitions=settings.session_definitions,
+                    default_definition=settings.default_definition,
+                    resolve_definition=partial(catalog_session_definition, pricing_provider),
+                ),
             )
             app.include_router(forge_router)
             app.include_router(

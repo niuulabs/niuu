@@ -54,6 +54,18 @@ class FakeForge(VolundrPort):
     def target_id(self) -> str:
         return self._name
 
+    async def check_playability(self, members, *, auth_token=None, principal=None):
+        from ting.ports.volundr import MemberPlayability
+
+        self.playability_checks = [*getattr(self, "playability_checks", []), list(members)]
+        refusals = getattr(self, "playability_refusals", {})
+        return [
+            MemberPlayability(
+                member.member, member.model, "test-harness", tuple(refusals.get(member.member, ()))
+            )
+            for member in members
+        ]
+
     async def get_project(self, project_id, *, auth_token=None, principal=None):
         return self.projects.get(project_id)
 

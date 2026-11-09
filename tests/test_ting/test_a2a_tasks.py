@@ -338,6 +338,18 @@ class RecordingVolundrPort(VolundrPort):
         self.ensured_projects: list[tuple[str, str]] = []
         self.joined_projects: list[tuple[str, str, str]] = []
 
+    async def check_playability(self, members, *, auth_token=None, principal=None):
+        from ting.ports.volundr import MemberPlayability
+
+        self.playability_checks = [*getattr(self, "playability_checks", []), list(members)]
+        refusals = getattr(self, "playability_refusals", {})
+        return [
+            MemberPlayability(
+                member.member, member.model, "test-harness", tuple(refusals.get(member.member, ()))
+            )
+            for member in members
+        ]
+
     async def get_project(
         self,
         project_id: str,

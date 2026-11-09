@@ -32,6 +32,7 @@ from uuid import UUID
 import httpx
 
 from ting.domain.models import WorkflowCampaign
+from ting.domain.run_members import RunMemberError, member_model, member_values
 from ting.domain.services.run_thread import (
     run_label,
     run_objective,
@@ -429,31 +430,22 @@ class ForgeStepSessions(StepSessionPort):
         return session.id
 
     def _model_of(self, campaign: WorkflowCampaign, member: str) -> str:
-        models = _member_models(campaign.workflow_snapshot, member)
-        if len(models) > 1:
-            raise StepSessionError(
-                f"member {member!r} is given different models by different stages "
-                f"({', '.join(sorted(models))}) but a run has one session per member; "
-                "give the member one model"
+        try:
+            return member_model(
+                campaign.workflow_snapshot,
+                member,
+                launch_model=str(campaign.metadata.get("model") or ""),
+                default_model=self._default_model,
             )
-        model = (
-            next(iter(models), "")
-            or str(campaign.metadata.get("model") or "")
-            or self._default_model
-        )
-        if not model:
-            raise StepSessionError(
-                f"no model for member {member!r}: set its model in the workflow, launch "
-                "with a model, or set dispatch.default_model"
-            )
-        return model
+        except RunMemberError as exc:
+            raise StepSessionError(str(exc)) from exc
 
     @staticmethod
     def _extra_prompt_of(campaign: WorkflowCampaign, member: str) -> str:
         """The member's ``systemPromptExtra``; one per member, as its session is one."""
         snapshot = campaign.workflow_snapshot
         # Both spellings, as the workflow snapshot reads them.
-        extras = _member_values(snapshot, member, "systemPromptExtra") | _member_values(
+        extras = member_values(snapshot, member, "systemPromptExtra") | member_values(
             snapshot, member, "system_prompt_extra"
         )
         if len(extras) > 1:
@@ -514,23 +506,3 @@ def activation_body(activation: StepActivation) -> dict[str, Any]:
         "deadline_at": activation.deadline_at.isoformat() if activation.deadline_at else None,
         "instructions": render_step_instructions(activation),
     }
-
-
-def _member_models(snapshot: Mapping[str, Any], member: str) -> set[str]:
-    return _member_values(snapshot, member, "model")
-
-
-def _member_values(snapshot: Mapping[str, Any], member: str, key: str) -> set[str]:
-    """The distinct non-empty values of ``key`` the member's stages give it."""
-    graph = snapshot.get("graph")
-    nodes = graph.get("nodes") if isinstance(graph, Mapping) else None
-    values: set[str] = set()
-    for node in nodes or []:
-        if not isinstance(node, Mapping) or node.get("kind") != "stage":
-            continue
-        for raw in node.get("stageMembers") or []:
-            if isinstance(raw, Mapping) and str(raw.get("personaId") or "") == member:
-                value = str(raw.get(key) or "").strip()
-                if value:
-                    values.add(value)
-    return values

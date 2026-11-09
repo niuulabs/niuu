@@ -13,10 +13,12 @@ import respx
 from personas.domain.persona import PersonaConfig
 from personas.domain.persona_document import portable_persona_from_config
 from ting.adapters.volundr_http import VolundrHTTPAdapter
+from ting.domain.run_members import RunMember
 from ting.ports.volundr import (
     ActivityStreamConnected,
     ForgeProjectRef,
     HostTagSetsUnreadableError,
+    MemberPlayability,
     SessionMembership,
     SpawnRequest,
     StepSessionRequest,
@@ -1673,6 +1675,61 @@ class TestStepSessions:
             "content": "coder closed Write the code: pass.",
             "notice_id": "s-1:closed",
         }
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_playability_asks_forge_for_every_member_and_reads_its_verdicts(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        route = respx.post(f"{SESSIONS_URL}/playability").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "members": [
+                        {
+                            "member": "security-auditor",
+                            "model": "gpt-5.6-terra",
+                            "definition": "skuldCodex",
+                            "transport": "skuld.transports.codex_ws.CodexWebSocketTransport",
+                            "playable": False,
+                            "reasons": ["prompt mode needs an operator"],
+                        }
+                    ]
+                },
+            )
+        )
+        document = {"id": "security-auditor", "revision": "r", "definition": {}}
+
+        [verdict] = await adapter.check_playability(
+            [RunMember("security-auditor", "gpt-5.6-terra", document)]
+        )
+
+        assert json.loads(route.calls[0].request.content) == {
+            "members": [
+                {
+                    "member": "security-auditor",
+                    "model": "gpt-5.6-terra",
+                    "persona_definition": document,
+                }
+            ]
+        }
+        assert verdict == MemberPlayability(
+            "security-auditor",
+            "gpt-5.6-terra",
+            "skuld.transports.codex_ws.CodexWebSocketTransport",
+            ("prompt mode needs an operator",),
+        )
+        assert not verdict.playable
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_playability_check_forge_refuses_is_raised(self, adapter: VolundrHTTPAdapter):
+        respx.post(f"{SESSIONS_URL}/playability").mock(
+            return_value=httpx.Response(422, json={"detail": "no checker configured"})
+        )
+
+        with pytest.raises(httpx.HTTPStatusError, match="no checker configured"):
+            await adapter.check_playability([RunMember("coder", "m", {"id": "coder"})])
 
     @pytest.mark.asyncio
     @respx.mock

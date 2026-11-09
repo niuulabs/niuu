@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -33,11 +33,13 @@ from niuu.domain.models import Principal
 from niuu.ports.http_auth import HttpAuthPort
 from personas.domain.persona_document import PortablePersonaDefinition, parse_portable_persona
 from ting.domain.models import PRStatus
+from ting.domain.run_members import RunMember
 from ting.ports.volundr import (
     ActivityEvent,
     ActivityStreamConnected,
     ForgeProjectRef,
     HostTagSetsUnreadableError,
+    MemberPlayability,
     PublicSessionLogEntry,
     PublicSessionLogPage,
     RunRoomRequest,
@@ -286,6 +288,45 @@ class VolundrHTTPAdapter(VolundrPort):
                     response=resp,
                 )
             return self._session_from(resp.json())
+
+    async def check_playability(
+        self,
+        members: Sequence[RunMember],
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[MemberPlayability]:
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.post(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}/playability",
+                headers=self._headers(auth_token, principal),
+                json={
+                    "members": [
+                        {
+                            "member": member.member,
+                            "model": member.model,
+                            "persona_definition": dict(member.persona_definition),
+                        }
+                        for member in members
+                    ]
+                },
+            )
+            if resp.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    f"Forge could not check the run's personas: {_error_detail(resp)}",
+                    request=resp.request,
+                    response=resp,
+                )
+            return [
+                MemberPlayability(
+                    member=str(item["member"]),
+                    model=str(item["model"]),
+                    transport=str(item.get("transport") or ""),
+                    reasons=tuple(str(reason) for reason in item.get("reasons") or ()),
+                )
+                for item in resp.json()["members"]
+            ]
 
     async def create_run_room(
         self,

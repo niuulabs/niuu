@@ -38,6 +38,7 @@ from ting.domain.models import (
     WorkflowScope,
     WorkflowVersionSummary,
 )
+from ting.domain.run_members import RunMemberError, run_members
 from ting.domain.services.dispatch_service import (
     HostTagsUnreadableError,
     TargetSelectionError,
@@ -833,6 +834,14 @@ async def prepare_workflow_launch(
     if launch.project_id is not None:
         await _require_project(target_adapter, str(launch.project_id), bearer_token, principal)
     settings = request.app.state.settings
+    await _require_playable_members(
+        target_adapter,
+        workflow_snapshot,
+        launch_model=launch.model,
+        default_model=settings.dispatch.default_model,
+        auth_token=bearer_token,
+        principal=principal,
+    )
     return WorkflowLaunchExecution(
         workflow=workflow,
         workflow_snapshot=workflow_snapshot,
@@ -849,6 +858,43 @@ async def prepare_workflow_launch(
             isolated_branch=(session_branch, base_branch) if isolated_branch else None,
         ),
     )
+
+
+async def _require_playable_members(
+    forge: VolundrPort,
+    snapshot: dict[str, Any],
+    *,
+    launch_model: str,
+    default_model: str,
+    auth_token: str | None,
+    principal: Principal,
+) -> None:
+    """Refuse a run a member of which its Forge could not start, before the run exists.
+
+    Each member's session runs the harness its model picks on that Forge, and the harness
+    refuses a persona it cannot play when the session starts. Forge runs the same check
+    now, so the launch is refused with the harness's reasons instead of a step failing.
+    A workflow with no members (no stages) has nothing to check.
+    """
+    try:
+        members = run_members(snapshot, launch_model=launch_model, default_model=default_model)
+    except RunMemberError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not members:
+        return
+    verdicts = await forge.check_playability(members, auth_token=auth_token, principal=principal)
+    refused = [verdict for verdict in verdicts if not verdict.playable]
+    if refused:
+        raise HTTPException(
+            status_code=422,
+            detail="This workflow cannot run on this Forge: "
+            + " ".join(
+                f"{verdict.member} on {verdict.model} ({verdict.transport or 'no harness'}): "
+                + "; ".join(verdict.reasons)
+                + "."
+                for verdict in refused
+            ),
+        )
 
 
 async def _require_project(

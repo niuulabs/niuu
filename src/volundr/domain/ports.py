@@ -7,7 +7,7 @@ Adapters implement these interfaces.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -123,6 +123,34 @@ class PodStartResult:
     chat_endpoint: str
     code_endpoint: str
     pod_name: str
+
+
+@dataclass(frozen=True)
+class Playability:
+    """One persona on the harness a model's session would run, and why it cannot, if so."""
+
+    model: str
+    definition: str
+    transport: str
+    reasons: tuple[str, ...]
+
+    @property
+    def playable(self) -> bool:
+        return not self.reasons
+
+
+class PersonaNotPlayableError(ValueError):
+    """A session's persona cannot be played on the harness its model runs; nothing started."""
+
+
+class PersonaPlayabilityPort(ABC):
+    """Whether a session's persona can be played on the harness its model runs."""
+
+    @abstractmethod
+    def check(
+        self, model: str, persona: Mapping[str, Any], *, definition: str | None = None
+    ) -> Playability:
+        """The harness a session of ``model`` would run, and its refusals of ``persona``."""
 
 
 class SessionRepository(ABC):

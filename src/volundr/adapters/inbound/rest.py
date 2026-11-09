@@ -124,6 +124,8 @@ from volundr.domain.ports import (
     EventBroadcaster,
     GitAuthError,
     GitRepoNotFoundError,
+    PersonaNotPlayableError,
+    PersonaPlayabilityPort,
     PricingProvider,
 )
 from volundr.domain.presented_files import PresentedFileStore, is_presented_file_id
@@ -657,6 +659,31 @@ class ForgeMcpGrantsResponse(BaseModel):
         default="next_start",
         description="Grants change only when a start mints a new session credential.",
     )
+
+
+class PlayabilityMember(BaseModel):
+    """One member to check: its persona document and the model its session would run."""
+
+    member: str = Field(default="", max_length=255)
+    model: str = Field(min_length=1, max_length=255)
+    persona_definition: dict[str, Any]
+
+
+class PlayabilityRequest(BaseModel):
+    members: list[PlayabilityMember] = Field(min_length=1)
+
+
+class PlayabilityVerdict(BaseModel):
+    member: str
+    model: str
+    definition: str
+    transport: str
+    playable: bool
+    reasons: list[str]
+
+
+class PlayabilityResponse(BaseModel):
+    members: list[PlayabilityVerdict]
 
 
 class SessionCreate(BaseModel):
@@ -2255,6 +2282,7 @@ def create_router(
     session_participant_service: SessionParticipantService,
     presented_file_store: PresentedFileStore | None = None,
     guild_membership: GuildMembership | None = None,
+    persona_playability: PersonaPlayabilityPort | None = None,
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints.
 
@@ -2330,6 +2358,7 @@ def create_router(
         archive_service=archive_service,
         project_service=project_service,
         session_participant_service=session_participant_service,
+        persona_playability=persona_playability,
     )
 
     def _require_bound_workload_session(request: Request, session_id: UUID) -> None:
@@ -2978,7 +3007,7 @@ def create_router(
             )
         except ForgeMcpGrantEscalationError as e:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
-        except RepoValidationError as e:
+        except (RepoValidationError, PersonaNotPlayableError) as e:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(e),
@@ -3001,6 +3030,43 @@ def create_router(
         except (ExecutionCatalogError, ExecutionSelectionError) as e:
             raise _execution_catalog_http_error(e) from e
         return _session_response(started)
+
+    @router.post(
+        "/sessions/playability",
+        response_model=PlayabilityResponse,
+        responses={422: {"model": ErrorResponse}},
+        tags=["Sessions"],
+    )
+    async def check_playability(request: Request, data: PlayabilityRequest) -> PlayabilityResponse:
+        """Whether each persona can be played on the harness its model's session would run.
+
+        Runs the projection Skuld runs at startup, against the session definition the model
+        picks and that definition's broker settings. Nothing is created: a workflow launch
+        asks this for every member before its run starts.
+        """
+        await _optional_principal(request)
+        try:
+            verdicts = [
+                (member, forge.check_playable(member.model, member.persona_definition))
+                for member in data.members
+            ]
+        except PersonaNotPlayableError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
+            ) from e
+        return PlayabilityResponse(
+            members=[
+                PlayabilityVerdict(
+                    member=member.member,
+                    model=verdict.model,
+                    definition=verdict.definition,
+                    transport=verdict.transport,
+                    playable=verdict.playable,
+                    reasons=list(verdict.reasons),
+                )
+                for member, verdict in verdicts
+            ]
+        )
 
     @router.get(
         "/sessions/{session_id}",
