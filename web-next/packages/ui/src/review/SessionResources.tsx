@@ -66,7 +66,12 @@ export function SessionResources({
           return Promise.reject(
             new Error('Presented-file downloads are unavailable on this backend.'),
           );
-        return filesystem.downloadPresentedFile(sessionId, resource.path, signal);
+        // A file another session presented (a run member's) opens from that session.
+        return filesystem.downloadPresentedFile(
+          resource.sessionId ?? sessionId,
+          resource.path,
+          signal,
+        );
       }
       if (!filesReadable) return Promise.reject(new Error(STOPPED_SESSION_FILES));
       if (!filesystem.downloadFile)

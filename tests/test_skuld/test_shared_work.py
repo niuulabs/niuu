@@ -112,3 +112,21 @@ async def test_a_copy_that_cannot_be_published_is_counted_and_does_not_fail_the_
     await sharer.reply("Done.")
 
     assert degraded == ["skuld.mesh.share_work"]
+
+
+@pytest.mark.asyncio
+async def test_a_presented_file_is_shared_with_this_sessions_id() -> None:
+    published: list = []
+    sharer = _sharer(published)
+
+    await sharer.presented({"file_id": "pf_1", "name": "review.md", "mime": "text/markdown"})
+
+    [(event, _)] = published
+    assert event.type == MeshEventType.TOOL_START
+    assert event.payload["tool_name"] == "present_file"
+    assert event.payload["input"] == {
+        "file_id": "pf_1",
+        "name": "review.md",
+        "mime": "text/markdown",
+        "session_id": "s-1",
+    }

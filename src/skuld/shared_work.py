@@ -95,6 +95,21 @@ class WorkSharer:
                     },
                 )
 
+    async def presented(self, record: dict[str, Any]) -> None:
+        """Share a file this member presented: the run's room lists it with its deliverables.
+
+        ``record`` is the present-file record of this session's own turn (file id, name, mime,
+        path, durable url); the room keeps it with this session's id, so a reader opens the
+        file from this session's durable copy.
+        """
+        await self._share(
+            MeshEventType.TOOL_START,
+            {
+                "tool_name": "present_file",
+                "input": {**record, "session_id": self._session_id},
+            },
+        )
+
     async def reply(self, text: str) -> None:
         """Share the harness's reply: the member's message in the room."""
         if text.strip():

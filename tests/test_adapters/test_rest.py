@@ -1877,6 +1877,34 @@ class TestSessionRoomProxy:
         assert kwargs["headers"]["x-niuu-room-caller-session"] == member_id
         assert kwargs["headers"]["x-niuu-room-role"] == "owner"
 
+    def test_the_owners_services_post_a_notice_in_the_room(
+        self, client: TestClient, repository: InMemorySessionRepository
+    ) -> None:
+        host = self._session(repository)
+
+        response, (args, _) = self._post_room(client, host, self.PRINCIPAL, operation="notice")
+
+        assert response.status_code == 200
+        assert args[1].endswith("/api/room/notice")
+
+    def test_a_session_can_never_post_a_notice_as_the_rooms_coordinator(
+        self, client: TestClient, repository: InMemorySessionRepository
+    ) -> None:
+        host = self._session(repository)
+        member = Principal(
+            user_id="dev-user",
+            email="",
+            tenant_id="default",
+            roles=[],
+            token_use="forge_session",
+            bound_session_id=str(uuid4()),
+        )
+
+        response, upstream = self._post_room(client, host, member, operation="notice")
+
+        assert response.status_code == 403
+        assert upstream is None
+
     def test_a_person_is_never_stamped_as_a_calling_session(
         self, client: TestClient, repository: InMemorySessionRepository
     ) -> None:

@@ -428,6 +428,21 @@ class VolundrPort(ABC):
         """Create the session that is a workflow run's room (no agent of its own)."""
         raise NotImplementedError(f"{type(self).__name__} cannot create workflow run rooms")
 
+    async def post_room_notice(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        notice_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        """Post a notice in the room a session hosts, as its Coordinator; sent to no one.
+
+        ``notice_id`` keys it, so a notice posted again is shown once.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot post room notices")
+
     async def deliver_workflow_step(
         self,
         session_id: str,

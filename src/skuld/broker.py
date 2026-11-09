@@ -1499,6 +1499,21 @@ class Broker(
             extra_payload=payload,
         )
 
+    async def post_room_notice(
+        self, content: str, *, notice_id: str, metadata: dict[str, Any] | None = None
+    ) -> None:
+        """Post a notice in the room this session hosts, as its Coordinator.
+
+        A notice is shown, never sent: no member is asked to act on it and no agent sees it.
+        A workflow run's coordinator (Ting) posts its steps, gates and the run's end here.
+        """
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled on this session")
+        host = self._observer_peer_id()
+        if not host:
+            raise RuntimeError("the room's host has not joined its mesh yet")
+        await self._room_bridge.post_notice(host, content, notice_id=notice_id, metadata=metadata)
+
     def _observer_peer_id(self) -> str:
         """Return Skuld's room participant id when available."""
         if self._mesh_adapter is not None and getattr(self._mesh_adapter, "peer_id", ""):

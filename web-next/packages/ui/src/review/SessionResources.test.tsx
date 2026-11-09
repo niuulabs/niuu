@@ -3,6 +3,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { Blob as NodeBlob } from 'node:buffer';
 import { MarkdownContent, PresentedFileCard } from '../chat';
 import { SessionResources } from './SessionResources';
+import { useConversationResources } from '../chat/components/ConversationResources';
 import type { IFileSystemPort } from './IFileSystemPort';
 
 function fileSystemStub(): IFileSystemPort {
@@ -126,6 +127,46 @@ describe('session file previews', () => {
       expect.any(AbortSignal),
     );
     expect(filesystem.downloadFile).not.toHaveBeenCalled();
+  });
+  it("opens a run member's presented file from the member's own session", async () => {
+    function MemberFile() {
+      const resources = useConversationResources();
+      return (
+        <button
+          type="button"
+          onClick={() =>
+            resources?.open({
+              kind: 'presented',
+              path: 'pf_member',
+              name: 'review.md',
+              mime: 'text/markdown',
+              sessionId: 'reviewer-session',
+            })
+          }
+        >
+          Member file
+        </button>
+      );
+    }
+    const filesystem = {
+      ...fileSystemStub(),
+      downloadPresentedFile: vi.fn().mockResolvedValue(blob('# Review', 'text/markdown')),
+    };
+    render(
+      <SessionResources sessionId="room-session" workspace="/home/x" filesystem={filesystem}>
+        <MemberFile />
+      </SessionResources>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Member file' }));
+
+    await waitFor(() =>
+      expect(filesystem.downloadPresentedFile).toHaveBeenCalledWith(
+        'reviewer-session',
+        'pf_member',
+        expect.any(AbortSignal),
+      ),
+    );
   });
   it('loads local Markdown images and opens their preview', async () => {
     const download = vi.fn().mockResolvedValue(blob('image bytes', 'image/png'));

@@ -797,6 +797,30 @@ class VolundrHTTPAdapter(VolundrPort):
             )
             resp.raise_for_status()
 
+    async def post_room_notice(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        notice_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.post(
+                self._room_url(session_id, "notice"),
+                headers=self._headers(auth_token, principal),
+                json={"content": content, "notice_id": notice_id},
+            )
+            if resp.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    f"Forge could not post the notice in session {session_id}'s room: "
+                    f"{_error_detail(resp)}",
+                    request=resp.request,
+                    response=resp,
+                )
+
     def _room_url(self, session_id: str, operation: str) -> str:
         """A room operation, through Forge: a session's own origin may be browser-only."""
         return f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/room/{operation}"

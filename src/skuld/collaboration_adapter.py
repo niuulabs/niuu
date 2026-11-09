@@ -708,6 +708,32 @@ class SkuldCollaborationAdapter(CollaborationRoom):
             {"kind": "activity", "activityType": activity_type, "detail": detail},
         )
 
+    async def post_notice(
+        self,
+        peer_id: str,
+        content: str,
+        *,
+        notice_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Post a notice in the room as the host's own message (the room's Coordinator).
+
+        ``notice_id`` keys it: a notice posted again (its sender retried) is shown once.
+        """
+        participant = self.participant(peer_id)
+        if participant is None:
+            raise LookupError(f"the room's host {peer_id} is not in the room")
+        await self._handle_event(
+            participant,
+            {
+                "kind": "message",
+                "content": content,
+                "visibility": "public",
+                "sourceEventId": notice_id,
+                "metadata": {**(metadata or {}), "room_notice": True},
+            },
+        )
+
     async def broadcast_cli_message(
         self,
         peer_id: str,

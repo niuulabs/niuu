@@ -70,11 +70,22 @@ describe('session home and presented files', () => {
           ],
         },
         { parts: [{ type: 'tool_use', name: 'present_file', input: { file_id: 'pf_2' } }] },
+        {
+          // A run member's file, shared into the run's room: it keeps its session.
+          parts: [
+            {
+              type: 'tool_use',
+              name: 'present_file',
+              input: { file_id: 'pf_3', name: 'review.md', session_id: 'reviewer-session' },
+            },
+          ],
+        },
         {},
       ]),
     ).toEqual([
       { fileId: 'pf_1', name: 'Plan', mime: 'text/markdown', path: '/home/plan.md' },
       { fileId: 'pf_2', name: 'pf_2' },
+      { fileId: 'pf_3', name: 'review.md', sessionId: 'reviewer-session' },
     ]);
   });
 

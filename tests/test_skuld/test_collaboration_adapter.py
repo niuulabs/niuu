@@ -657,3 +657,42 @@ async def test_any_other_room_shows_an_outcome_without_keeping_a_turn() -> None:
     )
 
     assert [t for t in turns if t.visibility == "public"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_notice_is_the_hosts_message_and_is_shown_once() -> None:
+    adapter, channels, turns = _realm_room()
+    await adapter.register_mesh_peer(
+        "room-session", "Skuld", display_name="Skuld", participant_type="skuld"
+    )
+    channels.broadcast.reset_mock()
+
+    for _ in range(2):
+        await adapter.post_notice(
+            "room-session", "coder closed Write the code: pass.", notice_id="step-1:closed"
+        )
+
+    messages = [
+        call.args[0]
+        for call in channels.broadcast.await_args_list
+        if call.args[0]["type"] == "room_message"
+    ]
+    assert len(messages) == 1
+    assert messages[0]["participantId"] == "room-session"
+    [turn] = [t for t in turns if t.visibility == "public"]
+    assert turn.content == "coder closed Write the code: pass."
+    assert turn.metadata["room_notice"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_notice_for_a_room_whose_host_is_not_in_it_is_refused() -> None:
+    adapter, _, _ = _realm_room()
+
+    with pytest.raises(LookupError, match="not in the room"):
+        await adapter.post_notice("room-session", "x", notice_id="n-1")
+
+
+def test_only_the_rooms_owner_may_post_a_notice() -> None:
+    from niuu.room_access import required_role_for_route
+
+    assert required_role_for_route("POST", "room/notice") == "owner"
