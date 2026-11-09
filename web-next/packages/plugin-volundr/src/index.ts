@@ -155,6 +155,11 @@ export type {
   VolundrSessionChanges,
 } from './ports/IVolundrService';
 export type { IClusterAdapter } from './ports/IClusterAdapter';
+export {
+  RUN_WORKFLOW_VIEW_SERVICE,
+  type RunWorkflowView,
+  type RunWorkflowViewProps,
+} from './ports/IRunWorkflowView';
 export type {
   ISessionStore,
   SessionChangeReader,

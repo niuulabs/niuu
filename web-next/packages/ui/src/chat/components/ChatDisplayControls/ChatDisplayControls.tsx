@@ -1,4 +1,4 @@
-import { Eye, ListCollapse, SlidersHorizontal } from 'lucide-react';
+import { Eye, ListCollapse, SlidersHorizontal, Workflow } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 import {
   setCompactUxChatPref,
@@ -12,6 +12,8 @@ export interface ChatDisplayControlsProps {
   className?: string;
   /** The host's tool-call visibility, offered in the same menu rather than as its own button. */
   toolCalls?: { shown: boolean; onToggle: () => void };
+  /** The host's workflow panel (a run's coordinator), shown or hidden from the same menu. */
+  workflowPanel?: { shown: boolean; onToggle: () => void };
 }
 
 /**
@@ -19,7 +21,11 @@ export interface ChatDisplayControlsProps {
  * tool-call visibility, and avatars, message actions, timestamps and copy. The settings are
  * shared, so a host can place the menu in its own toolbar and every open conversation follows.
  */
-export function ChatDisplayControls({ className, toolCalls }: ChatDisplayControlsProps) {
+export function ChatDisplayControls({
+  className,
+  toolCalls,
+  workflowPanel,
+}: ChatDisplayControlsProps) {
   const chatPrefs = useCompactUxChatPrefs();
   const conversationView = useConversationView();
   return (
@@ -56,6 +62,19 @@ export function ChatDisplayControls({ className, toolCalls }: ChatDisplayControl
             >
               <Eye className="niuu-chat-control-icon" aria-hidden="true" />
               Tool calls and results
+            </button>
+          )}
+          {workflowPanel && (
+            <button
+              type="button"
+              className="niuu-chat-preferences-toggle"
+              onClick={workflowPanel.onToggle}
+              aria-pressed={workflowPanel.shown}
+              aria-label={workflowPanel.shown ? 'Hide the workflow' : 'Show the workflow'}
+              data-testid="workflow-panel-toggle"
+            >
+              <Workflow className="niuu-chat-control-icon" aria-hidden="true" />
+              Workflow
             </button>
           )}
           <label>

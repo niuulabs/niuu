@@ -104,6 +104,8 @@ import {
   type DockPane,
 } from './detail/dockPanes';
 import { TerminalDock } from './detail/TerminalDock';
+import { WorkflowDock } from './detail/WorkflowDock';
+import { RUN_WORKFLOW_VIEW_SERVICE, type RunWorkflowView } from '../ports/IRunWorkflowView';
 import { FilePreviewPane } from './detail/FilePreviewPane';
 import { LivePreviewPane } from './detail/LivePreviewPane';
 import { LIVE_PREVIEW_DISABLED, findLocalUrls } from '../domain/livePreview';
@@ -146,6 +148,7 @@ import {
   DOCK_WIDTH,
   SESSION_STATE_LABELS,
   TERMINAL_HEIGHT,
+  WORKFLOW_PANEL_HEIGHT,
   TRANSCRIPT_MIN_WIDTH,
 } from './sessions/presentation';
 import { ContextMeter } from './detail/ContextMeter';
@@ -3310,6 +3313,17 @@ function LiveSessionDetailPageInner({
       ? terminalPreferredHeight
       : Math.min(terminalPreferredHeight, workAreaHeight - CONVERSATION_MIN_HEIGHT);
   const terminalShown = terminalOpen && terminalHeight >= TERMINAL_HEIGHT.min;
+  // A run's coordinator draws its run on the workflow, docked as the terminal is, when the
+  // host wired a workflow view (Ting's) and the person has not hidden it from Display.
+  const RunWorkflow = useOptionalService<RunWorkflowView>(RUN_WORKFLOW_VIEW_SERVICE);
+  const [workflowPreference, setWorkflowPreference] = useForgePreference('workflowPanel', '1', [
+    '0',
+    '1',
+  ]);
+  const { width: workflowPreferredHeight, resizer: workflowResizer } = useResizableSidebar(
+    'niuu.forge.workflowHeight',
+    WORKFLOW_PANEL_HEIGHT,
+  );
   useEffect(() => {
     if (!onDockOpenChange) return;
     onDockOpenChange(dockOpen);
@@ -3516,6 +3530,21 @@ function LiveSessionDetailPageInner({
   );
   const isCoordinator =
     liveSession?.coordination?.role === 'coordinator' || coordination.workers.length > 0;
+  // Only the run's own session (nested under no other) draws the run: its members are in it.
+  const workflowRunId =
+    RunWorkflow && liveSession?.runId && !liveSession.coordination?.parent
+      ? liveSession.runId
+      : null;
+  const workflowOpen = workflowPreference === '1';
+  const workflowHeight =
+    workAreaHeight === null
+      ? workflowPreferredHeight
+      : Math.min(
+          workflowPreferredHeight,
+          workAreaHeight - CONVERSATION_MIN_HEIGHT - (terminalShown ? terminalHeight : 0),
+        );
+  const workflowShown =
+    workflowRunId !== null && workflowOpen && workflowHeight >= WORKFLOW_PANEL_HEIGHT.min;
   // A workflow run's first session hosts the run's room: its members are in it from Forge's
   // record, whether the room is live or the run has finished.
   const runHost = useMemo(
@@ -4356,6 +4385,14 @@ function LiveSessionDetailPageInner({
                       shown: showInternalMessages,
                       onToggle: handleToggleInternalMessages,
                     }}
+                    workflowPanel={
+                      workflowRunId
+                        ? {
+                            shown: workflowOpen,
+                            onToggle: () => setWorkflowPreference(workflowOpen ? '0' : '1'),
+                          }
+                        : undefined
+                    }
                   />
                 )}
                 <SessionToolbarButton
@@ -4769,6 +4806,23 @@ function LiveSessionDetailPageInner({
               />
             ) : null}
           </div>
+          {workflowShown && RunWorkflow && workflowRunId ? (
+            <WorkflowDock
+              View={RunWorkflow}
+              runId={workflowRunId}
+              height={workflowHeight}
+              onOpenSession={openSession}
+              onClose={() => setWorkflowPreference('0')}
+              edge={
+                <SidebarResizer
+                  label="Resize the workflow"
+                  panelSide="bottom"
+                  {...workflowResizer}
+                  width={workflowHeight}
+                />
+              }
+            />
+          ) : null}
           {terminalShown ? (
             <TerminalDock
               height={terminalHeight}

@@ -5,6 +5,7 @@ import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { ChatConnectionsContext } from '@niuulabs/ui';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { ApiClientError } from '@niuulabs/query';
+import { RUN_WORKFLOW_VIEW_SERVICE } from '../ports/IRunWorkflowView';
 import { LiveSessionDetailPage, buildTelemetryTimelineRows } from './LiveSessionDetailPage';
 import * as chatHooks from './hooks/useSkuldChat';
 import {
@@ -576,6 +577,7 @@ function wrap(
     onBackToUnread?: () => void;
     sessionStore?: Partial<ISessionStore>;
     openConnections?: () => void;
+    services?: Record<string, unknown>;
   } = {},
 ) {
   const session = opts.session === undefined ? RUNNING_SESSION : opts.session;
@@ -592,6 +594,7 @@ function wrap(
           filesystem: buildFilesystem(),
           sessionStore,
           metricsStream: createMockMetricsStream(),
+          ...opts.services,
         }}
       >
         <ChatConnectionsContext.Provider value={opts.openConnections}>
@@ -982,6 +985,37 @@ describe('LiveSessionDetailPage', () => {
       expect(link).toHaveAttribute('href', '/ting/review/run/probe-9');
       fireEvent.click(link);
       expect(navigate).toHaveBeenCalledWith({ to: '/ting/review/run/probe-9' });
+    });
+
+    it("docks a run's workflow under its coordinator, hidden and shown from Display", async () => {
+      localStorage.removeItem('niuu.forge.workflowPanel');
+      const RunView = ({ runId }: { runId: string }) => (
+        <div data-testid="run-view">workflow of {runId}</div>
+      );
+      wrap('test-session-id-1234', {
+        session: { ...RUNNING_SESSION, runId: 'probe-9' },
+        services: { [RUN_WORKFLOW_VIEW_SERVICE]: RunView },
+      });
+
+      expect(await screen.findByTestId('run-view')).toHaveTextContent('workflow of probe-9');
+      expect(screen.getByTestId('workflow-dock')).toHaveAccessibleName('Workflow');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Close the workflow panel' }));
+      expect(screen.queryByTestId('workflow-dock')).toBeNull();
+
+      fireEvent.click(screen.getByTestId('workflow-panel-toggle'));
+      expect(screen.getByTestId('run-view')).toBeInTheDocument();
+    });
+
+    it('has no workflow panel without a run, or where no workflow view is wired', async () => {
+      const RunView = () => <div data-testid="run-view" />;
+      wrap('test-session-id-1234', {
+        session: RUNNING_SESSION,
+        services: { [RUN_WORKFLOW_VIEW_SERVICE]: RunView },
+      });
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.queryByTestId('workflow-dock')).toBeNull();
+      expect(screen.queryByTestId('workflow-panel-toggle')).toBeNull();
     });
 
     it('shows a distinct session handle and linked tracker issue', async () => {

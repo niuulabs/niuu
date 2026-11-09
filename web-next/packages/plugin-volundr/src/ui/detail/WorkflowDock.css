@@ -1,0 +1,59 @@
+.forge-workflow-dock {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.forge-workflow-dock__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: 12px;
+}
+
+.forge-workflow-dock__icon {
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-muted);
+}
+
+.forge-workflow-dock__title {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.forge-workflow-dock__run {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+}
+
+.forge-workflow-dock__close {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  border-radius: 6px;
+  color: var(--color-text-muted);
+}
+
+.forge-workflow-dock__close:hover {
+  background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+  color: var(--color-text-primary);
+}
+
+.forge-workflow-dock__close svg {
+  width: 14px;
+  height: 14px;
+}
+
+.forge-workflow-dock__body {
+  flex: 1;
+  min-height: 0;
+}

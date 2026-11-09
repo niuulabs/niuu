@@ -31,6 +31,7 @@ import {
   buildSpecsHttpAdapter,
   buildDispatchBusHttpAdapter,
   buildTingSettingsHttpAdapter,
+  RunWorkflowGraph,
   buildTingAuditLogHttpAdapter,
 } from '@niuulabs/plugin-ting';
 import { createMimirMockAdapter, buildMimirHttpAdapter } from '@niuulabs/plugin-mimir';
@@ -71,6 +72,8 @@ import {
   type Session,
   type SessionFilters,
   type VolundrSession,
+  RUN_WORKFLOW_VIEW_SERVICE,
+  type RunWorkflowView,
 } from '@niuulabs/plugin-volundr';
 import {
   REALM_GOVERNANCE_SERVICE_KEY,
@@ -1524,6 +1527,10 @@ export function buildServices(config: NiuuConfig): ServicesMap {
             'ting.work',
             'Configure a live work backend to view work.',
           ),
+    // Forge draws a run's workflow with Ting's view, where Ting can read the run.
+    ...(workClient || config.demoMode
+      ? { [RUN_WORKFLOW_VIEW_SERVICE]: RunWorkflowGraph satisfies RunWorkflowView }
+      : {}),
     // Artifacts are Forge's publications on every Forge host the registry lists.
     'ting.runLog': forgeBase
       ? buildRunLogHttpAdapter(

@@ -83,6 +83,13 @@ export const TERMINAL_HEIGHT = { default: 230, min: 140, max: 520, keyboardStep:
  * The terminal shortens to keep it, and hides for the moment when even its minimum does not fit.
  */
 export const CONVERSATION_MIN_HEIGHT = 320;
+/** The workflow panel of a run's coordinator, docked as the terminal is: its height when not dragged. */
+export const WORKFLOW_PANEL_HEIGHT = {
+  default: 260,
+  min: 160,
+  max: 560,
+  keyboardStep: 20,
+} as const;
 
 /** The model a row names: its own, else the harness that runs it. */
 export function sessionModelLabel(
