@@ -47,6 +47,7 @@ from skuld.claude_permission import (
 from skuld.slash_commands import build_slash_command_catalog, compose_slash_command_text
 from skuld.transports.claude_env import claude_spawn_env
 from skuld.transports.claude_policy import ClaudeToolPolicy
+from skuld.transports.claude_text_identity import ClaudeTextIdentity
 from skuld.transports.mcp_config import (
     build_claude_mcp_payload,
     build_sdk_mcp_servers,
@@ -373,6 +374,8 @@ class SDKTransport(CLITransport):
         self._slash_commands: list[str] = []
         self._skills: list[str] = []
         self._slash_command_catalog: list[dict] | None = None
+        # Pairs each streamed text block with its assistant snapshot (see the module).
+        self._text_identity = ClaudeTextIdentity()
 
     @property
     def capabilities(self) -> TransportCapabilities:
@@ -843,6 +846,11 @@ class SDKTransport(CLITransport):
         event = _to_stream_json(message)
         if event is None:
             return None
+
+        if isinstance(message, StreamEvent):
+            self._text_identity.observe_stream_event(message.event, event)
+        elif isinstance(message, AssistantMessage):
+            self._text_identity.stamp_snapshot(event)
 
         filtered = _filter_event(event)
         return filtered
