@@ -258,13 +258,15 @@ class ActivityReportingMixin:
             return False
 
     async def _report_workflow_step(self, report: dict[str, Any]) -> None:
-        """Report a workflow step's close, or a turn that ended with it open, to Ting.
+        """Report one of this session's workflow acts to Forge, for Ting to record.
 
-        The report rides session activity as ``metadata.workflow_step``, which Forge relays on
-        its activity stream. It is stamped with the broker's *current* state and anchors each
-        time it is sent, because Forge ignores a report older than the state it already holds.
-        It never touches the remembered activity detail, so a heartbeat does not repeat it.
-        Reports are kept and sent in order until Forge acknowledges each one.
+        The report rides session activity as ``metadata.workflow_step`` (``listening``,
+        ``offer_published``, ``picked_up``, ``passed``, ``offer_refused``, ``closed``,
+        ``unclosed``; see ``skuld.workflow_steps``), which Forge relays on its activity stream.
+        Each session reports only its own acts. A report is stamped with the broker's *current*
+        state and anchors each time it is sent, because Forge ignores a report older than the
+        state it already holds. It never touches the remembered activity detail, so a heartbeat
+        does not repeat it. Reports are kept and sent in order until Forge acknowledges each one.
         """
         self._pending_step_reports.append(report)
         await self._flush_workflow_step_reports()
@@ -276,7 +278,8 @@ class ActivityReportingMixin:
                 logger.error(
                     "workflow step report cannot be sent: activity reporting is off "
                     "(volundr_api_url / activity_reporting_enabled), so Ting would never learn "
-                    "of it; it is held, and Ting can read the step from GET /api/workflow/steps"
+                    "of it; it is held until activity reporting is on, and the step's state is "
+                    "in this session's durable event log"
                 )
                 return
             report = self._pending_step_reports[0]

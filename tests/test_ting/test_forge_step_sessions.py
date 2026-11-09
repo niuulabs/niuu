@@ -14,23 +14,15 @@ from ting.adapters.forge_step_sessions import (
     FORGE_SESSION_NAME_MAX,
     ForgeStepSessions,
     StepSessionError,
-    activation_body,
     run_room_name,
     step_session_name,
     step_session_tag,
 )
 from ting.domain.models import Saga, SagaStatus, WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.run_thread import FORGE_OBJECTIVE_MAX, RunProjectError, run_objective
-from ting.ports.volundr import ForgeProjectRef, SessionMembership, VolundrSession
-from ting.ports.workflow_steps import (
-    DeliveredEvent,
-    PersonaRef,
-    SessionLiveness,
-    SessionNotReadyError,
-    StepActivation,
-)
+from ting.ports.volundr import ForgeProjectRef, RunRoomRequest, SessionMembership
+from ting.ports.workflow_steps import PersonaRef, RunUnit, SessionLiveness
 
-from . import workflow_step_contract as contract
 from .fake_forge import FakeForge, FakeForgeFactory, FakeSagas
 
 PERSONA_DOCUMENT = {
@@ -101,44 +93,47 @@ def _sessions(campaign: WorkflowCampaign, forge: FakeForge | None = None, **kwar
     return adapter, forge
 
 
-def _activation(**overrides) -> StepActivation:
-    values = {
-        "run_id": UUID(contract.RUN_ID),
-        "activation_id": UUID(contract.ACTIVATION_ID),
-        "node_id": "implement",
-        "node_label": "Implement",
-        "member": "coder",
-        "attempt": 1,
-        "generation": 0,
-        "session_id": "ses-1",
-        "inputs": (
-            DeliveredEvent(
-                seq=2,
-                event_type="work.requested",
-                edge_id="e1",
-                node_id="go",
-                member=None,
-                payload={"outcome": {"prompt": "add an endpoint"}},
-            ),
-        ),
-        "deadline_at": datetime(2026, 11, 8, 12, 0, tzinfo=UTC),
-        "valid_verdicts": ("implemented", "blocked"),
-        "outcome_schema": {"summary": {"type": "string", "description": "what changed"}},
-        "verdict_events": {"implemented": "code.ready", "blocked": "work.blocked"},
-        "workflow_name": "Build",
+async def _launched(campaign: WorkflowCampaign, forge: FakeForge | None = None, **kwargs):
+    """A run whose unit is launched: ``(sessions, forge, unit)``."""
+    sessions, forge = _sessions(campaign, forge, **kwargs)
+    unit = await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
+    return sessions, forge, unit
+
+
+# -- Launching a run: the root and every member, created together and started once ---------
+
+
+async def test_launch_creates_root_then_hosted_members_then_starts_the_unit_once() -> None:
+    campaign = _two_members()
+    sessions, forge = _sessions(campaign, _in_project())
+
+    unit = await sessions.launch_run(campaign.id, {"coder": PERSONA_REF, "reviewer": REVIEWER_REF})
+
+    assert isinstance(unit, RunUnit)
+    [root_request] = forge.run_room_requests
+    assert root_request.name == "wf-add-endpoint-abc123"
+    assert root_request.hosts_members is True
+    root = unit.root_id
+    assert forge.unit_roots == {root: str(campaign.id)}
+    coder, reviewer = forge.create_requests
+    assert (coder.hosted_by, reviewer.hosted_by) == (root, root)
+    assert unit.members == {
+        "coder": forge.sessions[unit.members["coder"]].id,
+        "reviewer": forge.sessions[unit.members["reviewer"]].id,
     }
-    values.update(overrides)
-    return StepActivation(**values)
+    # The members were created while the unit was held, and only the root was started:
+    # Forge starts the unit with every member at once.
+    assert forge.lifecycle == [("start", root)]
+    assert {forge.sessions[i].status for i in (root, *unit.members.values())} == {"starting"}
+    assert [forge.launches[i] for i in unit.members.values()] == [1, 1]
 
 
-async def test_the_first_activation_creates_the_members_session_from_the_pinned_document() -> None:
+async def test_a_member_is_created_from_its_pinned_document() -> None:
     campaign = _campaign()
-    sessions, forge = _sessions(campaign)
-
-    session_id = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    _, forge, unit = await _launched(campaign)
 
     [request] = forge.create_requests
-    assert session_id == "ses-1"
+    assert unit.members == {"coder": "ses-2"}
     assert request.persona_definition == PERSONA_DOCUMENT
     assert request.model == "claude-sonnet-4-6"
     assert request.name == "wf-add-endpoint-abc123-coder"
@@ -152,97 +147,180 @@ async def test_the_first_activation_creates_the_members_session_from_the_pinned_
     )
 
 
-async def test_later_activations_of_a_member_reuse_its_session() -> None:
+async def test_launching_a_launched_run_again_creates_and_starts_nothing() -> None:
+    campaign = _two_members()
+    sessions, forge = _sessions(campaign, _in_project())
+    members = {"coder": PERSONA_REF, "reviewer": REVIEWER_REF}
+    first = await sessions.launch_run(campaign.id, members)
+    before = (len(forge.run_room_requests), len(forge.create_requests), list(forge.lifecycle))
+
+    # A new adapter, as after a Ting restart: nothing in memory from the earlier process.
+    again, _ = _sessions(campaign, forge)
+    second = await again.launch_run(campaign.id, members)
+
+    assert second == first
+    assert (len(forge.run_room_requests), len(forge.create_requests), forge.lifecycle) == before
+
+
+async def test_a_launch_that_stopped_half_way_creates_what_is_missing_and_starts_the_unit() -> None:
+    campaign = _two_members()
+    members = {"coder": PERSONA_REF, "reviewer": REVIEWER_REF}
+    sessions, forge = _sessions(campaign, _in_project())
+    original = forge.create_step_session
+    calls = 0
+
+    async def crash_on_the_second_member(request, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ConnectionError("Ting died here")
+        return await original(request, **kwargs)
+
+    forge.create_step_session = crash_on_the_second_member  # type: ignore[method-assign]
+    with pytest.raises(ConnectionError):
+        await sessions.launch_run(campaign.id, members)
+    assert forge.lifecycle == []  # the unit was not started with a member missing
+
+    forge.create_step_session = original  # type: ignore[method-assign]
+    resumed, _ = _sessions(campaign, forge)
+    unit = await resumed.launch_run(campaign.id, members)
+
+    assert len(forge.run_room_requests) == 1
+    assert [r.member for r in forge.create_requests] == ["coder", "reviewer"]
+    assert forge.lifecycle == [("start", unit.root_id)]
+
+
+async def test_concurrent_launches_of_one_run_create_one_root_and_start_it_once() -> None:
+    campaign = _two_members()
+    sessions, forge = _sessions(campaign, _in_project())
+    listed = forge.list_sessions
+
+    async def list_slowly(*args, **kwargs):
+        # Forge answers over the network: the list is taken, then the answer travels while
+        # the other launch runs.
+        answer = await listed(*args, **kwargs)
+        await asyncio.sleep(0)
+        return answer
+
+    forge.list_sessions = list_slowly  # type: ignore[method-assign]
+
+    units = await asyncio.gather(
+        *(
+            sessions.launch_run(campaign.id, {"coder": PERSONA_REF, "reviewer": REVIEWER_REF})
+            for _ in range(3)
+        )
+    )
+
+    assert len({unit.root_id for unit in units}) == 1
+    assert len(forge.run_room_requests) == 1
+    assert len(forge.create_requests) == 2
+    assert forge.lifecycle == [("start", units[0].root_id)]
+
+
+async def test_a_member_forge_refuses_to_host_surfaces_with_its_reason() -> None:
+    campaign = _campaign()
+    sessions, forge = _sessions(campaign)
+    create_root = forge.create_run_room
+
+    async def create_root_started_elsewhere(request, **kwargs):
+        root = await create_root(request, **kwargs)
+        # Someone else starts the unit after it exists and before Ting attaches a member.
+        forge._set(root.id, "starting")
+        return root
+
+    forge.create_run_room = create_root_started_elsewhere  # type: ignore[method-assign]
+
+    with pytest.raises(StepSessionError) as refused:
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
+
+    message = str(refused.value)
+    assert (
+        "Forge refused to host member 'coder' in run add-endpoint-abc123's unit room-1" in message
+    )
+    assert "a run's members are fixed when its unit starts" in message
+    assert isinstance(refused.value.__cause__, httpx.HTTPStatusError)
+    assert forge.create_requests == []
+    assert forge.lifecycle == []
+
+
+async def test_a_member_missing_from_a_unit_that_already_started_is_refused() -> None:
+    campaign = _two_members()
+    sessions, forge, unit = await _launched(campaign, _in_project())
+
+    with pytest.raises(StepSessionError, match="already started without member.*'reviewer'"):
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF, "reviewer": REVIEWER_REF})
+
+    assert [r.member for r in forge.create_requests] == ["coder"]
+    assert forge.lifecycle == [("start", unit.root_id)]
+
+
+async def test_a_launch_with_a_bad_member_creates_nothing() -> None:
+    campaign = _two_members()
+    sessions, forge = _sessions(campaign, _in_project())
+    bad_ref = PersonaRef("reviewer", "other", "r1", "sha256:" + "0" * 64)
+
+    with pytest.raises(StepSessionError, match="is persona 'reviewer', not the pinned 'other'"):
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF, "reviewer": bad_ref})
+
+    assert forge.run_room_requests == []
+    assert forge.create_requests == []
+    assert forge.lifecycle == []
+
+
+async def test_a_launch_with_no_members_is_an_error() -> None:
     campaign = _campaign()
     sessions, forge = _sessions(campaign)
 
-    first = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
-    second = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    with pytest.raises(StepSessionError, match="has no stage members to launch"):
+        await sessions.launch_run(campaign.id, {})
 
-    assert first == second
-    assert len(forge.create_requests) == 1
-
-
-async def test_a_ting_restart_finds_the_session_forge_already_has() -> None:
-    campaign = _campaign()
-    forge = FakeForge()
-    existing = forge.add_session(
-        "wf-add-endpoint-abc123-coder", step_session_tag(campaign.slug), status="running"
-    )
-    # A new adapter: nothing in memory from the earlier process.
-    sessions, _ = _sessions(campaign, forge)
-
-    assert await sessions.ensure_session(campaign.id, "coder", PERSONA_REF) == existing
-    assert forge.create_requests == []
+    assert forge.run_room_requests == []
 
 
-async def test_concurrent_activations_of_one_member_create_one_session() -> None:
-    import asyncio
-
+async def test_a_unit_forge_cannot_start_is_an_error_naming_the_root() -> None:
     campaign = _campaign()
     sessions, forge = _sessions(campaign)
 
-    ids = await asyncio.gather(
-        *(sessions.ensure_session(campaign.id, "coder", PERSONA_REF) for _ in range(3))
-    )
+    async def refuse(session_id, **kwargs):
+        raise ConnectionError("no capacity for the unit")
 
-    assert len(set(ids)) == 1
-    assert len(forge.create_requests) == 1
+    forge.start_session = refuse  # type: ignore[method-assign]
+
+    with pytest.raises(StepSessionError, match=r"could not start run add-endpoint-abc123's unit"):
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
 
 
-async def test_a_stopped_session_is_started_again_not_replaced() -> None:
+async def test_forge_refusing_a_create_for_another_reason_is_raised_as_it_is() -> None:
+    campaign = _campaign()
+    sessions, forge = _sessions(campaign)
+    forge.fail_create = RuntimeError("422: persona digest mismatch")
+
+    with pytest.raises(RuntimeError, match="persona digest mismatch"):
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
+
+    assert forge.lifecycle == []
+
+
+async def test_a_session_with_the_roots_name_but_another_tag_is_refused() -> None:
     campaign = _campaign()
     forge = FakeForge()
-    existing = forge.add_session(
-        "wf-add-endpoint-abc123-coder", step_session_tag(campaign.slug), status="stopped"
-    )
+    forge.add_session("wf-add-endpoint-abc123", "workflow:someone-else")
     sessions, _ = _sessions(campaign, forge)
 
-    assert await sessions.ensure_session(campaign.id, "coder", PERSONA_REF) == existing
-    assert forge.started == [existing]
+    with pytest.raises(StepSessionError, match="not run add-endpoint-abc123's root"):
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
 
 
-async def test_a_failed_session_stops_the_run_instead_of_being_replaced() -> None:
-    campaign = _campaign()
-    forge = FakeForge()
-    forge.add_session(
-        "wf-add-endpoint-abc123-coder", step_session_tag(campaign.slug), status="failed"
-    )
-    sessions, _ = _sessions(campaign, forge)
-
-    with pytest.raises(StepSessionError, match="has failed"):
-        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
-
-    assert forge.create_requests == []
-
-
-async def test_a_session_with_the_name_but_another_tag_is_refused() -> None:
+async def test_a_member_name_held_by_another_runs_session_is_refused() -> None:
     campaign = _campaign()
     forge = FakeForge()
     forge.add_session("wf-add-endpoint-abc123-coder", "workflow:someone-else")
     sessions, _ = _sessions(campaign, forge)
 
     with pytest.raises(StepSessionError, match="not run add-endpoint-abc123's session"):
-        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
 
-
-async def test_forge_refusing_the_create_is_raised_not_swallowed() -> None:
-    campaign = _campaign()
-    sessions, forge = _sessions(campaign)
-    forge.fail_create = RuntimeError("422: persona digest mismatch")
-
-    with pytest.raises(RuntimeError, match="persona digest mismatch"):
-        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
-
-
-async def test_a_member_pinned_to_other_persona_than_its_document_is_refused() -> None:
-    campaign = _campaign()
-    sessions, _ = _sessions(campaign)
-
-    with pytest.raises(StepSessionError, match="is persona 'coder', not the pinned 'other'"):
-        await sessions.ensure_session(
-            campaign.id, "coder", PersonaRef("coder", "other", "r1", "sha256:" + "0" * 64)
-        )
+    assert forge.run_room_requests == []
 
 
 async def test_a_member_with_no_pinned_document_is_refused() -> None:
@@ -250,7 +328,7 @@ async def test_a_member_with_no_pinned_document_is_refused() -> None:
     sessions, _ = _sessions(campaign)
 
     with pytest.raises(StepSessionError, match="pins no persona document for member 'ghost'"):
-        await sessions.ensure_session(campaign.id, "ghost", PERSONA_REF)
+        await sessions.launch_run(campaign.id, {"ghost": PERSONA_REF})
 
 
 async def test_the_launch_model_is_used_when_the_stage_names_none() -> None:
@@ -262,9 +340,10 @@ async def test_the_launch_model_is_used_when_the_stage_names_none() -> None:
     )
     sessions, forge = _sessions(campaign, default_model="configured-default")
 
-    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
 
     assert forge.create_requests[0].model == "claude-opus-launch"
+    assert forge.run_room_requests[0].model == "claude-opus-launch"
 
 
 async def test_the_configured_default_model_is_the_last_resort_and_none_is_an_error() -> None:
@@ -273,12 +352,13 @@ async def test_the_configured_default_model_is_the_last_resort_and_none_is_an_er
     campaign = _campaign(workflow_snapshot=snapshot)
     sessions, forge = _sessions(campaign, default_model="configured-default")
 
-    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
     assert forge.create_requests[0].model == "configured-default"
 
-    bare, _ = _sessions(campaign)
+    bare, bare_forge = _sessions(campaign)
     with pytest.raises(StepSessionError, match="no model for member 'coder'"):
-        await bare.ensure_session(campaign.id, "coder", PERSONA_REF)
+        await bare.launch_run(campaign.id, {"coder": PERSONA_REF})
+    assert bare_forge.run_room_requests == []
 
 
 async def test_the_members_extra_prompt_reaches_the_session_create() -> None:
@@ -287,16 +367,14 @@ async def test_the_members_extra_prompt_reaches_the_session_create() -> None:
     member["systemPromptExtra"] = "Only touch probe/."
     sessions, forge = _sessions(campaign)
 
-    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
 
     assert forge.create_requests[0].system_prompt == "Only touch probe/."
 
 
 async def test_a_member_without_an_extra_prompt_sends_none() -> None:
     campaign = _campaign()
-    sessions, forge = _sessions(campaign)
-
-    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    _, forge, _unit = await _launched(campaign)
 
     assert forge.create_requests[0].system_prompt == ""
 
@@ -315,7 +393,7 @@ async def test_a_member_given_two_extra_prompts_is_refused() -> None:
     sessions, _ = _sessions(campaign)
 
     with pytest.raises(StepSessionError, match="different systemPromptExtra"):
-        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
 
 
 async def test_a_member_given_two_models_is_refused() -> None:
@@ -331,7 +409,62 @@ async def test_a_member_given_two_models_is_refused() -> None:
     sessions, _ = _sessions(campaign)
 
     with pytest.raises(StepSessionError, match="different models"):
-        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
+
+
+async def test_a_member_and_the_root_are_told_the_alias_filters_and_orchestration() -> None:
+    snapshot = _campaign().workflow_snapshot
+    snapshot["graph"]["nodes"][0]["stageMembers"][0]["eventFilters"] = {"area": "backend"}
+    snapshot["orchestration"] = {"mode": "session"}
+    campaign = _campaign(workflow_snapshot=snapshot)
+
+    _, forge, _ = await _launched(campaign)
+
+    [member] = forge.create_requests
+    assert member.persona_alias == PERSONA_REF.alias
+    assert dict(member.event_filters) == {"area": "backend"}
+    assert member.orchestration == "session"
+    [root] = forge.run_room_requests
+    assert root.orchestration == "session"
+
+
+async def test_a_workflow_that_names_no_orchestration_runs_on_the_engine() -> None:
+    _, forge, _ = await _launched(_campaign())
+
+    [member] = forge.create_requests
+    assert member.orchestration == "engine"
+    assert dict(member.event_filters) == {}
+    assert forge.run_room_requests[0].orchestration == "engine"
+
+
+async def test_a_workflow_with_an_unknown_orchestration_creates_nothing() -> None:
+    snapshot = _campaign().workflow_snapshot
+    snapshot["orchestration"] = {"mode": "mystery"}
+    campaign = _campaign(workflow_snapshot=snapshot)
+    sessions, forge = _sessions(campaign)
+
+    with pytest.raises(StepSessionError, match="orchestration"):
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
+
+    assert forge.run_room_requests == []
+    assert forge.create_requests == []
+
+
+async def test_a_member_given_two_sets_of_event_filters_is_refused() -> None:
+    snapshot = _campaign().workflow_snapshot
+    snapshot["graph"]["nodes"][0]["stageMembers"][0]["eventFilters"] = {"area": "backend"}
+    snapshot["graph"]["nodes"].append(
+        {
+            "id": "polish",
+            "kind": "stage",
+            "stageMembers": [{"personaId": "coder", "eventFilters": {"area": "frontend"}}],
+        }
+    )
+    campaign = _campaign(workflow_snapshot=snapshot)
+    sessions, _ = _sessions(campaign)
+
+    with pytest.raises(StepSessionError, match="different eventFilters"):
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
 
 
 async def test_a_connection_that_no_longer_resolves_is_an_error() -> None:
@@ -339,14 +472,14 @@ async def test_a_connection_that_no_longer_resolves_is_an_error() -> None:
     sessions, _ = _sessions(campaign)
 
     with pytest.raises(StepSessionError, match="no longer resolves"):
-        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
 
 
 async def test_a_run_without_a_connection_uses_its_owners_primary_forge() -> None:
     campaign = _campaign(connection_id=None)
     sessions, forge = _sessions(campaign)
 
-    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
 
     assert len(forge.create_requests) == 1
 
@@ -357,88 +490,122 @@ async def test_a_run_with_no_campaign_is_an_error() -> None:
     )
 
     with pytest.raises(StepSessionError, match="has no campaign"):
-        await sessions.ensure_session(uuid4(), "coder", PERSONA_REF)
+        await sessions.launch_run(uuid4(), {"coder": PERSONA_REF})
 
 
-async def test_delivery_posts_the_contract_body_with_rendered_instructions() -> None:
-    campaign = _campaign(id=UUID(contract.RUN_ID))
-    sessions, forge = _sessions(campaign)
-
-    await sessions.deliver(_activation())
-
-    [(session_id, body)] = forge.deliveries
-    assert session_id == "ses-1"
-    assert set(body) == contract.ACTIVATION_KEYS
-    instructions = body.pop("instructions")
-    expected = dict(contract.ACTIVATION_BODY)
-    expected.pop("instructions")
-    assert body == expected
-    assert "workflow_step_close" in instructions
-    assert "add an endpoint" in instructions
+# -- A member's session after launch -------------------------------------------------------
 
 
-@pytest.mark.parametrize("status", [502, 503, 504])
-async def test_a_session_whose_endpoint_does_not_answer_yet_is_not_ready(status: int) -> None:
-    campaign = _campaign(id=UUID(contract.RUN_ID))
-    sessions, forge = _sessions(campaign)
-    request = httpx.Request("POST", "http://forge/x")
-    forge.fail_deliver = httpx.HTTPStatusError(
-        "Service endpoint is not reachable", request=request, response=httpx.Response(status)
-    )
+async def test_a_launched_members_session_is_found_again() -> None:
+    campaign = _campaign()
+    sessions, forge, unit = await _launched(campaign)
 
-    with pytest.raises(SessionNotReadyError, match="not reachable"):
-        await sessions.deliver(_activation())
+    assert await sessions.ensure_session(campaign.id, "coder", PERSONA_REF) == unit.members["coder"]
+    assert len(forge.create_requests) == 1
 
 
-async def test_a_session_forge_cannot_connect_to_is_not_ready() -> None:
-    campaign = _campaign(id=UUID(contract.RUN_ID))
-    sessions, forge = _sessions(campaign)
-    forge.fail_deliver = httpx.ConnectError("connection refused")
-
-    with pytest.raises(SessionNotReadyError, match="ConnectError"):
-        await sessions.deliver(_activation())
-
-
-async def test_a_delivery_forge_refuses_is_raised() -> None:
-    campaign = _campaign(id=UUID(contract.RUN_ID))
-    sessions, forge = _sessions(campaign)
-    forge.fail_deliver = RuntimeError("409: another step is open")
-
-    with pytest.raises(RuntimeError, match="another step is open"):
-        await sessions.deliver(_activation())
-
-
-def test_an_activation_without_a_schema_or_deadline_sends_nulls() -> None:
-    body = activation_body(_activation(outcome_schema=None, deadline_at=None))
-
-    assert body["outcome_schema"] is None
-    assert body["deadline_at"] is None
-
-
-async def test_stopping_a_run_stops_every_session_it_owns_and_no_other() -> None:
+async def test_a_run_that_was_not_launched_has_no_member_sessions_to_find() -> None:
     campaign = _campaign()
     sessions, forge = _sessions(campaign)
-    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+
+    with pytest.raises(StepSessionError, match="has no unit on Forge: launch the run"):
+        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+
+    assert forge.create_requests == []
+
+
+async def test_a_member_the_unit_was_not_launched_with_is_not_created_later() -> None:
+    campaign = _two_members()
+    sessions, forge, _unit = await _launched(campaign, _in_project())
+
+    with pytest.raises(StepSessionError, match="members are fixed when its unit starts"):
+        await sessions.ensure_session(campaign.id, "reviewer", REVIEWER_REF)
+
+    assert [r.member for r in forge.create_requests] == ["coder"]
+
+
+async def test_a_stopped_member_is_started_again_not_replaced() -> None:
+    campaign = _campaign()
+    sessions, forge, unit = await _launched(campaign)
+    member = unit.members["coder"]
+    forge.set_status(member, "stopped")
+
+    assert await sessions.ensure_session(campaign.id, "coder", PERSONA_REF) == member
+    assert forge.started[-1] == member
+    assert forge.launches[member] == 2
+
+
+async def test_a_failed_member_stops_the_run_instead_of_being_restarted() -> None:
+    campaign = _campaign()
+    sessions, forge, unit = await _launched(campaign)
+    forge.set_status(unit.members["coder"], "failed")
+
+    with pytest.raises(StepSessionError, match="has failed"):
+        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+
+
+async def test_a_member_session_with_another_tag_is_refused() -> None:
+    campaign = _campaign()
+    sessions, forge, unit = await _launched(campaign)
+    forge.sessions[unit.members["coder"]] = replace(
+        forge.sessions[unit.members["coder"]], tracker_issue_id="workflow:someone-else"
+    )
+
+    with pytest.raises(StepSessionError, match="not run add-endpoint-abc123's session"):
+        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+
+
+async def test_stopping_a_run_stops_its_members_first_then_its_root_and_no_other_session() -> None:
+    campaign = _two_members()
+    sessions, forge = _sessions(campaign, _in_project())
+    unit = await sessions.launch_run(campaign.id, {"coder": PERSONA_REF, "reviewer": REVIEWER_REF})
     other = forge.add_session("someone-elses", "workflow:other-run")
-    reviewer = forge.add_session("wf-add-endpoint-abc123-reviewer", step_session_tag(campaign.slug))
+    forge.lifecycle.clear()
 
     await sessions.stop_run_sessions(campaign.id)
 
-    assert sorted(forge.stopped) == ["ses-1", reviewer]
+    assert forge.lifecycle == [
+        *[("stop", member) for member in unit.members.values()],
+        ("stop", unit.root_id),
+    ]
     assert other not in forge.stopped
 
 
-async def test_a_session_that_cannot_be_stopped_is_reported_after_the_rest_were() -> None:
+async def test_stopping_a_run_skips_sessions_that_never_started_or_already_stopped() -> None:
     campaign = _campaign()
     sessions, forge = _sessions(campaign)
-    first = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
-    second = forge.add_session("wf-add-endpoint-abc123-reviewer", step_session_tag(campaign.slug))
-    forge.fail_stop.add(first)
+    # A launch that died before it started the unit: the root and a member are only held.
+    root = await forge.create_run_room(
+        RunRoomRequest(
+            name="wf-add-endpoint-abc123",
+            model="m",
+            tracker_issue_id=step_session_tag(campaign.slug),
+            run_id=str(campaign.id),
+            orchestration="engine",
+            hosts_members=True,
+        )
+    )
+    forge.add_session(
+        "wf-add-endpoint-abc123-coder", step_session_tag(campaign.slug), status="stopped"
+    )
+    assert forge.sessions[root.id].status == "created"
+
+    await sessions.stop_run_sessions(campaign.id)
+
+    assert forge.stopped == []
+
+
+async def test_a_session_that_cannot_be_stopped_is_reported_after_the_rest_were() -> None:
+    campaign = _two_members()
+    sessions, forge = _sessions(campaign, _in_project())
+    unit = await sessions.launch_run(campaign.id, {"coder": PERSONA_REF, "reviewer": REVIEWER_REF})
+    coder, reviewer = unit.members["coder"], unit.members["reviewer"]
+    forge.fail_stop.add(coder)
 
     with pytest.raises(StepSessionError, match="could not be stopped"):
         await sessions.stop_run_sessions(campaign.id)
 
-    assert forge.stopped == [second]
+    assert forge.stopped == [reviewer, unit.root_id]
 
 
 def test_session_names_are_forge_labels_within_the_limit() -> None:
@@ -463,37 +630,13 @@ def test_session_names_are_forge_labels_within_the_limit() -> None:
 @pytest.mark.parametrize(
     ("status", "liveness"),
     [
-        ("running", SessionLiveness.RUNNING),
-        ("starting", SessionLiveness.STARTING),
-        ("provisioning", SessionLiveness.STARTING),
-        ("stopped", SessionLiveness.STOPPED),
-        ("stopping", SessionLiveness.STOPPED),
-        ("archived", SessionLiveness.STOPPED),
-        ("failed", SessionLiveness.FAILED),
-    ],
-)
-async def test_a_session_is_observed_by_the_status_forge_reports(
-    status: str, liveness: SessionLiveness
-) -> None:
-    campaign = _campaign()
-    forge = FakeForge()
-    session_id = forge.add_session("wf-add-endpoint-abc123-coder", "workflow:x", status=status)
-    sessions, _ = _sessions(campaign, forge)
-
-    observed = await sessions.observe(campaign.id, session_id, uuid4())
-
-    assert observed.liveness is liveness
-    assert observed.reported is None
-
-
-@pytest.mark.parametrize(
-    ("status", "liveness"),
-    [
         ("created", SessionLiveness.STARTING),
         ("starting", SessionLiveness.STARTING),
         ("provisioning", SessionLiveness.STARTING),
         ("running", SessionLiveness.RUNNING),
         ("stopped", SessionLiveness.STOPPED),
+        ("stopping", SessionLiveness.STOPPED),
+        ("archived", SessionLiveness.STOPPED),
         ("failed", SessionLiveness.FAILED),
     ],
 )
@@ -506,7 +649,7 @@ async def test_liveness_is_the_status_forge_reports_and_asks_nothing_of_the_sess
     sessions, _ = _sessions(campaign, forge)
 
     assert await sessions.session_liveness(campaign.id, session_id) is liveness
-    assert forge.deliveries == []
+    assert forge.room_offers == [] and forge.log_reads == []
 
 
 async def test_liveness_of_a_session_forge_no_longer_has_is_gone() -> None:
@@ -516,133 +659,164 @@ async def test_liveness_of_a_session_forge_no_longer_has_is_gone() -> None:
     assert await sessions.session_liveness(campaign.id, "ses-404") is SessionLiveness.GONE
 
 
-async def test_a_session_forge_no_longer_has_is_gone() -> None:
+# --- restarting a member in place ---------------------------------------------------
+
+
+async def test_replacing_a_running_member_restarts_it_in_place_under_a_new_launch() -> None:
+    campaign = _two_members()
+    sessions, forge = _sessions(campaign, _in_project())
+    unit = await sessions.launch_run(campaign.id, {"coder": PERSONA_REF, "reviewer": REVIEWER_REF})
+    coder, reviewer = unit.members["coder"], unit.members["reviewer"]
+    forge.set_status(coder, "running")
+    forge.set_status(reviewer, "running")
+    forge.lifecycle.clear()
+    creates = len(forge.create_requests)
+
+    again = await sessions.replace_session(campaign.id, "coder", PERSONA_REF, coder)
+
+    # The same session: nothing was created, only the member stopped and started again.
+    assert again == coder
+    assert len(forge.create_requests) == creates
+    assert forge.lifecycle == [("stop", coder), ("start", coder)]
+    assert forge.launches[coder] == 2
+    assert forge.launches[reviewer] == 1
+    assert forge.sessions[coder].status == "starting"
+    assert forge.sessions[reviewer].status == "running"
+    assert forge.sessions[unit.root_id].status == "starting"
+    # And it is still the member's session afterwards.
+    assert await sessions.ensure_session(campaign.id, "coder", PERSONA_REF) == coder
+
+
+async def test_a_member_can_be_restarted_in_place_again_and_again() -> None:
     campaign = _campaign()
-    sessions, _ = _sessions(campaign)
+    sessions, forge, unit = await _launched(campaign)
+    member = unit.members["coder"]
 
-    observed = await sessions.observe(campaign.id, "ses-404", uuid4())
+    for _ in range(3):
+        forge.set_status(member, "running")
+        assert await sessions.replace_session(campaign.id, "coder", PERSONA_REF, member) == member
 
-    assert observed.liveness is SessionLiveness.GONE
-
-
-async def test_a_running_session_reports_what_it_holds_of_the_step() -> None:
-    campaign = _campaign()
-    forge = FakeForge()
-    session_id = forge.add_session("wf-add-endpoint-abc123-coder", "workflow:x")
-    activation_id = uuid4()
-    held = {"state": "closed", "attempt": 1, "ending": {"kind": "done"}}
-    forge.step_states[(session_id, str(activation_id))] = held
-    sessions, _ = _sessions(campaign, forge)
-
-    known = await sessions.observe(campaign.id, session_id, activation_id)
-    unknown = await sessions.observe(campaign.id, session_id, uuid4())
-
-    assert known.reported == held
-    assert unknown.liveness is SessionLiveness.RUNNING and unknown.reported is None
-
-
-# --- replacing a member's session ----------------------------------------------------
-
-
-def test_a_replacement_name_is_unique_and_fits_forge_limit_however_long_the_slug() -> None:
-    run_id = uuid4()
-    slug = "a-very-long-run-slug-" * 4
-
-    names = {
-        step_session_name(slug, "developer-coder", run_id, epoch=epoch) for epoch in range(1, 12)
-    }
-
-    assert len(names) == 11
-    assert all(len(name) <= FORGE_SESSION_NAME_MAX for name in names)
-    assert step_session_name("add-endpoint-abc123", "coder", run_id, epoch=2) == (
-        "wf-add-endpoint-abc123-coder-r2"
-    )
-    assert step_session_name("add-endpoint-abc123", "coder", run_id) == (
-        "wf-add-endpoint-abc123-coder"
-    )
-
-
-async def test_a_replacement_session_stops_the_old_one_and_becomes_the_members_session() -> None:
-    campaign = _campaign()
-    sessions, forge = _sessions(campaign)
-    old = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
-    forge.set_status(old, "running")
-
-    new = await sessions.replace_session(campaign.id, "coder", PERSONA_REF, old)
-
-    assert new != old
-    assert forge.stopped == [old]
-    assert [r.name for r in forge.create_requests] == [
-        "wf-add-endpoint-abc123-coder",
-        "wf-add-endpoint-abc123-coder-r2",
-    ]
-    assert forge.create_requests[1].persona_definition == PERSONA_DOCUMENT
-    assert forge.create_requests[1].tracker_issue_id == "workflow:add-endpoint-abc123"
-    forge.set_status(new, "running")
-    assert await sessions.ensure_session(campaign.id, "coder", PERSONA_REF) == new
-    # And again: the chain of replacements continues from the highest epoch.
-    third = await sessions.replace_session(campaign.id, "coder", PERSONA_REF, new)
-    assert forge.create_requests[2].name.endswith("-coder-r3")
-    forge.set_status(third, "running")
-    assert await sessions.ensure_session(campaign.id, "coder", PERSONA_REF) == third
-
-
-async def test_replacing_a_session_that_is_already_down_stops_nothing() -> None:
-    campaign = _campaign()
-    sessions, forge = _sessions(campaign)
-    old = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
-    forge.set_status(old, "failed")
-
-    new = await sessions.replace_session(campaign.id, "coder", PERSONA_REF, old)
-
-    assert new != old and forge.stopped == []
-
-
-async def test_asking_to_replace_a_session_that_was_replaced_returns_the_replacement() -> None:
-    campaign = _campaign()
-    sessions, forge = _sessions(campaign)
-    old = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
-    forge.set_status(old, "running")
-    new = await sessions.replace_session(campaign.id, "coder", PERSONA_REF, old)
-    forge.set_status(new, "running")
-
-    again = await sessions.replace_session(campaign.id, "coder", PERSONA_REF, old)
-
-    assert again == new
-    assert len(forge.create_requests) == 2
-
-
-async def test_a_session_that_cannot_be_stopped_is_not_replaced() -> None:
-    campaign = _campaign()
-    sessions, forge = _sessions(campaign)
-    old = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
-    forge.set_status(old, "running")
-    forge.fail_stop.add(old)
-
-    with pytest.raises(StepSessionError, match="could not be stopped"):
-        await sessions.replace_session(campaign.id, "coder", PERSONA_REF, old)
-
+    assert forge.launches[member] == 4
     assert len(forge.create_requests) == 1
 
 
-async def test_a_member_with_no_session_gets_its_first_one_when_asked_to_replace() -> None:
+async def test_restarting_a_member_that_is_already_down_only_starts_it() -> None:
+    campaign = _campaign()
+    sessions, forge, unit = await _launched(campaign)
+    member = unit.members["coder"]
+    forge.set_status(member, "failed")
+    forge.lifecycle.clear()
+
+    assert await sessions.replace_session(campaign.id, "coder", PERSONA_REF, member) == member
+
+    assert forge.lifecycle == [("start", member)]
+
+
+async def test_restarting_with_no_session_named_restarts_the_members_session() -> None:
+    campaign = _campaign()
+    sessions, forge, unit = await _launched(campaign)
+    forge.set_status(unit.members["coder"], "running")
+
+    assert (
+        await sessions.replace_session(campaign.id, "coder", PERSONA_REF, None)
+        == (unit.members["coder"])
+    )
+
+
+async def test_a_session_that_is_not_the_members_is_not_restarted() -> None:
+    campaign = _campaign()
+    sessions, forge, unit = await _launched(campaign)
+    forge.set_status(unit.members["coder"], "running")
+    forge.lifecycle.clear()
+
+    with pytest.raises(StepSessionError, match="the member's session in the unit is"):
+        await sessions.replace_session(campaign.id, "coder", PERSONA_REF, "ses-elsewhere")
+
+    assert forge.lifecycle == []
+
+
+async def test_a_member_that_cannot_be_stopped_is_not_restarted() -> None:
+    campaign = _campaign()
+    sessions, forge, unit = await _launched(campaign)
+    member = unit.members["coder"]
+    forge.set_status(member, "running")
+    forge.fail_stop.add(member)
+    forge.lifecycle.clear()
+
+    with pytest.raises(StepSessionError, match="could not be stopped"):
+        await sessions.replace_session(campaign.id, "coder", PERSONA_REF, member)
+
+    assert forge.lifecycle == []
+    assert forge.launches[member] == 1
+
+
+async def test_a_restart_forge_refuses_is_an_error_naming_the_member() -> None:
+    campaign = _campaign()
+    sessions, forge, unit = await _launched(campaign)
+    member = unit.members["coder"]
+    forge.set_status(member, "running")
+    forge.set_status(unit.root_id, "stopped")  # the unit is down: a member cannot start alone
+
+    with pytest.raises(StepSessionError, match="could not be restarted in place"):
+        await sessions.replace_session(campaign.id, "coder", PERSONA_REF, member)
+
+
+async def test_a_run_with_no_unit_or_no_such_member_has_nothing_to_restart() -> None:
+    campaign = _campaign()
+    sessions, forge = _sessions(campaign)
+    with pytest.raises(StepSessionError, match="has no unit on Forge"):
+        await sessions.replace_session(campaign.id, "coder", PERSONA_REF, None)
+
+    await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
+    with pytest.raises(StepSessionError, match="no session for member 'reviewer'"):
+        await sessions.replace_session(campaign.id, "reviewer", REVIEWER_REF, None)
+    assert len(forge.create_requests) == 1
+
+
+# --- handing an offer to the root ----------------------------------------------------
+
+OFFER = {
+    "kind": "step.offered",
+    "offer_id": "offer-1",
+    "run_id": "run-1",
+    "node_id": "implement",
+    "topic": "code.requested",
+}
+
+
+async def test_an_offer_is_handed_to_the_runs_root_verbatim() -> None:
+    campaign = _two_members()
+    sessions, forge = _sessions(campaign, _in_project())
+    unit = await sessions.launch_run(campaign.id, {"coder": PERSONA_REF, "reviewer": REVIEWER_REF})
+
+    await sessions.publish_offer(campaign.id, OFFER)
+    await sessions.publish_offer(campaign.id, OFFER)
+
+    # One call per offer, to the root and not to a member; re-handing the same offer is the
+    # same event, so the repeat is safe.
+    assert forge.room_offers == [(unit.root_id, OFFER), (unit.root_id, OFFER)]
+    assert unit.root_id not in unit.members.values()
+
+
+async def test_an_offer_for_a_run_that_was_not_launched_is_refused() -> None:
     campaign = _campaign()
     sessions, forge = _sessions(campaign)
 
-    new = await sessions.replace_session(campaign.id, "coder", PERSONA_REF, None)
+    with pytest.raises(StepSessionError, match="no root session to publish an offer on"):
+        await sessions.publish_offer(campaign.id, OFFER)
 
-    assert forge.create_requests[0].name == "wf-add-endpoint-abc123-coder"
-    assert new == "ses-1"
+    assert forge.room_offers == []
 
 
-async def test_a_replacement_over_a_foreign_session_is_refused() -> None:
+async def test_forge_refusing_an_offer_is_raised_not_swallowed() -> None:
     campaign = _campaign()
-    forge = FakeForge()
-    forge.add_session("wf-add-endpoint-abc123-coder", "workflow:someone-else")
-    sessions, _ = _sessions(campaign, forge)
+    sessions, forge, _unit = await _launched(campaign)
+    forge.fail_offer = RuntimeError("502: the root's broker is not up")
 
-    with pytest.raises(StepSessionError, match="not run add-endpoint-abc123's session"):
-        await sessions.replace_session(campaign.id, "coder", PERSONA_REF, "ses-1")
+    with pytest.raises(RuntimeError, match="the root's broker is not up"):
+        await sessions.publish_offer(campaign.id, OFFER)
+
+    assert forge.room_offers == []
 
 
 # -- A run as one thread: its sessions join the run's project -------------------------
@@ -682,13 +856,13 @@ def _in_project(forge: FakeForge | None = None) -> FakeForge:
     return forge
 
 
-async def test_a_run_launched_into_a_project_puts_each_member_in_it() -> None:
+async def test_a_run_launched_into_a_project_puts_the_root_and_each_member_in_it() -> None:
     campaign = _with(_campaign(), forge_project_id=PROJECT_ID)
     sessions, forge = _sessions(campaign, _in_project())
 
-    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    unit = await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
 
-    # The run's room comes first: a session of its own, the coordinator of the run.
+    # The root comes first: the run's room, the coordinator of the run, held as the unit root.
     [room] = forge.run_room_requests
     assert room.name == "wf-add-endpoint-abc123"
     assert room.tracker_issue_id == "workflow:add-endpoint-abc123"
@@ -699,6 +873,7 @@ async def test_a_run_launched_into_a_project_puts_each_member_in_it() -> None:
         labels=("workflow-run:add-endpoint-abc123",),
     )
     [request] = forge.create_requests
+    assert request.hosted_by == unit.root_id == "room-1"
     assert request.membership == SessionMembership(
         project_id=PROJECT_ID,
         role="coder",
@@ -716,47 +891,47 @@ async def test_a_tickets_run_joins_the_tickets_project_creating_it_under_its_id(
     campaign = _with(_campaign(), ticket={"sagaId": str(saga.id), "issueId": "issue-1"})
     sessions, forge = _sessions(campaign, sagas=FakeSagas(saga))
 
-    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
 
     [request] = forge.create_requests
     assert request.membership is not None
     assert request.membership.project_id == str(saga.forge_project_id)
+    assert forge.run_room_requests[0].membership.project_id == str(saga.forge_project_id)
     assert forge.projects[str(saga.forge_project_id)].name == "Billing"
 
 
-async def test_a_run_in_no_project_creates_its_sessions_as_before() -> None:
+async def test_a_run_in_no_project_still_has_its_root_and_hosted_members() -> None:
     campaign = _with(_campaign())
     sessions, forge = _sessions(campaign)
 
-    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    unit = await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
 
+    [room] = forge.run_room_requests
+    assert room.membership is None and room.hosts_members is True
     [request] = forge.create_requests
     assert request.membership is None
+    assert request.hosted_by == unit.root_id
+    assert forge.lifecycle == [("start", unit.root_id)]
 
 
-async def test_a_ticket_whose_project_is_gone_stops_the_session_create() -> None:
+async def test_a_ticket_whose_project_is_gone_stops_the_launch_before_anything_is_created() -> None:
     campaign = _with(_campaign(), ticket={"sagaId": str(uuid4()), "issueId": "issue-1"})
     sessions, forge = _sessions(campaign)
 
     with pytest.raises(RunProjectError, match="no longer has"):
-        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
+    assert forge.run_room_requests == []
     assert forge.create_requests == []
 
 
-def test_an_objective_past_forges_limit_is_cut_and_counted(monkeypatch) -> None:
-    hits: list[dict] = []
-    monkeypatch.setattr(
-        "ting.domain.services.run_thread.record_truncation",
-        lambda knob, **kwargs: hits.append({"knob": knob, **kwargs}),
-    )
-    campaign = _with(_campaign(), prompt="x" * (FORGE_OBJECTIVE_MAX + 50))
+async def test_a_project_its_forge_lacks_stops_the_launch_before_anything_is_created() -> None:
+    campaign = _with(_campaign(), forge_project_id=PROJECT_ID)
+    sessions, forge = _sessions(campaign)
 
-    objective = run_objective(campaign)
-
-    assert len(objective) == FORGE_OBJECTIVE_MAX
-    assert objective.endswith("…")
-    [hit] = hits
-    assert hit["kept"] == FORGE_OBJECTIVE_MAX
+    with pytest.raises(StepSessionError, match="does not have"):
+        await sessions.launch_run(campaign.id, {"coder": PERSONA_REF})
+    assert forge.run_room_requests == []
+    assert forge.create_requests == []
 
 
 def _two_members() -> WorkflowCampaign:
@@ -786,77 +961,37 @@ REVIEWER_REF = PersonaRef(
 )
 
 
-async def test_every_member_nests_under_the_runs_one_room() -> None:
+async def test_every_member_nests_under_the_runs_one_root() -> None:
     campaign = _two_members()
     sessions, forge = _sessions(campaign, _in_project())
 
-    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
-    await sessions.ensure_session(campaign.id, "reviewer", REVIEWER_REF)
+    unit = await sessions.launch_run(campaign.id, {"coder": PERSONA_REF, "reviewer": REVIEWER_REF})
 
     assert len(forge.run_room_requests) == 1
     coder, reviewer = forge.create_requests
-    assert coder.membership.parent_session_id == "room-1"
+    assert coder.membership.parent_session_id == unit.root_id
     assert (reviewer.membership.parent_instance_id, reviewer.membership.parent_session_id) == (
         "forge-a",
-        "room-1",
+        unit.root_id,
     )
     assert reviewer.membership.role == "reviewer"
+    assert (reviewer.model, reviewer.hosted_by) == ("gpt-5.6-terra", unit.root_id)
 
 
-async def test_members_that_start_together_still_make_one_room() -> None:
-    campaign = _two_members()
-    sessions, forge = _sessions(campaign, _in_project())
-    listed = forge.list_sessions
-
-    async def list_slowly(*args, **kwargs):
-        # Forge answers over the network: the list is taken, then the answer travels while
-        # the other member's create runs.
-        answer = await listed(*args, **kwargs)
-        await asyncio.sleep(0)
-        return answer
-
-    forge.list_sessions = list_slowly  # type: ignore[method-assign]
-
-    await asyncio.gather(
-        sessions.ensure_session(campaign.id, "coder", PERSONA_REF),
-        sessions.ensure_session(campaign.id, "reviewer", REVIEWER_REF),
+def test_an_objective_past_forges_limit_is_cut_and_counted(monkeypatch) -> None:
+    hits: list[dict] = []
+    monkeypatch.setattr(
+        "ting.domain.services.run_thread.record_truncation",
+        lambda knob, **kwargs: hits.append({"knob": knob, **kwargs}),
     )
+    campaign = _with(_campaign(), prompt="x" * (FORGE_OBJECTIVE_MAX + 50))
 
-    assert len(forge.run_room_requests) == 1
-    assert {r.membership.parent_session_id for r in forge.create_requests} == {"room-1"}
+    objective = run_objective(campaign)
 
-
-async def test_a_replaced_member_stays_in_the_runs_room() -> None:
-    campaign = _two_members()
-    sessions, forge = _sessions(campaign, _in_project())
-    coder = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
-    forge.sessions[coder] = replace(forge.sessions[coder], status="failed")
-
-    await sessions.replace_session(campaign.id, "coder", PERSONA_REF, coder)
-
-    assert len(forge.run_room_requests) == 1
-    assert forge.create_requests[-1].membership.parent_session_id == "room-1"
-
-
-async def test_a_session_with_the_rooms_name_but_another_tag_is_refused() -> None:
-    campaign = _with(_campaign(), forge_project_id=PROJECT_ID)
-    forge = _in_project()
-    forge.sessions["other"] = VolundrSession(
-        id="other", name="wf-add-endpoint-abc123", status="running", tracker_issue_id="NIU-1"
-    )
-    sessions, _ = _sessions(campaign, forge)
-
-    with pytest.raises(StepSessionError, match="not run add-endpoint-abc123's room"):
-        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
-
-
-async def test_a_run_in_no_project_has_no_room() -> None:
-    campaign = _with(_campaign())
-    sessions, forge = _sessions(campaign)
-
-    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
-
-    assert forge.run_room_requests == []
+    assert len(objective) == FORGE_OBJECTIVE_MAX
+    assert objective.endswith("…")
+    [hit] = hits
+    assert hit["kept"] == FORGE_OBJECTIVE_MAX
 
 
 def test_a_room_name_fits_forge_limit_however_long_the_slug() -> None:
@@ -866,12 +1001,3 @@ def test_a_room_name_fits_forge_limit_however_long_the_slug() -> None:
     assert len(name) <= FORGE_SESSION_NAME_MAX
     assert name.startswith("wf-x")
     assert run_room_name("short-run", run_id) == "wf-short-run"
-
-
-async def test_a_project_its_forge_lacks_stops_the_session_create() -> None:
-    campaign = _with(_campaign(), forge_project_id=PROJECT_ID)
-    sessions, forge = _sessions(campaign)
-
-    with pytest.raises(StepSessionError, match="does not have"):
-        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
-    assert forge.create_requests == []

@@ -15,7 +15,7 @@ Environment variable override format:
 import json
 import os
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
@@ -1116,24 +1116,111 @@ class TraceContextConfig(BaseSettings):
 
 
 class WorkflowStepsConfig(BaseModel):
-    """Hosting workflow steps: this session runs the steps of a workflow run.
+    """A session's part in a workflow run's mesh: a member that takes offers, or the run's root.
 
-    Forge sets ``enabled`` for a session a workflow run created as a step host. Skuld then
-    serves ``POST /api/workflow/steps`` and ``GET /api/workflow/steps/{activation_id}``,
-    holds the open step durably in the session's event log, injects its instructions at a
-    turn boundary and lists the ``workflow_step_close`` tool for the whole session. An
-    ordinary session leaves it off and pays for none of it.
+    A run is one unit: its root (a Skuld with no agent) and every member start together and
+    share a local mesh. Forge sets this when it launches each of them.
+
+    * A **member** (``enabled``) listens for the offers of the topics its pinned persona
+      consumes, takes the ones that are its own, holds the step durably in the session's
+      event log, injects its instructions at a turn boundary, lists the
+      ``workflow_step_close`` tool for the whole session, and publishes ``step.picked_up``,
+      ``step.passed`` and ``step.outcome`` on the run's mesh.
+    * The **root** (``root``) publishes the offers Ting posts to its ``room/offer`` operation.
+
+    An ordinary session leaves both off and pays for none of it.
     """
 
     enabled: bool = Field(
         default=False,
         description=(
-            "Serve the workflow step API and the workflow_step_close tool. Requires the "
-            "durable event log and history hydration (event_log_enabled and "
-            "history_hydration_enabled, with volundr_api_url): a step is restored from the log "
-            "after a restart, so enabling without them is fatal at startup."
+            "This session is a member of a workflow run: it takes the run's offers and serves "
+            "the workflow_step_close tool. Needs the durable event log and history hydration "
+            "(event_log_enabled and history_hydration_enabled, with volundr_api_url): a held "
+            "step is restored from the log after a restart. Also needs the mesh (mesh.enabled), "
+            "a pinned persona (session.persona), run_id, member, persona_alias and "
+            "orchestrator_peer_id. Enabling without any of them is fatal at startup."
         ),
     )
+    root: bool = Field(
+        default=False,
+        description=(
+            "This session is the root of a workflow run: Ting hands it offers through "
+            "POST /api/room/offer and it publishes them on the run's mesh. Needs the mesh "
+            "(mesh.enabled) and run_id. Exclusive with enabled: a coordinator that also did "
+            "work would take its own offers."
+        ),
+    )
+    run_id: str = Field(
+        default="",
+        description=(
+            "The workflow run this session belongs to. Offers of any other run are refused."
+        ),
+    )
+    orchestration: Literal["engine", "session"] = Field(
+        default="engine",
+        description=(
+            "Who decides the run's next step. engine: Ting's engine, whose offers carry its "
+            "signature (offer_signer) on top of the root's. session: the root's coordinator "
+            "agent, whose offers carry the root's signature only."
+        ),
+    )
+    orchestrator_peer_id: str = Field(
+        default="",
+        description=(
+            "The mesh peer id of the run's root. A member takes offers published by this peer "
+            "and no other."
+        ),
+    )
+    offer_signer: str = Field(
+        default="service:ting",
+        description=(
+            "Engine mode: the platform service peer id whose signature an offer must carry "
+            "(Ting's, service:ting). Ignored in session mode."
+        ),
+    )
+    member: str = Field(
+        default="",
+        description="This member's name in the workflow stage (shown in the room and the ledger).",
+    )
+    persona_alias: str = Field(
+        default="",
+        description=(
+            "The alias the workflow gives this member's pinned persona. The offer carries one "
+            "contract per alias; the member finds its own by this and checks it against its "
+            "own persona document."
+        ),
+    )
+    event_filters: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "The member's eventFilters from the workflow: each key must equal the value found "
+            "in the offered inputs' payload (a list: contain it), else the member passes the "
+            "offer and says which filter did not match. Empty takes every offer of its topics."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _coherent(self) -> Self:
+        if self.enabled and self.root:
+            raise ValueError(
+                "workflow_steps.enabled and workflow_steps.root are exclusive: a session is a "
+                "member of the run or its root"
+            )
+        if not (self.enabled or self.root):
+            return self
+        needed = {"run_id": self.run_id}
+        if self.enabled:
+            needed |= {
+                "member": self.member,
+                "persona_alias": self.persona_alias,
+                "orchestrator_peer_id": self.orchestrator_peer_id,
+            }
+        missing = [f"workflow_steps.{name}" for name, value in needed.items() if not value.strip()]
+        if missing:
+            role = "enabled" if self.enabled else "root"
+            raise ValueError(f"workflow_steps.{role} needs {', '.join(missing)}")
+        return self
 
 
 class PeerInboxConfig(BaseModel):

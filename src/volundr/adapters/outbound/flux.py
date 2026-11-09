@@ -7,8 +7,10 @@ adapter pattern in config YAML.
 
 import copy
 import logging
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 from niuu.adapters.flux import (
     HELMRELEASE_GROUP,
@@ -19,20 +21,66 @@ from niuu.adapters.flux import (
 )
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
+from volundr.adapters.outbound.hosted_member_harness import (
+    DEFAULT_POLL_SECONDS,
+    DEFAULT_REQUEST_SECONDS,
+    DEFAULT_RESTART_WAIT_SECONDS,
+    MemberHarnessControl,
+)
 from volundr.adapters.outbound.k8s_startup_stages import pod_startup_stages
+from volundr.adapters.outbound.mesh_settings import require_unit_mesh
 from volundr.domain.models import (
+    HOSTED_MEMBERS_KEY,
     Session,
     SessionSpec,
     SessionStatus,
     _deep_merge,
 )
-from volundr.domain.ports import PodManager, PodStartResult
+from volundr.domain.ports import HostedMemberLaunch, PodManager, PodStartResult
+from volundr.domain.services.forge_session_launch import launch_id_of
 from volundr.domain.session_startup import StartupStage
 
 logger = logging.getLogger(__name__)
 
 #: Prefix of the constructor kwargs of the Flux resident controller, which was removed.
 _REMOVED_RESIDENT_KWARG_PREFIX = "resident_"
+
+#: Reasons a container waits that no amount of waiting will end.
+_FAILED_WAITING_REASONS = frozenset(
+    {"CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError"}
+)
+
+#: The skuld chart's name for the container of member ``index`` (``skuld.memberContainerName``).
+_MEMBER_CONTAINER = "member-{index}"
+
+#: Values that belong to the pod, which the root's release alone decides. A member renders as a
+#: container of that pod, so a member launched with a different one cannot be honoured, and the
+#: unit refuses it rather than running the member somewhere it did not ask for.
+_POD_LEVEL_VALUES: tuple[str, ...] = (
+    "nodeSelector",
+    "tolerations",
+    "affinity",
+    "runtimeClassName",
+    "serviceAccountName",
+    "securityContext",
+    "imagePullSecrets",
+    "homeVolume.enabled",
+    "homeVolume.existingClaim",
+    "homeVolume.mountPath",
+    "homeVolume.persistentTmp",
+    "homeVolume.credentialFiles.secretName",
+    "homeVolume.credentialFiles.secretMountPath",
+    "homeVolume.credentialFiles.destDir",
+    "persistence.enabled",
+    "persistence.emptyDir",
+    "persistence.existingClaim",
+    "persistence.mountPath",
+    "secretManifest",
+)
+
+#: What a member's launch may not ask the pod for beyond its own container: containers, init
+#: containers and a service account of its own.
+_MEMBER_POD_ADDITIONS: tuple[str, ...] = ("init_containers", "extra_containers", "service_account")
 
 
 class FluxPodManager(
@@ -74,10 +122,18 @@ class FluxPodManager(
         codex_auth_adapter: str = "skuld.codex_auth.VolundrCodexAuthProvider",
         codex_auth_kwargs: dict | None = None,
         session_service_port: int = 8080,
+        unit_mesh_dir: str = "/tmp/niuu-mesh",
+        hosted_member_restart_wait_seconds: float = DEFAULT_RESTART_WAIT_SECONDS,
+        hosted_member_poll_seconds: float = DEFAULT_POLL_SECONDS,
+        hosted_member_request_seconds: float = DEFAULT_REQUEST_SECONDS,
         **_extra: object,
     ):
         """``session_service_port`` is the skuld chart's ``service.port``: the
-        session Service's single entry point (Envoy when enabled)."""
+        session Service's single entry point (Envoy when enabled).
+
+        ``unit_mesh_dir`` is where the Skulds of a unit (a workflow run's pod) share their
+        local mesh: one ``emptyDir`` mounted there in every container, holding the registry
+        file they discover each other through."""
         removed = sorted(key for key in _extra if key.startswith(_REMOVED_RESIDENT_KWARG_PREFIX))
         if removed:
             raise ValueError(
@@ -87,6 +143,16 @@ class FluxPodManager(
             )
         self._namespace = namespace
         self._session_service_port = session_service_port
+        if not unit_mesh_dir.startswith("/"):
+            raise ValueError(
+                f"FluxPodManager: unit_mesh_dir must be an absolute path: {unit_mesh_dir!r}"
+            )
+        self._unit_mesh_dir = unit_mesh_dir.rstrip("/")
+        self._harness = MemberHarnessControl(
+            restart_wait_seconds=hosted_member_restart_wait_seconds,
+            poll_seconds=hosted_member_poll_seconds,
+            request_seconds=hosted_member_request_seconds,
+        )
         self._chart_name = chart_name
         self._chart_version = chart_version
         self._source_ref_kind = source_ref_kind
@@ -123,7 +189,8 @@ class FluxPodManager(
         return client.CoreV1Api(self._api_client)
 
     def _release_name(self, session: Session) -> str:
-        return f"skuld-{session.id}"
+        """The HelmRelease the session runs in: its own, or its unit root's for a member."""
+        return f"skuld-{session.hosted_by or session.id}"
 
     def _session_host(self, session_name: str) -> str:
         return f"{session_name}.{self._base_domain}"
@@ -149,11 +216,45 @@ class FluxPodManager(
         session: Session,
         spec: SessionSpec,
     ) -> PodStartResult:
-        """Create a HelmRelease CR for the session."""
+        """Create a HelmRelease CR for the session.
+
+        A unit root (a workflow run) is one release for the whole run: the root's own Skuld
+        plus a container per member, all started with the pod.
+        """
+        if session.hosted_by is not None:
+            raise ValueError(
+                f"Session {session.id} is a member of unit {session.hosted_by}: it runs in "
+                "that unit's pod and starts with it (start the unit's root session)"
+            )
+        members = await self.hosted_member_launches(session)
+        self._require_members(session, members)
         spec = self._with_brokered_credentials(spec)
         release_name = self._release_name(session)
 
-        # Merge session defaults with spec values from contributors
+        values = self._release_values(spec)
+        if members:
+            self._add_unit(session, values, members)
+
+        _inject_workload_exchange_env(values)
+        _inject_codex_auth_env(values)
+
+        await self._apply_helmrelease(release_name, values)
+
+        logger.info(
+            "Created HelmRelease %s in namespace %s%s",
+            release_name,
+            self._namespace,
+            f" hosting {len(members)} member session(s)" if members else "",
+        )
+
+        return PodStartResult(
+            chat_endpoint=self._chat_endpoint(session.name, str(session.id)),
+            code_endpoint=self._code_endpoint(session.name, str(session.id)),
+            pod_name=release_name,
+        )
+
+    def _release_values(self, spec: SessionSpec) -> dict:
+        """The chart values one session's launch asks for: the defaults under its spec."""
         values = copy.deepcopy(self._session_defaults)
         _deep_merge(values, spec.values)
 
@@ -200,33 +301,172 @@ class FluxPodManager(
                 values["podLabels"] = dict(spec.pod_spec.labels)
             if spec.pod_spec.annotations:
                 values["podAnnotations"] = dict(spec.pod_spec.annotations)
+        return values
 
+    # -- units: one pod for a whole workflow run -----------------------------------------
+
+    @staticmethod
+    def _require_members(root: Session, members: Sequence[HostedMemberLaunch]) -> None:
+        """The members Forge launched are exactly the ones it recorded as the unit's.
+
+        A unit root whose recorded members did not arrive would start as a pod with only the
+        root's Skuld, and the run's members would never come up: refused instead.
+        """
+        recorded = _recorded_members(root)
+        if not members:
+            if recorded:
+                raise ValueError(
+                    f"Unit {root.id} was started with members {sorted(recorded)} but no "
+                    "launch for them came from the member source: "
+                    "Forge must render each member's spec before it starts the root"
+                )
+            return
+        if not root.is_unit_root:
+            raise ValueError(
+                f"Session {root.id} was launched with {len(members)} member(s) but is not a "
+                "unit root (created with hosts_members)"
+            )
+        launched = {}
+        for launch in members:
+            member = launch.session
+            if member.hosted_by != root.id:
+                raise ValueError(
+                    f"Session {member.id} is launched in unit {root.id} but is hosted by "
+                    f"{member.hosted_by}"
+                )
+            if member.hosted_port is None:
+                raise ValueError(f"Member {member.id} of unit {root.id} has no broker port")
+            if member.id in launched:
+                raise ValueError(f"Member {member.id} is launched twice in unit {root.id}")
+            launched[member.id] = member.hosted_port
+        if launched != recorded:
+            raise ValueError(
+                f"Unit {root.id} recorded members {sorted(recorded.items())} when it started "
+                f"but was launched with {sorted(launched.items())}: a run's members are fixed "
+                "when its unit starts"
+            )
+        ports = list(launched.values())
+        if len(set(ports)) != len(ports):
+            raise ValueError(f"Unit {root.id} gives two members the same broker port: {ports}")
+
+    def _add_unit(
+        self,
+        root: Session,
+        values: dict,
+        members: Sequence[HostedMemberLaunch],
+    ) -> None:
+        """Add the unit to the root's release values: a Skuld container per member.
+
+        Every Skuld of the pod (the root's and each member's) gets the same local mesh: nng
+        on loopback, discovered through one registry file in a directory the pod shares. A
+        member's complete values travel under ``members``; the chart renders its container,
+        configuration and routes from them. A member's volumes are the pod's, under names
+        only that member's mounts use, so its credential Secret is mounted into its own
+        container and no other.
+        """
+        mesh_dir = self._unit_mesh_dir
+        require_unit_mesh(
+            values.get("mesh") or {},
+            unit_id=root.id,
+            where="the release values (values.mesh, from the session defaults or the launch)",
+        )
+        _use_unit_mesh(values, mesh_dir)
+        values["unit"] = {"meshDir": mesh_dir}
+        pod_volumes = list(values.get("extraVolumes") or [])
+        entries: list[dict] = []
+        for index, launch in enumerate(members):
+            member = launch.session
+            member_values = self._member_values(root, values, index, launch)
+            pod_volumes.extend(member_values.pop("extraVolumes", []))
+            entries.append(
+                {
+                    "id": str(member.id),
+                    "port": member.hosted_port,
+                    "values": member_values,
+                }
+            )
+        if pod_volumes:
+            values["extraVolumes"] = pod_volumes
+        values["members"] = entries
+        checkout = _unit_checkout(root, values, entries)
+        if checkout:
+            values["unit"]["checkoutFrom"] = checkout
+
+    def _member_values(
+        self, root: Session, root_values: dict, index: int, launch: HostedMemberLaunch
+    ) -> dict:
+        """The values member ``index`` would have been launched with on its own."""
+        member = launch.session
+        where = f"member {member.id} of unit {root.id}"
+        additions = launch.spec.pod_spec
+        for field in _MEMBER_POD_ADDITIONS:
+            if additions is not None and getattr(additions, field):
+                raise ValueError(
+                    f"{where} asks for {field} of its own; a member is a container of its "
+                    "unit's pod and cannot add pod-level parts"
+                )
+        values = self._release_values(self._with_brokered_credentials(launch.spec))
         _inject_workload_exchange_env(values)
         _inject_codex_auth_env(values)
+        for key in _POD_LEVEL_VALUES:
+            wanted, unit = _dotted(values, key), _dotted(root_values, key)
+            if wanted != unit:
+                raise ValueError(
+                    f"{where} was launched with {key}={wanted!r} but its unit's pod has "
+                    f"{unit!r}: members share one pod, so they must agree on it"
+                )
+        for key in ("podLabels", "podAnnotations"):
+            for name, value in (values.get(key) or {}).items():
+                if (root_values.get(key) or {}).get(name) != value:
+                    raise ValueError(
+                        f"{where} asks for {key}[{name!r}]={value!r}, which its unit's pod "
+                        "does not have: members share one pod"
+                    )
+        _use_unit_mesh(values, self._unit_mesh_dir)
+        values["session"] = {**(values.get("session") or {}), "id": str(member.id)}
+        values["extraVolumes"] = _own_volumes(values, index)
+        return values
 
-        await self._apply_helmrelease(release_name, values)
+    async def stop_hosted_member(self, member: Session) -> None:
+        """End one member's harness: its container lives with the pod, its Skuld is asked."""
+        await self._harness.stop(member, await self.broker_target(member))
 
-        logger.info(
-            "Created HelmRelease %s in namespace %s",
-            release_name,
-            self._namespace,
-        )
+    async def restart_hosted_member(self, member: Session) -> None:
+        """Restart one member's harness under its new launch.
 
-        return PodStartResult(
-            chat_endpoint=self._chat_endpoint(session.name, str(session.id)),
-            code_endpoint=self._code_endpoint(session.name, str(session.id)),
-            pod_name=release_name,
+        The member's Secret is rewritten with the credential of the new launch (building the
+        launch does it), then its Skuld replaces its process once the volume carries it.
+        """
+        launch = await self.hosted_member_launch(member)
+        await self._harness.restart(
+            member,
+            await self.broker_target(member),
+            launch_id_of(launch.session.workload_config) or "",
         )
 
     async def stop(self, session: Session) -> bool:
-        """Delete the HelmRelease CR for the session."""
+        """Delete the HelmRelease CR for the session.
+
+        A member of a unit has no release or pod of its own: it is a container of its unit's
+        pod, which stops with the unit (stopping the root). Deleting the unit's release for
+        one member would end every other member too, so a member's stop removes nothing and
+        says so; Forge ends the member's own session record itself.
+        """
+        if session.hosted_by is not None:
+            return False
         release_name = self._release_name(session)
         return await self._delete_helmrelease(release_name)
 
     async def status(self, session: Session) -> SessionStatus:
-        """Read HelmRelease status conditions and map to SessionStatus."""
+        """Read HelmRelease status conditions and map to SessionStatus.
+
+        A member of a unit answers from its own container in the unit's pod, so a sweep
+        that checks every running row keeps a live member and finds a dead one.
+        """
         release_name = self._release_name(session)
         obj = await self._get_helmrelease(release_name)
+        if session.hosted_by is not None and obj is not None:
+            return await self._member_status(session, release_name, obj)
         if obj is None:
             if session.status == SessionStatus.STARTING:
                 return SessionStatus.STARTING
@@ -246,6 +486,22 @@ class FluxPodManager(
 
         return self._map_status(obj)
 
+    async def _member_status(
+        self, member: Session, release_name: str, release: dict
+    ) -> SessionStatus:
+        """A member's status from its container in the unit's pod."""
+        unit_status = self._map_status(release)
+        if unit_status != SessionStatus.RUNNING:
+            return unit_status
+        index = _member_index(release, member)
+        if index is None:
+            return SessionStatus.STOPPED
+        core = await self._get_core_api()
+        pod = await self._session_pod(core, release_name)
+        if pod is None:
+            return SessionStatus.STARTING
+        return _container_status(pod, _MEMBER_CONTAINER.format(index=index))
+
     async def status_detail(self, session: Session) -> str | None:
         """Say why a session's pods are not running, from the cluster's own record.
 
@@ -260,7 +516,9 @@ class FluxPodManager(
         conditions = (obj or {}).get("status", {}).get("conditions", [])
         ready = next((c for c in conditions if c.get("type") == "Ready"), None)
         if ready is not None and ready.get("status") == "True":
-            return None
+            if session.hosted_by is None or obj is None:
+                return None
+            return await self._member_detail(session, release_name, obj)
 
         parts: list[str] = []
         warning = await self._latest_pod_warning(release_name)
@@ -269,6 +527,24 @@ class FluxPodManager(
         if ready is not None and ready.get("message"):
             parts.append(f"HelmRelease {ready.get('reason') or 'NotReady'}: {ready['message']}")
         return "; ".join(parts) or None
+
+    async def _member_detail(self, member: Session, release_name: str, release: dict) -> str | None:
+        """Why a member's container is not running, from its state in the unit's pod."""
+        index = _member_index(release, member)
+        if index is None:
+            return f"session {member.id} is not one of the members its unit was started with"
+        core = await self._get_core_api()
+        pod = await self._session_pod(core, release_name)
+        if pod is None:
+            return None
+        container = _MEMBER_CONTAINER.format(index=index)
+        state = _container_state(pod, container)
+        if state is None or state.running is not None:
+            return None
+        detail = state.waiting or state.terminated
+        reason = getattr(detail, "reason", None) or "NotRunning"
+        message = getattr(detail, "message", None) or ""
+        return f"container {container} of {pod.metadata.name}: {reason} {message}".strip()
 
     @property
     def reports_startup_stages(self) -> bool:
@@ -433,11 +709,160 @@ class FluxPodManager(
         if session.status is not SessionStatus.RUNNING:
             return None
         host = f"{self._release_name(session)}.{self._namespace}.svc.cluster.local"
+        # A member shares its unit's Service and is reached at /m/<its id>/ (the pod's nginx
+        # sends it to the member's own Skuld), under the same Envoy and owner check.
+        path = f"/m/{session.id}/" if session.hosted_by is not None else "/"
         return SessionProxyTarget(
-            service_url=f"http://{host}:{self._session_service_port}/",
+            service_url=f"http://{host}:{self._session_service_port}{path}",
             connect_host=host,
             connect_port=self._session_service_port,
         )
+
+    async def broker_target(self, session: Session) -> SessionProxyTarget | None:
+        """Where Forge reaches the broker of a member of a unit.
+
+        A member's chat endpoint carries the unit's address and the member's port, which a
+        pod reached through the gateway does not serve; Forge dials the member's path on the
+        unit's own Service instead. An ordinary session keeps its chat endpoint (None).
+        """
+        if session.hosted_by is None:
+            return None
+        target = self.session_proxy_target(session)
+        if target is None:
+            raise ValueError(
+                f"Session {session.id} is a member of unit {session.hosted_by}, which is not "
+                "running: it has no broker to reach"
+            )
+        return target
+
+
+def _member_index(release: dict, member: Session) -> int | None:
+    """Where the unit's HelmRelease lists ``member`` (its container is ``member-<index>``)."""
+    entries = (release.get("spec") or {}).get("values", {}).get("members") or []
+    for index, entry in enumerate(entries):
+        if str(entry.get("id")) == str(member.id):
+            return index
+    return None
+
+
+def _container_state(pod: Any, container: str) -> Any:
+    """The current state of ``container`` in ``pod``; None before the kubelet reports it."""
+    for status in pod.status.container_statuses or []:
+        if status.name == container:
+            return status.state
+    return None
+
+
+def _container_status(pod: Any, container: str) -> SessionStatus:
+    """A member's session status from its container's state."""
+    state = _container_state(pod, container)
+    if state is None:
+        return SessionStatus.STARTING
+    if state.running is not None:
+        return SessionStatus.RUNNING
+    if state.terminated is not None:
+        return SessionStatus.STOPPED if state.terminated.exit_code == 0 else SessionStatus.FAILED
+    waiting_reason = getattr(state.waiting, "reason", "") or ""
+    if waiting_reason in _FAILED_WAITING_REASONS:
+        return SessionStatus.FAILED
+    return SessionStatus.STARTING
+
+
+def _recorded_members(root: Session) -> dict[UUID, int]:
+    """The members Forge recorded on a unit root when the unit started: id -> broker port."""
+    entries = root.workload_config.get(HOSTED_MEMBERS_KEY) or []
+    return {UUID(str(entry["id"])): int(entry["port"]) for entry in entries}
+
+
+def _dotted(values: Mapping[str, Any], path: str) -> Any:
+    """``values`` at a dotted path, None when any step of it is absent."""
+    current: Any = values
+    for part in path.split("."):
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _use_unit_mesh(values: dict, mesh_dir: str) -> None:
+    """Point a Skuld's mesh at the unit's own: nng on loopback, a registry file in ``mesh_dir``.
+
+    The Skulds of one pod are the whole mesh, so each listens on loopback (the OS picks the
+    port) and finds the others through a file in the directory the pod shares: nothing
+    outside the pod can reach a mesh port, and no pod listing is needed. A mesh that is off,
+    or not on nng, is the operator's choice and is left as it is.
+    """
+    mesh = values.get("mesh")
+    if not isinstance(mesh, dict) or not mesh.get("enabled"):
+        return
+    if str(mesh.get("transport") or "nng") != "nng":
+        return
+    mesh["discoveryAdapters"] = [{"adapter": "registry", "path": f"{mesh_dir}/peers.json"}]
+    mesh["adapters"] = None
+    mesh["nng"] = {
+        **(mesh.get("nng") or {}),
+        "pubSubAddress": "tcp://127.0.0.1:0",
+        "reqRepAddress": "tcp://127.0.0.1:0",
+        "advertiseHost": "",
+    }
+
+
+def _own_volumes(values: dict, index: int) -> list[dict]:
+    """The member's volumes under names only its own mounts use; its mounts follow.
+
+    A volume the chart owns (``home``, ``sessions``...) is not the member's to rename, so only
+    the names the member itself declares change. Two members (or a member and the root) that
+    declare the same name therefore cannot collide.
+    """
+    volumes = [dict(volume) for volume in values.get("extraVolumes") or []]
+    renamed = {str(volume["name"]): f"member-{index}-{volume['name']}" for volume in volumes}
+    for volume in volumes:
+        volume["name"] = renamed[str(volume["name"])]
+    values["extraVolumeMounts"] = [
+        {**mount, "name": renamed.get(str(mount.get("name")), mount.get("name"))}
+        for mount in values.get("extraVolumeMounts") or []
+    ]
+    return volumes
+
+
+def _unit_checkout(root: Session, root_values: dict, entries: list[dict]) -> str | None:
+    """Which member the unit's one checkout is cloned from, when the root names no repository.
+
+    A run works on one repository and branch, shared by every member. The root's own wins when
+    it names one; otherwise the members' must agree, and the chart clones what the first one
+    that names a repository names. A member that names another repository or branch is
+    refused: it would otherwise work in a checkout of something it did not ask for.
+    """
+    wanted = {}
+    for entry in entries:
+        git = (entry["values"].get("git") or {}) if isinstance(entry["values"], dict) else {}
+        if git.get("repoUrl"):
+            wanted[entry["id"]] = (
+                git.get("repoUrl"),
+                git.get("branch") or "main",
+                git.get("baseBranch") or "",
+            )
+    root_git = root_values.get("git") or {}
+    if root_git.get("repoUrl"):
+        root_wanted = (
+            root_git.get("repoUrl"),
+            root_git.get("branch") or "main",
+            root_git.get("baseBranch") or "",
+        )
+        for member_id, member_wanted in wanted.items():
+            if member_wanted != root_wanted:
+                raise ValueError(
+                    f"Member {member_id} of unit {root.id} was launched on {member_wanted} but "
+                    f"the unit's one checkout is {root_wanted}: a run's members share a "
+                    "repository and branch"
+                )
+        return None
+    if len(set(wanted.values())) > 1:
+        raise ValueError(
+            f"Members of unit {root.id} were launched on different repositories or branches "
+            f"{sorted(set(wanted.values()))}: a run's members share one checkout"
+        )
+    return next(iter(wanted), None)
 
 
 def _inject_workload_exchange_env(values: dict) -> None:

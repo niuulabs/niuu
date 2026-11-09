@@ -66,7 +66,32 @@ def test_no_persona_key_is_rendered_without_a_persona(chart):
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 def test_workflow_steps_are_off_unless_forge_marks_the_session_a_step_host():
-    assert _rendered_skuld_config("skuld")["workflow_steps"] == {"enabled": False}
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config("skuld")
+
+    assert config["workflow_steps"] == {
+        "enabled": False,
+        "root": False,
+        "run_id": "",
+        "member": "",
+        "persona_alias": "",
+        "orchestrator_peer_id": "",
+        "event_filters": {},
+    }
+    steps = SkuldSettings(**config).workflow_steps
+    assert not steps.enabled and not steps.root
+
+
+STEP_MEMBER_VALUES = {
+    "enabled": True,
+    "runId": "run-1",
+    "member": "reviewer",
+    "personaAlias": "reviewer-alias",
+    "orchestratorPeerId": "root-session-1",
+    "eventFilters": {"language": "python"},
+    "orchestration": "session",
+}
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
@@ -74,19 +99,81 @@ def test_a_step_host_session_reaches_runtime_configuration():
     from skuld.config import SkuldSettings
 
     config = _rendered_skuld_config(
-        "skuld", "--set-json", "workflowSteps=" + json.dumps({"enabled": True})
+        "skuld", "--set-json", "workflowSteps=" + json.dumps(STEP_MEMBER_VALUES)
     )
 
-    assert config["workflow_steps"] == {"enabled": True}
-    assert SkuldSettings(**config).workflow_steps.enabled is True
+    assert config["workflow_steps"] == {
+        "enabled": True,
+        "root": False,
+        "run_id": "run-1",
+        "member": "reviewer",
+        "persona_alias": "reviewer-alias",
+        "orchestrator_peer_id": "root-session-1",
+        "event_filters": {"language": "python"},
+        "orchestration": "session",
+    }
+    steps = SkuldSettings(**config).workflow_steps
+    assert steps.enabled is True
+    assert steps.run_id == "run-1"
+    assert steps.member == "reviewer"
+    assert steps.persona_alias == "reviewer-alias"
+    assert steps.orchestrator_peer_id == "root-session-1"
+    assert steps.event_filters == {"language": "python"}
+    assert steps.orchestration == "session"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_run_root_reaches_runtime_configuration():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld",
+        "--set-json",
+        "workflowSteps=" + json.dumps({"root": True, "runId": "run-1", "orchestration": "engine"}),
+    )
+
+    steps = SkuldSettings(**config).workflow_steps
+    assert steps.root is True
+    assert steps.enabled is False
+    assert steps.run_id == "run-1"
+    assert steps.orchestration == "engine"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_step_host_missing_a_field_is_refused_when_skuld_reads_its_configuration():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld", "--set-json", "workflowSteps=" + json.dumps({"enabled": True, "runId": "run-1"})
+    )
+
+    with pytest.raises(ValueError, match="orchestrator_peer_id"):
+        SkuldSettings(**config)
 
 
 def test_step_host_flag_survives_the_environment_a_local_broker_is_started_with(monkeypatch):
     from skuld.config import SkuldSettings
 
-    monkeypatch.setenv("SKULD__WORKFLOW_STEPS__ENABLED", "true")
+    for name, value in {
+        "ENABLED": "true",
+        "RUN_ID": "run-1",
+        "MEMBER": "reviewer",
+        "PERSONA_ALIAS": "reviewer-alias",
+        "ORCHESTRATOR_PEER_ID": "root-session-1",
+        "EVENT_FILTERS": json.dumps({"language": "python"}),
+        "ORCHESTRATION": "session",
+    }.items():
+        monkeypatch.setenv(f"SKULD__WORKFLOW_STEPS__{name}", value)
 
-    assert SkuldSettings().workflow_steps.enabled is True
+    steps = SkuldSettings().workflow_steps
+
+    assert steps.enabled is True
+    assert steps.run_id == "run-1"
+    assert steps.member == "reviewer"
+    assert steps.persona_alias == "reviewer-alias"
+    assert steps.orchestrator_peer_id == "root-session-1"
+    assert steps.event_filters == {"language": "python"}
+    assert steps.orchestration == "session"
 
 
 def test_persona_document_survives_the_environment_a_local_broker_is_started_with(monkeypatch):
@@ -282,8 +369,11 @@ class TestConfigMapTemplate:
 
     @pytest.fixture
     def configmap_yaml(self) -> str:
-        template_path = CHART_DIR / "templates" / "skuld-configmap.yaml"
-        return template_path.read_text()
+        # The broker's config.yaml is a named template, so a member of a unit renders it too.
+        templates = CHART_DIR / "templates"
+        return (templates / "skuld-configmap.yaml").read_text() + (
+            templates / "_skuld-config.tpl"
+        ).read_text()
 
     def test_configmap_has_transport_adapter(self, configmap_yaml):
         """Test configmap includes transport_adapter field."""
@@ -328,8 +418,12 @@ class TestDeploymentTemplate:
     @pytest.fixture
     def deployment_yaml(self) -> str:
         """Load deployment.yaml template."""
-        template_path = CHART_DIR / "templates" / "deployment.yaml"
-        return template_path.read_text()
+        # The broker container is a named template, so each member of a unit renders it too.
+        templates = CHART_DIR / "templates"
+        return "".join(
+            (templates / name).read_text()
+            for name in ("deployment.yaml", "_broker-container.tpl", "_git-clone.tpl")
+        )
 
     def test_contains_skuld_container(self, deployment_yaml):
         """Test deployment contains skuld container."""
@@ -395,7 +489,8 @@ class TestDeploymentTemplate:
 
     def test_broker_port_is_8081(self, deployment_yaml):
         """Test broker runs on port 8081 (nginx is entry at 8080)."""
-        assert "containerPort: 8081" in deployment_yaml
+        assert "containerPort: {{ .Values.brokerPort | default 8081 }}" in deployment_yaml
+        assert "brokerPort: 8081" in (CHART_DIR / "values.yaml").read_text()
 
     def test_deployment_uses_env_secrets_range_loop(self, deployment_yaml):
         """Test deployment injects secrets via generic range loop, not per-provider."""
@@ -1675,3 +1770,377 @@ def test_a_run_member_shares_its_work_with_the_runs_room():
 
     assert SkuldSettings(**shared).mesh.share_work is True
     assert SkuldSettings(**ordinary).mesh.share_work is False
+
+
+# -- A unit: one pod hosting a workflow run's root and every member ---------------------------
+
+ROOT_ID = "11111111-1111-1111-1111-111111111111"
+CODER_ID = "22222222-2222-2222-2222-222222222222"
+REVIEWER_ID = "33333333-3333-3333-3333-333333333333"
+MESH_DIR = "/tmp/niuu-mesh"
+REGISTRY = [{"adapter": "registry", "path": f"{MESH_DIR}/peers.json"}]
+
+
+def _unit_members(**overrides) -> list[dict]:
+    """The members as Forge's Flux pod manager writes them: complete values each."""
+
+    def member(member_id: str, port: int, name: str, **extra) -> dict:
+        values = {
+            "session": {"name": name, "ownerId": "user-1", "tenantId": "tenant-1"},
+            "mesh": {
+                "enabled": True,
+                "realmId": "run-1",
+                "discoveryAdapters": REGISTRY,
+                "nng": {"pubSubAddress": "tcp://127.0.0.1:0", "reqRepAddress": "tcp://127.0.0.1:0"},
+            },
+            "forgeMcp": {"tokenFile": "/var/run/secrets/niuu-forge-session/token"},
+            "extraVolumeMounts": [
+                {
+                    "name": f"member-{port - 8082}-forge-session-credential",
+                    "mountPath": "/var/run/secrets/niuu-forge-session",
+                    "readOnly": True,
+                }
+            ],
+            "envVars": [{"name": "MEMBER_NAME", "value": name}],
+            **extra,
+        }
+        return {"id": member_id, "port": port, "values": values}
+
+    coder = member(CODER_ID, 8082, "coder", **overrides.get("coder", {}))
+    reviewer = member(REVIEWER_ID, 8083, "reviewer", **overrides.get("reviewer", {}))
+    return [coder, reviewer]
+
+
+def _unit_values(tmp_path: Path, **overrides) -> Path:
+    values = {
+        "session": {"id": ROOT_ID, "name": "run-root", "ownerId": "user-1", "tenantId": "tenant-1"},
+        "unit": {"meshDir": MESH_DIR},
+        "ingress": {"enabled": False},
+        "mesh": {"enabled": True, "realmId": "run-1", "discoveryAdapters": REGISTRY},
+        "extraVolumes": [
+            {
+                "name": f"member-{index}-forge-session-credential",
+                "secret": {"secretName": f"forge-session-{index}"},
+            }
+            for index in range(2)
+        ],
+        "members": _unit_members(**overrides.pop("members_overrides", {})),
+    }
+    values.update(overrides)
+    # The pod's volumes are the pod's: every member was launched with the root's.
+    for key in ("persistence", "homeVolume"):
+        if key in overrides:
+            for member in values["members"]:
+                member["values"][key] = overrides[key]
+    path = tmp_path / "unit-values.yaml"
+    path.write_text(yaml.safe_dump(values))
+    return path
+
+
+def _render_unit(tmp_path: Path, *extra: str, **overrides) -> list[dict]:
+    values = _unit_values(tmp_path, **overrides)
+    output = subprocess.check_output(
+        ["helm", "template", "run", str(CHART_DIR), "-f", str(values), *extra],
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return [doc for doc in yaml.safe_load_all(output) if doc]
+
+
+def _of_kind(docs: list[dict], kind: str) -> list[dict]:
+    return [doc for doc in docs if doc["kind"] == kind]
+
+
+def _pod(docs: list[dict]) -> dict:
+    return _of_kind(docs, "Deployment")[0]["spec"]["template"]["spec"]
+
+
+def _env(container: dict) -> dict:
+    return {entry["name"]: entry.get("value") for entry in container.get("env", [])}
+
+
+def _mounts(container: dict) -> dict:
+    return {mount["mountPath"]: mount for mount in container.get("volumeMounts", [])}
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestUnitMembers:
+    """The root's release renders one Skuld container per member, all started with the pod."""
+
+    def test_one_container_per_member_beside_the_roots_own(self, tmp_path):
+        containers = {c["name"]: c for c in _pod(_render_unit(tmp_path))["containers"]}
+
+        assert {"nginx", "skuld", "member-0", "member-1"} <= set(containers)
+        assert containers["skuld"]["ports"][0]["containerPort"] == 8081
+        assert containers["member-0"]["ports"][0]["containerPort"] == 8082
+        assert containers["member-1"]["ports"][0]["containerPort"] == 8083
+        assert _env(containers["member-0"])["MEMBER_NAME"] == "coder"
+        assert _env(containers["member-1"])["MEMBER_NAME"] == "reviewer"
+
+    def test_each_member_has_its_own_configuration_that_skuld_accepts(self, tmp_path):
+        from skuld.config import SkuldSettings
+
+        docs = _render_unit(tmp_path)
+        members = next(
+            d for d in _of_kind(docs, "ConfigMap") if d["metadata"]["name"].endswith("-members")
+        )
+        assert set(members["data"]) == {f"{CODER_ID}.yaml", f"{REVIEWER_ID}.yaml"}
+        coder = yaml.safe_load(members["data"][f"{CODER_ID}.yaml"])
+        reviewer = yaml.safe_load(members["data"][f"{REVIEWER_ID}.yaml"])
+
+        assert (coder["session"]["id"], coder["session"]["name"], coder["port"]) == (
+            CODER_ID,
+            "coder",
+            8082,
+        )
+        assert (reviewer["session"]["id"], reviewer["port"]) == (REVIEWER_ID, 8083)
+        for config in (coder, reviewer):
+            # The credential file is mounted into the container, not present while rendering.
+            assert config.pop("forge_mcp")["token_file"].endswith("/token")
+            settings = SkuldSettings(**config)
+            assert settings.mesh.enabled is True
+            assert config["mesh"]["discovery_adapters"] == REGISTRY
+        # The root's own configuration keeps its own session and port.
+        roots = next(
+            d for d in _of_kind(docs, "ConfigMap") if d["metadata"]["name"].endswith("-config")
+        )
+        root_config = yaml.safe_load(roots["data"]["config.yaml"])
+        assert (root_config["session"]["id"], root_config["port"]) == (ROOT_ID, 8081)
+
+    def test_each_member_mounts_only_its_own_configuration_and_credential(self, tmp_path):
+        pod = _pod(_render_unit(tmp_path))
+        containers = {c["name"]: c for c in pod["containers"]}
+
+        coder = _mounts(containers["member-0"])
+        reviewer = _mounts(containers["member-1"])
+        assert coder["/etc/skuld/config.yaml"]["subPath"] == f"{CODER_ID}.yaml"
+        assert reviewer["/etc/skuld/config.yaml"]["subPath"] == f"{REVIEWER_ID}.yaml"
+        assert coder["/etc/skuld/config.yaml"]["name"] == "skuld-members"
+        credential = "/var/run/secrets/niuu-forge-session"
+        assert coder[credential]["name"] == "member-0-forge-session-credential"
+        assert reviewer[credential]["name"] == "member-1-forge-session-credential"
+        for other in ("skuld", "nginx"):
+            assert credential not in _mounts(containers[other])
+        volumes = {v["name"] for v in pod["volumes"]}
+        assert {"member-0-forge-session-credential", "member-1-forge-session-credential"} <= volumes
+
+    def test_every_skuld_of_the_pod_shares_one_mesh_directory(self, tmp_path):
+        pod = _pod(_render_unit(tmp_path))
+
+        assert {"name": "mesh", "emptyDir": {}} in pod["volumes"]
+        for container in pod["containers"]:
+            if container["name"] in {"skuld", "member-0", "member-1"}:
+                assert _mounts(container)[MESH_DIR]["name"] == "mesh"
+            else:
+                assert MESH_DIR not in _mounts(container)
+
+    def test_the_mesh_is_local_to_the_pod(self, tmp_path):
+        docs = _render_unit(tmp_path)
+        pod_template = _of_kind(docs, "Deployment")[0]["spec"]["template"]
+
+        # Registry discovery is explicit, so the pod is not labelled for listing by other pods.
+        assert "ravn.niuu.world/realm" not in pod_template["metadata"]["labels"]
+        assert "ravn.niuu.world/peer-id" not in (pod_template["metadata"].get("annotations") or {})
+        members = next(
+            d for d in _of_kind(docs, "ConfigMap") if d["metadata"]["name"].endswith("-members")
+        )
+        for text in members["data"].values():
+            mesh = yaml.safe_load(text)["mesh"]
+            assert mesh["nng"]["pub_sub_address"] == "tcp://127.0.0.1:0"
+
+    def test_members_share_the_roots_workspace_and_keep_their_own_state(self, tmp_path):
+        containers = {
+            c["name"]: c
+            for c in _pod(
+                _render_unit(
+                    tmp_path,
+                    persistence={
+                        "enabled": True,
+                        "emptyDir": True,
+                        "mountPath": "/volundr/sessions",
+                    },
+                    homeVolume={"enabled": True, "existingClaim": "home", "persistentTmp": True},
+                )
+            )["containers"]
+        }
+
+        workspace = f"/volundr/sessions/{ROOT_ID}/workspace"
+        for name in ("skuld", "member-0", "member-1"):
+            assert _env(containers[name])["SKULD__SESSION__WORKSPACE_DIR"] == workspace
+        assert _env(containers["member-0"])["CODEX_HOME"] == (
+            f"/volundr/sessions/{ROOT_ID}/members/{CODER_ID}/.codex"
+        )
+        assert _env(containers["member-1"])["CODEX_HOME"] == (
+            f"/volundr/sessions/{ROOT_ID}/members/{REVIEWER_ID}/.codex"
+        )
+        assert _env(containers["skuld"])["CODEX_HOME"] == f"{workspace}/.codex"
+        # Scratch is per container, under the root's directory, which is where it is created.
+        scratch = {
+            name: _mounts(containers[name])["/tmp"]["subPath"]
+            for name in ("skuld", "member-0", "member-1")
+        }
+        assert scratch == {
+            "skuld": f"tmp/sessions/{ROOT_ID}/skuld",
+            "member-0": f"tmp/sessions/{ROOT_ID}/member-0",
+            "member-1": f"tmp/sessions/{ROOT_ID}/member-1",
+        }
+
+    def test_the_pod_seeds_each_members_codex_home(self, tmp_path):
+        docs = _render_unit(
+            tmp_path,
+            homeVolume={
+                "enabled": True,
+                "existingClaim": "home",
+                "credentialFiles": {"destDir": ".codex"},
+            },
+        )
+        init = {c["name"]: c for c in _pod(docs)["initContainers"]}
+        script = init["home-setup"]["args"][0]
+
+        assert f"/volundr/sessions/{ROOT_ID}/members/{CODER_ID}/.codex" in script
+        assert f"/volundr/sessions/{ROOT_ID}/members/{REVIEWER_ID}/.codex" in script
+
+    def test_the_unit_has_one_checkout_cloned_from_the_member_that_names_it(self, tmp_path):
+        git = {"repoUrl": "https://github.com/org/repo.git", "branch": "feat/x"}
+        docs = _render_unit(
+            tmp_path,
+            unit={"meshDir": MESH_DIR, "checkoutFrom": CODER_ID},
+            members_overrides={"coder": {"git": git}, "reviewer": {"git": git}},
+            persistence={"enabled": True, "emptyDir": True, "mountPath": "/volundr/sessions"},
+        )
+        clones = [c for c in _pod(docs)["initContainers"] if c["name"] == "git-clone"]
+
+        assert len(clones) == 1
+        script = clones[0]["args"][0]
+        assert f'WORKSPACE="/volundr/sessions/{ROOT_ID}/workspace"' in script
+        assert "https://github.com/org/repo.git" in script
+        assert "feat/x" in script
+
+    def test_a_root_that_names_a_repository_clones_it_itself(self, tmp_path):
+        docs = _render_unit(
+            tmp_path,
+            git={"repoUrl": "https://github.com/org/root.git", "branch": "main"},
+            persistence={"enabled": True, "emptyDir": True, "mountPath": "/volundr/sessions"},
+        )
+
+        clones = [c for c in _pod(docs)["initContainers"] if c["name"] == "git-clone"]
+        assert len(clones) == 1
+        assert "https://github.com/org/root.git" in clones[0]["args"][0]
+
+    def test_without_a_repository_nothing_is_cloned(self, tmp_path):
+        docs = _render_unit(tmp_path)
+
+        assert "initContainers" not in _pod(docs) or all(
+            c["name"] != "git-clone" for c in _pod(docs)["initContainers"]
+        )
+
+    def test_nginx_sends_each_members_path_to_its_own_broker(self, tmp_path):
+        docs = _render_unit(tmp_path)
+        nginx = next(
+            d for d in _of_kind(docs, "ConfigMap") if d["metadata"]["name"].endswith("-nginx")
+        )
+        conf = " ".join(nginx["data"]["nginx.conf"].split())
+
+        assert "server 127.0.0.1:8082;" in conf
+        assert "server 127.0.0.1:8083;" in conf
+        assert f"location /m/{CODER_ID}/ {{ proxy_pass http://member_0/;" in conf
+        assert f"location /m/{REVIEWER_ID}/ {{ proxy_pass http://member_1/;" in conf
+        assert "server 127.0.0.1:8081;" in conf
+
+    def test_each_member_has_its_own_gateway_address_onto_the_units_service(self, tmp_path):
+        docs = _render_unit(tmp_path, "--set", "gateway.enabled=true", "--set", "gateway.name=gw")
+
+        routes = {d["metadata"]["name"]: d for d in _of_kind(docs, "HTTPRoute")}
+        assert set(routes) == {
+            f"session-{ROOT_ID}",
+            f"session-{CODER_ID}",
+            f"session-{REVIEWER_ID}",
+        }
+        service = _of_kind(docs, "Service")[0]["metadata"]["name"]
+        coder = routes[f"session-{CODER_ID}"]["spec"]["rules"][0]
+        assert coder["matches"][0]["path"]["value"] == f"/s/{CODER_ID}"
+        assert coder["filters"][0]["urlRewrite"]["path"]["replacePrefixMatch"] == f"/m/{CODER_ID}"
+        assert coder["backendRefs"][0]["name"] == service
+        policies = {d["spec"]["targetRef"]["name"] for d in _of_kind(docs, "SecurityPolicy")}
+        assert policies == set(routes)
+        assert (
+            routes[f"session-{ROOT_ID}"]["spec"]["rules"][0]["filters"][0]["urlRewrite"]["path"][
+                "replacePrefixMatch"
+            ]
+            == "/"
+        )
+
+    def test_without_members_the_chart_renders_no_unit(self):
+        docs = [
+            d
+            for d in yaml.safe_load_all(
+                subprocess.check_output(
+                    ["helm", "template", "solo", str(CHART_DIR), "--set", f"session.id={ROOT_ID}"],
+                    text=True,
+                )
+            )
+            if d
+        ]
+        names = {c["name"] for c in _pod(docs)["containers"]}
+
+        assert not any(name.startswith("member-") for name in names)
+        assert {"skuld-members", "mesh"}.isdisjoint({v["name"] for v in _pod(docs)["volumes"]})
+        assert not [d for d in docs if d["metadata"]["name"].endswith("-members")]
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"unit": {}}, "unit.meshDir"),
+            ({"unit": {"meshDir": MESH_DIR, "checkoutFrom": "nope"}}, "not one of the members"),
+            ({"ingress": {"enabled": True}}, "gateway.enabled"),
+        ],
+    )
+    def test_a_unit_that_cannot_be_rendered_says_why(self, tmp_path, overrides, message):
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            _render_unit(tmp_path, **overrides)
+
+        assert message in raised.value.stderr
+
+    def test_two_members_cannot_share_a_port(self, tmp_path):
+        members = _unit_members()
+        members[1]["port"] = members[0]["port"]
+        values = tmp_path / "v.yaml"
+        values.write_text(
+            yaml.safe_dump(
+                {"session": {"id": ROOT_ID}, "unit": {"meshDir": MESH_DIR}, "members": members}
+            )
+        )
+
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            subprocess.check_output(
+                ["helm", "template", "run", str(CHART_DIR), "-f", str(values)],
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+        assert "already taken" in raised.value.stderr
+
+    def test_a_member_cannot_take_the_brokers_port(self, tmp_path):
+        members = _unit_members()
+        members[0]["port"] = 8081
+        values = tmp_path / "v.yaml"
+        values.write_text(
+            yaml.safe_dump(
+                {"session": {"id": ROOT_ID}, "unit": {"meshDir": MESH_DIR}, "members": members}
+            )
+        )
+
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            subprocess.check_output(
+                ["helm", "template", "run", str(CHART_DIR), "-f", str(values)],
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+        assert "pod's own" in raised.value.stderr
+
+    def test_member_defaults_are_the_charts_own_values(self):
+        defaults = CHART_DIR / "files" / "defaults.yaml"
+
+        assert defaults.is_symlink()
+        assert defaults.resolve() == (CHART_DIR / "values.yaml").resolve()

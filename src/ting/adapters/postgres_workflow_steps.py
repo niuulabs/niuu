@@ -1,7 +1,10 @@
 """Postgres ledger of workflow step activations and run events.
 
 ``workflow_steps`` holds one row per step activation and ``workflow_run_events`` is
-the append-only log of a run (migration ``000054_workflow_steps``). Every write to a
+the append-only log of a run (migration ``000054_workflow_steps``). A row is an offer (kind
+``offer``, one per delivery to a stage), a member's pickup of an offer (``stage_member``, with
+the ``offer_id`` it took up and when) or a gate, wait or end (migration
+``000060_workflow_step_offers``). Every write to a
 run goes through ``transaction``, which takes a transaction-scoped advisory lock on
 the run, so two decisions about the same run never interleave; sequence numbers are
 assigned under that lock.
@@ -37,11 +40,11 @@ _UPSERT_STEP = """
 INSERT INTO workflow_steps (
     id, run_id, node_id, member, kind, attempt, generation, state, session_id,
     inputs, verdict, outcome, note, evidence, waiting_on,
-    deadline_at, created_at, activated_at, closed_at
+    deadline_at, created_at, activated_at, closed_at, offer_id, picked_up_at, orchestration
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9,
     $10::jsonb, $11, $12::jsonb, $13, $14::jsonb, $15::jsonb,
-    $16, $17, $18, $19
+    $16, $17, $18, $19, $20, $21, $22
 )
 ON CONFLICT (id) DO UPDATE SET
     generation = EXCLUDED.generation,
@@ -55,7 +58,9 @@ ON CONFLICT (id) DO UPDATE SET
     waiting_on = EXCLUDED.waiting_on,
     deadline_at = EXCLUDED.deadline_at,
     activated_at = EXCLUDED.activated_at,
-    closed_at = EXCLUDED.closed_at
+    closed_at = EXCLUDED.closed_at,
+    offer_id = EXCLUDED.offer_id,
+    picked_up_at = EXCLUDED.picked_up_at
 """
 
 _APPEND_EVENT = """
@@ -103,21 +108,6 @@ WHERE activation_id = $1 AND kind = $2
 """
 
 _SELECT_STEPS = "SELECT * FROM workflow_steps WHERE run_id = $1 ORDER BY created_at, id"
-_CLAIM_DELIVERY = """
-UPDATE workflow_steps SET delivered_at = $3
-WHERE id = $1 AND session_id = $2 AND state = 'active' AND delivered_at IS NULL
-RETURNING id
-"""
-_RELEASE_DELIVERY = """
-UPDATE workflow_steps SET delivered_at = NULL
-WHERE id = $1 AND session_id = $2 AND state = 'active'
-"""
-_SELECT_UNDELIVERED = """
-SELECT * FROM workflow_steps
-WHERE state = 'active' AND kind = 'stage_member' AND session_id IS NOT NULL
-  AND delivered_at IS NULL
-ORDER BY created_at, id
-"""
 _SELECT_FLAGS = (
     "SELECT run_id, activation_id, kind, since, raised_at, detail, notified_at, resolved_at, "
     "resolution, action_at, action_done_at, action_error FROM workflow_step_flags "
@@ -151,16 +141,6 @@ class PostgresWorkflowStepRepository(WorkflowStepRepository):
         event_rows = await self._pool.fetch(_SELECT_EVENTS, run_id)
         flag_rows = await self._pool.fetch(_SELECT_FLAGS, run_id)
         return _state_from_rows(run_id, step_rows, event_rows, flag_rows)
-
-    async def claim_delivery(self, activation_id: UUID, session_id: str, *, at: datetime) -> bool:
-        row = await self._pool.fetchrow(_CLAIM_DELIVERY, activation_id, session_id, at)
-        return row is not None
-
-    async def release_delivery(self, activation_id: UUID, session_id: str) -> None:
-        await self._pool.execute(_RELEASE_DELIVERY, activation_id, session_id)
-
-    async def undelivered_steps(self) -> list[WorkflowStep]:
-        return [_step_from_row(row) for row in await self._pool.fetch(_SELECT_UNDELIVERED)]
 
 
 class _PostgresLedgerTransaction(LedgerTransaction):
@@ -196,6 +176,9 @@ class _PostgresLedgerTransaction(LedgerTransaction):
             step.created_at,
             step.activated_at,
             step.closed_at,
+            step.offer_id,
+            step.picked_up_at,
+            step.orchestration,
         )
 
     async def append_event(
@@ -300,6 +283,9 @@ def _step_from_row(row: Any) -> WorkflowStep:
         deadline_at=row["deadline_at"],
         activated_at=row["activated_at"],
         closed_at=row["closed_at"],
+        offer_id=row["offer_id"],
+        picked_up_at=row["picked_up_at"],
+        orchestration=row["orchestration"],
     )
 
 

@@ -629,6 +629,7 @@ class Broker(
         self._startup_ready = False
         self._startup_state = "created"
         self._startup_failure = ""
+        self._shutdown_started = False
         self._peer_pending_commands: dict[str, list[str]] = {}
         self._git_workspace_checkpoint: GitWorkspaceCheckpoint | None = None
         # Genuine agent questions: a peer that emits help_needed is asking the
@@ -4799,7 +4800,13 @@ def main() -> None:
     install_uvicorn_log_redaction()
     settings = SkuldSettings()
     logger.info("Starting Skuld broker on %s:%d", settings.host, settings.port)
-    uvicorn.run(app, host=settings.host, port=settings.port, access_log=False)
+    server = uvicorn.Server(
+        uvicorn.Config(app, host=settings.host, port=settings.port, access_log=False)
+    )
+    _broker_api.harness_control.attach(server)
+    server.run()
+    if _broker_api.harness_control.restart_requested:
+        _broker_api.harness_control.reexec()
 
 
 if __name__ == "__main__":

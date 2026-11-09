@@ -15,6 +15,8 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
+from niuu.cap_telemetry import record_cap_hit
+
 #: OpenShell's peer-workload limits (``openshell_sandbox_backend::peer_workloads``).
 MAX_PEER_WORKLOADS = 16
 MAX_PEER_NAME_LENGTH = 40
@@ -177,6 +179,51 @@ def _reserved_metadata_key(key: str) -> bool:
         domain == reserved or domain.endswith(f".{reserved}")
         for reserved in RESERVED_POD_METADATA_DOMAINS
     )
+
+
+#: Where a workflow run's unit shares its mesh: an ``emptyDir`` mounted at this path in the
+#: primary and in every member's peer workload (the flock's ``/tmp/niuu-mesh``).
+UNIT_MESH_DIRECTORY = "/tmp/niuu-mesh"
+UNIT_MESH_REGISTRY = f"{UNIT_MESH_DIRECTORY}/peers.json"
+UNIT_MESH_VOLUME = "niuu-mesh"
+#: One ``emptyDir`` per member is mounted at ``UNIT_MEMBER_ROOT/<index>``, in the primary
+#: (which writes into it) and in that member's peer workload only: the member's Forge
+#: session credential, its environment file and its home live there, so no other member's
+#: container sees them.
+UNIT_MEMBER_ROOT = "/tmp/niuu-members"
+
+
+def unit_member_directory(index: int) -> str:
+    """The directory only the primary and member ``index`` mount."""
+    return f"{UNIT_MEMBER_ROOT}/{index}"
+
+
+def unit_member_volume(index: int) -> str:
+    return f"niuu-member-{index}"
+
+
+def unit_member_name(index: int) -> str:
+    """The peer workload name of member ``index``."""
+    return check_peer_workload_name(f"member-{index}")
+
+
+def check_unit_size(members: int, *, unit: object) -> None:
+    """Raise when a run's members do not fit one sandbox's peer workloads.
+
+    A run is one unit, so every member is a peer workload of the run's one sandbox and
+    OpenShell admits at most ``MAX_PEER_WORKLOADS`` of them. A larger run is refused at
+    launch, naming the bound, rather than split across sandboxes or trimmed.
+    """
+    if members <= MAX_PEER_WORKLOADS:
+        return
+    message = (
+        f"Unit {unit} hosts {members} member sessions, but OpenShell admits at most "
+        f"{MAX_PEER_WORKLOADS} peer workloads per sandbox and each member is one; give the "
+        f"workflow at most {MAX_PEER_WORKLOADS} members, or run it on a runtime without "
+        "this bound (Kubernetes or a VM)"
+    )
+    record_cap_hit("openshell.max_peer_workloads", message)
+    raise ValueError(message)
 
 
 def check_peer_workload_name(name: object) -> str:

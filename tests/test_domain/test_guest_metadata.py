@@ -1,4 +1,4 @@
-"""GuestMetadataService: credentials only for the session an allocation currently runs."""
+"""GuestMetadataService: credentials only for the unit an allocation currently runs."""
 
 from __future__ import annotations
 
@@ -457,3 +457,103 @@ def test_a_pool_id_is_required():
         GuestMetadataService(
             AsyncMock(), AsyncMock(), "", FixedIdentity(None), AsyncMock(), AsyncMock()
         )
+
+
+# -- the members of a run's unit ---------------------------------------------------------------
+
+MEMBER_A, MEMBER_B = uuid4(), uuid4()
+
+
+def unit_launch(*members: UUID, forge_session: bool = True) -> dict:
+    """A launch payload of a run's unit, as Forge writes it when it starts the unit."""
+    return {
+        **LAUNCH,
+        "members": [
+            {
+                "id": str(member),
+                "port": 8082 + index,
+                "forge_session": forge_session,
+                "forge_session_directory": f"/etc/niuu/forge-sessions/{member}",
+                "forge_session_file": "token",
+            }
+            for index, member in enumerate(members)
+        ],
+    }
+
+
+async def test_a_member_of_the_bound_unit_gets_its_own_forge_session_alone():
+    harness = Harness(make_machine(), launch=unit_launch(MEMBER_A, MEMBER_B))
+    harness.issue_forge_session.return_value = forge_credential(MEMBER_B)
+
+    issued = await harness.service.credentials(harness.request(session_id=str(MEMBER_B)))
+
+    harness.issue_forge_session.assert_awaited_once_with(MEMBER_B)
+    assert issued.forge_session.token == "forge-secret"
+    # The unit's ServiceAccount tokens stay the bound session's.
+    assert issued.service_account_tokens == ()
+    assert harness.tokens.calls == []
+
+
+async def test_the_bound_session_asking_by_its_own_id_is_answered_as_itself():
+    harness = Harness(make_machine(), launch=unit_launch(MEMBER_A))
+    session_id = harness.binding.session_id
+
+    issued = await harness.service.credentials(harness.request(session_id=str(session_id)))
+
+    assert len(issued.service_account_tokens) == 2
+    harness.issue_forge_session.assert_awaited_once_with(session_id)
+
+
+async def test_a_session_the_units_launch_does_not_list_gets_nothing():
+    harness = Harness(make_machine(), launch=unit_launch(MEMBER_A))
+
+    with pytest.raises(GuestCredentialUnavailableError) as refused:
+        await harness.service.credentials(harness.request(session_id=str(uuid4())))
+
+    assert refused.value.reason.value == "no_bound_session"
+    harness.issue_forge_session.assert_not_awaited()
+    assert harness.tokens.calls == []
+
+
+async def test_a_unit_with_no_members_answers_no_member():
+    harness = Harness(make_machine(), launch=LAUNCH)
+
+    with pytest.raises(GuestCredentialUnavailableError, match="not a member of the unit"):
+        await harness.service.credentials(harness.request(session_id=str(MEMBER_A)))
+
+
+async def test_a_member_is_only_answered_while_the_slot_runs_its_unit():
+    harness = Harness(
+        make_machine(), launch=unit_launch(MEMBER_A), binding={"stop_requested": True}
+    )
+
+    with pytest.raises(GuestCredentialUnavailableError, match="stopping"):
+        await harness.service.credentials(harness.request(session_id=str(MEMBER_A)))
+    unbound = Harness(make_machine(), bound=False, launch=unit_launch(MEMBER_A))
+    with pytest.raises(GuestCredentialUnavailableError, match="no bound session"):
+        await unbound.service.credentials(unbound.request(session_id=str(MEMBER_A)))
+
+
+async def test_a_member_that_asks_for_no_forge_session_gets_an_empty_answer():
+    harness = Harness(make_machine(), launch=unit_launch(MEMBER_A, forge_session=False))
+
+    issued = await harness.service.credentials(harness.request(session_id=str(MEMBER_A)))
+
+    assert issued.forge_session is None
+    harness.issue_forge_session.assert_not_awaited()
+
+
+async def test_a_member_whose_credential_cannot_be_issued_is_unavailable():
+    harness = Harness(make_machine(), launch=unit_launch(MEMBER_A))
+    harness.issue_forge_session.return_value = None
+
+    with pytest.raises(GuestCredentialUnavailableError, match="Forge session credential"):
+        await harness.service.credentials(harness.request(session_id=str(MEMBER_A)))
+
+
+@pytest.mark.parametrize("session_id", ["not-a-uuid", 5, ["x"]])
+async def test_a_session_id_that_is_not_a_uuid_is_a_bad_request(session_id):
+    harness = Harness(make_machine(), launch=unit_launch(MEMBER_A))
+
+    with pytest.raises(GuestRequestError):
+        await harness.service.credentials(harness.request(session_id=session_id))

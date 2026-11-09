@@ -17,6 +17,7 @@ import pytest
 
 from niuu.ports.session_proxy import SessionProxyTarget
 from tests.support.forge_session import token_service
+from tests.support.workflow_steps import MEMBER_STEPS_ENV, MEMBER_STEPS_VALUES
 from volundr.adapters.outbound import docker_container as dc
 from volundr.adapters.outbound.docker_container import (
     MANAGED_BY,
@@ -146,7 +147,7 @@ def spec() -> SessionSpec:
             "anthropic_api_key": "sk-ant-test",
             "env": {"EXTRA": "1"},
             "broker": {"cliType": "codex"},
-            "workflowSteps": {"enabled": True},
+            "workflowSteps": MEMBER_STEPS_VALUES,
         },
         pod_spec=PodSpecAdditions(env=[{"name": "FROM_POD", "value": "yes"}]),
     )
@@ -224,7 +225,7 @@ class TestStart:
         assert env["SKULD__SESSION__OWNER_ID"] == "dev-user"
         assert env["SKULD__SESSION__SYSTEM_PROMPT"] == "be helpful"
         assert json.loads(env["SKULD__SESSION__PERSONA"])["id"] == "reviewer"
-        assert env["SKULD__WORKFLOW_STEPS__ENABLED"] == "true"
+        assert MEMBER_STEPS_ENV.items() <= env.items()
         assert env["SKULD__SESSION__INITIAL_PROMPT"] == "start"
         assert env["HOME"] == "/home/skuld"
         assert env["SKULD__PERSISTENCE_MOUNT_PATH"] == "/home/skuld"

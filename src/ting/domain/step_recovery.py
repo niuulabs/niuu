@@ -50,8 +50,8 @@ def check_recoverable(
     if step.kind is not StepKind.STAGE_MEMBER:
         raise RecoveryRefusedError(
             action,
-            f"{where} is a {step.kind.value}, which no session runs; a gate is answered and "
-            "a wait closes when what it waits on is observed",
+            f"{where} is {_article(step.kind.value)} {step.kind.value}, which no session runs; "
+            "a gate is answered and a wait closes when what it waits on is observed",
         )
     if step.generation != state.generation:
         raise RecoveryRefusedError(
@@ -65,13 +65,17 @@ def check_recoverable(
     return step
 
 
+def _article(word: str) -> str:
+    return "an" if word[:1] in "aeiou" else "a"
+
+
 def _state_refusal(state: RunState, step: WorkflowStep) -> str | None:
     if step.state is StepState.FAILED:
         newer = [
             other.attempt
             for other in state.steps
             if other.node_id == step.node_id
-            and other.member == step.member
+            and (other.member == step.member or other.kind is StepKind.OFFER)
             and other.attempt > step.attempt
         ]
         if newer:

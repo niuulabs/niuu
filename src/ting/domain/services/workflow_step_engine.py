@@ -1,19 +1,25 @@
-"""The step engine service: persists the engine's decisions and drives the sessions.
+"""The step engine service: persists the engine's decisions and offers work on the run's mesh.
 
 ``WorkflowStepEngine`` is the only thing that writes a run's step ledger. Each public
 call is one serialised decision on one run:
 
-* ``launch`` records the trigger and activates the first steps;
+* ``launch`` starts the run's unit (its root and every member), records the trigger and
+  offers the first steps;
+* ``note_listening`` / ``note_picked_up`` / ``note_passed`` / ``note_offer_refused`` /
+  ``note_offer_published`` record what the unit's sessions report about the handoff;
 * ``record_close`` accepts a step's ending from the session that owns it, after
-  fencing, and activates what follows;
+  fencing, and offers what follows;
 * ``resolve_gate`` records a person's (or agent's) decision on an open gate;
 * ``cancel`` ends a run.
 
 The decision itself is the pure ``step_engine.next_actions``; this service reads the
 ledger through ``WorkflowStepRepository``, applies the actions inside the run's
-transaction and, once that has committed, starts sessions through ``StepSessionPort``.
-It never relays conversation between agents: it activates steps and records how they
-end.
+transaction and, once that has committed, publishes the offers that can go out: the
+engine signs an offer as the platform service Ting is and hands it to the run's root
+(``StepSessionPort.publish_offer``), whose Skuld puts it on the mesh. It publishes an offer
+only once every member that takes its topic reports it is listening. Ting never joins the
+mesh and never relays conversation between agents: it offers steps and records how the
+members' sessions report them.
 """
 
 from __future__ import annotations
@@ -26,39 +32,59 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from niuu.domain.workflow_step import (
+    OfferInput,
+    PersonaPin,
+    StepContract,
+    StepOffered,
+)
 from niuu.observability import get_observability
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.step_engine import (
     Action,
-    ActivateStep,
     CancelStep,
     ClosePlan,
     CompleteRun,
     EngineSettings,
     FailRun,
     MarkStale,
+    OfferStep,
     OpenGate,
     OpenWait,
     QueueStep,
     RecordEvent,
     cancel_actions,
+    listening_members,
     next_actions,
+    offer_members,
+    offer_publications,
+    offer_topic,
     plan_close,
     plan_gate_resolution,
     plan_retry,
+    unit_root,
+    unit_sessions,
 )
 from ting.domain.step_graph import NodeKind, StepGraph, compile_step_graph
+from ting.domain.step_instructions import render_offer_instructions
 from ting.domain.step_recovery import check_recoverable
 from ting.domain.step_stuck import Condition
 from ting.domain.workflow_document import validate_workflow_graph
 from ting.domain.workflow_steps import (
     EVENT_CLOSE_REJECTED,
+    EVENT_MEMBER_LISTENING,
+    EVENT_MEMBER_RESTARTED,
+    EVENT_OFFER_PASSED,
+    EVENT_OFFER_PICKED_UP,
+    EVENT_OFFER_PUBLISHED,
+    EVENT_OFFER_REFUSED,
     EVENT_RECOVERY,
     EVENT_RUN_COMPLETED,
     EVENT_RUN_FAILED,
     EVENT_RUN_LAUNCHED,
     EVENT_STEP_FLAGGED,
     EVENT_STEP_UNCLOSED,
+    EVENT_UNIT_LAUNCHED,
     SYSTEM_ACTOR_ID,
     SYSTEM_ACTOR_KIND,
     TERMINAL_RUN_EVENTS,
@@ -66,6 +92,7 @@ from ting.domain.workflow_steps import (
     FlagKind,
     GateActor,
     GateDecision,
+    HandoffRefusedError,
     InvalidEndingError,
     RecoveryAction,
     RecoveryRefusedError,
@@ -82,11 +109,11 @@ from ting.domain.workflow_steps import (
     is_repeat_close,
 )
 from ting.ports.workflow_steps import (
-    DeliveredEvent,
     LedgerTransaction,
+    OfferSigner,
+    PersonaRef,
+    RunUnit,
     SessionLiveness,
-    SessionNotReadyError,
-    StepActivation,
     StepRunDefinition,
     StepRunDefinitions,
     StepSessionPort,
@@ -111,7 +138,7 @@ class StepRunRequest:
 
 @dataclass(frozen=True)
 class Recovered:
-    """The outcome of a retry or reassign: the run as it is now and the new attempt."""
+    """The outcome of a retry or reassign: the run as it is now and the new offer."""
 
     state: RunState
     step: WorkflowStep
@@ -128,7 +155,6 @@ class _Ledger:
         self.steps: dict[UUID, WorkflowStep] = {step.id: step for step in state.steps}
         self.events: list[RunEvent] = list(state.events)
         self.generation = state.generation
-        self.to_start: list[WorkflowStep] = []
         self.terminal: str | None = None
         self.cap_hit: str | None = None
         self.failure: str | None = None
@@ -172,9 +198,8 @@ class _Ledger:
             await self._apply_one(action)
 
     async def _apply_one(self, action: Action) -> None:
-        if isinstance(action, ActivateStep):
+        if isinstance(action, OfferStep):
             await self.save(action.step)
-            self.to_start.append(action.step)
         elif isinstance(action, QueueStep | OpenGate | OpenWait):
             await self.save(action.step)
         elif isinstance(action, MarkStale):
@@ -222,63 +247,40 @@ class _Ledger:
 
 
 class WorkflowStepEngine:
-    """Launches runs and records how their steps end."""
+    """Launches runs, offers their steps on the mesh and records how the members report them."""
 
     def __init__(
         self,
         *,
         repository: WorkflowStepRepository,
         sessions: StepSessionPort,
+        offers: OfferSigner,
         definitions: StepRunDefinitions,
         settings: EngineSettings,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._repository = repository
         self._sessions = sessions
+        self._signer = offers
         self._definitions = definitions
         self._settings = settings
         self._clock = clock
-        #: Deliveries waiting for their session to come up (see ``_defer_delivery``).
-        self._deferred: set[asyncio.Task[None]] = set()
-
-    async def resume_deliveries(self) -> int:
-        """Wait again for every step a previous process left bound but undelivered.
-
-        A step whose session was still booting is delivered by a background wait that a
-        restart ends. The ledger records which steps were delivered (``delivered_at``), so
-        on start every active, bound, undelivered step gets its wait back. Every worker
-        does this; the delivery claim lets only one of them hand a step over. Returns how
-        many waits were started.
-        """
-        steps = await self._repository.undelivered_steps()
-        for step in steps:
-            definition, graph = await self._definition(step.run_id)
-            self._defer_delivery(step, graph, definition)
-        if steps:
-            logger.info("Resumed the delivery of %d undelivered workflow step(s)", len(steps))
-        return len(steps)
-
-    async def aclose(self) -> None:
-        """Stop waiting for sessions to come up.
-
-        A step whose delivery was still waiting stays active and bound to its session;
-        the stuck sweep delivers it once the session answers.
-        """
-        tasks = tuple(self._deferred)
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        #: One publication pass at a time per run, so an offer is not published twice at once.
+        self._publishing: dict[UUID, asyncio.Lock] = {}
 
     # -- public API -------------------------------------------------------------
 
     async def launch(self, request: StepRunRequest) -> RunState:
-        """Record the trigger and activate the first steps. A run is launched once."""
+        """Start the run's unit, record the trigger and offer the first steps. Once per run."""
         definition, graph = await self._definition(request.run_id)
         validate_workflow_graph(
             definition.graph, persona_definitions=definition.persona_definitions
         )
         self._require_personas(graph, definition)
         trigger = self._trigger(graph, request)
+        if (await self._repository.load(request.run_id)).launched:
+            raise RunStateError(f"run {request.run_id} was already launched")
+        unit = await self._launch_unit(request.run_id, graph, definition)
         now = self._clock()
         async with self._repository.transaction(request.run_id) as tx:
             state = await tx.load()
@@ -289,6 +291,11 @@ class WorkflowStepEngine:
                 EVENT_RUN_LAUNCHED,
                 {"trigger_node_id": trigger.id, "dispatch_event": trigger.dispatch_event},
             )
+            if unit is not None:
+                await ledger.append(
+                    EVENT_UNIT_LAUNCHED,
+                    {"root_id": unit.root_id, "members": dict(unit.members)},
+                )
             dispatched = await ledger.append(
                 trigger.dispatch_event,
                 {
@@ -300,6 +307,532 @@ class WorkflowStepEngine:
             )
             await self._advance(ledger, graph, dispatched, now)
         return await self._after(ledger, definition, graph)
+
+    async def expects_unit(self, run_id: UUID) -> bool:
+        """Whether the run's workflow has stage members, so a launched run has a unit."""
+        definition, graph = await self._definition(run_id)
+        return bool(self._stage_members(graph, definition))
+
+    @staticmethod
+    def _stage_members(graph: StepGraph, definition: StepRunDefinition) -> dict[str, PersonaRef]:
+        members: dict[str, PersonaRef] = {}
+        for node in graph.nodes.values():
+            if node.kind is not NodeKind.STAGE:
+                continue
+            for member in node.members:
+                members.setdefault(member.alias, definition.persona_refs[member.alias])
+        return members
+
+    async def _launch_unit(
+        self, run_id: UUID, graph: StepGraph, definition: StepRunDefinition
+    ) -> RunUnit | None:
+        """Start the run's root and every stage member together; ``None`` for a run with none."""
+        members = self._stage_members(graph, definition)
+        if not members:
+            return None
+        return await self._sessions.launch_run(run_id, members)
+
+    # -- what the unit's sessions report ----------------------------------------
+
+    async def note_listening(
+        self, *, run_id: UUID, session_id: str, member: str, start_id: str
+    ) -> RunState:
+        """Record that a member's subscriptions are up, then publish what was waiting for it.
+
+        A repeat of the same start (a reconnected stream) changes nothing.
+        """
+        definition, graph = await self._definition(run_id)
+        now = self._clock()
+        async with self._repository.transaction(run_id) as tx:
+            state = await tx.load()
+            if state.finished:
+                return state
+            self._require_member(state, session_id, member, "listening")
+            if any(
+                event.event_type == EVENT_MEMBER_LISTENING
+                and event.payload.get("session_id") == session_id
+                and event.payload.get("start_id") == start_id
+                for event in state.events
+            ):
+                self._count_repeat("listening")
+                return state
+            ledger = _Ledger(tx, state, now)
+            await ledger.append(
+                EVENT_MEMBER_LISTENING,
+                {"member": member, "session_id": session_id, "start_id": start_id},
+            )
+        return await self._after(ledger, definition, graph)
+
+    async def note_offer_published(
+        self, *, run_id: UUID, session_id: str, offer_id: UUID
+    ) -> RunState:
+        """Record that the root put an offer on the mesh, if Ting has not seen it published."""
+        now = self._clock()
+        async with self._repository.transaction(run_id) as tx:
+            state = await tx.load()
+            if state.finished:
+                return state
+            if session_id != unit_root(state):
+                self._refuse(
+                    "unknown_session",
+                    f"session {session_id} is not the root of run {run_id}, so it published "
+                    "no offer of this run",
+                )
+            offer = self._require_offer(state, offer_id)
+            if str(offer.id) in offer_publications(state):
+                self._count_repeat("offer_published")
+                return state
+            ledger = _Ledger(tx, state, now)
+            await ledger.append(
+                EVENT_OFFER_PUBLISHED,
+                {
+                    "offer_id": offer.offer_id,
+                    "node_id": offer.node_id,
+                    "attempt": offer.attempt,
+                    "reported_by": session_id,
+                },
+                source=offer.id,
+            )
+            return await self._repository.load(run_id)
+
+    async def note_picked_up(
+        self,
+        *,
+        run_id: UUID,
+        session_id: str,
+        member: str,
+        offer_id: UUID,
+        activation_id: UUID,
+        attempt: int,
+    ) -> RunState:
+        """Record a member's pickup of an offer as a step of its own.
+
+        The step is fenced on the member's session. The activation id is the member's: it
+        mints one per pickup, so a pickup reported again is the step already recorded and
+        changes nothing. A pickup of an offer the run did not make, that its generation has
+        moved past, that no longer stands, or by a member the offer is not addressed to, is
+        refused with ``HandoffRefusedError`` (counted, and logged by the caller).
+        """
+        definition, graph = await self._definition(run_id)
+        now = self._clock()
+        async with self._repository.transaction(run_id) as tx:
+            state = await tx.load()
+            if state.finished:
+                return state
+            if state.step(activation_id) is not None:
+                self._count_repeat("picked_up")
+                return state
+            self._require_member(state, session_id, member, "picked_up")
+            offer = self._require_offer(state, offer_id)
+            self._require_standing(state, offer, member, attempt, graph)
+            if any(
+                step.kind is StepKind.STAGE_MEMBER
+                and step.offer_id == offer.offer_id
+                and step.member == member
+                for step in state.steps
+            ):
+                self._refuse(
+                    "pickup",
+                    f"member {member!r} already took up offer {offer.offer_id} under another "
+                    "activation",
+                )
+            ledger = _Ledger(tx, state, now)
+            step = WorkflowStep(
+                id=activation_id,
+                run_id=run_id,
+                node_id=offer.node_id,
+                member=member,
+                kind=StepKind.STAGE_MEMBER,
+                attempt=offer.attempt,
+                generation=offer.generation,
+                state=StepState.ACTIVE,
+                created_at=now,
+                session_id=session_id,
+                inputs=offer.inputs,
+                deadline_at=offer.deadline_at,
+                activated_at=now,
+                offer_id=offer.offer_id,
+                picked_up_at=now,
+            )
+            await ledger.save(step)
+            if offer.state is StepState.ACTIVE:
+                await ledger.save(
+                    offer.with_state(StepState.DONE, closed_at=now, note=f"picked up by {member}")
+                )
+            await ledger.append(
+                EVENT_OFFER_PICKED_UP,
+                {
+                    "offer_id": offer.offer_id,
+                    "node_id": offer.node_id,
+                    "member": member,
+                    "session_id": session_id,
+                    "activation_id": str(activation_id),
+                    "attempt": offer.attempt,
+                },
+                source=step.id,
+            )
+        get_observability().count(
+            "ting_workflow_offer_pickups_total",
+            description="Members' pickups of workflow offers that Ting recorded as steps.",
+        )
+        return await self._after(ledger, definition, graph)
+
+    async def note_passed(
+        self,
+        *,
+        run_id: UUID,
+        session_id: str,
+        member: str,
+        offer_id: UUID,
+        reason: str,
+    ) -> RunState:
+        """Record that a member received an offer and it is not its to take.
+
+        An offer that every member it is addressed to passed is an answer, not a loss: it
+        ends its own path (failed, naming the filters that matched nobody) and is not
+        published again. An offer a member refused (busy) is not a pass and is.
+        """
+        definition, graph = await self._definition(run_id)
+        now = self._clock()
+        async with self._repository.transaction(run_id) as tx:
+            state = await tx.load()
+            if state.finished:
+                return state
+            self._require_member(state, session_id, member, "passed")
+            offer = self._require_offer(state, offer_id)
+            if _passed(state, offer.offer_id, member):
+                self._count_repeat("passed")
+                return state
+            ledger = _Ledger(tx, state, now)
+            await ledger.append(
+                EVENT_OFFER_PASSED,
+                {
+                    "offer_id": offer.offer_id,
+                    "node_id": offer.node_id,
+                    "member": member,
+                    "session_id": session_id,
+                    "reason": reason,
+                },
+                source=offer.id,
+            )
+            state = ledger.state()
+            addressed = [m.alias for m in offer_members(graph, offer)]
+            if offer.state is StepState.ACTIVE and all(
+                _passed(state, offer.offer_id, alias) for alias in addressed
+            ):
+                why = (
+                    f"every member offered {offer.node_id!r} passed it ({', '.join(addressed)}): "
+                    + "; ".join(_pass_reasons(state, offer.offer_id))
+                )
+                plan = plan_close(graph, state, offer, Ending.failed(why), now=now)
+                await self._commit_close(ledger, graph, plan, now)
+        return await self._after(ledger, definition, graph)
+
+    async def note_offer_refused(
+        self,
+        *,
+        run_id: UUID,
+        session_id: str,
+        member: str,
+        offer_id: str,
+        reason: str,
+        detail: str,
+    ) -> RunState:
+        """Record that a member's Skuld refused an offer; loud, counted, and not a pass.
+
+        The offer stays outstanding: a member that was busy takes it when the offer is
+        published again, and one that refused for good (a pin or contract mismatch) is
+        named in the log for an operator.
+        """
+        now = self._clock()
+        async with self._repository.transaction(run_id) as tx:
+            state = await tx.load()
+            if state.finished:
+                return state
+            self._require_member(state, session_id, member, "offer_refused")
+            ledger = _Ledger(tx, state, now)
+            await ledger.append(
+                EVENT_OFFER_REFUSED,
+                {
+                    "offer_id": offer_id,
+                    "member": member,
+                    "session_id": session_id,
+                    "reason": reason,
+                    "detail": detail,
+                },
+            )
+        logger.error(
+            "Member %s (session %s) of run %s refused offer %s (%s): %s",
+            member,
+            session_id,
+            run_id,
+            offer_id,
+            reason,
+            detail,
+        )
+        get_observability().count(
+            "ting_workflow_offer_refusals_total",
+            attributes={"reason": reason},
+            description="Workflow offers a member's Skuld refused, by reason.",
+        )
+        return await self._repository.load(run_id)
+
+    # -- publishing offers ------------------------------------------------------
+
+    async def publish_ready_offers(self, run_id: UUID) -> int:
+        """Publish the run's outstanding offers whose members all listen; returns how many.
+
+        Called after every change, and by the sweep, so an offer that waited for a member to
+        come up, or whose publication the root refused, goes out as soon as it can.
+        """
+        definition, graph = await self._definition(run_id)
+        return await self._publish_ready(run_id, definition, graph)
+
+    async def republish_offer(self, run_id: UUID, offer_id: UUID) -> bool:
+        """Publish an unclaimed offer again; the same offer, the same event. True if it went out.
+
+        Counted. The pickup grace says when to look again and is no cap: an offer is
+        republished for as long as nobody takes it, until the step deadline fails it.
+        """
+        definition, graph = await self._definition(run_id)
+        async with self._lock(run_id):
+            state = await self._repository.load(run_id)
+            offer = state.step(offer_id)
+            if (
+                state.finished
+                or offer is None
+                or offer.kind is not StepKind.OFFER
+                or offer.state is not StepState.ACTIVE
+            ):
+                return False
+            sent = await self._publish(state, offer, graph, definition)
+        if sent:
+            logger.warning(
+                "Offer %s (%s) of run %s was not taken up; published it again",
+                offer.offer_id,
+                offer.node_id,
+                run_id,
+            )
+            get_observability().count(
+                "ting_workflow_offers_republished_total",
+                description="Workflow offers published again because no member took them up.",
+            )
+        return sent
+
+    async def _publish_ready(
+        self, run_id: UUID, definition: StepRunDefinition, graph: StepGraph
+    ) -> int:
+        async with self._lock(run_id):
+            state = await self._repository.load(run_id)
+            if not state.launched or state.finished:
+                return 0
+            published = offer_publications(state)
+            listening = listening_members(state)
+            sent = 0
+            for offer in state.steps:
+                if (
+                    offer.kind is not StepKind.OFFER
+                    or offer.state is not StepState.ACTIVE
+                    or offer.offer_id in published
+                ):
+                    continue
+                waiting = [
+                    member.alias
+                    for member in offer_members(graph, offer)
+                    if member.alias not in listening
+                ]
+                if waiting:
+                    logger.info(
+                        "Offer %s (%s) of run %s waits for %s to listen",
+                        offer.offer_id,
+                        offer.node_id,
+                        run_id,
+                        ", ".join(waiting),
+                    )
+                    continue
+                if await self._publish(state, offer, graph, definition):
+                    sent += 1
+            return sent
+
+    async def _publish(
+        self,
+        state: RunState,
+        offer: WorkflowStep,
+        graph: StepGraph,
+        definition: StepRunDefinition,
+    ) -> bool:
+        """Sign the offer and hand it to the run's root; record that it went out.
+
+        A root that cannot take it yet (its broker is not up) or an offer its Skuld refuses
+        is logged at error and counted, and the offer stays outstanding: it is published
+        again by the next pass, and the step deadline fails it if that never works.
+        """
+        try:
+            body = self._offer_body(state, offer, graph, definition)
+            await self._sessions.publish_offer(state.run_id, body)
+        except Exception as exc:
+            logger.error(
+                "Could not publish offer %s (%s) of run %s: %s: %s; it stays outstanding and "
+                "is published again by the next pass",
+                offer.offer_id,
+                offer.node_id,
+                state.run_id,
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
+            get_observability().count(
+                "ting_workflow_offer_publish_failures_total",
+                description=(
+                    "Workflow offers the run's root could not take, by the next pass tried again."
+                ),
+            )
+            return False
+        now = self._clock()
+        async with self._repository.transaction(state.run_id) as tx:
+            current = await tx.load()
+            ledger = _Ledger(tx, current, now)
+            await ledger.append(
+                EVENT_OFFER_PUBLISHED,
+                {
+                    "offer_id": offer.offer_id,
+                    "node_id": offer.node_id,
+                    "topic": offer_topic(offer),
+                    "attempt": offer.attempt,
+                    "publication": len(offer_publications(current).get(offer.offer_id, ())) + 1,
+                },
+                source=offer.id,
+            )
+        get_observability().count(
+            "ting_workflow_offers_published_total",
+            description="Workflow offers Ting handed to a run's root for the mesh.",
+        )
+        return True
+
+    def _offer_body(
+        self,
+        state: RunState,
+        offer: WorkflowStep,
+        graph: StepGraph,
+        definition: StepRunDefinition,
+    ) -> dict[str, Any]:
+        """The body of the room's ``offer`` operation: the signed ``step.offered`` payload."""
+        node = graph.nodes[offer.node_id]
+        contracts = []
+        for member in offer_members(graph, offer):
+            if member.contract is None:
+                raise StepEngineError(
+                    f"member {member.alias!r} of {node.id!r} has no persona contract, so the "
+                    "offer cannot carry one for it"
+                )
+            ref = definition.persona_refs[member.alias]
+            contracts.append(
+                StepContract.from_persona(
+                    PersonaPin(
+                        alias=ref.alias, id=ref.id, revision=ref.revision, digest=ref.digest
+                    ),
+                    member.contract,
+                )
+            )
+        inputs = [
+            OfferInput(
+                seq=item.seq,
+                event_type=item.event_type,
+                edge_id=item.edge_id,
+                node_id=item.node_id,
+                member=item.member,
+                payload=dict(event.payload),
+            )
+            for item in offer.inputs
+            if (event := state.event(item.seq)) is not None
+        ]
+        offered = StepOffered(
+            run_id=str(state.run_id),
+            offer_id=offer.offer_id or str(offer.id),
+            node_id=node.id,
+            node_label=node.label,
+            workflow_name=definition.workflow_name,
+            topic=offer_topic(offer),
+            attempt=offer.attempt,
+            generation=offer.generation,
+            inputs=inputs,
+            deadline_at=offer.deadline_at,
+            instructions=render_offer_instructions(
+                workflow_name=definition.workflow_name,
+                node_id=node.id,
+                node_label=node.label,
+                run_id=state.run_id,
+                attempt=offer.attempt,
+                generation=offer.generation,
+                inputs=inputs,
+                contracts=contracts,
+                deadline_at=offer.deadline_at,
+            ),
+            contracts=contracts,
+        )
+        payload = offered.to_payload()
+        attestation = self._signer.sign(payload)
+        return {"offer": payload, "attestation": dict(attestation) if attestation else None}
+
+    def _lock(self, run_id: UUID) -> asyncio.Lock:
+        return self._publishing.setdefault(run_id, asyncio.Lock())
+
+    # -- fencing a report -------------------------------------------------------
+
+    def _refuse(self, kind: str, reason: str) -> None:
+        """Count and raise a report that does not fit the run."""
+        self._count_rejection(kind)
+        raise HandoffRefusedError(reason)
+
+    def _require_member(self, state: RunState, session_id: str, member: str, report: str) -> None:
+        """The report is from the session the run's unit launched for ``member``."""
+        unit = unit_sessions(state)
+        if member not in unit:
+            self._refuse(
+                "unknown_member",
+                f"{report} report names member {member!r}, which is not in run "
+                f"{state.run_id}'s unit ({', '.join(sorted(unit)) or 'no members'})",
+            )
+        if unit[member] != session_id:
+            self._refuse(
+                "unknown_session",
+                f"{report} report for member {member!r} came from session {session_id}, but the "
+                f"member's session is {unit[member]}",
+            )
+
+    def _require_offer(self, state: RunState, offer_id: UUID) -> WorkflowStep:
+        offer = state.step(offer_id)
+        if offer is None or offer.kind is not StepKind.OFFER or offer.run_id != state.run_id:
+            self._refuse("unknown_offer", f"run {state.run_id} made no offer {offer_id}")
+        assert offer is not None  # narrowed by _refuse, which raises
+        return offer
+
+    def _require_standing(
+        self, state: RunState, offer: WorkflowStep, member: str, attempt: int, graph: StepGraph
+    ) -> None:
+        if offer.state not in (StepState.ACTIVE, StepState.DONE):
+            self._refuse(
+                "stale_offer",
+                f"offer {offer.offer_id} is {offer.state.value}, so {member!r} cannot take it up",
+            )
+        if offer.generation != state.generation:
+            self._refuse(
+                "stale_offer",
+                f"offer {offer.offer_id} is of generation {offer.generation} and the run is in "
+                f"generation {state.generation}; rework replaced it",
+            )
+        if member not in {m.alias for m in offer_members(graph, offer)}:
+            self._refuse(
+                "pickup",
+                f"offer {offer.offer_id} is addressed to the members that take "
+                f"{offer_topic(offer)!r}, and {member!r} is not one",
+            )
+        if attempt != offer.attempt:
+            self._refuse(
+                "pickup",
+                f"{member!r} took up attempt {attempt} of offer {offer.offer_id}, which is "
+                f"attempt {offer.attempt}",
+            )
 
     async def record_close(
         self,
@@ -584,49 +1117,13 @@ class WorkflowStepEngine:
                 flag.activation_id, flag.kind, at=self._clock(), error=error
             )
 
-    async def resume_start(self, run_id: UUID, activation_id: UUID, reason: str) -> bool:
-        """Finish starting a step whose start was interrupted; True if it was resumed.
-
-        Creates or finds the member's session, records it on the step and delivers the
-        same activation again (delivery is idempotent by activation id). Nothing about
-        the outcome changes, so unlike the engine's own start this never fails the step
-        when the session cannot be reached: the error is raised for the caller to count,
-        and the step stays as it was. A step that is no longer ``active`` is left alone.
-        """
-        definition, graph = await self._definition(run_id)
-        now = self._clock()
-        async with self._repository.transaction(run_id) as tx:
-            state = await tx.load()
-            step = state.step(activation_id)
-            if (
-                state.finished
-                or step is None
-                or step.run_id != run_id
-                or step.kind is not StepKind.STAGE_MEMBER
-                or step.state is not StepState.ACTIVE
-            ):
-                return False
-            ledger = _Ledger(tx, state, now)
-            await ledger.append(
-                EVENT_RECOVERY,
-                _recovery_payload("resume_start", _system_actor(), reason, step),
-                source=step.id,
-            )
-        member = step.member or ""
-        session_id = await self._sessions.ensure_session(
-            run_id, member, definition.persona_refs[member]
-        )
-        bound = await self._bind_session(step, session_id)
-        if bound is None:
-            return False
-        await self._deliver_or_defer(bound, graph, definition, redeliver=True)
-        return True
-
     async def fail_step(self, run_id: UUID, activation_id: UUID, reason: str) -> bool:
-        """Fail an open step because its session is gone; True if it was failed.
+        """Fail an open step or offer; True if it was failed.
 
-        The step ends like any step that ended ``failed``: the engine's sibling and
-        run-failure rules apply to it. A step that is no longer open is left alone.
+        For a step whose session is gone, and for an offer that cannot be taken (a member
+        that never came up, the step deadline). It ends like any step that ended failed:
+        the engine's sibling and run-failure rules apply to it. One that is no longer open is
+        left alone.
         """
         definition, graph = await self._definition(run_id)
         now = self._clock()
@@ -637,7 +1134,7 @@ class WorkflowStepEngine:
                 state.finished
                 or step is None
                 or step.run_id != run_id
-                or step.kind is not StepKind.STAGE_MEMBER
+                or step.kind not in (StepKind.STAGE_MEMBER, StepKind.OFFER)
                 or step.state not in (StepState.ACTIVE, StepState.WAITING)
             ):
                 return False
@@ -696,7 +1193,7 @@ class WorkflowStepEngine:
                 graph, state, step, reason=reason, now=now, settings=self._settings
             )
             successor = next(
-                item.step for item in actions if isinstance(item, ActivateStep | QueueStep)
+                item.step for item in actions if isinstance(item, OfferStep | QueueStep)
             )
             ledger = _Ledger(tx, state, now)
             await ledger.append(
@@ -713,7 +1210,7 @@ class WorkflowStepEngine:
             )
             await ledger.apply(actions)
         logger.warning(
-            "Workflow step %s (%s/%s) of run %s: %s by %s (%s); attempt %d is %s",
+            "Workflow step %s (%s/%s) of run %s: %s by %s (%s); attempt %d is offered (%s)",
             step.id,
             step.node_id,
             step.member,
@@ -736,36 +1233,36 @@ class WorkflowStepEngine:
     async def _prepare_session(
         self, action: RecoveryAction, definition: StepRunDefinition, step: WorkflowStep
     ) -> None:
-        """Make the member's session fit for the new attempt, or refuse the retry."""
+        """Make the member's session fit for the new offer, or refuse the recovery."""
         if not step.session_id:
             return
         if action is RecoveryAction.REASSIGN:
-            await self._replace(definition, step)
+            await self._restart(definition, step)
             return
-        observed = await self._sessions.observe(step.run_id, step.session_id, step.id)
-        if observed.liveness is SessionLiveness.FAILED:
-            await self._replace(definition, step)
+        liveness = await self._sessions.session_liveness(step.run_id, step.session_id)
+        if liveness is SessionLiveness.FAILED:
+            await self._restart(definition, step)
             return
-        held = observed.reported
-        if held is None:
-            return
-        where = f"{step.node_id}/{step.member}"
-        if str(held.get("state") or "") in ("active", "waiting"):
-            raise RecoveryRefusedError(
-                action,
-                f"session {step.session_id} still holds {where} open and cannot let go of it, "
-                "so a new attempt could not be delivered there; reassign the step to a fresh "
-                "session instead",
-            )
         if step.is_open:
             raise RecoveryRefusedError(
                 action,
-                f"session {step.session_id} already closed {where} but that close is not "
-                "recorded yet; the sweep records it, then recover the step if it is still needed",
+                f"session {step.session_id} still holds {step.node_id}/{step.member} open and "
+                "cannot let go of it, so a new offer would be refused there as busy; "
+                "reassign the step to restart the member instead",
             )
 
-    async def _replace(self, definition: StepRunDefinition, step: WorkflowStep) -> None:
+    async def _restart(self, definition: StepRunDefinition, step: WorkflowStep) -> None:
+        """Restart the member's harness in place; its offers wait until it listens again.
+
+        The restart is recorded first, so a listening report from the new launch is never
+        undone by a late record of the restart.
+        """
         member = step.member or ""
+        async with self._repository.transaction(step.run_id) as tx:
+            state = await tx.load()
+            await _Ledger(tx, state, self._clock()).append(
+                EVENT_MEMBER_RESTARTED, {"member": member, "session_id": step.session_id}
+            )
         await self._sessions.replace_session(
             step.run_id, member, definition.persona_refs[member], step.session_id
         )
@@ -808,301 +1305,14 @@ class WorkflowStepEngine:
         definition: StepRunDefinition,
         graph: StepGraph,
     ) -> RunState:
-        """Count what the commit decided, start the sessions it asked for, stop them at the end."""
+        """Count what the commit decided, publish the offers that can go out, end the unit."""
         if ledger.failure is not None:
             self._report_failure(ledger)
-        for step in ledger.to_start:
-            await self._start(step, definition, graph)
-        if ledger.terminal is not None:
+        if ledger.terminal is None:
+            await self._publish_ready(ledger.run_id, definition, graph)
+        else:
             await self._sessions.stop_run_sessions(ledger.run_id)
         return await self._repository.load(ledger.run_id)
-
-    async def _start(
-        self,
-        step: WorkflowStep,
-        definition: StepRunDefinition,
-        graph: StepGraph,
-    ) -> None:
-        if step.kind is not StepKind.STAGE_MEMBER or step.member is None:
-            return
-        persona_ref = definition.persona_refs[step.member]
-        try:
-            session_id = await self._sessions.ensure_session(step.run_id, step.member, persona_ref)
-        except Exception as exc:
-            await self._fail_start(
-                step, graph, definition, f"no session for {step.member!r}: {exc}"
-            )
-            return
-        bound = await self._bind_session(step, session_id)
-        if bound is None:
-            return
-        try:
-            await self._deliver_or_defer(bound, graph, definition)
-        except Exception as exc:
-            await self._fail_start(
-                bound, graph, definition, f"delivery to {step.member!r} failed: {exc}"
-            )
-
-    async def _deliver_or_defer(
-        self,
-        bound: WorkflowStep,
-        graph: StepGraph,
-        definition: StepRunDefinition,
-        *,
-        redeliver: bool = False,
-    ) -> None:
-        """Hand the step to its session if the session is up; wait for it if it is coming up.
-
-        A session boots in minutes (a pod is scheduled, its volume attached, the harness
-        started) and cannot take a step before it is up, so a step for a session that is
-        still starting is not delivered and not failed: the engine waits for the session in
-        the background (``_deliver_when_up``) and the caller is not held for the boot.
-        Raises when the session cannot be asked, has ended, or refuses the step.
-
-        ``redeliver`` is the stuck sweep handing over a step again that may already have
-        been delivered: it sends without the delivery claim (delivery is idempotent by
-        activation id at the session) and records the delivery afterwards.
-        """
-        liveness = await self._sessions.session_liveness(bound.run_id, bound.session_id or "")
-        if liveness is SessionLiveness.STARTING:
-            self._defer_delivery(bound, graph, definition)
-            return
-        if liveness is not SessionLiveness.RUNNING:
-            raise StepEngineError(await self._cannot_take(bound, liveness))
-        try:
-            await self._deliver(bound, graph, definition, claim=not redeliver)
-        except SessionNotReadyError as exc:
-            logger.info(
-                "Session %s of step %s (%s/%s) runs but does not answer yet (%s); "
-                "delivering the step when it does",
-                bound.session_id,
-                bound.id,
-                bound.node_id,
-                bound.member,
-                exc,
-            )
-            self._defer_delivery(bound, graph, definition)
-
-    async def _deliver(
-        self,
-        bound: WorkflowStep,
-        graph: StepGraph,
-        definition: StepRunDefinition,
-        *,
-        claim: bool = True,
-    ) -> bool:
-        """Hand the step to its session; False when another worker claimed it first.
-
-        The claim is set before the send. A send that fails fails the step (the caller's
-        ``_fail_start``); a process that dies between the claim and the send leaves the
-        step claimed but undelivered, which the stuck sweep finds (its session runs and
-        does not know the activation) and delivers again.
-        """
-        session_id = bound.session_id or ""
-        claimed = await self._repository.claim_delivery(bound.id, session_id, at=self._clock())
-        if claim and not claimed:
-            logger.info(
-                "Step %s (%s/%s) was already delivered to session %s; not sending it again",
-                bound.id,
-                bound.node_id,
-                bound.member,
-                session_id,
-            )
-            return False
-        activation = self._activation(
-            bound,
-            graph,
-            await self._repository.load(bound.run_id),
-            definition.workflow_name,
-        )
-        try:
-            await self._sessions.deliver(activation)
-        except SessionNotReadyError:
-            # Nothing reached the session: give the claim back so the next try can take it.
-            if claimed:
-                await self._repository.release_delivery(bound.id, session_id)
-            raise
-        return True
-
-    def _defer_delivery(
-        self, bound: WorkflowStep, graph: StepGraph, definition: StepRunDefinition
-    ) -> None:
-        logger.info(
-            "Session %s of step %s (%s/%s) is still starting; delivering the step when it is up",
-            bound.session_id,
-            bound.id,
-            bound.node_id,
-            bound.member,
-        )
-        task = asyncio.create_task(
-            self._deliver_when_up(bound, graph, definition),
-            name=f"deliver-step-{bound.id}",
-        )
-        self._deferred.add(task)
-        task.add_done_callback(self._deferred.discard)
-
-    async def _deliver_when_up(
-        self, bound: WorkflowStep, graph: StepGraph, definition: StepRunDefinition
-    ) -> None:
-        """Poll the step's session until it is up, then deliver; fail the step if it never is.
-
-        The wait ends when the session is running, when it ends (stopped, failed or gone),
-        or at the step's deadline, which is the one real bound on a step: a session that
-        has not come up by then is not going to run the step. A session that cannot be
-        asked leaves the step active and logged: the stuck sweep delivers it once the
-        session answers, or flags it.
-        """
-        while True:
-            await asyncio.sleep(self._settings.session_poll_seconds)
-            current = (await self._repository.load(bound.run_id)).step(bound.id)
-            if current is None or current.state is not StepState.ACTIVE:
-                return
-            if current.session_id != bound.session_id:
-                return
-            try:
-                liveness = await self._sessions.session_liveness(
-                    bound.run_id, bound.session_id or ""
-                )
-            except Exception:
-                logger.error(
-                    "Could not ask session %s whether it is up for step %s (%s/%s); the "
-                    "step stays active and the stuck sweep delivers it once the session "
-                    "answers",
-                    bound.session_id,
-                    bound.id,
-                    bound.node_id,
-                    bound.member,
-                    exc_info=True,
-                )
-                get_observability().count(
-                    "ting_workflow_step_wait_failures_total",
-                    description="Waits for a starting step session that could not ask it.",
-                )
-                return
-            if liveness is SessionLiveness.RUNNING:
-                try:
-                    await self._deliver(bound, graph, definition)
-                    return
-                except SessionNotReadyError as exc:
-                    logger.info(
-                        "Session %s of step %s (%s/%s) runs but does not answer yet (%s); "
-                        "still waiting",
-                        bound.session_id,
-                        bound.id,
-                        bound.node_id,
-                        bound.member,
-                        exc,
-                    )
-                except Exception as exc:
-                    await self._fail_start(
-                        bound, graph, definition, f"delivery to {bound.member!r} failed: {exc}"
-                    )
-                    return
-            elif liveness is not SessionLiveness.STARTING:
-                await self._fail_start(
-                    bound,
-                    graph,
-                    definition,
-                    f"delivery to {bound.member!r} failed: "
-                    + await self._cannot_take(bound, liveness),
-                )
-                return
-            if bound.deadline_at is not None and self._clock() > bound.deadline_at:
-                await self._fail_start(
-                    bound,
-                    graph,
-                    definition,
-                    f"session {bound.session_id} did not come up before the step's "
-                    f"deadline of {bound.deadline_at.isoformat()}; raise "
-                    "workflow_steps.step_deadline_seconds if sessions boot that slowly",
-                )
-                return
-
-    async def _cannot_take(self, bound: WorkflowStep, liveness: SessionLiveness) -> str:
-        """Why the step's session cannot take it: its state, and for a failed one, its reason."""
-        reason = f"session {bound.session_id} is {liveness.value}, so it cannot take the step"
-        if liveness is not SessionLiveness.FAILED:
-            return reason
-        failure = await self._sessions.session_failure(bound.run_id, bound.session_id or "")
-        return f"{reason}: {failure}" if failure else reason
-
-    async def _bind_session(self, step: WorkflowStep, session_id: str) -> WorkflowStep | None:
-        """Record the session that owns an activated step; ``None`` if the step moved on."""
-        async with self._repository.transaction(step.run_id) as tx:
-            state = await tx.load()
-            current = state.step(step.id)
-            if current is None or current.state is not StepState.ACTIVE:
-                return None
-            bound = current.with_state(StepState.ACTIVE, session_id=session_id)
-            await tx.save_step(bound)
-            return bound
-
-    async def _fail_start(
-        self,
-        step: WorkflowStep,
-        graph: StepGraph,
-        definition: StepRunDefinition,
-        reason: str,
-    ) -> None:
-        """A step that could not be started fails: recorded, counted and logged, never retried."""
-        logger.error(
-            "Workflow step %s (%s/%s) could not be started: %s",
-            step.id,
-            step.node_id,
-            step.member,
-            reason,
-        )
-        get_observability().count(
-            "ting_workflow_step_start_failures_total",
-            description="Workflow step activations that could not reach a harness session.",
-        )
-        now = self._clock()
-        async with self._repository.transaction(step.run_id) as tx:
-            state = await tx.load()
-            current = state.step(step.id)
-            if current is None or current.state is not StepState.ACTIVE:
-                return
-            plan = plan_close(graph, state, current, Ending.failed(reason), now=now)
-            ledger = _Ledger(tx, state, now)
-            await self._commit_close(ledger, graph, plan, now)
-        await self._after(ledger, definition, graph)
-
-    @staticmethod
-    def _activation(
-        step: WorkflowStep, graph: StepGraph, state: RunState, workflow_name: str
-    ) -> StepActivation:
-        node = graph.nodes[step.node_id]
-        member = node.member(step.member or "")
-        contract = member.contract if member is not None else None
-        delivered = tuple(
-            DeliveredEvent(
-                seq=item.seq,
-                event_type=item.event_type,
-                edge_id=item.edge_id,
-                node_id=item.node_id,
-                member=item.member,
-                payload=event.payload,
-            )
-            for item in step.inputs
-            if (event := state.event(item.seq)) is not None
-        )
-        return StepActivation(
-            run_id=step.run_id,
-            activation_id=step.id,
-            node_id=step.node_id,
-            node_label=node.label,
-            member=step.member or "",
-            attempt=step.attempt,
-            generation=step.generation,
-            session_id=step.session_id or "",
-            inputs=delivered,
-            deadline_at=step.deadline_at,
-            valid_verdicts=tuple(sorted(contract.produces_map)) if contract is not None else (),
-            outcome_schema=contract.outcome_schema if contract is not None else None,
-            verdict_events=dict(contract.produces_map) if contract is not None else {},
-            default_event=contract.produces_event if contract is not None else "",
-            workflow_name=workflow_name,
-        )
 
     # -- helpers ----------------------------------------------------------------
 
@@ -1198,6 +1408,25 @@ class WorkflowStepEngine:
             attributes={"knob": ledger.cap_hit},
             description="Bounds a workflow run hit, by the graph knob that bounds it.",
         )
+
+
+def _passed(state: RunState, offer_id: str, member: str) -> bool:
+    """Whether ``member`` already passed the offer."""
+    return any(
+        event.event_type == EVENT_OFFER_PASSED
+        and event.payload.get("offer_id") == offer_id
+        and event.payload.get("member") == member
+        for event in state.events
+    )
+
+
+def _pass_reasons(state: RunState, offer_id: str) -> list[str]:
+    """Why each member passed the offer, one entry per member."""
+    return [
+        f"{event.payload.get('member')}: {event.payload.get('reason') or 'no reason given'}"
+        for event in state.events
+        if event.event_type == EVENT_OFFER_PASSED and event.payload.get("offer_id") == offer_id
+    ]
 
 
 def _actor_json(by: GateActor) -> dict[str, str]:

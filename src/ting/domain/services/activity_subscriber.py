@@ -27,10 +27,11 @@ try:
 except ImportError:
     _catalog_run_needs_approval = None  # type: ignore[assignment]
 
+from niuu.domain.workflow_step import STEP_EVENT_CLOSED, STEP_EVENT_UNCLOSED
 from niuu.observability import get_observability
 from ting.config import WatcherConfig
 from ting.domain.models import PR_STATE_MERGED, Run, RunStatus, SessionMessage
-from ting.domain.workflow_steps import InvalidEndingError, StepFencingError
+from ting.domain.workflow_steps import HandoffRefusedError, InvalidEndingError, StepFencingError
 from ting.ports.activity_projection import ActivityProjector
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.event_bus import EventBusPort, TingEvent
@@ -49,6 +50,14 @@ if TYPE_CHECKING:
     from ting.domain.services.workflow_runs import WorkflowRuns
 
 logger = logging.getLogger(__name__)
+
+#: ``metadata.workflow_step.event`` values a Skuld reports for the handoff, as Skuld names them
+#: (``skuld.workflow_steps``). Ting may not import Skuld, so the words are held here.
+STEP_REPORT_LISTENING = "listening"
+STEP_REPORT_OFFER_PUBLISHED = "offer_published"
+STEP_REPORT_PICKED_UP = "picked_up"
+STEP_REPORT_PASSED = "passed"
+STEP_REPORT_OFFER_REFUSED = "offer_refused"
 
 # Sentinel returned by _lookup_run_session() to distinguish "this cluster
 # errored while being asked" from a clean "not found" (None) — a plain
@@ -370,8 +379,9 @@ class SessionActivitySubscriber:
                         # same attempt.
                         await self._reconcile_running_runs(owner_id, exempt_cluster_key=key)
                         if self._workflow_runs is not None:
-                            # Closes reported while the stream was down are read back
-                            # from the sessions now that it is open, so none is missed.
+                            # Pickups, passes and closes reported while the stream was
+                            # down are read back from the sessions' durable logs now that
+                            # it is open, so none is missed.
                             await self._workflow_runs.reconcile_owner(owner_id)
                         logger.info(
                             "SSE subscription started for owner %s cluster=%s", owner_id[:8], label
@@ -788,14 +798,15 @@ class SessionActivitySubscriber:
         self._pending_evaluations[event.session_id] = task
 
     async def _handle_workflow_step(self, event: ActivityEvent, report: Any) -> None:
-        """Apply what a step-host session reported about its workflow step.
+        """Apply what a session of a run's unit reported about the handoff or its step.
 
-        The session id is the authenticated one of the activity envelope, never a
-        field of the payload. A ``closed`` report is applied through the step engine,
-        which fences it; ``unclosed`` (a turn ended with the step still open) is
-        recorded in the run's event log and counted, for stuck detection to act on.
-        A fencing or ending rejection has already been counted by the engine: it is
-        logged at error here and the stream moves on.
+        The session id is the authenticated one of the activity envelope, never a field of
+        the payload. Each report is recorded under its own key (``listening``: session and
+        start; a pickup or pass: offer and session; a close: activation, attempt and ending),
+        so a report delivered again, by a reconnected stream or by a second subscription to
+        the same session, is accepted and changes nothing. A rejection (fencing, an ending
+        the contract refuses, a report that does not fit the run) has been counted by the
+        engine: it is logged at error here and the stream moves on.
         """
         runs = self._workflow_runs
         if runs is None:
@@ -803,32 +814,8 @@ class SessionActivitySubscriber:
         try:
             if not isinstance(report, dict):
                 raise ValueError("workflow_step must be an object")
-            kind = report["event"]
-            run_id = UUID(str(report["run_id"]))
-            activation_id = UUID(str(report["activation_id"]))
-            attempt = int(report["attempt"])
-            if kind == "closed":
-                ending = report["ending"]
-                if not isinstance(ending, dict):
-                    raise ValueError("a closed workflow_step carries its ending as an object")
-                await runs.record_step_closed(
-                    run_id=run_id,
-                    activation_id=activation_id,
-                    session_id=event.session_id,
-                    attempt=attempt,
-                    report=ending,
-                )
-                return
-            if kind != "unclosed":
-                raise ValueError(f"unknown workflow_step event {kind!r}")
-            await runs.record_step_unclosed(
-                run_id=run_id,
-                activation_id=activation_id,
-                session_id=event.session_id,
-                attempt=attempt,
-                turn=_turn_of(event.metadata),
-            )
-        except (StepFencingError, InvalidEndingError) as exc:
+            await self._apply_step_report(runs, event, report)
+        except (StepFencingError, InvalidEndingError, HandoffRefusedError) as exc:
             logger.error(
                 "Workflow step report from session %s was rejected: %s", event.session_id, exc
             )
@@ -843,6 +830,78 @@ class SessionActivitySubscriber:
                 "ting_workflow_step_reports_invalid_total",
                 description="workflow_step activity reports Ting could not read.",
             )
+
+    async def _apply_step_report(
+        self, runs: WorkflowRuns, event: ActivityEvent, report: dict[str, Any]
+    ) -> None:
+        kind = report["event"]
+        run_id = UUID(str(report["run_id"]))
+        session_id = event.session_id
+        if kind == STEP_REPORT_LISTENING:
+            await runs.record_listening(
+                run_id=run_id,
+                session_id=session_id,
+                member=str(report["member"]),
+                start_id=str(report["start_id"]),
+            )
+            return
+        if kind == STEP_REPORT_OFFER_PUBLISHED:
+            await runs.record_offer_published(
+                run_id=run_id, session_id=session_id, offer_id=UUID(str(report["offer_id"]))
+            )
+            return
+        if kind == STEP_REPORT_PICKED_UP:
+            await runs.record_picked_up(
+                run_id=run_id,
+                session_id=session_id,
+                member=str(report["member"]),
+                offer_id=UUID(str(report["offer_id"])),
+                activation_id=UUID(str(report["activation_id"])),
+                attempt=int(report["attempt"]),
+            )
+            return
+        if kind == STEP_REPORT_PASSED:
+            await runs.record_passed(
+                run_id=run_id,
+                session_id=session_id,
+                member=str(report["member"]),
+                offer_id=UUID(str(report["offer_id"])),
+                reason=str(report.get("reason") or ""),
+            )
+            return
+        if kind == STEP_REPORT_OFFER_REFUSED:
+            await runs.record_offer_refused(
+                run_id=run_id,
+                session_id=session_id,
+                member=str(report["member"]),
+                offer_id=str(report.get("offer_id") or ""),
+                reason=str(report.get("reason") or ""),
+                detail=str(report.get("detail") or ""),
+            )
+            return
+        activation_id = UUID(str(report["activation_id"]))
+        attempt = int(report["attempt"])
+        if kind == STEP_EVENT_CLOSED:
+            ending = report["ending"]
+            if not isinstance(ending, dict):
+                raise ValueError("a closed workflow_step carries its ending as an object")
+            await runs.record_step_closed(
+                run_id=run_id,
+                activation_id=activation_id,
+                session_id=session_id,
+                attempt=attempt,
+                report=ending,
+            )
+            return
+        if kind != STEP_EVENT_UNCLOSED:
+            raise ValueError(f"unknown workflow_step event {kind!r}")
+        await runs.record_step_unclosed(
+            run_id=run_id,
+            activation_id=activation_id,
+            session_id=session_id,
+            attempt=attempt,
+            turn=_turn_of(event.metadata),
+        )
 
     @staticmethod
     def _on_eval_done(task: asyncio.Task) -> None:  # type: ignore[type-arg]

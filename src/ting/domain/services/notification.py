@@ -54,8 +54,7 @@ _STATUS_NOTIFICATION_MAP: dict[str, dict[str, Any]] = {
 #: How a stuck-step flag reads in a notification: "step X is {label} since ...".
 _STEP_FLAG_LABELS = {
     "overdue": "overdue",
-    "not_started": "not started",
-    "undelivered": "undelivered to its session",
+    "unclaimed": "unclaimed (no member took the offer up)",
     "unclosed": "unclosed (a turn ended without closing it)",
     "session_gone": "without its session",
 }

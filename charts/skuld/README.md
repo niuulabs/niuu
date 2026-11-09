@@ -50,6 +50,16 @@ Skuld is **not installed manually**. It is deployed automatically by the Volundr
 
 The session definitions in the Volundr chart define default values for Skuld deployments. Per-session overrides (model, repo, resources) are merged at deployment time.
 
+### A unit: one pod for a whole workflow run
+
+A workflow run is one **unit**: its root session's release hosts every member as a container of the same pod, all started together.
+
+- **One Skuld per member.** `members` lists them; each member's container runs the same image with its own configuration (`<release>-members` ConfigMap, a key per member session id), its own broker port and, through Forge, its own credential Secret mounted into that container only. The chart renders a member from `members[].values` over the chart defaults (`files/defaults.yaml` is `values.yaml`), so a member's configuration is exactly what it would have been on its own.
+- **A local mesh.** `unit.meshDir` is an `emptyDir` mounted into every Skuld of the pod; the Skulds use nng on loopback and `registry` discovery on a file in it, so they find each other without listing pods. Nothing outside the pod can reach a mesh port.
+- **One checkout, one home each.** Every member works in the root's workspace (`<persistence.mountPath>/<root id>/workspace`), cloned once by the `git-clone` init container from the root's repository or, when the root names none, from `unit.checkoutFrom`. Each member keeps its own `CODEX_HOME` (`<persistence.mountPath>/<root id>/members/<member id>/.codex`, seeded from the home volume) and its own scratch directory; the user's home volume is the one every session of the user mounts.
+- **One address each.** With `gateway.enabled`, every member has its own `HTTPRoute` and `SecurityPolicy` at `/s/<member id>`; the pod's nginx sends `/m/<member id>/` to that member's Skuld, behind the same Envoy and owner check as the root's.
+- **Pod-level settings are the root's.** Scheduling (`nodeSelector`, `tolerations`, `affinity`, `runtimeClassName`), `serviceAccountName`, `securityContext`, and the home and sessions volumes belong to the pod. The pod's resources are the sum of its containers'; nothing is shrunk to fit.
+
 ## Installation (Manual / Development)
 
 For development or testing, you can deploy Skuld directly:
@@ -101,6 +111,18 @@ These values are typically set by Volundr at deployment time, not by the user.
 | `session.id` | string | `""` | Session identifier (UUID, set by Volundr) |
 | `session.name` | string | `""` | Human-readable session name |
 | `session.model` | string | `"claude-sonnet-4-20250514"` | AI model to use for the session |
+
+### Unit (a workflow run's pod)
+
+These values are set by Volundr's Flux pod manager for a unit root, not by the user.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `brokerPort` | int | `8081` | Port of this release's broker (config `port`); a member of a unit is given its own |
+| `unit.sessionId` | string | `""` | Id of the unit's root session; set on a member's values by the chart, empty for the root |
+| `unit.meshDir` | string | `""` | Directory every Skuld of the unit shares for its local mesh (an `emptyDir`) |
+| `unit.checkoutFrom` | string | `""` | Member whose repository, branch and Git credential the unit's checkout is cloned from, when the root names no repository |
+| `members` | list | `[]` | The sessions this pod hosts besides its own: `id`, `port` and the complete `values` of each member |
 
 ### Image (Skuld Broker)
 
@@ -258,6 +280,21 @@ An agent asks the user for a secret with `request-secret` or the Forge MCP `requ
 | `ask.waitMaxS` | int | `50` | Longest one `ask` call waits, and the ceiling for a caller's `deadline_s`, in seconds (`ask.wait_max_s`); must stay below `forgeMcp.brokerRequestTimeoutS` and `forgeMcp.toolTimeoutS` |
 | `forgeMcp.brokerRequestTimeoutS` | number | `null` | Seconds the engine allows one stdio-server to broker tool call (`forge_mcp.broker_request_timeout_s`); null keeps the broker default of 60 |
 | `forgeMcp.toolTimeoutS` | number | `null` | Seconds the engine allows one MCP tool call (`forge_mcp.tool_timeout_s`), set for both Codex (`tool_timeout_sec`) and Claude Code (per-server `timeout`); null keeps the broker default of 120 |
+
+### Workflow steps
+
+A workflow run's sessions take part in the run's mesh: each **member** takes the offers of the topics its pinned persona consumes and closes its steps, and the run's **root** (the run's room, a Skuld with no agent) publishes the offers Ting hands it. Forge sets these values when it launches a run's session (the `workflow_step_host` session contributor); an ordinary session leaves them off and empty. Each renders into the `workflow_steps` section of the broker's config file under the key shown. Skuld refuses to start a member or root that lacks a field it needs, so none is defaulted.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `workflowSteps.enabled` | bool | `false` | This session is a member of a workflow run (`workflow_steps.enabled`). Needs `runId`, `member`, `personaAlias` and `orchestratorPeerId`, the mesh and a pinned persona |
+| `workflowSteps.root` | bool | `false` | This session is the root of a workflow run (`workflow_steps.root`); exclusive with `enabled`. Needs `runId` and the mesh |
+| `workflowSteps.runId` | string | `""` | The workflow run the session belongs to (`workflow_steps.run_id`); offers of any other run are refused |
+| `workflowSteps.member` | string | `""` | The member's name in the workflow stage (`workflow_steps.member`) |
+| `workflowSteps.personaAlias` | string | `""` | The alias the workflow gives the member's pinned persona (`workflow_steps.persona_alias`); the offer carries one contract per alias and the member finds its own by this |
+| `workflowSteps.orchestratorPeerId` | string | `""` | The mesh peer id of the run's root (`workflow_steps.orchestrator_peer_id`), which is the root session's id; a member takes offers published by this peer and no other |
+| `workflowSteps.eventFilters` | object | `{}` | The member's `eventFilters` from the workflow (`workflow_steps.event_filters`); each key must equal the value in the offered inputs' payload, else the member passes the offer. Empty takes every offer of its topics |
+| `workflowSteps.orchestration` | string | `""` | Who decides the run's next step, `engine` or `session` (`workflow_steps.orchestration`); empty keeps Skuld's default, `engine` |
 
 ### Mesh
 

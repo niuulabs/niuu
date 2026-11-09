@@ -194,26 +194,30 @@ def test_close_howto_is_the_text_ting_always_gave() -> None:
     assert render_close_howto(_ACTIVATION, ()) == _CLOSE_HOWTO % "<verdict>"
 
 
-def test_ting_renders_the_close_howto_from_the_shared_text() -> None:
+def test_ting_offers_the_step_without_the_close_howto_that_each_skuld_writes() -> None:
+    from datetime import UTC, datetime
     from uuid import UUID
 
-    from ting.ports.workflow_steps import StepActivation
+    from niuu.domain.workflow_step import PersonaPin, StepContract
+    from niuu.domain.workflow_step import persona_contract_of as contract_of
 
-    activation = StepActivation(
-        run_id=UUID(int=1),
-        activation_id=UUID(_ACTIVATION),
-        node_id="implement",
-        node_label="Implement",
-        member="coder",
-        attempt=1,
-        generation=0,
-        session_id="ses-1",
-        inputs=(),
-        deadline_at=None,
-        valid_verdicts=("blocked", "implemented"),
+    contract = StepContract.from_persona(
+        PersonaPin(alias="coder", id="coder", revision="1", digest="sha256:" + "0" * 64),
+        contract_of({"produces": {"event_type_map": {"implemented": "code.ready"}}}),
     )
 
-    text = step_instructions.render_step_instructions(activation)
+    text = step_instructions.render_offer_instructions(
+        workflow_name="Build",
+        node_id="implement",
+        node_label="Implement",
+        run_id=UUID(int=1),
+        attempt=1,
+        generation=0,
+        inputs=(),
+        contracts=(contract,),
+        deadline_at=datetime(2026, 11, 8, tzinfo=UTC),
+    )
 
-    assert text.endswith(_CLOSE_HOWTO % "blocked" + "\n")
+    assert "## Closing the step" not in text
+    assert "`implemented` produces `code.ready`" in text
     assert step_instructions.CLOSE_TOOL_NAME == "workflow_step_close"

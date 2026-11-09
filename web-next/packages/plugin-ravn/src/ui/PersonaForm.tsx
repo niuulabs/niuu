@@ -1,11 +1,5 @@
 import { useState, useCallback } from 'react';
-import {
-  cn,
-  EventPicker,
-  SchemaEditor,
-  ValidationSummary,
-  MountChip,
-} from '@niuulabs/ui';
+import { cn, EventPicker, SchemaEditor, ValidationSummary, MountChip } from '@niuulabs/ui';
 import type { FieldType, PersonaRole } from '@niuulabs/domain';
 import type { PersonaDetail, PersonaCreateRequest, PersonaConsumesEvent } from '../ports';
 import { validatePersona } from './validatePersona';

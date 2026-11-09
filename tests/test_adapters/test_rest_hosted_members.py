@@ -6,7 +6,6 @@ from uuid import UUID, uuid4
 
 from tests.support.forge_session import PREFIX, ForgeApp, build_forge_app
 from volundr.domain.models import SessionStatus
-from volundr.domain.services.forge import DEFAULT_HOSTED_MEMBER_BASE_PORT
 
 RUN = str(uuid4())
 
@@ -17,6 +16,7 @@ def _root_body(name: str = "wf-run") -> dict:
         "hosts_members": True,
         "workflow_run_id": RUN,
         "workflow_run_room": True,
+        "workflow_orchestration": "engine",
     }
 
 
@@ -88,6 +88,15 @@ async def test_a_member_of_a_session_that_is_not_a_unit_is_refused_with_409():
     assert "not a unit" in refused.json()["detail"]
 
 
+async def test_a_member_of_a_unit_that_does_not_exist_is_refused_with_404():
+    forge = build_forge_app()
+
+    refused = await _create(forge, _member_body(str(uuid4()), "member-1"))
+
+    assert refused.status_code == 404
+    assert "does not exist" in refused.json()["detail"]
+
+
 async def test_a_member_cannot_name_a_unit_and_be_a_unit():
     forge = build_forge_app()
     root_id, _ = await _unit(forge, members=0)
@@ -111,11 +120,14 @@ async def test_starting_the_root_starts_the_unit_with_all_members_and_one_pod():
         assert member["status"] == "running"
 
 
-async def test_a_members_endpoint_is_the_units_address_and_its_own_port():
+async def test_a_members_endpoint_is_the_one_its_runtime_names():
     forge = build_forge_app()
     root_id, member_ids = await _unit(forge)
     forge.client.post(f"{PREFIX}/sessions/{root_id}/start")
     await _run(forge, root_id)
+    forge.pod_manager.initial_chat_endpoint = lambda s: (
+        f"wss://gw.example.com/s/{s.id}/session" if s.hosted_by else None
+    )
 
     root = forge.client.get(f"{PREFIX}/sessions/{root_id}").json()
     endpoints = [
@@ -124,10 +136,7 @@ async def test_a_members_endpoint_is_the_units_address_and_its_own_port():
     ]
 
     assert root["chat_endpoint"] == "wss://chat.example.com/session"
-    assert endpoints == [
-        f"wss://chat.example.com:{DEFAULT_HOSTED_MEMBER_BASE_PORT}/session",
-        f"wss://chat.example.com:{DEFAULT_HOSTED_MEMBER_BASE_PORT + 1}/session",
-    ]
+    assert endpoints == [f"wss://gw.example.com/s/{member_id}/session" for member_id in member_ids]
 
 
 async def test_a_members_status_follows_the_unit_and_a_listing_agrees():
@@ -212,7 +221,7 @@ async def test_a_unit_with_members_cannot_be_deleted_until_they_are():
 
     refused = forge.client.delete(f"{PREFIX}/sessions/{root_id}")
 
-    assert refused.status_code == 503  # the delete route's answer for "kept", with the reason
+    assert refused.status_code == 409
     assert "delete the members first" in refused.json()["detail"]
     assert forge.client.delete(f"{PREFIX}/sessions/{member_id}").status_code in (200, 204)
     assert forge.client.delete(f"{PREFIX}/sessions/{root_id}").status_code in (200, 204)

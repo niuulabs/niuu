@@ -237,40 +237,42 @@ a2a:
 
 # The step engine that runs a workflow graph on harness sessions.
 workflowSteps:
-  # -- Seconds a stage member's step may stay active before it counts as overdue
-  # (deadline_at = activated_at + this). The longest single agent step you tolerate
-  # without a close; a node overrides it with deadlineSeconds. Only stored: stuck
-  # detection flags an overdue step, nothing is cancelled or retried because of it.
+  # -- Seconds a stage's offer may wait to be taken up, and a member's step may stay active,
+  # before it counts as overdue (deadline_at = activated_at + this). The longest single agent
+  # step you tolerate without a close; a node overrides it with deadlineSeconds. An active
+  # step past it is only flagged. An offer past it with no pickup is the hard stop: the step
+  # fails naming stepDeadlineSeconds.
   stepDeadlineSeconds: 14400
-  # -- Seconds between asking a starting step session whether it is up. A step is delivered
-  # only once Forge reports its session running (a session boots in minutes); this is only
-  # how often Ting asks. The wait ends when the session runs, ends, or the step's deadline
-  # passes (the step then fails naming stepDeadlineSeconds).
-  sessionPollSeconds: 5
-  # The harness sessions that run a run's steps, one per stage member, created on the
-  # run's Forge connection. A new adapter is a StepSessionPort class path plus plain kwargs.
+  # -- Seconds a published offer may go without a member picking it up or passing it before
+  # it is flagged unclaimed (the owner is told once) and published again. It is when to look
+  # again, never a cap: the offer is published again until a member takes it up or
+  # stepDeadlineSeconds fails it.
+  pickupGraceSeconds: 300
+  # -- Frames asked of Forge's session log per request when Ting reads back what its run
+  # sessions reported while the activity stream was down. Bounds nothing: it reads to the end.
+  catchUpPageSize: 200
+  # The harness sessions of a run's unit: the root and one session per stage member, created
+  # and started together on the run's Forge connection. A new adapter is a StepSessionPort
+  # class path plus plain kwargs.
   sessions:
     adapter: ting.adapters.forge_step_sessions.ForgeStepSessions
     # -- Plain kwargs for the adapter, e.g. name_prefix, or default_model for members whose
     # stage names none (when unset, dispatch.default_model).
     kwargs: {}
-  # Stuck detection: a sweep over the open steps of running workflows. It flags an
-  # overdue step, one that never started or was never delivered to its session, one whose
-  # turn ended without closing it, and one whose session is gone; each flag is raised once
-  # per step, counted on ting_workflow_step_flags_raised_total{kind}, and sent to the
-  # run's owner through the notification feed. It also starts or re-delivers a step that
-  # never reached its session and fails a step whose session is gone; an overdue or
-  # unclosed step is only flagged.
+  # Stuck detection: a sweep over the open steps of running workflows. It flags an overdue
+  # step or offer, an offer nobody took up, a step whose turn ended without closing it, and
+  # one whose session is gone; each flag is raised once per step, counted on
+  # ting_workflow_step_flags_raised_total{kind}, and sent to the run's owner through the
+  # notification feed. It also publishes an unclaimed offer again, reads back what the
+  # activity stream dropped from the sessions' logs, and fails a step whose session is gone;
+  # an overdue or unclosed step is only flagged.
   stuckDetection:
     # -- Run the sweep. false is a decision to go without it, and nothing then says so.
     enabled: true
-    # -- Seconds between sweeps. Bounds how long a stuck step goes unflagged; each pass
-    # asks Forge about every open stage-member step.
+    # -- Seconds between sweeps. Bounds how long a stuck step goes unflagged and how soon an
+    # unclaimed offer is published again; each pass reads the run sessions' new log entries
+    # and asks Forge about every open stage-member step.
     sweepIntervalSeconds: 120
-    # -- Seconds a step may be active before a missing session or an undelivered
-    # activation counts as stuck. A plain session boots in about three minutes at the
-    # median; this must outlast creating a session and delivering the step.
-    startGraceSeconds: 600
 
 workflowExecution:
   # Domain-neutral fan-out/join, durable waits, and the A2A gateway.

@@ -19,6 +19,7 @@ from ting.ports.volundr import (
     ForgeProjectRef,
     HostTagSetsUnreadableError,
     MemberPlayability,
+    RunRoomRequest,
     SessionMembership,
     SpawnRequest,
     StepSessionRequest,
@@ -1638,6 +1639,9 @@ class TestStepSessions:
                 tracker_issue_id="workflow:run",
                 run_id=contract.RUN_ID,
                 member="coder",
+                persona_alias="coder",
+                orchestration="engine",
+                event_filters={"area": "backend"},
                 repo="https://github.com/niuulabs/volundr.git",
                 branch="feat/x",
                 base_branch="main",
@@ -1650,6 +1654,9 @@ class TestStepSessions:
         assert body["issue_id"] == "workflow:run"
         assert body["workflow_run_id"] == contract.RUN_ID
         assert body["workflow_member"] == "coder"
+        assert body["workflow_persona_alias"] == "coder"
+        assert body["workflow_event_filters"] == {"area": "backend"}
+        assert body["workflow_orchestration"] == "engine"
         assert "metadata" not in body
         assert body["model"] == "claude-sonnet-4-6"
         assert "persona_name" not in body
@@ -1676,6 +1683,8 @@ class TestStepSessions:
                 tracker_issue_id="workflow:run",
                 run_id=contract.RUN_ID,
                 member="coder",
+                persona_alias="coder",
+                orchestration="engine",
                 system_prompt="Only touch probe/.",
             )
         )
@@ -1765,6 +1774,164 @@ class TestStepSessions:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_a_member_is_created_hosted_by_the_runs_root(self, adapter: VolundrHTTPAdapter):
+        route = respx.post(SESSIONS_URL).mock(
+            return_value=httpx.Response(
+                201,
+                json={"id": "ses-9", "name": "n", "status": "created", "hosted_by": "room-1"},
+            )
+        )
+        request = StepSessionRequest(
+            name="n",
+            model="m",
+            persona_definition={},
+            tracker_issue_id="workflow:run",
+            run_id=contract.RUN_ID,
+            member="coder",
+            persona_alias="coder",
+            orchestration="engine",
+            hosted_by="room-1",
+        )
+
+        session = await adapter.create_step_session(request)
+
+        assert json.loads(route.calls[0].request.content)["hosted_by"] == "room-1"
+        assert session.hosted_by == "room-1"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_member_with_no_root_sends_no_hosted_by(self, adapter: VolundrHTTPAdapter):
+        route = respx.post(SESSIONS_URL).mock(
+            return_value=httpx.Response(201, json={"id": "ses-9", "name": "n", "status": "created"})
+        )
+
+        session = await adapter.create_step_session(
+            StepSessionRequest(
+                name="n",
+                model="m",
+                persona_definition={},
+                tracker_issue_id="workflow:run",
+                run_id=contract.RUN_ID,
+                member="coder",
+                persona_alias="coder",
+                orchestration="engine",
+            )
+        )
+
+        assert "hosted_by" not in json.loads(route.calls[0].request.content)
+        assert session.hosted_by == ""
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_refused_attach_names_forges_reason(self, adapter: VolundrHTTPAdapter):
+        respx.post(SESSIONS_URL).mock(
+            return_value=httpx.Response(
+                409, json={"detail": "a run's members are fixed when its unit starts"}
+            )
+        )
+
+        with pytest.raises(
+            httpx.HTTPStatusError, match="members are fixed when its unit starts"
+        ) as raised:
+            await adapter.create_step_session(
+                StepSessionRequest(
+                    name="n",
+                    model="m",
+                    persona_definition={},
+                    tracker_issue_id="workflow:run",
+                    run_id=contract.RUN_ID,
+                    member="coder",
+                    persona_alias="coder",
+                    orchestration="engine",
+                    hosted_by="room-1",
+                )
+            )
+
+        assert raised.value.response.status_code == 409
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_the_run_root_is_created_as_a_room_that_hosts_members(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        route = respx.post(SESSIONS_URL).mock(
+            return_value=httpx.Response(
+                201, json={"id": "room-1", "name": "wf-run", "status": "created"}
+            )
+        )
+
+        session = await adapter.create_run_room(
+            RunRoomRequest(
+                name="wf-run",
+                model="m",
+                tracker_issue_id="workflow:run",
+                run_id=contract.RUN_ID,
+                orchestration="engine",
+                hosts_members=True,
+            )
+        )
+
+        body = json.loads(route.calls[0].request.content)
+        assert body["workflow_run_room"] is True
+        assert body["workflow_orchestration"] == "engine"
+        assert body["hosts_members"] is True
+        assert "coordination" not in body  # the run is in no project
+        assert session.status == "created"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_room_that_hosts_nothing_sends_no_hosts_members(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        route = respx.post(SESSIONS_URL).mock(
+            return_value=httpx.Response(
+                201, json={"id": "room-1", "name": "wf-run", "status": "created"}
+            )
+        )
+
+        await adapter.create_run_room(
+            RunRoomRequest(
+                name="wf-run",
+                model="m",
+                tracker_issue_id="workflow:run",
+                run_id=contract.RUN_ID,
+                orchestration="engine",
+                membership=SessionMembership(project_id="p-1", role="coordinator"),
+            )
+        )
+
+        body = json.loads(route.calls[0].request.content)
+        assert "hosts_members" not in body
+        assert body["coordination"]["project_id"] == "p-1"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_an_offer_goes_to_the_rooms_offer_operation_as_given(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        route = respx.post(f"{SESSIONS_URL}/room-1/room/offer").mock(
+            return_value=httpx.Response(200, json={"status": "published"})
+        )
+        offer = {"kind": "step.offered", "offer_id": "offer-1", "signature": {"key": "abc"}}
+
+        await adapter.post_room_offer("room-1", offer)
+
+        assert json.loads(route.calls[0].request.content) == offer
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_an_offer_forge_refuses_is_raised_with_its_reason(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        respx.post(f"{SESSIONS_URL}/room-1/room/offer").mock(
+            return_value=httpx.Response(403, json={"detail": "only the owner's services offer"})
+        )
+
+        with pytest.raises(httpx.HTTPStatusError, match="only the owner's services offer"):
+            await adapter.post_room_offer("room-1", {"offer_id": "offer-1"})
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_a_step_session_joins_the_runs_project_as_its_member(
         self, adapter: VolundrHTTPAdapter
     ):
@@ -1780,6 +1947,8 @@ class TestStepSessions:
                 tracker_issue_id="workflow:run",
                 run_id=contract.RUN_ID,
                 member="reviewer",
+                persona_alias="reviewer",
+                orchestration="engine",
                 membership=SessionMembership(
                     project_id="11111111-1111-1111-1111-111111111111",
                     role="reviewer",
@@ -1812,31 +1981,10 @@ class TestStepSessions:
                     tracker_issue_id="workflow:run",
                     run_id=contract.RUN_ID,
                     member="coder",
+                    persona_alias="coder",
+                    orchestration="engine",
                 )
             )
-
-    @pytest.mark.asyncio
-    @respx.mock
-    async def test_deliver_workflow_step_posts_the_activation_body(
-        self, adapter: VolundrHTTPAdapter
-    ):
-        route = respx.post(f"{SESSIONS_URL}/ses-1/workflow/steps").mock(
-            return_value=httpx.Response(202, json={})
-        )
-
-        await adapter.deliver_workflow_step("ses-1", contract.ACTIVATION_BODY)
-
-        assert json.loads(route.calls[0].request.content) == contract.ACTIVATION_BODY
-
-    @pytest.mark.asyncio
-    @respx.mock
-    async def test_a_step_the_session_refuses_stays_loud(self, adapter: VolundrHTTPAdapter):
-        respx.post(f"{SESSIONS_URL}/ses-1/workflow/steps").mock(
-            return_value=httpx.Response(409, json={"detail": "session has another open step"})
-        )
-
-        with pytest.raises(httpx.HTTPStatusError, match="another open step"):
-            await adapter.deliver_workflow_step("ses-1", contract.ACTIVATION_BODY)
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1887,36 +2035,3 @@ class TestStepSessions:
 
         with pytest.raises(httpx.HTTPStatusError, match="not found"):
             await adapter.resolve_notification("n-1", resolution="x")
-
-    @pytest.mark.asyncio
-    @respx.mock
-    async def test_get_workflow_step_reads_the_durable_state(self, adapter: VolundrHTTPAdapter):
-        state = {
-            "activation_id": contract.ACTIVATION_ID,
-            "state": "closed",
-            "ending": contract.CLOSED_METADATA["workflow_step"]["ending"],
-        }
-        respx.get(f"{SESSIONS_URL}/ses-1/workflow/steps/{contract.ACTIVATION_ID}").mock(
-            return_value=httpx.Response(200, json=state)
-        )
-
-        assert await adapter.get_workflow_step("ses-1", contract.ACTIVATION_ID) == state
-
-    @pytest.mark.asyncio
-    @respx.mock
-    async def test_a_step_the_session_does_not_know_is_none(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1/workflow/steps/{contract.ACTIVATION_ID}").mock(
-            return_value=httpx.Response(404, json={})
-        )
-
-        assert await adapter.get_workflow_step("ses-1", contract.ACTIVATION_ID) is None
-
-    @pytest.mark.asyncio
-    @respx.mock
-    async def test_an_unreadable_step_state_is_an_error(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1/workflow/steps/{contract.ACTIVATION_ID}").mock(
-            return_value=httpx.Response(200, json=["not", "an", "object"])
-        )
-
-        with pytest.raises(ValueError, match="expected an object"):
-            await adapter.get_workflow_step("ses-1", contract.ACTIVATION_ID)

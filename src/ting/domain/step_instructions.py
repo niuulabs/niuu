@@ -1,23 +1,30 @@
-"""The text a harness session is given when a workflow step is activated.
+"""The text an offered workflow step carries to the members that take it up.
 
-Ting owns the words of a step activation: which workflow and step this is, who the
-member is, what the step consumed (the payloads of the outcomes that led here,
-verdicts and notes included), the endings and verdicts the step may close with, the
-shape of the outcome, the deadline, and the exact way to close the step with the
-``workflow_step_close`` tool that Skuld offers while a step is open.
+Ting owns the words of a step: which workflow and step this is, what the step consumed (the
+payloads of the outcomes that led here, verdicts and notes included), what each role may end
+it with, the shape of the outcome and the deadline. The text goes out once, in the offer, to
+every member that takes the node's work, so it names no member and no activation: a member's
+Skuld mints its own activation when it picks the offer up and appends the exact way to close
+it with the ``workflow_step_close`` tool (``niuu.domain.workflow_step.render_close_howto``).
 
-``render_step_instructions`` is a pure function of the activation. Skuld injects the
-result as a user turn and interprets none of it; Ting never reads an answer back out
-of the transcript, only out of the close call.
+``render_offer_instructions`` is a pure function of the offer's parts. Skuld injects the
+result as a user turn and interprets none of it; Ting never reads an answer back out of the
+transcript, only out of the close call.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any
+from uuid import UUID
 
-from niuu.domain.workflow_step import WORKFLOW_STEP_CLOSE_TOOL, json_block, render_close_howto
-from ting.ports.workflow_steps import DeliveredEvent, StepActivation
+from niuu.domain.workflow_step import (
+    WORKFLOW_STEP_CLOSE_TOOL,
+    OfferInput,
+    StepContract,
+    json_block,
+)
 
 CLOSE_TOOL_NAME = WORKFLOW_STEP_CLOSE_TOOL
 
@@ -29,33 +36,47 @@ _ENDING_MEANINGS = {
 }
 
 
-def render_step_instructions(activation: StepActivation) -> str:
-    """The instructions for one activation, as the member's session receives them."""
+def render_offer_instructions(
+    *,
+    workflow_name: str,
+    node_id: str,
+    node_label: str,
+    run_id: UUID,
+    attempt: int,
+    generation: int,
+    inputs: Sequence[OfferInput],
+    contracts: Sequence[StepContract],
+    deadline_at: datetime | None,
+) -> str:
+    """The instructions of one offer, as the members that take it up receive them."""
     sections = [
-        _header(activation),
-        _inputs(activation.inputs),
-        _endings(activation),
-        _outcome_schema(activation.outcome_schema),
-        _deadline(activation),
-        _closing(activation),
+        _header(workflow_name, node_id, node_label, run_id, attempt, generation),
+        _inputs(inputs),
+        _endings(contracts),
+        _deadline(deadline_at),
     ]
     return "\n\n".join(section for section in sections if section) + "\n"
 
 
-def _header(activation: StepActivation) -> str:
-    workflow = f'workflow "{activation.workflow_name}"' if activation.workflow_name else "workflow"
+def _header(
+    workflow_name: str,
+    node_id: str,
+    node_label: str,
+    run_id: UUID,
+    attempt: int,
+    generation: int,
+) -> str:
+    workflow = f'workflow "{workflow_name}"' if workflow_name else "workflow"
     lines = [
-        f"# Workflow step: {activation.node_label}",
+        f"# Workflow step: {node_label}",
         "",
-        f'You are `{activation.member}` in the step "{activation.node_label}" '
-        f"(node `{activation.node_id}`) of the {workflow}. "
-        f"Run `{activation.run_id}`, activation `{activation.activation_id}`.",
+        f'You are in the step "{node_label}" (node `{node_id}`) of the {workflow}. Run `{run_id}`.',
     ]
-    if activation.attempt > 1:
-        lines.append(f"This is attempt {activation.attempt} of this step.")
-    if activation.generation > 0:
+    if attempt > 1:
+        lines.append(f"This is attempt {attempt} of this step.")
+    if generation > 0:
         lines.append(
-            f"The run is on rework generation {activation.generation}: earlier work was sent "
+            f"The run is on rework generation {generation}: earlier work was sent "
             "back, and the inputs below carry what to change."
         )
     lines.append(
@@ -65,7 +86,7 @@ def _header(activation: StepActivation) -> str:
     return "\n".join(lines)
 
 
-def _inputs(inputs: tuple[DeliveredEvent, ...]) -> str:
+def _inputs(inputs: Sequence[OfferInput]) -> str:
     if not inputs:
         return "## Inputs\n\nThis step consumed no earlier outcome."
     blocks = ["## Inputs", "", "What this step consumed, oldest first:"]
@@ -75,7 +96,7 @@ def _inputs(inputs: tuple[DeliveredEvent, ...]) -> str:
     return "\n".join(blocks)
 
 
-def _input_block(item: DeliveredEvent) -> str:
+def _input_block(item: OfferInput) -> str:
     source = item.node_id
     if item.member:
         source = f"{item.node_id} / {item.member}"
@@ -107,63 +128,100 @@ def _input_block(item: DeliveredEvent) -> str:
 
 
 _PAYLOAD_KEYS_SHOWN = frozenset(
-    {"node_id", "member", "verdict", "outcome", "note", "evidence", "attempt", "activation_id"}
+    {
+        "node_id",
+        "member",
+        "verdict",
+        "outcome",
+        "note",
+        "evidence",
+        "attempt",
+        "activation_id",
+        "offer_id",
+    }
 )
 
 
-def _endings(activation: StepActivation) -> str:
-    lines = ["## How this step may end", ""]
-    for ending in activation.valid_endings:
+def _endings(contracts: Sequence[StepContract]) -> str:
+    """How the step may end, once for roles that agree and per role where they differ."""
+    shared = len({_shape(contract) for contract in contracts}) == 1
+    if shared:
+        return "\n\n".join(
+            part for part in (_endings_of(contracts[0]), _outcome_schema(contracts[0])) if part
+        )
+    sections = ["## How this step may end", "", "It depends on your role:"]
+    for contract in contracts:
+        sections.append("")
+        sections.append(f"### As `{contract.persona.alias}`")
+        sections.append("")
+        sections.append(_endings_of(contract, heading=False))
+        schema = _outcome_schema(contract, heading=False)
+        if schema:
+            sections.append("")
+            sections.append(schema)
+    return "\n".join(sections)
+
+
+def _shape(contract: StepContract) -> str:
+    return json_block(
+        {
+            "endings": sorted(contract.valid_endings),
+            "verdicts": contract.verdict_events or sorted(contract.valid_verdicts),
+            "default_event": contract.default_event,
+            "schema": contract.outcome_schema,
+        }
+    )
+
+
+def _endings_of(contract: StepContract, *, heading: bool = True) -> str:
+    lines = ["## How this step may end", ""] if heading else []
+    for ending in contract.valid_endings:
         meaning = _ENDING_MEANINGS.get(ending, "")
         lines.append(f"- `{ending}`: {meaning}" if meaning else f"- `{ending}`")
-    if "verdict" in activation.valid_endings:
+    if "verdict" in contract.valid_endings:
         lines.append("")
-        lines.append(_verdicts(activation))
-    if "waiting" in activation.valid_endings:
+        lines.append(_verdicts(contract))
+    if "waiting" in contract.valid_endings:
         lines.append("")
         lines.append(
             "A `waiting` ending needs `waiting_on` with a `kind` (`person`, `session`, "
             "`event`, `time` or `agent`) and a `ref` naming what you wait for; close the "
             "step again, with its real ending, once that resolves."
         )
-    if "failed" in activation.valid_endings:
+    if "failed" in contract.valid_endings:
         lines.append("")
         lines.append("A `failed` ending needs `failure_reason`.")
     return "\n".join(lines)
 
 
-def _verdicts(activation: StepActivation) -> str:
-    if activation.verdict_events:
+def _verdicts(contract: StepContract) -> str:
+    if contract.verdict_events:
         lines = ["A `verdict` ending needs `verdict`, one of these (each hands off its event):"]
-        for verdict in activation.valid_verdicts:
-            event = activation.verdict_events.get(verdict, "")
+        for verdict in contract.valid_verdicts:
+            event = contract.verdict_events.get(verdict, "")
             lines.append(f"- `{verdict}`" + (f" produces `{event}`" if event else ""))
         return "\n".join(lines)
-    if activation.default_event:
+    if contract.default_event:
         return (
             "A `verdict` ending needs `verdict`, a short word saying how the step went. "
-            f"Whatever you answer hands off `{activation.default_event}`."
+            f"Whatever you answer hands off `{contract.default_event}`."
         )
     return "A `verdict` ending needs `verdict`, a short word saying how the step went."
 
 
-def _outcome_schema(schema: Mapping[str, Any] | None) -> str:
+def _outcome_schema(contract: StepContract, *, heading: bool = True) -> str:
+    schema: Mapping[str, Any] | None = contract.outcome_schema
     if not schema:
         return ""
-    return (
-        "## Outcome\n\nGive `outcome` as an object with these fields, as your role defines "
-        "them:\n\n" + json_block(schema)
-    )
+    intro = "Give `outcome` as an object with these fields, as your role defines them:"
+    body = intro + "\n\n" + json_block(schema)
+    return f"## Outcome\n\n{body}" if heading else body
 
 
-def _deadline(activation: StepActivation) -> str:
-    if activation.deadline_at is None:
+def _deadline(deadline_at: datetime | None) -> str:
+    if deadline_at is None:
         return ""
     return (
-        f"## Deadline\n\nClose this step by {activation.deadline_at.isoformat()}. A step that "
+        f"## Deadline\n\nClose this step by {deadline_at.isoformat()}. A step that "
         "is still open then is flagged for an operator."
     )
-
-
-def _closing(activation: StepActivation) -> str:
-    return render_close_howto(str(activation.activation_id), activation.valid_verdicts)

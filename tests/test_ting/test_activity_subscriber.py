@@ -8,6 +8,7 @@ import time
 from collections.abc import AsyncGenerator
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
@@ -29,7 +30,7 @@ from ting.domain.services.activity_subscriber import (
     SessionActivitySubscriber,
     _ClusterBackoffState,
 )
-from ting.domain.workflow_steps import StepFencingError
+from ting.domain.workflow_steps import HandoffRefusedError, InvalidEndingError, StepFencingError
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.volundr import (
     ActivityEvent,
@@ -1948,27 +1949,54 @@ class _RecordingRuns:
     """What the subscriber hands the run service for the workflow_step reports it reads."""
 
     def __init__(self, *, reject: Exception | None = None) -> None:
-        self.closed: list[dict] = []
-        self.unclosed: list[dict] = []
+        #: Every call, in order: (method name, keyword arguments).
+        self.calls: list[tuple[str, dict]] = []
         self.reconciled: list[str] = []
         self._reject = reject
 
-    async def record_step_closed(self, **kwargs) -> None:
+    def _record(self, name: str, kwargs: dict) -> None:
         if self._reject is not None:
             raise self._reject
-        self.closed.append(kwargs)
+        self.calls.append((name, kwargs))
+
+    def of(self, name: str) -> list[dict]:
+        return [kwargs for called, kwargs in self.calls if called == name]
+
+    @property
+    def closed(self) -> list[dict]:
+        return self.of("record_step_closed")
+
+    @property
+    def unclosed(self) -> list[dict]:
+        return self.of("record_step_unclosed")
+
+    async def record_step_closed(self, **kwargs) -> None:
+        self._record("record_step_closed", kwargs)
 
     async def record_step_unclosed(self, **kwargs) -> None:
-        if self._reject is not None:
-            raise self._reject
-        self.unclosed.append(kwargs)
+        self._record("record_step_unclosed", kwargs)
+
+    async def record_listening(self, **kwargs) -> None:
+        self._record("record_listening", kwargs)
+
+    async def record_offer_published(self, **kwargs) -> None:
+        self._record("record_offer_published", kwargs)
+
+    async def record_picked_up(self, **kwargs) -> None:
+        self._record("record_picked_up", kwargs)
+
+    async def record_passed(self, **kwargs) -> None:
+        self._record("record_passed", kwargs)
+
+    async def record_offer_refused(self, **kwargs) -> None:
+        self._record("record_offer_refused", kwargs)
 
     async def reconcile_owner(self, owner_id: str) -> None:
         self.reconciled.append(owner_id)
 
 
 class TestWorkflowStepReports:
-    """The subscriber maps the ``workflow_step`` activity metadata of the phase 2 contract."""
+    """The subscriber maps the ``workflow_step`` activity metadata of the handoff contract."""
 
     @staticmethod
     def _event(metadata: dict, session_id: str = "ses-from-envelope") -> ActivityEvent:
@@ -1990,6 +2018,125 @@ class TestWorkflowStepReports:
         assert call["attempt"] == 1
         assert call["report"] == contract.CLOSED_METADATA["workflow_step"]["ending"]
         assert runs.unclosed == []
+
+    @pytest.mark.asyncio
+    async def test_a_listening_report_is_applied_for_the_member_and_its_start(self) -> None:
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+
+        await sub._on_activity_event(self._event(contract.LISTENING_METADATA), volundr, OWNER_ID)
+
+        [(name, call)] = runs.calls
+        assert name == "record_listening"
+        assert call == {
+            "run_id": UUID(contract.RUN_ID),
+            "session_id": "ses-from-envelope",
+            "member": contract.MEMBER,
+            "start_id": contract.START_ID,
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_offer_published_report_names_the_offer_and_the_envelopes_session(
+        self,
+    ) -> None:
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+
+        await sub._on_activity_event(
+            self._event(contract.OFFER_PUBLISHED_METADATA, "ses-root"), volundr, OWNER_ID
+        )
+
+        [(name, call)] = runs.calls
+        assert name == "record_offer_published"
+        assert call == {
+            "run_id": UUID(contract.RUN_ID),
+            "session_id": "ses-root",
+            "offer_id": UUID(contract.OFFER_ID),
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_picked_up_report_carries_the_members_own_activation(self) -> None:
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+
+        await sub._on_activity_event(self._event(contract.PICKED_UP_METADATA), volundr, OWNER_ID)
+
+        [(name, call)] = runs.calls
+        assert name == "record_picked_up"
+        assert call == {
+            "run_id": UUID(contract.RUN_ID),
+            "session_id": "ses-from-envelope",
+            "member": contract.MEMBER,
+            "offer_id": UUID(contract.OFFER_ID),
+            "activation_id": UUID(contract.ACTIVATION_ID),
+            "attempt": 1,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_passed_report_carries_the_reason(self) -> None:
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+
+        await sub._on_activity_event(self._event(contract.PASSED_METADATA), volundr, OWNER_ID)
+
+        [(name, call)] = runs.calls
+        assert name == "record_passed"
+        assert call == {
+            "run_id": UUID(contract.RUN_ID),
+            "session_id": "ses-from-envelope",
+            "member": contract.MEMBER,
+            "offer_id": UUID(contract.OFFER_ID),
+            "reason": "filters",
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_offer_refused_report_carries_the_reason_and_detail(self) -> None:
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+
+        await sub._on_activity_event(
+            self._event(contract.OFFER_REFUSED_METADATA), volundr, OWNER_ID
+        )
+
+        [(name, call)] = runs.calls
+        assert name == "record_offer_refused"
+        assert call == {
+            "run_id": UUID(contract.RUN_ID),
+            "session_id": "ses-from-envelope",
+            "member": contract.MEMBER,
+            "offer_id": contract.OFFER_ID,
+            "reason": "busy",
+            "detail": "the member holds another step",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_report_is_handed_over_each_time_it_is_delivered(self) -> None:
+        # Deduplication is the run service's (it keys each report); the subscriber neither
+        # drops a repeat nor treats it as a failure.
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+
+        for _ in range(2):
+            await sub._on_activity_event(
+                self._event(contract.PICKED_UP_METADATA), volundr, OWNER_ID
+            )
+
+        assert [name for name, _ in runs.calls] == ["record_picked_up"] * 2
+        assert runs.calls[0] == runs.calls[1]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("event", sorted(contract.REPORTS))
+    async def test_every_report_takes_its_session_from_the_envelope_never_the_payload(
+        self, event: str
+    ) -> None:
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+        forged = {"workflow_step": {**contract.REPORTS[event]["workflow_step"], "session_id": "x"}}
+
+        await sub._on_activity_event(self._event(forged), volundr, OWNER_ID)
+
+        [(_, call)] = runs.calls
+        assert call["session_id"] == "ses-from-envelope"
 
     @pytest.mark.asyncio
     async def test_the_session_in_the_payload_is_never_trusted(self) -> None:
@@ -2035,16 +2182,100 @@ class TestWorkflowStepReports:
         assert any("was rejected" in record.getMessage() for record in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_a_malformed_report_is_logged_and_counted(self, caplog) -> None:
-        runs = _RecordingRuns()
+    @pytest.mark.parametrize("event", sorted(contract.REPORTS))
+    @pytest.mark.parametrize(
+        "rejection",
+        [
+            HandoffRefusedError("the offer was replaced"),
+            StepFencingError(UUID(contract.ACTIVATION_ID), "stale"),
+            InvalidEndingError("not a verdict this step can give"),
+        ],
+        ids=["handoff_refused", "fenced", "invalid_ending"],
+    )
+    async def test_a_rejected_report_is_logged_at_error_and_the_stream_moves_on(
+        self, event: str, rejection: Exception, caplog
+    ) -> None:
+        runs = _RecordingRuns(reject=rejection)
         sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
-        broken = {"workflow_step": {"event": "closed", "run_id": "not-a-uuid"}}
 
         with caplog.at_level("ERROR", logger="ting.domain.services.activity_subscriber"):
-            await sub._on_activity_event(self._event(broken), volundr, OWNER_ID)
+            await sub._on_activity_event(self._event(contract.REPORTS[event]), volundr, OWNER_ID)
+            await sub._on_activity_event(self._event(contract.REPORTS[event]), volundr, OWNER_ID)
 
-        assert any("Malformed workflow_step" in record.getMessage() for record in caplog.records)
-        assert runs.closed == [] and runs.unclosed == []
+        rejected = [r for r in caplog.records if "was rejected" in r.getMessage()]
+        assert len(rejected) == 2
+        assert all(
+            r.levelname == "ERROR" and "ses-from-envelope" in r.getMessage() for r in rejected
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "broken",
+        [
+            {"event": "closed", "run_id": "not-a-uuid"},
+            {"event": "listening", "run_id": contract.RUN_ID},
+            {"event": "picked_up", "run_id": contract.RUN_ID, "member": "coder"},
+            {"event": "passed", "run_id": contract.RUN_ID, "member": "coder", "offer_id": "x"},
+            {"event": "offer_published", "run_id": contract.RUN_ID, "offer_id": "x"},
+            {
+                "event": "closed",
+                "run_id": contract.RUN_ID,
+                "activation_id": contract.ACTIVATION_ID,
+                "attempt": 1,
+                "ending": "verdict",
+            },
+            {"run_id": contract.RUN_ID},
+        ],
+        ids=[
+            "bad_run_id",
+            "listening_without_member",
+            "pickup_without_offer",
+            "pass_with_bad_offer",
+            "published_with_bad_offer",
+            "ending_not_an_object",
+            "no_event",
+        ],
+    )
+    async def test_a_malformed_report_is_logged_at_error_and_counted(
+        self, broken: dict, caplog, monkeypatch
+    ) -> None:
+        counted: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            "ting.domain.services.activity_subscriber.get_observability",
+            lambda: SimpleNamespace(count=lambda name, **kw: counted.append((name, kw))),
+        )
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+
+        with caplog.at_level("ERROR", logger="ting.domain.services.activity_subscriber"):
+            await sub._on_activity_event(self._event({"workflow_step": broken}), volundr, OWNER_ID)
+
+        assert any(
+            r.levelname == "ERROR" and "Malformed workflow_step" in r.getMessage()
+            for r in caplog.records
+        )
+        assert [name for name, _ in counted] == ["ting_workflow_step_reports_invalid_total"]
+        assert runs.calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_report_that_is_not_an_object_is_counted_as_invalid(
+        self, caplog, monkeypatch
+    ) -> None:
+        counted: list[str] = []
+        monkeypatch.setattr(
+            "ting.domain.services.activity_subscriber.get_observability",
+            lambda: SimpleNamespace(count=lambda name, **_: counted.append(name)),
+        )
+        runs = _RecordingRuns()
+        sub, volundr, _, _ = _make_subscriber(workflow_runs=runs)
+
+        with caplog.at_level("ERROR", logger="ting.domain.services.activity_subscriber"):
+            await sub._on_activity_event(
+                self._event({"workflow_step": "closed"}), volundr, OWNER_ID
+            )
+
+        assert counted == ["ting_workflow_step_reports_invalid_total"]
+        assert any("must be an object" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.asyncio
     async def test_an_unknown_report_event_is_an_error(self, caplog) -> None:

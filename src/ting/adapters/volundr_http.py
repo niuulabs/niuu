@@ -77,12 +77,13 @@ def _local_mount_path(value: str) -> str | None:
 
 
 def _coordination_fields(data: Mapping[str, Any]) -> dict[str, str]:
-    """A Forge session's project and the session it is nested under, as Ting reads them."""
+    """A Forge session's project, parent session and unit root, as Ting reads them."""
     coordination = data.get("coordination") or {}
     parent = coordination.get("parent") or {}
     return {
         "project_id": str(coordination.get("project_id") or ""),
         "parent_session_id": str(parent.get("session_id") or ""),
+        "hosted_by": str(data.get("hosted_by") or ""),
     }
 
 
@@ -272,6 +273,10 @@ class VolundrHTTPAdapter(VolundrPort):
                     "issue_id": request.tracker_issue_id,
                     "workflow_run_id": request.run_id,
                     "workflow_member": request.member,
+                    "workflow_persona_alias": request.persona_alias,
+                    "workflow_event_filters": dict(request.event_filters),
+                    "workflow_orchestration": request.orchestration,
+                    **({"hosted_by": request.hosted_by} if request.hosted_by else {}),
                     **({"system_prompt": request.system_prompt} if request.system_prompt else {}),
                     **(
                         {"coordination": _coordination_payload(request.membership)}
@@ -354,7 +359,13 @@ class VolundrHTTPAdapter(VolundrPort):
                     "issue_id": request.tracker_issue_id,
                     "workflow_run_id": request.run_id,
                     "workflow_run_room": True,
-                    "coordination": _coordination_payload(request.membership),
+                    "workflow_orchestration": request.orchestration,
+                    **({"hosts_members": True} if request.hosts_members else {}),
+                    **(
+                        {"coordination": _coordination_payload(request.membership)}
+                        if request.membership is not None
+                        else {}
+                    ),
                 },
             )
             if resp.status_code >= 400:
@@ -365,28 +376,6 @@ class VolundrHTTPAdapter(VolundrPort):
                     response=resp,
                 )
             return self._session_from(resp.json())
-
-    async def deliver_workflow_step(
-        self,
-        session_id: str,
-        activation: dict,
-        *,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> None:
-        client = await self._client(timeout=self._timeout)
-        async with client:
-            resp = await client.post(
-                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/workflow/steps",
-                headers=self._headers(auth_token, principal),
-                json=activation,
-            )
-            if resp.status_code >= 400:
-                raise httpx.HTTPStatusError(
-                    f"Forge session {session_id} did not accept the step: {_error_detail(resp)}",
-                    request=resp.request,
-                    response=resp,
-                )
 
     async def submit_session_notification(
         self,
@@ -427,32 +416,6 @@ class VolundrHTTPAdapter(VolundrPort):
                     response=resp,
                 )
             return resp.json()
-
-    async def get_workflow_step(
-        self,
-        session_id: str,
-        activation_id: str,
-        *,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> dict | None:
-        client = await self._client(timeout=self._timeout)
-        async with client:
-            resp = await client.get(
-                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/workflow/steps/"
-                f"{quote(activation_id, safe='')}",
-                headers=self._headers(auth_token, principal),
-            )
-            if resp.status_code == 404:
-                return None
-            resp.raise_for_status()
-            data = resp.json()
-            if not isinstance(data, dict):
-                raise ValueError(
-                    f"Forge returned {type(data).__name__} for step {activation_id} of "
-                    f"session {session_id}; expected an object"
-                )
-            return data
 
     def _session_from(self, data: dict[str, Any]) -> VolundrSession:
         source = data.get("source") or {}
@@ -860,6 +823,29 @@ class VolundrHTTPAdapter(VolundrPort):
             if resp.status_code >= 400:
                 raise httpx.HTTPStatusError(
                     f"Forge could not post the notice in session {session_id}'s room: "
+                    f"{_error_detail(resp)}",
+                    request=resp.request,
+                    response=resp,
+                )
+
+    async def post_room_offer(
+        self,
+        session_id: str,
+        offer: dict,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.post(
+                self._room_url(session_id, "offer"),
+                headers=self._headers(auth_token, principal),
+                json=offer,
+            )
+            if resp.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    f"Forge could not hand the offer to session {session_id}'s room: "
                     f"{_error_detail(resp)}",
                     request=resp.request,
                     response=resp,

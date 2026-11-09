@@ -44,21 +44,6 @@ OTHER_SENDER_ID = "7e3a1c9d-5b28-4f16-a0d4-9c8b2e6f1a37"
 RUN_ID = "0b7e6d5c-4a39-4281-9f10-e1d2c3b4a596"
 ACTIVATION_ID = "3f2b8c1e-5a47-4d0e-9b61-7c1e2a9d4f10"
 
-STEP = {
-    "activation_id": ACTIVATION_ID,
-    "run_id": RUN_ID,
-    "attempt": 1,
-    "generation": 0,
-    "node_id": "implement",
-    "node_label": "Implement",
-    "member": "coder",
-    "valid_endings": ["verdict", "done", "failed"],
-    "valid_verdicts": ["implemented"],
-    "outcome_schema": None,
-    "deadline_at": None,
-    "instructions": "# Workflow step: Implement",
-}
-
 
 def _message(
     message_id: str = "msg-1",
@@ -489,26 +474,29 @@ class TestUrgent:
 
 class TestWorkflowStepsGoFirst:
     async def test_a_pending_step_is_handed_over_before_waiting_messages(self, tmp_path) -> None:
-        from skuld.workflow_steps import WorkflowStepRequest
+        from tests.test_skuld.workflow_support import offer_event, sender, step_broker
 
-        broker = _inbox_broker(tmp_path, activity="active", workflow_steps={"enabled": True})
-        await broker.accept_workflow_step(WorkflowStepRequest(**STEP))
+        broker = step_broker(tmp_path, activity="active")
+        await broker.accept_workflow_offer(offer_event(), verified=sender())
+        step_text = next(iter(broker._workflow_steps.values())).instructions
         await _accept(broker, _message("m-1"))
         assert _sent_texts(broker) == []
 
         await broker._report_activity_state("idle")
         await _settle()
 
-        assert _sent_texts(broker) == [STEP["instructions"]]
+        assert _sent_texts(broker) == [step_text]
 
         await broker._report_activity_state("active")
         await broker._report_activity_state("idle")
         await _settle()
 
-        assert _sent_texts(broker) == [STEP["instructions"], render_for_harness(_message("m-1"))]
+        assert _sent_texts(broker) == [step_text, render_for_harness(_message("m-1"))]
 
     async def test_without_a_step_the_messages_go_in_at_once(self, tmp_path) -> None:
-        broker = _inbox_broker(tmp_path, workflow_steps={"enabled": True})
+        from tests.test_skuld.workflow_support import step_broker
+
+        broker = step_broker(tmp_path)
 
         await _accept(broker, _message())
 

@@ -37,6 +37,7 @@ from skuld.transports import (
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry as event_registry
 from sleipnir.testing import EventCapture
+from tests.test_skuld.workflow_support import MEMBER_MESH, MEMBER_STEPS, PERSONA
 
 
 class TestBroker:
@@ -598,6 +599,18 @@ class TestBroker:
 
         await test_broker.shutdown()
         mock_transport.stop.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_second_shutdown_does_nothing(self, test_broker):
+        """A member stopped on Forge's request is shut down again when its process ends."""
+        mock_transport = AsyncMock()
+        test_broker._transport = mock_transport
+
+        await test_broker.shutdown()
+        await test_broker.shutdown()
+
+        mock_transport.stop.assert_called_once()
+        assert test_broker.startup_status()["startup_state"] == "stopping"
 
     @pytest.mark.asyncio
     async def test_shutdown_closes_channels(self, test_broker):
@@ -3057,9 +3070,15 @@ class TestPublishMeshOutcome:
     async def test_a_workflow_step_host_publishes_no_turn_outcome(self, tmp_path):
         """A run member's outcome is its step close; its turns announce nothing."""
         settings = SkuldSettings(
-            session={"id": "test-mesh-step-host", "workspace_dir": str(tmp_path)},
+            session={
+                "id": "test-mesh-step-host",
+                "workspace_dir": str(tmp_path),
+                "persona": PERSONA,
+            },
             volundr_api_url="http://forge.test",
-            workflow_steps={"enabled": True},
+            transport="subprocess",
+            mesh=MEMBER_MESH,
+            workflow_steps=MEMBER_STEPS,
         )
         b = Broker(settings=settings)
         mock_mesh = AsyncMock()

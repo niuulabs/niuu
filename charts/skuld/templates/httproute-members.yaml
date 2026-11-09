@@ -1,0 +1,42 @@
+{{- if and .Values.gateway.enabled .Values.members }}
+{{- range $i, $m := .Values.members }}
+---
+# Gateway API HTTPRoute for a member of the unit: its own page and address, /s/{member-id}, onto
+# the unit's one Service. The pod's nginx sends /m/{member-id} to that member's Skuld, so the
+# member's traffic passes the same Envoy and owner check as the root's.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: session-{{ $m.id }}
+  labels:
+    {{- include "skuld.labels" $ | nindent 4 }}
+    volundr.niuu.io/session: {{ $m.id | quote }}
+    {{- with $.Values.gateway.userId }}
+    volundr.niuu.io/user: {{ . | quote }}
+    {{- end }}
+spec:
+  parentRefs:
+    - name: {{ $.Values.gateway.name }}
+      namespace: {{ $.Values.gateway.namespace }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /s/{{ $m.id }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /m/{{ $m.id }}
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            # Same as the root's route: only Forge stamps the room headers.
+            remove:
+              - {{ $.Values.envoy.headerNames.roomRole | quote }}
+              - {{ $.Values.envoy.headerNames.roomCallerSession | quote }}
+      backendRefs:
+        - name: {{ include "skuld.fullname" $ }}
+          port: {{ $.Values.service.port }}
+{{- end }}
+{{- end }}

@@ -23,6 +23,7 @@ import jwt
 import pytest
 
 from niuu.ports.workload_identity import IssuedWorkloadToken
+from tests.support.workflow_steps import MEMBER_STEPS_ENV, MEMBER_STEPS_VALUES
 from volundr.adapters.outbound.hermes_gateway import (
     HERMES_CREDENTIAL_NAME,
     HERMES_LEGACY_CREDENTIAL_NAME,
@@ -1023,7 +1024,7 @@ async def test_start_uses_gateway_client_without_host_cli(
                 "systemPrompt": initial_prompt,
                 **({"persona": persona} if initial_prompt else {}),
             },
-            **({"workflowSteps": {"enabled": True}} if initial_prompt else {}),
+            **({"workflowSteps": MEMBER_STEPS_VALUES} if initial_prompt else {}),
             "env": {"CUSTOM_ENV": "yes"},
             "resources": {
                 "requests": {"cpu": "500m", "memory": "1Gi"},
@@ -1096,7 +1097,7 @@ async def test_start_uses_gateway_client_without_host_cli(
                     f"SKULD__SESSION__INITIAL_PROMPT={initial_prompt}",
                     f"SKULD__SESSION__SYSTEM_PROMPT={initial_prompt}",
                     "SKULD__SESSION__PERSONA=" + json.dumps(persona, separators=(",", ":")),
-                    "SKULD__WORKFLOW_STEPS__ENABLED=true",
+                    *(f"{name}={value}" for name, value in MEMBER_STEPS_ENV.items()),
                     "skuld",
                     "serve",
                 ]

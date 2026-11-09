@@ -52,6 +52,7 @@ from skuld.conversation_snapshot import ConversationSnapshotTooLargeError, prepa
 from skuld.event_log import FORGE_SESSIONS_PATH
 from skuld.file_routes import register_file_routes
 from skuld.forge_mcp.routes import register_forge_mcp_routes
+from skuld.harness_control import HarnessControl, HarnessControlError
 from skuld.path_security import (
     UnsafePathError,
     resolve_contained_path,
@@ -70,12 +71,7 @@ from skuld.presented_durable import (
 from skuld.preview import PreviewMiddleware
 from skuld.room_role_port import RoomRoleResolutionError
 from skuld.service_manager import ServiceCreateRequest, ServiceStatus
-from skuld.workflow_steps import (
-    WorkflowStepConflictError,
-    WorkflowStepNotHostedError,
-    WorkflowStepRequest,
-    WorkflowStepUnavailableError,
-)
+from skuld.workflow_steps import WorkflowOfferRefusedError, WorkflowStepNotHostedError
 from volundr.log_aggregate import aggregate_workspace_logs
 
 logger = logging.getLogger("skuld.broker")
@@ -94,6 +90,7 @@ class _BrokerProxy:
 
 
 broker = _BrokerProxy()
+harness_control = HarnessControl(lambda: _broker_getter())
 
 
 def bind_broker(getter: Callable[[], Any], log_buffer: deque[dict]) -> None:
@@ -1445,6 +1442,15 @@ class _RoomNoticeRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class _RoomOfferRequest(BaseModel):
+    """A workflow run's offer, as its engine signed it, for the run's root to publish."""
+
+    #: The ``step.offered`` payload exactly as the engine signed it.
+    offer: dict[str, Any]
+    #: The engine's attestation of ``offer`` (absent only where the mesh does not sign).
+    attestation: dict[str, Any] | None = None
+
+
 class _SessionRoomMessageRequest(BaseModel):
     """A member session speaking in a room this session hosts (stamped by Forge)."""
 
@@ -1637,6 +1643,41 @@ async def send_directed_room_message(request: Request, body: _DirectedRoomMessag
     return {"status": "sent", "message_id": message_id}
 
 
+class _HarnessRestartRequest(BaseModel):
+    launch_id: str = Field(
+        min_length=1,
+        description="The launch whose credential the new process must read.",
+    )
+
+
+@app.post("/api/harness/stop")
+async def stop_harness() -> dict:
+    """Stop this member's harness and broker work; the process stays up and idle.
+
+    For a member of a workflow run's unit (its pod or sandbox cannot stop one member from
+    outside). Idempotent. Unlisted in the room-role table, so owner only.
+    """
+    try:
+        await harness_control.stop()
+    except HarnessControlError as exc:
+        raise HTTPException(exc.status, {"error": exc.code, "message": str(exc)}) from exc
+    return {"status": "stopped"}
+
+
+@app.post("/api/harness/restart")
+async def restart_harness(body: _HarnessRestartRequest) -> dict:
+    """Stop this member's harness and replace the process, re-reading its credential.
+
+    409 ``credential_stale`` until the credential file carries ``launch_id``; the caller
+    asks again. The process is replaced after this answer is sent.
+    """
+    try:
+        await harness_control.restart(body.launch_id)
+    except HarnessControlError as exc:
+        raise HTTPException(exc.status, {"error": exc.code, "message": str(exc)}) from exc
+    return {"status": "restarting"}
+
+
 @app.post("/api/room/notice")
 async def post_room_notice(body: _RoomNoticeRequest) -> dict:
     """Post a notice in this session's room (owner only: unlisted in the room-role table)."""
@@ -1649,6 +1690,22 @@ async def post_room_notice(body: _RoomNoticeRequest) -> dict:
     except LookupError as exc:
         raise HTTPException(404, str(exc))
     return {"status": "posted", "notice_id": body.notice_id}
+
+
+@app.post("/api/room/offer")
+async def post_room_offer(body: _RoomOfferRequest) -> dict:
+    """Publish a workflow offer on the run's mesh (owner only: unlisted in the room-role table).
+
+    The run's engine signs the offer and hands it to the run's root here; the root checks the
+    signature and publishes it verbatim, so every member that consumes its topic receives it.
+    The same offer posted again is the same event.
+    """
+    try:
+        return await broker.publish_workflow_offer(body.offer, body.attestation)
+    except WorkflowStepNotHostedError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except WorkflowOfferRefusedError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
 
 
 @app.post("/api/room/session-message")
@@ -1840,36 +1897,6 @@ async def answer_help_request(request: Request, request_id: str, body: _HelpAnsw
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"status": "answered", "message_id": message_id}
-
-
-@app.post("/api/workflow/steps")
-async def activate_workflow_step(body: WorkflowStepRequest, response: Response) -> dict:
-    """Hold a workflow step on this session and hand its instructions to the harness.
-
-    202 when the step is new, 200 when this exact activation is already here (nothing
-    changes), 409 when a different step is open, 404 when this is not a step host.
-    """
-    try:
-        created, step = await broker.accept_workflow_step(body)
-    except WorkflowStepNotHostedError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except WorkflowStepConflictError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except WorkflowStepUnavailableError as exc:
-        raise HTTPException(503, str(exc)) from exc
-    response.status_code = status.HTTP_202_ACCEPTED if created else status.HTTP_200_OK
-    return step.status()
-
-
-@app.get("/api/workflow/steps/{activation_id}")
-async def get_workflow_step(activation_id: str) -> dict:
-    """The step's durable state: active, waiting, or closed with its ending."""
-    try:
-        return broker.get_workflow_step(activation_id).status()
-    except WorkflowStepNotHostedError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
 
 
 @app.get("/api/communication/routes")

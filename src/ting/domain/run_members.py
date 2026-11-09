@@ -35,6 +35,55 @@ def member_values(snapshot: Mapping[str, Any], member: str, key: str) -> set[str
     return values
 
 
+#: Who decides what a run offers next: Ting's engine, or a coordinator agent in the run's root.
+ORCHESTRATION_ENGINE = "engine"
+ORCHESTRATION_SESSION = "session"
+ORCHESTRATION_MODES = frozenset({ORCHESTRATION_ENGINE, ORCHESTRATION_SESSION})
+
+
+def run_orchestration(snapshot: Mapping[str, Any]) -> str:
+    """The run's orchestration mode: the workflow's ``orchestration.mode``, else ``engine``.
+
+    ``engine`` is the workflow document's own default for a workflow that names none; a mode
+    the document names that is not one of ours is refused, never read as ``engine``.
+    """
+    raw = snapshot.get("orchestration")
+    if raw is None:
+        return ORCHESTRATION_ENGINE
+    mode = raw.get("mode") if isinstance(raw, Mapping) else None
+    if mode not in ORCHESTRATION_MODES:
+        raise RunMemberError(
+            f"the workflow's orchestration {raw!r} must be a mapping whose mode is one of "
+            f"{', '.join(sorted(ORCHESTRATION_MODES))}"
+        )
+    return str(mode)
+
+
+def member_event_filters(snapshot: Mapping[str, Any], member: str) -> dict[str, str]:
+    """The member's ``eventFilters``: the one set all of its stages give it, else empty.
+
+    A run has one session per member, and the session checks one set of filters, so stages
+    that give the same member different filters cannot be served and are refused.
+    """
+    found: dict[frozenset[tuple[str, str]], dict[str, str]] = {}
+    for raw in _stage_members(snapshot):
+        if str(raw.get("personaId") or "") != member:
+            continue
+        filters = raw.get("eventFilters")
+        named = (
+            {str(key): str(value) for key, value in filters.items()}
+            if isinstance(filters, Mapping)
+            else {}
+        )
+        found[frozenset(named.items())] = named
+    if len(found) > 1:
+        raise RunMemberError(
+            f"member {member!r} is given different eventFilters by different stages but a "
+            "run has one session per member; give the member one set of eventFilters"
+        )
+    return next(iter(found.values()), {})
+
+
 def member_model(
     snapshot: Mapping[str, Any], member: str, *, launch_model: str, default_model: str
 ) -> str:

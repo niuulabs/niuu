@@ -29,6 +29,7 @@ from skuld.transports.session_tools import (
     claude_cli_args,
 )
 from skuld.transports.tool_shims import ensure_codex_tool_shims
+from tests.test_skuld.workflow_support import MEMBER_MESH, MEMBER_STEPS, PERSONA
 
 ADAPTERS = {
     "tmux": "skuld.transports.tmux_interactive.TmuxInteractiveTransport",
@@ -44,7 +45,12 @@ SESSION_ID = "0b6c1d7e-3f0a-4a8e-9a57-6a9c2f1d0e11"
 
 
 def _broker(
-    tmp_path: Path, adapter: str = "sdk", *, system_prompt: str = "", **overrides: Any
+    tmp_path: Path,
+    adapter: str = "sdk",
+    *,
+    system_prompt: str = "",
+    persona: dict[str, Any] | None = None,
+    **overrides: Any,
 ) -> Broker:
     forge_mcp = {"runtime_dir": str(tmp_path / "rt"), **overrides.pop("forge_mcp", {})}
     settings = SkuldSettings(
@@ -53,6 +59,7 @@ def _broker(
             "workspace_dir": str(tmp_path / "ws"),
             "model": "m",
             "system_prompt": system_prompt,
+            "persona": persona,
         },
         transport_adapter=ADAPTERS[adapter],
         port=18765,
@@ -113,7 +120,9 @@ class TestBrokerComposition:
             _broker(
                 tmp_path,
                 volundr_api_url="http://forge.test",
-                workflow_steps={"enabled": True},
+                persona=PERSONA,
+                mesh=MEMBER_MESH,
+                workflow_steps=MEMBER_STEPS,
             )._build_transport_kwargs()["mcp_servers"]
         )
 
