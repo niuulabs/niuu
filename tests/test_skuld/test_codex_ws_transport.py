@@ -565,6 +565,29 @@ class TestSpawnAppServer:
         assert "features.multi_agent=false" in call_args
 
     @pytest.mark.asyncio
+    async def test_the_workspace_write_sandbox_keeps_the_network(self, tmp_path):
+        """A workspace_write persona limits where it writes; it still pushes and fetches."""
+        t = _make_transport(tmp_path, skip_permissions=False, sandbox="workspace-write")
+        t._codex_socket_path = str(tmp_path / "app-server.sock")
+        process = MagicMock(pid=123, stdout=None, stderr=None)
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)) as spawn:
+            await t._spawn_app_server()
+
+        assert "sandbox_workspace_write.network_access=true" in spawn.call_args.args
+
+    @pytest.mark.asyncio
+    async def test_a_read_only_sandbox_is_not_given_the_network_flag(self, tmp_path):
+        t = _make_transport(tmp_path, skip_permissions=False, sandbox="read-only")
+        t._codex_socket_path = str(tmp_path / "app-server.sock")
+        process = MagicMock(pid=123, stdout=None, stderr=None)
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)) as spawn:
+            await t._spawn_app_server()
+
+        assert "sandbox_workspace_write.network_access=true" not in spawn.call_args.args
+
+    @pytest.mark.asyncio
     async def test_spawn_app_server_enables_the_plan_tool(self, tmp_path):
         """Codex >= 0.152 registers update_plan (turn/plan/updated) only when asked."""
         t = _make_transport(tmp_path)
