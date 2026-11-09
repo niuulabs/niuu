@@ -13,13 +13,13 @@ of the transcript, only out of the close call.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from typing import Any
 
+from niuu.domain.workflow_step import WORKFLOW_STEP_CLOSE_TOOL, json_block, render_close_howto
 from ting.ports.workflow_steps import DeliveredEvent, StepActivation
 
-CLOSE_TOOL_NAME = "workflow_step_close"
+CLOSE_TOOL_NAME = WORKFLOW_STEP_CLOSE_TOOL
 
 _ENDING_MEANINGS = {
     "verdict": "hand the work on: say which verdict describes how the step went",
@@ -90,11 +90,11 @@ def _input_block(item: DeliveredEvent) -> str:
     outcome = payload.get("outcome")
     if isinstance(outcome, Mapping) and outcome:
         lines.append("- outcome:")
-        lines.append(_json_block(outcome))
+        lines.append(json_block(outcome))
     evidence = payload.get("evidence")
     if evidence:
         lines.append("- evidence:")
-        lines.append(_json_block(evidence))
+        lines.append(json_block(evidence))
     rest = {
         key: value
         for key, value in payload.items()
@@ -102,7 +102,7 @@ def _input_block(item: DeliveredEvent) -> str:
     }
     if rest:
         lines.append("- other fields:")
-        lines.append(_json_block(rest))
+        lines.append(json_block(rest))
     return "\n".join(lines)
 
 
@@ -152,7 +152,7 @@ def _outcome_schema(schema: Mapping[str, Any] | None) -> str:
         return ""
     return (
         "## Outcome\n\nGive `outcome` as an object with these fields, as your role defines "
-        "them:\n\n" + _json_block(schema)
+        "them:\n\n" + json_block(schema)
     )
 
 
@@ -166,25 +166,4 @@ def _deadline(activation: StepActivation) -> str:
 
 
 def _closing(activation: StepActivation) -> str:
-    call = {
-        "activation_id": str(activation.activation_id),
-        "ending": "verdict",
-        "verdict": activation.valid_verdicts[0] if activation.valid_verdicts else "<verdict>",
-        "outcome": {},
-        "note": "<what you did, in a sentence or two>",
-    }
-    return (
-        "## Closing the step\n\n"
-        f"When you are done, call the `{CLOSE_TOOL_NAME}` tool exactly once, with this "
-        "activation's id. For example:\n\n"
-        f"{_json_block(call)}\n\n"
-        "`evidence` (a list of `{kind, ref, summary}`) and `note` are optional on every ending. "
-        "If the call is refused, the error says why and nothing was recorded; fix the call "
-        "and make it again. Ending your turn without closing the step does not close it: "
-        "the step stays open and is flagged. Do not close it by writing the answer in "
-        "your reply."
-    )
-
-
-def _json_block(value: Any) -> str:
-    return "```json\n" + json.dumps(value, indent=2, sort_keys=True, default=str) + "\n```"
+    return render_close_howto(str(activation.activation_id), activation.valid_verdicts)

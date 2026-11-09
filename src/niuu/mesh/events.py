@@ -7,6 +7,13 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import uuid4
 
+from niuu.domain.workflow_step import (
+    UnknownWorkflowEvent,
+    WorkflowEventBody,
+    WorkflowEventError,
+    parse_workflow_event,
+)
+
 
 class MeshEventType(StrEnum):
     THOUGHT = "thought"
@@ -22,6 +29,9 @@ class MeshEventType(StrEnum):
     HELP_NEEDED = "help_needed"  # emitted when persona needs human input to proceed
     USAGE = "usage"  # emitted when a turn reports token usage for session accounting
     REVOCATION = "revocation"  # Forge: a session stopped; peers drop it (never shown in rooms)
+    #: A workflow run's record: an offer, a pickup, an outcome, a gate, the end (``kind`` in the
+    #: payload; see ``niuu.domain.workflow_step``). The set of kinds is open.
+    WORKFLOW = "workflow"
 
 
 @dataclass(frozen=True)
@@ -322,3 +332,39 @@ class MeshEvent:
             session_id=session_id,
             task_id=task_id,
         )
+
+    @classmethod
+    def workflow(
+        cls,
+        source: str,
+        body: WorkflowEventBody,
+        session_id: str,
+        task_id: str | None = None,
+    ) -> MeshEvent:
+        """A workflow event on its run's thread: ``correlation_id`` is the run id.
+
+        The event id derives from the kind and the offer, activation, gate or run it is about,
+        so publishing the same fact twice is the same event.
+        """
+        return cls(
+            type=MeshEventType.WORKFLOW,
+            source=source,
+            payload=body.to_payload(),
+            timestamp=datetime.now(UTC),
+            urgency=body.URGENCY,
+            correlation_id=body.run_id,
+            session_id=session_id,
+            task_id=task_id,
+            root_correlation_id=body.run_id,
+            event_id=body.event_id,
+        )
+
+    def as_workflow(self) -> WorkflowEventBody | UnknownWorkflowEvent:
+        """This event's workflow payload, typed. An unknown ``kind`` comes back whole.
+
+        Raises ``WorkflowEventError`` when the event is not a ``workflow`` event, or its kind is
+        known and its payload does not fit it.
+        """
+        if self.type != MeshEventType.WORKFLOW:
+            raise WorkflowEventError(f"a `{self.type}` event is not a workflow event")
+        return parse_workflow_event(self.payload)
