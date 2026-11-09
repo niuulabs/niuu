@@ -184,7 +184,8 @@ data:
 
     workflow_steps:
       step_deadline_seconds: {{ .Values.workflowSteps.stepDeadlineSeconds }}
-      session_poll_seconds: {{ .Values.workflowSteps.sessionPollSeconds }}
+      pickup_grace_seconds: {{ .Values.workflowSteps.pickupGraceSeconds }}
+      catch_up_page_size: {{ .Values.workflowSteps.catchUpPageSize }}
       sessions:
         adapter: {{ .Values.workflowSteps.sessions.adapter | quote }}
         kwargs:
@@ -192,7 +193,6 @@ data:
       stuck:
         enabled: {{ .Values.workflowSteps.stuckDetection.enabled | toJson }}
         sweep_interval_seconds: {{ .Values.workflowSteps.stuckDetection.sweepIntervalSeconds }}
-        start_grace_seconds: {{ .Values.workflowSteps.stuckDetection.startGraceSeconds }}
 
     workflow_execution:
       enabled: {{ .Values.workflowExecution.enabled }}

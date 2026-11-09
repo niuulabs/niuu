@@ -373,28 +373,6 @@ class VolundrHTTPAdapter(VolundrPort):
                 )
             return self._session_from(resp.json())
 
-    async def deliver_workflow_step(
-        self,
-        session_id: str,
-        activation: dict,
-        *,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> None:
-        client = await self._client(timeout=self._timeout)
-        async with client:
-            resp = await client.post(
-                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/workflow/steps",
-                headers=self._headers(auth_token, principal),
-                json=activation,
-            )
-            if resp.status_code >= 400:
-                raise httpx.HTTPStatusError(
-                    f"Forge session {session_id} did not accept the step: {_error_detail(resp)}",
-                    request=resp.request,
-                    response=resp,
-                )
-
     async def submit_session_notification(
         self,
         session_id: str,
@@ -434,32 +412,6 @@ class VolundrHTTPAdapter(VolundrPort):
                     response=resp,
                 )
             return resp.json()
-
-    async def get_workflow_step(
-        self,
-        session_id: str,
-        activation_id: str,
-        *,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> dict | None:
-        client = await self._client(timeout=self._timeout)
-        async with client:
-            resp = await client.get(
-                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/workflow/steps/"
-                f"{quote(activation_id, safe='')}",
-                headers=self._headers(auth_token, principal),
-            )
-            if resp.status_code == 404:
-                return None
-            resp.raise_for_status()
-            data = resp.json()
-            if not isinstance(data, dict):
-                raise ValueError(
-                    f"Forge returned {type(data).__name__} for step {activation_id} of "
-                    f"session {session_id}; expected an object"
-                )
-            return data
 
     def _session_from(self, data: dict[str, Any]) -> VolundrSession:
         source = data.get("source") or {}

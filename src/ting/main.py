@@ -49,6 +49,7 @@ from ting.adapters.guild_instances import GuildInstanceRegistryClient
 from ting.adapters.inbound.rest_integrations import create_telegram_setup_router
 from ting.adapters.inbound.rest_pats import create_pats_router
 from ting.adapters.inbound.rest_telegram_webhook import create_telegram_webhook_router
+from ting.adapters.offer_signing import MeshOfferSigner
 from ting.adapters.plain_child_gates import (
     SchemaOnlyChildResultVerifier,
     UndeclaredReviewAttestor,
@@ -1396,13 +1397,16 @@ def create_app(
                     "sagas": app.state.saga_repo,
                 }
             )
+            step_definitions = CampaignStepRunDefinitions(workflow_campaign_repo)
             step_engine = WorkflowStepEngine(
                 repository=workflow_step_repo,
                 sessions=step_sessions,
-                definitions=CampaignStepRunDefinitions(workflow_campaign_repo),
+                offers=MeshOfferSigner(
+                    signer=platform_signer, required=settings.mesh.attestation.required
+                ),
+                definitions=step_definitions,
                 settings=EngineSettings(
                     step_deadline_seconds=settings.workflow_steps.step_deadline_seconds,
-                    session_poll_seconds=settings.workflow_steps.session_poll_seconds,
                 ),
             )
             workflow_runs = WorkflowRuns(
@@ -1416,6 +1420,7 @@ def create_app(
                     public_origin=settings.notification.public_origin,
                 ),
                 room_notifier=RunRoomNotifier(volundr_factory=app.state.volundr_factory),
+                catch_up_page_size=settings.workflow_steps.catch_up_page_size,
             )
             workflow_campaign_projector.bind_runs(workflow_runs)
             dispatch_svc.bind_workflow_runs(workflow_runs, workflow_campaign_repo)
@@ -1569,9 +1574,6 @@ def create_app(
             app.state.subscriber = subscriber
             await subscriber.start()
 
-            # Steps a previous process left bound to a booting session but undelivered.
-            await step_engine.resume_deliveries()
-
             # Stuck detection for workflow steps (NIU-1181)
             stuck_cfg = settings.workflow_steps.stuck
             stuck_sweeper: StuckStepSweeper | None = None
@@ -1582,8 +1584,11 @@ def create_app(
                     steps=workflow_step_repo,
                     campaigns=workflow_campaign_repo,
                     sessions=step_sessions,
+                    definitions=step_definitions,
                     event_bus=event_bus,
-                    settings=StuckSettings(start_grace_seconds=stuck_cfg.start_grace_seconds),
+                    settings=StuckSettings(
+                        pickup_grace_seconds=settings.workflow_steps.pickup_grace_seconds
+                    ),
                     interval_seconds=stuck_cfg.sweep_interval_seconds,
                 )
                 await stuck_sweeper.start()
@@ -1626,7 +1631,6 @@ def create_app(
                 await platform_signer.stop()
             if stuck_sweeper is not None:
                 await stuck_sweeper.stop()
-            await step_engine.aclose()
             await subscriber.stop()
             if ting_sleipnir_bridge is not None:
                 await ting_sleipnir_bridge.stop()

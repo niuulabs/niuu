@@ -1,23 +1,24 @@
 """Stuck detection: which open steps of a run are stuck, and why.
 
-``detect_stuck`` is a pure function of a run's ledger, what its steps' sessions
-reported and the clock. It decides nothing and changes nothing: the sweep
-(``ting.domain.services.workflow_step_watch``) raises the flags, takes the safe
-automatic actions and tells a person.
+``detect_stuck`` is a pure function of a run's ledger, whether its steps' sessions are up and
+the clock. It decides nothing and changes nothing: the sweep
+(``ting.domain.services.workflow_step_watch``) raises the flags, takes the safe automatic
+actions and tells a person.
 
-A step is stuck in one of five ways (``FlagKind``):
+A step is stuck in one of four ways (``FlagKind``):
 
-* **overdue**: an ``active`` or ``waiting`` step is past its ``deadline_at``;
-* **not started**: an ``active`` stage-member step has no session after the start
-  grace, so the engine committed it and died before (or while) starting the session;
-* **undelivered**: its session is running but does not know the activation, so the
-  delivery never landed;
+* **overdue**: an ``active`` or ``waiting`` step, or an offer nobody took up, is past its
+  ``deadline_at``;
+* **unclaimed**: an offer was published and no member took it up (or passed it) within the
+  pickup grace, so the same offer is published again; the grace is when to look again, not
+  a cap;
 * **unclosed**: a turn ended with the step still open (the engine logged it when the
   session said so);
 * **session gone**: the session failed, stopped or no longer exists.
 
-A session that has not come up yet (created, starting) is neither undelivered nor
-gone: nothing can be asked of it, so nothing is claimed about the step.
+A session that has not come up yet (created, starting) is not gone: nothing can be asked of
+it, so nothing is claimed about the step. An offer that is not published yet is waiting for
+its members to listen, which is neither unclaimed nor stuck until its deadline.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID
 
+from ting.domain.step_engine import offer_publications
 from ting.domain.workflow_steps import (
     EVENT_STEP_UNCLOSED,
     FlagKind,
@@ -35,7 +37,7 @@ from ting.domain.workflow_steps import (
     StepState,
     WorkflowStep,
 )
-from ting.ports.workflow_steps import SessionLiveness, StepObservation
+from ting.ports.workflow_steps import SessionLiveness
 
 _SESSION_ENDED = frozenset({SessionLiveness.STOPPED, SessionLiveness.FAILED, SessionLiveness.GONE})
 _WATCHED_STATES = frozenset({StepState.ACTIVE, StepState.WAITING})
@@ -45,11 +47,13 @@ _WATCHED_STATES = frozenset({StepState.ACTIVE, StepState.WAITING})
 class StuckSettings:
     """Stuck detection knobs, from Ting's configuration."""
 
-    start_grace_seconds: float
+    #: How long a published offer may go without a pickup or a pass before it is published
+    #: again.
+    pickup_grace_seconds: float
 
     def __post_init__(self) -> None:
-        if not self.start_grace_seconds > 0:
-            raise ValueError("start_grace_seconds must be positive")
+        if not self.pickup_grace_seconds > 0:
+            raise ValueError("pickup_grace_seconds must be positive")
 
 
 @dataclass(frozen=True)
@@ -64,27 +68,30 @@ class Condition:
 
 def detect_stuck(
     state: RunState,
-    observations: Mapping[UUID, StepObservation],
+    liveness: Mapping[UUID, SessionLiveness],
     *,
     now: datetime,
     settings: StuckSettings,
 ) -> list[Condition]:
     """Every way the run's open steps are stuck.
 
-    ``observations`` holds, per activation, what its session reported; a step with no
-    entry could not be asked, so only the conditions that need no question are
-    judged for it.
+    ``liveness`` holds, per activation, whether its session is up; a step with no entry
+    could not be asked, so only the conditions that need no question are judged for it.
     """
-    grace = timedelta(seconds=settings.start_grace_seconds)
+    grace = timedelta(seconds=settings.pickup_grace_seconds)
     unclosed = _unclosed_since(state)
+    published = offer_publications(state)
     conditions: list[Condition] = []
     for step in state.steps:
         if step.state not in _WATCHED_STATES:
             continue
         conditions.extend(_overdue(step, now))
+        if step.kind is StepKind.OFFER:
+            conditions.extend(_unclaimed(step, published.get(step.offer_id or "", ()), now, grace))
+            continue
         if step.kind is not StepKind.STAGE_MEMBER:
             continue
-        conditions.extend(_session_conditions(step, observations.get(step.id), now, grace))
+        conditions.extend(_session_gone(step, liveness.get(step.id), now))
         if step.state is StepState.ACTIVE and step.id in unclosed:
             conditions.append(
                 Condition(
@@ -111,52 +118,39 @@ def _overdue(step: WorkflowStep, now: datetime) -> list[Condition]:
     ]
 
 
-def _session_conditions(
-    step: WorkflowStep,
-    observed: StepObservation | None,
+def _unclaimed(
+    offer: WorkflowStep,
+    publications: list[datetime] | tuple[()],
     now: datetime,
     grace: timedelta,
 ) -> list[Condition]:
-    started = step.activated_at or step.created_at
-    waited = now - started
-    if not step.session_id:
-        if step.state is StepState.ACTIVE and waited > grace:
-            return [
-                Condition(
-                    step,
-                    FlagKind.NOT_STARTED,
-                    f"active for {_seconds(waited)}s with no session; the start grace is "
-                    f"{_seconds(grace)}s",
-                    started,
-                )
-            ]
+    if not publications:
         return []
-    if observed is None:
+    last = max(publications)
+    if now - last <= grace:
         return []
-    if observed.liveness in _SESSION_ENDED:
-        return [
-            Condition(
-                step,
-                FlagKind.SESSION_GONE,
-                f"its session {step.session_id} is {observed.liveness.value}",
-                now,
-            )
-        ]
-    undelivered = (
-        observed.liveness is SessionLiveness.RUNNING
-        and step.state is StepState.ACTIVE
-        and observed.reported is None
-        and waited > grace
-    )
-    if not undelivered:
+    return [
+        Condition(
+            offer,
+            FlagKind.UNCLAIMED,
+            f"offered {len(publications)} time(s), last at {last.isoformat()}, and no member "
+            f"took it up or passed it within the pickup grace of {int(grace.total_seconds())}s",
+            publications[0],
+        )
+    ]
+
+
+def _session_gone(
+    step: WorkflowStep, liveness: SessionLiveness | None, now: datetime
+) -> list[Condition]:
+    if liveness is None or liveness not in _SESSION_ENDED:
         return []
     return [
         Condition(
             step,
-            FlagKind.UNDELIVERED,
-            f"its session {step.session_id} is running but does not know the activation "
-            f"{_seconds(waited)}s after it started",
-            started,
+            FlagKind.SESSION_GONE,
+            f"its session {step.session_id} is {liveness.value}",
+            now,
         )
     ]
 
@@ -168,10 +162,6 @@ def _unclosed_since(state: RunState) -> dict[UUID, datetime]:
             continue
         since.setdefault(event.source_activation_id, event.created_at)
     return since
-
-
-def _seconds(span: timedelta) -> int:
-    return int(span.total_seconds())
 
 
 __all__ = ["Condition", "StuckSettings", "detect_stuck"]

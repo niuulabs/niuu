@@ -2,15 +2,18 @@
 
 A periodic task, one pass over every active workflow run. For each run it
 
-1. asks the session of every open stage-member step what it holds (its liveness and its
-   durable record of the step), and records any close the activity stream missed;
-2. judges which steps are stuck (``detect_stuck``) and raises a durable flag, once per
-   step and kind, counted and logged;
+1. publishes the offers that were waiting for their members to listen, and reads what the
+   run's sessions hold in their durable logs, recording any report the activity stream
+   missed (a pickup, a pass, a close);
+2. asks whether the session of every open stage-member step is still up, judges which steps
+   are stuck (``detect_stuck``) and raises a durable flag, once per step and kind, counted
+   and logged;
 3. tells a person about each flag through the notification feed, once;
-4. takes the two automatic actions that finish an interrupted operation and cannot
-   change the outcome: it starts or re-delivers a step that never reached its session,
-   and fails a step whose session is gone (the engine's sibling and run-failure rules
-   then apply). An overdue or unclosed step is only flagged, never acted on;
+4. takes the automatic actions that cannot change the outcome: it publishes an unclaimed
+   offer again (the same offer, counted: the pickup grace is when to look again, never a
+   cap), and fails a step whose session is gone, an offer whose members' sessions ended
+   before they listened, and an offer that reached its deadline untaken, naming the knob. An
+   overdue or unclosed step is only flagged;
 5. resolves flags whose step closed or whose condition cleared, and projects the run's
    open flags onto its campaign for the web to show.
 
@@ -32,6 +35,8 @@ from niuu.observability import get_observability
 from ting.domain.models import WorkflowCampaign
 from ting.domain.services.workflow_runs import WorkflowRuns
 from ting.domain.services.workflow_step_engine import WorkflowStepEngine
+from ting.domain.step_engine import listening_members, offer_members, unit_sessions
+from ting.domain.step_graph import compile_step_graph
 from ting.domain.step_stuck import Condition, StuckSettings, detect_stuck
 from ting.domain.workflow_steps import (
     NOTIFY_STEP_FLAGGED,
@@ -43,19 +48,27 @@ from ting.domain.workflow_steps import (
 )
 from ting.ports.event_bus import EventBusPort, TingEvent
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
-from ting.ports.workflow_steps import StepObservation, StepSessionPort, WorkflowStepRepository
+from ting.ports.workflow_steps import (
+    SessionLiveness,
+    StepRunDefinitions,
+    StepSessionPort,
+    WorkflowStepRepository,
+)
 
 logger = logging.getLogger(__name__)
 
 #: What happens next to a flagged step, for the person who reads the notification.
 _NEXT_BY_KIND = {
     FlagKind.OVERDUE: ("Ting only flags an overdue step. Retry or reassign it, or abort the run."),
+    FlagKind.UNCLAIMED: (
+        "Ting publishes the same offer again, and keeps doing so until a member takes it up "
+        "or the step deadline fails it. Check that the members that take this kind of work "
+        "are running."
+    ),
     FlagKind.UNCLOSED: (
         "Ting only flags a step whose turn ended without a close. Retry or reassign it, or "
         "abort the run."
     ),
-    FlagKind.NOT_STARTED: "Ting started the step on its session again.",
-    FlagKind.UNDELIVERED: "Ting delivered the step to its session again.",
     FlagKind.SESSION_GONE: (
         "Ting is failing the step; the run's other branches carry on. Retry or reassign "
         "it if the run is still open."
@@ -63,18 +76,8 @@ _NEXT_BY_KIND = {
 }
 
 
-#: The flags whose one automatic action is to start or re-deliver the step.
-_RESUME_KINDS = (FlagKind.NOT_STARTED, FlagKind.UNDELIVERED)
-
-
 def _next_for(flag: StepFlag) -> str:
     """What happens next to a flagged step, as the notification tells the owner."""
-    if flag.kind not in _RESUME_KINDS:
-        return _NEXT_BY_KIND[flag.kind]
-    if flag.action_error:
-        return f"Automatic restart failed: {flag.action_error}; retry or reassign it."
-    if flag.action_done_at is None:
-        return "Ting's automatic restart was interrupted before it finished; retry or reassign it."
     return _NEXT_BY_KIND[flag.kind]
 
 
@@ -93,6 +96,7 @@ class StuckStepSweeper:
         steps: WorkflowStepRepository,
         campaigns: WorkflowCampaignRepository,
         sessions: StepSessionPort,
+        definitions: StepRunDefinitions,
         event_bus: EventBusPort,
         settings: StuckSettings,
         interval_seconds: float,
@@ -105,6 +109,7 @@ class StuckStepSweeper:
         self._steps = steps
         self._campaigns = campaigns
         self._sessions = sessions
+        self._definitions = definitions
         self._event_bus = event_bus
         self._settings = settings
         self._interval = interval_seconds
@@ -166,22 +171,26 @@ class StuckStepSweeper:
         state = await self._steps.load(campaign.id)
         if not state.launched or state.finished:
             return ()
-        observations, unobserved = await self._observe(campaign, state)
-        if await self._record_missed_closes(campaign, state, observations):
-            state = await self._steps.load(campaign.id)
-            if state.finished:
-                return ()
-        conditions = detect_stuck(state, observations, now=self._clock(), settings=self._settings)
+        await self._runs.catch_up_run(campaign)
+        await self._engine.publish_ready_offers(campaign.id)
+        state = await self._steps.load(campaign.id)
+        if state.finished:
+            return ()
+        liveness, unobserved = await self._observe(campaign, state)
+        conditions = detect_stuck(state, liveness, now=self._clock(), settings=self._settings)
         await self._engine.raise_flags(campaign.id, conditions)
         for condition in conditions:
-            if condition.kind in _RESUME_KINDS:
-                await self._resume(campaign, condition)
-        # Told after the start was tried, so the message says how it went; and before a
-        # step whose session is gone is failed, which would close it and its flag.
+            if condition.kind is FlagKind.UNCLAIMED:
+                await self._republish(campaign, condition)
+        # Told after the offer went out again, and before a step that is failed below closes
+        # it and its flag.
         await self._notify(campaign, await self._steps.load(campaign.id))
         for condition in conditions:
             if condition.kind is FlagKind.SESSION_GONE:
                 await self._fail_gone(campaign, condition)
+            elif condition.kind is FlagKind.OVERDUE and condition.step.kind is StepKind.OFFER:
+                await self._fail_expired_offer(campaign, condition)
+        await self._fail_unreachable_offers(campaign, await self._steps.load(campaign.id))
         await self._engine.resolve_flags(
             campaign.id,
             {(condition.step.id, condition.kind) for condition in conditions},
@@ -191,9 +200,9 @@ class StuckStepSweeper:
 
     async def _observe(
         self, campaign: WorkflowCampaign, state: RunState
-    ) -> tuple[dict[UUID, StepObservation], set[UUID]]:
-        """What each open step's session holds; the steps that could not be asked."""
-        observations: dict[UUID, StepObservation] = {}
+    ) -> tuple[dict[UUID, SessionLiveness], set[UUID]]:
+        """Whether each open step's session is up; the steps that could not be asked."""
+        liveness: dict[UUID, SessionLiveness] = {}
         unobserved: set[UUID] = set()
         for step in state.steps:
             if (
@@ -203,12 +212,12 @@ class StuckStepSweeper:
             ):
                 continue
             try:
-                observations[step.id] = await self._sessions.observe(
-                    campaign.id, step.session_id, step.id
+                liveness[step.id] = await self._sessions.session_liveness(
+                    campaign.id, step.session_id
                 )
             except Exception:
                 logger.error(
-                    "Could not ask session %s about step %s (%s/%s) of run %s",
+                    "Could not ask whether session %s is up for step %s (%s/%s) of run %s",
                     step.session_id,
                     step.id,
                     step.node_id,
@@ -218,38 +227,7 @@ class StuckStepSweeper:
                 )
                 self._count_error("observe")
                 unobserved.add(step.id)
-        return observations, unobserved
-
-    async def _record_missed_closes(
-        self,
-        campaign: WorkflowCampaign,
-        state: RunState,
-        observations: dict[UUID, StepObservation],
-    ) -> bool:
-        """Apply the closes sessions hold that the activity stream never delivered."""
-        applied = False
-        for step in state.steps:
-            observed = observations.get(step.id)
-            if observed is None or observed.reported is None:
-                continue
-            if await self._runs.apply_reported_close(campaign.id, step, observed.reported):
-                logger.warning(
-                    "Recorded the close of step %s (%s/%s) of run %s that its session held "
-                    "but the activity stream never delivered",
-                    step.id,
-                    step.node_id,
-                    step.member,
-                    campaign.slug,
-                )
-                get_observability().count(
-                    "ting_workflow_step_closes_reconciled_total",
-                    description=(
-                        "Step closes recorded by the sweep because the session held them but "
-                        "the activity stream never delivered them."
-                    ),
-                )
-                applied = True
-        return applied
+        return liveness, unobserved
 
     # -- telling a person -------------------------------------------------------
 
@@ -291,74 +269,90 @@ class StuckStepSweeper:
 
     # -- the safe automatic actions ---------------------------------------------
 
-    async def _resume(self, campaign: WorkflowCampaign, condition: Condition) -> None:
-        """Start or re-deliver the step, once per flag.
-
-        The attempt is claimed on the flag before it runs and its outcome recorded on the
-        flag after, so a failure is not retried: the step stays flagged, the failure is
-        in the notification, and a person retries or reassigns it.
-        """
-        step = condition.step
-        flag = (await self._steps.load(campaign.id)).flag(step.id, condition.kind)
-        if flag is None or flag.is_resolved or flag.action_attempted:
-            return
-        if not await self._engine.claim_flag_action(campaign.id, flag):
-            return
-        error = ""
+    async def _republish(self, campaign: WorkflowCampaign, condition: Condition) -> None:
+        """Publish an unclaimed offer again. The same offer is the same event on the mesh."""
+        offer = condition.step
         try:
-            await self._engine.resume_start(
-                campaign.id,
-                step.id,
-                f"stuck sweep: {condition.kind.value}: {condition.detail}",
-            )
+            await self._engine.republish_offer(campaign.id, offer.id)
         except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
             logger.error(
-                "Automatic restart of step %s (%s/%s) of run %s failed (%s): %s; it stays "
-                "flagged and is not tried again, retry or reassign it",
-                step.id,
-                step.node_id,
-                step.member,
+                "Republishing offer %s (%s) of run %s failed (%s: %s); it stays unclaimed and "
+                "the next pass tries again",
+                offer.id,
+                offer.node_id,
                 campaign.slug,
-                condition.kind.value,
-                error,
+                type(exc).__name__,
+                exc,
                 exc_info=True,
             )
             get_observability().count(
                 "ting_workflow_step_auto_recovery_failures_total",
-                attributes={"action": "resume_start"},
+                attributes={"action": "republish_offer"},
                 description="Automatic recoveries of stuck workflow steps that failed.",
             )
-        await self._engine.finish_flag_action(campaign.id, flag, error)
-        if error:
-            return
-        logger.warning(
-            "Stuck step %s (%s/%s) of run %s (%s): resume_start done",
-            step.id,
-            step.node_id,
-            step.member,
-            campaign.slug,
-            condition.kind.value,
-        )
-        get_observability().count(
-            "ting_workflow_step_auto_recoveries_total",
-            attributes={"action": "resume_start", "kind": condition.kind.value},
-            description="Automatic recoveries of stuck workflow steps, by action and flag kind.",
+
+    async def _fail_expired_offer(self, campaign: WorkflowCampaign, condition: Condition) -> None:
+        """The step deadline is the hard stop of an offer nobody took up: it fails."""
+        offer = condition.step
+        deadline = offer.deadline_at.isoformat() if offer.deadline_at else "its deadline"
+        await self._fail(
+            campaign,
+            condition,
+            f"nobody took up the offer of {offer.node_id!r} before {deadline}; the members that "
+            "take its work may not be running or never listened. Raise "
+            "workflow_steps.step_deadline_seconds (or the node's deadlineSeconds) if members "
+            "start slower than that, or fix the member",
         )
 
-    async def _fail_gone(self, campaign: WorkflowCampaign, condition: Condition) -> None:
+    async def _fail_unreachable_offers(self, campaign: WorkflowCampaign, state: RunState) -> None:
+        """Fail an unpublished offer whose member's session ended before it listened.
+
+        Waiting for a member that can never listen is waiting for the deadline for nothing.
+        """
+        waiting = [
+            offer
+            for offer in state.steps
+            if offer.kind is StepKind.OFFER and offer.state is StepState.ACTIVE
+        ]
+        if not waiting:
+            return
+        definition = await self._definitions.get(campaign.id)
+        graph = compile_step_graph(definition.graph, definition.persona_definitions)
+        listening = listening_members(state)
+        unit = unit_sessions(state)
+        for offer in waiting:
+            for member in offer_members(graph, offer):
+                session_id = unit.get(member.alias)
+                if member.alias in listening or not session_id:
+                    continue
+                gone = await self._ended_reason(campaign, session_id)
+                if not gone:
+                    continue
+                await self._fail(
+                    campaign,
+                    Condition(offer, FlagKind.SESSION_GONE, gone, self._clock()),
+                    f"member {member.alias!r} cannot take the offer of {offer.node_id!r}: {gone}",
+                )
+                break
+
+    async def _ended_reason(self, campaign: WorkflowCampaign, session_id: str) -> str:
+        """Why a member's session can no longer listen; empty while it is up or coming up."""
+        liveness = await self._sessions.session_liveness(campaign.id, session_id)
+        if liveness not in (SessionLiveness.FAILED, SessionLiveness.STOPPED, SessionLiveness.GONE):
+            return ""
+        detail = f"session {session_id} is {liveness.value}"
+        if liveness is not SessionLiveness.FAILED:
+            return detail
+        failure = await self._sessions.session_failure(campaign.id, session_id)
+        return f"{detail}: {failure}" if failure else detail
+
+    async def _fail(self, campaign: WorkflowCampaign, condition: Condition, reason: str) -> None:
         step = condition.step
         try:
-            failed = await self._engine.fail_step(
-                campaign.id,
-                step.id,
-                f"session gone: {condition.detail}; Ting failed the step because nothing "
-                "can close it",
-            )
+            failed = await self._engine.fail_step(campaign.id, step.id, reason)
         except Exception:
             logger.error(
-                "Could not fail step %s (%s/%s) of run %s whose session is gone; it stays "
-                "flagged %s",
+                "Could not fail step %s (%s/%s) of run %s (%s); it stays flagged",
                 step.id,
                 step.node_id,
                 step.member,
@@ -386,6 +380,13 @@ class StuckStepSweeper:
             "ting_workflow_step_auto_recoveries_total",
             attributes={"action": "fail_step", "kind": condition.kind.value},
             description="Automatic recoveries of stuck workflow steps, by action and flag kind.",
+        )
+
+    async def _fail_gone(self, campaign: WorkflowCampaign, condition: Condition) -> None:
+        await self._fail(
+            campaign,
+            condition,
+            f"session gone: {condition.detail}; Ting failed the step because nothing can close it",
         )
 
     @staticmethod

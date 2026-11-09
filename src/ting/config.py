@@ -1216,46 +1216,71 @@ class StepSessionsConfig(BaseModel):
 class StuckDetectionConfig(BaseModel):
     """The sweep that flags workflow steps that stopped making progress (NIU-1181).
 
-    One pass looks at every open step of every active run, and asks each step's session
-    what it holds (one Forge read and one step read per open stage-member step). A flagged
-    step reaches the owner through the notification feed once per kind; the sweep itself
-    only acts to finish an interrupted start or to fail a step whose session is gone.
+    One pass looks at every open step of every active run: it reads what each run's sessions
+    recorded in their durable logs, asks Forge whether each open step's session is still up,
+    and publishes the offers that were waiting for their members. A flagged step reaches the
+    owner through the notification feed once per kind; the sweep itself only acts to publish
+    an unclaimed offer again, or to fail a step or offer that nothing can take any more.
     """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_keys(cls, data: Any) -> Any:
+        reject_removed_keys(
+            "workflow_steps.stuck",
+            data,
+            {
+                "start_grace_seconds": (
+                    "a step has no session of its own to start or deliver to any more: an "
+                    "offer goes to the run's root and members pick it up. Remove "
+                    "start_grace_seconds; how long an offer may wait for a pickup is "
+                    "workflow_steps.pickup_grace_seconds"
+                ),
+            },
+        )
+        return data
 
     enabled: bool = Field(
         default=True,
         description=(
             "Run the stuck-step sweep. False is a decision to go without it: stuck steps "
-            "are then neither flagged nor recovered automatically, and nothing says so."
+            "are then neither flagged nor recovered automatically, offers whose members "
+            "were not listening when they were made are never published after a restart, "
+            "and nothing says so."
         ),
     )
     sweep_interval_seconds: float = Field(
         default=120.0,
         gt=0.0,
         description=(
-            "Seconds between sweeps. Bounds how long a stuck step can go unflagged, and so "
-            "how soon an automatic start or re-delivery happens; every pass costs two Forge "
-            "reads per open stage-member step, so it should stay well above the time one "
-            "pass takes. A pass that is slower than the interval delays the next one; "
-            "passes of one Ting process never overlap."
-        ),
-    )
-    start_grace_seconds: float = Field(
-        default=600.0,
-        gt=0.0,
-        description=(
-            "Seconds a step may be active before a missing session (not started) or a "
-            "session that does not know the activation (undelivered) counts as stuck. Real "
-            "bound: how long Forge takes to create a session and accept the step; a plain "
-            "session boots in about three minutes at the median, so the default allows "
-            "several times that. A step flagged inside the grace would be restarted while "
-            "its first delivery is still on its way."
+            "Seconds between sweeps. Bounds how long a stuck step can go unflagged, how soon "
+            "an unclaimed offer is published again and how soon a report the activity stream "
+            "dropped is read back from a session's log; every pass costs a Forge read of each "
+            "run session's new log entries and one per open stage-member step, so it should "
+            "stay well above the time one pass takes. A pass that is slower than the interval "
+            "delays the next one; passes of one Ting process never overlap."
         ),
     )
 
 
 class WorkflowStepsConfig(BaseModel):
     """The step engine that runs workflow graphs on harness sessions."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_keys(cls, data: Any) -> Any:
+        reject_removed_keys(
+            "workflow_steps",
+            data,
+            {
+                "session_poll_seconds": (
+                    "Ting no longer waits for a step's session to come up and delivers to it: "
+                    "an offer is published once the run's members report they listen. Remove "
+                    "session_poll_seconds"
+                ),
+            },
+        )
+        return data
 
     sessions: StepSessionsConfig = Field(default_factory=StepSessionsConfig)
     stuck: StuckDetectionConfig = Field(default_factory=StuckDetectionConfig)
@@ -1264,26 +1289,39 @@ class WorkflowStepsConfig(BaseModel):
         default=4 * 3600.0,
         gt=0.0,
         description=(
-            "Wall-clock time a stage member's step may stay active before it counts as "
-            "overdue: every activation is stamped deadline_at = activated_at + this. Real "
-            "bound: the longest single agent step an operator tolerates without a close; "
-            "workflows declare no run timeout to derive it from, so a node may override it "
-            "with deadlineSeconds. The engine only stores the deadline and never acts on it; "
-            "when it passes, stuck detection (NIU-1181) flags the step for an operator, it "
-            "is never guessed from the transcript. Gate, wait and subworkflow steps wait on "
-            "a person or an outside event and get a deadline only from their node's "
-            "deadlineSeconds."
+            "Wall-clock time a stage's offer may wait to be taken up, and a member's step may "
+            "stay active, before it counts as overdue: every offer and pickup is stamped "
+            "deadline_at = activated_at + this. Real bound: the longest single agent step an "
+            "operator tolerates without a close; workflows declare no run timeout to derive "
+            "it from, so a node may override it with deadlineSeconds. An active step past it "
+            "is flagged for an operator, never guessed from the transcript. An offer past it "
+            "with no pickup is the hard stop: nothing is going to take it, so the step fails "
+            "naming this setting, whether the members never listened or none took the work "
+            "up. Gate, wait and subworkflow steps wait on a person or an outside event and "
+            "get a deadline only from their node's deadlineSeconds."
         ),
     )
-    session_poll_seconds: float = Field(
-        default=5.0,
+    pickup_grace_seconds: float = Field(
+        default=300.0,
         gt=0.0,
         description=(
-            "Seconds between asking a step's session whether it is up yet. A session boots "
-            "in minutes, and a step is delivered only once Forge reports it running; this is "
-            "only how often Ting asks, one Forge read per starting session per poll, and "
-            "bounds nothing. The wait ends when the session runs, when it ends, or at the "
-            "step's deadline (step_deadline_seconds), where the step fails naming that knob."
+            "Seconds a published offer may go without a member picking it up or passing it "
+            "before it is flagged unclaimed (a person is told once) and published again, the "
+            "same offer and the same event. It is when to look again, never a cap: the offer "
+            "is published again for as long as nobody takes it, until step_deadline_seconds "
+            "fails it. Real bound: how long a member's Skuld takes to receive an offer on the "
+            "mesh and report its pickup, which is seconds; a member that is mid-turn still "
+            "reports a pickup at once and starts the step at the next turn boundary, so a "
+            "busy member is not waited for here (it refuses, which is counted)."
+        ),
+    )
+    catch_up_page_size: int = Field(
+        default=200,
+        ge=1,
+        description=(
+            "Frames asked of Forge's session log per request when Ting reads back what its "
+            "run sessions reported while the activity stream was down. It bounds nothing: "
+            "the catch-up reads pages until the log has no more."
         ),
     )
 

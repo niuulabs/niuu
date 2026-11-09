@@ -48,7 +48,6 @@ from ting.domain.services.run_thread import (
     run_objective,
     run_project,
 )
-from ting.domain.step_instructions import render_step_instructions
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.volundr import (
     ForgeProjectRef,
@@ -62,10 +61,8 @@ from ting.ports.volundr import (
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_steps import (
     PersonaRef,
+    RunUnit,
     SessionLiveness,
-    SessionNotReadyError,
-    StepActivation,
-    StepObservation,
     StepSessionPort,
 )
 
@@ -79,9 +76,6 @@ _NAME_DIGEST_CHARS = 8
 _NAME_MEMBER_CHARS = 20
 
 _FAILED_STATUSES = frozenset({"failed"})
-#: What Forge answers for a session whose runtime is up but whose broker does not serve yet:
-#: its proxy could not reach the endpoint (bad gateway, unavailable, gateway timeout).
-_NOT_READY_STATUSES = frozenset({502, 503, 504})
 _STOPPED_STATUSES = frozenset({"stopped"})
 #: Statuses of a session that is not running and will not come up by itself.
 _ENDED_STATUSES = frozenset({"stopped", "stopping", "archived"})
@@ -131,14 +125,6 @@ def run_room_name(run_slug: str, run_id: UUID, *, prefix: str = "wf") -> str:
 
 def _label(value: str) -> str:
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", value.lower())).strip("-")
-
-
-@dataclass(frozen=True)
-class RunUnit:
-    """A launched run's unit: the root session and each stage member's session by member."""
-
-    root_id: str
-    members: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -279,26 +265,6 @@ class ForgeStepSessions(StepSessionPort):
     async def session_liveness(self, run_id: UUID, session_id: str) -> SessionLiveness:
         _, forge = await self._run(run_id)
         return _liveness_of(await forge.get_session(session_id))
-
-    async def observe(self, run_id: UUID, session_id: str, activation_id: UUID) -> StepObservation:
-        _, forge = await self._run(run_id)
-        liveness = _liveness_of(await forge.get_session(session_id))
-        if liveness is not SessionLiveness.RUNNING:
-            return StepObservation(liveness)
-        return StepObservation(
-            liveness, await forge.get_workflow_step(session_id, str(activation_id))
-        )
-
-    async def deliver(self, activation: StepActivation) -> None:
-        _, forge = await self._run(activation.run_id)
-        try:
-            await forge.deliver_workflow_step(activation.session_id, activation_body(activation))
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in _NOT_READY_STATUSES:
-                raise SessionNotReadyError(str(exc)) from exc
-            raise
-        except httpx.TransportError as exc:
-            raise SessionNotReadyError(f"{type(exc).__name__}: {exc}") from exc
 
     async def stop_run_sessions(self, run_id: UUID) -> None:
         campaign, forge = await self._run(run_id)
@@ -633,21 +599,3 @@ def _liveness_of(session: VolundrSession | None) -> SessionLiveness:
     if status in _STARTING_STATUSES:
         return SessionLiveness.STARTING
     return SessionLiveness.RUNNING
-
-
-def activation_body(activation: StepActivation) -> dict[str, Any]:
-    """The JSON body of a step activation, exactly as Forge's step route takes it."""
-    return {
-        "activation_id": str(activation.activation_id),
-        "run_id": str(activation.run_id),
-        "attempt": activation.attempt,
-        "generation": activation.generation,
-        "node_id": activation.node_id,
-        "node_label": activation.node_label,
-        "member": activation.member,
-        "valid_endings": list(activation.valid_endings),
-        "valid_verdicts": list(activation.valid_verdicts),
-        "outcome_schema": dict(activation.outcome_schema) if activation.outcome_schema else None,
-        "deadline_at": activation.deadline_at.isoformat() if activation.deadline_at else None,
-        "instructions": render_step_instructions(activation),
-    }

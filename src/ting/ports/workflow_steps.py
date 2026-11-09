@@ -1,9 +1,9 @@
 """Ports of the Ting step engine: the ledger, the sessions and the run definitions.
 
 The engine service (``ting.domain.services.workflow_step_engine``) depends only on
-these. ``WorkflowStepRepository`` is implemented over Postgres;
-``StepSessionPort`` and ``StepRunDefinitions`` are filled in when workflow steps are
-wired to harness sessions (NIU-1198), and are faked in tests until then.
+these. ``WorkflowStepRepository`` is implemented over Postgres, ``StepSessionPort`` over
+Forge's sessions, ``OfferSigner`` over the platform signer, and ``StepRunDefinitions`` over
+the campaigns; tests fake them.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -46,56 +46,22 @@ class StepRunDefinition:
 
 
 @dataclass(frozen=True)
-class DeliveredEvent:
-    """An event a step consumed, with its payload, as the member's session sees it."""
+class RunUnit:
+    """A launched run: its root session and the session of every member it hosts.
 
-    seq: int
-    event_type: str
-    edge_id: str
-    node_id: str
-    member: str | None
-    payload: Mapping[str, Any]
-
-
-@dataclass(frozen=True)
-class StepActivation:
-    """A structured step activation, delivered to the member's session."""
-
-    run_id: UUID
-    activation_id: UUID
-    node_id: str
-    node_label: str
-    member: str
-    attempt: int
-    generation: int
-    session_id: str
-    inputs: tuple[DeliveredEvent, ...]
-    deadline_at: datetime | None
-    valid_verdicts: tuple[str, ...] = field(default=())
-    #: The endings the step may close with.
-    valid_endings: tuple[str, ...] = field(default=("verdict", "waiting", "done", "failed"))
-    #: The persona's ``produces.schema`` verbatim, or ``None`` when it declares none.
-    outcome_schema: Mapping[str, Any] | None = None
-    #: What each valid verdict hands off: verdict -> the event it produces.
-    verdict_events: Mapping[str, str] = field(default_factory=dict)
-    #: The event every verdict produces when the persona names no per-verdict map.
-    default_event: str = ""
-    workflow_name: str = ""
-
-
-class SessionNotReadyError(RuntimeError):
-    """The session's Forge reports it running, but its endpoint does not answer yet.
-
-    Forge marks a session running when its runtime is up, which can be a moment before the
-    session's broker serves requests (an OpenShell sandbox, a pod whose proxy route is not
-    ready). Nothing reached the session, so the delivery can be tried again.
+    One run is one unit of compute: the root and every member start together at launch,
+    and the members are fixed from then on.
     """
+
+    root_id: str
+    #: Stage member alias -> that member's session id.
+    members: Mapping[str, str]
 
 
 class SessionLiveness(StrEnum):
-    """Whether a step's session can still run the step, as its Forge reports it."""
+    """Whether a member's session can still run a step, as its Forge reports it."""
 
-    #: Up and answering: a step can be asked about.
+    #: Up and answering.
     RUNNING = "running"
     #: Created or starting; it has not come up yet.
     STARTING = "starting"
@@ -106,50 +72,35 @@ class SessionLiveness(StrEnum):
     GONE = "gone"
 
 
-@dataclass(frozen=True)
-class StepObservation:
-    """What Ting can see of a step's session right now.
-
-    ``reported`` is the session's own durable record of the step (``state`` is
-    ``active``, ``waiting`` or ``closed``, with the ``ending`` once it ended); ``None``
-    means the session does not know the activation, or was not asked because it is not
-    running.
-    """
-
-    liveness: SessionLiveness
-    reported: Mapping[str, Any] | None = None
-
-
 class StepSessionPort(ABC):
-    """The harness sessions that run a run's stage members.
+    """The unit of harness sessions that runs a run's stage members.
 
-    There is one session per (run, stage member), kept alive for the whole run and
-    reused for the member's later activations, rework included.
+    A run is one unit: the root session (the run's room, which carries Ting's offers onto
+    the mesh) and one session per stage member, all started together at launch and kept
+    for the whole run. Ting never talks to a member session about a step: an offer goes to
+    the root, the members answer on the mesh, and each Skuld reports what it did to Forge.
     """
 
     @abstractmethod
-    async def ensure_session(self, run_id: UUID, member: str, persona_ref: PersonaRef) -> str:
-        """Create the member's session, or return the kept-alive one. Returns its id."""
+    async def launch_run(self, run_id: UUID, members: Mapping[str, PersonaRef]) -> RunUnit:
+        """Create the run's root and every member hosted by it, then start the unit.
+
+        Idempotent: a run that is already launched is returned as it is. A member the unit
+        was not launched with cannot be added to it, and that raises.
+        """
 
     @abstractmethod
-    async def deliver(self, activation: StepActivation) -> None:
-        """Hand a step activation to the member's session.
+    async def publish_offer(self, run_id: UUID, offer: Mapping[str, Any]) -> None:
+        """Hand a signed offer to the run's root, whose Skuld publishes it on the run's mesh.
 
-        Raises ``SessionNotReadyError`` when the session's endpoint does not answer yet, so
-        the step can be delivered again; any other error is a refusal.
+        ``offer`` is the body of the room's ``offer`` operation: the ``step.offered``
+        payload and Ting's attestation of it. Raises when the root cannot take it (its
+        broker is not up, or its Skuld refuses the offer); the caller holds the offer back.
         """
 
     @abstractmethod
     async def stop_run_sessions(self, run_id: UUID) -> None:
         """Stop every session of the run (it completed, failed or was canceled)."""
-
-    @abstractmethod
-    async def observe(self, run_id: UUID, session_id: str, activation_id: UUID) -> StepObservation:
-        """The session's liveness and, if it is running, what it holds of the activation.
-
-        Raises when Forge or the session cannot be asked: a question that cannot be
-        answered is never reported as "the session does not know the step".
-        """
 
     @abstractmethod
     async def session_failure(self, run_id: UUID, session_id: str) -> str:
@@ -163,9 +114,8 @@ class StepSessionPort(ABC):
     async def session_liveness(self, run_id: UUID, session_id: str) -> SessionLiveness:
         """Whether the session is up, still starting, or ended, as its Forge reports it.
 
-        Asks nothing of the session itself, so it works before the session's broker is
-        reachable. Raises when Forge cannot be asked: a question that cannot be answered
-        is never reported as an answer.
+        Raises when Forge cannot be asked: a question that cannot be answered is never
+        reported as an answer.
         """
 
     @abstractmethod
@@ -176,11 +126,23 @@ class StepSessionPort(ABC):
         persona_ref: PersonaRef,
         replaces: str | None,
     ) -> str:
-        """Give the member a fresh session in place of ``replaces`` and return its id.
+        """Restart the member's harness in place and return its session id (it does not change).
 
-        The replaced session is stopped if it is still up. Later ``ensure_session``
-        calls for the member find the replacement, not the replaced session. Asking
-        again for a session that was already replaced returns the replacement.
+        A running unit cannot take a new member, so a reassigned member is restarted under a
+        new launch of the same session. ``replaces`` is the session the caller believes the
+        member has; a different one raises.
+        """
+
+
+class OfferSigner(ABC):
+    """Signs the offers Ting hands to a run's root, as the platform service Ting is."""
+
+    @abstractmethod
+    def sign(self, offer: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        """The attestation of ``offer``, or ``None`` when the deployment runs unsigned.
+
+        ``None`` is the operator's decision (mesh attestation not required), never a
+        failure to sign: a signer that cannot sign raises.
         """
 
 
@@ -260,20 +222,3 @@ class WorkflowStepRepository(ABC):
     @abstractmethod
     async def load(self, run_id: UUID) -> RunState:
         """The run's ledger (steps, events and flags), without locking it."""
-
-    @abstractmethod
-    async def claim_delivery(self, activation_id: UUID, session_id: str, *, at: datetime) -> bool:
-        """Mark the step delivered to ``session_id`` if it is still active, bound to that
-        session and undelivered; True for the one caller that set it.
-
-        The conditional write is the claim: of several workers waiting on the same step,
-        only the one that gets True hands it to the session.
-        """
-
-    @abstractmethod
-    async def release_delivery(self, activation_id: UUID, session_id: str) -> None:
-        """Undo a delivery claim whose send never reached the session."""
-
-    @abstractmethod
-    async def undelivered_steps(self) -> list[WorkflowStep]:
-        """Every active stage-member step bound to a session but not yet delivered to it."""

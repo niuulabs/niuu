@@ -497,28 +497,6 @@ class VolundrPort(ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} cannot post room offers")
 
-    async def deliver_workflow_step(
-        self,
-        session_id: str,
-        activation: dict,
-        *,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> None:
-        """Hand a step activation to the session. Re-delivering one is idempotent."""
-        raise NotImplementedError(f"{type(self).__name__} cannot deliver workflow steps")
-
-    async def get_workflow_step(
-        self,
-        session_id: str,
-        activation_id: str,
-        *,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> dict | None:
-        """The session's durable state of one step (``active`` or ``closed``), if it has it."""
-        raise NotImplementedError(f"{type(self).__name__} cannot read workflow steps")
-
     async def submit_session_notification(
         self,
         session_id: str,
