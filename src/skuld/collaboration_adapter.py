@@ -110,6 +110,11 @@ def _add_work_part(parts: list[dict[str, Any]], frame: dict[str, Any]) -> None:
             parts.append({"type": "text", "text": text})
 
 
+#: ``metadata.messageType`` of a kept room row (``room_mesh_message``): a client shows it as
+#: the row it was live, not as a message.
+ROOM_ROW_MESSAGE_TYPE = "mesh_message"
+
+
 def _source_wire_fields(event: dict[str, Any]) -> dict[str, Any]:
     """Keep neutral source identity available to delivery adapters."""
     fields: dict[str, Any] = {}
@@ -643,17 +648,49 @@ class SkuldCollaborationAdapter(CollaborationRoom):
             raise RoomDeliveryError("; ".join(failures))
 
     async def _handle_delegation(self, participant: Participant, event: dict[str, Any]) -> None:
+        """Show one room row (a hand-off, a workflow step's offer, pickup or outcome) and keep it.
+
+        The row is kept as a turn of the room, so whoever opens the room later sees the run's
+        hand-offs too, not only the ones that happened while they watched. The live row carries
+        the turn's id, so a client that reloads the history shows it once.
+        """
+        row_id = str(uuid.uuid4())
+        from_persona = str(event.get("fromPersona") or participant.persona)
+        event_type = str(event.get("eventType") or "work")
+        direction = str(event.get("direction") or "delegate")
+        preview = str(event.get("preview") or "")
         await self._channels.broadcast(
             {
                 "type": "room_mesh_message",
+                "id": row_id,
                 "participantId": participant.peer_id,
                 "participant": asdict(participant),
-                "fromPersona": event.get("fromPersona") or participant.persona,
-                "eventType": event.get("eventType") or "work",
-                "direction": event.get("direction") or "delegate",
-                "preview": event.get("preview") or "",
+                "fromPersona": from_persona,
+                "eventType": event_type,
+                "direction": direction,
+                "preview": preview,
                 **_source_wire_fields(event),
             }
+        )
+        if self._append_turn is None:
+            return
+        from skuld.conversation_models import ConversationTurn
+
+        self._append_turn(
+            ConversationTurn(
+                id=row_id,
+                role="assistant",
+                content=preview,
+                metadata={
+                    "messageType": ROOM_ROW_MESSAGE_TYPE,
+                    "fromPersona": from_persona,
+                    "eventType": event_type,
+                    "direction": direction,
+                },
+                participant_id=participant.peer_id,
+                participant_meta=asdict(participant),
+                visibility="public",
+            )
         )
 
     async def _handle_agent_event(self, participant: Participant, event: dict[str, Any]) -> None:

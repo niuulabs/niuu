@@ -385,6 +385,41 @@ async def test_delegation_is_rendered_without_mesh_protocol_interpretation() -> 
 
 
 @pytest.mark.asyncio
+async def test_a_room_row_is_kept_so_a_later_viewer_sees_it() -> None:
+    """A workflow step's offer shown live is also a turn of the room, under the same id."""
+    append_turn = MagicMock()
+    adapter, channels = _adapter(append_turn=append_turn)
+    await adapter.register("root-1", "Coordinator", _websocket())
+    channels.broadcast.reset_mock()
+
+    await adapter.handle_collaboration_frame(
+        "root-1",
+        {
+            "kind": "delegation",
+            "sourceEventType": "workflow",
+            "fromPersona": "",
+            "eventType": "step.offered",
+            "direction": "workflow",
+            "preview": "Offered Implement the change to coder",
+        },
+    )
+
+    live = channels.broadcast.await_args.args[0]
+    kept = append_turn.call_args.args[0]
+    assert live["type"] == "room_mesh_message"
+    assert kept.id == live["id"]
+    assert kept.content == "Offered Implement the change to coder"
+    assert kept.participant_id == "root-1"
+    assert kept.visibility == "public"
+    assert kept.metadata == {
+        "messageType": "mesh_message",
+        "fromPersona": "Coordinator",
+        "eventType": "step.offered",
+        "direction": "workflow",
+    }
+
+
+@pytest.mark.asyncio
 async def test_usage_is_adapted_to_skuld_runtime_accounting() -> None:
     report = AsyncMock()
     adapter, _channels = _adapter(report_usage=report)
