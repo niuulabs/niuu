@@ -55,6 +55,7 @@ from jwt.exceptions import PyJWKSetError
 
 from niuu.cap_telemetry import record_degraded, record_retry
 from niuu.domain.services.token_scope import MESH_PEER_TOKEN_USE
+from niuu.mesh import mesh_topic
 from niuu.observability import get_observability
 
 #: Audience of a mesh certificate. Forge's and Envoy's audiences never include it.
@@ -210,8 +211,13 @@ def public_key_bytes(private_key: Ed25519PrivateKey) -> bytes:
 
 
 def sanitize_topic(topic: str) -> str:
-    """Topics as the mesh transports spell them (lowercase, ``-`` as ``_``)."""
-    return ".".join(segment.lower().replace("-", "_") for segment in topic.split("."))
+    """Topics as the mesh transports spell them, so a signed topic matches the one it arrived on.
+
+    The transports' own spelling (``niuu.mesh.mesh_topic``), digit-led segments included: a
+    member whose peer id starts with a digit shares its work on ``activity.<id>``, which
+    arrives as ``activity.p<id>``, and must still verify.
+    """
+    return mesh_topic(topic)
 
 
 def topic_matches(pattern: str, topic: str) -> bool:

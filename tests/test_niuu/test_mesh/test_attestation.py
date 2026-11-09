@@ -1091,6 +1091,30 @@ class TestDecoratorSurface:
         await _settle()
         assert all("ravn_type" in e.payload for e in seen)
 
+    async def test_a_digit_led_topic_verifies_as_the_transport_spells_it(
+        self, bus, authority
+    ) -> None:
+        """A member whose peer id starts with a digit shares its work on ``activity.<id>``.
+
+        The transport spells that segment ``p<id>``, and the run's room reads it from the wire:
+        the signature is bound to the same spelling, so the room keeps the member's work
+        instead of refusing it as a topic mismatch.
+        """
+        member = "92c80073-594e-5820-936e-42531093326c"
+        sender = await make_peer(bus, authority, member)
+        room = await make_peer(bus, authority, "room")
+        seen: list[Any] = []
+
+        async def handler(event: Any) -> None:
+            seen.append(event)
+
+        await room.mesh.verified_subscriber(bus, event_prefix="mesh").subscribe(["mesh.*"], handler)
+        await sender.mesh.publish(_event(member), f"activity.{member}")
+        await _settle()
+
+        assert room.refusals == []
+        assert [e for e in seen if e.payload.get("ravn_source") == member]
+
     async def test_event_on_a_different_topic_than_signed_is_refused_by_the_subscriber(
         self, bus, authority
     ) -> None:

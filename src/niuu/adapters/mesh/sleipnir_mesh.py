@@ -62,7 +62,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from niuu.mesh import mesh_event_prefix
+from niuu.mesh import mesh_event_prefix, mesh_topic, mesh_topic_segment
 from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE
 from niuu.mesh.events import MeshEvent, MeshEventType
 from niuu.mesh.projection import project_mesh_event
@@ -73,22 +73,13 @@ logger = logging.getLogger(__name__)
 
 
 def _sanitize_for_event_type(s: str) -> str:
-    """Sanitize a string for use in Sleipnir event types.
-
-    Sleipnir event type segments require lowercase alphanumeric + underscores only, and
-    must start with a letter. Converts hyphens to underscores inside a segment, and puts
-    a ``p`` in front of one that starts with a digit (a session's UUID peer id does in 10
-    of 16 cases). Both ends of an address are built here, so they agree.
-    """
-    segment = s.lower().replace("-", "_")
-    if segment[:1].isdigit():
-        return f"p{segment}"
-    return segment
+    """A peer id or topic segment as a Sleipnir event type segment (``niuu.mesh``'s spelling)."""
+    return mesh_topic_segment(s)
 
 
 def _sanitize_topic(topic: str) -> str:
     """Sanitize a dotted topic while preserving segment boundaries."""
-    return ".".join(_sanitize_for_event_type(segment) for segment in topic.split("."))
+    return mesh_topic(topic)
 
 
 def _ravn_to_sleipnir(
