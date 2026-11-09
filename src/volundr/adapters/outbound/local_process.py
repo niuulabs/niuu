@@ -63,7 +63,7 @@ from volundr.domain.ports import (
 )
 from volundr.domain.services.forge_session_launch import launch_id_of
 from volundr.domain.services.session import SessionCapacityError
-from volundr.domain.workflow_session import workflow_steps_environment
+from volundr.domain.workflow_session import workflow_session_environment
 
 logger = logging.getLogger(__name__)
 
@@ -1386,7 +1386,7 @@ class LocalProcessPodManager(PodManager):
             env["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
         if initial_prompt:
             env["SKULD__SESSION__INITIAL_PROMPT"] = initial_prompt
-        env.update(workflow_steps_environment(spec.values))
+        env.update(workflow_session_environment(spec.values))
 
         # Claude transports still need the CLI binary location.
         if env.get("SKULD__CLI_TYPE", "claude") == "claude":

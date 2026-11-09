@@ -35,3 +35,28 @@ ROOT_STEPS_ENV = {
     "SKULD__WORKFLOW_STEPS__RUN_ID": "run-1",
     "SKULD__WORKFLOW_STEPS__ORCHESTRATION": "engine",
 }
+
+#: ``values.mesh`` of a run's member: the run's realm, and its work shared with the run's room.
+MEMBER_MESH_VALUES = {"enabled": True, "realmId": "workflow-run-1", "shareWork": True}
+MEMBER_MESH_ENV = {
+    "SKULD__MESH__ENABLED": "true",
+    "SKULD__MESH__REALM_ID": "workflow-run-1",
+    "SKULD__MESH__SHARE_WORK": "true",
+}
+
+#: ``values.mesh`` and ``values.room`` of a run's root: it hosts the run's room.
+ROOT_MESH_VALUES = {"enabled": True, "realmId": "workflow-run-1"}
+ROOT_ROOM_VALUES = {
+    "enabled": True,
+    "environmentId": "workflow-run-1",
+    "realmRoom": True,
+    "routed": True,
+}
+ROOT_ROOM_ENV = {
+    "SKULD__MESH__ENABLED": "true",
+    "SKULD__MESH__REALM_ID": "workflow-run-1",
+    "SKULD__ROOM__ENABLED": "true",
+    "SKULD__ROOM__ENVIRONMENT_ID": "workflow-run-1",
+    "SKULD__ROOM__REALM_ROOM": "true",
+    "SKULD__ROOM__ROUTED": "true",
+}

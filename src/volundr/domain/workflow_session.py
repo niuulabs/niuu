@@ -71,24 +71,59 @@ WORKFLOW_STEPS_ENV_NAMES = {
 }
 
 
-def workflow_steps_environment(values: Mapping[str, Any]) -> dict[str, str]:
-    """The ``SKULD__WORKFLOW_STEPS__...`` variables a session spec's values call for.
+#: The fields of ``values.mesh`` a workflow run sets on its sessions and the Skuld mesh setting
+#: each becomes (after ``SKULD__MESH__``): the run's own realm, and whether a member shares its
+#: work with the run's room. The skuld chart renders the same fields.
+WORKFLOW_MESH_ENV_NAMES = {
+    "enabled": "ENABLED",
+    "realmId": "REALM_ID",
+    "shareWork": "SHARE_WORK",
+}
 
-    Every field the contributor set, so a member or a root started from the environment gets
-    the same settings the chart renders into a pod's config file. Skuld refuses a member or
-    root that lacks one at startup, so nothing is filled in here. An ordinary session has no
-    ``workflowSteps`` and gets none.
+#: The fields of ``values.room`` (the run's room, on its root) and the Skuld room setting each
+#: becomes (after ``SKULD__ROOM__``). The skuld chart renders the same fields.
+WORKFLOW_ROOM_ENV_NAMES = {
+    "enabled": "ENABLED",
+    "environmentId": "ENVIRONMENT_ID",
+    "realmRoom": "REALM_ROOM",
+    "routed": "ROUTED",
+}
+
+
+def workflow_session_environment(values: Mapping[str, Any]) -> dict[str, str]:
+    """The Skuld variables a workflow run's session spec values call for.
+
+    Every ``values.workflowSteps`` field (``SKULD__WORKFLOW_STEPS__...``), and the run's mesh
+    realm, work sharing and room (``values.mesh`` and ``values.room``), so a member or a root
+    started from the environment gets the same settings the chart renders into a pod's config
+    file. Without the room a run's root shows none of its members' work, and without the realm
+    and work sharing the members have nothing to show it. Skuld refuses a member or root that
+    lacks a step setting at startup, so nothing is filled in here. An ordinary session has no
+    ``workflowSteps`` and gets none of these.
     """
     steps = values.get(WORKFLOW_STEPS_VALUES_KEY)
     if not isinstance(steps, Mapping):
         return {}
-    environment: dict[str, str] = {}
-    for key, name in WORKFLOW_STEPS_ENV_NAMES.items():
-        value = steps.get(key)
-        if value is None:
-            continue
-        environment[f"{WORKFLOW_STEPS_ENV_PREFIX}{name}"] = _env_text(value)
+    environment = _prefixed(steps, WORKFLOW_STEPS_ENV_NAMES, WORKFLOW_STEPS_ENV_PREFIX)
+    mesh = values.get("mesh")
+    if isinstance(mesh, Mapping):
+        environment.update(_prefixed(mesh, WORKFLOW_MESH_ENV_NAMES, "SKULD__MESH__"))
+    room = values.get("room")
+    if isinstance(room, Mapping) and room.get("enabled") is True:
+        room_values = dict(room)
+        # As the chart: the room's environment is the session's mesh realm unless it names one.
+        if not room_values.get("environmentId") and isinstance(mesh, Mapping):
+            room_values["environmentId"] = mesh.get("realmId")
+        environment.update(_prefixed(room_values, WORKFLOW_ROOM_ENV_NAMES, "SKULD__ROOM__"))
     return environment
+
+
+def _prefixed(values: Mapping[str, Any], names: Mapping[str, str], prefix: str) -> dict[str, str]:
+    return {
+        f"{prefix}{name}": _env_text(values[key])
+        for key, name in names.items()
+        if values.get(key) is not None
+    }
 
 
 def _env_text(value: Any) -> str:

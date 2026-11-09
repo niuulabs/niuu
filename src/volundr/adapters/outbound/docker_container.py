@@ -46,7 +46,7 @@ from volundr.adapters.outbound.local_process import (
 )
 from volundr.adapters.outbound.mesh_settings import mesh_environment
 from volundr.domain.models import SessionStatus
-from volundr.domain.workflow_session import workflow_steps_environment
+from volundr.domain.workflow_session import workflow_session_environment
 
 if TYPE_CHECKING:
     from volundr.domain.models import Session, SessionSpec
@@ -448,7 +448,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
                 env["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
             if initial_prompt:
                 env["SKULD__SESSION__INITIAL_PROMPT"] = initial_prompt
-        env.update(workflow_steps_environment(spec.values))
+        env.update(workflow_session_environment(spec.values))
         del workspace
         return env
 

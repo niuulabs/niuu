@@ -17,8 +17,13 @@ from uuid import uuid4
 import pytest
 
 from tests.support.workflow_steps import (
+    MEMBER_MESH_ENV,
+    MEMBER_MESH_VALUES,
     MEMBER_STEPS_ENV,
     MEMBER_STEPS_VALUES,
+    ROOT_MESH_VALUES,
+    ROOT_ROOM_ENV,
+    ROOT_ROOM_VALUES,
     ROOT_STEPS_ENV,
     ROOT_STEPS_VALUES,
 )
@@ -1220,9 +1225,17 @@ class TestProcessSpawning:
         workspace = tmp_workspaces / str(git_session.id)
         workspace.mkdir(parents=True)
         step_host = SessionSpec(
-            values={"workflowSteps": MEMBER_STEPS_VALUES}, pod_spec=PodSpecAdditions()
+            values={"workflowSteps": MEMBER_STEPS_VALUES, "mesh": MEMBER_MESH_VALUES},
+            pod_spec=PodSpecAdditions(),
         )
-        root = SessionSpec(values={"workflowSteps": ROOT_STEPS_VALUES}, pod_spec=PodSpecAdditions())
+        root = SessionSpec(
+            values={
+                "workflowSteps": ROOT_STEPS_VALUES,
+                "mesh": ROOT_MESH_VALUES,
+                "room": ROOT_ROOM_VALUES,
+            },
+            pod_spec=PodSpecAdditions(),
+        )
         envs = []
 
         for spec in (default_spec, step_host, root):
@@ -1241,7 +1254,11 @@ class TestProcessSpawning:
 
         assert not [name for name in envs[0] if name.startswith("SKULD__WORKFLOW_STEPS__")]
         assert MEMBER_STEPS_ENV.items() <= envs[1].items()
+        # A member shares its work in the run's realm; the root hosts the room that keeps it.
+        assert MEMBER_MESH_ENV.items() <= envs[1].items()
+        assert "SKULD__ROOM__ENABLED" not in envs[1]
         assert ROOT_STEPS_ENV.items() <= envs[2].items()
+        assert ROOT_ROOM_ENV.items() <= envs[2].items()
         assert "SKULD__WORKFLOW_STEPS__ENABLED" not in envs[2]
 
     async def test_spawn_skuld_has_no_persona_without_one(
