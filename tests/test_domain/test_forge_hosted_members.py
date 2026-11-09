@@ -574,6 +574,25 @@ class TestStop:
         assert (await unit.forge.get_session(reviewer.id)).status == SessionStatus.RUNNING
         assert (await unit.forge.get_session(coder.id)).status == SessionStatus.STOPPED
 
+    async def test_a_member_the_runtime_cannot_confirm_stopped_is_a_conflict_not_a_server_error(
+        self, unit: Unit
+    ):
+        root = await unit.root()
+        coder = await unit.member(root, "coder-1")
+        await unit.start_and_run(root)
+
+        async def refuse(member):
+            raise HostedUnitError(f"its Skuld could not be asked to stop {member.id}")
+
+        unit.app.pod_manager.stop_hosted_member = refuse
+
+        with pytest.raises(HostedMemberError, match="could not be asked to stop") as error:
+            await unit.forge.stop_session(coder.id, principal=PRINCIPAL)
+
+        assert isinstance(error.value, SessionStateError)  # the session routes answer it 409
+        # The member is as it was: not recorded stopped while its process may still run.
+        assert (await unit.forge.get_session(coder.id)).status == SessionStatus.RUNNING
+
     async def test_a_stopped_member_cannot_be_stopped_again(self, unit: Unit):
         root = await unit.root()
         coder = await unit.member(root, "coder-1")
@@ -748,7 +767,7 @@ class TestEndingMembers:
 
         unit.app.pod_manager.stop = stop
 
-        with pytest.raises(HostedUnitError, match="did not stop member"):
+        with pytest.raises(HostedMemberError, match="did not stop member"):
             await unit.forge.stop_session(coder.id, principal=PRINCIPAL)
 
         assert (await unit.forge.get_session(coder.id)).status == SessionStatus.RUNNING

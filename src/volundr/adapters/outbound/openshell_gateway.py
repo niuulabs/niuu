@@ -73,6 +73,8 @@ from volundr.adapters.outbound.openshell_contract import (
     UNIT_MESH_DIRECTORY,
     UNIT_MESH_REGISTRY,
     UNIT_MESH_VOLUME,
+    UNIT_WORKSPACE_DIRECTORY,
+    UNIT_WORKSPACE_VOLUME,
     check_peer_workloads,
     check_pod_metadata_keys,
     check_policy_allows_egress,
@@ -195,6 +197,14 @@ DEFAULT_RESIDENT_SANDBOX_DELETE_TIMEOUT_SECONDS = 180.0
 TCP_FORWARD_BUFFER_BYTES = 64 * 1024
 # The gateway decodes at most 1 MiB per gRPC message; streamed stdin stays well below.
 EXEC_STDIN_CHUNK_BYTES = 256 * 1024
+#: Who owns a session sandbox's storage (sandbox label). ``forge``: a claim Völundr
+#: mounts, which outlives the sandbox. ``unit``: a workflow run's own volume, which lives
+#: and ends with the sandbox. Both are deleted on stop; any other (no label) is a legacy
+#: sandbox whose volume the gateway owns, so a stop only removes its compute.
+SANDBOX_STORAGE_LABEL = "volundr.niuu.io/storage"
+SANDBOX_STORAGE_FORGE = "forge"
+SANDBOX_STORAGE_UNIT = "unit"
+SANDBOX_STORAGE_DELETED = frozenset({SANDBOX_STORAGE_FORGE, SANDBOX_STORAGE_UNIT})
 #: The image Völundr created a resident's sandbox with (sandbox annotation).
 SANDBOX_IMAGE_ANNOTATION = "volundr.niuu.io/image"
 #: The image of the sandbox this one replaced on an upgrade. A Völundr that still
@@ -370,12 +380,16 @@ class OpenShellUnit:
     ``values`` are the root's values with the unit's volumes, mounts and one peer workload
     per member; ``files`` are the members' credential, environment and auth files, written
     with the root's before the peers are released; ``providers`` are the members' provider
-    grants, attached to the one sandbox.
+    grants, attached to the one sandbox. ``workspace_volume`` is where the checkout lives
+    when the launch has no workspace claim to carry it: the ``emptyDir`` every container
+    of the sandbox mounts there, which the root's workspace path then links to. It is None
+    when the claim is the shared checkout.
     """
 
     values: dict[str, Any]
     files: dict[str, bytes]
     providers: tuple[str, ...]
+    workspace_volume: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1299,6 +1313,10 @@ class OpenShellGatewayPodManager(
         self._resident_claim_policy = _sandbox_policy_from_config(
             _with_read_write_path(sandbox_policy or {"version": 1}, RESIDENT_WORKSPACE_VOLUME_PATH)
         )
+        # A unit with no workspace claim also writes the checkout's volume, outside /sandbox.
+        self._unit_workspace_policy = _sandbox_policy_from_config(
+            _with_read_write_path(sandbox_policy or {"version": 1}, UNIT_WORKSPACE_DIRECTORY)
+        )
         self._service_port = int(service_port)
         self._service_name = service_name
         self._command_log_path = command_log_path
@@ -1898,7 +1916,7 @@ class OpenShellGatewayPodManager(
             "volundr.niuu.io/runtime": self._runtime_from_spec(spec),
         }
         if spec.values.get("persistence", {}).get("existingClaim"):
-            labels["volundr.niuu.io/storage"] = "forge"
+            labels[SANDBOX_STORAGE_LABEL] = SANDBOX_STORAGE_FORGE
         pod_labels: dict[str, str] = {}
         pod_annotations: dict[str, str] = {}
         if spec.pod_spec:
@@ -1921,6 +1939,9 @@ class OpenShellGatewayPodManager(
             if members:
                 unit = await self._plan_unit(session, spec, members, env, unit_grants)
                 spec = replace(spec, values=unit.values)
+                if unit.workspace_volume:
+                    # The checkout is the sandbox's own volume: nothing outlives it to retain.
+                    labels[SANDBOX_STORAGE_LABEL] = SANDBOX_STORAGE_UNIT
             forge_session_files, forge_session_env = _forge_session_projection(
                 spec, token_path=f"{self._sandbox_home}/{FORGE_SESSION_TOKEN_FILE}"
             )
@@ -1932,6 +1953,7 @@ class OpenShellGatewayPodManager(
             runtime_processes = _runtime_processes_from_spec(spec)
             workloads = (spec.values.get("openshell") or {}).get("workloads", [])
             workload_start_file = ""
+            workload_start_write = ""
             if workloads:
                 if runtime_processes:
                     raise ValueError(
@@ -1942,7 +1964,15 @@ class OpenShellGatewayPodManager(
                         "OpenShell workload containers require dynamic provider credentials; "
                         "disable materializeEnvironment"
                     )
-                workload_start_file = f"{self._sandbox_workspace}/.volundr/start-{uuid4().hex}"
+                start_name = f".volundr/start-{uuid4().hex}"
+                # The peers wait for the marker where they see the checkout; Völundr
+                # writes it where the primary does (the same file when the unit's
+                # checkout is the volume the workspace path links to).
+                workload_start_file = (
+                    f"{(unit.workspace_volume if unit else None) or self._sandbox_workspace}/"
+                    f"{start_name}"
+                )
+                workload_start_write = f"{self._sandbox_workspace}/{start_name}"
             driver_config = _driver_config_from_values(
                 spec.values,
                 workload_start_file=workload_start_file,
@@ -1982,7 +2012,11 @@ class OpenShellGatewayPodManager(
                     resources=self._resources_from_spec(spec),
                     driver_config=driver_config,
                     providers=provider_names,
-                    policy=self._sandbox_policy,
+                    policy=(
+                        self._unit_workspace_policy
+                        if unit and unit.workspace_volume
+                        else self._sandbox_policy
+                    ),
                 )
             self._set_stage(
                 session.id,
@@ -1999,6 +2033,9 @@ class OpenShellGatewayPodManager(
                 ),
             )
             self._set_stage(session.id, STAGE_READY, StartupStageState.DONE, _sandbox_report(ready))
+            if unit and unit.workspace_volume:
+                # Before anything is written into the workspace path.
+                await self._link_unit_workspace(ready, unit.workspace_volume)
             projected_files = {
                 **credential_context.files,
                 **forge_session_files,
@@ -2045,7 +2082,7 @@ class OpenShellGatewayPodManager(
                 await asyncio.to_thread(
                     self._client.write_files,
                     sandbox=ready.name,
-                    files={**workload_files, workload_start_file: b"ready"},
+                    files={**workload_files, workload_start_write: b"ready"},
                 )
             for process in runtime_processes:
                 self._set_stage(
@@ -2145,9 +2182,11 @@ class OpenShellGatewayPodManager(
     # Skuld is the primary; every member is a peer workload, a container of the same pod
     # that runs its own Skuld. Containers of a pod share loopback, so the mesh is nng on
     # 127.0.0.1 discovered through a registry file in an ``emptyDir`` they all mount. The
-    # workspace volume is shared (one checkout); each member's credential, environment
-    # file and home are in an ``emptyDir`` only that member's container (and the primary,
-    # which writes it) mounts.
+    # checkout is shared: through the workspace claim when the launch has one, else through an
+    # ``emptyDir`` of the sandbox's own (``UNIT_WORKSPACE_DIRECTORY``) that every container
+    # mounts, so the run needs no claim. Each member's credential, environment file and home
+    # are in an ``emptyDir`` only that member's container (and the primary, which writes it)
+    # mounts.
 
     @staticmethod
     def _unit_member_ids(session: Session) -> list[str]:
@@ -2236,12 +2275,16 @@ class OpenShellGatewayPodManager(
         rolls them back.
         """
         persistence = spec.values.get("persistence")
-        if not (isinstance(persistence, dict) and persistence.get("existingClaim")):
+        claimed = isinstance(persistence, dict) and bool(persistence.get("existingClaim"))
+        if claimed and not _workspace_persisted(spec.values, self._sandbox_workspace):
             raise ValueError(
-                f"Unit {root.id} shares its checkout through the sandbox's workspace volume, "
-                "which this launch has none of (values.persistence.existingClaim): the "
-                "members would each get a copy of the checkout in their own container. "
-                "Configure the workspace claim for OpenShell sessions"
+                f"Unit {root.id} shares its checkout through the workspace claim "
+                f"{persistence['existingClaim']!r}, which is mounted at "
+                f"{persistence.get('mountPath')!r}, not at or above the sandbox workspace "
+                f"{self._sandbox_workspace}: the members would each get a copy of the "
+                "checkout in their own container. Set values.persistence.mountPath to the "
+                "workspace path (under /sandbox/), or drop the claim to share the checkout "
+                f"through the sandbox's own volume at {UNIT_WORKSPACE_DIRECTORY}"
             )
         values = deepcopy(spec.values)
         openshell = values.get("openshell")
@@ -2257,12 +2300,24 @@ class OpenShellGatewayPodManager(
         mesh_mount = {"name": UNIT_MESH_VOLUME, "mount_path": UNIT_MESH_DIRECTORY}
         volumes = [*deepcopy(openshell.get("volumes") or []), self._empty_dir(UNIT_MESH_VOLUME)]
         agent_mounts = [*deepcopy(openshell.get("volumeMounts") or []), dict(mesh_mount)]
+        # With a claim, the claim's mount is the shared checkout (every peer gets it from
+        # the driver config). Without one, the checkout is a volume of the sandbox's own
+        # that every container mounts, so the run still has one checkout and no claim.
+        workspace_mount: dict[str, Any] | None = None
+        if not claimed:
+            workspace_mount = {
+                "name": UNIT_WORKSPACE_VOLUME,
+                "mount_path": UNIT_WORKSPACE_DIRECTORY,
+                "read_only": False,
+            }
+            volumes.append(self._empty_dir(UNIT_WORKSPACE_VOLUME))
+            agent_mounts.append(dict(workspace_mount))
         workloads: list[dict[str, Any]] = []
         files: dict[str, bytes] = {}
         providers: list[str] = []
         for index, member in enumerate(members):
             peer, member_files, member_providers = await self._plan_member(
-                index, member, root_env, mesh_env, mesh_mount, grants
+                index, member, root_env, mesh_env, mesh_mount, grants, workspace_mount
             )
             directory = unit_member_directory(index)
             volume = unit_member_volume(index)
@@ -2274,7 +2329,42 @@ class OpenShellGatewayPodManager(
         openshell["volumes"] = volumes
         openshell["volumeMounts"] = agent_mounts
         openshell["workloads"] = workloads
-        return OpenShellUnit(values=values, files=files, providers=tuple(providers))
+        return OpenShellUnit(
+            values=values,
+            files=files,
+            providers=tuple(providers),
+            workspace_volume=None if claimed else UNIT_WORKSPACE_DIRECTORY,
+        )
+
+    async def _link_unit_workspace(self, sandbox: OpenShellSandbox, volume: str) -> None:
+        """Make the workspace path a link to the unit's checkout volume, or fail the launch.
+
+        The primary mounts the volume outside ``/sandbox`` (see ``UNIT_WORKSPACE_DIRECTORY``),
+        so its workspace path is a link to it and everything that clones, writes or reads
+        the workspace reaches the one checkout the members mount.
+        """
+        exit_code, output = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox=sandbox.name,
+            script=_workspace_link_script(self._sandbox_workspace, volume),
+            env={},
+        )
+        if exit_code != 0:
+            raise RuntimeError(
+                f"Could not link {self._sandbox_workspace} to the unit's checkout volume "
+                f"{volume} in {sandbox.name}: {output.strip()}"
+            )
+        for line in output.splitlines():
+            if line.startswith("moved-aside="):
+                # What the image shipped there is not the run's checkout; the link is.
+                logger.warning(
+                    "Moved %s in sandbox %s aside to %s and linked it to the unit's "
+                    "checkout volume %s",
+                    self._sandbox_workspace,
+                    sandbox.name,
+                    line.removeprefix("moved-aside="),
+                    volume,
+                )
 
     @staticmethod
     def _empty_dir(name: str) -> dict[str, Any]:
@@ -2288,8 +2378,14 @@ class OpenShellGatewayPodManager(
         mesh_env: dict[str, str],
         mesh_mount: dict[str, Any],
         grants: list[OpenShellProviderGrant],
+        workspace_mount: dict[str, Any] | None,
     ) -> tuple[dict[str, Any], dict[str, bytes], list[str]]:
-        """One member's peer workload, its files and the provider grants it needs."""
+        """One member's peer workload, its files and the provider grants it needs.
+
+        ``workspace_mount`` is the unit's checkout volume when no claim carries it: the
+        member mounts it and works in it at that path (a peer cannot make the workspace
+        path a link in the image's ``/sandbox``). None when the claim does.
+        """
         session = member.session
         spec = self._with_brokered_credentials(member.spec)
         check_policy_allows_egress(
@@ -2335,6 +2431,9 @@ class OpenShellGatewayPodManager(
                 "CLAUDE_CONFIG_DIR": f"{home}/.claude",
             }
         )
+        if workspace_mount is not None:
+            env["SKULD__SESSION__WORKSPACE_DIR"] = workspace_mount["mount_path"]
+            env["SKULD__PERSISTENCE_MOUNT_PATH"] = workspace_mount["mount_path"]
         files = {**token_files, **self._member_credential_files(context.files, home)}
         env_path = f"{directory}/env"
         files[env_path] = self._member_environment_file(env, root_env).encode("utf-8")
@@ -2353,6 +2452,7 @@ class OpenShellGatewayPodManager(
             "volume_mounts": [
                 dict(mesh_mount),
                 {"name": unit_member_volume(index), "mount_path": directory, "read_only": False},
+                *([dict(workspace_mount)] if workspace_mount is not None else []),
             ],
         }
         resources = self._resources_from_spec(spec)
@@ -2454,8 +2554,34 @@ class OpenShellGatewayPodManager(
         return self._member_failures.get(str(session.id))
 
     async def stop_hosted_member(self, member: Session) -> None:
-        """End one member's harness: its peer lives with the sandbox, so its Skuld is asked."""
+        """End one member's harness: its peer lives with the sandbox, so its Skuld is asked.
+
+        A member whose unit's sandbox is gone or stopped has nothing running to stop: that
+        is the answer, and the tunnel this controller held to it is closed. A sandbox that
+        is not up yet, or failed, cannot be asked and may still hold the process, so that
+        raises (``HostedUnitError``) rather than reading as stopped.
+        """
+        sandbox = await asyncio.to_thread(self._client.get_sandbox, self._sandbox_of(member))
+        if sandbox is None or _sandbox_stopped(sandbox):
+            await self._close_member_forwarder(member)
+            return
+        status = _status_from_sandbox(sandbox)
+        if status is SessionStatus.STOPPING:
+            # The sandbox is ending, and the member with it.
+            await self._close_member_forwarder(member)
+            return
+        if status is not SessionStatus.RUNNING:
+            raise HostedUnitError(
+                f"Member session {member.id}: its unit's sandbox {sandbox.name} is "
+                f"{status.value}, so its Skuld cannot be asked to stop and its process may "
+                "still be running; wait for the sandbox, or stop the run to end it"
+            )
         await self._harness.stop(member, await self.broker_target(member))
+
+    async def _close_member_forwarder(self, member: Session) -> None:
+        forwarder = self._resident_forwarders.pop(str(member.id), None)
+        if forwarder is not None:
+            await asyncio.to_thread(forwarder.close)
 
     async def restart_hosted_member(self, member: Session) -> None:
         """Restart one member's harness under its new launch.
@@ -2582,7 +2708,10 @@ class OpenShellGatewayPodManager(
         if session.hosted_by is not None:
             return await self._release_member(session)
         sandbox_name, sandbox, grants = await self._release_session_handles(session)
-        if sandbox is not None and (sandbox.labels or {}).get("volundr.niuu.io/storage") != "forge":
+        if (
+            sandbox is not None
+            and (sandbox.labels or {}).get(SANDBOX_STORAGE_LABEL) not in SANDBOX_STORAGE_DELETED
+        ):
             # Legacy volumes are owned by the Sandbox CR: deleting it also
             # deletes history. Native stop removes compute but retains storage.
             if sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPED:

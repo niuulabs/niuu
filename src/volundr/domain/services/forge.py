@@ -17,7 +17,7 @@ from volundr.domain.models import (
     Session,
     SessionStatus,
 )
-from volundr.domain.ports import PersonaNotPlayableError
+from volundr.domain.ports import HostedUnitError, PersonaNotPlayableError
 from volundr.domain.services.forge_session_launch import (
     FORGE_MCP_KEY,
     GRANTS_KEY,
@@ -621,11 +621,16 @@ class ForgeService:
         # that is gone is not a stop that can succeed. Ending the member then only ends its
         # record, credential and identity. While the unit is up, a Skuld that cannot be
         # asked is a real failure and is raised.
-        stopped = await self._end_member(
-            member.model_copy(update={"status": effective.status}),
-            principal,
-            unit_running=unit.status in _LIVE_UNIT_STATUSES,
-        )
+        try:
+            stopped = await self._end_member(
+                member.model_copy(update={"status": effective.status}),
+                principal,
+                unit_running=unit.status in _LIVE_UNIT_STATUSES,
+            )
+        except HostedUnitError as exc:
+            # The runtime could not confirm the member's process ended: the member stays as
+            # it was and the caller is told why (a session state conflict, 409), not 500.
+            raise HostedMemberError(member.id, "stop", effective.status, str(exc)) from exc
         return self._member_in(stopped, unit)
 
     def _resolve_session_definition(
