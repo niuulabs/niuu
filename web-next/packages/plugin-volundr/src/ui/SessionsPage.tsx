@@ -399,6 +399,7 @@ function PodEntry({
         data-testid={`pod-entry-${session.id}`}
         className={cn(
           'forge-session-row__select niuu:flex niuu:w-full niuu:items-start niuu:gap-2 niuu:border-b niuu:border-l-2 niuu:px-3 niuu:py-1.5 niuu:text-left niuu:transition-colors',
+          memberRole && 'forge-session-row__select--member',
           selected
             ? 'niuu:border-brand niuu:border-b-white/10 forge-session-row__select--selected niuu:shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]'
             : 'niuu:border-transparent niuu:border-b-white/6 niuu:hover:bg-bg-tertiary',

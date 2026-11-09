@@ -694,6 +694,15 @@
   height: 7px;
 }
 
+.forge-session-tree-children .forge-session-row__select--member {
+  min-height: 0;
+  padding-block: 7px;
+}
+
+.forge-session-row__select--member .forge-session-row__headline {
+  min-height: 0;
+}
+
 .forge-session-state.forge-session-row__member-state {
   padding: 0;
   background: none;
