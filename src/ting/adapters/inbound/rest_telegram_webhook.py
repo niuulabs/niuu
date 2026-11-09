@@ -504,8 +504,11 @@ def create_telegram_webhook_router() -> APIRouter:
     def _get_saga_repo(request: Request) -> SagaRepository:
         return request.app.state.saga_repo
 
-    def _get_volundr(request: Request) -> VolundrPort:
-        return request.app.state.volundr
+    async def _get_volundr(request: Request, owner_id: str) -> VolundrPort | None:
+        # Resolved per command, for the owner who sent it: the factory may
+        # need a live Forge (mini mode looks up the local Forge's Guild id),
+        # which is not there yet while Ting starts.
+        return await request.app.state.volundr_factory.primary_for_owner(owner_id)
 
     def _get_dispatcher_repo(request: Request) -> DispatcherRepository:
         return request.app.state.dispatcher_repo
@@ -573,7 +576,7 @@ def create_telegram_webhook_router() -> APIRouter:
 
         # Dispatch command
         saga_repo = _get_saga_repo(request)
-        volundr = _get_volundr(request)
+        volundr = await _get_volundr(request, owner_id)
         dispatcher_repo = _get_dispatcher_repo(request)
         dispatch_service = _get_dispatch_service(request)
         event_bus = getattr(request.app.state, "event_bus", None)

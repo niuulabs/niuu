@@ -776,16 +776,6 @@ def create_app(
                     allow_unauthenticated=settings.auth.allow_anonymous_dev,
                     target_auth=_create_http_auth_adapter(settings.volundr.auth),
                 )
-            # Default Volundr adapter for code paths that don't have a per-owner
-            # context (e.g. the Telegram webhook router's _get_volundr). In
-            # mini/anonymous-dev mode the factory always returns the same
-            # singleton; in multi-owner production the per-owner factory
-            # lookup is the right path and this default is a fallback.
-            app.state.volundr = (
-                await app.state.volundr_factory.primary_for_owner("dev-user")
-                if settings.auth.allow_anonymous_dev
-                else None
-            )
             app.state.tracker_factory = TrackerAdapterFactory(
                 integration_repo, credential_store, pool=pool
             )
