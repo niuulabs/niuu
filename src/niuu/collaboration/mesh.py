@@ -78,8 +78,7 @@ def _outcome_line(body: StepOutcome) -> str:
                 f"{body.member} is waiting on {target} to finish {node}",
                 waiting_on.reason if waiting_on else None,
             )
-        case _:
-            return _with_detail(f"{body.member} failed {node}", body.failure_reason)
+    return _with_detail(f"{body.member} failed {node}", body.failure_reason)
 
 
 def _unknown_line(unknown: UnknownWorkflowEvent) -> str:

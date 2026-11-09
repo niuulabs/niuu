@@ -20,7 +20,6 @@ from volundr.adapters.outbound.vm_hosted_unit import (
     HOSTED_MEMBERS_KEY,
     UNIT_MESH_REGISTRY,
     HostedMemberLaunch,
-    HostedMemberSource,
     HostedUnitError,
     HostedUnitVmRuntime,
     member_entry,
@@ -50,7 +49,12 @@ from volundr.domain.execution_catalog import (
 from volundr.domain.host_preparation import HostPreparation
 from volundr.domain.models import HOSTED_MEMBERS_KEY as UNIT_MEMBERS_KEY
 from volundr.domain.models import Session, SessionSpec, SessionStatus
-from volundr.domain.ports import PodManager, PodStartResult, SessionCapacity
+from volundr.domain.ports import (
+    HostedMemberSource,
+    PodManager,
+    PodStartResult,
+    SessionCapacity,
+)
 from volundr.domain.services.compute_leases import ComputeLeaseService
 from volundr.domain.services.execution_catalog import ExecutionPlanResolver
 from volundr.domain.services.forge_session_launch import launch_id_of

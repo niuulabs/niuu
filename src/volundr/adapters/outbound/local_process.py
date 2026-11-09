@@ -45,7 +45,6 @@ from volundr.adapters.outbound.mesh_settings import (
 )
 from volundr.adapters.outbound.vm_hosted_unit import (
     HostedMemberLaunch,
-    HostedMemberSource,
     HostedUnitError,
 )
 from volundr.domain.models import HOSTED_MEMBERS_KEY as UNIT_MEMBERS_KEY
@@ -56,7 +55,12 @@ from volundr.domain.models import (
     SessionSpec,
     SessionStatus,
 )
-from volundr.domain.ports import PodManager, PodStartResult, SessionCapacity
+from volundr.domain.ports import (
+    HostedMemberSource,
+    PodManager,
+    PodStartResult,
+    SessionCapacity,
+)
 from volundr.domain.services.forge_session_launch import launch_id_of
 from volundr.domain.services.session import SessionCapacityError
 from volundr.domain.workflow_session import workflow_steps_environment

@@ -27,7 +27,6 @@ from volundr.domain.compute import MachineBootstrap, SlotLease
 from volundr.domain.models import PodSpecAdditions, SessionSpec
 from volundr.domain.ports import (  # noqa: F401  (the seam lives in the port)
     HostedMemberLaunch,
-    HostedMemberSource,
     HostedUnitError,
 )
 

@@ -130,7 +130,6 @@ from volundr.adapters.outbound.resident_container_spec import (
 )
 from volundr.adapters.outbound.vm_hosted_unit import (
     HostedMemberLaunch,
-    HostedMemberSource,
     HostedUnitError,
 )
 from volundr.domain.models import HOSTED_MEMBERS_KEY as UNIT_MEMBERS_KEY
@@ -156,6 +155,7 @@ from volundr.domain.models import (
 )
 from volundr.domain.ports import (
     CredentialStorePort,
+    HostedMemberSource,
     OpenShellCredentialGrantPort,
     OpenShellCredentialGrantToken,
     PodManager,
