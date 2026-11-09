@@ -33,6 +33,7 @@ from niuu.domain.notifications import MAX_BODY_CHARS, MAX_TITLE_CHARS
 from niuu.observability import get_observability
 from ting.domain.campaign_run_projection import run_gates
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.services.run_room_notices import run_room_of
 from ting.domain.step_graph import GATE_MODE_AUTOMATED_APPROVAL
 from ting.domain.workflow_board import GATE_STATUS_APPROVED, GATE_STATUS_PENDING
 from ting.domain.workflow_steps import RunState, StepKind, StepState, WorkflowStep
@@ -133,7 +134,13 @@ class GateNotifier:
 
     async def _raise_failure(self, campaign: WorkflowCampaign, state: RunState) -> None:
         failed = [step for step in state.steps if step.state is StepState.FAILED]
-        session_id = _failure_session(state, failed)
+        forge = await self._forge(campaign)
+        session_id = _failure_session(failed)
+        if session_id is None:
+            # A step that failed before any member picked it up has no session; the run's
+            # root (its room) holds the run, so the failure is recorded there.
+            root = run_room_of(await forge.list_sessions(), campaign)
+            session_id = root.id if root is not None else _failure_session(state.steps)
         if session_id is None:
             record_degraded(
                 _DEGRADED_PATH,
@@ -150,7 +157,6 @@ class GateNotifier:
             or "The run failed."
         )
         key = f"workflow-run-failed:{campaign.id}"
-        forge = await self._forge(campaign)
         await forge.submit_session_notification(
             session_id,
             {
@@ -253,13 +259,10 @@ def _notifies(campaign: WorkflowCampaign, node_id: str) -> bool:
     return True
 
 
-def _failure_session(state: RunState, failed: list[WorkflowStep]) -> str | None:
-    """The session of the last failed step that had one, else the run's newest session."""
-    for steps in (failed, state.steps):
-        sessions = [step.session_id for step in steps if step.session_id]
-        if sessions:
-            return sessions[-1]
-    return None
+def _failure_session(steps: tuple[WorkflowStep, ...] | list[WorkflowStep]) -> str | None:
+    """The session of the last of ``steps`` that had one."""
+    sessions = [step.session_id for step in steps if step.session_id]
+    return sessions[-1] if sessions else None
 
 
 def _anchor_session(state: RunState, gate: WorkflowStep) -> str | None:

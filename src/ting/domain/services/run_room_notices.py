@@ -84,7 +84,9 @@ def _node_labels(campaign: WorkflowCampaign) -> dict[str, str]:
     }
 
 
-def _room_of(sessions: list[VolundrSession], campaign: WorkflowCampaign) -> VolundrSession | None:
+def run_room_of(
+    sessions: list[VolundrSession], campaign: WorkflowCampaign
+) -> VolundrSession | None:
     """The run's room: its session in a project that is nested under none."""
     tag = f"workflow:{campaign.slug}"
     for session in sessions:
@@ -110,7 +112,7 @@ class RunRoomNotifier:
         if not pending:
             return
         forge = await self._forge(campaign)
-        room = _room_of(await forge.list_sessions(), campaign)
+        room = run_room_of(await forge.list_sessions(), campaign)
         if room is None:
             # No room yet (its first member is still being created), or the run is in no
             # project and has none: nothing is kept, so a later change posts these.
@@ -148,4 +150,4 @@ class RunRoomNotifier:
         return forge
 
 
-__all__ = ["RoomNotice", "RunRoomNotifier", "run_notices"]
+__all__ = ["RoomNotice", "RunRoomNotifier", "run_notices", "run_room_of"]

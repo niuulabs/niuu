@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -310,3 +311,31 @@ async def test_a_failure_notification_forge_refused_is_raised_on_the_next_change
     await notifier.sync_failure(campaign, state, WorkflowCampaignStatus.FAILED)
 
     assert list(forge.notifications) == [f"workflow-run-failed:{campaign.id}"]
+
+
+async def test_a_run_that_failed_before_a_member_took_a_step_is_told_on_its_root() -> None:
+    forge = FakeForge()
+    campaign = _campaign()
+    root = forge.add_session("wf-run-1", f"workflow:{campaign.slug}")
+    forge.sessions[root] = replace(forge.sessions[root], project_id="project-1")
+    offered = WorkflowStep(
+        id=uuid4(),
+        run_id=campaign.id,
+        node_id="code",
+        member=None,
+        kind=StepKind.STAGE_MEMBER,
+        attempt=1,
+        generation=0,
+        state=StepState.FAILED,
+        created_at=NOW,
+        note="member 'coder' cannot take the offer of 'code': session s is failed",
+        closed_at=NOW,
+    )
+
+    await _notifier(forge).sync_failure(
+        campaign, RunState(campaign.id, steps=(offered,)), WorkflowCampaignStatus.FAILED
+    )
+
+    [(session_id, draft)] = forge.notifications.values()
+    assert session_id == root
+    assert "cannot take the offer" in draft["body"]
