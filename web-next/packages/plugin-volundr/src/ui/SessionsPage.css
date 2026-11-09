@@ -566,6 +566,15 @@
   flex: 0 1 auto;
   min-width: 0;
 }
+/* A run member's role, ahead of its long name so it is never what is cut off. */
+.forge-session-row__role {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.forge-session-row__role + .forge-session-row__title {
+  color: var(--color-text-muted);
+}
 .forge-session-unread-dot {
   flex-shrink: 0;
   width: 6px;

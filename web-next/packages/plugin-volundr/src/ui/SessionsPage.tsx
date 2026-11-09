@@ -57,9 +57,11 @@ import { UnreadStream } from './UnreadStream';
 import {
   buildSessionTree,
   groupByProject,
+  isCoordinationRole,
   isCoordinator,
   leadLabel,
   nestSessions,
+  roleLabel,
   type SessionTreeNode,
 } from '../domain/projectTree';
 import { groupByState } from './sessions/groupByState';
@@ -342,6 +344,11 @@ function PodEntry({
   readBusy?: boolean;
 }) {
   const primaryLabel = session.name || session.personaName || session.id;
+  // A run's member leads with its role: its name repeats the run's and is cut off first.
+  const memberRole =
+    session.coordination?.parent && !isCoordinationRole(session.coordination.role)
+      ? roleLabel(session.coordination.role)
+      : null;
   const trackerLabel = session.sagaId ?? session.runId ?? session.trackerIssue?.identifier;
   const previewLabel = session.preview;
   const sourceParts =
@@ -437,6 +444,14 @@ function PodEntry({
                 data-state={session.state}
                 aria-hidden="true"
               />
+              {memberRole && (
+                <span
+                  className="forge-session-row__role"
+                  data-testid={`pod-entry-${session.id}-role`}
+                >
+                  {memberRole}
+                </span>
+              )}
               <span className="forge-session-row__title">{primaryLabel}</span>
               {unread && (
                 <span
@@ -677,6 +692,14 @@ function RoomWorkerRow({
         style={{ '--forge-worker-color': worker.color } as React.CSSProperties}
       >
         <span className="forge-room-worker__dot" aria-hidden="true" />
+        {worker.persona && worker.persona !== worker.peerId && worker.persona !== worker.name && (
+          <span
+            className="forge-session-row__role"
+            data-testid={`room-worker-${worker.peerId}-role`}
+          >
+            {roleLabel(worker.persona)}
+          </span>
+        )}
         <span className="forge-session-row__title">{worker.name}</span>
         <span className="forge-room-worker__state" data-status={worker.status}>
           {worker.latest && worker.status !== 'working'
