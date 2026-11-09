@@ -14,6 +14,7 @@ from niuu.ports.cli.transport import TransportCapabilities
 from skuld.broker import Broker, ConversationTurn
 from skuld.config import SkuldSettings
 from skuld.history_hydration import merge_history_turns
+from tests.test_skuld.workflow_support import MEMBER_MESH, MEMBER_STEPS, PERSONA
 
 _SID = "native-recovered-session"
 _TS = "2026-09-08T07:43:04+00:00"
@@ -35,13 +36,14 @@ def _history():
     ]
 
 
-def _broker(tmp_path, **settings):
+def _broker(tmp_path, persona=None, **settings):
     broker = Broker(
         SkuldSettings(
             session={
                 "id": _SID,
                 "workspace_dir": str(tmp_path),
                 "resume_session_id": "native-thread",
+                "persona": persona,
             },
             volundr_api_url="http://forge.test",
             transport="subprocess",
@@ -207,7 +209,7 @@ async def test_unconfigured_resume_does_not_fetch_history(tmp_path):
 
 
 async def test_step_host_fails_startup_when_durable_history_is_incomplete(tmp_path):
-    broker = _broker(tmp_path, workflow_steps={"enabled": True})
+    broker = _broker(tmp_path, persona=PERSONA, mesh=MEMBER_MESH, workflow_steps=MEMBER_STEPS)
     broker._settings.session.resume_session_id = ""
     client, _ = _client(fail_after=0)
     async with client:

@@ -6,7 +6,10 @@ harness at the next turn boundary like any other peer message:
 
 * an RPC of type ``peer_message`` carries a :class:`~niuu.domain.peer_message.PeerMessage`;
 * a ``work_request`` RPC and an outcome event on a consumed topic become a peer message from
-  the mesh peer, whose reply route is the mesh back to it.
+  the mesh peer, whose reply route is the mesh back to it;
+* a ``workflow`` event (a workflow run's offer, pickup, outcome...) goes to the session's
+  workflow host (:class:`WorkflowOfferReceiver`), which decides whether the offer is this
+  session's to take. The adapter carries it and says who the mesh verified sent it.
 
 Nothing here waits for the harness. A sender is told its message is held; the answer comes
 later, from the harness, through the ``reply`` tool.
@@ -20,7 +23,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from niuu.domain.peer_message import (
     PEER_MESSAGE_FRAME,
@@ -68,6 +71,19 @@ class PeerMessageReceiver(Protocol):
         """Hold ``envelope`` for the next turn boundary; raises when it is refused."""
 
 
+@runtime_checkable
+class WorkflowOfferReceiver(Protocol):
+    """The session's workflow host, as the mesh sees it."""
+
+    async def accept_workflow_offer(
+        self, event: MeshEvent, *, verified: SenderIdentity | None
+    ) -> str:
+        """Decide what to do with a ``workflow`` event; a refusal is reported, not raised."""
+
+    async def workflow_mesh_ready(self) -> None:
+        """The mesh is up and every standing subscription is in place."""
+
+
 class MeshConfigurationError(RuntimeError):
     """The mesh is enabled and its configuration cannot work; the message says what to set."""
 
@@ -108,11 +124,17 @@ class SkuldMeshAdapter:
         peer_inbox: PeerMessageReceiver,
         rpc_handlers: Mapping[str, RpcHandler] | None = None,
         consumes_event_types: Sequence[str] | None = None,
+        workflow: WorkflowOfferReceiver | None = None,
     ) -> None:
         self._participant = participant
         self._rpc_handlers = dict(rpc_handlers or {})
         self._mesh: MeshPort | None = participant.mesh
         self._peer_inbox = peer_inbox
+        # The session's workflow host: given, else the peer inbox when that is one (the
+        # broker is both), else none and workflow events are not this session's business.
+        self._workflow: WorkflowOfferReceiver | None = workflow or (
+            peer_inbox if isinstance(peer_inbox, WorkflowOfferReceiver) else None
+        )
         self._config = config
         self._session_id = session_id
         # The topics subscribed to: the session's declaration when the composition root
@@ -190,6 +212,8 @@ class SkuldMeshAdapter:
             self._config.capabilities,
             list(self._consumes),
         )
+        if self._workflow is not None:
+            await self._workflow.workflow_mesh_ready()
 
     async def stop(self) -> None:
         """Unsubscribe from topics and stop participant (mesh + discovery)."""
@@ -416,8 +440,12 @@ class SkuldMeshAdapter:
     async def _handle_outcome_event(self, event: MeshEvent) -> None:
         """An outcome event on a consumed topic becomes a message from the emitting peer.
 
-        A message this session refuses raises: the event is not silently dropped.
+        A message this session refuses raises: the event is not silently dropped. A
+        ``workflow`` event goes to the workflow host instead.
         """
+        if event.type == MeshEventType.WORKFLOW:
+            await self._handle_workflow_event(event)
+            return
         if event.type != MeshEventType.OUTCOME:
             return
         if event.source == self._peer_id:
@@ -449,6 +477,14 @@ class SkuldMeshAdapter:
             raise PeerMessageRefusedError(
                 f"outcome event {event.event_id} from {event.source} was refused: {answer['error']}"
             )
+
+    async def _handle_workflow_event(self, event: MeshEvent) -> None:
+        """A workflow event: the workflow host decides; this peer's own copies are skipped."""
+        if self._workflow is None or event.source == self._peer_id:
+            return
+        await self._workflow.accept_workflow_offer(
+            event, verified=self._verified_sender(event.attestation)
+        )
 
     def _mesh_message(
         self,

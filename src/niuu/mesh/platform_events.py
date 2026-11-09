@@ -20,7 +20,7 @@ when an event is accepted, so consumers see the payload that was published.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -32,6 +32,7 @@ from niuu.mesh.attestation import (
     AttestationRefusedError,
     MeshAttestationVerifier,
     MeshSigner,
+    VerifiedSender,
 )
 from sleipnir.domain.events import SleipnirEvent
 
@@ -134,11 +135,72 @@ class PlatformEventVerifier:
             return None
 
 
+# ---------------------------------------------------------------------------------------------
+# Workflow offers: the engine's offer, signed as a platform service, published verbatim by the root.
+# ---------------------------------------------------------------------------------------------
+
+
+def offer_subject(offer: Mapping[str, Any]) -> dict[str, Any]:
+    """What an offer signature covers: the whole ``step.offered`` payload, nothing else.
+
+    The attestation travels inside the payload under :data:`ATTESTATION_KEY` and is not part of
+    what it signs. The wrapper keeps an offer's signature from being read as a platform event
+    (``platform_subject``) or the other way round.
+    """
+    return {"workflow_offer": {k: v for k, v in offer.items() if k != ATTESTATION_KEY}}
+
+
+def sign_workflow_offer(signer: MeshSigner, offer: Mapping[str, Any]) -> dict[str, Any]:
+    """The attestation a platform service (Ting) attaches to an offer it hands to the root."""
+    return signer.attest(PURPOSE_PLATFORM_EVENT, offer_subject(offer))
+
+
+class WorkflowOfferVerifier:
+    """Checks that an offer was signed by the platform service the run's engine is.
+
+    The root publishes the offer verbatim, so the signature is the engine's and the mesh
+    attestation on the published event is the root's: a member checks both.
+    """
+
+    def __init__(
+        self,
+        verifier: MeshAttestationVerifier,
+        *,
+        event_max_age_s: float,
+        signer_peer_id: str,
+    ) -> None:
+        self._verifier = verifier
+        self._max_age_ms = int(event_max_age_s * 1000)
+        self._signer_peer_id = signer_peer_id
+
+    def verify(self, offer: Mapping[str, Any], attestation: Any) -> VerifiedSender:
+        """The verified signer of ``offer``, or raise :class:`AttestationRefusedError`."""
+        sender = self._verifier.verify(
+            attestation,
+            PURPOSE_PLATFORM_EVENT,
+            offer_subject(offer),
+            platform=True,
+            max_age_ms=self._max_age_ms,
+            check_membership=False,
+        )
+        if sender.peer_id != self._signer_peer_id:
+            raise AttestationRefusedError(
+                AttestationReason.NOT_PLATFORM_SERVICE,
+                f"the offer is signed by {sender.peer_id!r}, not by {self._signer_peer_id!r}, "
+                "the service that decides this run's steps",
+                claimed=sender.peer_id,
+            )
+        return sender
+
+
 __all__ = [
     "ATTESTATION_KEY",
     "DIRECTION_PLATFORM_EVENT",
     "AttestationReason",
     "PlatformEventVerifier",
     "SigningBus",
+    "WorkflowOfferVerifier",
+    "offer_subject",
     "platform_subject",
+    "sign_workflow_offer",
 ]
