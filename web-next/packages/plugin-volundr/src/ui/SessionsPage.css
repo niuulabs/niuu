@@ -647,8 +647,6 @@
 /* A worker in the open session's room, listed under its coordinator. */
 .forge-room-worker__dot {
   flex-shrink: 0;
-  width: 8px;
-  height: 8px;
   border-radius: 50%;
   background: var(--forge-worker-color);
 }
@@ -676,7 +674,29 @@
   gap: 6px;
   min-height: 0;
   padding-block: 7px;
-  padding-left: 3px;
+}
+
+/* A run's member reads the same whether its run is open (a worker row of the run's room) or
+   not (a session row nested under the run): one indent clear of the fold chevron, one dot
+   size, the state as plain text. Selecting or leaving the run then moves nothing. */
+.forge-session-tree-children .forge-room-worker .forge-session-row__select,
+.forge-project-group
+  .forge-session-tree-children
+  .forge-session-tree-entry
+  > .forge-session-tree-row
+  .forge-session-row__select {
+  padding-left: 16px;
+}
+
+.forge-room-worker__dot,
+.forge-session-tree-children .forge-session-row__dot {
+  width: 7px;
+  height: 7px;
+}
+
+.forge-session-state.forge-session-row__member-state {
+  padding: 0;
+  background: none;
 }
 
 /* ── List head: title and actions, search, then the quick states (Lexi's code sidebar) ── */
