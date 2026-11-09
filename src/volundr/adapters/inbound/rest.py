@@ -4418,7 +4418,7 @@ def create_router(
         request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
         operation: Literal[
-            "direct", "join", "leave", "workflow-events", "session-message", "notice"
+            "direct", "join", "leave", "workflow-events", "session-message", "notice", "offer"
         ] = Path(description="Room operation on the session's broker"),
     ) -> Response:
         """Reach a session's room through Forge, which can always route to its broker.
@@ -4426,13 +4426,16 @@ def create_router(
         A session's advertised origin may serve browsers only, and on a cluster
         the Forge host does not serve session paths, so services come through here.
         ``notice`` posts a notice as the room's Coordinator (a workflow run's steps, gates
-        and end, from Ting); a session-bound credential may never post one.
+        and end, from Ting); ``offer`` hands a workflow run's root the engine's signed step
+        offer to publish on the run's mesh. A session-bound credential may post neither.
         """
         principal = await extract_principal(request)
-        if operation == "notice" and principal.token_use == FORGE_SESSION_TOKEN_USE:
+        if operation in ("notice", "offer") and principal.token_use == FORGE_SESSION_TOKEN_USE:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="A session cannot post notices in a room; only its owner's services do",
+                detail=(
+                    f"A session cannot post a {operation} in a room; only its owner's services do"
+                ),
             )
         session = await forge.get_session(session_id)
         if session is None:
