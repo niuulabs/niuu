@@ -1,0 +1,79 @@
+{{- if and .Values.gateway.enabled .Values.members }}
+{{- range $i, $m := .Values.members }}
+---
+# A member of the unit has its own SecurityPolicy, because a policy targets one route.
+# Envoy SecurityPolicy for CORS and optional JWT validation.
+# CORS is required because the Volundr UI is served from a different
+# origin than the session gateway. JWT validation extracts the sub
+# claim into the x-auth-user-id header.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: session-{{ $m.id }}-security
+  labels:
+    {{- include "skuld.labels" $ | nindent 4 }}
+    volundr.niuu.io/session: {{ $m.id | quote }}
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: session-{{ $m.id }}
+  cors:
+    allowOrigins:
+      {{- toYaml $.Values.gateway.cors.allowOrigins | nindent 6 }}
+    allowMethods:
+      {{- toYaml $.Values.gateway.cors.allowMethods | nindent 6 }}
+    allowHeaders:
+      {{- toYaml $.Values.gateway.cors.allowHeaders | nindent 6 }}
+    allowCredentials: {{ $.Values.gateway.cors.allowCredentials }}
+    maxAge: "1h"
+  {{- if $.Values.gateway.jwt.enabled }}
+  jwt:
+    providers:
+      - name: volundr-idp
+        issuer: {{ $.Values.gateway.jwt.issuer | quote }}
+        audiences:
+          {{- toYaml $.Values.gateway.jwt.audiences | nindent 10 }}
+        remoteJWKS:
+          uri: {{ $.Values.gateway.jwt.jwksUri | quote }}
+          cacheDuration: 300s
+        extractFrom:
+          headers:
+            - name: Authorization
+              valuePrefix: "Bearer "
+          params:
+            - access_token
+            - token
+        claimToHeaders:
+          - claim: sub
+            header: {{ $.Values.envoy.headerNames.userId | quote }}
+          - claim: {{ $.Values.gateway.jwt.tenantClaim }}
+            header: {{ $.Values.envoy.headerNames.tenant | quote }}
+          - claim: {{ $.Values.gateway.jwt.rolesClaim }}
+            header: {{ $.Values.envoy.headerNames.roles | quote }}
+      {{- if $.Values.gateway.jwt.workload.enabled }}
+      - name: workload
+        issuer: {{ $.Values.gateway.jwt.workload.issuer | quote }}
+        audiences:
+          {{- toYaml $.Values.gateway.jwt.workload.audiences | nindent 10 }}
+        remoteJWKS:
+          uri: {{ $.Values.gateway.jwt.workload.jwksUri | quote }}
+          cacheDuration: 300s
+        extractFrom:
+          headers:
+            - name: Authorization
+              valuePrefix: "Bearer "
+          params:
+            - access_token
+            - token
+        claimToHeaders:
+          - claim: sub
+            header: {{ $.Values.envoy.headerNames.userId | quote }}
+          - claim: {{ $.Values.gateway.jwt.workload.tenantClaim }}
+            header: {{ $.Values.envoy.headerNames.tenant | quote }}
+          - claim: {{ $.Values.gateway.jwt.workload.rolesClaim }}
+            header: {{ $.Values.envoy.headerNames.roles | quote }}
+      {{- end }}
+  {{- end }}
+{{- end }}
+{{- end }}

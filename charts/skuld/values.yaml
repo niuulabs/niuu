@@ -604,6 +604,37 @@ extraVolumes: []
 # -- Extra volume mounts added to skuld and devrunner containers
 extraVolumeMounts: []
 
+# -- Port of this release's broker (config `port`). A member of a unit (below) is given its own.
+brokerPort: 8081
+
+# -- The unit this release's broker is part of. Forge sets it on the members' values, never on
+# the root's own: a member renders as a container of the root's pod, so its workspace is the
+# root's (one checkout for the run) and its scratch directories live under the root's.
+unit:
+  # -- Id of the unit's root session (the release's own `session.id`). Empty for a release that
+  # is not hosting a unit, and for the root itself.
+  sessionId: ""
+  # -- The directory every Skuld of the unit shares for its local mesh: nng on loopback with
+  # `registry` discovery on a file in it (an `emptyDir` mounted into every container). Set by
+  # Forge with `members`; empty leaves the pod without it.
+  meshDir: ""
+  # -- Id of the member whose repository, branch and Git credential the unit's one checkout is
+  # cloned from, when the root itself names no repository. Forge sets it; every member that
+  # names a repository names the same one.
+  checkoutFrom: ""
+
+# -- The sessions this pod hosts besides its own: one Skuld container per member, each with its
+# own configuration, credential and broker port, all started with the pod (a workflow run is
+# one unit). Forge sets it for a unit root, from the members' own launches. Each entry:
+# `id` (the member session's id), `port` (its broker port) and `values` (the complete values the
+# member would have been launched with on its own, as Forge computes them: `session`, `mesh`,
+# `broker`, `forgeMcp`, `envVars`, `extraVolumeMounts`, `git`, `resources`, ...). The pod-level
+# parts of a member's values (nodeSelector, tolerations, affinity, runtimeClassName,
+# serviceAccountName, securityContext, the home and sessions volumes and their claims) must be
+# the root's; Forge refuses a unit whose members differ. The members' `extraVolumes` belong
+# in the root's `extraVolumes` (under a name only that member's `extraVolumeMounts` use).
+members: []
+
 # -- Desired Deployment replicas. 0 suspends the pod while preserving
 # configured persistent storage.
 replicaCount: 1
