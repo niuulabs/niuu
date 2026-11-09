@@ -619,6 +619,9 @@ room:
   # -- Show every member of the mesh realm, not only events tagged with this session
   # (room.realm_room). A workflow run's realm is the run's own.
   realmRoom: false
+  # -- The session runs no agent of its own: it only hosts the room (room.routed). A
+  # workflow run's room session is one.
+  routed: false
 
 # Mesh configuration for session-local agent flocks. Every value below is a key of Skuld's
 # `mesh` settings (skuld.config.MeshConfig), rendered into the broker's config file. A value
@@ -641,6 +644,9 @@ mesh:
   # ravn.niuu.world/persona, /consumes and /emits annotations. Forge sets it for a workflow
   # step session from its pinned persona; Skuld's own topics come from the persona itself.
   announce: {}
+  # -- Share this session's replies, tool work and step closes with its realm's room
+  # (mesh.share_work). Forge sets it for a workflow run's member sessions.
+  shareWork: false
   # -- Flock realm the peer announces in and discovers within (mesh.realm_id). Peers in
   # another realm are not seen.
   realmId: ""

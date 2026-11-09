@@ -733,7 +733,16 @@ class SessionCreate(BaseModel):
         default=None,
         description=(
             "The workflow run this session works for; recorded in the session metadata so the "
-            "run can find the session again. Requires workflow_member."
+            "run can find the session again. Requires workflow_member, or workflow_run_room."
+        ),
+    )
+    workflow_run_room: bool = Field(
+        default=False,
+        description=(
+            "Make the session its workflow run's room: a Skuld with no agent or harness of its "
+            "own that hosts the run's thread. Every member session of the run is nested under "
+            "it and shares its replies, tool work and outcomes into it. Requires "
+            "workflow_run_id; no workflow_member, persona or step host."
         ),
     )
     workflow_member: str | None = Field(
@@ -858,6 +867,20 @@ class SessionCreate(BaseModel):
                 "persona_name and persona_definition are mutually exclusive: send the persona "
                 "to look up by name, or the exact pinned document to play, not both"
             )
+        if self.workflow_run_room:
+            if self.workflow_run_id is None:
+                raise ValueError("workflow_run_room needs the workflow_run_id of its run")
+            if (
+                self.workflow_member is not None
+                or self.workflow_step_host
+                or self.persona_definition is not None
+                or self.persona_name.strip()
+            ):
+                raise ValueError(
+                    "a workflow run's room runs no agent: send no workflow_member, persona or "
+                    "workflow_step_host with workflow_run_room"
+                )
+            return self
         if (self.workflow_run_id is None) != (self.workflow_member is None):
             raise ValueError("workflow_run_id and workflow_member must be sent together")
         return self

@@ -515,6 +515,21 @@ class TestClosingAStep:
         assert _step_frames(broker)[-1]["step"]["ending"]["verdict"] == "implemented"
         assert (broker._open_workflow_step() is not None) is False
 
+    async def test_a_close_is_shared_with_the_runs_room(self, tmp_path) -> None:
+        broker = _step_broker(tmp_path)
+        shared: list = []
+
+        class _Sharer:
+            async def step_closed(self, step, ending) -> None:
+                shared.append((step.activation_id, ending["verdict"], ending["note"]))
+
+        broker._work_sharer = _Sharer()
+        await _accept(broker)
+
+        await broker.close_workflow_step(WorkflowStepCloseArgs(**CLOSE))
+
+        assert shared == [(ACTIVATION_ID, "implemented", "tests pass")]
+
     async def test_the_report_has_the_contracts_shape(self, tmp_path) -> None:
         broker = _step_broker(tmp_path)
         await _accept(broker)

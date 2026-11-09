@@ -13,6 +13,7 @@ from volundr.domain.workflow_session import (
     PERSONA_NAME_KEY,
     WORKFLOW_MEMBER_KEY,
     WORKFLOW_RUN_ID_KEY,
+    WORKFLOW_RUN_ROOM_KEY,
     WORKFLOW_STEP_HOST_KEY,
 )
 
@@ -194,7 +195,10 @@ class ForgeService:
         if getattr(data, "workflow_step_host", False) is True:
             workload_config[WORKFLOW_STEP_HOST_KEY] = True
         workflow_run_id = getattr(data, "workflow_run_id", None)
-        if workflow_run_id is not None:
+        if getattr(data, "workflow_run_room", False) is True:
+            workload_config[WORKFLOW_RUN_ROOM_KEY] = True
+            workload_config[WORKFLOW_RUN_ID_KEY] = str(workflow_run_id)
+        elif workflow_run_id is not None:
             workload_config[WORKFLOW_RUN_ID_KEY] = str(workflow_run_id)
             workload_config[WORKFLOW_MEMBER_KEY] = data.workflow_member
         if requested_grants:

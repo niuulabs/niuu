@@ -40,6 +40,7 @@ from ting.ports.volundr import (
     HostTagSetsUnreadableError,
     PublicSessionLogEntry,
     PublicSessionLogPage,
+    RunRoomRequest,
     SessionMembership,
     SpawnRequest,
     StepSessionRequest,
@@ -281,6 +282,44 @@ class VolundrHTTPAdapter(VolundrPort):
                 logger.error("create_step_session %d: %s", resp.status_code, resp.text[:500])
                 raise httpx.HTTPStatusError(
                     f"Forge could not start the step session: {_error_detail(resp)}",
+                    request=resp.request,
+                    response=resp,
+                )
+            return self._session_from(resp.json())
+
+    async def create_run_room(
+        self,
+        request: RunRoomRequest,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> VolundrSession:
+        source_payload = await self._source_payload(
+            request.repo,
+            branch=request.branch,
+            base_branch=request.base_branch,
+            auth_token=auth_token,
+            principal=principal,
+        )
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.post(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}",
+                headers=self._headers(auth_token, principal),
+                json={
+                    "name": request.name,
+                    "model": request.model,
+                    "source": source_payload,
+                    "issue_id": request.tracker_issue_id,
+                    "workflow_run_id": request.run_id,
+                    "workflow_run_room": True,
+                    "coordination": _coordination_payload(request.membership),
+                },
+            )
+            if resp.status_code >= 400:
+                logger.error("create_run_room %d: %s", resp.status_code, resp.text[:500])
+                raise httpx.HTTPStatusError(
+                    f"Forge could not start the run's room: {_error_detail(resp)}",
                     request=resp.request,
                     response=resp,
                 )

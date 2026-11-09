@@ -40,6 +40,7 @@ from ting.domain.services.run_thread import (
 from ting.domain.step_instructions import render_step_instructions
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.volundr import (
+    RunRoomRequest,
     SessionMembership,
     StepSessionRequest,
     VolundrFactory,
@@ -105,6 +106,20 @@ def step_session_name(
     )
     slug_part = _label(run_slug)[:slug_room].rstrip("-")
     return f"{prefix}-{slug_part}-{member_part}-{digest}{suffix}"
+
+
+#: The run's room session's role in the run's project: it coordinates the run's thread.
+RUN_ROOM_ROLE = "coordinator"
+
+
+def run_room_name(run_slug: str, run_id: UUID, *, prefix: str = "wf") -> str:
+    """The name of a run's room session: the run's own, ``wf-{run slug}``."""
+    name = _label(f"{prefix}-{run_slug}")
+    if len(name) <= FORGE_SESSION_NAME_MAX:
+        return name
+    digest = hashlib.sha256(f"{run_id}:room".encode()).hexdigest()[:_NAME_DIGEST_CHARS]
+    slug_room = FORGE_SESSION_NAME_MAX - len(prefix) - len(digest) - 2
+    return f"{prefix}-{_label(run_slug)[:slug_room].rstrip('-')}-{digest}"
 
 
 def _label(value: str) -> str:
@@ -320,10 +335,11 @@ class ForgeStepSessions(StepSessionPort):
     async def _membership(
         self, forge: VolundrPort, campaign: WorkflowCampaign, member: str
     ) -> SessionMembership | None:
-        """The run's project, with the member as its role and the run as its objective.
+        """The run's project, with the member as its role, nested under the run's room.
 
-        The run's first session is the root of its thread; every later session of the run
-        nests under it, so Forge shows the run as one thread in its project.
+        The run's room is a session of its own (no agent), the root of the run's thread:
+        every member is nested under it, so Forge shows the run as one session with its
+        workers. The caller holds the run's lock, so the run has one room.
         """
         project = await run_project(campaign, self._sagas)
         if project is None:
@@ -338,32 +354,51 @@ class ForgeStepSessions(StepSessionPort):
                 f"run {campaign.slug} belongs to project {project.id}, which Forge "
                 f"{forge.name} does not have; create it there or launch the run elsewhere"
             )
-        root = await self._root(forge, campaign, project.id)
+        room = await self._run_room(forge, campaign, member, project.id)
         return SessionMembership(
             project_id=project.id,
             role=member,
             objective=run_objective(campaign),
             labels=(run_label(campaign),),
-            parent_instance_id=ref.instance_id if root else "",
-            parent_session_id=root.id if root else "",
+            parent_instance_id=ref.instance_id,
+            parent_session_id=room.id,
         )
 
-    @staticmethod
-    async def _root(
-        forge: VolundrPort, campaign: WorkflowCampaign, project_id: str
-    ) -> VolundrSession | None:
-        """The run's first session in its project: the one nested under none."""
+    async def _run_room(
+        self, forge: VolundrPort, campaign: WorkflowCampaign, member: str, project_id: str
+    ) -> VolundrSession:
+        """The run's room session, created on the run's first member session."""
+        name = run_room_name(campaign.slug, campaign.id, prefix=self._prefix)
         tag = step_session_tag(campaign.slug)
-        roots = [
-            session
-            for session in await forge.list_sessions()
-            if session.tracker_issue_id == tag
-            and session.project_id == project_id
-            and not session.parent_session_id
-        ]
-        # One create at a time per run leaves one root; a run whose sessions predate that
-        # nests under the first by name, which is stable across Ting restarts.
-        return min(roots, key=lambda session: session.name) if roots else None
+        for session in await forge.list_sessions():
+            if session.name != name:
+                continue
+            if session.tracker_issue_id != tag:
+                raise StepSessionError(
+                    f"Forge already has a session named {name!r} that is not run "
+                    f"{campaign.slug}'s room (it is tagged {session.tracker_issue_id!r}); "
+                    "rename or stop it"
+                )
+            return session
+        room = await forge.create_run_room(
+            RunRoomRequest(
+                name=name,
+                model=self._model_of(campaign, member),
+                tracker_issue_id=tag,
+                run_id=str(campaign.id),
+                membership=SessionMembership(
+                    project_id=project_id,
+                    role=RUN_ROOM_ROLE,
+                    objective=run_objective(campaign),
+                    labels=(run_label(campaign),),
+                ),
+                repo=str(campaign.metadata.get("repo") or ""),
+                branch=str(campaign.metadata.get("branch") or ""),
+                base_branch=str(campaign.metadata.get("base_branch") or ""),
+            )
+        )
+        logger.info("Created the room %s (%s) of run %s", room.id, name, campaign.slug)
+        return room
 
     async def _stop_replaced(
         self, forge: VolundrPort, session: VolundrSession, campaign: WorkflowCampaign

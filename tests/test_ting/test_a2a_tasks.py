@@ -324,6 +324,7 @@ class RecordingVolundrPort(VolundrPort):
         self._spawn_failure = spawn_failure
         self.spawned: list[SpawnRequest] = []
         self.step_session_requests: list[StepSessionRequest] = []
+        self.run_room_requests: list = []
         self.delivered_steps: list[tuple[str, dict]] = []
         self.stopped: list[str] = []
         self.stop_attempts: list[str] = []
@@ -412,6 +413,25 @@ class RecordingVolundrPort(VolundrPort):
             base_branch=request.base_branch,
             workload_type=request.workload_type,
         )
+
+    async def create_run_room(
+        self,
+        request,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> VolundrSession:
+        self.auth_calls.append(("create_run_room", auth_token, principal))
+        self.run_room_requests.append(request)
+        session = VolundrSession(
+            id=f"room-{len(self.run_room_requests)}",
+            name=request.name,
+            status=self._session_status,
+            tracker_issue_id=request.tracker_issue_id,
+            cluster_name=self._name,
+        )
+        self.sessions.append(session)
+        return session
 
     async def create_step_session(
         self,
@@ -1161,9 +1181,12 @@ class TestSendMessage:
         assert campaign.metadata["ticket"] == ticket
         assert campaign.status is WorkflowCampaignStatus.RUNNING
         [request] = port.step_session_requests
-        # The ticket's run joins the ticket's project.
+        # The ticket's run joins the ticket's project, nested under the run's room.
         assert request.membership is not None
         assert request.membership.project_id == str(saga_id)
+        [room] = port.run_room_requests
+        assert room.membership.role == "coordinator"
+        assert request.membership.parent_session_id == "room-1"
 
     def test_campaign_names_the_workload_that_sent_the_task(self) -> None:
         """A resident's exchanged token (act.sub) is recorded on the campaign it launches."""

@@ -74,8 +74,8 @@ const session = (id: string, name: string): Session => ({
   events: [],
 });
 
-function renderPage() {
-  const sessions = [session('lead', 'storm-probe'), session('other', 'other-session')];
+function renderPage(extra: Session[] = []) {
+  const sessions = [session('lead', 'storm-probe'), session('other', 'other-session'), ...extra];
   const store: ISessionStore = {
     getSession: async (id) => sessions.find((s) => s.id === id) ?? null,
     listSessions: async () => sessions,
@@ -139,5 +139,26 @@ describe('SessionsPage — the open room’s workers', () => {
       within(entry as HTMLElement).getByRole('button', { name: /Collapse workers of/ }),
     );
     expect(screen.queryByTestId('room-worker-coder')).toBeNull();
+  });
+
+  it("lists a workflow run's member sessions as its room's workers, counted once", async () => {
+    // An earlier case folds the lead; this one reads it open.
+    localStorage.clear();
+    const member = (id: string, role: string): Session => ({
+      ...session(id, `wf-run-${role}`),
+      coordination: {
+        projectId: 'probe',
+        role,
+        parent: { instanceId: 'cluster-a', sessionId: 'lead' },
+      },
+    });
+    renderPage([member('coder', 'coder'), member('rev', 'reviewer')]);
+
+    await screen.findByTestId('room-worker-coder');
+    expect(screen.getByTestId('room-worker-rev')).toBeInTheDocument();
+    // Each member is listed once, as the room's worker, not again as a session row.
+    expect(screen.queryByTestId('pod-entry-coder')).toBeNull();
+    expect(screen.queryByTestId('pod-entry-rev')).toBeNull();
+    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('2 workers');
   });
 });

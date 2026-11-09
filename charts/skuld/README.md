@@ -268,7 +268,9 @@ A session joins a flock as a mesh peer when `mesh.enabled` is true: it announces
 | `room.enabled` | bool | `false` | Host a room (`room.enabled`); the session keeps its own agent. Forge turns it on for a workflow run's first session |
 | `room.environmentId` | string | `""` | Environment of the room's participants (`room.environment_id`); empty uses `mesh.realmId` |
 | `room.realmRoom` | bool | `false` | Show every member of the mesh realm, not only events tagged with this session (`room.realm_room`) |
+| `room.routed` | bool | `false` | The session runs no agent of its own and only hosts the room (`room.routed`); a workflow run's room session |
 | `mesh.announce` | object | `{}` | `persona`, `consumes` and `emits` written as the pod's `ravn.niuu.world/persona`, `/consumes` and `/emits` annotations, which pod discovery shows to the realm's other peers. Forge sets it for a workflow step session from its pinned persona |
+| `mesh.shareWork` | bool | `false` | Share this session's replies, tool work and step closes with its realm's room (`mesh.share_work`); Forge sets it for a workflow run's member sessions |
 | `mesh.enabled` | bool | `false` | Join the flock as a mesh peer (`mesh.enabled`) |
 | `mesh.transport` | string | `"nng"` | Mesh transport: `nng`, `nats`, `in_process` or a Sleipnir transport class path (`mesh.transport`) |
 | `mesh.peerPorts` | list | `[]` | Container ports to expose for direct mesh peers; not a Skuld setting |

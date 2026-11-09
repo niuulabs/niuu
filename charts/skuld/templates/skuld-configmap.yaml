@@ -185,4 +185,5 @@ data:
       enabled: true
       environment_id: {{ .Values.room.environmentId | default .Values.mesh.realmId | quote }}
       realm_room: {{ .Values.room.realmRoom | toJson }}
+      routed: {{ .Values.room.routed | toJson }}
     {{- end }}

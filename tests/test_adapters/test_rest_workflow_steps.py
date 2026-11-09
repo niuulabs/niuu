@@ -262,6 +262,48 @@ class TestWorkflowStepSessionCreate:
         assert response.status_code == 422
         assert "must be sent together" in response.text
 
+    def test_a_runs_room_is_recorded_as_the_runs_room_with_no_member(
+        self, client: TestClient, repository: InMemorySessionRepository
+    ) -> None:
+        run_id = STEP_ACTIVATION["run_id"]
+
+        response = client.post(
+            "/api/v1/forge/sessions",
+            json={
+                **_SESSION_BODY,
+                "workflow_run_id": run_id,
+                "workflow_run_room": True,
+                "issue_id": "workflow:ship-it",
+            },
+        )
+
+        assert response.status_code == 201, response.text
+        stored = asyncio.run(repository.get(UUID(response.json()["id"])))
+        assert stored.workload_config["workflow_run_room"] is True
+        assert stored.workload_config["workflow_run_id"] == run_id
+        assert "workflow_member" not in stored.workload_config
+        assert "workflow_step_host" not in stored.workload_config
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {},
+            {"workflow_run_id": STEP_ACTIVATION["run_id"], "workflow_member": "coder"},
+            {"workflow_run_id": STEP_ACTIVATION["run_id"], "workflow_step_host": True},
+            {"workflow_run_id": STEP_ACTIVATION["run_id"], "persona_name": "coder"},
+        ],
+        ids=["no-run", "member", "step-host", "persona"],
+    )
+    def test_a_runs_room_with_an_agent_or_no_run_is_refused(
+        self, client: TestClient, extra: dict
+    ) -> None:
+        response = client.post(
+            "/api/v1/forge/sessions",
+            json={**_SESSION_BODY, "workflow_run_room": True, **extra},
+        )
+
+        assert response.status_code == 422
+
     def test_session_tokens_cannot_call_the_step_routes(self) -> None:
         """Ting calls the step routes; a session never does, so they stay off the allow-list."""
         base = f"/api/v1/forge/sessions/{uuid4()}/workflow/steps"

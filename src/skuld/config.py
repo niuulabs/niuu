@@ -175,6 +175,15 @@ class MeshConfig(BaseModel):
             "refused loudly, so a mistyped topic is never published to nobody."
         ),
     )
+    share_work: bool = Field(
+        default=False,
+        description=(
+            "Share this session's work with its realm: each reply, tool call and result, and "
+            "each workflow step close is published on the session's own activity topic, "
+            "which no member subscribes to, so only the realm's room keeps it (a workflow "
+            "run's room shows it as this member's turns). Off by default."
+        ),
+    )
     published_event_urgency: float = Field(
         default=0.8,
         ge=0.0,

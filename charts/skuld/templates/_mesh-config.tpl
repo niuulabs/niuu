@@ -110,6 +110,9 @@ mesh:
   {{- if kindIs "slice" .Values.mesh.publishEventTypes }}
   publish_event_types: {{ .Values.mesh.publishEventTypes | toJson }}
   {{- end }}
+  {{- if .Values.mesh.shareWork }}
+  share_work: true
+  {{- end }}
   {{- if not (kindIs "invalid" .Values.mesh.publishedEventUrgency) }}
   published_event_urgency: {{ .Values.mesh.publishedEventUrgency | toJson }}
   {{- end }}

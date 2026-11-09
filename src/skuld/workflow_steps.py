@@ -501,6 +501,10 @@ class WorkflowStepMixin:
                 "ending": ending,
             }
         )
+        # The run's room shows the close as this member's outcome.
+        sharer = getattr(self, "_work_sharer", None)
+        if sharer is not None:
+            await sharer.step_closed(step, ending)
 
     # -- the close tool
 

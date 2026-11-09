@@ -249,6 +249,12 @@ mesh:
   peerPorts: []
   # -- This peer's id on the mesh (mesh.peer_id). Empty uses the pod's host name.
   peerId: ""
+  # -- What pod discovery shows of this peer to the realm's other peers: its persona and the
+  # topics it consumes and emits (ravn.niuu.world/persona, /consumes, /emits annotations).
+  announce: {}
+  # -- Share this session's replies, tool work and step closes with its realm's room
+  # (mesh.share_work).
+  shareWork: false
   # -- Flock realm the peer announces in and discovers within (mesh.realm_id). Peers in
   # another realm are not seen.
   realmId: ""
