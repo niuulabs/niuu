@@ -84,8 +84,8 @@ const session = (id: string, name: string): Session => ({
   events: [],
 });
 
-function renderPage(extra: Session[] = []) {
-  const sessions = [session('lead', 'storm-probe'), session('other', 'other-session'), ...extra];
+function renderPage(extra: Session[] = [], lead: Session = session('lead', 'storm-probe')) {
+  const sessions = [lead, session('other', 'other-session'), ...extra];
   const store: ISessionStore = {
     getSession: async (id) => sessions.find((s) => s.id === id) ?? null,
     listSessions: async () => sessions,
@@ -125,7 +125,8 @@ describe('SessionsPage — the open room’s workers', () => {
     expect(coder).toHaveTextContent('coder');
     expect(coder).toHaveTextContent('Working');
     expect(screen.getByTestId('room-worker-rev')).toHaveTextContent('Idle');
-    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('Coordinator · 2 workers');
+    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent(/^Coordinator$/);
+    expect(screen.getByTestId('session-worker-count-lead')).toHaveTextContent(/^2$/);
     expect(screen.queryByTestId('session-leads-other')).toBeNull();
   });
 
@@ -169,7 +170,7 @@ describe('SessionsPage — the open room’s workers', () => {
     // Each member is listed once, as the room's worker, not again as a session row.
     expect(screen.queryByTestId('pod-entry-coder')).toBeNull();
     expect(screen.queryByTestId('pod-entry-rev')).toBeNull();
-    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('2 workers');
+    expect(screen.getByTestId('session-worker-count-lead')).toHaveAccessibleName('2 workers');
   });
 
   it("leads a run member's row with its role, ahead of its long name", async () => {
@@ -194,6 +195,27 @@ describe('SessionsPage — the open room’s workers', () => {
       expect(row.querySelector('.forge-session-row__metadata')).toBeNull();
       // The run's own session has no parent: it is named, not given a role.
       expect(screen.queryByTestId('pod-entry-lead-role')).toBeNull();
+    } finally {
+      routeSessionId = 'lead';
+    }
+  });
+
+  it("shows a run's root as working while a member works, though the root itself is idle", async () => {
+    localStorage.clear();
+    routeSessionId = 'other';
+    try {
+      const coder: Session = {
+        ...session('coder', 'wf-run-coder'),
+        coordination: {
+          projectId: 'probe',
+          role: 'coder',
+          parent: { instanceId: 'cluster-a', sessionId: 'lead' },
+        },
+      };
+      renderPage([coder], { ...session('lead', 'storm-probe'), state: 'idle' });
+      const lead = await screen.findByTestId('pod-entry-lead');
+      expect(within(lead).getByText('Working')).toBeInTheDocument();
+      expect(within(lead).queryByText('Idle')).toBeNull();
     } finally {
       routeSessionId = 'lead';
     }

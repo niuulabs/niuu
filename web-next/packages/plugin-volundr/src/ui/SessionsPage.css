@@ -694,6 +694,22 @@
   height: 7px;
 }
 
+/* How many workers a lead has: a small number at the end of its first line, above its state,
+   so a narrow list that cuts the second line still shows it. */
+.forge-session-row__worker-count {
+  flex-shrink: 0;
+  min-width: 18px;
+  margin-left: auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text-muted) 18%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+
 .forge-session-tree-children .forge-session-row__select--member {
   min-height: 0;
   padding-block: 7px;

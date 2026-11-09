@@ -60,6 +60,7 @@ import {
   isCoordinationRole,
   isCoordinator,
   leadLabel,
+  leadState,
   nestSessions,
   roleLabel,
   type SessionTreeNode,
@@ -318,6 +319,7 @@ function PodEntry({
   busy = false,
   readBusy = false,
   coordinatorWorkers,
+  displayState,
   context = false,
   nested = false,
   unreadNote = false,
@@ -329,6 +331,8 @@ function PodEntry({
   onSelect: () => void;
   /** Set when this session leads others: how many workers it has. */
   coordinatorWorkers?: number;
+  /** The state the row shows when it is not the session's own: a lead's busiest worker's. */
+  displayState?: SessionState;
   /** Listed only as the path to a worker that matches the filters. */
   context?: boolean;
   /** A worker listed under its coordinator: a compact row. */
@@ -344,6 +348,7 @@ function PodEntry({
   readBusy?: boolean;
 }) {
   const primaryLabel = session.name || session.personaName || session.id;
+  const shownState = displayState ?? session.state;
   // A run's member leads with its role: its name repeats the run's and is cut off first.
   const memberRole =
     session.coordination?.parent && !isCoordinationRole(session.coordination.role)
@@ -434,17 +439,13 @@ function PodEntry({
         ) : null}
         {collapsed ? (
           <StateDot
-            state={SESSION_DOT[session.state]}
-            pulse={session.state === 'running' || session.state === 'awaiting_input'}
+            state={SESSION_DOT[shownState]}
+            pulse={shownState === 'running' || shownState === 'awaiting_input'}
           />
         ) : (
           <div className="forge-session-row__content">
             <div className="forge-session-row__headline">
-              <span
-                className="forge-session-row__dot"
-                data-state={session.state}
-                aria-hidden="true"
-              />
+              <span className="forge-session-row__dot" data-state={shownState} aria-hidden="true" />
               {memberRole && (
                 <span
                   className="forge-session-row__role"
@@ -462,6 +463,16 @@ function PodEntry({
                   data-testid={`session-unread-dot-${session.id}`}
                 />
               )}
+              {coordinatorWorkers ? (
+                <span
+                  className="forge-session-row__worker-count"
+                  title={`${coordinatorWorkers} ${coordinatorWorkers === 1 ? 'worker' : 'workers'}`}
+                  aria-label={`${coordinatorWorkers} ${coordinatorWorkers === 1 ? 'worker' : 'workers'}`}
+                  data-testid={`session-worker-count-${session.id}`}
+                >
+                  {coordinatorWorkers}
+                </span>
+              ) : null}
               {memberRole && (
                 <span
                   className="forge-session-state forge-session-row__member-state"
@@ -521,7 +532,8 @@ function PodEntry({
                     className="forge-session-row__leads"
                     data-testid={`session-leads-${session.id}`}
                   >
-                    {leadLabel(session, coordinatorWorkers)}
+                    {/* The count is the number on the first line, where a narrow list keeps it. */}
+                    {leadLabel(session, 0)}
                   </span>
                 )}
                 {unreadNote ? (
@@ -531,10 +543,10 @@ function PodEntry({
                 ) : (
                   <span
                     className="forge-session-state"
-                    data-state={session.state}
+                    data-state={shownState}
                     title={timeFact ?? undefined}
                   >
-                    {SESSION_STATE_LABELS[session.state]}
+                    {SESSION_STATE_LABELS[shownState]}
                   </span>
                 )}
               </div>
@@ -856,6 +868,7 @@ function PodGroup({
     <PodEntry
       key={s.id}
       session={s}
+      displayState={leadState(s, sessions)}
       coordinatorWorkers={
         (workerCounts && isCoordinator(s, workerCounts)) || roomWorkerCount(s) > 0
           ? (workerCounts?.get(s.id) ?? 0) + roomWorkerCount(s)

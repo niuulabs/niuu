@@ -1,4 +1,4 @@
-import type { Session } from './session';
+import type { Session, SessionState } from './session';
 import type { ForgeProject } from '../models/volundr.model';
 
 export interface SessionTreeNode {
@@ -220,4 +220,20 @@ export function coordinationOf(sessions: Session[], sessionId: string): SessionC
   };
   visit(buildSessionTree(sessions), null);
   return found;
+}
+
+/** A lead's own states in which its workers' activity is its own: it is up and not busy. */
+const QUIET_LEAD_STATES: ReadonlySet<SessionState> = new Set(['ready', 'idle', 'running']);
+
+/**
+ * The state a session that leads others shows: its workers' when they are busier. A run's
+ * root runs no agent and sits idle while its members work, so it reads as working while one
+ * does, and as needing you while one does. A lead that stopped or failed shows its own.
+ */
+export function leadState(lead: Session, sessions: readonly Session[]): SessionState {
+  if (!QUIET_LEAD_STATES.has(lead.state)) return lead.state;
+  const workers = sessions.filter((session) => session.coordination?.parent?.sessionId === lead.id);
+  if (workers.some((worker) => worker.state === 'awaiting_input')) return 'awaiting_input';
+  if (workers.some((worker) => worker.state === 'running')) return 'running';
+  return lead.state;
 }

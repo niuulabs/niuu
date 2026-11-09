@@ -1088,7 +1088,8 @@ describe('coordinators and their workers', () => {
       ]),
     );
     await screen.findByTestId('pod-entry-lead');
-    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('Coordinator · 2 workers');
+    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent(/^Coordinator$/);
+    expect(screen.getByTestId('session-worker-count-lead')).toHaveAccessibleName('2 workers');
     expect(screen.queryByTestId('session-leads-w1')).toBeNull();
     expect(screen.getByTestId('pod-entry-w1').closest('.forge-session-row')).toHaveAttribute(
       'data-nested',
@@ -1112,8 +1113,9 @@ describe('coordinators and their workers', () => {
       ]),
     );
     await screen.findByTestId('pod-entry-lead');
-    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('Coordinator · 1 worker');
+    expect(screen.getByTestId('session-worker-count-lead')).toHaveAccessibleName('1 worker');
     expect(screen.getByTestId('session-leads-lone2')).toHaveTextContent(/^Coordinator$/);
+    expect(screen.queryByTestId('session-worker-count-lone2')).toBeNull();
     expect(screen.queryByTestId('session-leads-lone')).toBeNull();
   });
 
@@ -1141,7 +1143,8 @@ describe('coordinators and their workers', () => {
     );
     await screen.findByTestId('pod-entry-coder');
 
-    expect(screen.getByTestId('session-leads-coder')).toHaveTextContent(/^Coder · 1 session$/);
+    expect(screen.getByTestId('session-leads-coder')).toHaveTextContent(/^Coder$/);
+    expect(screen.getByTestId('session-worker-count-coder')).toHaveTextContent(/^1$/);
     expect(screen.getByTestId('pod-entry-reviewer').closest('.forge-session-row')).toHaveAttribute(
       'data-nested',
       'true',
@@ -1200,7 +1203,7 @@ describe('coordinators and their workers', () => {
     expect(
       within(screen.getByTestId('pod-group-pinned')).getByTestId('pod-entry-lead'),
     ).toBeTruthy();
-    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('Coordinator · 1 worker');
+    expect(screen.getByTestId('session-worker-count-lead')).toHaveAccessibleName('1 worker');
     expect(screen.getByTestId('pod-entry-w1')).toBeInTheDocument();
   });
 });

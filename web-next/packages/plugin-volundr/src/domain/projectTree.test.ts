@@ -4,6 +4,7 @@ import {
   coordinationOf,
   groupByProject,
   isCoordinator,
+  leadState,
   nestSessions,
 } from './projectTree';
 import type { Session } from './session';
@@ -141,5 +142,29 @@ describe('nesting workers under coordinators', () => {
     expect(coordinationOf(all, 'w1').coordinator?.id).toBe('lead');
     expect(coordinationOf(all, 'w1').workers).toEqual([]);
     expect(coordinationOf(all, 'missing')).toEqual({ coordinator: null, workers: [] });
+  });
+});
+
+describe('a lead shows its workers when they are busier', () => {
+  const withState = (base: Session, state: Session['state']): Session => ({ ...base, state });
+  const lead = withState(session('root', 'run'), 'idle');
+
+  it('reads as working while a worker works, and as needing you while one waits on you', () => {
+    const idle = withState(session('coder', 'run', 'root'), 'idle');
+    const working = withState(session('reviewer', 'run', 'root'), 'running');
+    const waiting = withState(session('auditor', 'run', 'root'), 'awaiting_input');
+
+    expect(leadState(lead, [lead, idle])).toBe('idle');
+    expect(leadState(lead, [lead, idle, working])).toBe('running');
+    expect(leadState(lead, [lead, working, waiting])).toBe('awaiting_input');
+  });
+
+  it("keeps a stopped or failed lead's own state, and ignores sessions it does not lead", () => {
+    const working = withState(session('coder', 'run', 'root'), 'running');
+    const elsewhere = withState(session('other', 'run', 'someone-else'), 'running');
+
+    expect(leadState(withState(lead, 'terminated'), [working])).toBe('terminated');
+    expect(leadState(withState(lead, 'failed'), [working])).toBe('failed');
+    expect(leadState(lead, [lead, elsewhere])).toBe('idle');
   });
 });
