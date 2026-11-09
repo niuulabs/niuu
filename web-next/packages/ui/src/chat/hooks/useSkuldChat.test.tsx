@@ -2131,6 +2131,33 @@ page_path: council/demo/opinion-b.md
     });
   });
 
+  it('shows a kept room row once under the id it is kept by', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    const row = JSON.stringify({
+      type: 'room_mesh_message',
+      id: 'row-1',
+      participantId: 'root-1',
+      participant: { peer_id: 'root-1', persona: 'coordinator', participant_type: 'skuld' },
+      fromPersona: 'Coordinator',
+      eventType: 'step.offered',
+      preview: 'Offered Implement the change to coder',
+    });
+    act(() => {
+      wsHandlers.onMessage?.(row);
+      wsHandlers.onMessage?.(row);
+    });
+
+    expect(result.current.meshEvents).toHaveLength(1);
+    expect(result.current.meshEvents[0]).toMatchObject({
+      type: 'mesh_message',
+      id: 'history-row-1',
+      eventType: 'step.offered',
+    });
+  });
+
   it('normalizes punctuation spacing in live room_outcome summaries', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 

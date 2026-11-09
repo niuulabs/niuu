@@ -596,32 +596,47 @@ export function serializeAgentEvents(
   );
 }
 
+/** `metadata.messageType` of a room row the broker kept (a hand-off, a workflow step's offer,
+ * pickup or outcome): it is shown as the row it was live, never as a message. */
+export const ROOM_ROW_MESSAGE_TYPE = 'mesh_message';
+
+function isRoomRowTurn(turn: ConversationTurn): boolean {
+  return turn.metadata?.messageType === ROOM_ROW_MESSAGE_TYPE;
+}
+
+/** The mesh event id of a kept turn, the same whether it arrived live or from history. */
+function historyEventId(turnId: string): string {
+  return `history-${turnId}`;
+}
+
 export function transformTurns(turns: ConversationTurn[]): ChatMessage[] {
-  return turns.map((turn) => {
-    const imageContent = extractInlineImages(turn.content);
-    const metadata = turn.metadata as ChatMessage['metadata'] | undefined;
-    const metadataStatus = (turn.metadata as Record<string, unknown> | undefined)?.status;
-    const delivery =
-      turn.role === 'user' ? deliveryFromSteeringState(turn.metadata?.steering_state) : undefined;
-    return {
-      id: turn.id,
-      role: turn.role === 'user' ? 'user' : 'assistant',
-      content: imageContent.text,
-      attachments: imageContent.attachments.length ? imageContent.attachments : undefined,
-      createdAt: new Date(turn.created_at),
-      status: metadataStatus === 'error' ? 'error' : turn.in_progress ? 'running' : 'done',
-      parts: turn.parts as ChatMessagePart[] | undefined,
-      metadata,
-      historyPreview: turn.history_preview,
-      historyMetadataPreview: turn.history_metadata_preview,
-      participant: parseParticipantMeta(
-        turn.participant_meta as Record<string, unknown> | undefined,
-      ),
-      threadId: turn.thread_id,
-      visibility: turn.visibility,
-      ...(delivery ? { delivery } : {}),
-    };
-  });
+  return turns
+    .filter((turn) => !isRoomRowTurn(turn))
+    .map((turn) => {
+      const imageContent = extractInlineImages(turn.content);
+      const metadata = turn.metadata as ChatMessage['metadata'] | undefined;
+      const metadataStatus = (turn.metadata as Record<string, unknown> | undefined)?.status;
+      const delivery =
+        turn.role === 'user' ? deliveryFromSteeringState(turn.metadata?.steering_state) : undefined;
+      return {
+        id: turn.id,
+        role: turn.role === 'user' ? 'user' : 'assistant',
+        content: imageContent.text,
+        attachments: imageContent.attachments.length ? imageContent.attachments : undefined,
+        createdAt: new Date(turn.created_at),
+        status: metadataStatus === 'error' ? 'error' : turn.in_progress ? 'running' : 'done',
+        parts: turn.parts as ChatMessagePart[] | undefined,
+        metadata,
+        historyPreview: turn.history_preview,
+        historyMetadataPreview: turn.history_metadata_preview,
+        participant: parseParticipantMeta(
+          turn.participant_meta as Record<string, unknown> | undefined,
+        ),
+        threadId: turn.thread_id,
+        visibility: turn.visibility,
+        ...(delivery ? { delivery } : {}),
+      };
+    });
 }
 
 /** Broker-appended notification turns (contract §1) that must render live, not only on reload. */
@@ -734,12 +749,26 @@ export function meshEventsFromTurns(turns: ConversationTurn[]): MeshEvent[] {
       turn.participant_meta as Record<string, unknown> | undefined,
     );
     if (!participant?.peerId) continue;
+    if (isRoomRowTurn(turn)) {
+      const row = turn.metadata ?? {};
+      events.push({
+        type: 'mesh_message',
+        id: historyEventId(turn.id),
+        timestamp: new Date(turn.created_at),
+        participantId: participant.peerId,
+        participant: { color: participant.color },
+        fromPersona: typeof row.fromPersona === 'string' ? row.fromPersona : participant.persona,
+        eventType: typeof row.eventType === 'string' ? row.eventType : '',
+        preview: turn.content ?? '',
+      });
+      continue;
+    }
     const outcome = extractOutcomeBlock(turn.content ?? '');
     if (!outcome) continue;
     const fields = parseOutcomeFields(outcome.raw);
     events.push({
       type: 'outcome',
-      id: `history-${turn.id}`,
+      id: historyEventId(turn.id),
       timestamp: new Date(turn.created_at),
       participantId: participant.peerId,
       participant: { color: participant.color },
@@ -2455,11 +2484,13 @@ export function useSkuldChat(
           }
           case 'room_mesh_message': {
             const participant = parseParticipantMeta(event.participant);
+            // The broker keeps the row as a turn under this id: the history shows it once.
+            const rowId = typeof event.id === 'string' && event.id ? historyEventId(event.id) : '';
             setMeshEvents((prev) => [
-              ...prev,
+              ...prev.filter((existing) => !rowId || existing.id !== rowId),
               {
                 type: 'mesh_message',
-                id: generateId(),
+                id: rowId || generateId(),
                 timestamp: new Date(),
                 participantId: String(event.participantId ?? event.participant_id ?? ''),
                 participant: { color: participant?.color },

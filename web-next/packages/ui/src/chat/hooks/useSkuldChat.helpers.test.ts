@@ -173,6 +173,36 @@ describe('useSkuldChat helpers', () => {
     ).toBe(0);
   });
 
+  it('shows a kept room row as the row it was live, never as a message', () => {
+    const turns = [
+      {
+        id: 'row-1',
+        role: 'assistant',
+        content: 'Offered Implement the change to coder',
+        created_at: '2026-11-09T21:16:40.000000+00:00',
+        metadata: {
+          messageType: 'mesh_message',
+          fromPersona: 'Coordinator',
+          eventType: 'step.offered',
+          direction: 'workflow',
+        },
+        participant_meta: { peer_id: 'root-1', persona: 'coordinator', participant_type: 'skuld' },
+      },
+    ];
+
+    expect(transformTurns(turns as never)).toEqual([]);
+    expect(meshEventsFromTurns(turns as never)).toEqual([
+      expect.objectContaining({
+        type: 'mesh_message',
+        id: 'history-row-1',
+        participantId: 'root-1',
+        fromPersona: 'Coordinator',
+        eventType: 'step.offered',
+        preview: 'Offered Implement the change to coder',
+      }),
+    ]);
+  });
+
   it('extracts mesh outcome events from history turns and skips non-outcome cases', () => {
     const events = meshEventsFromTurns([
       {
