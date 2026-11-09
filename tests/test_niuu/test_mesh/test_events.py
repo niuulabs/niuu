@@ -23,9 +23,10 @@ class TestMeshEventType:
         assert MeshEventType.USAGE == "usage"
 
     def test_member_count(self) -> None:
-        # 12 types: THOUGHT, TOOL_START, TOOL_RESULT, RESPONSE, ERROR,
-        # DECISION, TASK_COMPLETE, TASK_STARTED, TASK_STUCK, OUTCOME, HELP_NEEDED, USAGE
-        assert len(MeshEventType) == 13
+        # 14 types: THOUGHT, TOOL_START, TOOL_RESULT, RESPONSE, ERROR,
+        # DECISION, TASK_COMPLETE, TASK_STARTED, TASK_STUCK, OUTCOME, HELP_NEEDED, USAGE,
+        # REVOCATION, WORKFLOW
+        assert len(MeshEventType) == 14
 
 
 class TestMeshEvent:
