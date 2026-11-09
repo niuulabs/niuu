@@ -116,6 +116,16 @@ describe('RunWorkflowGraph', () => {
     expect(screen.getByTestId('workflow-edge-e2')).toHaveAttribute('data-run-passed', 'true');
   });
 
+  it('lets a step the run has not reached recede, with no label of its own', async () => {
+    const graph = runGraph();
+    graph.states.set('approve', { nodeId: 'approve', state: 'pending', members: [] });
+    renderGraph(async () => graph);
+
+    const approve = await screen.findByTestId('workflow-run-state-approve');
+    expect(approve).toHaveAttribute('data-run-state', 'pending');
+    expect(approve).not.toHaveTextContent('Not reached');
+  });
+
   it("opens a member's session from its chip", async () => {
     const onOpenSession = renderGraph(async () => runGraph());
 

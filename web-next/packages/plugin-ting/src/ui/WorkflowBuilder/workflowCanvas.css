@@ -91,10 +91,10 @@
   stroke-width: 1;
 }
 /* The way the run went: from a step that closed to one it reached. */
+/* Thicker in the graph's own units, not on screen: the arrowhead scales with the stroke. */
 [data-run-passed='true'] .workflow-edge-line {
   stroke: var(--status-emerald);
-  stroke-width: 2.5;
-  vector-effect: non-scaling-stroke;
+  stroke-width: 3;
 }
 .workflow-run-state__pill {
   fill: var(--color-bg-elevated);

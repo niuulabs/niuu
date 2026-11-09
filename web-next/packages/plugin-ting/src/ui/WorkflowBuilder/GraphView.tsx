@@ -1960,19 +1960,27 @@ function RunStateOverlay({
         vectorEffect="non-scaling-stroke"
         pointerEvents="none"
       />
-      <g
-        transform={`translate(${bounds.x + bounds.width + 6},${bounds.y - 4}) scale(${labelScale}) translate(${-labelWidth},${-pillHeight + 6})`}
-      >
-        <rect className="workflow-run-state__pill" width={labelWidth} height={pillHeight} rx={8} />
-        <text
-          className="workflow-run-state__pill-text"
-          x={labelWidth / 2}
-          y={11.5}
-          textAnchor="middle"
+      {/* A step not reached says so by receding, with no label to crowd its neighbours. */}
+      {state.state !== 'pending' && (
+        <g
+          transform={`translate(${bounds.x + bounds.width + 6},${bounds.y - 4}) scale(${labelScale}) translate(${-labelWidth},${-pillHeight + 6})`}
         >
-          {label}
-        </text>
-      </g>
+          <rect
+            className="workflow-run-state__pill"
+            width={labelWidth}
+            height={pillHeight}
+            rx={8}
+          />
+          <text
+            className="workflow-run-state__pill-text"
+            x={labelWidth / 2}
+            y={11.5}
+            textAnchor="middle"
+          >
+            {label}
+          </text>
+        </g>
+      )}
       <g
         transform={`translate(${bounds.x},${bounds.y + bounds.height + RUN_CHIP_GAP}) scale(${labelScale})`}
       >
