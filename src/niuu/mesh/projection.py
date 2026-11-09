@@ -11,7 +11,11 @@ from niuu.mesh.surface import strip_surface_marker
 _ACTIVITY_BY_EVENT: dict[MeshEventType, str] = {
     MeshEventType.THOUGHT: "thinking",
     MeshEventType.TOOL_START: "tool_executing",
-    MeshEventType.TOOL_RESULT: "idle",
+    # A tool's result goes back to the agent, which goes on: the peer is not idle until its
+    # turn ends (its reply, or ``TASK_COMPLETE``). A room ends a peer's work message on idle,
+    # so idle here split a turn's work into one message per tool, and parallel tools left
+    # empty messages.
+    MeshEventType.TOOL_RESULT: "thinking",
     MeshEventType.TASK_STARTED: "busy",
     MeshEventType.TASK_COMPLETE: "idle",
     MeshEventType.DECISION: "thinking",
