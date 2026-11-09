@@ -169,6 +169,30 @@ class TestUnitRelease:
         assert {"name": "MEMBER", "value": "coder"} in values["members"][0]["values"]["envVars"]
         assert "members" not in values["members"][0]["values"]
 
+    async def test_the_roots_secret_injection_is_the_pods_and_members_add_none(self, manager, api):
+        """OpenBao injection gives the pod the root's ServiceAccount; the members add nothing."""
+        root, _, spec = _unit()
+        spec.pod_spec = PodSpecAdditions(
+            service_account=f"openbao-session-{root.id}",
+            annotations={"vault.hashicorp.com/agent-inject": "true"},
+        )
+
+        values = await _start(manager, api, root, spec)
+
+        assert values["serviceAccountName"] == f"openbao-session-{root.id}"
+        assert values["podAnnotations"] == {"vault.hashicorp.com/agent-inject": "true"}
+        for member in values["members"]:
+            assert "serviceAccountName" not in member["values"]
+            assert "podAnnotations" not in member["values"]
+
+    async def test_a_member_cannot_run_the_pod_under_another_service_account(self, manager, api):
+        root, launches, spec = _unit()
+        spec.pod_spec = PodSpecAdditions(service_account=f"openbao-session-{root.id}")
+        launches[0].spec.values["serviceAccountName"] = "elevated"
+
+        with pytest.raises(ValueError, match="serviceAccountName='elevated'"):
+            await _start(manager, api, root, spec)
+
     async def test_a_members_credential_is_mounted_into_its_own_container_only(self, manager, api):
         root, launches, spec = _unit()
 

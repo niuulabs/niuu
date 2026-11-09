@@ -78,6 +78,11 @@ _POD_LEVEL_VALUES: tuple[str, ...] = (
     "secretManifest",
 )
 
+#: Pod-level values only the unit root's pod spec can supply (the secret injector gives the
+#: pod the root's ServiceAccount). A member that asks for none of its own runs under the
+#: unit's; one that asks for a different one is refused like any other disagreement.
+_ROOT_SUPPLIED_POD_VALUES: frozenset[str] = frozenset({"serviceAccountName"})
+
 #: What a member's launch may not ask the pod for beyond its own container: containers, init
 #: containers and a service account of its own.
 _MEMBER_POD_ADDITIONS: tuple[str, ...] = ("init_containers", "extra_containers", "service_account")
@@ -410,6 +415,8 @@ class FluxPodManager(
         _inject_codex_auth_env(values)
         for key in _POD_LEVEL_VALUES:
             wanted, unit = _dotted(values, key), _dotted(root_values, key)
+            if wanted is None and key in _ROOT_SUPPLIED_POD_VALUES:
+                continue
             if wanted != unit:
                 raise ValueError(
                     f"{where} was launched with {key}={wanted!r} but its unit's pod has "

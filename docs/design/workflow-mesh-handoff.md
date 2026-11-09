@@ -130,6 +130,28 @@ clone and every member's work are the same files; the sandbox is deleted, not re
 when the run stops. A claim that does not cover the workspace path is refused at launch
 naming the fix.
 
+### Secret injection on Kubernetes
+
+An injector that works on the pod (the OpenBao agent injector, Infisical's: annotations plus a
+ServiceAccount per session, `SecretInjectionPort.injects_per_pod`) gives a pod one injection.
+A member is a container of the root's pod, so the injection is the root's and a member adds no
+pod-level part (a ServiceAccount, annotations, init containers), which the Flux and direct
+pod managers refuse. Forge keeps the members' needs met in three places:
+
+- the root's pipeline sees each member (`SessionContext.unit_members`, resolved exactly as the
+  member's own launch resolves its integrations) and the injection renders the union of
+  their credentials; all members share the root's owner, so one role reading the union
+  grants nothing a member lacked. A credential several members need is rendered once; two
+  members wanting one env var or file from different credentials is refused at launch;
+- the injector is told to inject the members' containers too (`agent-inject-containers`),
+  so they read the rendered `/run/secrets`;
+- the pod runs as the root's ServiceAccount, so the room-role route
+  (`participants/role`) accepts that pod's workload credential for the root and for the
+  sessions it hosts, and for no other session.
+
+A VM unit keeps an agent per member (explicit containers on the guest); the root's injection
+there covers only its own credentials.
+
 ### Workspace
 
 The workspace is shared wherever the runtime allows it (decision 1). The flock shared one

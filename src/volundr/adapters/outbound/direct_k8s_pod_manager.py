@@ -1176,13 +1176,17 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
 
         annotations = dict(spec.pod_spec.annotations) if spec.pod_spec else {}
         inject_key = "vault.hashicorp.com/agent-inject-containers"
-        if (
-            spec.values.get("git", {}).get("credentials", {}).get("tokenFile")
-            and inject_key in annotations
-        ):
+        clone_token_file = spec.values.get("git", {}).get("credentials", {}).get("tokenFile")
+        if inject_key in annotations and (clone_token_file or members):
+            # The unit's members are containers of this pod and read what its one injection
+            # renders, so they are injected whether or not the clone is.
             names = annotations[inject_key].split(",")
-            names.extend(c["name"] for c in pod_spec["containers"])
-            names.append("git-clone")
+            names.extend(
+                self._member_container_name(int(launch.session.hosted_port)) for launch in members
+            )
+            if clone_token_file:
+                names.extend(c["name"] for c in pod_spec["containers"])
+                names.append("git-clone")
             annotations[inject_key] = ",".join(dict.fromkeys(names))
 
         pod_labels, mesh_annotations = self._mesh_pod_identity(session, mesh)

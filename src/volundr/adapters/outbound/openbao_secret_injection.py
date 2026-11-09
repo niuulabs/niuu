@@ -166,6 +166,12 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
         return bool(self._oauth_mount)
 
     @property
+    def injects_per_pod(self) -> bool:
+        # The injector mutates the pod from its annotations and the pod runs as the
+        # session's ServiceAccount: one injection per pod, the unit root's for a unit.
+        return True
+
+    @property
     def supports_guest_agents(self) -> bool:
         return True
 

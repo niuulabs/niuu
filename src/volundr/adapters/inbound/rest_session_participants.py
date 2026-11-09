@@ -61,8 +61,16 @@ _ROOM_ROLE_SCOPE = "forge:session:room-role"
 _SESSION_SERVICE_ACCOUNT_PREFIX = "openbao-session-"
 
 
-def _require_session_scoped_workload_credential(request: Request, session_id: UUID) -> None:
+def _require_session_scoped_workload_credential(
+    request: Request, session_id: UUID, unit_id: UUID | None = None
+) -> None:
     """Refuse anything but a workload credential scoped to THIS session.
+
+    ``unit_id`` is the unit root the session is hosted by, when it is a member of a unit. A
+    member is a container of its unit's pod and runs as the pod's one ServiceAccount, the
+    root's, so that pod's credential also names its members: it may ask about the root and
+    about the sessions the root hosts, the unit that already shares the pod, and nothing
+    else.
 
     Unlike every other route on this router (gated by extract_principal's
     ordinary Cedar-backed access checks), this endpoint discloses "does user
@@ -89,8 +97,12 @@ def _require_session_scoped_workload_credential(request: Request, session_id: UU
             f"Token is missing the required scope: {_ROOM_ROLE_SCOPE}",
         )
     workload_sub = str(claims.get("workload_sub", ""))
-    session_marker = f"{_SESSION_SERVICE_ACCOUNT_PREFIX}{session_id}"
-    if session_marker not in workload_sub and str(session_id) not in workload_sub:
+    scoped_ids = [session_id] if unit_id is None else [session_id, unit_id]
+    if not any(
+        f"{_SESSION_SERVICE_ACCOUNT_PREFIX}{scoped_id}" in workload_sub
+        or str(scoped_id) in workload_sub
+        for scoped_id in scoped_ids
+    ):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "This workload credential is not scoped to this session — a session's "
@@ -404,7 +416,10 @@ def create_session_participants_router(
                session: session pods use the ``openbao-session-{id}``
                service account (``OpenBaoAgentInjectionAdapter
                ._service_account_name``), so a token minted for session A's
-               pod can never be used to probe session B's participants.
+               pod can never be used to probe session B's participants. The
+               one pod of a workflow run's unit runs as its root's service
+               account and also hosts the root's members, so that credential
+               may ask about the root and the sessions it hosts.
 
             ``user_id``/``tenant_id``/``roles`` name the TARGET principal
             whose role is being asked about — already verified upstream by
@@ -436,8 +451,14 @@ def create_session_participants_router(
             reached without Envoy in front (or directly via the app port).
             """
             await extract_principal(request)
-            _require_session_scoped_workload_credential(request, session_id)
-            session = await _get_session(session_id)
+            # A member's pod is its unit root's, so the unit is part of what the credential
+            # may name. A missing session reads as an unscoped credential (403), never 404.
+            session = await session_service.get_session(session_id)
+            _require_session_scoped_workload_credential(
+                request, session_id, session.hosted_by if session is not None else None
+            )
+            if session is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
             target = await _resolve_target_principal(
                 request,
                 user_id=user_id,

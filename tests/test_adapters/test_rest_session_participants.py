@@ -1,6 +1,7 @@
 """HTTP surface for invite/accept/revoke/list, and one real-Cedar integration case."""
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -426,6 +427,12 @@ def test_actual_cedar_policy_enforces_invite_and_accept_end_to_end():
 # a much stricter bar than every other route on this router, which relies
 # on extract_principal's ordinary Cedar checks.
 
+
+def _standalone_session(hosted_by=None):
+    """The part of a session the role endpoint reads: the unit that hosts it, if any."""
+    return SimpleNamespace(hosted_by=hosted_by)
+
+
 _ROOM_ROLE_SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
 _WRONG_SIGNING_KEY = "a-different-test-signing-key-32-bytes!!"
 
@@ -514,7 +521,7 @@ def test_route_absent_unless_room_role_source_is_remote(participants_api):
     """The default ("deployment") router never registers this route at all —
     it must not go live on a production deployment that hasn't opted in."""
     client, _service, session_service, path = participants_api
-    session_service.get_session.return_value = object()
+    session_service.get_session.return_value = _standalone_session()
     response = client.get(
         path.rsplit("/participants", 1)[0] + "/participants/role",
         params={"user_id": "bob"},
@@ -534,7 +541,7 @@ def test_unsigned_forged_token_is_rejected(remote_participants_api):
     import jwt
 
     client, service, session_service, sid = remote_participants_api
-    session_service.get_session.return_value = object()
+    session_service.get_session.return_value = _standalone_session()
     forged = jwt.encode(
         {
             "sub": "niuu-workload",
@@ -559,7 +566,7 @@ def test_wrongly_signed_forged_token_is_rejected(remote_participants_api):
     """Same forged claim set as above, but signed with a key the configured
     identity adapter does not trust — still refused."""
     client, service, session_service, sid = remote_participants_api
-    session_service.get_session.return_value = object()
+    session_service.get_session.return_value = _standalone_session()
     forged = _scoped_workload_token(sid, signing_key=_WRONG_SIGNING_KEY)
     response = client.get(
         f"/api/v1/forge/sessions/{sid}/participants/role",
@@ -572,7 +579,7 @@ def test_wrongly_signed_forged_token_is_rejected(remote_participants_api):
 
 def test_effective_role_endpoint_returns_the_service_answer(remote_participants_api):
     client, service, session_service, sid = remote_participants_api
-    session_service.get_session.return_value = object()
+    session_service.get_session.return_value = _standalone_session()
     service.effective_room_role.return_value = "approver"
     token = _scoped_workload_token(sid)
     response = client.get(
@@ -596,7 +603,7 @@ def test_effective_role_endpoint_returns_null_role_for_no_grant(remote_participa
     """A 200 with role: null, not a 403/404 — "no grant" is an answer, not a
     failure, matching effective_room_role's own contract."""
     client, service, session_service, sid = remote_participants_api
-    session_service.get_session.return_value = object()
+    session_service.get_session.return_value = _standalone_session()
     service.effective_room_role.return_value = None
     token = _scoped_workload_token(sid)
     response = client.get(
@@ -629,7 +636,7 @@ def test_unscoped_human_jwt_is_refused(remote_participants_api):
     import jwt
 
     client, service, session_service, sid = remote_participants_api
-    session_service.get_session.return_value = object()
+    session_service.get_session.return_value = _standalone_session()
     now = int(time.time())
     token = jwt.encode(
         {"sub": "alice", "iat": now, "exp": now + 600},
@@ -649,7 +656,7 @@ def test_missing_bearer_token_is_refused(remote_participants_api):
     """extract_principal (the mandatory signature-verifying gate, run before
     the scope/session-binding checks) rejects this first, with 401."""
     client, service, session_service, sid = remote_participants_api
-    session_service.get_session.return_value = object()
+    session_service.get_session.return_value = _standalone_session()
     response = client.get(
         f"/api/v1/forge/sessions/{sid}/participants/role", params={"user_id": "bob"}
     )
@@ -663,7 +670,7 @@ def test_effective_role_endpoint_requires_the_configured_scope_for_scoped_tokens
     """A scoped workload credential minted for something ELSE (missing
     forge:session:room-role) must be refused, not silently admitted."""
     client, service, session_service, sid = remote_participants_api
-    session_service.get_session.return_value = object()
+    session_service.get_session.return_value = _standalone_session()
     token = _scoped_workload_token(sid, scopes=["forge:session:create"])
     response = client.get(
         f"/api/v1/forge/sessions/{sid}/participants/role",
@@ -678,7 +685,7 @@ def test_credential_scoped_to_a_different_session_is_refused(remote_participants
     """The scope alone is not enough — a token minted for session A's pod
     must not be usable to probe session B's participants."""
     client, service, session_service, sid = remote_participants_api
-    session_service.get_session.return_value = object()
+    session_service.get_session.return_value = _standalone_session()
     other_session = uuid4()
     token = _scoped_workload_token(other_session)
     response = client.get(
@@ -690,13 +697,58 @@ def test_credential_scoped_to_a_different_session_is_refused(remote_participants
     service.effective_room_role.assert_not_awaited()
 
 
+def test_a_units_credential_may_ask_about_the_sessions_its_root_hosts(remote_participants_api):
+    """A member runs in its unit root's pod, as the root's ServiceAccount: that pod's
+    credential names the root, and may ask about the root's members."""
+    client, service, session_service, member_id = remote_participants_api
+    unit_id = uuid4()
+    session_service.get_session.return_value = _standalone_session(hosted_by=unit_id)
+    service.effective_room_role.return_value = "owner"
+    response = client.get(
+        f"/api/v1/forge/sessions/{member_id}/participants/role",
+        params={"user_id": "bob"},
+        headers={"Authorization": f"Bearer {_scoped_workload_token(unit_id)}"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"role": "owner"}
+
+
+def test_a_units_credential_may_not_ask_about_a_session_another_unit_hosts(
+    remote_participants_api,
+):
+    """The unit shares its pod, not the platform: a session hosted by another root is
+    as foreign to this pod's credential as a standalone one."""
+    client, service, session_service, member_id = remote_participants_api
+    session_service.get_session.return_value = _standalone_session(hosted_by=uuid4())
+    response = client.get(
+        f"/api/v1/forge/sessions/{member_id}/participants/role",
+        params={"user_id": "bob"},
+        headers={"Authorization": f"Bearer {_scoped_workload_token(uuid4())}"},
+    )
+    assert response.status_code == 403
+    service.effective_room_role.assert_not_awaited()
+
+
+def test_a_missing_session_reads_as_a_foreign_credential_not_a_404(remote_participants_api):
+    """Whether a session exists is not disclosed to a credential that is not scoped to it."""
+    client, service, session_service, sid = remote_participants_api
+    session_service.get_session.return_value = None
+    response = client.get(
+        f"/api/v1/forge/sessions/{sid}/participants/role",
+        params={"user_id": "bob"},
+        headers={"Authorization": f"Bearer {_scoped_workload_token(uuid4())}"},
+    )
+    assert response.status_code == 403
+    service.effective_room_role.assert_not_awaited()
+
+
 def test_target_roles_are_mapped_through_the_identity_adapter(remote_participants_api):
     """The raw, IdP-namespace-less roles a pod forwards ("developer") must be
     mapped the SAME way every other entry point maps them — an unmapped
     Principal here is the same demotion-to-403 class of incident this
     project has already hit once."""
     client, service, session_service, sid = remote_participants_api
-    session_service.get_session.return_value = object()
+    session_service.get_session.return_value = _standalone_session()
     service.effective_room_role.return_value = "owner"
 
     mapped_principal = Principal(
@@ -744,7 +796,7 @@ def test_target_role_mapping_uses_configured_header_names():
         )
     )
     sid = uuid4()
-    session_service.get_session.return_value = object()
+    session_service.get_session.return_value = _standalone_session()
     service.effective_room_role.return_value = "viewer"
 
     class _CustomHeaderIdentity(HeaderAuthenticationPort):
@@ -770,7 +822,7 @@ def test_target_role_mapping_uses_configured_header_names():
 
 def test_identity_adapter_rejection_yields_no_role_not_an_error(remote_participants_api):
     client, service, session_service, sid = remote_participants_api
-    session_service.get_session.return_value = object()
+    session_service.get_session.return_value = _standalone_session()
 
     class _RejectingIdentity(HeaderAuthenticationPort):
         async def validate_headers(self, headers: dict[str, str]) -> Principal:
