@@ -63,7 +63,6 @@ import type {
   UserFeaturePreference,
   PersonalAccessToken,
   CreatePATResult,
-  VolundrWorkflowGate,
   VolundrSessionTrace,
   VolundrSessionTraceLane,
   VolundrSessionTraceSpan,
@@ -314,32 +313,6 @@ type ConversationPayload = {
     thread_id?: string;
     visibility?: 'visible' | 'internal';
   }>;
-};
-
-type WorkflowGatePayload = {
-  id: string;
-  node_id?: string;
-  activation_id?: string;
-  label?: string;
-  condition?: string;
-  status?: VolundrWorkflowGate['status'];
-  pending_behavior?: VolundrWorkflowGate['pending_behavior'];
-  approvers?: string[];
-  auto_forward_after?: string;
-  requested_at?: string;
-  updated_at?: string;
-  triggered_by_event_type?: string;
-  approval_event_type?: string;
-  changes_requested_event_type?: string;
-  attempt?: number;
-  decision?: string | null;
-  notes?: string;
-  source?: string;
-  summary?: string;
-};
-
-type WorkflowGateListPayload = {
-  gates?: WorkflowGatePayload[];
 };
 
 type LogPayload = {
@@ -601,22 +574,6 @@ function toDate(value?: Date | string | null): Date | undefined {
   return Number.isNaN(parsed) ? undefined : new Date(parsed);
 }
 
-const GATE_PENDING = 'pending';
-
-/**
- * A human gate the session's activity metadata records as pending. Brokers that predate
- * reporting gates as `awaiting_input` stay `idle` at an open gate and record it under
- * `help_needed`, but never clear that record once the gate is decided: it only says where
- * to look, and the session's gates say whether one still waits.
- */
-function waitsAtGate(metadata: Record<string, unknown> | null | undefined): boolean {
-  const help = metadata?.help_needed;
-  if (!help || typeof help !== 'object') return false;
-  const context = (help as { context?: unknown }).context;
-  if (!context || typeof context !== 'object') return false;
-  return (context as { gate_status?: unknown }).gate_status === GATE_PENDING;
-}
-
 /** Ting tags each session of a workflow run `workflow:<run slug>`. */
 export const WORKFLOW_RUN_TAG = 'workflow:';
 
@@ -695,7 +652,6 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     needsAttention:
       Boolean(session.needsAttention ?? session.needs_attention) ||
       (session.activityState ?? session.activity_state) === 'awaiting_input',
-    gateRecorded: session.status === 'running' && waitsAtGate(session.activity_metadata),
     ownerId: session.ownerId ?? session.owner_id ?? undefined,
     tenantId: session.tenantId ?? session.tenant_id ?? undefined,
     instanceId: session.instanceId ?? session.instance_id ?? undefined,
@@ -909,30 +865,6 @@ function normalizeConversationHistory(payload: ConversationPayload): VolundrConv
       thread_id: turn.thread_id,
       visibility: turn.visibility,
     })),
-  };
-}
-
-function normalizeWorkflowGate(payload: WorkflowGatePayload): VolundrWorkflowGate {
-  return {
-    id: payload.id,
-    node_id: payload.node_id ?? '',
-    activation_id: payload.activation_id ?? '',
-    label: payload.label ?? payload.id,
-    condition: payload.condition ?? '',
-    status: payload.status ?? 'pending',
-    pending_behavior: payload.pending_behavior ?? 'help_needed',
-    approvers: payload.approvers ?? [],
-    auto_forward_after: payload.auto_forward_after ?? '30m',
-    requested_at: payload.requested_at ?? new Date(0).toISOString(),
-    updated_at: payload.updated_at ?? payload.requested_at ?? new Date(0).toISOString(),
-    triggered_by_event_type: payload.triggered_by_event_type ?? '',
-    approval_event_type: payload.approval_event_type ?? '',
-    changes_requested_event_type: payload.changes_requested_event_type ?? '',
-    attempt: payload.attempt ?? 1,
-    decision: payload.decision ?? undefined,
-    notes: payload.notes ?? '',
-    source: payload.source ?? 'human',
-    summary: payload.summary ?? '',
   };
 }
 
@@ -1268,7 +1200,6 @@ export const __testables = {
   normalizeSecretTypeInfo,
   normalizeMessages,
   normalizeConversationHistory,
-  normalizeWorkflowGate,
   normalizeLogLevel,
   normalizeLogs,
   normalizeAggregateParticipants,
@@ -1637,37 +1568,6 @@ export function buildVolundrHttpAdapter(
       : forgeClient.get<SessionPayload[]>(endpoint);
   }
 
-  // Whether a session whose metadata records a gate really waits at one, from its gates.
-  const gateVerdicts = new Map<string, boolean>();
-
-  function withGateVerdict(session: VolundrSession): VolundrSession {
-    if (!session.gateRecorded || session.needsAttention) return session;
-    return gateVerdicts.get(session.id) ? { ...session, needsAttention: true } : session;
-  }
-
-  async function confirmRecordedGates(
-    sessions: VolundrSession[],
-    signal?: AbortSignal,
-  ): Promise<VolundrSession[]> {
-    await Promise.all(
-      sessions
-        .filter((session) => session.gateRecorded && !session.needsAttention)
-        .map(async (session) => {
-          const path = sessionPath(session.id, '/workflow/gates', session.instanceId);
-          const payload = await (signal
-            ? forgeClient.get<WorkflowGateListPayload>(path, { signal })
-            : forgeClient.get<WorkflowGateListPayload>(path));
-          gateVerdicts.set(
-            session.id,
-            (payload.gates ?? [])
-              .map(normalizeWorkflowGate)
-              .some((gate) => gate.status === 'pending' && gate.pending_behavior === 'help_needed'),
-          );
-        }),
-    );
-    return sessions.map(withGateVerdict);
-  }
-
   async function loadSessions(
     endpoint: string,
     options?: { instanceId?: string; signal?: AbortSignal },
@@ -1675,12 +1575,9 @@ export function buildVolundrHttpAdapter(
     const scoped = options?.instanceId
       ? `${endpoint}${endpoint.includes('?') ? '&' : '?'}instance_id=${encodeURIComponent(options.instanceId)}`
       : endpoint;
-    const sessions = (
-      await confirmRecordedGates(
-        (await readSessionList(scoped, options?.signal)).map(normalizeSession),
-        options?.signal,
-      )
-    ).map(keepNewerActivity);
+    const sessions = (await readSessionList(scoped, options?.signal))
+      .map(normalizeSession)
+      .map(keepNewerActivity);
     if (options?.instanceId) {
       for (const [id, session] of sessionCache) {
         if (session.instanceId === options.instanceId) sessionCache.delete(id);
@@ -1716,7 +1613,7 @@ export function buildVolundrHttpAdapter(
       throw new Error(`Invalid session changes from ${instanceId}`);
     }
     const listed = new Set(payload.ids);
-    const sessions = await confirmRecordedGates(payload.sessions.map(normalizeSession), signal);
+    const sessions = payload.sessions.map(normalizeSession);
     // Mirror loadSessions/listArchivedSessions: this host's cached membership is
     // exactly what it lists now.
     if (archived) {
@@ -1762,8 +1659,7 @@ export function buildVolundrHttpAdapter(
       publishSessions();
       return null;
     }
-    const [fetched] = await confirmRecordedGates([normalizeSession(session)], options?.signal);
-    if (!fetched) throw new Error(`Session ${id} could not be read`);
+    const fetched = normalizeSession(session);
     if (options?.instanceId && fetched.instanceId && fetched.instanceId !== options.instanceId) {
       throw new Error(
         `Session ${id} was returned by ${fetched.instanceId}, expected ${options.instanceId}`,
@@ -1935,7 +1831,7 @@ export function buildVolundrHttpAdapter(
           }
           if (eventType === 'session_created' || eventType === 'session_updated') {
             const session = keepListOnlyFields(
-              keepNewerActivity(withGateVerdict(normalizeSession(payload as SessionPayload))),
+              keepNewerActivity(normalizeSession(payload as SessionPayload)),
             );
             sessionCache.set(session.id, session);
             publishSessions();
@@ -2436,34 +2332,6 @@ export function buildVolundrHttpAdapter(
         : [];
       if (!turn) throw new Error(`Forge returned no turn for ${turnId}`);
       return turn;
-    },
-    getWorkflowGates: async (sessionId) => {
-      const payload = await forgeClient.get<WorkflowGateListPayload>(
-        sessionPath(sessionId, '/workflow/gates'),
-      );
-      return (payload.gates ?? []).map(normalizeWorkflowGate);
-    },
-    resolveWorkflowGate: async (sessionId, gateId, request) => {
-      const response = await fetch(
-        `${forgeClient.basePath}${sessionPath(sessionId, `/workflow/gates/${gateId}/resolve`)}`,
-        {
-          method: 'POST',
-          headers: getAuthHeaders({
-            'Content-Type': 'application/json',
-            'x-niuu-workflow-gate-intent': 'resolve',
-          }),
-          body: JSON.stringify(request),
-        },
-      );
-      const payload = await response.json();
-      if (!response.ok) {
-        const detail =
-          payload && typeof payload === 'object' && 'detail' in payload
-            ? String((payload as { detail?: unknown }).detail ?? 'Unknown error')
-            : 'Unknown error';
-        throw new Error(`API request failed: ${response.status} ${detail}`);
-      }
-      return normalizeWorkflowGate(payload as WorkflowGatePayload);
     },
     getMessages: (sessionId) => loadMessages(sessionId),
     sendMessage: async (sessionId, content) =>

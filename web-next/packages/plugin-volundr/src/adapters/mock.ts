@@ -2,7 +2,7 @@
  * Mock adapters for Völundr ports — used in tests and dev mode.
  */
 import type { SecretRequest } from '@niuulabs/domain';
-import type { IVolundrService, ResolveWorkflowGateRequest } from '../ports/IVolundrService';
+import type { IVolundrService } from '../ports/IVolundrService';
 import type { ForgeProject } from '../models/volundr.model';
 import type { IClusterAdapter } from '../ports/IClusterAdapter';
 import type { ISessionStore } from '../ports/ISessionStore';
@@ -25,7 +25,6 @@ import type {
   VolundrRepo,
   TrackerIssue,
   VolundrWorkspace,
-  VolundrWorkflowGate,
   ExternalSession,
   SessionReadState,
 } from '../models/volundr.model';
@@ -1301,7 +1300,6 @@ export function createMockVolundrService(): IVolundrService {
   const externalSessions = SEED_EXTERNAL_SESSIONS.map((session) => ({ ...session }));
   const credentials = new Map(SEED_CREDENTIALS.map((credential) => [credential.name, credential]));
   const launchSpecs = [...SEED_LAUNCH_SPECS];
-  const workflowGates = new Map<string, VolundrWorkflowGate[]>();
   const readStates = new Map<string, SessionReadState>();
   const readStateOf = (id: string): SessionReadState => {
     const stored = readStates.get(id);
@@ -1610,49 +1608,6 @@ export function createMockVolundrService(): IVolundrService {
     getConversationHistory: async () => ({ turns: [] }),
     getConversationTurn: async (_sessionId, turnId) => {
       throw new Error(`The mock conversation has no turn ${turnId}`);
-    },
-    getWorkflowGates: async (sessionId) => workflowGates.get(sessionId) ?? [],
-    resolveWorkflowGate: async (
-      sessionId: string,
-      gateId: string,
-      request: ResolveWorkflowGateRequest,
-    ) => {
-      const gates = workflowGates.get(sessionId) ?? [];
-      const index = gates.findIndex((gate) => gate.id === gateId);
-      const resolved: VolundrWorkflowGate = {
-        ...(index >= 0
-          ? gates[index]!
-          : {
-              id: gateId,
-              node_id: 'gate',
-              activation_id: sessionId,
-              label: 'Workflow gate',
-              condition: '',
-              status: 'pending',
-              pending_behavior: 'help_needed',
-              approvers: [],
-              auto_forward_after: '30m',
-              requested_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-              triggered_by_event_type: '',
-              approval_event_type: '',
-              changes_requested_event_type: '',
-              attempt: 1,
-              summary: '',
-            }),
-        status: request.decision === 'APPROVE' ? 'approved' : 'changes_requested',
-        decision: request.decision,
-        notes: request.notes ?? '',
-        source: request.source ?? 'human',
-        updated_at: new Date().toISOString(),
-      };
-      if (index >= 0) {
-        gates[index] = resolved;
-      } else {
-        gates.push(resolved);
-      }
-      workflowGates.set(sessionId, gates);
-      return resolved;
     },
     getMessages: async () => [],
     sendMessage: async (sessionId): Promise<SessionMessageDelivery> => ({

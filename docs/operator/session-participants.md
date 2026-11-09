@@ -3,11 +3,11 @@
 A Forge session's owner can invite other same-tenant users into the session's
 room as durable participants, with one of two roles:
 
-- **viewer** — can read the transcript, tool results, capabilities, workflow
-  gates, and presented files, and can send room chat, but cannot change
-  session state, resolve gates, or answer an operator's pending question.
-- **approver** — everything a viewer can, plus resolving workflow gates and
-  answering `ask_user_answer`/`permission_response` operator waits.
+- **viewer** — can read the transcript, tool results, capabilities,
+  and presented files, and can send room chat, but cannot change
+  session state or answer an operator's pending question.
+- **approver** — everything a viewer can, plus answering `ask_user_answer`/`permission_response`
+  operator waits.
 
 The owner always keeps full control regardless of any grant. Invite, accept,
 and revoke are exposed under `/api/v1/forge/sessions/{id}/participants`; see

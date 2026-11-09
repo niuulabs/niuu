@@ -726,125 +726,6 @@ describe('LiveSessionDetailPage', () => {
     global.fetch = originalFetch;
   });
 
-  it('surfaces native workflow gates and resolves them through Volundr', async () => {
-    const resolveWorkflowGate = vi.fn().mockResolvedValue({
-      id: 'gate-1',
-      node_id: 'spec-prd-gate',
-      activation_id: 'activation-1',
-      label: 'PRD approval gate',
-      condition: 'Review the PRD and decide whether it is strong enough to unlock SRD drafting.',
-      status: 'approved',
-      pending_behavior: 'help_needed',
-      approvers: ['human'],
-      auto_forward_after: '30m',
-      requested_at: '2026-05-20T12:00:00Z',
-      updated_at: '2026-05-20T12:02:00Z',
-      triggered_by_event_type: 'spec.prd.ready_for_gate',
-      approval_event_type: 'spec.prd.approved',
-      changes_requested_event_type: 'spec.prd.changes_requested',
-      attempt: 1,
-      decision: 'APPROVE',
-      notes: 'The scope is right; proceed.',
-      source: 'human',
-      summary: 'PRD approved by human reviewer.',
-    });
-    mockChatState();
-
-    wrap('test-session-id-1234', {
-      volundr: {
-        getWorkflowGates: vi.fn().mockResolvedValue([
-          {
-            id: 'gate-1',
-            node_id: 'spec-prd-gate',
-            activation_id: 'activation-1',
-            label: 'PRD approval gate',
-            condition:
-              'Review the PRD and decide whether it is strong enough to unlock SRD drafting.',
-            status: 'pending',
-            pending_behavior: 'help_needed',
-            approvers: ['human'],
-            auto_forward_after: '30m',
-            requested_at: '2026-05-20T12:00:00Z',
-            updated_at: '2026-05-20T12:00:00Z',
-            triggered_by_event_type: 'spec.prd.ready_for_gate',
-            approval_event_type: 'spec.prd.approved',
-            changes_requested_event_type: 'spec.prd.changes_requested',
-            attempt: 1,
-            notes: '',
-            source: 'workflow',
-            summary: 'Please approve or request changes on the PRD.',
-          },
-        ]),
-        resolveWorkflowGate,
-      },
-    });
-
-    await screen.findByTestId('live-session-detail-page');
-    // The decision waits by the composer as a strip and opens in place.
-    const strip = await screen.findByTestId('decision-strip');
-    expect(strip).toHaveTextContent('1 decision waiting');
-    expect(strip).toHaveTextContent('PRD approval gate');
-    fireEvent.click(within(strip).getByRole('button', { name: /Show the decision/ }));
-    expect(screen.getByTestId('decision-card')).toHaveTextContent('Your decision');
-    expect(
-      within(screen.getByRole('region', { name: 'PRD approval gate' })).getByText(
-        /Please approve or request changes on the PRD/,
-      ),
-    ).toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText('Reply Notes'), {
-      target: { value: 'The scope is right; proceed.' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
-
-    await waitFor(() => {
-      expect(resolveWorkflowGate).toHaveBeenCalledWith('test-session-id-1234', 'gate-1', {
-        decision: 'APPROVE',
-        notes: 'The scope is right; proceed.',
-        source: 'human',
-      });
-    });
-    await waitFor(() => {
-      expect(screen.queryByTestId('decision-card')).not.toBeInTheDocument();
-    });
-    expect(screen.queryByTestId('decision-strip')).not.toBeInTheDocument();
-  });
-
-  it('hides the gate card once the latest gate verdict is already resolved', async () => {
-    mockChatState();
-
-    wrap('test-session-id-1234', {
-      volundr: {
-        getWorkflowGates: vi.fn().mockResolvedValue([
-          {
-            id: 'gate-1',
-            node_id: 'spec-prd-gate',
-            activation_id: 'activation-1',
-            label: 'PRD approval gate',
-            condition: 'Review the PRD',
-            status: 'approved',
-            pending_behavior: 'help_needed',
-            approvers: ['human'],
-            auto_forward_after: '30m',
-            requested_at: '2026-05-20T12:00:00Z',
-            updated_at: '2026-05-20T12:01:00Z',
-            triggered_by_event_type: 'spec.prd.ready_for_gate',
-            approval_event_type: 'spec.prd.approved',
-            changes_requested_event_type: 'spec.prd.changes_requested',
-            attempt: 1,
-            decision: 'APPROVE',
-            notes: '',
-            source: 'human',
-            summary: 'PRD approved by human reviewer.',
-          },
-        ]),
-      },
-    });
-
-    await screen.findByTestId('live-session-detail-page');
-    expect(screen.queryByTestId('decision-strip')).not.toBeInTheDocument();
-  });
-
   it("answers a secret request in the chat through this session's Forge route", async () => {
     mockChatState({
       messages: [
@@ -2268,8 +2149,32 @@ describe('LiveSessionDetailPage', () => {
           expect(respondToPermission).toHaveBeenCalledWith('perm-1', 'allow_once');
         });
 
-        it('lists a pending native gate and shows the latest task list', async () => {
+        it('lists a pending peer gate and shows the latest task list', async () => {
           mockChatState({
+            participants: new Map([
+              [
+                'workflow-reviewer',
+                {
+                  peerId: 'workflow-reviewer',
+                  displayName: 'PRD approval gate',
+                  persona: 'reviewer',
+                  participantType: 'ravn',
+                },
+              ],
+            ]),
+            meshEvents: [
+              {
+                id: 'mesh-gate-1',
+                participantId: 'workflow-reviewer',
+                participant: { color: '#a78bfa' },
+                type: 'notification',
+                notificationType: 'help_needed',
+                summary: 'Waiting for your approval.',
+                urgency: 2,
+                persona: 'reviewer',
+                timestamp: new Date('2026-05-23T09:35:00Z'),
+              } as never,
+            ],
             messages: [
               {
                 id: 'todo',
@@ -2286,18 +2191,7 @@ describe('LiveSessionDetailPage', () => {
               },
             ],
           });
-          wrap('test-session-id-1234', {
-            volundr: {
-              getWorkflowGates: vi.fn().mockResolvedValue([
-                {
-                  id: 'gate-1',
-                  label: 'PRD approval gate',
-                  status: 'pending',
-                  pending_behavior: 'help_needed',
-                },
-              ]),
-            },
-          });
+          wrap('test-session-id-1234');
 
           const gate = await screen.findByTestId('attention-gate');
           expect(gate).toHaveTextContent('PRD approval gate');

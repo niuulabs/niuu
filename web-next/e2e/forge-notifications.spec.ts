@@ -611,13 +611,11 @@ async function sessionFixture(page: Page) {
         ? session
         : path.endsWith('/sessions')
           ? [session]
-          : path.includes('/workflow/gates')
-            ? { gates: [] }
-            : path.includes('/features/modules')
-              ? [{ key: 'chat', scope: 'session', enabled: true, label: 'Chat', order: 0 }]
-              : path.includes('/stats') || path.endsWith('/read-state')
-                ? {}
-                : [],
+          : path.includes('/features/modules')
+            ? [{ key: 'chat', scope: 'session', enabled: true, label: 'Chat', order: 0 }]
+            : path.includes('/stats') || path.endsWith('/read-state')
+              ? {}
+              : [],
     });
   });
 }
