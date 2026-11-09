@@ -189,6 +189,8 @@ class VolundrSession:
     #: The Forge project the session is in, and the session it is nested under there.
     project_id: str = ""
     parent_session_id: str = ""
+    #: Why the session failed, as Forge recorded it (a broker that could not start says why).
+    error: str = ""
 
 
 @dataclass(frozen=True)

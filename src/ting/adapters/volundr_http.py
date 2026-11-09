@@ -469,6 +469,7 @@ class VolundrHTTPAdapter(VolundrPort):
             workload_type=data.get("workload_type", "default"),
             activity_state=data.get("activity_state"),
             activity_metadata=data.get("activity_metadata") or {},
+            error=str(data.get("error") or ""),
             **_coordination_fields(data),
         )
 
@@ -745,6 +746,7 @@ class VolundrHTTPAdapter(VolundrPort):
                 last_active=_parse_timestamp(data.get("last_active")),
                 activity_state_since=_parse_timestamp(data.get("activity_state_since")),
                 updated_at=_parse_timestamp(data.get("updated_at")),
+                error=str(data.get("error") or ""),
                 **_coordination_fields(data),
             )
 
@@ -776,6 +778,7 @@ class VolundrHTTPAdapter(VolundrPort):
                     workload_type=s.get("workload_type", "default"),
                     activity_state=s.get("activity_state"),
                     activity_metadata=s.get("activity_metadata") or {},
+                    error=str(s.get("error") or ""),
                     **_coordination_fields(s),
                 )
                 for s in resp.json()

@@ -391,6 +391,8 @@ class WorkflowRuns:
             # Before the no-change check: a sweep's refresh retries what Forge refused.
             await self._gate_notifier.sync(campaign, state)
         projection = project_run(campaign, state, now=datetime.now(UTC))
+        if self._gate_notifier is not None:
+            await self._gate_notifier.sync_failure(campaign, state, projection.status)
         if self._room_notifier is not None:
             # Also before the no-change check: a sweep's refresh retries what Forge refused.
             await self._room_notifier.sync(campaign, state, projection.status)

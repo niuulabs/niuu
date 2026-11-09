@@ -868,9 +868,7 @@ class WorkflowStepEngine:
             self._defer_delivery(bound, graph, definition)
             return
         if liveness is not SessionLiveness.RUNNING:
-            raise StepEngineError(
-                f"session {bound.session_id} is {liveness.value}, so it cannot take the step"
-            )
+            raise StepEngineError(await self._cannot_take(bound, liveness))
         try:
             await self._deliver(bound, graph, definition, claim=not redeliver)
         except SessionNotReadyError as exc:
@@ -1005,8 +1003,8 @@ class WorkflowStepEngine:
                     bound,
                     graph,
                     definition,
-                    f"delivery to {bound.member!r} failed: session {bound.session_id} is "
-                    f"{liveness.value}, so it cannot take the step",
+                    f"delivery to {bound.member!r} failed: "
+                    + await self._cannot_take(bound, liveness),
                 )
                 return
             if bound.deadline_at is not None and self._clock() > bound.deadline_at:
@@ -1019,6 +1017,14 @@ class WorkflowStepEngine:
                     "workflow_steps.step_deadline_seconds if sessions boot that slowly",
                 )
                 return
+
+    async def _cannot_take(self, bound: WorkflowStep, liveness: SessionLiveness) -> str:
+        """Why the step's session cannot take it: its state, and for a failed one, its reason."""
+        reason = f"session {bound.session_id} is {liveness.value}, so it cannot take the step"
+        if liveness is not SessionLiveness.FAILED:
+            return reason
+        failure = await self._sessions.session_failure(bound.run_id, bound.session_id or "")
+        return f"{reason}: {failure}" if failure else reason
 
     async def _bind_session(self, step: WorkflowStep, session_id: str) -> WorkflowStep | None:
         """Record the session that owns an activated step; ``None`` if the step moved on."""

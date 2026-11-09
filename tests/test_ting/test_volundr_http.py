@@ -499,6 +499,28 @@ class TestGetSession:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_a_failed_session_carries_the_reason_forge_recorded(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        respx.get(f"{SESSIONS_URL}/ses-3").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "ses-3",
+                    "name": "wf-run-security-auditor",
+                    "status": "failed",
+                    "error": "PersonaProjectionError: Persona 'security-auditor' cannot run",
+                },
+            )
+        )
+
+        session = await adapter.get_session("ses-3")
+
+        assert session is not None
+        assert session.error == "PersonaProjectionError: Persona 'security-auditor' cannot run"
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_listed_sessions_carry_their_project_and_parent(
         self, adapter: VolundrHTTPAdapter
     ):

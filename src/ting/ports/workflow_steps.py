@@ -152,6 +152,14 @@ class StepSessionPort(ABC):
         """
 
     @abstractmethod
+    async def session_failure(self, run_id: UUID, session_id: str) -> str:
+        """Why the session failed, as its Forge recorded it; empty when it recorded nothing.
+
+        A broker that could not start (its harness refused the persona, its mesh never came
+        up) reports why, and that reason is the step's. Raises when Forge cannot be asked.
+        """
+
+    @abstractmethod
     async def session_liveness(self, run_id: UUID, session_id: str) -> SessionLiveness:
         """Whether the session is up, still starting, or ended, as its Forge reports it.
 

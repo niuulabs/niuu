@@ -1,4 +1,4 @@
-"""Workflow gates in Forge's notification feed.
+"""Workflow gates, and runs that failed, in Forge's notification feed.
 
 A gate of the step engine waits for a person in Ting; no session holds it, so Forge
 never projects it into its feed the way it projects a session's own ``workflow_gate``
@@ -10,6 +10,10 @@ Forge's feed is per session, so a gate's notification is recorded on a session o
 run: the session of the step whose outcome opened the gate, else the run's most recent
 session. The notification belongs to that session's owner. Forge never calls Ting for
 any of this.
+
+A run that fails is told the same way: an ``error`` notification for its owner naming each
+step that failed and why (a member session that could not start says what its broker
+reported), recorded on the failed step's session, else the run's newest one.
 
 Every call is idempotent at Forge (the idempotency key names the run and the gate's
 activation), so a gate synced again after a restart neither duplicates nor reopens its
@@ -28,7 +32,7 @@ from niuu.cap_telemetry import record_degraded, record_truncation
 from niuu.domain.notifications import MAX_BODY_CHARS, MAX_TITLE_CHARS
 from niuu.observability import get_observability
 from ting.domain.campaign_run_projection import run_gates
-from ting.domain.models import WorkflowCampaign
+from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.step_graph import GATE_MODE_AUTOMATED_APPROVAL
 from ting.domain.workflow_board import GATE_STATUS_APPROVED, GATE_STATUS_PENDING
 from ting.domain.workflow_steps import RunState, StepKind, StepState, WorkflowStep
@@ -97,6 +101,69 @@ class GateNotifier:
                 )
                 self._done.discard((step.id, phase))
                 continue
+
+    async def sync_failure(
+        self, campaign: WorkflowCampaign, state: RunState, status: WorkflowCampaignStatus
+    ) -> None:
+        """Tell the run's owner the run failed and why, once."""
+        if status is not WorkflowCampaignStatus.FAILED:
+            return
+        claim = (campaign.id, "failed")
+        if claim in self._done:
+            return
+        self._done.add(claim)
+        try:
+            await self._raise_failure(campaign, state)
+        except Exception as exc:
+            self._done.discard(claim)
+            logger.error(
+                "Could not raise the failure notification of run %s: %s: %s",
+                campaign.slug,
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
+            get_observability().count(
+                "ting_workflow_failure_notification_failures_total",
+                description=(
+                    "Failed-run notifications Forge could not record; retried on the run's "
+                    "next change."
+                ),
+            )
+
+    async def _raise_failure(self, campaign: WorkflowCampaign, state: RunState) -> None:
+        failed = [step for step in state.steps if step.state is StepState.FAILED]
+        session_id = _failure_session(state, failed)
+        if session_id is None:
+            record_degraded(
+                _DEGRADED_PATH,
+                f"run {campaign.slug} failed before any session of the run existed, so "
+                "Forge's per-session feed has nowhere to record it; the failure is on the "
+                f"review page {review_path(campaign)}",
+            )
+            return
+        body = (
+            " ".join(
+                f"{step.member or step.node_id} failed {step.node_id}: {step.note}"
+                for step in failed
+            )
+            or "The run failed."
+        )
+        key = f"workflow-run-failed:{campaign.id}"
+        forge = await self._forge(campaign)
+        await forge.submit_session_notification(
+            session_id,
+            {
+                "kind": "error",
+                "severity": "critical",
+                "title": _fit(f"{campaign.name}: the run failed", MAX_TITLE_CHARS, "title"),
+                "body": _fit(body, MAX_BODY_CHARS, "body"),
+                "links": [{"label": "Open the run", "url": self._link(campaign), "kind": "url"}],
+                "correlation_id": key,
+            },
+            idempotency_key=key,
+        )
+        logger.info("Raised the failure notification of run %s", campaign.slug)
 
     async def _sync_gate(
         self,
@@ -184,6 +251,15 @@ def _notifies(campaign: WorkflowCampaign, node_id: str) -> bool:
                 return False
             return str(node.get("pendingBehavior") or "") != _SILENT
     return True
+
+
+def _failure_session(state: RunState, failed: list[WorkflowStep]) -> str | None:
+    """The session of the last failed step that had one, else the run's newest session."""
+    for steps in (failed, state.steps):
+        sessions = [step.session_id for step in steps if step.session_id]
+        if sessions:
+            return sessions[-1]
+    return None
 
 
 def _anchor_session(state: RunState, gate: WorkflowStep) -> str | None:

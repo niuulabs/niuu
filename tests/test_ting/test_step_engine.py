@@ -537,12 +537,17 @@ async def test_a_session_that_ends_while_starting_fails_the_step_and_says_so(
     run.sessions.liveness[CODER_SESSION] = SessionLiveness.STARTING
 
     await run.launch()
+    run.sessions.failures[CODER_SESSION] = "PersonaProjectionError: Persona 'coder' cannot run"
     run.sessions.liveness[CODER_SESSION] = SessionLiveness.FAILED
     await wait_for(lambda: run.finished_with(), what="the run to fail")
 
     coder = run.steps("workstream-code")[0]
     assert coder.state is StepState.FAILED
-    assert f"session {CODER_SESSION} is failed" in coder.note
+    # The member's step says why its session failed, as the broker reported it.
+    assert coder.note.endswith(
+        f"session {CODER_SESSION} is failed, so it cannot take the step: "
+        "PersonaProjectionError: Persona 'coder' cannot run"
+    )
     assert run.sessions.delivered == []
     assert recorder.total("ting_workflow_step_start_failures_total") == 1
 

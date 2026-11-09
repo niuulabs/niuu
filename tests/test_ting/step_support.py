@@ -234,6 +234,7 @@ class FakeSessions(StepSessionPort):
         self.not_ready: dict[str, int] = {}
         #: Per session id: what ``observe`` says. Unlisted sessions are running and hold nothing.
         self.liveness: dict[str, SessionLiveness] = {}
+        self.failures: dict[str, str] = {}
         #: Per (session id, activation id): the session's durable record of the step.
         self.reported: dict[tuple[str, UUID], dict[str, Any]] = {}
         self.fail_observe: set[str] = set()
@@ -259,6 +260,9 @@ class FakeSessions(StepSessionPort):
 
     async def stop_run_sessions(self, run_id: UUID) -> None:
         self.stopped.append(run_id)
+
+    async def session_failure(self, run_id: UUID, session_id: str) -> str:
+        return self.failures.get(session_id, "")
 
     async def session_liveness(self, run_id: UUID, session_id: str) -> SessionLiveness:
         if session_id in self.fail_observe:

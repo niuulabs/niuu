@@ -246,3 +246,67 @@ async def test_two_syncs_of_the_same_gate_at_once_raise_it_once() -> None:
     await asyncio.gather(notifier.sync(campaign, state), notifier.sync(campaign, state))
 
     assert forge.notification_calls == 1
+
+
+async def test_a_failed_run_tells_its_owner_why_on_the_failed_members_session() -> None:
+    forge = FakeForge()
+    coder = forge.add_session("coder", "t")
+    auditor = forge.add_session("security-auditor", "t")
+    campaign = _campaign()
+    reason = (
+        "delivery to 'security-auditor' failed: session s is failed, so it cannot take the "
+        "step: PersonaProjectionError: Persona 'security-auditor' cannot run on codex"
+    )
+    failed = WorkflowStep(
+        id=uuid4(),
+        run_id=campaign.id,
+        node_id="checks",
+        member="security-auditor",
+        kind=StepKind.STAGE_MEMBER,
+        attempt=1,
+        generation=0,
+        state=StepState.FAILED,
+        created_at=NOW,
+        session_id=auditor,
+        note=reason,
+        closed_at=NOW,
+    )
+    state = RunState(campaign.id, steps=(failed, _member(campaign.id, "code", "coder", coder)))
+    notifier = _notifier(forge)
+
+    for _ in range(2):
+        await notifier.sync_failure(campaign, state, WorkflowCampaignStatus.FAILED)
+
+    [(key, (session_id, draft))] = forge.notifications.items()
+    assert key == f"workflow-run-failed:{campaign.id}"
+    assert session_id == auditor
+    assert (draft["kind"], draft["severity"]) == ("error", "critical")
+    assert draft["title"] == "run: the run failed"
+    assert draft["body"] == f"security-auditor failed checks: {reason}"
+    assert draft["links"][0]["url"] == "https://niuu.example/ting/review/run/run-1"
+
+
+async def test_a_run_that_did_not_fail_raises_no_failure_notification() -> None:
+    forge = FakeForge()
+    campaign = _campaign()
+    state = RunState(campaign.id, steps=(_member(campaign.id, "code", "coder", "s-1"),))
+
+    for status in (WorkflowCampaignStatus.RUNNING, WorkflowCampaignStatus.COMPLETED):
+        await _notifier(forge).sync_failure(campaign, state, status)
+
+    assert forge.notifications == {}
+
+
+async def test_a_failure_notification_forge_refused_is_raised_on_the_next_change() -> None:
+    forge = FakeForge()
+    coder = forge.add_session("coder", "t")
+    campaign = _campaign()
+    state = RunState(campaign.id, steps=(_member(campaign.id, "code", "coder", coder),))
+    notifier = _notifier(forge)
+    forge.fail_notify = RuntimeError("feed down")
+
+    await notifier.sync_failure(campaign, state, WorkflowCampaignStatus.FAILED)
+    forge.fail_notify = None
+    await notifier.sync_failure(campaign, state, WorkflowCampaignStatus.FAILED)
+
+    assert list(forge.notifications) == [f"workflow-run-failed:{campaign.id}"]
