@@ -1534,6 +1534,7 @@ function WorkflowEdgePath({
   feedbackLane,
   selected,
   onSelect,
+  runPassed = false,
 }: {
   edge: WorkflowEdge;
   edges: WorkflowEdge[];
@@ -1544,6 +1545,8 @@ function WorkflowEdgePath({
   feedbackLane: number;
   selected: boolean;
   onSelect: () => void;
+  /** A run went this way: its source closed and its target was reached. */
+  runPassed?: boolean;
 }) {
   const src = nodes.get(edge.source);
   const tgt = nodes.get(edge.target);
@@ -1581,6 +1584,7 @@ function WorkflowEdgePath({
       data-target-event={targetPort.eventType}
       data-resolved={resolution.resolved ? 'true' : 'false'}
       data-feedback={feedback ? 'true' : 'false'}
+      data-run-passed={runPassed ? 'true' : undefined}
     >
       <path
         d={d}
@@ -1600,11 +1604,11 @@ function WorkflowEdgePath({
         strokeWidth={selected ? 2.25 : 1.5}
         strokeDasharray={feedback ? '5 4' : undefined}
         markerEnd="url(#arrowhead)"
+        className="workflow-edge-line niuu:cursor-pointer"
         onClick={(e) => {
           e.stopPropagation();
           onSelect();
         }}
-        className="niuu:cursor-pointer"
       />
       {selected &&
         edge.label &&
@@ -1897,6 +1901,18 @@ function memberChipLabel(member: RunGraphNodeState['members'][number]): string {
 
 const RUN_CHIP_HEIGHT = 18;
 const RUN_CHIP_GAP = 4;
+/** How far a run's labels grow against zooming out: enough to read at a panel's fit. */
+const RUN_LABEL_MAX_SCALE = 2.5;
+
+/** The box of what is drawn, in the graph's own coordinates; none where nothing lays out. */
+function drawnContentBox(
+  content: SVGGElement | null,
+): { x: number; y: number; width: number; height: number } | null {
+  if (!content || typeof content.getBBox !== 'function') return null;
+  const box = content.getBBox();
+  if (box.width <= 0 || box.height <= 0) return null;
+  return { x: box.x, y: box.y, width: box.width, height: box.height };
+}
 
 /**
  * Where a run is at one node, drawn over it: an outline in the state's colour, the state at
@@ -1906,20 +1922,33 @@ const RUN_CHIP_GAP = 4;
 function RunStateOverlay({
   bounds,
   state,
+  labelScale,
   onOpenSession,
 }: {
   bounds: { x: number; y: number; width: number; height: number };
   state: RunGraphNodeState;
+  /** How much larger than the graph's scale the labels are drawn, to stay readable. */
+  labelScale: number;
   onOpenSession?: (sessionId: string) => void;
 }) {
   const label = RUN_STATE_LABELS[state.state];
   const labelWidth = label.length * 6.4 + 14;
+  const pillHeight = 16;
   return (
     <g
       className="workflow-run-state"
       data-run-state={state.state}
       data-testid={`workflow-run-state-${state.nodeId}`}
     >
+      <rect
+        className="workflow-run-state__tint"
+        x={bounds.x}
+        y={bounds.y}
+        width={bounds.width}
+        height={bounds.height}
+        rx={8}
+        pointerEvents="none"
+      />
       <rect
         className="workflow-run-state__outline"
         x={bounds.x - 3}
@@ -1928,10 +1957,13 @@ function RunStateOverlay({
         height={bounds.height + 6}
         rx={10}
         fill="none"
+        vectorEffect="non-scaling-stroke"
         pointerEvents="none"
       />
-      <g transform={`translate(${bounds.x + bounds.width - labelWidth + 6},${bounds.y - 10})`}>
-        <rect className="workflow-run-state__pill" width={labelWidth} height={16} rx={8} />
+      <g
+        transform={`translate(${bounds.x + bounds.width + 6},${bounds.y - 4}) scale(${labelScale}) translate(${-labelWidth},${-pillHeight + 6})`}
+      >
+        <rect className="workflow-run-state__pill" width={labelWidth} height={pillHeight} rx={8} />
         <text
           className="workflow-run-state__pill-text"
           x={labelWidth / 2}
@@ -1941,44 +1973,47 @@ function RunStateOverlay({
           {label}
         </text>
       </g>
-      {state.members.map((member, index) => {
-        const y =
-          bounds.y + bounds.height + RUN_CHIP_GAP + index * (RUN_CHIP_HEIGHT + RUN_CHIP_GAP);
-        const text = memberChipLabel(member);
-        const width = Math.min(bounds.width, text.length * 6 + 18);
-        const open = member.sessionId && onOpenSession ? onOpenSession : null;
-        return (
-          <g
-            key={member.member}
-            className="workflow-run-member"
-            data-run-state={member.state}
-            transform={`translate(${bounds.x},${y})`}
-            role={open ? 'button' : undefined}
-            tabIndex={open ? 0 : undefined}
-            aria-label={open ? `Open ${member.member}'s session` : undefined}
-            data-testid={`workflow-run-member-${state.nodeId}-${member.member}`}
-            onClick={open ? () => open(member.sessionId!) : undefined}
-            onKeyDown={
-              open
-                ? (event) => {
-                    if (event.key === 'Enter') open(member.sessionId!);
-                  }
-                : undefined
-            }
-          >
-            <rect
-              className="workflow-run-member__chip"
-              width={width}
-              height={RUN_CHIP_HEIGHT}
-              rx={9}
-            />
-            <circle className="workflow-run-member__dot" cx={9} cy={RUN_CHIP_HEIGHT / 2} r={3} />
-            <text className="workflow-run-member__text" x={16} y={12.5}>
-              {text}
-            </text>
-          </g>
-        );
-      })}
+      <g
+        transform={`translate(${bounds.x},${bounds.y + bounds.height + RUN_CHIP_GAP}) scale(${labelScale})`}
+      >
+        {state.members.map((member, index) => {
+          const y = index * (RUN_CHIP_HEIGHT + RUN_CHIP_GAP);
+          const text = memberChipLabel(member);
+          const width = text.length * 6 + 18;
+          const open = member.sessionId && onOpenSession ? onOpenSession : null;
+          return (
+            <g
+              key={member.member}
+              className="workflow-run-member"
+              data-run-state={member.state}
+              transform={`translate(0,${y})`}
+              role={open ? 'button' : undefined}
+              tabIndex={open ? 0 : undefined}
+              aria-label={open ? `Open ${member.member}'s session` : undefined}
+              data-testid={`workflow-run-member-${state.nodeId}-${member.member}`}
+              onClick={open ? () => open(member.sessionId!) : undefined}
+              onKeyDown={
+                open
+                  ? (event) => {
+                      if (event.key === 'Enter') open(member.sessionId!);
+                    }
+                  : undefined
+              }
+            >
+              <rect
+                className="workflow-run-member__chip"
+                width={width}
+                height={RUN_CHIP_HEIGHT}
+                rx={9}
+              />
+              <circle className="workflow-run-member__dot" cx={9} cy={RUN_CHIP_HEIGHT / 2} r={3} />
+              <text className="workflow-run-member__text" x={16} y={12.5}>
+                {text}
+              </text>
+            </g>
+          );
+        })}
+      </g>
     </g>
   );
 }
@@ -2057,7 +2092,17 @@ export function GraphView({
 }: GraphViewProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const contentRef = useRef<SVGGElement>(null);
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
+  // A run's labels keep their size on screen as the graph zooms out, so its progress reads
+  // at the scale a panel fits the whole workflow in; they never grow past it.
+  const runLabelScale = Math.min(RUN_LABEL_MAX_SCALE, Math.max(1, 1 / transform.scale));
+  const runPassed = (edge: WorkflowEdge): boolean => {
+    if (!runStates || isReentryEdge(edge)) return false;
+    const source = runStates.get(edge.source)?.state;
+    const target = runStates.get(edge.target)?.state;
+    return source === 'done' && target !== undefined && target !== 'pending';
+  };
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const pointerRef = useRef<{ x: number; y: number } | null>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
@@ -2195,6 +2240,27 @@ export function GraphView({
         return;
       }
       const rect = svg.getBoundingClientRect();
+      const drawn = fitOnLoad ? drawnContentBox(contentRef.current) : null;
+      if (drawn) {
+        // A viewer frames what is drawn (feedback lanes, a run's chips) and centres it.
+        const margin = 24;
+        const scale = Math.min(
+          scaleLimit,
+          Math.max(
+            MIN_ZOOM,
+            Math.min(
+              rect.width / (drawn.width + margin * 2),
+              rect.height / (drawn.height + margin * 2),
+            ),
+          ),
+        );
+        setTransform({
+          x: (rect.width - drawn.width * scale) / 2 - drawn.x * scale,
+          y: (rect.height - drawn.height * scale) / 2 - drawn.y * scale,
+          scale,
+        });
+        return;
+      }
       const bounds = displayNodes.map((node) => nodeBounds(node, { measurements }));
       const minX = Math.min(...bounds.map((box) => box.x)) - 48;
       const maxX = Math.max(...bounds.map((box) => box.x + box.width)) + 48;
@@ -2215,7 +2281,7 @@ export function GraphView({
         scale,
       });
     },
-    [displayNodes, edges, measurements, nodes.length],
+    [displayNodes, edges, measurements, nodes.length, fitOnLoad],
   );
 
   // A viewer fits the graph once, when the canvas first has a size: it is not edited, so
@@ -2230,6 +2296,8 @@ export function GraphView({
       if (fittedRef.current || rect.width === 0 || rect.height === 0) return;
       fittedRef.current = true;
       fitToNodes(1);
+      // A run's labels grow as the fit zooms out; frame again once they have.
+      requestAnimationFrame(() => fitToNodes(1));
     };
     fitWhenSized();
     if (fittedRef.current || typeof ResizeObserver === 'undefined') return;
@@ -2793,7 +2861,10 @@ export function GraphView({
             <polygon points="0 0, 8 3, 0 6" fill={C.edgeStroke} />
           </marker>
         </defs>
-        <g transform={`translate(${transform.x},${transform.y}) scale(${transform.scale})`}>
+        <g
+          ref={contentRef}
+          transform={`translate(${transform.x},${transform.y}) scale(${transform.scale})`}
+        >
           {/* Edges (drawn first, below nodes) */}
           {edges.map((edge) => (
             <WorkflowEdgePath
@@ -2805,6 +2876,7 @@ export function GraphView({
               portCatalogs={visiblePortCatalogs}
               measurements={measurements}
               feedbackLane={feedbackLanes.get(edge.id) ?? 0}
+              runPassed={runPassed(edge)}
               selected={edge.id === selectedEdgeId}
               onSelect={() => {
                 setSelectedEdgeId(edge.id);
@@ -2898,6 +2970,7 @@ export function GraphView({
                   key={`run-${node.id}`}
                   bounds={nodeBounds(node, { measurements })}
                   state={state}
+                  labelScale={runLabelScale}
                   onOpenSession={onOpenMemberSession}
                 />
               );

@@ -77,11 +77,24 @@
 }
 .workflow-run-state__outline {
   stroke: var(--run-state-color);
-  stroke-width: 2;
+  stroke-width: 2.5;
+}
+.workflow-run-state__tint {
+  fill: color-mix(in srgb, var(--run-state-color) 14%, transparent);
+}
+/* What the run has not reached recedes, so where it is stands out at any zoom. */
+.workflow-run-state[data-run-state='pending'] .workflow-run-state__tint {
+  fill: color-mix(in srgb, var(--color-bg-primary) 45%, transparent);
 }
 .workflow-run-state[data-run-state='pending'] .workflow-run-state__outline {
   stroke-dasharray: 4 4;
   stroke-width: 1;
+}
+/* The way the run went: from a step that closed to one it reached. */
+[data-run-passed='true'] .workflow-edge-line {
+  stroke: var(--status-emerald);
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
 }
 .workflow-run-state__pill {
   fill: var(--color-bg-elevated);

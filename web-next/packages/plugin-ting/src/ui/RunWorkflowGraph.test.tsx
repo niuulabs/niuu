@@ -86,6 +86,36 @@ describe('RunWorkflowGraph', () => {
     }
   });
 
+  it('centres what is drawn in its canvas', async () => {
+    const box = { x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 300, width: 800, height: 300 };
+    const sized = vi
+      .spyOn(SVGElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ ...box, toJSON: () => box } as DOMRect);
+    const drawn = Object.assign(() => ({ x: 100, y: 40, width: 400, height: 100 }) as DOMRect, {});
+    const original = (SVGElement.prototype as { getBBox?: unknown }).getBBox;
+    (SVGElement.prototype as { getBBox?: unknown }).getBBox = drawn;
+    try {
+      renderGraph(async () => runGraph());
+
+      const canvas = await screen.findByTestId('run-graph');
+      // 400x100 drawn at (100,40) fits at 1:1 and sits in the middle of 800x300.
+      expect(canvas.querySelector('svg g[transform]')?.getAttribute('transform')).toBe(
+        'translate(100,60) scale(1)',
+      );
+    } finally {
+      sized.mockRestore();
+      (SVGElement.prototype as { getBBox?: unknown }).getBBox = original;
+    }
+  });
+
+  it('marks the way the run went, from a step that closed to one it reached', async () => {
+    renderGraph(async () => runGraph());
+
+    await screen.findByTestId('workflow-run-state-code');
+    expect(screen.getByTestId('workflow-edge-e1')).toHaveAttribute('data-run-passed', 'true');
+    expect(screen.getByTestId('workflow-edge-e2')).toHaveAttribute('data-run-passed', 'true');
+  });
+
   it("opens a member's session from its chip", async () => {
     const onOpenSession = renderGraph(async () => runGraph());
 
