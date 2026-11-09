@@ -2017,6 +2017,8 @@ export interface GraphViewProps {
   runStates?: ReadonlyMap<string, RunGraphNodeState>;
   /** Open a member's session from its chip under a node of a run. */
   onOpenMemberSession?: (sessionId: string) => void;
+  /** Fit the graph to the canvas once the canvas has a size, as a viewer that only shows it. */
+  fitOnLoad?: boolean;
   /** Optional host action for making a read-only workflow editable. */
   onEdit?: () => void;
   readOnlyMessage?: string;
@@ -2051,6 +2053,7 @@ export function GraphView({
   readOnlyMessage,
   runStates,
   onOpenMemberSession,
+  fitOnLoad = false,
 }: GraphViewProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -2214,6 +2217,26 @@ export function GraphView({
     },
     [displayNodes, edges, measurements, nodes.length],
   );
+
+  // A viewer fits the graph once, when the canvas first has a size: it is not edited, so
+  // nothing else frames it. Later frames are the person's (zoom, pan, Fit).
+  const fittedRef = useRef(false);
+  useEffect(() => {
+    if (!fitOnLoad || fittedRef.current || nodes.length === 0) return;
+    const svg = svgRef.current;
+    if (!svg) return;
+    const fitWhenSized = () => {
+      const rect = svg.getBoundingClientRect();
+      if (fittedRef.current || rect.width === 0 || rect.height === 0) return;
+      fittedRef.current = true;
+      fitToNodes(1);
+    };
+    fitWhenSized();
+    if (fittedRef.current || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(fitWhenSized);
+    observer.observe(svg);
+    return () => observer.disconnect();
+  }, [fitOnLoad, fitToNodes, nodes.length]);
 
   const resetOneToOne = useCallback(() => {
     const svg = svgRef.current;

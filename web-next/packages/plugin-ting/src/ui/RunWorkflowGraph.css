@@ -1,7 +1,14 @@
 .ting-run-graph {
   position: relative;
+  display: flex;
   height: 100%;
   min-height: 0;
+}
+
+/* The canvas takes the panel it is shown in, however short, not the builder's own height. */
+.ting-run-graph .workflow-canvas {
+  min-height: 0;
+  height: 100%;
 }
 
 .ting-run-graph__status {

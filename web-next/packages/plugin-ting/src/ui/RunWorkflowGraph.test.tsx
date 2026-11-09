@@ -70,6 +70,22 @@ describe('RunWorkflowGraph', () => {
     expect(screen.getByTestId('workflow-run-member-code-coder')).toHaveTextContent('coder · pass');
   });
 
+  it('frames the run on its canvas once it has a size, as a viewer that only shows it', async () => {
+    const box = { x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 300, width: 800, height: 300 };
+    const sized = vi
+      .spyOn(SVGElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ ...box, toJSON: () => box } as DOMRect);
+    try {
+      renderGraph(async () => runGraph());
+
+      const canvas = await screen.findByTestId('run-graph');
+      const frame = canvas.querySelector('svg g[transform]');
+      expect(frame?.getAttribute('transform')).not.toBe('translate(0,0) scale(1)');
+    } finally {
+      sized.mockRestore();
+    }
+  });
+
   it("opens a member's session from its chip", async () => {
     const onOpenSession = renderGraph(async () => runGraph());
 

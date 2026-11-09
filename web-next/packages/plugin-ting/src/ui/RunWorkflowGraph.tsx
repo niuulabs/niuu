@@ -51,6 +51,7 @@ export function RunWorkflowGraph({ runId, onOpenSession }: RunWorkflowGraphProps
     <div className="ting-run-graph" data-testid="run-graph">
       <GraphView
         readOnly
+        fitOnLoad
         readOnlyMessage="This is a run: it follows the workflow version it was launched with."
         nodes={graph.data.nodes}
         edges={graph.data.edges}
