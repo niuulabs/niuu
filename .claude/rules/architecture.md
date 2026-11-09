@@ -397,22 +397,35 @@ and Forge never tries another.
 
 Limits of this exception, enforced together:
 
-- **The endpoint only ever answers for the session currently bound to one slot
-  of the allocation.** Authentication yields an allocation, never a session or
+- **The endpoint only ever answers for the unit currently bound to one slot of
+  the allocation: the bound session and, when it is a workflow run's unit, the
+  members of that run.** Authentication yields an allocation, never a session or
   a slot. The request body names the slot (`{"allocation_id": ..., "slot": n}`);
   it may be omitted only on a single-slot allocation, and a missing, non-integer
   or out-of-range `slot` is a 400 after authentication. The machine must be in
   the configured pool and `ready` or `idle`, and the slot must hold a `starting`
   or `busy` binding with no stop requested; the credentials come from that
-  session's own launch payload. Anything else is a 409 with the reason (after
-  authentication) or the identical 401. A released or draining machine, or a slot
-  with no bound session, gets nothing, and the Forge session credential carries
-  the session's *current* launch id, so a restart revokes what the previous
-  launch held. An allocation's identity vouches for every slot of the machine, so
-  a process that holds it can ask for any slot: more than one slot per machine
-  needs a runtime that keeps that identity out of the slots' reach (own user,
-  network namespace and credential files per slot; the identity mounted into the
-  slot's guest agent only). A runtime declares that with
+  session's own launch payload. Without more, the answer is the bound session's.
+  A guest agent of a run's unit adds `"session_id"`: a **member session** of the
+  unit, and the answer is that member's Forge session credential alone (the
+  unit's ServiceAccount tokens stay the bound session's). A member answers only
+  when the *unit's own launch payload* lists it (`members`, written by Forge
+  when it started the unit, so the members are fixed at that point): a session
+  that is not listed, belongs to another run or is bound to another slot gets
+  the same 409 as an unbound slot, and a malformed `session_id` is a 400. The
+  members of one run share its slot's one Unix user (workflow-mesh-handoff
+  decision 2): they can read each other's files and credentials, which is
+  accepted for now within one run of one owner, and a Unix user per member is
+  future work. Between slots nothing changes: a member is only ever reachable
+  through the slot its unit is bound to. Anything else is a 409 with the reason
+  (after authentication) or the identical 401. A released or draining machine, or
+  a slot with no bound session, gets nothing, and the Forge session credential
+  carries the session's (member's) *current* launch id, so a restart revokes what
+  the previous launch held. An allocation's identity vouches for every slot of
+  the machine, so a process that holds it can ask for any slot: more than one
+  slot per machine needs a runtime that keeps that identity out of the slots'
+  reach (own user, network namespace and credential files per slot; the identity
+  mounted into the slot's guest agent only). A runtime declares that with
   `VmRuntime.supports_slots`; `SshContainerVmRuntime` does only with
   `slot_isolation` and a credential delivery that serves slots. Forge refuses
   more than one slot per machine unless every configured runtime declares it.

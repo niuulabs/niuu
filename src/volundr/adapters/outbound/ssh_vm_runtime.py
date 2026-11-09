@@ -29,6 +29,10 @@ from volundr.adapters.outbound.brokered_credentials import (
     DEFAULT_CODEX_AUTH_ADAPTER,
     BrokeredCredentialPodManager,
 )
+from volundr.adapters.outbound.guest_credential_delivery import (
+    AGENT_CONFIG_DIRECTORY,
+    AGENT_CONFIG_FILE,
+)
 from volundr.adapters.outbound.host_checks import parse_check_output, slot_audit_arguments
 from volundr.adapters.outbound.local_process import (
     FORGE_MCP_GRANTS_ENV,
@@ -39,6 +43,16 @@ from volundr.adapters.outbound.ssh_guest_access import (
     HOST_KEY_CONFIG_PATH,
     HOST_KEY_PATH,
     SshGuestAccess,
+)
+from volundr.adapters.outbound.vm_hosted_unit import (
+    HOSTED_MEMBERS_KEY,
+    UNIT_MESH_SOURCE,
+    UNIT_MESH_TARGET,
+    HostedUnitError,
+    member_container,
+    member_credential_directory,
+    member_spec,
+    require_same_pod,
 )
 from volundr.adapters.outbound.vm_slot_layout import (
     FORGE_SESSION_DIRECTORY,
@@ -159,18 +173,33 @@ for c in p.get('sidecars',[]):
 if p.get('containers_only'):
     # Another runtime starts the broker itself, next to these containers.
     sys.exit(0)
-if owned(name):
-    # A new launch replaced the Forge session credential the running broker read.
-    run('docker','restart' if p.get('relaunch') else 'start',name)
+# The unit's Skuld containers: the session's own, then one per member of a run (the same
+# machine or slot, one shared workspace, each its own home and credential directory).
+units=[{'id':p['environment'].get('SESSION_ID'),'name':name,'environment':p['environment'],
+    'mounts':p.get('volume_mounts',[]),'home':root/'home'}]
+for m in p.get('members',[]):
+    units.append({'id':m['id'],'name':name+'-m'+str(m['port']),'environment':m['environment'],
+        'mounts':m['volume_mounts'],'home':root/'members'/str(m['port'])/'home'})
+if p.get('only'):
+    # One member again, in place, under its new launch credential.
+    units=[u for u in units if u['id'] in p['only']]
+missing=[]
+for u in units:
+    if owned(u['name']):
+        # A new launch replaced the Forge session credential the running broker read.
+        run('docker','restart' if p.get('relaunch') else 'start',u['name'])
+        continue
+    missing.append(u)
+if not missing:
     sys.exit(0)
 if not marker.exists():
     raise RuntimeError('Session storage was not prepared')
 if marker.read_text() != (s['marker'] if s else p['allocation_id']):
     raise RuntimeError('Workspace allocation mismatch')
 workspace=root/'workspace'
-home=root/'home'
 workspace.mkdir(exist_ok=True)
-home.mkdir(exist_ok=True)
+for u in missing:
+    u['home'].mkdir(parents=True,exist_ok=True)
 if p['repo'] and not (workspace/'.git').exists():
     args=['git','clone']
     if p['branch']:
@@ -180,7 +209,6 @@ if p['repo'] and not (workspace/'.git').exists():
 # -h: a link the session left in its storage names its own path, never a target.
 owner=f"{s['uid']}:{s['uid']}" if s else '1000:1000'
 run('chown','-R','-h',owner,str(root))
-env_args=[arg for key in p['environment'] for arg in ('--env',key)]
 identity=[]
 if s:
     # The slot's uid, with the image account's name, home and shell.
@@ -188,12 +216,14 @@ if s:
         {'source':s['identity']+'/passwd','target':'/etc/passwd'},
         {'source':s['identity']+'/group','target':'/etc/group'}])]
 run('docker','pull',p['image'])
-run('docker','run','--detach',*init,'--name',name,*placement(),
-    *(a for l in labels for a in ('--label',l)),*identity,
-    *env_args,*binds(p.get('secret_mounts',[])),*binds(p.get('volume_mounts',[])),
-    '--mount','type=bind,src='+str(workspace)+',dst=/workspace',
-    '--mount','type=bind,src='+str(home)+',dst=/home/skuld',p['image'],
-    env=p['environment'])
+for u in missing:
+    env_args=[arg for key in u['environment'] for arg in ('--env',key)]
+    run('docker','run','--detach',*init,'--name',u['name'],*placement(),
+        *(a for l in labels for a in ('--label',l)),*identity,
+        *env_args,*binds(p.get('secret_mounts',[])),*binds(u['mounts']),
+        '--mount','type=bind,src='+str(workspace)+',dst=/workspace',
+        '--mount','type=bind,src='+str(u['home'])+',dst=/home/skuld',p['image'],
+        env=u['environment'])
 """
 
 _PREPARE = r"""
@@ -289,8 +319,10 @@ sys.exit(0 if pathlib.Path(sys.argv[1]).is_file() else 43)
 _STOP = r"""
 import json,pathlib,subprocess,sys
 allocation=sys.argv[1]
-# A slot (vm_slot_layout.SlotLayout.stop_spec) names its storage and containers.
+# A slot (vm_slot_layout.SlotLayout.stop_spec) names its storage and containers; the
+# containers of a run's other members (argv[4]) stop before the session's own.
 s=json.loads(sys.argv[3]) if len(sys.argv)>3 else None
+members=json.loads(sys.argv[4]) if len(sys.argv)>4 else []
 marker=pathlib.Path(s['data_root'] if s else '/var/lib/niuu/session')/'.allocation'
 name=s['skuld'] if s else 'niuu-skuld'
 filters=['--filter','label=compute.niuu.io/allocation='+allocation]
@@ -306,20 +338,79 @@ def sidecars():
     for container in listed.stdout.split():
         subprocess.run(['docker','stop','--time',sys.argv[2],container],check=True,
             stdout=subprocess.DEVNULL)
+def mine(info):
+    found=info['Config'].get('Labels') or {}
+    if found.get('compute.niuu.io/allocation') != allocation or (
+            s and found.get('compute.niuu.io/slot') != s['slot_label'].split('=',1)[1]):
+        raise RuntimeError('Container ownership mismatch')
+for member in members:
+    # A member that never started has nothing to stop.
+    r=subprocess.run(['docker','container','inspect',member],capture_output=True,text=True)
+    if r.returncode:
+        continue
+    mine(json.loads(r.stdout)[0])
+    subprocess.run(['docker','stop','--time',sys.argv[2],member],check=True,
+        stdout=subprocess.DEVNULL)
 r=subprocess.run(['docker','container','inspect',name],capture_output=True,text=True)
 if r.returncode:
     # Confirm Docker is reachable; missing container is expected after partial startup.
     subprocess.run(['docker','info'],check=True,stdout=subprocess.DEVNULL)
     sidecars()
     sys.exit(0)
-info=json.loads(r.stdout)[0]
-found=info['Config'].get('Labels') or {}
-if found.get('compute.niuu.io/allocation') != allocation or (
-        s and found.get('compute.niuu.io/slot') != s['slot_label'].split('=',1)[1]):
-    raise RuntimeError('Container ownership mismatch')
+mine(json.loads(r.stdout)[0])
 subprocess.run(['docker','stop','--time',sys.argv[2],name],check=True,stdout=subprocess.DEVNULL)
 sidecars()
 """
+
+# One member of a run's unit: argv is the action (running|stop), the member's container, the
+# stop timeout and the labels the unit's containers carry. Exit 44: no such container, or
+# it is not running.
+_MEMBER = r"""
+import json,subprocess,sys
+action,name,timeout=sys.argv[1:4]
+labels=json.loads(sys.argv[4])
+r=subprocess.run(['docker','container','inspect',name],capture_output=True,text=True)
+if r.returncode:
+    sys.exit(44)
+info=json.loads(r.stdout)[0]
+found=info['Config'].get('Labels') or {}
+if any(found.get(k) != v for k,v in (l.split('=',1) for l in labels)):
+    raise RuntimeError('Container ownership mismatch')
+if action=='running':
+    sys.exit(0 if info['State']['Running'] else 44)
+subprocess.run(['docker','stop','--time',timeout,name],check=True,stdout=subprocess.DEVNULL)
+"""
+
+
+class _MemberFiles:
+    """The runtime's file channel, as one member of a unit sees it.
+
+    A credential delivery writes the guest agent's configuration to one fixed file. A unit
+    runs an agent per member, each configured for its member, so this puts that file
+    beside the unit's own, named for the member, and tells the agent which session it
+    fetches for. Everything else a delivery writes goes through unchanged.
+    """
+
+    def __init__(self, files, member_id: str) -> None:
+        self._files = files
+        self._member_id = member_id
+
+    async def write_files(
+        self, lease: AllocationRef, bootstrap: MachineBootstrap, items: list[dict]
+    ) -> None:
+        await self._files.write_files(lease, bootstrap, [self._item(item) for item in items])
+
+    async def file_exists(
+        self, lease: AllocationRef, bootstrap: MachineBootstrap, path: str
+    ) -> bool:
+        return await self._files.file_exists(lease, bootstrap, path)
+
+    def _item(self, item: dict) -> dict:
+        if item.get("directory") != AGENT_CONFIG_DIRECTORY or item.get("name") != AGENT_CONFIG_FILE:
+            return item
+        config = json.loads(item["content"])
+        config["session_id"] = self._member_id
+        return {**item, "name": f"{self._member_id}.json", "content": json.dumps(config)}
 
 
 class SlotNotCleanError(RuntimeError):
@@ -629,7 +720,6 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
     def session_bootstrap(
         self, session: Session, spec: SessionSpec, machine: MachineBootstrap
     ) -> MachineBootstrap:
-        pod = spec.pod_spec
         if session.source.type != "git":
             raise ValueError(
                 "SSH VM sessions accept Git or an empty workspace, not host-path mounts"
@@ -637,52 +727,19 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         if any(spec.values.get(key) for key in ("homeVolume", "persistence")):
             raise ValueError("SSH VM runtime cannot silently replace configured storage")
         layout = self._pod_layout(spec)
-        brokered = self._with_brokered_credentials(spec)
-        env = LocalProcessPodManager._session_env(brokered, Path("/workspace"))
-        env.update(self._brokered_credential_environment(brokered))
-        for entry in pod.env:
-            if "valueFrom" in entry or "value" not in entry or not entry.get("name"):
-                raise ValueError("SSH VM session env must contain literal name/value entries")
-            env[str(entry["name"])] = str(entry["value"])
-        env.update(
-            {
-                "SESSION_ID": str(session.id),
-                "WORKSPACE_DIR": "/workspace",
-                "SKULD__SESSION__ID": str(session.id),
-                "SKULD__SESSION__NAME": session.name,
-                "SKULD__SESSION__MODEL": session.model,
-                "SKULD__SESSION__OWNER_ID": session.owner_id or "",
-                "SKULD__SESSION__TENANT_ID": session.tenant_id or "",
-                "SKULD__SESSION__WORKSPACE_DIR": "/workspace",
-                "SKULD__PERSISTENCE_MOUNT_PATH": "/home/skuld",
-                "SKULD__HOST": "127.0.0.1",
-                "SKULD__PORT": str(self._broker_port),
-                "SKULD__VOLUNDR_API_URL": f"http://127.0.0.1:{self._guest_platform_port}",
-                "HOME": "/home/skuld",
-            }
+        entries = list(spec.values.get(HOSTED_MEMBERS_KEY) or [])
+        for entry in entries:
+            require_same_pod(spec, entry)
+        member_ports = tuple(entry["port"] for entry in entries)
+        env = self._launch_environment(
+            session, spec, port=self._broker_port, member_ports=member_ports
         )
-        env.update(self._preview_env())
         if spec.forge_session is not None:
             # The token itself is written at start, never into the stored bootstrap.
             env[FORGE_MCP_TOKEN_FILE_ENV] = f"{_FORGE_SESSION_TARGET}/{_FORGE_SESSION_FILE}"
             layout["volume_mounts"].append(
                 {"source": _FORGE_SESSION_DIR, "target": _FORGE_SESSION_TARGET, "readonly": True}
             )
-        for source, target in [
-            ("systemPrompt", "SYSTEM_PROMPT"),
-            ("initialPrompt", "INITIAL_PROMPT"),
-        ]:
-            value = spec.values.get("session", {}).get(source)
-            if value:
-                env[f"SKULD__SESSION__{target}"] = str(value)
-        if persona := spec.values.get("session", {}).get("persona"):
-            env["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
-        if workflow_steps_enabled(spec.values):
-            env[WORKFLOW_STEPS_ENABLED_ENV] = "true"
-        if any("\x00" in v for v in env.values()):
-            raise ValueError("SSH VM environment cannot contain NUL values")
-        if any(not k or "=" in k or any(c.isspace() for c in k) or "\x00" in k for k in env):
-            raise ValueError("Invalid VM environment variable name")
         launch = {
             "image": self._image,
             "environment": env,
@@ -699,13 +756,15 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             "forge_session_directory": _FORGE_SESSION_DIR,
             "forge_session_file": _FORGE_SESSION_FILE,
         }
+        if entries:
+            self._add_members(session, launch, entries)
         plan = GuestCredentialPlan.from_launch(launch)
+        member_plans = [m for m in launch.get("members", []) if m["forge_session"]]
+        if (not plan.empty or member_plans) and self._credential_delivery is None:
+            raise ValueError(
+                "This VM session needs delivered credentials; configure compute.credential_delivery"
+            )
         if not plan.empty:
-            if self._credential_delivery is None:
-                raise ValueError(
-                    "This VM session needs delivered credentials; configure "
-                    "compute.credential_delivery"
-                )
             added = self._credential_delivery.session_containers(plan, image=self._delivery_image())
             # Delivery containers run first: the others read what they deliver.
             launch["init_containers"] = [*added.init_containers, *launch["init_containers"]]
@@ -715,6 +774,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 *launch["directories"],
             ]
             launch.update(added.launch)
+        for member in member_plans:
+            self._add_member_agent(launch, member)
         launch["directories"] = [
             *launch["directories"],
             *self._nested_mountpoints(
@@ -738,6 +799,161 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 )
             }
         )
+
+    def _launch_environment(
+        self,
+        session: Session,
+        spec: SessionSpec,
+        *,
+        port: int,
+        member_ports: tuple[int, ...] = (),
+    ) -> dict[str, str]:
+        """The environment of one Skuld of the machine: the session's, or a unit member's."""
+        pod = spec.pod_spec
+        brokered = self._with_brokered_credentials(spec)
+        env = LocalProcessPodManager._session_env(brokered, Path("/workspace"))
+        env.update(self._brokered_credential_environment(brokered))
+        for entry in pod.env:
+            if "valueFrom" in entry or "value" not in entry or not entry.get("name"):
+                raise ValueError("SSH VM session env must contain literal name/value entries")
+            env[str(entry["name"])] = str(entry["value"])
+        env.update(
+            {
+                "SESSION_ID": str(session.id),
+                "WORKSPACE_DIR": "/workspace",
+                "SKULD__SESSION__ID": str(session.id),
+                "SKULD__SESSION__NAME": session.name,
+                "SKULD__SESSION__MODEL": session.model,
+                "SKULD__SESSION__OWNER_ID": session.owner_id or "",
+                "SKULD__SESSION__TENANT_ID": session.tenant_id or "",
+                "SKULD__SESSION__WORKSPACE_DIR": "/workspace",
+                "SKULD__PERSISTENCE_MOUNT_PATH": "/home/skuld",
+                "SKULD__HOST": "127.0.0.1",
+                "SKULD__PORT": str(port),
+                "SKULD__VOLUNDR_API_URL": f"http://127.0.0.1:{self._guest_platform_port}",
+                "HOME": "/home/skuld",
+            }
+        )
+        env.update(self._preview_env(member_ports))
+        for source, target in [
+            ("systemPrompt", "SYSTEM_PROMPT"),
+            ("initialPrompt", "INITIAL_PROMPT"),
+        ]:
+            value = spec.values.get("session", {}).get(source)
+            if value:
+                env[f"SKULD__SESSION__{target}"] = str(value)
+        if persona := spec.values.get("session", {}).get("persona"):
+            env["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
+        if workflow_steps_enabled(spec.values):
+            env[WORKFLOW_STEPS_ENABLED_ENV] = "true"
+        if any("\x00" in v for v in env.values()):
+            raise ValueError("SSH VM environment cannot contain NUL values")
+        if any(not k or "=" in k or any(c.isspace() for c in k) or "\x00" in k for k in env):
+            raise ValueError("Invalid VM environment variable name")
+        return env
+
+    def _add_members(self, session: Session, launch: dict, entries: list[dict]) -> None:
+        """Put a run's members into the unit's launch payload.
+
+        The unit is one machine (or slot) with one pod layout: its mounts, volumes,
+        sidecars and ServiceAccount are the root's. Each member adds its own Skuld
+        environment and port, its own Forge session credential directory (mounted into
+        its container alone) and the unit's shared mesh directory, where every Skuld finds
+        the others through the registry discovery file. They all share the workspace and
+        each keeps its own home.
+        """
+        seen: set[int] = {self._broker_port}
+        mesh = {"source": UNIT_MESH_SOURCE, "target": UNIT_MESH_TARGET, "readonly": False}
+        root_mounts = launch["volume_mounts"]
+        shared = [mount for mount in root_mounts if mount["source"] != _FORGE_SESSION_DIR]
+        launch["volume_mounts"] = [*root_mounts, mesh]
+        launch["directories"] = [*launch["directories"], {"path": UNIT_MESH_SOURCE, "mode": "0777"}]
+        members = []
+        for entry in entries:
+            port = entry["port"]
+            if port in seen:
+                raise HostedUnitError(
+                    f"Member session {entry['id']} has the broker port {port}, which another "
+                    "Skuld of the unit already uses"
+                )
+            seen.add(port)
+        for entry in entries:
+            port = entry["port"]
+            member = Session.model_construct(
+                id=UUID(entry["id"]),
+                name=entry["name"],
+                model=entry["model"],
+                owner_id=entry["owner_id"] or None,
+                tenant_id=entry["tenant_id"] or None,
+            )
+            spec = member_spec(entry)
+            environment = self._launch_environment(
+                member,
+                spec,
+                port=port,
+                member_ports=tuple(sorted(seen - {port, self._broker_port})),
+            )
+            directory = member_credential_directory(entry["id"])
+            mounts = [*shared, mesh]
+            if entry["forge_session"]:
+                environment[FORGE_MCP_TOKEN_FILE_ENV] = (
+                    f"{_FORGE_SESSION_TARGET}/{_FORGE_SESSION_FILE}"
+                )
+                mounts.append(
+                    {"source": directory, "target": _FORGE_SESSION_TARGET, "readonly": True}
+                )
+                launch["directories"] = [
+                    *launch["directories"],
+                    {"path": directory, "mode": "0755"},
+                ]
+            if workflow_steps_enabled(spec.values):
+                environment[WORKFLOW_STEPS_ENABLED_ENV] = "true"
+            members.append(
+                {
+                    "id": entry["id"],
+                    "port": port,
+                    "environment": environment,
+                    "volume_mounts": mounts,
+                    "forge_session": entry["forge_session"],
+                    "forge_session_directory": directory,
+                    "forge_session_file": _FORGE_SESSION_FILE,
+                }
+            )
+        launch["members"] = members
+
+    def _add_member_agent(self, launch: dict, member: dict) -> None:
+        """The credential agent of one member, next to the unit's, when delivery runs one."""
+        if not member["forge_session"]:
+            return
+        plan = GuestCredentialPlan(
+            service_account="",
+            forge_session=True,
+            forge_session_directory=member["forge_session_directory"],
+            forge_session_file=member["forge_session_file"],
+        )
+        added = self._credential_delivery.session_containers(plan, image=self._delivery_image())
+        config = f"{AGENT_CONFIG_DIRECTORY}/{member['id']}.json"
+        suffix = member["id"][:8]
+        for key in ("init_containers", "sidecars"):
+            renamed = [self._member_agent_container(c, suffix, config) for c in getattr(added, key)]
+            launch[key] = [*launch[key], *renamed]
+        launch.update(added.launch)
+        launch["directories"] = [
+            *launch["directories"],
+            *({"path": path, "mode": "0755"} for path in added.directories),
+        ]
+
+    @staticmethod
+    def _member_agent_container(container: dict, suffix: str, config: str) -> dict:
+        """A delivery's agent container, named and configured for one member."""
+        command = list(container["command"])
+        if "--config" not in command or command.index("--config") + 1 >= len(command):
+            raise HostedUnitError(
+                f"The credential delivery's agent container {container['name']!r} takes no "
+                "--config argument, so a unit member cannot get an agent of its own"
+            )
+        command[command.index("--config") + 1] = config
+        return {**container, "name": f"{container['name']}-{suffix}", "command": command}
 
     def _shape_launch(self, session: Session, launch: dict) -> dict:
         """The launch payload as this runtime runs it; checks or changes it before it is stored.
@@ -1084,8 +1300,12 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         )
         return result.exit_code
 
-    def _preview_env(self) -> dict[str, str]:
-        """Skuld live-preview settings for a session VM (see ``__init__``)."""
+    def _preview_env(self, member_ports: tuple[int, ...] = ()) -> dict[str, str]:
+        """Skuld live-preview settings for a session VM (see ``__init__``).
+
+        The brokers of a run's other members are listeners of the machine too, and not
+        previews.
+        """
         if not self._preview_router_auth:
             return {"SKULD__PREVIEW__ENABLED": "false"}
         return {
@@ -1094,7 +1314,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 {
                     "adapter": "skuld.preview_adapters.ProcNetListeningPortScanner",
                     "kwargs": {
-                        "excluded_ports": self._preview_excluded_ports,
+                        "excluded_ports": sorted({*self._preview_excluded_ports, *member_ports}),
                         # The guest's own services run as root on ports no list
                         # names (containerd's stream server picks one per boot).
                         "same_user_only": True,
@@ -1193,10 +1413,26 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         await self._restore_data(lease, bootstrap)
         self._step(lease, "guest_tunnel", "Opening the tunnel to Forge")
         await self.target(lease, bootstrap)
+        payload = await self._launch_payload(lease, bootstrap, layout)
+        await self._launch_skuld(lease, bootstrap, payload)
+
+    async def _launch_payload(
+        self,
+        lease: SlotLease,
+        bootstrap: MachineBootstrap,
+        layout: SlotLayout | None,
+        *,
+        only: UUID | None = None,
+    ) -> dict:
+        """The stored launch payload with this launch's credentials delivered, placed.
+
+        ``only`` names one member of the unit to start again in place: its credential is
+        delivered and the start program is told to touch no other Skuld.
+        """
         payload = json.loads(next(f.content for f in bootstrap.files if f.path == _LAUNCH))
         payload["allocation_id"] = str(lease.id)
         plan = GuestCredentialPlan.from_launch(payload)
-        if not plan.empty:
+        if only is None and not plan.empty:
             if self._credential_delivery is None:
                 raise ValueError(
                     "This VM session needs delivered credentials; configure "
@@ -1207,9 +1443,51 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             grants = payload.pop("forge_session_grants", None)
             if grants is not None:
                 payload["environment"][FORGE_MCP_GRANTS_ENV] = ",".join(grants)
+        await self._deliver_member_credentials(lease, bootstrap, payload, only)
+        if only is not None:
+            payload["only"] = [str(only)]
+            payload["relaunch"] = True
         if layout is not None:
             payload = self._place_launch(layout, payload)
-        await self._launch_skuld(lease, bootstrap, payload)
+        return payload
+
+    async def _deliver_member_credentials(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, payload: dict, only: UUID | None
+    ) -> None:
+        """Each member's Forge session credential, into that member's own directory."""
+        for member in payload.get("members") or []:
+            if only is not None and member["id"] != str(only):
+                continue
+            plan = GuestCredentialPlan.from_launch(member)
+            if plan.empty:
+                continue
+            if self._credential_delivery is None:
+                raise ValueError(
+                    "This VM session needs delivered credentials; configure "
+                    "compute.credential_delivery"
+                )
+            self._step(lease, "guest_credentials", "Delivering credentials")
+            started: dict = {}
+            await self._credential_delivery.start(
+                self._member_lease(lease, member["id"]),
+                bootstrap,
+                plan,
+                started,
+                _MemberFiles(self, member["id"]),
+            )
+            grants = started.get("forge_session_grants")
+            if grants is not None:
+                member["environment"][FORGE_MCP_GRANTS_ENV] = ",".join(grants)
+            if started.get("relaunch"):
+                payload["relaunch"] = True
+
+    @staticmethod
+    def _member_lease(lease: SlotLease, member_id: str) -> SlotLease:
+        """The unit's lease as one of its members sees it: its own session, the same slot."""
+        return SlotLease(
+            allocation=lease.allocation,
+            binding=lease.binding.model_copy(update={"session_id": UUID(member_id)}),
+        )
 
     def _place_launch(self, layout, payload: dict) -> dict:
         """The launch payload placed in the session's slot."""
@@ -1269,6 +1547,121 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 self._python(_PREPARE, *self._prepare_arguments(lease, "empty")),
             )
 
+    # -- The members of a run's unit ------------------------------------------------------
+
+    def _member(self, bootstrap: MachineBootstrap, member_id: UUID) -> dict:
+        launch = self._launch(bootstrap) or {}
+        member = next((m for m in launch.get("members") or [] if m["id"] == str(member_id)), None)
+        if member is None:
+            raise HostedUnitError(
+                f"Session {member_id} is not a member of the unit this VM was launched with; "
+                "a run's members are fixed when its unit starts"
+            )
+        return member
+
+    def _member_container_name(self, layout: SlotLayout | None, member: dict) -> str:
+        return member_container(layout.skuld if layout else "niuu-skuld", member["port"])
+
+    def _member_labels(self, lease: SlotLease, layout: SlotLayout | None) -> list[str]:
+        if layout is None:
+            return [f"{vm_slot_supervisor.ALLOCATION_LABEL}={lease.id}"]
+        return [
+            f"{vm_slot_supervisor.ALLOCATION_LABEL}={lease.id}",
+            f"{vm_slot_supervisor.SLOT_LABEL}={layout.slot}",
+        ]
+
+    async def member_running(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, member_id: UUID
+    ) -> bool:
+        """Whether the member's container runs."""
+        layout = self._layout(lease)
+        member = self._member(bootstrap, member_id)
+        result = await self._guest_access.execute(
+            lease,
+            bootstrap,
+            self._python(
+                _MEMBER,
+                "running",
+                self._member_container_name(layout, member),
+                str(self._stop_timeout),
+                json.dumps(self._member_labels(lease, layout)),
+            ),
+            expected_exit_codes=(0, 44),
+        )
+        return result.exit_code == 0
+
+    async def member_target(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, member_id: UUID
+    ) -> SessionProxyTarget:
+        """A tunnel to the member's broker, beside the unit's own.
+
+        The unit's tunnel carries the callbacks to Forge for every Skuld of the machine
+        (they share its loopback or the slot's gateway), so this one carries only the
+        forward: its reverse listener asks the guest for a port it picks, and nothing
+        connects to it.
+        """
+        layout = self._layout(lease)
+        member = self._member(bootstrap, member_id)
+        ends = self._tunnel_ends(layout)
+        ends["reverse_port"] = 0
+        ends["key"] = f"{ends.get('key') or lease.id}-m{member['port']}"
+        return await self._guest_access.open_tunnel(
+            lease,
+            bootstrap,
+            remote_port=member["port"],
+            controller_host=self._platform_host,
+            controller_port=self._platform_port,
+            **ends,
+        )
+
+    async def member_ready(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, member_id: UUID
+    ) -> bool:
+        target = await self.member_target(lease, bootstrap, member_id)
+        try:
+            async with httpx.AsyncClient(timeout=self._health_timeout) as client:
+                response = await client.get(target.service_url + "/health")
+        except httpx.TransportError:
+            return False
+        return response.status_code == 200
+
+    async def restart_member(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, member_id: UUID
+    ) -> None:
+        """Start the member's Skuld again under its new launch, the rest of the unit as is."""
+        layout = self._layout(lease)
+        self._member(bootstrap, member_id)
+        payload = await self._launch_payload(lease, bootstrap, layout, only=member_id)
+        await self._launch_skuld(lease, bootstrap, payload)
+
+    async def stop_member(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, member_id: UUID
+    ) -> None:
+        layout = self._layout(lease)
+        member = self._member(bootstrap, member_id)
+        await self._guest_access.execute(
+            lease,
+            bootstrap,
+            self._python(
+                _MEMBER,
+                "stop",
+                self._member_container_name(layout, member),
+                str(self._stop_timeout),
+                json.dumps(self._member_labels(lease, layout)),
+            ),
+            expected_exit_codes=(0, 44),
+        )
+        await self._close_tunnel(f"{layout.key if layout else lease.id}-m{member['port']}")
+
+    def _member_names(self, lease: SlotLease, bootstrap: MachineBootstrap) -> list[str]:
+        """The unit's member containers, in the order they stop."""
+        launch = self._launch(bootstrap) or {}
+        layout = self._layout(lease)
+        return [
+            self._member_container_name(layout, member)
+            for member in reversed(launch.get("members") or [])
+        ]
+
     async def ready(self, lease: SlotLease, bootstrap: MachineBootstrap) -> bool:
         target = await self.target(lease, bootstrap)
         try:
@@ -1281,8 +1674,11 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
     async def _stop_session(self, lease: SlotLease, bootstrap: MachineBootstrap, layout) -> int:
         """Stop Skuld, then its agents; the exit code is 42 when storage was never prepared."""
         arguments = [str(lease.id), str(self._stop_timeout)]
-        if layout is not None:
-            arguments.append(json.dumps(layout.stop_spec()))
+        members = self._member_names(lease, bootstrap)
+        if layout is not None or members:
+            arguments.append(json.dumps(layout.stop_spec() if layout is not None else None))
+        if members:
+            arguments.append(json.dumps(members))
         result = await self._guest_access.execute(
             lease,
             bootstrap,
@@ -1305,7 +1701,10 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             if isinstance(layout, SlotLayout):
                 await self._report_slot_limits(lease, bootstrap, layout)
             await self._supervise(lease, bootstrap, layout, "down")
-        await self._close_tunnel(layout.key if layout else str(lease.id))
+        key = layout.key if layout else str(lease.id)
+        for member in (self._launch(bootstrap) or {}).get("members") or []:
+            await self._close_tunnel(f"{key}-m{member['port']}")
+        await self._close_tunnel(key)
 
     async def _audit_slot(
         self, lease: AllocationRef, bootstrap: MachineBootstrap, program: str, slot: int
