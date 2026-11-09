@@ -314,7 +314,7 @@ class TestListBuiltinNames:
         assert "coder" in names
         assert "reviewer" in names
         assert "security-auditor" in names
-        assert "postmortem-analyst" in names
+        assert "ticket-coordinator" in names
         assert "sidekick" not in names
 
 
@@ -364,9 +364,6 @@ class TestBuiltinPersonas:
     def test_all_builtins_have_positive_budgets(self) -> None:
         for p in _BUILTIN_PERSONAS_DIR.glob("*.yaml"):
             cfg = self._load(p.stem)
-            if p.stem == "product-steward":
-                assert cfg.iteration_budget == 0
-                continue
             assert cfg.iteration_budget > 0, f"{p.stem} has non-positive iteration_budget"
 
     def test_specification_framer_leaves_publication_to_workflow_runtime(self) -> None:
@@ -376,10 +373,6 @@ class TestBuiltinPersonas:
             cfg.system_prompt_template.lower()
         )
         assert "mimir:publish_files" not in cfg.allowed_tools
-
-    def test_product_steward_uses_runtime_model(self) -> None:
-        cfg = self._load("product-steward")
-        assert cfg.llm.primary_alias == ""
 
     # ------------------------------------------------------------------
     # Specialist personas (NIU-586)
@@ -540,7 +533,7 @@ def test_every_built_in_persona_says_what_it_does_and_when_to_talk_to_it() -> No
     adapter = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
     names = adapter.list_builtin_names()
 
-    assert len(names) >= 48
+    assert len(names) == 46
     for name in names:
         persona = adapter.load(name)
         assert persona.description, f"built-in persona {name!r} has no description"

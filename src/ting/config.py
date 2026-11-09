@@ -31,6 +31,7 @@ from niuu.config_models import WorkloadIdentityConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.mesh.config import MeshSettings
+from personas.archived import reject_archived_persona
 
 
 # Config file search paths (in order of priority).
@@ -985,6 +986,11 @@ class TicketCoordinatorConfig(BaseModel):
         default="ticket-coordinator",
         description="Ravn persona that coordinates a ticket.",
     )
+
+    @field_validator("persona")
+    @classmethod
+    def _persona_is_not_archived(cls, value: str) -> str:
+        return reject_archived_persona(value, where="ticket_coordinator.persona")
 
     @model_validator(mode="before")
     @classmethod

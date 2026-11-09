@@ -218,13 +218,13 @@ along.
 | Ticket board | Ships, with limits | PR 1209 and fixes. Columns come from `graph.board`, several workflows can sit on one board, and moving a ticket starts its workflow. Proved end to end on a cluster at dev.431 and dev.435. Only system workflows can go on a board, and PR links fail on clusters. The page does not name a tracker for the board, because Linear is the one proved live. |
 | Ticket coordinator | Ships | One long-lived session per ticket (`ticket_coordinators`, persona `ticket-coordinator`). It starts workflows, hands over between them, hears gates through its room, tells the person and closes with the ticket. Proved on the same cluster runs. |
 | Workflow graphs with branching, loops and gates | Ships | The Branch and converge and Gates views are bundled workflows (`ting-run-flow-security-memory-curation.yaml`, `ticket-planning-flow.yaml`) in the real builder on a local install. Their names had internal words swapped at capture. |
-| Teams through workflows, with review and gates | Ships | 18 bundled workflows, `src/ting/workflows/` |
+| Teams through workflows, with review and gates | Ships | 15 bundled workflows, `src/ting/workflows/` (three more are archived under `archive/`) |
 | Per-role tools, model and budget | Ships | Workflow stages set persona, model and budget (`src/ting/workflows/*.yaml`). Personas set tools (`src/personas/builtin/developer-security-plan-reviewer.yaml`). |
 | Rooms shared by people and agents | Ships | `niuu.collaboration`, browser and Telegram. `LiveSessionDetailPage` passes participants and mesh events to `SessionChat`, the component in the Room screen. |
 | Direct peer communication, A2A | Ships | Flock mesh, `src/ravn` |
 | Tool built, verified and adopted | Ships | `build_tool.py`, `tool-skill-builder.yaml` |
 | Peer adoption | Ships, partial | Tested tools only, and they re-verify. `docs/ravn/flock-capability-gate.md` shows proposals do not reach every resident. The copy says "can adopt a tested tool". |
-| Use cases | Ships | `developer-delivery`, `infra-change-flow`, `research-campaign` and `specification-stack` in `src/ting/workflows/`. Non-code residents use the Blank template. |
+| Use cases | Ships | `developer-delivery`, `research-campaign` and `specification-stack` in `src/ting/workflows/` (`infra-change-flow` is archived under `archive/`). Non-code residents use the Blank template. |
 | Duplicate tools retired | Ships | Evolution report. Unused and unrunnable tools are also retired, so the page says a tool stays "while it stays useful". |
 | Resident decision history | Ships, needs a database | In memory without a DSN (`src/ravn/adapters/valkyrie_history/__init__.py`), and no repo chart sets one. The page says Activity "shows" decisions, not that they persist. |
 | Memory with beliefs and evidence | Ships | `plugin-mimir` |

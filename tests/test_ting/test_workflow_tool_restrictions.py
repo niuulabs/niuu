@@ -12,7 +12,9 @@ from ting.system_workflows import BUNDLED_SYSTEM_WORKFLOWS_PATH
 
 
 def _document(**graph_overrides: Any) -> str:
-    source = (BUNDLED_SYSTEM_WORKFLOWS_PATH / "code-review-flow.yaml").read_text(encoding="utf-8")
+    source = (BUNDLED_SYSTEM_WORKFLOWS_PATH / "reviewed-delivery-flow.yaml").read_text(
+        encoding="utf-8"
+    )
     document = yaml.safe_load(source)
     document["graph"].update(graph_overrides)
     return yaml.safe_dump(document, sort_keys=False)

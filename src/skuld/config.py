@@ -31,6 +31,7 @@ from niuu.config import DynamicAdapterConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.forge_mcp.models import ForgeMcpGrant
 from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshAttestationConfig, MeshNatsConfig
+from personas.archived import reject_archived_persona
 from skuld.claude_permission import DEFAULT_CLAUDE_PERMISSION_MODE
 
 
@@ -135,6 +136,12 @@ class MeshConfig(BaseModel):
     tools: list[str] = Field(default_factory=lambda: list(_DEFAULT_MESH_TOOLS))
     persona: str = Field(default="coder")
     transport: str = Field(default="nng")
+
+    @field_validator("persona")
+    @classmethod
+    def _persona_is_not_archived(cls, value: str) -> str:
+        return reject_archived_persona(value, where="mesh.persona")
+
     nng: NngConfig = Field(default_factory=NngConfig)
     adapters: list[dict[str, Any]] = Field(default_factory=list)
     discovery_adapters: list[dict[str, Any]] = Field(default_factory=list)

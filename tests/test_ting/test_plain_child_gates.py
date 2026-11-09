@@ -43,7 +43,7 @@ async def test_result_is_accepted_with_a_stable_digest() -> None:
 async def test_result_passes_through_when_no_review_is_attested(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    workflow = _bundled("code-review-flow.yaml")
+    workflow = _bundled("reviewed-delivery-flow.yaml")
     assert "reviewAttestation" not in workflow.graph
     _pinned(monkeypatch, workflow)
     result = {"summary": "published"}

@@ -23,3 +23,6 @@ web-next/test-results
 web-next/.packed
 charts
 docs
+
+# Archived catalogue: kept in the repository, never shipped (archive/README.md)
+archive

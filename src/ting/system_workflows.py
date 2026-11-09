@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import UUID
 
 from personas.adapters.loader import FilesystemPersonaAdapter
+from personas.archived import ARCHIVED_BUILTIN_PERSONAS, archived_persona_message
 from personas.ports.persona import PersonaPort
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
@@ -28,18 +29,38 @@ from ting.ports.workflow_repository import WorkflowRepository
 BUNDLED_SYSTEM_WORKFLOWS_PATH = (Path(__file__).parent / "workflows").resolve()
 BUNDLED_SYSTEM_PACKAGE_ROOT = BUNDLED_SYSTEM_WORKFLOWS_PATH.parent
 
+# Packaged system workflows archived out of the catalogue (see archive/README.md).
+# The files live under ``archive/workflows`` in the repository; the wheel and the
+# images do not carry them, so this set is code. ``tests/test_catalog_archive.py`` keeps it
+# equal to the ids of the archived documents, and restoring a workflow means
+# moving the file back *and* removing its id here.
+ARCHIVED_SYSTEM_WORKFLOW_IDS: frozenset[UUID] = frozenset(
+    {
+        # "Code & Review Flow"
+        UUID("03dba0d8-4f29-560a-a4e1-1fc7e5f9ee23"),
+        # "Infra Change Flow"
+        UUID("0b51b458-0aeb-5a1b-8f79-d805834491e3"),
+        # "Tracker Delivery Flow"
+        UUID("3f444455-6b63-53c2-b057-3205345a56da"),
+    }
+)
+
 # Packaged system workflows a release removed. A file catalog migrated while one
 # still shipped lists its id in the migration inventory without storing it,
 # because bundled ids are served from the package, and its legacy PostgreSQL row
 # is package content rather than an operator's. The migration guard stops
 # expecting these ids and the migration does not copy their rows; sagas that
-# named one are detached by a Ting SQL migration.
-RETIRED_SYSTEM_WORKFLOW_IDS: frozenset[UUID] = frozenset(
-    {
-        # "Ting Run Flow + Security + Memory Curation", removed in niuu#1282
-        # with the wardens and memory curation it ran.
-        UUID("29393e53-5a29-5f37-aa87-1171aaf20726"),
-    }
+# named one are detached by a Ting SQL migration. Without an archived id here a
+# Ting whose file catalog was migrated while it shipped would refuse to start.
+RETIRED_SYSTEM_WORKFLOW_IDS: frozenset[UUID] = (
+    frozenset(
+        {
+            # "Ting Run Flow + Security + Memory Curation", removed in niuu#1282
+            # with the wardens and memory curation it ran.
+            UUID("29393e53-5a29-5f37-aa87-1171aaf20726"),
+        }
+    )
+    | ARCHIVED_SYSTEM_WORKFLOW_IDS
 )
 logger = logging.getLogger(__name__)
 
@@ -85,6 +106,12 @@ def load_bundled_workflow(
         document = load_workflow_document(document_path.read_text(encoding="utf-8"))
     except (OSError, WorkflowDocumentError) as exc:
         raise WorkflowDocumentError(f"Invalid bundled workflow {document_path}: {exc}") from exc
+    if document.id in ARCHIVED_SYSTEM_WORKFLOW_IDS:
+        raise WorkflowDocumentError(
+            f"Bundled workflow {document_path} is archived (id {document.id}) and must not "
+            "ship. Move it back to archive/workflows, or restore it properly: remove its id "
+            "from ARCHIVED_SYSTEM_WORKFLOW_IDS (see archive/README.md)."
+        )
     source = persona_source or FilesystemPersonaAdapter(
         persona_dirs=[],
         include_builtin=True,
@@ -152,6 +179,13 @@ def _load_bundled_definitions(
     current_lineage = (*lineage, document.id)
     persona_definitions: dict[str, dict] = {}
     for alias, dependency in document.persona_dependencies.items():
+        if dependency.id in ARCHIVED_BUILTIN_PERSONAS:
+            raise WorkflowDocumentError(
+                archived_persona_message(
+                    dependency.id,
+                    where=f"Bundled workflow {document_path} persona {alias!r}",
+                )
+            )
         portable = persona_source.load_portable(dependency.id, dependency.revision)
         if portable is None or portable.digest != dependency.digest:
             raise WorkflowDocumentError(
@@ -162,6 +196,12 @@ def _load_bundled_definitions(
 
     workflow_definitions: dict[str, dict] = {}
     for alias, dependency in document.workflow_dependencies.items():
+        if dependency.id in ARCHIVED_SYSTEM_WORKFLOW_IDS:
+            raise WorkflowDocumentError(
+                f"Bundled workflow {document_path} dependency {alias!r} is the archived "
+                f"workflow {dependency.id}. Drop the dependency, or restore the workflow "
+                "(see archive/README.md)."
+            )
         if dependency.path is None:
             raise WorkflowDocumentError(
                 f"Bundled workflow {document_path} dependency {alias!r} has no bundle path"

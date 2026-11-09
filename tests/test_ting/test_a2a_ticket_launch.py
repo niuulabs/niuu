@@ -28,7 +28,7 @@ from .test_a2a_tasks import (
 
 PLANNING = "Ticket Planning Flow"
 DELIVERY = "Reviewed Delivery Flow"
-OFF_BOARD = "Tracker Delivery Flow"
+OFF_BOARD = "Saga Planning"
 NOW = datetime.now(UTC)
 
 
@@ -118,7 +118,7 @@ def test_a_workflow_on_the_board_starts() -> None:
 def test_a_workflow_not_on_the_board_is_refused_and_says_what_to_do(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """NIU-1166: the coordinator picked Tracker Delivery Flow, which has no person gate."""
+    """NIU-1166: the coordinator picked Saga Planning, which is not on the project board."""
     board = _Board()
 
     body = board.launch(OFF_BOARD)

@@ -540,11 +540,11 @@ class TestFindConsumersProducers:
         assert "reviewer" in names
         assert "security-auditor" in names
 
-    def test_find_consumers_review_completed_returns_postmortem_analyst(self) -> None:
+    def test_find_consumers_review_completed_has_no_bundled_consumer(self) -> None:
+        # The only bundled consumer (postmortem-analyst) is archived; see archive/README.md.
         loader = FilesystemPersonaAdapter()
         consumers = loader.find_consumers("review.completed")
-        names = [p.name for p in consumers]
-        assert names == ["postmortem-analyst"]
+        assert [p.name for p in consumers] == []
 
     def test_find_consumers_unknown_event_returns_empty(self) -> None:
         loader = FilesystemPersonaAdapter()

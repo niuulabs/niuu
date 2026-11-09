@@ -140,7 +140,7 @@ def test_the_digest_follows_the_authored_spelling_so_existing_pins_stay_valid() 
 def test_every_builtin_persona_speaks_only_the_vocabulary_and_one_mode_spelling() -> None:
     source = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
     names = source.list_builtin_names()
-    assert len(names) == 48
+    assert len(names) == 46
     for name in names:
         config = source.load(name)
         assert config is not None

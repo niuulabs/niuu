@@ -22,6 +22,11 @@ from ting.domain.workflow_document import dump_workflow_document
 from ting.system_workflows import load_system_workflows
 
 
+def _standalone_bundled():
+    """The first shipped workflow that needs no other file, so it can be written out alone."""
+    return next(item for item in load_system_workflows() if not item.workflow_definitions)
+
+
 def _workflow(*, owner_id: str = "owner") -> WorkflowDefinition:
     now = datetime.now(UTC)
     return WorkflowDefinition(
@@ -270,7 +275,7 @@ async def test_bundled_successor_archives_package_head_and_delete_does_not_resur
     catalog_path = tmp_path / "catalog"
     bundled_path.mkdir()
     catalog_path.mkdir()
-    bundled = load_system_workflows()[0]
+    bundled = _standalone_bundled()
     package_path = bundled_path / "workflow.yaml"
     package_path.write_text(dump_workflow_document(bundled), encoding="utf-8")
     package_bytes = package_path.read_bytes()
@@ -367,7 +372,7 @@ async def test_bundled_workflows_are_read_only(tmp_path) -> None:
     catalog_path = tmp_path / "catalog"
     bundled_path.mkdir()
     catalog_path.mkdir()
-    bundled = load_system_workflows()[0]
+    bundled = _standalone_bundled()
     (bundled_path / "workflow.yaml").write_text(dump_workflow_document(bundled), encoding="utf-8")
     repo = FilesystemWorkflowRepository(str(catalog_path), str(bundled_path))
 
@@ -719,7 +724,7 @@ def test_duplicate_bundled_identity_is_rejected_during_archive_lookup(tmp_path) 
     catalog_path = tmp_path / "catalog"
     bundled_path.mkdir()
     catalog_path.mkdir()
-    bundled = load_system_workflows()[0]
+    bundled = _standalone_bundled()
     document = dump_workflow_document(bundled)
     (bundled_path / "first.yaml").write_text(document, encoding="utf-8")
     (bundled_path / "second.yaml").write_text(document, encoding="utf-8")
