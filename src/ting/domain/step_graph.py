@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from niuu.domain.workflow_step import PersonaContract, persona_contract_of
 from ting.domain.exceptions import WorkflowDocumentError
 
 
@@ -72,60 +73,6 @@ def split_edge_label(label: object) -> tuple[str, str]:
         return "", ""
     source, target = label.split("->", 1)
     return source.strip(), target.strip()
-
-
-@dataclass(frozen=True)
-class PersonaContract:
-    """What a persona says about the events it takes in and gives out.
-
-    ``produces_map`` maps a verdict to the event it hands off; when a persona has
-    one, a verdict outside it is refused. ``produces_event`` is the event of a
-    persona that declares no map, whatever its verdict.
-    """
-
-    produces_map: Mapping[str, str] = field(default_factory=dict)
-    produces_event: str = ""
-    consumes: tuple[str, ...] = ()
-    #: The persona's ``produces.schema`` exactly as its document states it; ``None`` when absent.
-    outcome_schema: Mapping[str, Any] | None = None
-
-    @property
-    def produced_events(self) -> frozenset[str]:
-        if self.produces_map:
-            return frozenset(self.produces_map.values())
-        return frozenset({self.produces_event}) if self.produces_event else frozenset()
-
-    def event_for(self, verdict: str) -> str | None:
-        """The event a verdict hands off, or ``None`` when the persona does not name it."""
-        if self.produces_map:
-            return self.produces_map.get(verdict)
-        return self.produces_event or None
-
-
-def persona_contract_of(definition: Mapping[str, Any]) -> PersonaContract:
-    """Read a persona's event contract from its portable document or its bare definition."""
-    body = definition.get("definition")
-    persona = body if isinstance(body, Mapping) else definition
-    produces = persona.get("produces")
-    produces = produces if isinstance(produces, Mapping) else {}
-    consumes = persona.get("consumes")
-    consumes = consumes if isinstance(consumes, Mapping) else {}
-    raw_map = produces.get("event_type_map")
-    event_map = (
-        {str(verdict): str(event) for verdict, event in raw_map.items()}
-        if isinstance(raw_map, Mapping)
-        else {}
-    )
-    raw_consumes = consumes.get("event_types")
-    raw_schema = produces.get("schema")
-    return PersonaContract(
-        produces_map=event_map,
-        produces_event=str(produces.get("event_type") or ""),
-        consumes=tuple(str(item) for item in raw_consumes)
-        if isinstance(raw_consumes, list)
-        else (),
-        outcome_schema=dict(raw_schema) if isinstance(raw_schema, Mapping) and raw_schema else None,
-    )
 
 
 @dataclass(frozen=True)

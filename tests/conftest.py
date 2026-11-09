@@ -188,10 +188,29 @@ class InMemorySessionRepository(SessionRepository):
                 "description_updated_at": current.description_updated_at,
                 "session_usage": current.session_usage,
                 "startup": current.startup,
+                "hosted_by": current.hosted_by,
+                "hosted_port": current.hosted_port,
             }
         )
         self._sessions[session.id] = updated
         return updated
+
+    async def attach_to_unit(self, session_id, unit_id, base_port):
+        unit = self._sessions.get(unit_id)
+        current = self._sessions.get(session_id)
+        if unit is None or current is None or unit.status != SessionStatus.CREATED:
+            return None
+        if current.hosted_by is not None:
+            return None
+        ports = [s.hosted_port for s in self._sessions.values() if s.hosted_by == unit_id]
+        port = max(ports) + 1 if ports else base_port
+        updated = current.model_copy(update={"hosted_by": unit_id, "hosted_port": port})
+        self._sessions[session_id] = updated
+        return updated
+
+    async def list_hosted(self, unit_id):
+        members = [s for s in self._sessions.values() if s.hosted_by == unit_id]
+        return sorted(members, key=lambda s: s.hosted_port)
 
     async def update_startup(self, session_id, startup):
         current = self._sessions.get(session_id)
