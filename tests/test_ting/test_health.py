@@ -43,8 +43,8 @@ class TestHealthEndpoint:
         assert response.status_code == 200
         assert response.json() == {
             "status": "ok",
-            # Default settings run without a Sleipnir bus: nothing to sign.
-            "mesh_attestation": {"required": True, "state": "no_bus"},
+            # Ting signs its step offers whether or not it has a Sleipnir bus.
+            "mesh_attestation": {"required": True, "state": "signed"},
         }
 
     def test_health_has_correlation_id(self, client: TestClient) -> None:
@@ -57,27 +57,15 @@ class TestHealthEndpoint:
 
 
 class TestMeshSigningReport:
-    def test_signing_on_with_a_bus_is_signed(self) -> None:
+    def test_signing_on_is_signed(self) -> None:
         from ting.main import mesh_signing_report
 
-        assert mesh_signing_report(required=True, has_bus=True) == {
-            "required": True,
-            "state": "signed",
+        assert mesh_signing_report(required=True) == {"required": True, "state": "signed"}
+
+    def test_signing_off_is_unauthenticated(self) -> None:
+        from ting.main import mesh_signing_report
+
+        assert mesh_signing_report(required=False) == {
+            "required": False,
+            "state": "unauthenticated",
         }
-
-    def test_signing_on_without_a_bus_has_nothing_to_sign(self) -> None:
-        from ting.main import mesh_signing_report
-
-        assert mesh_signing_report(required=True, has_bus=False) == {
-            "required": True,
-            "state": "no_bus",
-        }
-
-    def test_signing_off_is_unauthenticated_with_or_without_a_bus(self) -> None:
-        from ting.main import mesh_signing_report
-
-        for has_bus in (True, False):
-            assert mesh_signing_report(required=False, has_bus=has_bus) == {
-                "required": False,
-                "state": "unauthenticated",
-            }

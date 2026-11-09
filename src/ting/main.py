@@ -594,30 +594,21 @@ async def _integration_repository(settings: Settings, pool):
     yield PostgresIntegrationRepository(pool)
 
 
-def mesh_signing_report(*, required: bool, has_bus: bool) -> dict[str, Any]:
-    """What Ting's ``/health`` says about platform-event signing.
-
-    ``no_bus`` means Ting has no Sleipnir bus, so it publishes and acts on no platform
-    events and there is nothing to sign, which is not the same as signing switched off.
-    """
+def mesh_signing_report(*, required: bool) -> dict[str, Any]:
+    """What Ting's ``/health`` says about signing its platform events and step offers."""
     if not required:
         return {"required": False, "state": "unauthenticated"}
-    if not has_bus:
-        return {"required": True, "state": "no_bus"}
     return {"required": True, "state": "signed"}
 
 
-async def start_ting_platform_signer(
-    settings: Settings, sleipnir_bus: object | None
-) -> MeshSigner | None:
-    """Ting's platform-event signer, or ``None`` when Ting has no bus.
+async def start_ting_platform_signer(settings: Settings) -> MeshSigner | None:
+    """Ting's platform signer, or ``None`` when ``mesh.attestation.required`` is false.
 
-    Without a bus Ting publishes no platform events and its event triggers, which
-    subscribe to the bus, act on none, so there is nothing to sign or check and no
-    signing key is needed. With a bus, signing follows ``mesh.attestation`` as everywhere.
+    Ting signs every workflow step offer it hands a run's root, and the members accept an
+    engine run's offers only signed by ``service:ting``, so Ting needs its signer whether or
+    not it has a Sleipnir bus. A Ting that must sign and has no key fails to start, naming
+    the key to give it.
     """
-    if sleipnir_bus is None:
-        return None
     return await start_platform_signer(
         "ting",
         settings.mesh.attestation,
@@ -895,14 +886,12 @@ def create_app(
             if settings.sleipnir.enabled:
                 sl_cls = import_class(settings.sleipnir.adapter)
                 sleipnir_bus = sl_cls(**settings.sleipnir.kwargs)
-            # Platform events are signed as service:ting; the same signer's keys verify the
-            # events Ting acts on. With mesh.attestation.required false both are off (logged).
-            # Without a bus Ting publishes no platform events and its triggers (which need
-            # the bus) act on none, so there is nothing to sign or check and no key is needed.
-            platform_signer = await start_ting_platform_signer(settings, sleipnir_bus)
+            # Platform events and workflow step offers are signed as service:ting; the same
+            # signer's keys verify the events Ting acts on. With mesh.attestation.required
+            # false both are off (logged).
+            platform_signer = await start_ting_platform_signer(settings)
             app.state.mesh_signing = mesh_signing_report(
-                required=settings.mesh.attestation.required,
-                has_bus=sleipnir_bus is not None,
+                required=settings.mesh.attestation.required
             )
             platform_verifier = (
                 platform_event_verifier(

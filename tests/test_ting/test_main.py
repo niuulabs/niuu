@@ -194,22 +194,8 @@ def test_delivery_enabled_without_review_authenticator_raises_with_remedy():
 
 
 class TestPlatformSigner:
-    async def test_without_a_bus_ting_needs_no_signer_or_key(self, monkeypatch) -> None:
-        from ting import main
-        from ting.config import Settings
-
-        called = False
-
-        async def fake_start(*_args, **_kwargs):
-            nonlocal called
-            called = True
-
-        monkeypatch.setattr(main, "start_platform_signer", fake_start)
-
-        assert await main.start_ting_platform_signer(Settings(), None) is None
-        assert called is False
-
-    async def test_with_a_bus_ting_signs_as_service_ting(self, monkeypatch) -> None:
+    async def test_ting_signs_as_service_ting_with_or_without_a_bus(self, monkeypatch) -> None:
+        """Step offers go to a run's root over HTTP, so Ting signs even with no bus."""
         from ting import main
         from ting.config import Settings
 
@@ -223,7 +209,7 @@ class TestPlatformSigner:
         monkeypatch.setattr(main, "start_platform_signer", fake_start)
         settings = Settings()
 
-        assert await main.start_ting_platform_signer(settings, object()) is signer
+        assert await main.start_ting_platform_signer(settings) is signer
         assert seen["name"] == "ting"
         assert seen["mesh"] is settings.mesh.attestation
         assert seen["workload_identity"] is settings.workload_identity
