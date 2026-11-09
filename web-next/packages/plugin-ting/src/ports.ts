@@ -45,6 +45,7 @@ export interface IRunLogService {
   sendMessage(sessionId: string, instanceId: string | null, content: string): Promise<void>;
 }
 
+import type { RunGraph } from './domain/runGraph';
 export interface IWorkService {
   list(options?: { executionLimit?: number; executionCursor?: string }): Promise<WorkCollection>;
   get(kind: WorkResourceKind, id: string): Promise<WorkDetail>;
@@ -56,6 +57,8 @@ export interface IWorkService {
   runReviews(slug: string): Promise<RunReviews>;
   /** One run by its slug, whatever page of Work it is on, finished or not. */
   run(slug: string): Promise<WorkDetail>;
+  /** The run's workflow graph, each node with where the run is at it. */
+  runGraph(slug: string): Promise<RunGraph>;
   decideRunGate(slug: string, decision: GateDecision): Promise<void>;
   /** Every run a person reviews, across their projects. */
   reviews(): Promise<ReviewList>;

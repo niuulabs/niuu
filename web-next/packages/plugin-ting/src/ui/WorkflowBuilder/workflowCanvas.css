@@ -54,3 +54,62 @@
   stroke: var(--status-amber);
   stroke-dasharray: 5 4;
 }
+
+/* A run drawn on its workflow: each node's state over it, members as chips under it. */
+.workflow-run-state {
+  --run-state-color: var(--color-text-faint);
+}
+.workflow-run-state[data-run-state='done'],
+.workflow-run-member[data-run-state='done'] {
+  --run-state-color: var(--status-emerald);
+}
+.workflow-run-state[data-run-state='active'],
+.workflow-run-member[data-run-state='active'] {
+  --run-state-color: var(--color-brand);
+}
+.workflow-run-state[data-run-state='waiting'],
+.workflow-run-member[data-run-state='waiting'] {
+  --run-state-color: var(--status-amber);
+}
+.workflow-run-state[data-run-state='failed'],
+.workflow-run-member[data-run-state='failed'] {
+  --run-state-color: var(--color-critical);
+}
+.workflow-run-state__outline {
+  stroke: var(--run-state-color);
+  stroke-width: 2;
+}
+.workflow-run-state[data-run-state='pending'] .workflow-run-state__outline {
+  stroke-dasharray: 4 4;
+  stroke-width: 1;
+}
+.workflow-run-state__pill {
+  fill: var(--color-bg-elevated);
+  stroke: var(--run-state-color);
+}
+.workflow-run-state__pill-text {
+  fill: var(--run-state-color);
+  font-size: 10px;
+  font-weight: 600;
+}
+.workflow-run-member {
+  --run-state-color: var(--color-text-faint);
+}
+.workflow-run-member[role='button'] {
+  cursor: pointer;
+}
+.workflow-run-member__chip {
+  fill: var(--color-bg-secondary);
+  stroke: var(--color-border-subtle);
+}
+.workflow-run-member[role='button']:hover .workflow-run-member__chip,
+.workflow-run-member[role='button']:focus-visible .workflow-run-member__chip {
+  stroke: var(--run-state-color);
+}
+.workflow-run-member__dot {
+  fill: var(--run-state-color);
+}
+.workflow-run-member__text {
+  fill: var(--color-text-secondary);
+  font-size: 10.5px;
+}

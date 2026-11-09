@@ -6,6 +6,8 @@
  * local development without a running backend.
  */
 
+import type { RunGraph } from '../domain/runGraph';
+import { placeWorkflowGraph } from '../domain/workflowCanvas';
 import type {
   ITingService,
   IDispatcherService,
@@ -2527,6 +2529,40 @@ export function createMockWorkService(): IWorkService {
       const item = MOCK_WORK.find((entry) => entry.campaignSlug === slug);
       if (!item) throw new Error(`Run not found: ${slug}`);
       return { item, tasks: [], coverage: [], board: null };
+    },
+    async runGraph(slug): Promise<RunGraph> {
+      if (!MOCK_WORK.some((entry) => entry.campaignSlug === slug)) {
+        throw new Error(`Run not found: ${slug}`);
+      }
+      const workflow = SEED_WORKFLOWS[0]!;
+      const { nodes, edges } = placeWorkflowGraph(workflow.nodes, workflow.edges);
+      const stages = nodes.filter((node) => node.kind === 'stage');
+      return {
+        workflowName: workflow.name,
+        nodes,
+        edges,
+        // The first stage closed, the next at work, the rest not reached yet.
+        states: new Map(
+          stages.map((node, index) => [
+            node.id,
+            {
+              nodeId: node.id,
+              state: index === 0 ? 'done' : index === 1 ? 'active' : 'pending',
+              members:
+                index <= 1
+                  ? [
+                      {
+                        member: 'qa',
+                        state: index === 0 ? 'done' : 'active',
+                        verdict: index === 0 ? 'pass' : null,
+                        sessionId: `mock-session-${index}`,
+                      },
+                    ]
+                  : [],
+            },
+          ]),
+        ),
+      };
     },
     async runReviews(slug) {
       if (slug !== MOCK_RUN_SLUG) throw new Error(`Run not found: ${slug}`);

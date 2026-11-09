@@ -34,6 +34,7 @@ import type {
 } from '../../domain/workflow';
 import { providedNodeIds } from '../../domain/workflow';
 import type { WorkflowIssue } from '../../domain/workflowValidation';
+import type { RunGraphNodeState, RunNodeState } from '../../domain/runGraph';
 import { isReentryEdge, parseWorkflowEdgeLabel } from '../../domain/workflowSemantics';
 import {
   nodeMatchIds,
@@ -1880,6 +1881,108 @@ function InsertFromPortMenu({
 // GraphView
 // ---------------------------------------------------------------------------
 
+const RUN_STATE_LABELS: Record<RunNodeState, string> = {
+  waiting: 'Needs you',
+  active: 'Working',
+  failed: 'Failed',
+  done: 'Done',
+  pending: 'Not reached',
+};
+
+/** A verdict as a member's chip says it, or the member's state while it has none. */
+function memberChipLabel(member: RunGraphNodeState['members'][number]): string {
+  if (member.verdict) return `${member.member} · ${member.verdict}`;
+  return `${member.member} · ${RUN_STATE_LABELS[member.state].toLowerCase()}`;
+}
+
+const RUN_CHIP_HEIGHT = 18;
+const RUN_CHIP_GAP = 4;
+
+/**
+ * Where a run is at one node, drawn over it: an outline in the state's colour, the state at
+ * the node's top right, and each member of its newest round as a chip under it that opens
+ * the member's session.
+ */
+function RunStateOverlay({
+  bounds,
+  state,
+  onOpenSession,
+}: {
+  bounds: { x: number; y: number; width: number; height: number };
+  state: RunGraphNodeState;
+  onOpenSession?: (sessionId: string) => void;
+}) {
+  const label = RUN_STATE_LABELS[state.state];
+  const labelWidth = label.length * 6.4 + 14;
+  return (
+    <g
+      className="workflow-run-state"
+      data-run-state={state.state}
+      data-testid={`workflow-run-state-${state.nodeId}`}
+    >
+      <rect
+        className="workflow-run-state__outline"
+        x={bounds.x - 3}
+        y={bounds.y - 3}
+        width={bounds.width + 6}
+        height={bounds.height + 6}
+        rx={10}
+        fill="none"
+        pointerEvents="none"
+      />
+      <g transform={`translate(${bounds.x + bounds.width - labelWidth + 6},${bounds.y - 10})`}>
+        <rect className="workflow-run-state__pill" width={labelWidth} height={16} rx={8} />
+        <text
+          className="workflow-run-state__pill-text"
+          x={labelWidth / 2}
+          y={11.5}
+          textAnchor="middle"
+        >
+          {label}
+        </text>
+      </g>
+      {state.members.map((member, index) => {
+        const y =
+          bounds.y + bounds.height + RUN_CHIP_GAP + index * (RUN_CHIP_HEIGHT + RUN_CHIP_GAP);
+        const text = memberChipLabel(member);
+        const width = Math.min(bounds.width, text.length * 6 + 18);
+        const open = member.sessionId && onOpenSession ? onOpenSession : null;
+        return (
+          <g
+            key={member.member}
+            className="workflow-run-member"
+            data-run-state={member.state}
+            transform={`translate(${bounds.x},${y})`}
+            role={open ? 'button' : undefined}
+            tabIndex={open ? 0 : undefined}
+            aria-label={open ? `Open ${member.member}'s session` : undefined}
+            data-testid={`workflow-run-member-${state.nodeId}-${member.member}`}
+            onClick={open ? () => open(member.sessionId!) : undefined}
+            onKeyDown={
+              open
+                ? (event) => {
+                    if (event.key === 'Enter') open(member.sessionId!);
+                  }
+                : undefined
+            }
+          >
+            <rect
+              className="workflow-run-member__chip"
+              width={width}
+              height={RUN_CHIP_HEIGHT}
+              rx={9}
+            />
+            <circle className="workflow-run-member__dot" cx={9} cy={RUN_CHIP_HEIGHT / 2} r={3} />
+            <text className="workflow-run-member__text" x={16} y={12.5}>
+              {text}
+            </text>
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
 export interface GraphViewProps {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
@@ -1910,6 +2013,10 @@ export interface GraphViewProps {
   onAutoLayout?: WorkflowBuilderActions['autoLayout'];
   /** System templates and other immutable workflows retain navigation and inspection. */
   readOnly?: boolean;
+  /** A run drawn on its workflow: where the run is at each node, shown over the node. */
+  runStates?: ReadonlyMap<string, RunGraphNodeState>;
+  /** Open a member's session from its chip under a node of a run. */
+  onOpenMemberSession?: (sessionId: string) => void;
   /** Optional host action for making a read-only workflow editable. */
   onEdit?: () => void;
   readOnlyMessage?: string;
@@ -1942,6 +2049,8 @@ export function GraphView({
   readOnly = false,
   onEdit,
   readOnlyMessage,
+  runStates,
+  onOpenMemberSession,
 }: GraphViewProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -2757,6 +2866,19 @@ export function GraphView({
               onReveal={() => onSelectNode(node.id)}
             />
           ))}
+          {runStates &&
+            displayNodes.map((node) => {
+              const state = runStates.get(node.id);
+              if (!state) return null;
+              return (
+                <RunStateOverlay
+                  key={`run-${node.id}`}
+                  bounds={nodeBounds(node, { measurements })}
+                  state={state}
+                  onOpenSession={onOpenMemberSession}
+                />
+              );
+            })}
         </g>
       </svg>
     </div>

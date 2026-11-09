@@ -119,4 +119,37 @@ describe('Work HTTP read adapter', () => {
     await expect(buildWorkHttpAdapter(http).list({ executionLimit: 25 })).rejects.toBe(denied);
     await expect(buildWorkHttpAdapter(http).get('campaign', 'id')).rejects.toBe(denied);
   });
+
+  it("reads a run's graph and places it as the builder places a workflow", async () => {
+    const http = client();
+    http.get.mockResolvedValue({
+      workflowName: 'Code, Review and Merge',
+      graph: {
+        nodes: [
+          { id: 'go', kind: 'trigger', label: 'Requested', dispatchEvent: 'code.requested' },
+          { id: 'code', kind: 'stage', label: 'Implement', position: { x: 300, y: 80 } },
+        ],
+        edges: [{ id: 'e1', source: 'go', target: 'code', label: 'code.requested' }],
+      },
+      nodes: [
+        { nodeId: 'go', state: 'done', members: [] },
+        {
+          nodeId: 'code',
+          state: 'active',
+          members: [{ member: 'coder', state: 'active', verdict: null, sessionId: 's-1' }],
+        },
+      ],
+    });
+    const adapter = buildWorkHttpAdapter(http as never);
+
+    const graph = await adapter.runGraph('run 1');
+
+    expect(http.get).toHaveBeenCalledWith('/work/runs/run%201/graph');
+    expect(graph.workflowName).toBe('Code, Review and Merge');
+    // A node without a position is laid out; one with a position keeps it.
+    expect(graph.nodes[0]!.position).toBeDefined();
+    expect(graph.nodes[1]!.position).toEqual({ x: 300, y: 80 });
+    expect(graph.edges[0]!.cp1).toBeDefined();
+    expect(graph.states.get('code')?.members[0]?.sessionId).toBe('s-1');
+  });
 });
