@@ -175,7 +175,9 @@ function ravnWorkerPill(worker: Worker): { label: string; tone: OutcomeTone } | 
 
 /**
  * The workers a coordinator leads: the sessions it started (each opens its session) and
- * the Ravn workers in its room (each with the last outcome it reported).
+ * the Ravn workers in its room (each with the last outcome it reported). A session that is
+ * also a worker in the room (a workflow run's member) is listed once, as its session, with
+ * the verdict and note it last reported there.
  */
 export function WorkersSection({
   sessions,
@@ -186,30 +188,44 @@ export function WorkersSection({
   ravnWorkers: readonly Worker[];
   onOpenSession: (id: string) => void;
 }) {
-  const count = sessions.length + ravnWorkers.length;
+  const sessionIds = new Set(sessions.map((session) => session.id));
+  const inRoom = new Map(ravnWorkers.map((worker) => [worker.peerId, worker]));
+  const roomOnly = ravnWorkers.filter((worker) => !sessionIds.has(worker.peerId));
+  const count = sessions.length + roomOnly.length;
   if (count === 0) return null;
   return (
     <PanelSection title="Workers" count={count}>
       <ul className="niuu-session-panel__workers">
-        {sessions.map((worker) => (
-          <li key={`session:${worker.id}`}>
-            <button
-              type="button"
-              className="niuu-session-panel__worker"
-              data-testid={`panel-worker-${worker.id}`}
-              onClick={() => onOpenSession(worker.id)}
-            >
-              <strong>{worker.name || worker.personaName || worker.id}</strong>
-              <span className="niuu-session-panel__pill" data-tone={stateTone(worker.state)}>
-                {SESSION_STATE_LABELS[worker.state]}
-              </span>
-              {worker.coordination?.objective ? (
-                <small>{worker.coordination.objective}</small>
-              ) : null}
-            </button>
-          </li>
-        ))}
-        {ravnWorkers.map((worker) => {
+        {sessions.map((worker) => {
+          const reported = inRoom.get(worker.id)?.latest;
+          const note = reported ? reported.summary : worker.coordination?.objective;
+          return (
+            <li key={`session:${worker.id}`}>
+              <button
+                type="button"
+                className="niuu-session-panel__worker"
+                data-testid={`panel-worker-${worker.id}`}
+                onClick={() => onOpenSession(worker.id)}
+              >
+                <strong>{worker.name || worker.personaName || worker.id}</strong>
+                {reported ? (
+                  <span
+                    className="niuu-session-panel__pill"
+                    data-tone={verdictTone(reported.verdict)}
+                  >
+                    {verdictLabel(reported.verdict)}
+                  </span>
+                ) : (
+                  <span className="niuu-session-panel__pill" data-tone={stateTone(worker.state)}>
+                    {SESSION_STATE_LABELS[worker.state]}
+                  </span>
+                )}
+                {note ? <small>{note}</small> : null}
+              </button>
+            </li>
+          );
+        })}
+        {roomOnly.map((worker) => {
           const pill = ravnWorkerPill(worker);
           return (
             <li key={`ravn:${worker.peerId}`}>
