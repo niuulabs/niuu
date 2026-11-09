@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from skuld.collaboration_adapter import SkuldCollaborationAdapter
+from skuld.collaboration_adapter import SkuldCollaborationAdapter, outcome_turn_content
 from skuld.config import RoomConfig
 from sleipnir.domain import registry
 
@@ -643,6 +643,32 @@ async def test_a_realm_room_keeps_a_members_outcome_as_its_turn() -> None:
     assert "event_type: code.changed" in block
     assert 'files_changed: ["probe/hello.txt"]' in block
     assert "task_description" not in block and "diff_summary" not in block
+
+
+def test_an_outcome_field_of_several_lines_keeps_its_lines() -> None:
+    findings = "## Critical\nNone.\n\n## Scope\nTwo new files.\n- tests/a.py:4 is test-only"
+
+    content = outcome_turn_content(
+        {
+            "summary": "No findings.",
+            "verdict": "pass",
+            "fields": {"findings": findings, "critical_findings": 0},
+        }
+    )
+
+    block = content.split("---outcome---\n")[1].split("---end---")[0]
+    assert block.splitlines() == [
+        "verdict: pass",
+        "summary: No findings.",
+        "findings: |",
+        "  ## Critical",
+        "  None.",
+        "",
+        "  ## Scope",
+        "  Two new files.",
+        "  - tests/a.py:4 is test-only",
+        "critical_findings: 0",
+    ]
 
 
 @pytest.mark.asyncio

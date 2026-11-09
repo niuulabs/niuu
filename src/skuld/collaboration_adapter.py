@@ -988,7 +988,8 @@ def outcome_turn_content(outcome: dict[str, Any]) -> str:
     """A member's outcome as a turn: its summary, then the outcome block the chat reads.
 
     Each field is one ``key: value`` line (a structured value as compact JSON), the format the
-    chat's outcome card and the room's worker list parse back from a stored turn.
+    chat's outcome card and the room's worker list parse back from a stored turn. A text of
+    several lines (a markdown write-up) is a ``key: |`` block, so it keeps its lines.
     """
     summary = str(outcome.get("summary") or "").strip()
     event_type = str(outcome.get("eventType") or "")
@@ -1006,10 +1007,20 @@ def outcome_turn_content(outcome: dict[str, Any]) -> str:
         if key not in _OUTCOME_CONTEXT_KEYS:
             fields.setdefault(str(key), value)
     lines = [
-        f"{key}: {_one_line(value)}" for key, value in fields.items() if value not in (None, "")
+        line
+        for key, value in fields.items()
+        if value not in (None, "")
+        for line in _field_lines(str(key), value)
     ]
     head = summary.splitlines()[0] if summary else (event_type or "Outcome")
     return "\n".join([head, "", "---outcome---", *lines, "---end---"])
+
+
+def _field_lines(key: str, value: Any) -> list[str]:
+    text = value.strip() if isinstance(value, str) else ""
+    if "\n" not in text:
+        return [f"{key}: {_one_line(value)}"]
+    return [f"{key}: |", *(f"  {line}" if line.strip() else "" for line in text.splitlines())]
 
 
 def _one_line(value: Any) -> str:

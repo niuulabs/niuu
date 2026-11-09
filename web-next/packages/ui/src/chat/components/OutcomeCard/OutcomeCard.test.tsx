@@ -222,6 +222,29 @@ ed
   });
 });
 
+describe('a field written as a block', () => {
+  it('keeps a markdown write-up in its own lines, each heading over its own text', () => {
+    const raw = [
+      'verdict: pass',
+      'summary: No findings.',
+      'findings: |',
+      '  ## Critical',
+      '  None.',
+      '',
+      '  ## Scope',
+      '  Two new files.',
+      'critical_findings: 0',
+    ].join('\n');
+
+    render(<OutcomeCard raw={raw} />);
+
+    expect(screen.getByRole('heading', { name: 'Critical' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Scope' })).toBeInTheDocument();
+    expect(screen.getByText('Two new files.')).toBeInTheDocument();
+    expect(screen.getByText('critical findings')).toBeInTheDocument();
+  });
+});
+
 describe('extractOutcomeBlock', () => {
   it('extracts outcome from backtick block', () => {
     const text = 'before\n```outcome\nverdict: pass\n```\nafter';
