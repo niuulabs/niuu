@@ -945,6 +945,32 @@ async def test_replaying_the_same_log_twice_changes_nothing(harness: Harness) ->
     assert len(harness.forge.room_offers) == published
 
 
+async def test_reconnecting_replays_a_listening_report_the_stream_missed(
+    harness: Harness,
+) -> None:
+    """Ting's stream was down when the members came up: the offer goes out on catch-up."""
+    await harness.campaigns.save_campaign(harness.campaign)
+    await harness.runs.launch(harness.campaign, {"prompt": "add an endpoint"})
+    assert harness.offers == []
+    for member, session_id in (await harness.members()).items():
+        harness.forge.log_entry(
+            session_id,
+            {
+                "type": "workflow_step",
+                "listening": {
+                    "run_id": str(harness.campaign.id),
+                    "member": member,
+                    "start_id": "start-1",
+                    "topics": [],
+                },
+            },
+        )
+
+    await harness.runs.reconcile_owner(OWNER)
+
+    assert [offer["node_id"] for offer in harness.offers] == ["implement"]
+
+
 async def test_reconnecting_replays_a_pass_the_stream_missed(harness: Harness) -> None:
     await harness.launch(pickups=False)
     [offer] = harness.offers

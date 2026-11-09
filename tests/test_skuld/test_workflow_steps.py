@@ -1139,6 +1139,29 @@ class TestListening:
             "topics": [TOPIC],
         }
 
+    async def test_the_listening_report_is_kept_in_the_durable_log(self, tmp_path) -> None:
+        """Ting reads a listening report its activity stream missed back from the log."""
+        broker = step_broker(tmp_path)
+
+        await broker.workflow_mesh_ready()
+
+        frames = [
+            entry["payload"]
+            for entry in broker._event_log_buffer
+            if entry["kind"] == WORKFLOW_STEP_FRAME and "listening" in entry["payload"]
+        ]
+        assert frames == [
+            {
+                "type": WORKFLOW_STEP_FRAME,
+                "listening": {
+                    "run_id": RUN_ID,
+                    "member": "coder",
+                    "start_id": broker._workflow_start_id,
+                    "topics": [TOPIC],
+                },
+            }
+        ]
+
     async def test_each_start_is_its_own_start(self, tmp_path) -> None:
         first = step_broker(tmp_path)
         second = step_broker(tmp_path)
@@ -1181,6 +1204,16 @@ class TestRestart:
         assert step.activation_id == _activation_id(before)
         after._transport.send_message.assert_awaited_once()
         assert "## Closing the step" in after._transport.send_message.await_args.args[0]
+
+    async def test_a_listening_report_in_the_log_restores_no_step(self, tmp_path) -> None:
+        before = step_broker(tmp_path)
+        await before.workflow_mesh_ready()
+        await _take(before)
+        after = step_broker(tmp_path)
+
+        after._restore_durable_workflow_steps(self._frames(before))
+
+        assert [step.offer_id for step in after._workflow_steps.values()] == [OFFER_ID]
 
     async def test_a_step_already_handed_over_is_not_handed_over_again(self, tmp_path) -> None:
         before = step_broker(tmp_path)
