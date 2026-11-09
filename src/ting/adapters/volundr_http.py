@@ -895,6 +895,33 @@ class VolundrHTTPAdapter(VolundrPort):
             )
         return str(instance_id)
 
+    async def registered_instance_id(self, slug: str) -> str:
+        """The Guild instance id under which this Forge is registered as ``slug``.
+
+        The id is what a Forge's sessions and their files are addressed by through the root
+        facade (``instance_id``), so a connection that knows only its slug learns it here.
+        Raises :class:`LookupError` when no Forge instance has that slug.
+        """
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.get(
+                f"{self._base_url}/api/v1/niuu/instances", headers=self._headers()
+            )
+            resp.raise_for_status()
+            items = resp.json()
+        rows = items.get("items", items) if isinstance(items, dict) else items
+        for row in rows if isinstance(rows, list) else []:
+            if (
+                isinstance(row, dict)
+                and row.get("slug") == slug
+                and str(row.get("kind") or "volundr") == "volundr"
+            ):
+                return str(row["id"])
+        raise LookupError(
+            f"no Forge instance is registered in Guild as {slug!r} at {self._base_url}; the "
+            "embedded Forge of mini mode registers itself as 'local'"
+        )
+
     async def get_project(
         self,
         project_id: str,
