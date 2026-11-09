@@ -7,7 +7,7 @@ Adapters implement these interfaces.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +40,7 @@ from niuu.ports.integrations import IntegrationRepository  # noqa: F401
 from niuu.ports.session_proxy import SessionProxyTarget
 from tracker.ports import IssueTrackerProvider, ProjectMappingRepository  # noqa: F401
 from volundr.domain.models import (  # noqa: F401
+    HOSTED_MEMBERS_KEY,
     Chronicle,
     ClusterResourceInfo,
     CommunicationRoute,
@@ -607,8 +608,127 @@ class SessionCapacity:
         return max(self.limit - self.active, 0)
 
 
+class HostedUnitError(RuntimeError):
+    """A workflow run's unit cannot be hosted as configured; the message names the remedy."""
+
+
+@dataclass(frozen=True)
+class HostedMemberLaunch:
+    """A member of a unit as its own start prepares it.
+
+    ``session`` is the member's stored session (its own launch id, port and workload config)
+    and ``spec`` what the contributor pipeline made for it as if it were started alone: its
+    persona, prompts and environment, and ``spec.forge_session``, the credential minted for
+    its current launch (or, where the runtime projects credentials, the Secret mount that
+    carries it). A runtime holds the credential in memory and writes it where only that
+    member can read it; it is never stored.
+    """
+
+    session: Session
+    spec: SessionSpec
+
+
+#: Resolves the launches of a unit's members, ordered by port: the unit root's id and, to
+#: start one member again in place, that member's id (None for every member of the unit).
+#: Forge answers it (``SessionService.hosted_member_launches``); every pod manager that
+#: hosts units takes the same callable through ``PodManager.configure_hosted_members``.
+HostedMemberSource = Callable[[UUID, UUID | None], Awaitable[Sequence[HostedMemberLaunch]]]
+
+
 class PodManager(ABC):
     """Port for managing session pods (Skuld, code-server, terminal)."""
+
+    #: What resolves a unit root's members; set by ``configure_hosted_members``.
+    _hosted_members: HostedMemberSource | None = None
+
+    def configure_hosted_members(self, source: HostedMemberSource) -> None:
+        """Attach what resolves a unit root's members (their sessions and own specs).
+
+        A unit root starts its members with it, and each member's persona, prompts and
+        credential come from its own contributor pipeline, which only Forge can run. Starting
+        a unit root with no source is an error, never a unit without its members.
+        """
+        self._hosted_members = source
+
+    async def hosted_member_launches(
+        self, root: Session, member_id: UUID | None = None
+    ) -> tuple[HostedMemberLaunch, ...]:
+        """The launches of a unit root's members, from the configured source.
+
+        Empty for a root that recorded no members. A root that recorded members and a
+        manager with no source is an error, as is a source whose answer is not the members
+        asked for: a unit never starts as a pod with only its root.
+        """
+        recorded = [
+            str(entry["id"]) for entry in root.workload_config.get(HOSTED_MEMBERS_KEY) or ()
+        ]
+        if not recorded:
+            return ()
+        if self._hosted_members is None:
+            raise HostedUnitError(
+                f"Session {root.id} is a unit that hosts {len(recorded)} member session(s), "
+                f"but this {type(self).__name__} has no member source; compose it with "
+                "configure_hosted_members"
+            )
+        launches = tuple(await self._hosted_members(root.id, member_id))
+        wanted = recorded if member_id is None else [str(member_id)]
+        if sorted(str(m.session.id) for m in launches) != sorted(wanted):
+            raise HostedUnitError(
+                f"The members resolved for unit {root.id} are "
+                f"{sorted(str(m.session.id) for m in launches)}, not the {sorted(wanted)} it "
+                "was started with: a run's members are fixed when its unit starts"
+            )
+        return launches
+
+    async def hosted_member_launch(self, member: Session) -> HostedMemberLaunch:
+        """The launch of one member of a running unit, as Forge builds it now.
+
+        Built from the member's current row, so it carries the credential of its current
+        launch (a runtime that projects credentials has just rewritten the member's Secret).
+        """
+        if member.hosted_by is None:
+            raise HostedUnitError(f"Session {member.id} is not a member of a unit")
+        if self._hosted_members is None:
+            raise HostedUnitError(
+                f"{type(self).__name__} has no member source, so member {member.id} of unit "
+                f"{member.hosted_by} cannot be launched again; compose it with "
+                "configure_hosted_members"
+            )
+        launches = tuple(await self._hosted_members(member.hosted_by, member.id))
+        if [str(m.session.id) for m in launches] != [str(member.id)]:
+            raise HostedUnitError(
+                f"The member source answered {[str(m.session.id) for m in launches]} for "
+                f"member {member.id} of unit {member.hosted_by}"
+            )
+        return launches[0]
+
+    async def restart_hosted_member(self, member: Session) -> None:
+        """Start one member's process again, in place, under its current launch.
+
+        The member's unit keeps running. A runtime that can restart one process of a running
+        unit does it; one that cannot (a pod's containers and a sandbox's peers restart only
+        with the pod) asks the member's own Skuld to restart its harness and re-read its
+        credential. Raises, naming the reason, when it can do neither: a restart is never
+        skipped silently.
+        """
+        raise HostedUnitError(
+            f"{type(self).__name__} cannot start one member of a unit again; stop the run and "
+            "start it again"
+        )
+
+    async def stop_hosted_member(self, member: Session) -> None:
+        """Stop one member's process while its unit keeps running.
+
+        The default is the runtime's ``stop`` for a runtime whose ``stop(member)`` ends the
+        member's process (a local process, a VM's container). One whose ``stop`` cannot (a
+        container of a pod) overrides this to ask the member's own Skuld. Raises when the
+        member's process was not stopped.
+        """
+        if not await self.stop(member):
+            raise HostedUnitError(
+                f"{type(self).__name__} did not stop member {member.id}, so its process may "
+                "still be running; stop the run to end it"
+            )
 
     async def capacity(self) -> SessionCapacity | None:
         """The runtime's session capacity, or None when it has no fixed cap."""

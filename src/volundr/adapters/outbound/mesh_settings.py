@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from volundr.domain.models import SessionSpec
+from volundr.domain.ports import HostedUnitError
 
 
 def parse_mesh_settings(raw: dict | str | None, where: str = "pod_manager mesh") -> dict:
@@ -39,6 +40,24 @@ def mesh_is_nng(mesh: Mapping[str, Any]) -> bool:
     if isinstance(enabled, str):
         enabled = enabled.strip().lower() == "true"
     return bool(enabled) and str(mesh.get("transport") or "nng") == "nng"
+
+
+def require_unit_mesh(mesh: Mapping[str, Any], *, unit_id: object, where: str) -> None:
+    """Refuse a unit whose mesh is off: its members hand steps to each other over it.
+
+    Every runtime calls this before it creates anything for a workflow run's unit, so a
+    unit never starts as sessions that cannot reach each other. ``where`` names the setting
+    the operator turns on.
+    """
+    enabled = mesh.get("enabled")
+    if isinstance(enabled, str):
+        enabled = enabled.strip().lower() == "true"
+    if enabled:
+        return
+    raise HostedUnitError(
+        f"Unit {unit_id} hosts a workflow run, whose members hand steps to each other over "
+        f"the mesh, but the mesh is off in {where}: set `enabled: true` there"
+    )
 
 
 def mesh_lists_pods_of(mesh: Mapping[str, Any], namespace: str) -> bool:

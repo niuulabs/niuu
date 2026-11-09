@@ -48,6 +48,12 @@ from niuu.domain.services.token_scope import (
 from niuu.ports.session_proxy import SessionProxyTarget
 from niuu.ports.workload_identity import WorkloadTokenIssuer
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
+from volundr.adapters.outbound.hosted_member_harness import (
+    DEFAULT_POLL_SECONDS,
+    DEFAULT_REQUEST_SECONDS,
+    DEFAULT_RESTART_WAIT_SECONDS,
+    MemberHarnessControl,
+)
 from volundr.adapters.outbound.k8s_storage_adapter import _storage_bytes
 from volundr.adapters.outbound.local_process import (
     FORGE_MCP_GRANTS_ENV,
@@ -1214,8 +1220,16 @@ class OpenShellGatewayPodManager(
         resident_workspace_migration_holder: str = "",
         sandbox_attachable_labels: dict[str, str] | None = None,
         client: OpenShellGatewayClient | None = None,
+        hosted_member_restart_wait_seconds: float = DEFAULT_RESTART_WAIT_SECONDS,
+        hosted_member_poll_seconds: float = DEFAULT_POLL_SECONDS,
+        hosted_member_request_seconds: float = DEFAULT_REQUEST_SECONDS,
         **_extra: object,
     ) -> None:
+        self._harness = MemberHarnessControl(
+            restart_wait_seconds=hosted_member_restart_wait_seconds,
+            poll_seconds=hosted_member_poll_seconds,
+            request_seconds=hosted_member_request_seconds,
+        )
         if sandbox_policy is None and client is None:
             raise ValueError("OpenShell sandbox_policy configuration is required")
         if resident_workspace_migration_lease_seconds <= 0:
@@ -1338,6 +1352,7 @@ class OpenShellGatewayPodManager(
         # with. Held in memory, so they are known only to the Forge that started the unit.
         self._unit_sandboxes: dict[str, str] = {}
         self._member_launches: dict[str, str] = {}
+        self._member_directories: dict[str, str] = {}
         self._member_failures: dict[str, str] = {}
         self._provider_grants: dict[str, tuple[OpenShellProviderGrant, ...]] = {}
         self._credential_store: CredentialStorePort | None = None
@@ -2107,10 +2122,11 @@ class OpenShellGatewayPodManager(
             self._service_urls[session_id] = service_url.rstrip("/")
         if members:
             self._unit_sandboxes[session_id] = sandbox_name
-            for member in members:
+            for index, member in enumerate(members):
                 launch = launch_id_of(member.session.workload_config)
                 if launch is not None:
                     self._member_launches[str(member.session.id)] = launch
+                self._member_directories[str(member.session.id)] = unit_member_directory(index)
                 self._member_failures.pop(str(member.session.id), None)
         self._provider_grants[session_id] = grants
         self._set_stage(session.id, STAGE_BROKER, StartupStageState.ACTIVE)
@@ -2132,15 +2148,6 @@ class OpenShellGatewayPodManager(
     # workspace volume is shared (one checkout); each member's credential, environment
     # file and home are in an ``emptyDir`` only that member's container (and the primary,
     # which writes it) mounts.
-
-    def configure_hosted_members(self, source: HostedMemberSource) -> None:
-        """Attach what resolves a unit root's members (their sessions and own specs).
-
-        A unit root starts its members with it, and each member's persona, prompts, grants
-        and credential come from its own contributor pipeline. Starting a unit root with no
-        source is an error, never a sandbox without its members.
-        """
-        self._hosted_members = source
 
     @staticmethod
     def _unit_member_ids(session: Session) -> list[str]:
@@ -2447,6 +2454,42 @@ class OpenShellGatewayPodManager(
     async def status_detail(self, session: Session) -> str | None:
         return self._member_failures.get(str(session.id))
 
+    async def stop_hosted_member(self, member: Session) -> None:
+        """End one member's harness: its peer lives with the sandbox, so its Skuld is asked."""
+        await self._harness.stop(member, await self.broker_target(member))
+
+    async def restart_hosted_member(self, member: Session) -> None:
+        """Restart one member's harness under its new launch.
+
+        The gateway restarts a sandbox, never one of its peers, so the member's credential
+        file is rewritten for the new launch over the file API and its Skuld replaces its
+        own process to read it.
+        """
+        member_id = str(member.id)
+        directory = self._member_directories.get(member_id)
+        if directory is None:
+            raise HostedUnitError(
+                f"Member session {member_id} was not started by this OpenShell controller, so "
+                "its credential file is not known; stop the run and start it again"
+            )
+        launch = await self.hosted_member_launch(member)
+        credential = launch.spec.forge_session
+        if credential is None:
+            raise HostedUnitError(
+                f"No credential was minted for member {member_id}'s new launch, so its Skuld "
+                "would restart onto the revoked one; this Forge cannot deliver session "
+                "credentials to OpenShell members"
+            )
+        await asyncio.to_thread(
+            self._client.write_files,
+            sandbox=self._sandbox_of(member),
+            files={f"{directory}/token": credential.token.encode("utf-8")},
+        )
+        launch_id = launch_id_of(launch.session.workload_config) or ""
+        await self._harness.restart(member, await self.broker_target(member), launch_id)
+        self._member_launches[member_id] = launch_id
+        self._member_failures.pop(member_id, None)
+
     async def _release_member(self, member: Session) -> bool:
         """Release what this controller holds for a member; its container is its unit's.
 
@@ -2458,6 +2501,7 @@ class OpenShellGatewayPodManager(
         if forwarder is not None:
             await asyncio.to_thread(forwarder.close)
         self._member_launches.pop(member_id, None)
+        self._member_directories.pop(member_id, None)
         self._member_failures.pop(member_id, None)
         return True
 

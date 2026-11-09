@@ -540,3 +540,92 @@ class TestMemberFiles:
         assert unit.files["/tmp/niuu-members/1/home/.codex/auth.json"] == b"codex-auth"
         assert "/tmp/niuu-members/0/home/.codex/auth.json" not in unit.files
         assert "/sandbox/.codex/auth.json" not in unit.files
+
+
+class TestMemberHarness:
+    """The gateway restarts a sandbox, never a peer: the member's own Skuld is asked."""
+
+    @staticmethod
+    def _wired(unit, handler):
+        import httpx
+
+        from volundr.adapters.outbound.hosted_member_harness import MemberHarnessControl
+
+        unit.manager._harness = MemberHarnessControl(
+            restart_wait_seconds=5,
+            poll_seconds=0.001,
+            request_seconds=5,
+            transport=httpx.MockTransport(handler),
+        )
+
+    async def test_stop_asks_the_members_skuld_on_its_tunnel(self, unit) -> None:
+        import httpx
+
+        await unit.start()
+        seen = []
+
+        def handler(request):
+            seen.append((request.method, request.url.path, request.headers["host"]))
+            return httpx.Response(200, json={"status": "stopped"})
+
+        self._wired(unit, handler)
+
+        await unit.manager.stop_hosted_member(unit.members[1])
+
+        assert seen == [("POST", "/api/harness/stop", "skuld.internal")]
+
+    async def test_restart_writes_the_new_credential_then_asks_and_records_the_launch(
+        self, unit
+    ) -> None:
+        import httpx
+
+        await unit.start()
+        member = unit.members[0]
+        relaunched = member.model_copy(update={"workload_config": _config("launch-2")})
+        unit.launches[0] = HostedMemberLaunch(session=relaunched, spec=_member_spec(relaunched))
+        calls = []
+
+        def handler(request):
+            calls.append((request.method, request.url.path, request.content))
+            return httpx.Response(200, json={"status": "ok"})
+
+        self._wired(unit, handler)
+        before = len(unit.client.written_files)
+
+        await unit.manager.restart_hosted_member(relaunched)
+
+        written = unit.client.written_files[before:]
+        assert [call["files"] for call in written] == [
+            {"/tmp/niuu-members/0/token": unit.launches[0].spec.forge_session.token.encode()}
+        ]
+        assert calls[0][:2] == ("POST", "/api/harness/restart")
+        assert b"launch-2" in calls[0][2]
+        assert await unit.manager.status(relaunched) is SessionStatus.RUNNING
+        assert await unit.manager.status_detail(relaunched) is None
+
+    async def test_a_member_this_controller_did_not_start_cannot_be_restarted(self, unit) -> None:
+        with pytest.raises(HostedUnitError, match="was not started by this OpenShell controller"):
+            await unit.manager.restart_hosted_member(unit.members[0])
+
+    async def test_a_restart_with_no_credential_minted_is_refused(self, unit) -> None:
+        await unit.start()
+        spec = _member_spec(unit.members[0])
+        spec.forge_session = None
+        unit.launches[0] = HostedMemberLaunch(session=unit.members[0], spec=spec)
+
+        with pytest.raises(HostedUnitError, match="No credential was minted"):
+            await unit.manager.restart_hosted_member(unit.members[0])
+
+
+class TestUnitSizeIsCounted:
+    async def test_the_refusal_counts_on_the_cap_counter(self, monkeypatch) -> None:
+        from niuu.cap_telemetry import health_counts
+
+        key = "cap_hits.openshell.max_peer_workloads"
+        before = health_counts().get(key, 0)
+        unit = UnitFixture(_import_adapter(monkeypatch), count=MAX_PEER_WORKLOADS + 1)
+
+        with pytest.raises(ValueError):
+            await unit.start()
+
+        assert health_counts()[key] == before + 1

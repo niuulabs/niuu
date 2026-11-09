@@ -14,6 +14,7 @@ from volundr.adapters.outbound.mesh_settings import (
     add_mesh_env_to_spec,
     mesh_with_defaults,
     parse_mesh_settings,
+    require_unit_mesh,
 )
 from volundr.adapters.outbound.vm_hosted_unit import (
     HOSTED_MEMBERS_KEY,
@@ -194,15 +195,6 @@ class VmPodManager(PodManager):
 
     def configure_pool(self, service) -> None:
         self._pool_service = service
-
-    def configure_hosted_members(self, source: HostedMemberSource) -> None:
-        """Attach what resolves a unit root's members (their sessions and own specs).
-
-        A VM hosts a workflow run as one unit: the unit root is the session bound to the
-        machine or slot, and its members run beside it. Starting a unit root with no source
-        configured is an error.
-        """
-        self._hosted_members = source
 
     def configure_execution(
         self,
@@ -652,8 +644,9 @@ class VmPodManager(PodManager):
         members = session.workload_config.get(UNIT_MEMBERS_KEY) or []
         return [UUID(member["id"]) for member in members]
 
-    def _unit_mesh(self) -> dict:
+    def _unit_mesh(self, unit_id: UUID) -> dict:
         """The mesh settings of a unit: its Skulds find each other in the unit's directory."""
+        require_unit_mesh(self._mesh, unit_id=unit_id, where="this VM pod manager's mesh")
         return mesh_with_defaults(
             self._mesh,
             {"discovery_adapters": [{"adapter": "registry", "path": UNIT_MESH_REGISTRY}]},
@@ -699,7 +692,7 @@ class VmPodManager(PodManager):
                 f"The members resolved for unit {session.id} differ from the members it was "
                 "started with: a run's members are fixed when its unit starts"
             )
-        mesh = self._unit_mesh()
+        mesh = self._unit_mesh(session.id)
         entries = []
         for member in members:
             add_mesh_env_to_spec(member.spec, mesh)
@@ -721,7 +714,7 @@ class VmPodManager(PodManager):
     async def start(self, session: Session, spec: SessionSpec) -> PodStartResult:
         # Every runtime builds the session's environment from the spec's `env`.
         unit = bool(self._unit_member_ids(session))
-        add_mesh_env_to_spec(spec, self._unit_mesh() if unit else self._mesh)
+        add_mesh_env_to_spec(spec, self._unit_mesh(session.id) if unit else self._mesh)
         service, repository, legacy_runtime = self._configured()
         async with self._locks.setdefault(session.id, asyncio.Lock()):
             self._begin_progress(session.id)
@@ -1418,6 +1411,20 @@ class VmPodManager(PodManager):
             if not await runtime.member_ready(view, bootstrap, member.id):
                 return SessionStatus.PROVISIONING
         return SessionStatus.RUNNING
+
+    async def restart_hosted_member(self, member: Session) -> None:
+        """Start a member's Skuld again, in place, in its unit's machine or slot."""
+        service, repository, _ = self._configured()
+        view = await repository.active_for_session(self._pool_id, member.hosted_by)
+        if view is None:
+            raise HostedUnitError(
+                f"Unit {member.hosted_by} of member session {member.id} holds no machine or slot "
+                "in this pool, so the member cannot be started again; start the run again"
+            )
+        runtime = self._hosting(await self._runtime_for_lease(view))
+        bootstrap = await service.bootstrap_for(view)
+        async with self._locks.setdefault(member.id, asyncio.Lock()):
+            await self._stage_new_launch(member, runtime, view, bootstrap)
 
     async def _stage_new_launch(
         self,

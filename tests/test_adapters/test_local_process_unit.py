@@ -486,6 +486,34 @@ class TestRestartInPlace:
         assert info.state is ProcessState.RUNNING
         assert info.pid == fx.spawned[0]["pid"]
 
+    async def test_forge_asks_for_the_restart_explicitly(self, fx, started) -> None:
+        root, _ = await started()
+        fx.manager._ready.add(str(root.id))
+        member = fx.members[0]
+        relaunched = member.model_copy(update={"workload_config": _config("launch-2")})
+        fx.members[0] = relaunched
+        fx.spawned.clear()
+
+        with (
+            patch.object(fx.manager, "_spawn_skuld", side_effect=fx.fake_spawn),
+            patch.object(fx.manager, "_monitor_process", new=AsyncMock()),
+            patch.object(fx.manager, "_terminate_process", new_callable=AsyncMock),
+        ):
+            await fx.manager.restart_hosted_member(relaunched)
+
+        assert fx.manager._processes[str(member.id)].launch_id == "launch-2"
+        assert len(fx.spawned) == 1
+
+    async def test_a_member_with_no_process_cannot_be_restarted(self, fx) -> None:
+        with pytest.raises(HostedUnitError, match="has no process on this host"):
+            await fx.manager.restart_hosted_member(fx.members[0])
+
+    async def test_a_restart_that_changes_nothing_is_an_error_not_a_skip(self, fx, started) -> None:
+        await started()
+
+        with pytest.raises(HostedUnitError, match="was not restarted"):
+            await fx.manager.restart_hosted_member(fx.members[0])
+
     async def test_the_same_launch_is_not_restarted(self, fx, started) -> None:
         await started()
         fx.source.reset_mock()
@@ -574,6 +602,36 @@ class TestSpawnArguments:
             await fx.manager._spawn_skuld(session, _spec(), workspace, 9100)
 
         assert "process_group" not in spawn.call_args.kwargs
+
+
+class TestMemberHomes:
+    async def _env(self, fx, session, tmp_path) -> dict:
+        workspace = tmp_path / "w"
+        workspace.mkdir(exist_ok=True)
+        with (
+            patch.object(fx.manager, "_resolve_claude_binary", return_value="/bin/claude"),
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=MagicMock(pid=9),
+            ) as spawn,
+        ):
+            await fx.manager._spawn_skuld(session, _spec(), workspace, 9100)
+        return spawn.call_args.kwargs["env"]
+
+    async def test_each_member_has_its_own_agent_state(self, fx, tmp_path) -> None:
+        first = await self._env(fx, fx.members[0], tmp_path)
+        second = await self._env(fx, fx.members[1], tmp_path)
+
+        assert first["CODEX_HOME"] != second["CODEX_HOME"]
+        assert first["CLAUDE_CONFIG_DIR"] != second["CLAUDE_CONFIG_DIR"]
+        assert first["CODEX_HOME"].endswith(f"{fx.members[0].id}/.codex")
+        assert first["CLAUDE_CONFIG_DIR"].endswith(f"{fx.members[0].id}/.claude")
+
+    async def test_an_ordinary_session_keeps_the_hosts_homes(self, fx, tmp_path) -> None:
+        env = await self._env(fx, Session(id=uuid4(), name="plain"), tmp_path)
+
+        assert "CODEX_HOME" not in env or ".forge-members" not in env["CODEX_HOME"]
 
 
 class TestProcessInfoPersistence:

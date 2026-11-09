@@ -600,6 +600,18 @@ class TestBroker:
         mock_transport.stop.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_a_second_shutdown_does_nothing(self, test_broker):
+        """A member stopped on Forge's request is shut down again when its process ends."""
+        mock_transport = AsyncMock()
+        test_broker._transport = mock_transport
+
+        await test_broker.shutdown()
+        await test_broker.shutdown()
+
+        mock_transport.stop.assert_called_once()
+        assert test_broker.startup_status()["startup_state"] == "stopping"
+
+    @pytest.mark.asyncio
     async def test_shutdown_closes_channels(self, test_broker):
         mock_channel = AsyncMock()
         mock_channel.channel_type = "browser"

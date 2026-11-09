@@ -21,6 +21,7 @@ from volundr.domain.models import (
     SessionSpec,
     SessionStatus,
 )
+from volundr.domain.ports import HostedUnitError
 
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "skuld"
 CREDENTIAL_PATH = "/var/run/secrets/niuu-forge-session"
@@ -132,7 +133,18 @@ def core(monkeypatch) -> AsyncMock:
     return core
 
 
+def _source_of(spec: SessionSpec):
+    """The member source Forge composes the manager with, answering the spec's members."""
+    members = list(getattr(spec, "members", ()) or ())
+
+    async def source(unit_id, member_id):
+        return [m for m in members if member_id in (None, m.session.id)]
+
+    return source
+
+
 async def _start(manager: FluxPodManager, api: AsyncMock, root: Session, spec: SessionSpec) -> dict:
+    manager.configure_hosted_members(_source_of(spec))
     with patch.object(manager, "_get_api", return_value=api):
         await manager.start(root, spec)
     return api.create_namespaced_custom_object.call_args[1]["body"]["spec"]["values"]
@@ -205,15 +217,24 @@ class TestUnitRelease:
         with pytest.raises(ValueError, match="absolute"):
             FluxPodManager(namespace="ns", unit_mesh_dir="mesh")
 
-    async def test_a_mesh_that_is_off_or_not_nng_is_left_alone(self, manager, api):
-        root, launches, spec = _unit(mesh={"enabled": False})
+    async def test_a_mesh_that_is_not_nng_is_left_alone(self, manager, api):
+        root, launches, spec = _unit()
         launches[0].spec.values["mesh"] = {"enabled": True, "transport": "nats"}
 
         values = await _start(manager, api, root, spec)
 
-        assert "discoveryAdapters" not in values["mesh"]
         assert "discoveryAdapters" not in values["members"][0]["values"]["mesh"]
         assert values["members"][1]["values"]["mesh"]["discoveryAdapters"]
+
+    async def test_a_unit_with_the_mesh_off_is_refused_before_anything_is_created(
+        self, manager, api
+    ):
+        root, _, spec = _unit(mesh={"enabled": False})
+
+        with pytest.raises(HostedUnitError, match="mesh is off"):
+            await _start(manager, api, root, spec)
+
+        api.create_namespaced_custom_object.assert_not_called()
 
     async def test_the_checkout_is_cloned_from_the_member_that_names_a_repository(
         self, manager, api
@@ -253,6 +274,7 @@ class TestUnitRelease:
 
     async def test_the_response_is_the_roots_own_address(self, manager, api):
         root, _, spec = _unit()
+        manager.configure_hosted_members(_source_of(spec))
 
         with patch.object(manager, "_get_api", return_value=api):
             result = await manager.start(root, spec)
@@ -281,8 +303,15 @@ class TestUnitRefusals:
         root, _, spec = _unit()
         spec.members = ()
 
-        with pytest.raises(ValueError, match="no launch for them reached"):
+        with pytest.raises(HostedUnitError, match="fixed when its unit starts"):
             await _start(manager, api, root, spec)
+
+    async def test_a_manager_with_no_member_source_refuses_a_unit(self, manager, api):
+        root, _, spec = _unit()
+
+        with patch.object(manager, "_get_api", return_value=api):
+            with pytest.raises(HostedUnitError, match="has no member source"):
+                await manager.start(root, spec)
 
         api.create_namespaced_custom_object.assert_not_called()
 
@@ -290,15 +319,16 @@ class TestUnitRefusals:
         root, launches, spec = _unit()
         spec.members = (launches[0],)
 
-        with pytest.raises(ValueError, match="fixed when its unit starts"):
+        with pytest.raises(HostedUnitError, match="fixed when its unit starts"):
             await _start(manager, api, root, spec)
 
-    async def test_members_of_a_session_that_is_not_a_unit_root_are_refused(self, manager, api):
+    async def test_a_session_that_recorded_no_members_asks_the_source_for_none(self, manager, api):
         root, _, spec = _unit()
         plain = root.model_copy(update={"workload_config": {}})
 
-        with pytest.raises(ValueError, match="not a unit root"):
-            await _start(manager, api, plain, spec)
+        values = await _start(manager, api, plain, spec)
+
+        assert "members" not in values
 
     async def test_a_member_of_another_unit_is_refused(self, manager, api):
         root, launches, spec = _unit()
@@ -331,7 +361,7 @@ class TestUnitRefusals:
         root, launches, spec = _unit()
         spec.members = (launches[0], launches[0], launches[1])
 
-        with pytest.raises(ValueError, match="launched twice"):
+        with pytest.raises(HostedUnitError, match="fixed when its unit starts"):
             await _start(manager, api, root, spec)
 
     async def test_a_member_without_a_port_is_refused(self, manager, api):
@@ -644,3 +674,73 @@ class TestAdapterAndChartAgree:
             assert member_config["mesh"]["discovery_adapters"][0]["adapter"] == "registry"
         routes = {d["metadata"]["name"] for d in docs if d["kind"] == "HTTPRoute"}
         assert routes == {f"session-{root.id}", *(f"session-{member_id}" for member_id in ids)}
+
+
+class TestMemberHarness:
+    """A container of the pod is stopped and restarted by asking the member's own Skuld."""
+
+    @staticmethod
+    def _wired(manager, handler):
+        import httpx
+
+        from volundr.adapters.outbound.hosted_member_harness import MemberHarnessControl
+
+        manager._harness = MemberHarnessControl(
+            restart_wait_seconds=5,
+            poll_seconds=0.001,
+            request_seconds=5,
+            transport=httpx.MockTransport(handler),
+        )
+
+    async def test_stop_asks_the_members_skuld_on_its_route_through_the_pod(self, manager):
+        import httpx
+
+        root, launches, spec = _unit()
+        member = launches[0].session.model_copy(update={"status": SessionStatus.RUNNING})
+        seen = []
+
+        def handler(request):
+            seen.append((request.method, request.url.path))
+            return httpx.Response(200, json={"status": "stopped"})
+
+        self._wired(manager, handler)
+
+        await manager.stop_hosted_member(member)
+
+        assert seen == [("POST", f"/m/{member.id}/api/harness/stop")]
+
+    async def test_restart_rewrites_the_credential_then_asks_for_the_new_launch(self, manager):
+        import httpx
+
+        from volundr.domain.services.forge_session_launch import with_forge_mcp
+
+        root, launches, spec = _unit()
+        member = launches[0].session.model_copy(
+            update={
+                "status": SessionStatus.RUNNING,
+                "workload_config": with_forge_mcp(
+                    launches[0].session.workload_config, grants=[], launch_id="launch-2"
+                ),
+            }
+        )
+        spec.members = (Launch(member, launches[0].spec), launches[1])
+        manager.configure_hosted_members(_source_of(spec))
+        calls = []
+
+        def handler(request):
+            calls.append((request.method, request.url.path, request.content))
+            return httpx.Response(200, json={"status": "ok"})
+
+        self._wired(manager, handler)
+
+        await manager.restart_hosted_member(member)
+
+        assert calls[0][:2] == ("POST", f"/m/{member.id}/api/harness/restart")
+        assert b"launch-2" in calls[0][2]
+        assert calls[-1][:2] == ("GET", f"/m/{member.id}/ready")
+
+    async def test_restart_with_no_member_source_is_refused(self, manager):
+        root, launches, spec = _unit()
+
+        with pytest.raises(HostedUnitError, match="no member source"):
+            await manager.restart_hosted_member(launches[0].session)

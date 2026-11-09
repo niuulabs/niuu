@@ -1575,6 +1575,9 @@ def create_app(
                 secret_cleanup=secret_request_service,
                 mesh_identity=mesh_identity_service,
             )
+            # A workflow run's unit starts its members with it: every pod manager that hosts
+            # one resolves their launches (each member's own spec and credential) from here.
+            pod_manager.configure_hosted_members(session_service.hosted_member_launches)
             if presented_file_store is not None:
                 require_presented_file_uploads(
                     settings, delivers_session_credential=session_service.delivers_forge_session
