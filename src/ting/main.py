@@ -1425,6 +1425,7 @@ def create_app(
             workflow_campaign_projector.bind_runs(workflow_runs)
             dispatch_svc.bind_workflow_runs(workflow_runs, workflow_campaign_repo)
             app.state.workflow_runs = workflow_runs
+            await workflow_runs.cancel_runs_open_before_mesh()
             app.state.workflow_step_repo = workflow_step_repo
             app.state.workflow_campaign_projector = workflow_campaign_projector
             await workflow_campaign_projector.start()

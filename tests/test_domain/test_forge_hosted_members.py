@@ -25,6 +25,7 @@ from volundr.domain.services.forge import (
     ForgeService,
     HostedMemberError,
     HostedUnitInUseError,
+    HostedUnitNotFoundError,
 )
 from volundr.domain.services.forge_session_launch import launch_id_of
 from volundr.domain.services.session import SessionNotFoundError, SessionStateError
@@ -202,7 +203,7 @@ class TestRefusals:
     async def test_the_unit_must_exist(self, unit: Unit):
         ghost = Session(name="ghost", id=uuid4())
 
-        with pytest.raises(HostedMemberError, match="does not exist"):
+        with pytest.raises(HostedUnitNotFoundError, match="does not exist"):
             await unit.member(ghost, "coder-1")
 
     async def test_the_unit_must_be_a_unit_root(self, unit: Unit):

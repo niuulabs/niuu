@@ -23,7 +23,7 @@ from volundr.domain.services.forge_session_launch import (
     GRANTS_KEY,
     launch_id_of,
 )
-from volundr.domain.services.session import SessionStateError
+from volundr.domain.services.session import SessionNotFoundError, SessionStateError
 from volundr.domain.session_broker import broker_base_url
 from volundr.domain.workflow_session import (
     PERSONA_DEFINITION_KEY,
@@ -93,12 +93,36 @@ class HostedMemberError(SessionStateError):
         Exception.__init__(self, reason)
 
 
-class HostedUnitInUseError(RuntimeError):
+class HostedUnitNotFoundError(SessionNotFoundError):
+    """The unit a member names does not exist.
+
+    A ``SessionNotFoundError``, so a caller answers it as not found (404), not as a
+    session in the wrong state; ``reason`` names the unit and what to do about it.
+    """
+
+    def __init__(self, unit_id: UUID, reason: str) -> None:
+        self.session_id = unit_id
+        self.reason = reason
+        Exception.__init__(self, reason)
+
+
+class HostedUnitInUseError(SessionStateError):
     """A unit root cannot be deleted while it still hosts members.
 
-    A ``RuntimeError`` because the delete route answers those (503, session kept) with the
-    message; the members are deleted first, then the unit.
+    A ``SessionStateError``, so the routes answer it with 409 and the message; the members
+    are deleted first, then the unit.
     """
+
+    def __init__(self, unit_id: UUID, member_count: int) -> None:
+        self.session_id = unit_id
+        self.operation = "delete"
+        self.current_status = None
+        self.member_count = member_count
+        Exception.__init__(
+            self,
+            f"session {unit_id} is the unit of {member_count} member session(s): "
+            "delete the members first",
+        )
 
 
 class ForgeService:
@@ -317,9 +341,7 @@ class ForgeService:
         or to another run, or has already started: a run's members are fixed at that point."""
         unit = await self._session_service.get_session(unit_id)
         if unit is None:
-            raise HostedMemberError(
-                unit_id, "add a member to", None, f"unit session {unit_id} does not exist"
-            )
+            raise HostedUnitNotFoundError(unit_id, f"unit session {unit_id} does not exist")
         if not unit.is_unit_root:
             raise HostedMemberError(
                 unit_id,
@@ -710,10 +732,7 @@ class ForgeService:
     ) -> bool:
         members = await self._session_service._repository.list_hosted(session_id)
         if members:
-            raise HostedUnitInUseError(
-                f"session {session_id} is the unit of {len(members)} member session(s): "
-                "delete the members first"
-            )
+            raise HostedUnitInUseError(session_id, len(members))
         return await self._session_service.delete_session(
             session_id,
             principal=principal,

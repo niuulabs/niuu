@@ -30,6 +30,7 @@ from ting.domain.services.workflow_step_engine import WorkflowStepEngine
 from ting.domain.step_engine import EngineSettings, unit_root, unit_sessions
 from ting.domain.workflow_steps import (
     EVENT_OFFER_PASSED,
+    EVENT_UNIT_LAUNCHED,
     ActorKind,
     EndingKind,
     GateActor,
@@ -728,6 +729,86 @@ async def test_cancelling_the_run_stops_its_sessions_and_cancels_the_campaign(
     assert harness.current.metadata["run_canceled"] is True
     assert members["reviewer"] in harness.forge.stopped
     assert len(harness.forge.stopped) == 3  # the root and both members
+
+
+# -- runs still open on the old HTTP step path are canceled at the upgrade ----------------
+
+
+def _as_launched_before_the_mesh(harness: Harness) -> None:
+    """Make the run look as the old engine left it: launched, with no unit recorded."""
+    run_id = harness.campaign.id
+    harness.steps.events[run_id] = [
+        event for event in harness.steps.events[run_id] if event.event_type != EVENT_UNIT_LAUNCHED
+    ]
+
+
+async def test_a_run_launched_before_the_mesh_is_canceled_at_the_upgrade_with_its_reason(
+    harness: Harness,
+) -> None:
+    await harness.launch()
+    _as_launched_before_the_mesh(harness)
+
+    canceled = await harness.runs.cancel_runs_open_before_mesh()
+
+    assert canceled == [harness.campaign.id]
+    assert harness.current.status is WorkflowCampaignStatus.CANCELED
+    assert (
+        harness.current.metadata["cancel_reason"]
+        == "canceled at upgrade: step handoff moved to the mesh"
+    )
+    assert (await harness.state()).finished
+    assert len(harness.forge.stopped) == 3  # the root and both members
+
+
+async def test_the_upgrade_cancel_leaves_mesh_runs_finished_runs_and_unlaunched_runs_alone(
+    harness: Harness,
+) -> None:
+    await harness.launch()
+    assert await harness.runs.cancel_runs_open_before_mesh() == []
+    assert harness.current.status is not WorkflowCampaignStatus.CANCELED
+
+    await harness.runs.cancel(harness.current, "stop")
+    _as_launched_before_the_mesh(harness)
+    assert await harness.runs.cancel_runs_open_before_mesh() == []
+
+    unlaunched = replace(harness.campaign, id=uuid4(), slug="not-launched")
+    await harness.campaigns.save_campaign(unlaunched)
+    assert await harness.runs.cancel_runs_open_before_mesh() == []
+    assert not (await harness.steps.load(unlaunched.id)).launched
+
+
+async def test_a_run_the_upgrade_cannot_cancel_is_loud_counted_and_the_others_are_canceled(
+    harness: Harness,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    await harness.launch()
+    _as_launched_before_the_mesh(harness)
+    broken = replace(harness.campaign, id=uuid4(), slug="broken-run")
+    harness.campaigns.items = {broken.id: broken, **harness.campaigns.items}
+    counted: list[str] = []
+    monkeypatch.setattr(
+        "ting.domain.services.workflow_runs.get_observability",
+        lambda: SimpleNamespace(count=lambda name, **_: counted.append(name)),
+    )
+    real = harness.steps.load
+
+    async def load(run_id: UUID) -> RunState:
+        if run_id == broken.id:
+            raise ConnectionError("database is down")
+        return await real(run_id)
+
+    monkeypatch.setattr(harness.steps, "load", load)
+
+    with caplog.at_level(logging.ERROR):
+        canceled = await harness.runs.cancel_runs_open_before_mesh()
+
+    assert canceled == [harness.campaign.id]
+    assert counted == ["ting_workflow_run_upgrade_cancel_errors_total"]
+    [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert "broken-run" in record.getMessage()
+    assert "ConnectionError: database is down" in record.getMessage()
+    assert "tried again at the next start" in record.getMessage()
 
 
 # -- catching up with the sessions' durable logs after the stream was down ---------------
