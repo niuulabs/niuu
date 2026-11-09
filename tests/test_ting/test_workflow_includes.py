@@ -10,6 +10,8 @@ import yaml
 
 from personas.domain.persona import PersonaConfig
 from personas.domain.persona_document import portable_persona_from_config
+from tests.support.full_catalogue import full_catalogue_personas, full_catalogue_root
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import (
@@ -23,11 +25,7 @@ from ting.domain.workflow_includes import (
     resolve_workflow_includes,
 )
 from ting.domain.workflow_snapshot import build_workflow_snapshot, pin_workflow_personas
-from ting.system_workflows import (
-    BUNDLED_SYSTEM_WORKFLOWS_PATH,
-    load_bundled_workflow,
-    load_system_workflows,
-)
+from ting.system_workflows import load_bundled_workflow
 
 _REVIEWER_PORTABLE = portable_persona_from_config(
     PersonaConfig(name="reviewer", system_prompt_template="Review the work under test.")
@@ -802,9 +800,17 @@ def test_synthetic_snapshot_resolves_a_hand_built_include():
 
 
 def test_standalone_planning_and_integration_workflows_still_load_unchanged():
-    planning = load_bundled_workflow(BUNDLED_SYSTEM_WORKFLOWS_PATH / "developer-planning.yaml")
+    planning = load_bundled_workflow(
+        full_catalogue_root() / "developer-planning.yaml",
+        persona_source=full_catalogue_personas(),
+        bundle_root=full_catalogue_root().parent,
+        allow_archived=True,
+    )
     integration = load_bundled_workflow(
-        BUNDLED_SYSTEM_WORKFLOWS_PATH / "developer-integration.yaml"
+        full_catalogue_root() / "developer-integration.yaml",
+        persona_source=full_catalogue_personas(),
+        bundle_root=full_catalogue_root().parent,
+        allow_archived=True,
     )
 
     assert not graph_has_include_nodes(planning.graph)

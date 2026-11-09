@@ -981,11 +981,6 @@ class ReviewWidgetsConfig(BaseModel):
 class TicketCoordinatorConfig(BaseModel):
     """The persistent session each ticket works through."""
 
-    persona: str = Field(
-        default="ticket-coordinator",
-        description="Ravn persona that coordinates a ticket.",
-    )
-
     @model_validator(mode="before")
     @classmethod
     def _reject_removed_keys(cls, data: Any) -> Any:
@@ -1000,6 +995,11 @@ class TicketCoordinatorConfig(BaseModel):
                 "ravn_config": (
                     f"{RAVN_FLOCK_REMOVED_MESSAGE}; a ticket coordinator is no "
                     "longer launched. Remove ticket_coordinator.ravn_config"
+                ),
+                "persona": (
+                    "a ticket coordinator is no longer launched, so it has no persona "
+                    "(its persona is archived, see archive/README.md). "
+                    "Remove ticket_coordinator.persona"
                 ),
             },
         )
@@ -1050,12 +1050,10 @@ class WorkflowExecutionDeliveryConfig(BaseModel):
     )
     evidence_policy_id: str = Field(
         default="",
-        min_length=1,
         description="Forge evidence policy ID, required once delivery is enabled.",
     )
     integration_policy_id: str = Field(
         default="",
-        min_length=1,
         description="Forge integration policy ID, required once delivery is enabled.",
     )
 
@@ -1161,6 +1159,24 @@ class WorkflowExecutionConfig(BaseModel):
                 "workflow_execution.delivery.enabled requires workflow_execution.enabled; "
                 "set workflow_execution.enabled: true or disable workflow_execution.delivery"
             )
+        if self.delivery.enabled:
+            unset = [
+                f"workflow_execution.delivery.{name}"
+                for name in (
+                    "review_producers",
+                    "integration_review_producer",
+                    "evidence_policy_id",
+                    "integration_policy_id",
+                )
+                if not getattr(self.delivery, name)
+            ]
+            if unset:
+                raise ValueError(
+                    f"workflow_execution.delivery.enabled requires {', '.join(unset)}. No "
+                    "delivery workflow ships (the Developer workflows are archived, see "
+                    "archive/README.md); set them for the workflow you run, or disable "
+                    "workflow_execution.delivery"
+                )
         if not self.delivery.enabled:
             offending = sorted(
                 {

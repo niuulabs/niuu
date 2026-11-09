@@ -512,7 +512,9 @@ class TestFilesystemPersonaAdapterLoadInjection:
 class TestPersonaContractE2E:
     def test_persona_without_contract_unchanged(self) -> None:
         """Loading ticket-coordinator (no produces) → no outcome block in system prompt."""
-        loader = FilesystemPersonaAdapter()
+        loader = FilesystemPersonaAdapter(
+            persona_dirs=[str(Path(__file__).resolve().parents[2] / "archive" / "personas")]
+        )
         persona = loader.load("ticket-coordinator")
         assert persona is not None
         assert "---outcome---" not in persona.system_prompt_template
@@ -540,11 +542,11 @@ class TestFindConsumersProducers:
         assert "reviewer" in names
         assert "security-auditor" in names
 
-    def test_find_consumers_review_completed_returns_postmortem_analyst(self) -> None:
+    def test_find_consumers_review_completed_has_no_bundled_consumer(self) -> None:
+        # The only bundled consumer (postmortem-analyst) is archived; see archive/README.md.
         loader = FilesystemPersonaAdapter()
         consumers = loader.find_consumers("review.completed")
-        names = [p.name for p in consumers]
-        assert names == ["postmortem-analyst"]
+        assert [p.name for p in consumers] == []
 
     def test_find_consumers_unknown_event_returns_empty(self) -> None:
         loader = FilesystemPersonaAdapter()
@@ -622,7 +624,14 @@ class TestBuiltinSpecialistContracts:
         assert cfg.fan_in.strategy == "all_must_pass"
 
     def test_capability_publisher_uses_json_artifact_publisher(self) -> None:
-        cfg = self._load("capability-publisher")
+        # Archived with Tool & Skill Builder; its document stays valid.
+        cfg = self._loader.load_from_file(
+            Path(__file__).resolve().parents[2]
+            / "archive"
+            / "personas"
+            / "capability-publisher.yaml"
+        )
+        assert cfg is not None
 
         assert "mimir:publish_artifact" in cfg.allowed_tools
         assert "mimir_write" not in cfg.allowed_tools

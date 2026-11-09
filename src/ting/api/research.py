@@ -741,7 +741,15 @@ async def _resolve_research_workflow(
     for workflow in workflows:
         if workflow.name == _DEFAULT_RESEARCH_WORKFLOW_NAME:
             return await _selected_version(repo, workflow, workflow_version)
-    raise HTTPException(status_code=404, detail="Research Campaign workflow not found")
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            f"No research workflow is available: no workflow is tagged 'research' and "
+            f"{_DEFAULT_RESEARCH_WORKFLOW_NAME!r} is no longer bundled (archived, see "
+            "archive/README.md). Create a workflow tagged 'research', or restore the "
+            "archived one."
+        ),
+    )
 
 
 async def _selected_version(

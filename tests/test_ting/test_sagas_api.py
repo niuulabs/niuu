@@ -22,6 +22,7 @@ from niuu.domain.models import (
     Principal,
     RegisteredInstance,
 )
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from ting.api import sagas as sagas_api
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.phases import create_saga_phases_router
@@ -64,7 +65,6 @@ from ting.domain.workflow_steps import (
 )
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
-from ting.system_workflows import load_system_workflows
 
 from .fake_workflow_runs import FakeWorkflowRuns
 from .test_tracker_api import MockSagaRepo, MockTracker

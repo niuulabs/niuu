@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from personas.adapters.loader import FilesystemPersonaAdapter
+from tests.support.full_catalogue import ARCHIVE, full_catalogue_personas, full_catalogue_root
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDependency
 from ting.domain.workflow_document import (
@@ -14,7 +15,6 @@ from ting.domain.workflow_document import (
     workflow_document_revision,
 )
 from ting.domain.workflow_snapshot import build_workflow_snapshot
-from ting.system_workflows import BUNDLED_SYSTEM_WORKFLOWS_PATH, load_system_workflows
 
 
 def _developer_workflows():
@@ -50,9 +50,7 @@ def test_developer_workflow_package_has_exact_transitive_closure() -> None:
 
 
 def test_developer_workflows_pin_current_integration_reviewer_content() -> None:
-    reviewer = FilesystemPersonaAdapter(
-        persona_dirs=[], include_builtin=True
-    ).load_current_portable("developer-integration-verifier")
+    reviewer = full_catalogue_personas().load_current_portable("developer-integration-verifier")
     assert reviewer is not None
 
     workflows = _developer_workflows()
@@ -64,8 +62,8 @@ def test_developer_workflows_pin_current_integration_reviewer_content() -> None:
 
 def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_is_bounded() -> None:
     files = [
-        *Path("src/personas/builtin").glob("developer-*.yaml"),
-        *BUNDLED_SYSTEM_WORKFLOWS_PATH.glob("developer-*.yaml"),
+        *(ARCHIVE / "personas").glob("developer-*.yaml"),
+        *full_catalogue_root().glob("developer-*.yaml"),
     ]
     rendered = "\n".join(path.read_text(encoding="utf-8").casefold() for path in files)
     assert "github" not in rendered
@@ -73,17 +71,13 @@ def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_i
 
     # The coordinator's retired-runtime tools have no counterpart in a harness session, so it
     # is closed to the plan tool and cannot touch files, a shell or a repository.
-    coordinator = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
-        "developer-coordinator"
-    )
+    coordinator = full_catalogue_personas().load("developer-coordinator")
     assert coordinator is not None
     assert coordinator.allowed_tools == ["plan"]
     for forbidden in ("shell", "file_write", "file_read", "git"):
         assert forbidden in coordinator.forbidden_tools
 
-    coordinator_persona = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
-        "developer-coordinator"
-    )
+    coordinator_persona = full_catalogue_personas().load("developer-coordinator")
     assert coordinator_persona is not None
     handoff_fields = {
         "attempt_id": "string",
@@ -115,9 +109,9 @@ def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_i
         coordinator_persona.system_prompt_template
     )
 
-    integration_reviewer = Path(
-        "src/personas/builtin/developer-integration-verifier.yaml"
-    ).read_text(encoding="utf-8")
+    integration_reviewer = Path("archive/personas/developer-integration-verifier.yaml").read_text(
+        encoding="utf-8"
+    )
     assert "delivery_workspace.inspect" in integration_reviewer
     assert "bounded exact-candidate patch" in integration_reviewer
     assert "allowed_tools: [plan]" in integration_reviewer
@@ -130,11 +124,11 @@ def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_i
     ["developer-delivery.yaml", "developer-workstream.yaml", "developer-integration.yaml"],
 )
 def test_developer_workflows_pin_current_coordinator_content(workflow_name: str) -> None:
-    source = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
+    source = full_catalogue_personas()
     coordinator = source.load_current_portable("developer-coordinator")
     assert coordinator is not None
     workflow = load_workflow_document(
-        (BUNDLED_SYSTEM_WORKFLOWS_PATH / workflow_name).read_text(encoding="utf-8")
+        (full_catalogue_root() / workflow_name).read_text(encoding="utf-8")
     )
 
     pin = workflow.persona_dependencies["developer-coordinator"]
@@ -144,10 +138,10 @@ def test_developer_workflows_pin_current_coordinator_content(workflow_name: str)
 
 def test_delivery_pins_current_workstream_content() -> None:
     root = load_workflow_document(
-        (BUNDLED_SYSTEM_WORKFLOWS_PATH / "developer-delivery.yaml").read_text(encoding="utf-8")
+        (full_catalogue_root() / "developer-delivery.yaml").read_text(encoding="utf-8")
     )
     child = load_workflow_document(
-        (BUNDLED_SYSTEM_WORKFLOWS_PATH / "developer-workstream.yaml").read_text(encoding="utf-8")
+        (full_catalogue_root() / "developer-workstream.yaml").read_text(encoding="utf-8")
     )
 
     revision = workflow_document_revision(child)
@@ -231,7 +225,7 @@ def test_delivery_pins_current_workstream_content() -> None:
 
 def test_workflow_revision_ignores_transport_paths_for_both_dependency_kinds() -> None:
     document = load_workflow_document(
-        (BUNDLED_SYSTEM_WORKFLOWS_PATH / "developer-delivery.yaml").read_text()
+        (full_catalogue_root() / "developer-delivery.yaml").read_text()
     )
     changed = copy.deepcopy(document)
     changed.persona_dependencies["developer-coordinator"] = replace(

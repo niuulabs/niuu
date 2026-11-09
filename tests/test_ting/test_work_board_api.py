@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from niuu.review_widgets import ReviewWidget
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.sagas import resolve_saga_repo
 from ting.api.work import create_work_router, resolve_work_trackers
@@ -55,7 +56,6 @@ from ting.ports.ticket_coordinator_repository import TicketCoordinatorRepository
 from ting.ports.tracker import TrackerPort, TrackerResolution
 from ting.ports.volundr import ForgeProjectRef
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
-from ting.system_workflows import load_system_workflows
 
 NOW = datetime(2026, 10, 30, 12, tzinfo=UTC)
 HEADERS = {"x-auth-user-id": "owner-1", "x-auth-tenant": "tenant-1"}

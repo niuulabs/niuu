@@ -203,10 +203,10 @@ class TestRemovedWorkflowRunnerSettings:
         with pytest.raises(ValueError, match=rf"dispatch\.{key} was removed"):
             DispatchConfig(**{key: value})
 
-    @pytest.mark.parametrize("key", ["model", "ravn_config"])
+    @pytest.mark.parametrize("key", ["model", "ravn_config", "persona"])
     def test_removed_ticket_coordinator_keys_are_fatal(self, key: str) -> None:
         with pytest.raises(ValueError, match=rf"ticket_coordinator\.{key} was removed"):
-            TicketCoordinatorConfig(**{key: "x" if key == "model" else {}})
+            TicketCoordinatorConfig(**{key: {} if key == "ravn_config" else "x"})
 
     @pytest.mark.parametrize("key", ["ravn_decomposer_enabled", "ravn_decomposer_timeout"])
     def test_removed_decomposer_keys_are_fatal(self, key: str) -> None:
@@ -261,8 +261,29 @@ class TestWorkflowExecutionConfig:
             WorkflowExecutionConfig(enabled=False, delivery={"enabled": True})
 
     def test_delivery_enabled_with_workflow_execution_enabled_is_accepted(self) -> None:
-        config = WorkflowExecutionConfig(enabled=True, delivery={"enabled": True})
+        config = WorkflowExecutionConfig(
+            enabled=True,
+            delivery={
+                "enabled": True,
+                "review_producers": {"code": "code-reviewer"},
+                "integration_review_producer": "integration-verifier",
+                "evidence_policy_id": "delivery-evidence",
+                "integration_policy_id": "delivery-integration",
+            },
+        )
         assert config.delivery.enabled is True
+
+    def test_delivery_enabled_without_its_wiring_names_what_is_missing(self) -> None:
+        with pytest.raises(ValueError, match=r"delivery\.evidence_policy_id.*archive/README\.md"):
+            WorkflowExecutionConfig(
+                enabled=True,
+                delivery={
+                    "enabled": True,
+                    "review_producers": {"code": "code-reviewer"},
+                    "integration_review_producer": "integration-verifier",
+                    "integration_policy_id": "delivery-integration",
+                },
+            )
 
     def test_rejects_ting_delivery_wait_observer_while_delivery_is_disabled(self) -> None:
         with pytest.raises(ValueError, match="ting.delivery"):
@@ -280,7 +301,13 @@ class TestWorkflowExecutionConfig:
     def test_accepts_ting_delivery_wait_observer_once_delivery_is_enabled(self) -> None:
         config = WorkflowExecutionConfig(
             enabled=True,
-            delivery={"enabled": True},
+            delivery={
+                "enabled": True,
+                "review_producers": {"code": "code-reviewer"},
+                "integration_review_producer": "integration-verifier",
+                "evidence_policy_id": "delivery-evidence",
+                "integration_policy_id": "delivery-integration",
+            },
             wait_observers=[
                 {
                     "condition_type": "forge.checks",

@@ -73,7 +73,7 @@ requirements live in `.metadata` sidecars and are not exported as authority.
 ## Portable document
 
 See the complete packaged
-[`Code & Review Flow`](../../src/ting/workflows/code-review-flow.yaml) for a
+[`Reviewed Delivery Flow`](../../archive/workflows/reviewed-delivery-flow.yaml) for a
 real document with its full graph and exact current persona pins.
 
 `schema_version` versions the file contract. `version` is the workflow's own
@@ -331,3 +331,16 @@ workflowMigration:
 The `workflow-catalog-migrate` init container also receives `extraEnv`, same as
 the main container, so anything the migration needs beyond `DATABASE__*` (e.g.
 observability exporter settings) can be supplied the same way.
+
+## Archived bundled workflows
+
+One workflow ships: **Code, Review and Merge**. The coder implements a change, the reviewer
+and the security auditor check it in parallel, a person approves the merge once both pass,
+and the coder then merges. Either check, or the person, can send the work back to the coder,
+with no round limit, and a coder that cannot finish waits at a "Coder blocked" gate. The other 18 bundled workflows
+and 45 built-in personas are archived under `archive/`, outside the packaged tree. They are
+not shipped, served or seeded, and `archive/README.md` says how to restore one and which
+product surfaces still name them. A Ting whose file catalog was migrated while they shipped
+still starts: their ids are in `RETIRED_SYSTEM_WORKFLOW_IDS`, so the migration guard does not
+expect them. Campaigns that already ran them keep their snapshot and stay readable.
+[`bundled-catalogue.md`](bundled-catalogue.md) lists what ships and why.

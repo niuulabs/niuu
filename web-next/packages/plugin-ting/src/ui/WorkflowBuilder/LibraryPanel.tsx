@@ -63,14 +63,6 @@ export const DEFAULT_PERSONAS: PersonaEntry[] = [
     consumes: ['code.changed'],
     produces: ['security.completed'],
   },
-  {
-    id: 'postmortem-analyst',
-    label: 'postmortem-analyst',
-    role: 'memory',
-    summary: 'Synthesizes a post-mortem source after review fan-in completes.',
-    consumes: ['review.completed', 'security.completed'],
-    produces: ['mimir.source.ingested'],
-  },
 ];
 
 const FLOW_CONTROL_BLOCKS: ReadonlyArray<{

@@ -317,13 +317,14 @@ workflowExecution:
     reviewAuthenticatorAdapter: ""
     reviewAuthenticatorKwargs: {}
     reviewAuthenticatorSecretKwargsEnv: {}
-    reviewProducers:
-      code: developer-code-reviewer
-      security: developer-security-reviewer
-      adversarial: developer-adversarial-reviewer
-    integrationReviewProducer: developer-integration-verifier
-    evidencePolicyId: developer-workstream
-    integrationPolicyId: developer-integration
+    # Delivery names the producers and Forge policies of a delivery workflow. None
+    # ships any more (the Developer workflows are archived, see archive/README.md),
+    # so these have no default: set them for the workflow you run, or delivery.enabled
+    # stops Ting at startup.
+    reviewProducers: {}
+    integrationReviewProducer: ""
+    evidencePolicyId: ""
+    integrationPolicyId: ""
 
 database:
   name: ting

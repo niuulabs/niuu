@@ -25,6 +25,7 @@ from uuid import uuid4
 
 import pytest
 
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from tests.test_ting.test_research_api import (
     InMemoryWorkflowCampaignRepository,
     InMemoryWorkflowRepository,
@@ -47,7 +48,6 @@ from ting.domain.models import CampaignStageState, WorkflowCampaign, WorkflowCam
 from ting.domain.workflow_execution import CHILDREN_JOINED_SUSPENSION_REASON, ExecutionState
 from ting.domain.workflow_snapshot import build_workflow_snapshot
 from ting.ports.volundr import VolundrSession
-from ting.system_workflows import load_system_workflows
 
 _STAGE_IDS = [
     "research-frame",

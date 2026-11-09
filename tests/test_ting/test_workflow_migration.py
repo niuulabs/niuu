@@ -29,6 +29,11 @@ from ting.migrate_workflows import _registry_source_for_workflow
 from ting.system_workflows import RETIRED_SYSTEM_WORKFLOW_IDS, load_system_workflows
 
 
+def _standalone_bundled():
+    """The first shipped workflow that needs no other file, so it can be written out alone."""
+    return next(item for item in load_system_workflows() if not item.workflow_definitions)
+
+
 class _Source:
     def __init__(
         self,
@@ -163,7 +168,7 @@ async def test_migrated_workflow_delete_records_explicit_tombstone(tmp_path) -> 
 
 @pytest.mark.asyncio
 async def test_divergent_bundled_row_requires_explicit_same_id_replacement(tmp_path) -> None:
-    packaged = load_system_workflows()[0]
+    packaged = _standalone_bundled()
     divergent = replace(
         packaged,
         description="Administrator-owned divergent definition",
@@ -224,7 +229,7 @@ async def test_bundled_superseded_row_is_skipped_without_error_or_flag(tmp_path)
     reconcile -- it is simply superseded by the current package, which the
     filesystem catalog already serves for this id without any write.
     """
-    packaged = load_system_workflows()[0]
+    packaged = _standalone_bundled()
     stale_bundled = replace(
         packaged,
         description="Older packaged content before a version bump",
@@ -266,7 +271,7 @@ async def test_bundled_row_newer_than_package_is_an_error_not_superseded(tmp_pat
     that row -- so it must be reported as an error with a remedy, not
     skipped as bundled_superseded.
     """
-    packaged = load_system_workflows()[0]
+    packaged = _standalone_bundled()
     newer_bundled = replace(
         packaged,
         description="Content from a newer image",
@@ -296,7 +301,7 @@ async def test_startup_guard_accepts_catalog_with_a_superseded_bundled_row(tmp_p
     """The startup guard passes after a migration that only skipped superseded rows."""
     from ting.main import _assert_workflow_catalog_migrated
 
-    packaged = load_system_workflows()[0]
+    packaged = _standalone_bundled()
     stale_bundled = replace(
         packaged,
         description="Older packaged content before a version bump",
@@ -326,7 +331,7 @@ async def test_startup_guard_accepts_catalog_with_a_superseded_bundled_row(tmp_p
 
 @pytest.mark.asyncio
 async def test_bundled_uuid_with_user_ownership_is_not_silently_skipped(tmp_path) -> None:
-    packaged = load_system_workflows()[0]
+    packaged = _standalone_bundled()
     collision = replace(
         packaged,
         scope=WorkflowScope.USER,
@@ -511,7 +516,7 @@ async def test_workflow_migration_reports_reference_to_missing_workflow_row(tmp_
 
 @pytest.mark.asyncio
 async def test_workflow_migration_counts_exact_bundled_match(tmp_path) -> None:
-    packaged = load_system_workflows()[0]
+    packaged = _standalone_bundled()
 
     report = await migrate_workflow_catalog(
         source=_Source([packaged]),
@@ -530,7 +535,7 @@ async def test_workflow_migration_counts_exact_bundled_match(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_workflow_migration_raises_when_referenced_identity_is_lost(tmp_path) -> None:
     del tmp_path
-    packaged = load_system_workflows()[0]
+    packaged = _standalone_bundled()
 
     class _EmptyTarget:
         async def get_workflow(self, workflow_id: UUID) -> WorkflowDefinition | None:
@@ -596,7 +601,7 @@ async def test_workflow_migration_raises_when_save_does_not_verify(tmp_path) -> 
 async def test_workflow_migration_rejects_divergent_bundled_replacement_over_existing(
     tmp_path,
 ) -> None:
-    packaged = load_system_workflows()[0]
+    packaged = _standalone_bundled()
     target = FilesystemWorkflowRepository(str(tmp_path))
     first_replacement = replace(
         packaged,
@@ -847,7 +852,7 @@ def test_retired_system_workflow_ids_are_not_packaged() -> None:
 
 
 def test_loading_a_packaged_workflow_with_a_retired_id_raises(monkeypatch) -> None:
-    packaged = load_system_workflows()[0]
+    packaged = _standalone_bundled()
     monkeypatch.setattr(
         system_workflows,
         "RETIRED_SYSTEM_WORKFLOW_IDS",

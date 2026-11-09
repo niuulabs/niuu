@@ -772,7 +772,9 @@ class _Planner:
                 )
             )
             return
-        inputs = (_input_of(event, edge),)
+        inputs = self._waiting_inputs(event, edge, target)
+        if inputs is None:
+            return
         if not self._take_reworks(inputs, event):
             return
         self._create_step(target, kind, None, inputs)
@@ -850,6 +852,43 @@ class _Planner:
                 f"{edge.id!r} but fills no join slot there: {event.member or event.node_id!r} is "
                 "not a producer the graph expects for that edge"
             )
+        return tuple(chosen)
+
+    def _waiting_inputs(
+        self,
+        event: RunEvent,
+        edge: EdgeSpec,
+        target: NodeSpec,
+    ) -> tuple[StepInput, ...] | None:
+        """What a gate opens with: its delivery, or, for ``joinMode: all``, every branch's.
+
+        A gate that declares ``joinMode: all`` opens once each forward edge into it (from
+        each producer of that edge) holds an unused delivery of the current generation,
+        like an ``all`` end. A delivery over a rework edge never waits for the others.
+        """
+        if target.kind is not NodeKind.GATE or target.join_mode != JOIN_ALL or edge.rework:
+            return (_input_of(event, edge),)
+        used = {
+            item.seq
+            for step in self._steps.values()
+            if step.node_id == target.id
+            for item in step.inputs
+        }
+        chosen: list[StepInput] = []
+        for incoming in self._graph.incoming(target.id):
+            if incoming.rework:
+                continue
+            for producer in self._graph.producers(incoming):
+                candidates = [
+                    candidate
+                    for candidate in self._events
+                    if self._is_delivery(candidate, incoming, producer)
+                    and candidate.seq not in used
+                    and (candidate.generation == self._generation or candidate.seq == event.seq)
+                ]
+                if not candidates:
+                    return None
+                chosen.append(_input_of(max(candidates, key=lambda item: item.seq), incoming))
         return tuple(chosen)
 
     def _end_inputs(

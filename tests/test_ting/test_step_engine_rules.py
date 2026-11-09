@@ -994,3 +994,84 @@ def test_a_persona_without_a_verdict_map_hands_off_one_event_whatever_it_says() 
     assert contract.event_for("anything") == "review.completed"
     assert contract.produced_events == frozenset({"review.completed"})
     assert PersonaContract().event_for("anything") is None
+
+
+# --- gates and joins ---------------------------------------------------------------
+
+
+def two_checks_into_a_gate(gate_extra: dict[str, object]) -> Run:
+    gate = {
+        "id": "approve",
+        "kind": "gate",
+        "label": "approve",
+        "mode": "human_approval",
+        "approvalEvent": "merge.approved",
+        "changesRequestedEvent": "merge.changes_requested",
+        **gate_extra,
+    }
+    return custom_run(
+        [
+            trigger("go"),
+            stage("fix", [member("f")]),
+            stage("make", [member("c1"), member("c2")], execution="parallel"),
+            gate,
+            end(),
+        ],
+        [
+            edge("e0", "go", "fix", "go"),
+            edge("e1", "fix", "make", "fixed"),
+            edge("e2", "make", "approve", "check.ok"),
+            edge("e3", "approve", "done", "merge.approved"),
+            edge("e4", "approve", "fix", "merge.changes_requested", rework=True),
+        ],
+        {
+            "f": persona({"ok": "fixed"}, ["go", "merge.changes_requested"]),
+            "c1": persona({"ok": "check.ok"}, ["fixed"]),
+            "c2": persona({"ok": "check.ok"}, ["fixed"]),
+        },
+    )
+
+
+async def test_a_gate_that_declares_join_all_waits_for_every_branch_that_feeds_it() -> None:
+    run = two_checks_into_a_gate({"joinMode": "all"})
+    await run.launch()
+    await run.close(run.current("fix"), "ok")
+    await run.close(run.current("make", "c1"), "ok")
+
+    assert run.steps("approve") == []
+
+    await run.close(run.current("make", "c2"), "ok")
+
+    gate = run.current("approve")
+    assert sorted(item.member for item in gate.inputs) == ["c1", "c2"]
+
+
+async def test_a_gate_that_does_not_say_opens_on_its_first_delivery() -> None:
+    """A gate reached from alternative branches must not wait for the ones not taken."""
+    run = two_checks_into_a_gate({})
+    await run.launch()
+    await run.close(run.current("fix"), "ok")
+    await run.close(run.current("make", "c1"), "ok")
+
+    gate = run.current("approve")
+    assert [item.member for item in gate.inputs] == ["c1"]
+    await run.close(run.current("make", "c2"), "ok")
+    assert len([step for step in run.steps("approve") if step.is_open]) == 1
+
+
+async def test_a_join_all_gate_does_not_reuse_deliveries_an_earlier_opening_consumed() -> None:
+    run = two_checks_into_a_gate({"joinMode": "all"})
+    await run.launch()
+    await run.close(run.current("fix"), "ok")
+    await run.close(run.current("make", "c1"), "ok")
+    await run.close(run.current("make", "c2"), "ok")
+    await run.engine.resolve_gate(
+        run.run_id, "approve", GateDecision.REQUEST_CHANGES, GateActor(ActorKind.PERSON, "p"), ""
+    )
+
+    # The change went round: the gate needs both checks of the new generation again.
+    await run.close(run.current("fix"), "ok")
+    await run.close(run.current("make", "c1"), "ok")
+    assert [step.state.value for step in run.steps("approve")] == ["done"]
+    await run.close(run.current("make", "c2"), "ok")
+    assert [step.state.value for step in run.steps("approve")] == ["done", "waiting"]

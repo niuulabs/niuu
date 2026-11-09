@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from ting.domain.models import WorkflowDefinition
 from ting.domain.services.workflow_step_engine import StepRunRequest, WorkflowStepEngine
 from ting.domain.step_definition import step_run_definition
@@ -42,7 +43,6 @@ from ting.ports.workflow_steps import (
     StepSessionPort,
     WorkflowStepRepository,
 )
-from ting.system_workflows import load_system_workflows
 
 STEP_DEADLINE_SECONDS = 600.0
 SESSION_POLL_SECONDS = 0.01

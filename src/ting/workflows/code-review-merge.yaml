@@ -1,0 +1,191 @@
+schema_version: 1
+id: 5b95a49b-471c-5ef1-b20b-5b156b070568
+name: Code, Review and Merge
+description: The coder implements a change, the reviewer and the security auditor check it in parallel,
+  and once both pass a person approves the merge and the coder merges it. Either reviewer, or the
+  person, can send the work back to the coder, with no limit on the rounds.
+version: 1.0.0
+persona_dependencies:
+  coder:
+    id: coder
+    revision: content-6c648f6dd3dafec8
+    digest: sha256:6c648f6dd3dafec85cc2090c32b1400feee7acab2a2fd4fe17a3b0ce90521c69
+    path: personas/coder.yaml
+  reviewer:
+    id: reviewer
+    revision: content-8b9a792f57d3aeea
+    digest: sha256:8b9a792f57d3aeea4003c7207bc6451344c9cb0aa927efc55bfd681799d37c05
+    path: personas/reviewer.yaml
+  security-auditor:
+    id: security-auditor
+    revision: content-372ca2715f0fb1c9
+    digest: sha256:372ca2715f0fb1c9318735489792df2af63bd7138cd72358ccf07f96e5a8b76a
+    path: personas/security-auditor.yaml
+graph:
+  tags:
+  - code
+  - review
+  - security
+  - merge
+  requiresRepository: true
+  nodes:
+  - id: code-request
+    kind: trigger
+    label: Code change requested
+    source: code request
+    dispatchEvent: code.requested
+    position:
+      x: 96
+      y: 280
+  - id: code-implement
+    kind: stage
+    label: Implement the change
+    description: Implement the requested change in the repository, with tests, and commit and push it
+      so the reviewers can read the exact diff. When a reviewer or the security auditor sent the work
+      back, address every finding they raised before reporting the change done again.
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: coder
+      model: claude-opus-5-5
+      consumesEventTypes:
+      - code.requested
+      - review.changes_requested
+      - security.changes_requested
+      - merge.changes_requested
+      - code.unblocked
+    position:
+      x: 352
+      y: 280
+  - id: code-checks
+    kind: stage
+    label: Review and security review
+    description: The reviewer checks correctness, maintainability and the project's conventions; the
+      security auditor checks for exploitable weaknesses. Both read the same pushed change and each
+      gives its own verdict.
+    executionMode: parallel
+    joinMode: any
+    stageMembers:
+    - personaId: reviewer
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - code.changed
+    - personaId: security-auditor
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - code.changed
+    position:
+      x: 704
+      y: 280
+  - id: code-merge
+    kind: stage
+    label: Merge the change
+    description: A person approved the merge. Merge the reviewed change into the repository's target branch. If
+      a hosted pull or merge request exists for it, merge that request with the host's normal merge
+      path. Otherwise merge the working branch into the repository's default branch (main when there
+      is no obvious default) and push. Report the change as done only when the merge is pushed. When
+      the merge cannot be completed (a conflict, a protected branch, failing checks), report blocked
+      and say why; never report a merge that did not land.
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: coder
+      model: claude-opus-5-5
+      consumesEventTypes:
+      - merge.approved
+    position:
+      x: 1408
+      y: 280
+  - id: code-approve
+    kind: gate
+    label: Approve merge
+    condition: Merging lands the change on the target branch.
+    mode: human_approval
+    pendingBehavior: help_needed
+    approvalEvent: merge.approved
+    changesRequestedEvent: merge.changes_requested
+    instructions: The reviewer and the security auditor both passed this change. Read their findings and
+      the diff, and approve only a change you are willing to merge. Otherwise request changes with
+      specifics, and the coder continues in this same run.
+    joinMode: all
+    position:
+      x: 1056
+      y: 280
+  - id: code-blocked
+    kind: gate
+    label: Coder blocked
+    condition: The coder could not finish and says why. Answer its question or correct the request, and
+      the work goes back to the coder.
+    mode: human_approval
+    pendingBehavior: help_needed
+    joinMode: any
+    approvalEvent: code.unblocked
+    changesRequestedEvent: code.unblocked
+    instructions: Read the coder's stated reason, then answer it or change what was asked. The coder
+      continues in this same run with your answer.
+    position:
+      x: 528
+      y: 480
+  - id: code-merged
+    kind: end
+    label: Change merged
+    joinMode: all
+    completionEvent: code.merged
+    passingVerdicts:
+    - pass
+    position:
+      x: 1760
+      y: 280
+  edges:
+  - id: edge-request-to-implement
+    source: code-request
+    target: code-implement
+    label: code.requested -> code.requested
+  - id: edge-implement-to-checks
+    source: code-implement
+    target: code-checks
+    label: code.changed -> code.changed
+  - id: edge-implement-to-blocked
+    source: code-implement
+    target: code-blocked
+    label: code.blocked -> code.blocked
+  - id: edge-blocked-to-implement
+    source: code-blocked
+    target: code-implement
+    label: code.unblocked -> code.unblocked
+    rework: true
+  - id: edge-review-to-implement
+    source: code-checks
+    target: code-implement
+    label: review.changes_requested -> review.changes_requested
+    rework: true
+  - id: edge-security-to-implement
+    source: code-checks
+    target: code-implement
+    label: security.changes_requested -> security.changes_requested
+    rework: true
+  - id: edge-review-to-approve
+    source: code-checks
+    target: code-approve
+    label: review.passed -> review.passed
+  - id: edge-security-to-approve
+    source: code-checks
+    target: code-approve
+    label: security.passed -> security.passed
+  - id: edge-approve-to-merge
+    source: code-approve
+    target: code-merge
+    label: merge.approved -> merge.approved
+  - id: edge-approve-to-implement
+    source: code-approve
+    target: code-implement
+    label: merge.changes_requested -> merge.changes_requested
+    rework: true
+  - id: edge-merge-to-blocked
+    source: code-merge
+    target: code-blocked
+    label: code.blocked -> code.blocked
+  - id: edge-merge-to-end
+    source: code-merge
+    target: code-merged
+    label: code.changed -> code.merged
