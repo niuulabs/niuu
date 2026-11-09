@@ -3782,6 +3782,81 @@ describe('LiveSessionDetailPage', () => {
       ).toBeInTheDocument();
     });
 
+    it("shows a finished run's members as workers of its first session, stopped", async () => {
+      mockChatState();
+      const coder = listed(leadId, 'wf-v588-coder', 'terminated', {
+        projectId: 'lexi',
+        role: 'coder',
+      });
+      const reviewer = {
+        ...listed(workerId, 'wf-v588-reviewer', 'terminated', {
+          projectId: 'lexi',
+          role: 'reviewer',
+          parent: { instanceId: 'local', sessionId: leadId },
+        }),
+        runId: 'v588',
+      };
+      wrap(leadId, {
+        session: {
+          ...STOPPED_SESSION,
+          name: 'wf-v588-coder',
+          runId: 'v588',
+          coordination: { projectId: 'lexi', role: 'coder' },
+        },
+        sessionStore: {
+          listSessions: async () => [{ ...coder, runId: 'v588' }, reviewer],
+          listSources: undefined,
+        },
+        volundr: {
+          getConversationHistory: vi.fn().mockResolvedValue({
+            turns: [
+              {
+                id: 'step',
+                role: 'user',
+                content: 'Write probe/hello.txt.',
+                created_at: '2026-11-08T23:53:40Z',
+              },
+              {
+                id: 'coder-reply',
+                role: 'assistant',
+                content: 'Created probe/hello.txt.',
+                created_at: '2026-11-08T23:54:00Z',
+              },
+              {
+                // The room kept the reviewer's outcome as its turn.
+                id: 'reviewer-outcome',
+                role: 'assistant',
+                content:
+                  'Session completed (2 turns, 0 files)\n\n---outcome---\nevent_type: code.changed\nverdict: pass\nsummary: Mesh answer matched.\n---end---',
+                created_at: '2026-11-08T23:55:44Z',
+                participant_meta: {
+                  peer_id: workerId,
+                  persona: 'reviewer',
+                  display_name: 'wf-v588-reviewer',
+                  participant_type: 'skuld',
+                },
+              },
+            ],
+          }),
+        },
+      });
+
+      const strip = await screen.findByTestId('workers-strip');
+      expect(document.body.textContent).toContain('Created probe/hello.txt.');
+      expect(document.body.textContent).toContain('Mesh answer matched.');
+      // The coder speaks as the run's Coder; the reviewer's kept outcome is the reviewer's.
+      const speakers = [...document.querySelectorAll('.niuu-chat-room-persona-name')].map(
+        (node) => node.textContent,
+      );
+      expect(speakers).toContain('Coder');
+      expect(speakers).toContain('wf-v588-reviewer');
+      expect(speakers).not.toContain('Coordinator');
+      const chip = await within(strip).findByRole('button', { name: /wf-v588-reviewer/ });
+      expect(within(chip).getByRole('img', { name: 'Stopped' })).toBeInTheDocument();
+      // Listed once: as the run's worker, not again as a worker-session chip.
+      expect(within(strip).queryByTestId(`worker-chip-${workerId}`)).toBeNull();
+    });
+
     it('says only Worker when the list does not know the coordinator', async () => {
       mockChatState();
       wrap(workerId, {

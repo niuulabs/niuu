@@ -115,3 +115,30 @@ async def test_a_run_in_no_project_or_without_the_mesh_hosts_no_room() -> None:
     assert "room" not in no_project.values
     assert "room" not in no_mesh.values
     assert "room" not in declined.values
+
+
+async def test_a_member_announces_its_persona_and_topics_from_its_pinned_persona() -> None:
+    document = {
+        "schema_version": 1,
+        "id": "reviewer",
+        "revision": "r1",
+        "definition": {
+            "name": "reviewer",
+            "consumes": {"event_types": ["code.changed"]},
+            "produces": {
+                "event_type": "review.passed",
+                "event_type_map": {"needs_changes": "review.changes_requested"},
+            },
+        },
+    }
+
+    result = await WorkflowStepHostContributor().contribute(
+        _session(), _step_host(workflow_run_id=RUN_ID, persona_definition=document)
+    )
+
+    assert result.values["mesh"]["announce"] == {
+        "persona": "reviewer",
+        "consumes": ["code.changed"],
+        # Every Skuld session also publishes code.changed after each turn.
+        "emits": ["code.changed", "review.changes_requested", "review.passed"],
+    }

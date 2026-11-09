@@ -645,6 +645,7 @@ const WORKER_STATUS_TEXT: Record<Worker['status'], string> = {
   idle: 'Idle',
   error: 'Error',
   left: 'Left',
+  stopped: 'Stopped',
 };
 
 /** A worker in the open session's room, under its coordinator: picking it shows only its output. */
@@ -696,7 +697,13 @@ function SessionTreeEntry({
   depth?: number;
   openRoom?: OpenRoom | null;
 }) {
-  const roomWorkers = openRoom?.sessionId === node.session.id ? openRoom.workers : [];
+  // A room worker that is one of the session's nested sessions (a workflow run's member) is
+  // already listed as that session.
+  const nestedIds = new Set(node.children.map((child) => child.session.id));
+  const roomWorkers =
+    openRoom?.sessionId === node.session.id
+      ? openRoom.workers.filter((worker) => !nestedIds.has(worker.peerId))
+      : [];
   const hasChildren = node.children.length > 0 || roomWorkers.length > 0;
   const [folded, setFolded] = useForgePreference(
     `tree.${node.session.clusterId}.${node.session.id}`,

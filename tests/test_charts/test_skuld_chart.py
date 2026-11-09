@@ -1382,6 +1382,23 @@ class TestMeshOnNngInACluster:
         assert annotations["ravn.niuu.world/participant-type"] == "skuld"
         assert annotations["ravn.niuu.world/display-name"] == "wf-probe-coder"
 
+    def test_the_pod_announces_its_persona_and_topics_to_pod_discovery(self):
+        docs = self._docs(
+            "--set",
+            "mesh.enabled=true",
+            "--set",
+            "mesh.announce.persona=reviewer",
+            "--set-json",
+            'mesh.announce.consumes=["code.changed"]',
+            "--set-json",
+            'mesh.announce.emits=["code.changed","review.passed"]',
+        )
+        annotations = self._kind(docs, "Deployment")["spec"]["template"]["metadata"]["annotations"]
+
+        assert annotations["ravn.niuu.world/persona"] == "reviewer"
+        assert annotations["ravn.niuu.world/consumes"] == "code.changed"
+        assert annotations["ravn.niuu.world/emits"] == "code.changed,review.passed"
+
     def test_the_pod_gets_its_ip_its_realm_label_and_its_peer_id(self):
         docs = self._docs("--set", "mesh.enabled=true", "--set", "mesh.realmId=flock-a")
         pod = self._kind(docs, "Deployment")["spec"]["template"]

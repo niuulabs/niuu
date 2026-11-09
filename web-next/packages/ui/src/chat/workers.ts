@@ -27,7 +27,7 @@ export interface WorkerOutcome {
 }
 
 /** `left`: took part in the work and is no longer in the room. */
-export type WorkerStatus = 'working' | 'idle' | 'error' | 'left';
+export type WorkerStatus = 'working' | 'idle' | 'error' | 'left' | 'stopped';
 
 export interface Worker {
   peerId: string;
@@ -120,6 +120,8 @@ function workerStatus(status: string | undefined): WorkerStatus {
       return 'error';
     case 'left':
       return 'left';
+    case 'stopped':
+      return 'stopped';
     default:
       return 'idle';
   }

@@ -91,6 +91,7 @@ import type {
 } from '../models/volundr.model';
 import { useSessionDetail, useSessionList } from './hooks/useSessionStore';
 import { coordinationOf, isCoordinationRole, leaderTag } from '../domain/projectTree';
+import { withRunMembers } from '../domain/runRoom';
 import { buildSessionLinks } from './sessions/sessionLinks';
 import { CoordinatorTag, WorkerOf } from './detail/Coordination';
 import { DecisionDock } from './detail/DecisionDock';
@@ -3558,6 +3559,20 @@ function LiveSessionDetailPageInner({
   );
   const isCoordinator =
     liveSession?.coordination?.role === 'coordinator' || coordination.workers.length > 0;
+  // A workflow run's first session hosts the run's room: its members are in it from Forge's
+  // record, whether the room is live or the run has finished.
+  const runHost = useMemo(
+    () => (liveSession ? { id: sessionId, runId: liveSession.runId } : null),
+    [liveSession, sessionId],
+  );
+  const roomParticipants = useMemo(
+    () => withRunMembers(chat.participants, runHost, coordination.workers),
+    [chat.participants, runHost, coordination.workers],
+  );
+  const replayRoomParticipants = useMemo(
+    () => withRunMembers(replayParticipants, runHost, coordination.workers),
+    [replayParticipants, runHost, coordination.workers],
+  );
   const hasCoordinator = Boolean(liveSession?.coordination?.parent);
   const openSession = useCallback(
     (id: string) =>
@@ -3637,14 +3652,14 @@ function LiveSessionDetailPageInner({
   const ravnWorkers = useMemo(
     () =>
       isReady
-        ? roomWorkers(chat.participants, chat.meshEvents, chat.messages, sessionId)
-        : roomWorkers(replayParticipants, replayMeshEvents, replayMessages, sessionId),
+        ? roomWorkers(roomParticipants, chat.meshEvents, chat.messages, sessionId)
+        : roomWorkers(replayRoomParticipants, replayMeshEvents, replayMessages, sessionId),
     [
       isReady,
-      chat.participants,
+      roomParticipants,
       chat.meshEvents,
       chat.messages,
-      replayParticipants,
+      replayRoomParticipants,
       replayMeshEvents,
       replayMessages,
       sessionId,
@@ -4553,8 +4568,9 @@ function LiveSessionDetailPageInner({
                             onLoadOlderHistory={chat.loadOlderHistory}
                             historyError={chat.historyError}
                             onRetryHistory={chat.retryHistory}
-                            participants={chat.participants}
+                            participants={roomParticipants}
                             hostPeerId={sessionId}
+                            hostLabel={leaderTag(liveSession?.coordination?.role)}
                             workerSessionIds={workerSessionIds}
                             focusedWorkerId={focusedWorkerId}
                             onFocusWorker={onFocusWorker}
@@ -4633,8 +4649,9 @@ function LiveSessionDetailPageInner({
                           chatEndpoint={chatEndpoint}
                           connected={false}
                           historyLoaded={!transcriptQuery.isLoading}
-                          participants={replayParticipants}
+                          participants={replayRoomParticipants}
                           hostPeerId={sessionId}
+                          hostLabel={leaderTag(liveSession?.coordination?.role)}
                           workerSessionIds={workerSessionIds}
                           focusedWorkerId={focusedWorkerId}
                           onFocusWorker={onFocusWorker}

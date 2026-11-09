@@ -580,6 +580,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
             )
 
     async def _handle_outcome(self, participant: Participant, event: dict[str, Any]) -> None:
+        """Show a member's outcome; in a realm room, also keep it as the member's turn."""
         if event.get("routingOnly"):
             return
         event_type = str(event.get("eventType") or "")
@@ -598,6 +599,18 @@ class SkuldCollaborationAdapter(CollaborationRoom):
                 outcome[key] = event[key]
         self._save_peer_work(participant)
         await self._emit_frame(outcome)
+        if self._config.realm_room:
+            # A run's room keeps what its members did: the outcome is also the member's turn
+            # in the host's conversation, so a finished run shows it, not only a live page.
+            await self._handle_message(
+                participant,
+                {
+                    "kind": "message",
+                    "content": outcome_turn_content(outcome),
+                    "visibility": "public",
+                    "metadata": {"outcome_event_type": event_type},
+                },
+            )
         await self._deliver_outcome_to_subscribers(
             outcome,
             source_is_mesh=participant.participant_kind == "mesh",
@@ -937,3 +950,43 @@ class SkuldCollaborationAdapter(CollaborationRoom):
 
 
 __all__ = ["SkuldCollaborationAdapter"]
+
+#: What an outcome carries for its receivers to act on, not what the member concluded: the
+#: task it was given, its diff and where it works. The room's turn leaves them out.
+_OUTCOME_CONTEXT_KEYS = frozenset(
+    {"task_description", "diff_summary", "workspace_path", "session_id", "persona"}
+)
+
+
+def outcome_turn_content(outcome: dict[str, Any]) -> str:
+    """A member's outcome as a turn: its summary, then the outcome block the chat reads.
+
+    Each field is one ``key: value`` line (a structured value as compact JSON), the format the
+    chat's outcome card and the room's worker list parse back from a stored turn.
+    """
+    summary = str(outcome.get("summary") or "").strip()
+    event_type = str(outcome.get("eventType") or "")
+    raw = dict(outcome.get("fields") or {})
+    fields: dict[str, Any] = {"event_type": event_type} if event_type else {}
+    for key in ("verdict", "summary"):
+        if outcome.get(key):
+            fields[key] = outcome[key]
+    # The member's own outcome block, when it wrote one, is what it concluded.
+    structured = raw.pop("outcome", None)
+    if isinstance(structured, dict):
+        for key, value in structured.items():
+            fields.setdefault(str(key), value)
+    for key, value in raw.items():
+        if key not in _OUTCOME_CONTEXT_KEYS:
+            fields.setdefault(str(key), value)
+    lines = [
+        f"{key}: {_one_line(value)}" for key, value in fields.items() if value not in (None, "")
+    ]
+    head = summary.splitlines()[0] if summary else (event_type or "Outcome")
+    return "\n".join([head, "", "---outcome---", *lines, "---end---"])
+
+
+def _one_line(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, separators=(",", ":"), default=str)
+    return " ".join(str(value).split())

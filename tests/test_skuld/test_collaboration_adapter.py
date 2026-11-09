@@ -578,3 +578,82 @@ async def test_peer_working_steps_are_saved_when_the_peer_leaves() -> None:
 
     (work,) = [call.args[0] for call in append_turn.call_args_list]
     assert work.parts == [{"type": "reasoning", "text": "Half way"}]
+
+
+def _realm_room(**kwargs) -> tuple[SkuldCollaborationAdapter, MagicMock, list]:
+    channels = MagicMock()
+    channels.broadcast = AsyncMock()
+    turns: list = []
+    adapter = SkuldCollaborationAdapter(
+        RoomConfig(
+            enabled=True,
+            environment_id="workflow-run-1",
+            presence_sweep_interval_s=0,
+            realm_room=True,
+        ),
+        channels,
+        emit_frame=channels.broadcast,
+        append_turn=turns.append,
+        **kwargs,
+    )
+    return adapter, channels, turns
+
+
+@pytest.mark.asyncio
+async def test_a_realm_room_keeps_a_members_outcome_as_its_turn() -> None:
+    adapter, channels, turns = _realm_room()
+    await adapter.register_mesh_peer(
+        "reviewer-session",
+        "reviewer",
+        display_name="wf-run-1-reviewer",
+        participant_type="skuld",
+        participant_kind="mesh",
+        heartbeat_ttl_s=0.0,
+    )
+    channels.broadcast.reset_mock()
+
+    await adapter.handle_collaboration_frame(
+        "reviewer-session",
+        {
+            "events": [
+                {
+                    "kind": "outcome",
+                    "eventType": "code.changed",
+                    "summary": "Session completed (2 turns, 0 files)",
+                    "fields": {
+                        "event_type": "code.changed",
+                        "task_description": "the whole brief, which the turn leaves out",
+                        "diff_summary": "a long diff",
+                        "outcome": {"verdict": "pass", "summary": "Mesh answer matched."},
+                        "files_changed": ["probe/hello.txt"],
+                    },
+                }
+            ]
+        },
+    )
+
+    frames = [call.args[0]["type"] for call in channels.broadcast.await_args_list]
+    assert "room_outcome" in frames and "room_message" in frames
+    [turn] = [t for t in turns if t.visibility == "public"]
+    assert turn.participant_id == "reviewer-session"
+    assert turn.participant_meta["display_name"] == "wf-run-1-reviewer"
+    assert turn.content.splitlines()[0] == "Session completed (2 turns, 0 files)"
+    block = turn.content.split("---outcome---")[1].split("---end---")[0]
+    assert "verdict: pass" in block
+    assert "event_type: code.changed" in block
+    assert 'files_changed: ["probe/hello.txt"]' in block
+    assert "task_description" not in block and "diff_summary" not in block
+
+
+@pytest.mark.asyncio
+async def test_any_other_room_shows_an_outcome_without_keeping_a_turn() -> None:
+    turns: list = []
+    adapter, channels = _adapter(append_turn=turns.append)
+    await adapter.register_mesh_peer("producer", "Producer", participant_kind="mesh")
+
+    await adapter.handle_collaboration_frame(
+        "producer",
+        {"events": [{"kind": "outcome", "eventType": "research.completed", "fields": {}}]},
+    )
+
+    assert [t for t in turns if t.visibility == "public"] == []

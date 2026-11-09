@@ -50,7 +50,7 @@ import { ProgressLane } from '../ProgressLane';
 import { WorkerSheet } from '../WorkerSheet';
 import { HandoffRow, handoffParties } from '../HandoffRow';
 import { AttentionRow } from '../AttentionRow';
-import { isCoordinator } from '../RoomMessage/speaker';
+import { isCoordinator, type RoomHost } from '../RoomMessage/speaker';
 import { ChatInput } from '../ChatInput';
 import { PlanDock } from '../PlanDock';
 import { QuestionBand } from '../QuestionBand';
@@ -166,6 +166,8 @@ export interface SessionChatProps {
    * another session in it (a member of the workflow run it started) is one of its workers.
    */
   hostPeerId?: string;
+  /** What the host is called in its room: Coordinator, or its role in a workflow run's. */
+  hostLabel?: string;
   /**
    * Ids of the worker sessions this session coordinates. They join the room's agents in the
    * Workers strip, resolved through the page's session links.
@@ -294,10 +296,10 @@ type InlineItem =
 const COORDINATOR_KEY = 'coordinator';
 
 /** Who a message speaks as, for sharing a header; null for messages that have no speaker. */
-function speakerKey(message: ChatMessage): string | null {
+function speakerKey(message: ChatMessage, host?: RoomHost): string | null {
   if (message.metadata?.messageType === 'system') return null;
   if (message.participant) {
-    return isCoordinator(message.participant) ? COORDINATOR_KEY : message.participant.peerId;
+    return isCoordinator(message.participant, host) ? COORDINATOR_KEY : message.participant.peerId;
   }
   return message.role === 'assistant' ? COORDINATOR_KEY : null;
 }
@@ -341,6 +343,7 @@ export function SessionChat({
   onLoadOlderHistory,
   participants = new Map(),
   hostPeerId,
+  hostLabel,
   workerSessionIds,
   showWorkersStrip = true,
   aboveComposer,
@@ -488,15 +491,22 @@ export function SessionChat({
     [participantsMap, meshEvents, messages, hostPeerId],
   );
   const stages = useMemo(() => workerStages(workers), [workers]);
+  const roomHost = useMemo<RoomHost>(
+    () => ({ peerId: hostPeerId, label: hostLabel }),
+    [hostPeerId, hostLabel],
+  );
   const hasWorkers = workers.length > 0;
   const sessionLinks = useSessionLinks();
+  // A worker session that is also in the room (a workflow run's member) is listed once, as
+  // one of the room's workers.
   const workerSessions = useMemo(
     () =>
       (workerSessionIds ?? []).flatMap((id): SessionLink[] => {
+        if (workers.some((worker) => worker.peerId === id)) return [];
         const link = sessionLinks?.resolve(id);
         return link ? [link] : [];
       }),
-    [sessionLinks, workerSessionIds],
+    [sessionLinks, workerSessionIds, workers],
   );
   const roomView = isRoomMode || isRoomSession || hasWorkers;
   const [ownFocus, setOwnFocus] = useState<string | null>(null);
@@ -787,7 +797,7 @@ export function SessionChat({
     if (!hasWorkers) return hidden;
     let previous: string | null = null;
     const visit = (message: ChatMsg) => {
-      const key = speakerKey(message);
+      const key = speakerKey(message, roomHost);
       if (key && key === previous) hidden.add(message.id);
       previous = key;
     };
@@ -811,7 +821,7 @@ export function SessionChat({
       if (group.turn.final) visit(group.turn.final);
     }
     return hidden;
-  }, [hasWorkers, timeline]);
+  }, [hasWorkers, timeline, roomHost]);
 
   const hasRunningAssistantMessage = visibleMessages.some(
     (message) => message.role === 'assistant' && message.status === 'running',
@@ -1009,6 +1019,7 @@ export function SessionChat({
           <RoomMessage
             message={msg}
             workerRoom={hasWorkers}
+            host={roomHost}
             showHeader={!hiddenHeaders.has(msg.id)}
             onShowDetail={worker ? openWorker : undefined}
             onCopy={handleCopy}

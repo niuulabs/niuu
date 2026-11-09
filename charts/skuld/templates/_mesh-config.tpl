@@ -53,6 +53,17 @@ ravn.niuu.world/participant-type: "skuld"
 {{- with .Values.session.name }}
 ravn.niuu.world/display-name: {{ . | quote }}
 {{- end }}
+{{- with .Values.mesh.announce }}
+{{- with .persona }}
+ravn.niuu.world/persona: {{ . | quote }}
+{{- end }}
+{{- with .consumes }}
+ravn.niuu.world/consumes: {{ join "," . | quote }}
+{{- end }}
+{{- with .emits }}
+ravn.niuu.world/emits: {{ join "," . | quote }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{- /* The pod's own IP, and the host other pods dial this one at. */ -}}
