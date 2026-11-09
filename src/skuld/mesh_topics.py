@@ -138,6 +138,10 @@ def mesh_topics(settings: SkuldSettings) -> MeshTopics:
     could not have started its harness with it either.
     """
     mesh = settings.mesh
+    if settings.workflow_steps.root:
+        # A run's root runs no agent, so nothing it subscribed to would reach one: it only
+        # publishes the run's offers. The mesh config's default subscription is a coder's.
+        return MeshTopics(consumes=(), produces=_merged(mesh.publish_event_types))
     raw = settings.session.persona
     if raw is None:
         return MeshTopics(

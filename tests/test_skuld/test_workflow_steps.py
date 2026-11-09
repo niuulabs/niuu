@@ -526,18 +526,19 @@ class TestRefusedOffers:
 
         self._assert_refused(broker, "unverified", caplog, _counted)
 
-    async def test_an_offer_that_names_no_contract_for_this_persona(
+    async def test_an_offer_for_other_members_is_ignored_not_refused(
         self, tmp_path, caplog, _counted
     ) -> None:
+        """A reviewer hearing the coder's offer on a shared topic was not asked."""
         broker = step_broker(tmp_path)
         caplog.set_level(logging.ERROR)
 
         decision = await _take(broker, offer_body(contracts=[contract_of(alias="reviewer")]))
 
-        assert decision == OFFER_REFUSED
-        report = self._assert_refused(broker, "pin", caplog, _counted)
-        assert "[reviewer]" in report["detail"]
-        assert "'coder'" in report["detail"]
+        assert decision == OFFER_IGNORED
+        assert _reports(broker, "offer_refused") == []
+        assert _reports(broker, "passed") == []
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
     async def test_an_offer_that_pins_another_revision_of_the_persona(
         self, tmp_path, caplog, _counted

@@ -192,6 +192,12 @@ def _configure_logging() -> None:
 _configure_logging()
 logger = logging.getLogger("skuld.broker")
 
+#: What a workflow run's root announces itself as on the run's mesh: it runs no agent.
+RUN_ROOT_PERSONA = "coordinator"
+RUN_ROOT_DESCRIPTION = (
+    "The run's root: it publishes the run's step offers and hosts its room; it runs no agent."
+)
+
 FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 FORGE_CHRONICLES_PATH = "/api/v1/forge/chronicles"
 FORGE_EVENTS_PATH = "/api/v1/forge/events"
@@ -982,20 +988,25 @@ class Broker(
             )
 
         # Build discovery adapter using shared niuu.mesh.discovery_builder
+        run_root = self._settings.workflow_steps.root
         own_identity = MeshIdentity(
             peer_id=own_peer_id,
             realm_id=mesh_cfg.realm_id,
-            persona=topics.persona_id or mesh_cfg.persona,
+            # A run's root runs no agent: it is the run's coordinator (it publishes the run's
+            # offers and hosts its room), never the coder the mesh config defaults to.
+            persona=RUN_ROOT_PERSONA if run_root else topics.persona_id or mesh_cfg.persona,
             # The session's name, so a peer can address this session by it.
             display_name=self._settings.session.name or "Skuld",
             participant_type="skuld",
-            capabilities=list(mesh_cfg.capabilities),
+            capabilities=[] if run_root else list(mesh_cfg.capabilities),
             permission_mode="full_access",
             version="0.1.0",
             consumes_event_types=list(topics.consumes),
-            emits_event_types=["code.changed", *topics.produces],
-            role=topics.role,
-            description=topics.description,
+            emits_event_types=(
+                list(topics.produces) if run_root else ["code.changed", *topics.produces]
+            ),
+            role=RUN_ROOT_PERSONA if run_root else topics.role,
+            description=RUN_ROOT_DESCRIPTION if run_root else topics.description,
             pub_address=self._mesh_pub_address,
             activity_state=self._activity_state,
             busy=self._coarse_bucket(self._activity_state) == "running",

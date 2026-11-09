@@ -980,11 +980,29 @@ async def start_workflow_run(
         await fail_unstarted_campaign(campaign_repo, saved, str(exc))
         if isinstance(exc, WorkflowDocumentError):
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if isinstance(exc, httpx.HTTPStatusError):
+            raise _forge_refusal(exc) from exc
         raise
     started = await campaign_repo.get_campaign(saved.id)
     if started is None:
         raise LookupError(f"campaign {saved.slug} vanished while its run started")
     return started
+
+
+def _forge_refusal(exc: httpx.HTTPStatusError) -> HTTPException:
+    """Forge's answer to a run that could not start, as the launch's own answer.
+
+    A refusal Forge explains (no free session slot: 409, a member it will not start: 422,
+    not allowed: 403) keeps its status, so the caller can act on it; anything else Forge
+    answered is a 502 naming what it said. Either way the run was not started.
+    """
+    forge_status = exc.response.status_code
+    status_code = forge_status if forge_status in _FORGE_REFUSALS_PASSED_ON else 502
+    return HTTPException(status_code=status_code, detail=f"The run was not started: {exc}")
+
+
+#: Forge refusals a launch answers with Forge's own status.
+_FORGE_REFUSALS_PASSED_ON = frozenset({403, 404, 409, 422})
 
 
 async def fail_unstarted_campaign(

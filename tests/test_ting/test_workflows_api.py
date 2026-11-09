@@ -1754,6 +1754,37 @@ class TestWorkflowCatalogAPI:
         assert campaign.status.value == "failed"
         assert campaign.metadata["failure_error"] == "no Forge capacity"
 
+    @pytest.mark.parametrize(("forge_status", "expected"), [(409, 409), (422, 422), (500, 502)])
+    def test_a_run_forge_refuses_answers_with_forges_reason(
+        self, forge_status: int, expected: int
+    ) -> None:
+        workflow = _make_research_workflow()
+        campaign_repo = RecordingCampaignRepository()
+        request = httpx.Request("POST", "http://forge/api/v1/forge/sessions")
+        refusal = httpx.HTTPStatusError(
+            "Forge could not start the run's room: No session slot is free: 4 of 4 sessions "
+            "are running on this host",
+            request=request,
+            response=httpx.Response(forge_status, request=request),
+        )
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([RecordingVolundrPort()]),
+            campaign_repo=campaign_repo,
+            workflow_runs=FakeWorkflowRuns(launch_error=refusal),
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "No room for it."},
+        )
+
+        assert response.status_code == expected
+        assert response.json()["detail"].startswith("The run was not started: Forge could not")
+        [campaign] = campaign_repo.items.values()
+        assert campaign.status.value == "failed"
+
     def test_launch_workflow_still_refuses_a_workflow_the_caller_cannot_see(self) -> None:
         workflow = _make_workflow(owner_id="someone-else")
         adapter = RecordingVolundrPort()

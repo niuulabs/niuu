@@ -9,7 +9,7 @@ import pytest
 from niuu.forge_mcp.models import ForgeApiError
 from niuu.mesh.identity import MeshPeer
 from personas.domain.persona_document import PersonaDocumentError
-from skuld.config import MeshConfig, SkuldSettings
+from skuld.config import MeshConfig, SkuldSettings, WorkflowStepsConfig
 from skuld.forge_mcp.host import BrokerForgeMcpHost
 from skuld.mesh_topics import describe_peer, mesh_topics, peer_table
 from tests.test_skuld.test_broker_review_regressions import _broker
@@ -133,6 +133,32 @@ class TestBrokerAnnouncement:
             assert (identity.activity_state, identity.busy) == ("awaiting_input", False)
             broker._set_activity_state("idle")
             assert identity.activity_state == "idle"
+        finally:
+            await broker._mesh_adapter.stop()
+
+    async def test_a_runs_root_announces_itself_as_the_runs_coordinator(self, tmp_path) -> None:
+        """The root runs no agent: it is never the coder the mesh config defaults to."""
+        broker = _broker(tmp_path)
+        broker._settings.session.name = "wf-run-1"
+        broker._settings.mesh = MeshConfig(
+            enabled=True,
+            peer_id="root",
+            transport="in_process",
+            rpc_timeout_s=5.0,
+            attestation={"required": False},
+        )
+        broker._settings.workflow_steps = WorkflowStepsConfig(root=True, run_id="run-1")
+        broker._room_bridge = None
+
+        await broker._start_mesh_adapter()
+        try:
+            identity = broker._mesh_identity
+            assert (identity.persona, identity.role) == ("coordinator", "coordinator")
+            assert identity.capabilities == []
+            assert "code.changed" not in identity.emits_event_types
+            assert identity.consumes_event_types == []
+            assert broker._mesh_adapter.standing_topics == ()
+            assert "runs no agent" in identity.description
         finally:
             await broker._mesh_adapter.stop()
 
