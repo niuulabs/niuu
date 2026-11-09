@@ -18,6 +18,7 @@ from niuu.ports.cli.transport import TransportCapabilities
 from skuld.broker import Broker, ConversationTurn
 from skuld.config import SkuldSettings
 from tests.test_adapters.test_rest_session_log import InMemoryLog, allow_log_access
+from tests.test_skuld.workflow_support import MEMBER_MESH, MEMBER_STEPS, PERSONA
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
 
 _SID = "468b74c4-a05d-57c5-afd8-f27b1a6e2191"
@@ -160,11 +161,13 @@ def _coordinator_broker(tmp_path, *, step_host=False):
                 "id": _SID,
                 "workspace_dir": str(tmp_path),
                 "initial_prompt": _BRIEF,
+                "persona": PERSONA if step_host else None,
             },
             volundr_api_url="http://forge.test",
             transport="subprocess",
             room={"enabled": True},
-            workflow_steps={"enabled": step_host},
+            mesh=MEMBER_MESH if step_host else {},
+            workflow_steps=MEMBER_STEPS if step_host else {},
         )
     )
     broker._transport = MagicMock()

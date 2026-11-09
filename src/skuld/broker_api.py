@@ -70,12 +70,7 @@ from skuld.presented_durable import (
 from skuld.preview import PreviewMiddleware
 from skuld.room_role_port import RoomRoleResolutionError
 from skuld.service_manager import ServiceCreateRequest, ServiceStatus
-from skuld.workflow_steps import (
-    WorkflowStepConflictError,
-    WorkflowStepNotHostedError,
-    WorkflowStepRequest,
-    WorkflowStepUnavailableError,
-)
+from skuld.workflow_steps import WorkflowOfferRefusedError, WorkflowStepNotHostedError
 from volundr.log_aggregate import aggregate_workspace_logs
 
 logger = logging.getLogger("skuld.broker")
@@ -1445,6 +1440,15 @@ class _RoomNoticeRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class _RoomOfferRequest(BaseModel):
+    """A workflow run's offer, as its engine signed it, for the run's root to publish."""
+
+    #: The ``step.offered`` payload exactly as the engine signed it.
+    offer: dict[str, Any]
+    #: The engine's attestation of ``offer`` (absent only where the mesh does not sign).
+    attestation: dict[str, Any] | None = None
+
+
 class _SessionRoomMessageRequest(BaseModel):
     """A member session speaking in a room this session hosts (stamped by Forge)."""
 
@@ -1651,6 +1655,22 @@ async def post_room_notice(body: _RoomNoticeRequest) -> dict:
     return {"status": "posted", "notice_id": body.notice_id}
 
 
+@app.post("/api/room/offer")
+async def post_room_offer(body: _RoomOfferRequest) -> dict:
+    """Publish a workflow offer on the run's mesh (owner only: unlisted in the room-role table).
+
+    The run's engine signs the offer and hands it to the run's root here; the root checks the
+    signature and publishes it verbatim, so every member that consumes its topic receives it.
+    The same offer posted again is the same event.
+    """
+    try:
+        return await broker.publish_workflow_offer(body.offer, body.attestation)
+    except WorkflowStepNotHostedError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except WorkflowOfferRefusedError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+
+
 @app.post("/api/room/session-message")
 async def send_session_room_message(request: Request, body: _SessionRoomMessageRequest) -> dict:
     """Record a message a member session says in a room this session hosts.
@@ -1840,36 +1860,6 @@ async def answer_help_request(request: Request, request_id: str, body: _HelpAnsw
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"status": "answered", "message_id": message_id}
-
-
-@app.post("/api/workflow/steps")
-async def activate_workflow_step(body: WorkflowStepRequest, response: Response) -> dict:
-    """Hold a workflow step on this session and hand its instructions to the harness.
-
-    202 when the step is new, 200 when this exact activation is already here (nothing
-    changes), 409 when a different step is open, 404 when this is not a step host.
-    """
-    try:
-        created, step = await broker.accept_workflow_step(body)
-    except WorkflowStepNotHostedError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except WorkflowStepConflictError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except WorkflowStepUnavailableError as exc:
-        raise HTTPException(503, str(exc)) from exc
-    response.status_code = status.HTTP_202_ACCEPTED if created else status.HTTP_200_OK
-    return step.status()
-
-
-@app.get("/api/workflow/steps/{activation_id}")
-async def get_workflow_step(activation_id: str) -> dict:
-    """The step's durable state: active, waiting, or closed with its ending."""
-    try:
-        return broker.get_workflow_step(activation_id).status()
-    except WorkflowStepNotHostedError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
 
 
 @app.get("/api/communication/routes")
