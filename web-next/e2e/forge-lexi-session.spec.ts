@@ -178,7 +178,7 @@ test('a live conversation shows tool runs, the plan, a question and a queued mes
     socket = ws;
     ws.onMessage((raw) => fromBrowser.push(JSON.parse(String(raw))));
   });
-  await page.goto('/volundr/session/gates');
+  await page.goto('/volundr/sessions/gates');
   await page.locator('#tab-chat').click();
   await expect.poll(() => Boolean(socket)).toBe(true);
   const send = (frame: object) => socket!.send(JSON.stringify(frame));

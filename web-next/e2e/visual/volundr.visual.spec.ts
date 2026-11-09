@@ -57,7 +57,7 @@ test('volundr sessions matches web2', async ({ page }) => {
 
 test('volundr session chat matches web2', async ({ page }) => {
   // ds-1 is the first running session in seed data
-  await page.goto('/volundr/session/ds-1');
+  await page.goto('/volundr/sessions/ds-1');
   await page.waitForLoadState('networkidle');
   await expect(page).toHaveScreenshot('volundr-session-chat.png');
 });

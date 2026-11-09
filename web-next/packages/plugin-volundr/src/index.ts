@@ -5,12 +5,7 @@ import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ForgePage } from './ui/ForgePage';
 import { VolundrPage } from './ui/VolundrPage';
 import { NewSessionPage } from './ui/NewSessionPage';
-import {
-  VolundrSessionsRoute,
-  VolundrSessionRoute,
-  VolundrArchivedRoute,
-  VolundrHostsRoute,
-} from './ui/routes';
+import { VolundrSessionsRoute, VolundrArchivedRoute, VolundrHostsRoute } from './ui/routes';
 import { LaunchCatalogPage } from './ui/LaunchCatalogPage';
 import { HistoryPage } from './ui/HistoryPage';
 import { NotificationsPage } from './ui/notifications/NotificationsPage';
@@ -73,8 +68,18 @@ export const volundrPlugin = definePlugin({
     }),
     createRoute({
       getParentRoute: () => rootRoute,
+      // The standalone session page is gone: an old link opens the session on the Sessions
+      // page, keeping its anchor (a notification) and query.
       path: '/volundr/session/$sessionId',
-      component: VolundrSessionRoute,
+      beforeLoad: ({ params, location }) => {
+        throw redirect({
+          to: '/volundr/sessions/$sessionId' as never,
+          params: { sessionId: params.sessionId } as never,
+          search: location.search as never,
+          hash: location.hash,
+        });
+      },
+      component: () => null,
     }),
     createRoute({
       getParentRoute: () => rootRoute,

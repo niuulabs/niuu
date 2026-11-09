@@ -624,7 +624,7 @@ test('a notification turn renders as a card in the session transcript and takes 
   page,
 }, info) => {
   await sessionFixture(page);
-  await page.goto('/volundr/session/review#notification-n-1');
+  await page.goto('/volundr/sessions/review#notification-n-1');
   const card = page.getByTestId('notification-card');
   await expect(card).toBeVisible();
   await expect(card).toHaveAttribute('data-targeted', 'true');

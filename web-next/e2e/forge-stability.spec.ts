@@ -31,7 +31,7 @@ test('Forge entry survives a hard reload', async ({ page }) => {
 });
 
 test('a session deep link survives reload with the same session selected', async ({ page }) => {
-  await page.goto('/volundr/session/ds-1');
+  await page.goto('/volundr/sessions/ds-1');
   await expect(page.getByTestId('live-session-detail-page')).toBeVisible();
   await expect(page.getByTestId('session-id-label')).toHaveAttribute('title', /^ds-1 /);
   await page.reload();
