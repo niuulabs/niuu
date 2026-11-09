@@ -247,16 +247,19 @@ def project_mesh_event(event: MeshEvent, *, persona: str = "") -> list[dict[str,
         projected["usage"] = dict(event.payload)
         return [projected]
 
+    # The work first, then the activity it leaves the peer in. A room keeps a peer's work in
+    # one message until the peer goes idle; told "idle" before a tool result, it closed that
+    # message and opened a new one holding the result alone, shown as an empty message.
     events: list[dict[str, Any]] = []
-    activity = _ACTIVITY_BY_EVENT.get(event.type)
-    if activity:
-        projected = _base(event, "activity")
-        projected.update({"activityType": activity, "detail": _activity_detail(event)})
-        events.append(projected)
-
     delegation = _delegation(event, persona)
     if delegation is not None:
         events.append(delegation)
 
     events.append(_agent_event(event))
+
+    activity = _ACTIVITY_BY_EVENT.get(event.type)
+    if activity:
+        projected = _base(event, "activity")
+        projected.update({"activityType": activity, "detail": _activity_detail(event)})
+        events.append(projected)
     return events

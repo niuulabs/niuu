@@ -102,12 +102,22 @@ def test_tool_projection_exposes_activity_and_delegation_without_skuld_logic() -
     )
 
     assert [event["kind"] for event in projected] == [
-        "activity",
         "delegation",
         "agent_event",
+        "activity",
     ]
-    assert projected[1]["eventType"] == "code.review"
+    assert projected[0]["eventType"] == "code.review"
     assert len({event["sourceEventId"] for event in projected}) == 1
+
+
+def test_a_tool_result_reaches_the_room_before_the_peer_goes_idle() -> None:
+    """The room closes a peer's work message on idle: the result must land in it first."""
+    projected = project_mesh_event(
+        _event(MeshEventType.TOOL_RESULT, {"tool_name": "Bash", "result": "ok"})
+    )
+
+    assert [event["kind"] for event in projected] == ["agent_event", "activity"]
+    assert projected[1]["activityType"] == "idle"
 
 
 def test_outcome_projection_is_structured_and_instruction_free() -> None:
