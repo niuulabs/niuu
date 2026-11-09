@@ -127,6 +127,11 @@ class StepSessionRequest:
     #: The run's project, the member's role in it, the run as objective and its label,
     #: so Forge shows the run's sessions together; ``None`` for a run in no project.
     membership: SessionMembership | None = None
+    #: The run's root (the unit root session) that runs this member in its unit. Forge holds
+    #: the member, not started, until the root starts; it refuses the create (409) once the
+    #: unit has started, for another owner's unit and for another run's. Empty creates a
+    #: session with a runtime of its own.
+    hosted_by: str = ""
 
 
 @dataclass(frozen=True)
@@ -135,6 +140,8 @@ class RunRoomRequest:
 
     It hosts the run's thread: every member session of the run is nested under it
     (``membership`` of the members names it as their parent) and shares its work into it.
+    With ``hosts_members`` it is also the run's *unit root*: created and held, not started,
+    so the members can be created hosted by it; starting it starts the unit with them all.
     """
 
     name: str
@@ -142,10 +149,12 @@ class RunRoomRequest:
     model: str
     tracker_issue_id: str
     run_id: str
-    membership: SessionMembership
+    #: The run's project and the room's role in it; ``None`` for a run in no project.
+    membership: SessionMembership | None = None
     repo: str = ""
     branch: str = ""
     base_branch: str = ""
+    hosts_members: bool = False
 
 
 @dataclass(frozen=True)
@@ -174,6 +183,8 @@ class VolundrSession:
     #: The Forge project the session is in, and the session it is nested under there.
     project_id: str = ""
     parent_session_id: str = ""
+    #: The unit root this session runs in as a member, when Forge says so; empty otherwise.
+    hosted_by: str = ""
 
 
 @dataclass(frozen=True)
@@ -442,6 +453,22 @@ class VolundrPort(ABC):
         ``notice_id`` keys it, so a notice posted again is shown once.
         """
         raise NotImplementedError(f"{type(self).__name__} cannot post room notices")
+
+    async def post_room_offer(
+        self,
+        session_id: str,
+        offer: dict,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        """Hand a signed ``step.offered`` event to the room a session hosts, to publish.
+
+        The session is a run's root; its Skuld publishes ``offer`` verbatim on the run's
+        mesh. One call per offer. Posting the same offer again is the same event (its id
+        derives from the offer id), so a retry is safe.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot post room offers")
 
     async def deliver_workflow_step(
         self,

@@ -75,12 +75,13 @@ def _local_mount_path(value: str) -> str | None:
 
 
 def _coordination_fields(data: Mapping[str, Any]) -> dict[str, str]:
-    """A Forge session's project and the session it is nested under, as Ting reads them."""
+    """A Forge session's project, parent session and unit root, as Ting reads them."""
     coordination = data.get("coordination") or {}
     parent = coordination.get("parent") or {}
     return {
         "project_id": str(coordination.get("project_id") or ""),
         "parent_session_id": str(parent.get("session_id") or ""),
+        "hosted_by": str(data.get("hosted_by") or ""),
     }
 
 
@@ -270,6 +271,7 @@ class VolundrHTTPAdapter(VolundrPort):
                     "issue_id": request.tracker_issue_id,
                     "workflow_run_id": request.run_id,
                     "workflow_member": request.member,
+                    **({"hosted_by": request.hosted_by} if request.hosted_by else {}),
                     **({"system_prompt": request.system_prompt} if request.system_prompt else {}),
                     **(
                         {"coordination": _coordination_payload(request.membership)}
@@ -313,7 +315,12 @@ class VolundrHTTPAdapter(VolundrPort):
                     "issue_id": request.tracker_issue_id,
                     "workflow_run_id": request.run_id,
                     "workflow_run_room": True,
-                    "coordination": _coordination_payload(request.membership),
+                    **({"hosts_members": True} if request.hosts_members else {}),
+                    **(
+                        {"coordination": _coordination_payload(request.membership)}
+                        if request.membership is not None
+                        else {}
+                    ),
                 },
             )
             if resp.status_code >= 400:
@@ -816,6 +823,29 @@ class VolundrHTTPAdapter(VolundrPort):
             if resp.status_code >= 400:
                 raise httpx.HTTPStatusError(
                     f"Forge could not post the notice in session {session_id}'s room: "
+                    f"{_error_detail(resp)}",
+                    request=resp.request,
+                    response=resp,
+                )
+
+    async def post_room_offer(
+        self,
+        session_id: str,
+        offer: dict,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.post(
+                self._room_url(session_id, "offer"),
+                headers=self._headers(auth_token, principal),
+                json=offer,
+            )
+            if resp.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    f"Forge could not hand the offer to session {session_id}'s room: "
                     f"{_error_detail(resp)}",
                     request=resp.request,
                     response=resp,

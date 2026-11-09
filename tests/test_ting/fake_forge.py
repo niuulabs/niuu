@@ -3,12 +3,22 @@
 It implements the slice of ``VolundrPort`` that workflow steps use, with Forge's own
 rules where they matter to Ting: session names are unique, a step is delivered to one
 session, and re-delivering an activation is idempotent.
+
+A run is one unit, as on Forge: a root created with ``hosts_members`` is held (``created``),
+members are created ``hosted_by`` it while it is held (a member for a root that started, for
+another owner's root or another run's is refused with 409), starting the root starts the
+unit with every member, and stopping it stops them all. A member alone can be stopped and
+started again while its unit runs; that is a restart in place under a new launch, counted in
+``launches``.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 from typing import Any
+
+import httpx
 
 from ting.domain.models import Saga
 from ting.ports.volundr import (
@@ -37,6 +47,15 @@ class FakeForge(VolundrPort):
         #: (session id, text, notice id) of each notice posted in a room.
         self.room_notices: list[tuple[str, str, str]] = []
         self.fail_notice: Exception | None = None
+        #: (session id, offer body) of each offer handed to a root's room.
+        self.room_offers: list[tuple[str, dict[str, Any]]] = []
+        self.fail_offer: Exception | None = None
+        #: Roots created with ``hosts_members``, and the run each belongs to.
+        self.unit_roots: dict[str, str] = {}
+        #: Launches of each hosted session: 1 once its unit started, +1 per restart in place.
+        self.launches: dict[str, int] = {}
+        #: Every call that changed a session's lifecycle, in order: ("start" | "stop", id).
+        self.lifecycle: list[tuple[str, str]] = []
         self.fail_create: Exception | None = None
         self.fail_deliver: Exception | None = None
         self.fail_stop: set[str] = set()
@@ -79,27 +98,62 @@ class FakeForge(VolundrPort):
         session = VolundrSession(
             id=f"room-{len(self.run_room_requests)}",
             name=request.name,
-            status="creating",
+            status="created" if request.hosts_members else "creating",
             tracker_issue_id=request.tracker_issue_id,
-            project_id=request.membership.project_id,
+            project_id=request.membership.project_id if request.membership else "",
         )
         self.sessions[session.id] = session
+        if request.hosts_members:
+            self.unit_roots[session.id] = request.run_id
         return session
+
+    async def post_room_offer(self, session_id, offer, *, auth_token=None, principal=None):
+        if self.fail_offer is not None:
+            raise self.fail_offer
+        if session_id not in self.sessions:
+            raise RuntimeError(f"Session not found: {session_id}")
+        self.room_offers.append((session_id, offer))
+
+    @staticmethod
+    def _refusal(detail: str) -> httpx.HTTPStatusError:
+        request = httpx.Request("POST", "http://forge/api/v1/forge/sessions")
+        response = httpx.Response(409, request=request, json={"detail": detail})
+        return httpx.HTTPStatusError(
+            f"Forge could not start the step session: {detail}", request=request, response=response
+        )
+
+    def _require_open_unit(self, request) -> None:
+        unit = self.sessions.get(request.hosted_by)
+        if unit is None or request.hosted_by not in self.unit_roots:
+            raise self._refusal(f"session {request.hosted_by} is not a unit")
+        if unit.status != "created":
+            raise self._refusal(
+                "a run's members are fixed when its unit starts: unit session "
+                f"{request.hosted_by} is {unit.status}"
+            )
+        if self.unit_roots[request.hosted_by] != request.run_id:
+            raise self._refusal(
+                f"unit session {request.hosted_by} hosts workflow run "
+                f"{self.unit_roots[request.hosted_by]}, not {request.run_id}"
+            )
 
     async def create_step_session(self, request, *, auth_token=None, principal=None):
         if self.fail_create is not None:
             raise self.fail_create
         if any(session.name == request.name for session in self.sessions.values()):
             raise RuntimeError(f"a session named {request.name!r} already exists")
+        if request.hosted_by:
+            self._require_open_unit(request)
         self.create_requests.append(request)
         membership = request.membership
         session = VolundrSession(
             id=f"ses-{len(self.sessions) + 1}",
             name=request.name,
-            status="creating",
+            status="created" if request.hosted_by else "creating",
             tracker_issue_id=request.tracker_issue_id,
             project_id=membership.project_id if membership else "",
             parent_session_id=membership.parent_session_id if membership else "",
+            hosted_by=request.hosted_by,
         )
         self.sessions[session.id] = session
         return session
@@ -140,11 +194,49 @@ class FakeForge(VolundrPort):
 
     async def start_session(self, session_id, *, auth_token=None, principal=None):
         self.started.append(session_id)
+        self.lifecycle.append(("start", session_id))
+        session = self.sessions[session_id]
+        if session_id in self.unit_roots:
+            if session.status != "created":
+                raise self._refusal(f"unit session {session_id} is {session.status}")
+            self._set(session_id, "starting")
+            for member in self._members_of(session_id):
+                self._set(member.id, "starting")
+                self.launches[member.id] = 1
+            return
+        if not session.hosted_by:
+            return
+        unit = self.sessions[session.hosted_by]
+        if unit.status not in {"starting", "running"}:
+            raise self._refusal(
+                f"session {session_id} runs in unit session {unit.id}, which is {unit.status}"
+            )
+        if session.status not in {"stopped", "failed"}:
+            raise self._refusal(f"session {session_id} is {session.status} and cannot start")
+        self._set(session_id, "starting")
+        self.launches[session_id] += 1
 
     async def stop_session(self, session_id, *, auth_token=None, principal=None):
         if session_id in self.fail_stop:
             raise ConnectionError(f"cannot stop {session_id}")
         self.stopped.append(session_id)
+        self.lifecycle.append(("stop", session_id))
+        session = self.sessions.get(session_id)
+        if session is None:
+            return
+        if session_id in self.unit_roots or session.hosted_by:
+            if session.status == "created":
+                raise self._refusal(f"session {session_id} is created and cannot stop")
+            self._set(session_id, "stopped")
+        if session_id in self.unit_roots:
+            for member in self._members_of(session_id):
+                self._set(member.id, "stopped")
+
+    def _members_of(self, root_id: str) -> list[VolundrSession]:
+        return [s for s in self.sessions.values() if s.hosted_by == root_id]
+
+    def _set(self, session_id: str, status: str) -> None:
+        self.sessions[session_id] = replace(self.sessions[session_id], status=status)
 
     async def spawn_session(self, request, *, auth_token=None, principal=None):
         raise AssertionError("workflow steps never spawn plain sessions")
@@ -176,13 +268,7 @@ class FakeForge(VolundrPort):
         yield ActivityStreamConnected()
 
     def set_status(self, session_id: str, status: str) -> None:
-        session = self.sessions[session_id]
-        self.sessions[session_id] = VolundrSession(
-            id=session.id,
-            name=session.name,
-            status=status,
-            tracker_issue_id=session.tracker_issue_id,
-        )
+        self._set(session_id, status)
 
     def add_session(self, name: str, tracker_issue_id: str | None, status: str = "running") -> str:
         session_id = f"ses-{len(self.sessions) + 1}"
