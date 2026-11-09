@@ -156,6 +156,8 @@ class TestBrokerAnnouncement:
             assert (identity.persona, identity.role) == ("coordinator", "coordinator")
             assert identity.capabilities == []
             assert "code.changed" not in identity.emits_event_types
+            assert identity.consumes_event_types == []
+            assert broker._mesh_adapter.standing_topics == ()
             assert "runs no agent" in identity.description
         finally:
             await broker._mesh_adapter.stop()
