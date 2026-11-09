@@ -1207,9 +1207,21 @@ export function SessionsPage() {
       ),
     [resolvedSelectedSessionId],
   );
+  // Only a session that leads its room lists the room's workers under it. A run's member
+  // sees the run's other members in its own chat, but it leads none of them: listing them
+  // under it would move the run's sessions every time a member is opened.
+  const openSessionIsNested = useMemo(
+    () =>
+      Boolean(
+        allSessions.find((session) => session.id === resolvedSelectedSessionId)?.coordination
+          ?.parent,
+      ),
+    [allSessions, resolvedSelectedSessionId],
+  );
   const openRoom = useMemo<OpenRoom | null>(
     () =>
       !showProjectHome &&
+      !openSessionIsNested &&
       room &&
       room.sessionId === resolvedSelectedSessionId &&
       room.workers.length > 0
@@ -1225,7 +1237,14 @@ export function SessionsPage() {
             onSelect: (sessionId, peerId) => setFocusedWorker({ sessionId, peerId }),
           }
         : null,
-    [room, resolvedSelectedSessionId, focusedPeerId, showProjectHome, allSessions],
+    [
+      room,
+      resolvedSelectedSessionId,
+      focusedPeerId,
+      showProjectHome,
+      openSessionIsNested,
+      allSessions,
+    ],
   );
   // While a project's home is open no session is the open one.
   const listSelectedId = showProjectHome ? null : resolvedSelectedSessionId;

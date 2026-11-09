@@ -17,9 +17,11 @@ import type { Session } from '../domain/session';
 
 const navigate = vi.fn();
 
+let routeSessionId = 'lead';
+
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => navigate,
-  useParams: () => ({ sessionId: 'lead' }),
+  useParams: () => ({ sessionId: routeSessionId }),
 }));
 
 const worker = (peerId: string, name: string, status: Worker['status']): Worker => ({
@@ -160,5 +162,29 @@ describe('SessionsPage — the open room’s workers', () => {
     expect(screen.queryByTestId('pod-entry-coder')).toBeNull();
     expect(screen.queryByTestId('pod-entry-rev')).toBeNull();
     expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('2 workers');
+  });
+
+  it("leaves the run's sessions where they are when one of its members is opened", async () => {
+    localStorage.clear();
+    const member = (id: string, role: string): Session => ({
+      ...session(id, `wf-run-${role}`),
+      coordination: {
+        projectId: 'probe',
+        role,
+        parent: { instanceId: 'cluster-a', sessionId: 'lead' },
+      },
+    });
+    routeSessionId = 'coder';
+    try {
+      renderPage([member('coder', 'coder'), member('rev', 'reviewer')]);
+
+      expect(await screen.findByTestId('detail')).toHaveTextContent('coder:everyone');
+      // The member's chat names the run's other members, but it leads none of them.
+      expect(screen.queryByTestId('room-worker-rev')).toBeNull();
+      expect(screen.queryByTestId('session-leads-coder')).toBeNull();
+      expect(screen.getByTestId('pod-entry-rev')).toBeInTheDocument();
+    } finally {
+      routeSessionId = 'lead';
+    }
   });
 });
