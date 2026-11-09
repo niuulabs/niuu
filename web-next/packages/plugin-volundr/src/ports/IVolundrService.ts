@@ -65,7 +65,6 @@ import type {
   UserFeaturePreference,
   PersonalAccessToken,
   CreatePATResult,
-  VolundrWorkflowGate,
   VolundrSessionTrace,
   VolundrSessionTraceSummary,
   ExternalSession,
@@ -109,12 +108,6 @@ export interface PermissionAutoApprovalDecision {
   command: string | null;
   delaySeconds: number;
   matchedPattern?: string | null;
-}
-
-export interface ResolveWorkflowGateRequest {
-  decision: 'APPROVE' | 'CHANGES_REQUESTED';
-  notes?: string;
-  source?: string;
 }
 
 export interface UserHomeListing {
@@ -360,12 +353,6 @@ export interface IVolundrService {
   getConversationHistory(sessionId: string): Promise<VolundrConversationHistory>;
   /** One turn in full (`GET /sessions/{id}/conversation/turns/{turnId}`), wherever it sits. */
   getConversationTurn(sessionId: string, turnId: string): Promise<VolundrConversationTurn>;
-  getWorkflowGates(sessionId: string): Promise<VolundrWorkflowGate[]>;
-  resolveWorkflowGate(
-    sessionId: string,
-    gateId: string,
-    request: ResolveWorkflowGateRequest,
-  ): Promise<VolundrWorkflowGate>;
   getMessages(sessionId: string): Promise<VolundrMessage[]>;
   /**
    * Send a user message into a running session. Resolves `delivered` or `pending` (accepted,

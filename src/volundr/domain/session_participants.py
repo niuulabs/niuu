@@ -8,7 +8,7 @@ is inactive (see ``SessionParticipant.is_active``), and Cedar policy only ever
 sees the *computed* active/unexpired sets built by ``compute_room_grants``.
 
 All four roles read the room and speak in it by default; ``approver`` additionally
-resolves workflow gates and answers tool-permission prompts. ``teacher`` and
+answers tool-permission prompts. ``teacher`` and
 ``debugger`` exist as distinct invitation intents but carry the same baseline
 grant as ``observer`` in this version — there is no third permission tier for
 them yet.

@@ -24,7 +24,6 @@ from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.guild_membership import GuildMembership
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
-from niuu.domain.models import actor_name
 from niuu.domain.notifications import notification_visible_to
 from niuu.domain.peer_envelope import (
     STAMPED_BODY_KEYS,
@@ -198,7 +197,6 @@ from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import load_workspace_transcript
 
 logger = logging.getLogger(__name__)
-WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
 # How long Forge waits for a session's broker to accept or answer one workflow step call. The
 # broker only records the step (it injects it later), so a call that takes longer than this
 # means the broker is not answering, which the caller must hear about (409 after reconcile).
@@ -1784,17 +1782,6 @@ class RepoResponse(BaseModel):
     url: str = Field(description="Web URL for the repository")
     default_branch: str = Field(description="Default branch name")
     branches: list[str] = Field(description="Available branch names")
-
-
-class WorkflowGateResolveRequest(BaseModel):
-    """Request body for resolving a live workflow gate."""
-
-    decision: str
-    notes: str = ""
-    source: str = "human"
-    # The workload a trusted caller such as Ting answers for, when its own credential
-    # does not show it. Claiming one can only narrow what may be answered.
-    actor: str = ""
 
 
 class HelpAnswerRequest(BaseModel):
@@ -5704,211 +5691,6 @@ def create_router(
                 ) from None
             preview_cache.put(sid, cache_key, jpeg, edge)
             return _jpeg_response(jpeg)
-
-    @router.get(
-        "/sessions/{session_id}/workflow/gates",
-        tags=["Sessions"],
-        responses={
-            404: {"model": ErrorResponse},
-            502: {"model": ErrorResponse},
-        },
-    )
-    async def get_workflow_gates(
-        request: Request,
-        session_id: UUID = Path(description="Unique session identifier"),
-    ) -> dict:
-        """Return native workflow gate state for a live session."""
-        session = await forge.get_session(session_id)
-        if session is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session not found: {session_id}",
-            )
-        principal = await _optional_principal(request)
-        try:
-            # read_room OR read: the gate list is room state, visible to any
-            # active session_participants grant (read_room), but must not
-            # take away what a tenant volundr:viewer already had under
-            # plain "read" — session-viewer grants "read", never "read_room".
-            await _check_room_access(session, principal, "read_room")
-        except PermissionError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication is required to read gates for this session",
-            )
-        except SessionAccessDeniedError:
-            try:
-                await forge.ensure_access(session, principal, "read")
-            except SessionAccessDeniedError:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Not authorized to read gates for this session",
-                )
-        if not session.chat_endpoint:
-            return {"gates": []}
-
-        try:
-            live_session, base_url = await forge.get_session_proxy_target(session_id)
-            headers = {}
-            auth = request.headers.get("authorization")
-            if auth:
-                headers["Authorization"] = auth
-            proxy_url, routing_headers = await _broker_request(
-                live_session, base_url, "api", "workflow", "gates"
-            )
-            headers.update(routing_headers)
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    proxy_url,
-                    headers=headers,
-                )
-                response.raise_for_status()
-                return response.json()
-        except httpx.HTTPStatusError as e:
-            logger.warning(
-                "Workflow gate proxy returned error for session %s: %s",
-                _sanitize_log(session_id),
-                _sanitize_log(e),
-            )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to fetch workflow gates from session pod: {e}",
-            )
-        except (ValueError, httpx.RequestError):
-            # Couldn't reach the pod — reconcile the stale row and fail
-            # deterministically (409) instead of a misleading bad-gateway.
-            reconciled = await forge.reconcile_session(session_id)
-            logger.warning(
-                "Workflow gate pod unreachable for session %s; reconciled to %s",
-                _sanitize_log(session_id),
-                reconciled.status.value if reconciled else "unknown",
-            )
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Session {session_id} is no longer reachable; "
-                    f"reconciled to {reconciled.status.value if reconciled else 'unknown'}."
-                ),
-            )
-
-    @router.post(
-        "/sessions/{session_id}/workflow/gates/{gate_id}/resolve",
-        tags=["Sessions"],
-        responses={
-            400: {"model": ErrorResponse},
-            403: {"model": ErrorResponse},
-            404: {"model": ErrorResponse},
-            502: {"model": ErrorResponse},
-        },
-    )
-    async def resolve_workflow_gate(
-        request: Request,
-        body: WorkflowGateResolveRequest,
-        session_id: UUID = Path(description="Unique session identifier"),
-        gate_id: str = Path(description="Workflow gate identifier"),
-    ) -> dict:
-        """Resolve a pending native workflow gate for a live session."""
-        principal = await extract_principal(request)
-        try:
-            session, base_url = await forge.get_session_proxy_target(session_id)
-        except LookupError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session not found: {session_id}",
-            )
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session {session_id} has no active endpoint",
-            )
-        # An empty owner_id must never grant access: delegate to the same
-        # Cedar-backed authorization path every other mutating session route
-        # uses. "resolve_gate" (not "update"): only the owner/admin or an
-        # ACTIVE, unexpired session_participants grant with role=approver may
-        # resolve a gate (session-owner / session-participant-approver).
-        try:
-            await _check_room_access(session, principal, "resolve_gate")
-        except PermissionError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication is required to resolve gates for this session",
-            )
-        except SessionAccessDeniedError:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to resolve gates for this session",
-            )
-
-        actor = principal.actor or body.actor
-        headers = {}
-        auth = request.headers.get("authorization")
-        if auth:
-            headers["Authorization"] = auth
-        intent = request.headers.get(WORKFLOW_GATE_INTENT_HEADER)
-        if intent:
-            headers[WORKFLOW_GATE_INTENT_HEADER] = intent
-        # "approver" is the minimum tier check_room_access("resolve_gate") above
-        # could have just accepted (session-owner or session-participant-approver
-        # are Cedar's only permit rules for it), so it always satisfies the
-        # broker's own ROOM_ROLES_MAY_RESOLVE_GATES gate. This header is only
-        # trustworthy when it survives to the broker unmodified: the mini-mode
-        # session proxy forwards it as-is (ws_auth.room_role_source: proxy).
-        # Every other backend (Kubernetes, OpenShell, VM) strips any
-        # client-supplied copy on the way in and ignores it entirely
-        # (ws_auth.room_role_source: deployment, the default) — that pod's
-        # own auth boundary already gates every caller who reaches it, and
-        # participants (so a non-owner "approver" grant) are not supported
-        # there at all, so this header is simply inert on that path, not
-        # load-bearing. Do not try to authenticate that hop with a separate
-        # scoped credential: the sidecar ext_authz routes have no
-        # required_scope concept, so a scoped token is refused there and the
-        # deployment-mode middleware refuses it before that check even runs
-        # on a non-enforced pod — there is no topology where a Skuld-side
-        # scoped token for this route actually works. The Kubernetes owner
-        # already resolves via room_role_source=deployment instead.
-        headers[ROOM_ROLE_HEADER] = "approver"
-
-        try:
-            proxy_url, routing_headers = await _broker_request(
-                session, base_url, "api", "workflow", "gates", gate_id, "resolve"
-            )
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session {session_id} has no active endpoint",
-            )
-        try:
-            headers.update(routing_headers)
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    proxy_url,
-                    headers=headers,
-                    json={
-                        **body.model_dump(),
-                        "actor": actor,
-                        "decided_by": (
-                            actor_name(actor) if actor else principal.email or principal.user_id
-                        ),
-                    },
-                )
-                response.raise_for_status()
-                return response.json()
-        except httpx.HTTPStatusError as e:
-            status_code = e.response.status_code
-            detail = e.response.text[:500]
-            raise HTTPException(status_code=status_code, detail=detail)
-        except httpx.RequestError as e:
-            # Pod unreachable — reconcile the stale row and fail deterministically
-            # (409) so the caller never thinks the gate resolved.
-            reconciled = await forge.reconcile_session(session_id)
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Session {session_id} is no longer reachable; "
-                    f"reconciled to {reconciled.status.value if reconciled else 'unknown'}. "
-                    f"Gate not resolved: {e}"
-                ),
-            )
 
     async def _proxy_workflow_step_call(
         request: Request,

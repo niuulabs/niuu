@@ -390,42 +390,6 @@ describe('createMockVolundrService', () => {
     expect(imported.name).toBe(importable!.title.trim());
   });
 
-  it('getWorkflowGates returns an empty list for sessions without gates', async () => {
-    const svc = createMockVolundrService();
-    expect(await svc.getWorkflowGates('sess-1')).toEqual([]);
-  });
-
-  it('resolveWorkflowGate fabricates and stores an approved gate', async () => {
-    const svc = createMockVolundrService();
-    const resolved = await svc.resolveWorkflowGate('sess-1', 'gate-1', { decision: 'APPROVE' });
-    expect(resolved.id).toBe('gate-1');
-    expect(resolved.status).toBe('approved');
-    expect(resolved.decision).toBe('APPROVE');
-    expect(resolved.notes).toBe('');
-    expect(resolved.source).toBe('human');
-
-    const gates = await svc.getWorkflowGates('sess-1');
-    expect(gates).toHaveLength(1);
-    expect(gates[0]?.id).toBe('gate-1');
-  });
-
-  it('resolveWorkflowGate updates an existing gate with changes requested', async () => {
-    const svc = createMockVolundrService();
-    await svc.resolveWorkflowGate('sess-1', 'gate-1', { decision: 'APPROVE' });
-    const resolved = await svc.resolveWorkflowGate('sess-1', 'gate-1', {
-      decision: 'CHANGES_REQUESTED',
-      notes: 'needs tests',
-      source: 'reviewer',
-    });
-    expect(resolved.status).toBe('changes_requested');
-    expect(resolved.notes).toBe('needs tests');
-    expect(resolved.source).toBe('reviewer');
-
-    const gates = await svc.getWorkflowGates('sess-1');
-    expect(gates).toHaveLength(1);
-    expect(gates[0]?.status).toBe('changes_requested');
-  });
-
   it('updateTenant falls back to default quota fields', async () => {
     const svc = createMockVolundrService();
     const tenant = await svc.updateTenant('t1', {});

@@ -86,8 +86,8 @@ A gate is a step that waits for a person. The Work board and the run's review pa
 decide it through Ting's own gate routes, which resolve it in the engine (recording who,
 when and why); nothing is forwarded to a session.
 
-No session holds a gate, so Forge cannot project it into its notification feed the way
-it projects a session's `workflow_gate` frame. Ting raises it there itself: when a gate
+No session holds a gate, so Forge never projects one into its notification feed. Ting
+raises it there itself: when a gate
 that waits for a person opens (not `automated_approval`, not `pendingBehavior: silent`),
 Ting submits an `attention` / `warning` notification through
 `POST /api/v1/forge/sessions/{id}/notifications` on the session of the step whose outcome

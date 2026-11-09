@@ -130,7 +130,6 @@ async function intercept(page: Page, onReadState: (body: unknown) => void = () =
       return route.fulfill({
         json: new URL(request.url()).searchParams.get('status') === 'archived' ? [] : sessions,
       });
-    if (path.includes('/workflow/gates')) return route.fulfill({ json: { gates: [] } });
     if (path.includes('/stats')) return route.fulfill({ json: {} });
     return route.fulfill({ json: [] });
   });

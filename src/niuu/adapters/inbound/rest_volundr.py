@@ -4621,31 +4621,6 @@ def create_volundr_router(
             headers=headers,
         )
 
-    @router.get("/sessions/{session_id}/workflow/gates")
-    async def get_workflow_gates(
-        request: Request,
-        session_id: str = Path(description="Volundr session identifier"),
-        principal: Principal = Depends(extract_principal),
-    ) -> dict[str, Any]:
-        instance, _ = await _find_session_owner(
-            service,
-            principal,
-            request,
-            session_id,
-            embedded_app=embedded_forge_app,
-        )
-        response = await _request_remote(
-            instance,
-            request,
-            method="GET",
-            path=f"/sessions/{session_id}/workflow/gates",
-            params=_query_params(request),
-            embedded_app=embedded_forge_app,
-        )
-        _ensure_remote_success(response)
-        payload = response.json()
-        return payload if isinstance(payload, dict) else {"gates": []}
-
     @router.get("/sessions/{session_id}/help/requests")
     async def get_help_requests(
         request: Request,
@@ -4692,38 +4667,6 @@ def create_volundr_router(
             method="POST",
             path=f"/sessions/{session_id}/help/requests/{quote(request_id, safe='')}/answer",
             json_body=body,
-            embedded_app=embedded_forge_app,
-        )
-        _ensure_remote_success(response)
-        payload = response.json()
-        return payload if isinstance(payload, dict) else {}
-
-    @router.post("/sessions/{session_id}/workflow/gates/{gate_id}/resolve")
-    async def resolve_workflow_gate(
-        request: Request,
-        session_id: str = Path(description="Volundr session identifier"),
-        gate_id: str = Path(description="Workflow gate identifier"),
-        body: dict[str, Any] = Body(default_factory=dict),
-        principal: Principal = Depends(extract_principal),
-    ) -> dict[str, Any]:
-        instance, _ = await _find_session_owner(
-            service,
-            principal,
-            request,
-            session_id,
-            embedded_app=embedded_forge_app,
-        )
-        extra_headers: dict[str, str] = {}
-        intent = request.headers.get("x-niuu-workflow-gate-intent")
-        if intent:
-            extra_headers["x-niuu-workflow-gate-intent"] = intent
-        response = await _request_remote(
-            instance,
-            request,
-            method="POST",
-            path=f"/sessions/{session_id}/workflow/gates/{quote(gate_id, safe='')}/resolve",
-            json_body=body,
-            extra_headers=extra_headers,
             embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)

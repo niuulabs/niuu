@@ -33,7 +33,6 @@ from niuu.domain.notifications import (
     summarize_reply,
     turn_dedupe_key,
 )
-from niuu.observability import get_observability
 from volundr.domain.models import (
     ResidentRuntime,
     Session,
@@ -72,13 +71,6 @@ from volundr.domain.notifications import (
 from volundr.domain.ports import EventBroadcaster, IntegrationRepository
 from volundr.domain.services.notification_images import notification_event
 from volundr.domain.session_read_state import is_final_output
-from volundr.domain.workflow_gate import (
-    WORKFLOW_GATE_INPUT_KIND,
-    WorkflowGateFrame,
-    is_workflow_gate_frame,
-    workflow_gate_dedupe_key,
-    workflow_gate_from_log_payload,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +126,6 @@ _DEFAULT_ATTENTION_PROMPTS = {
     "question": "The agent is asking you a question",
     "confirmation": "The agent needs your confirmation",
     "permission": "The agent needs permission to continue",
-    WORKFLOW_GATE_INPUT_KIND: "A review is waiting for your decision",
 }
 _DEFAULT_ATTENTION_PROMPT = "The agent needs your attention"
 
@@ -232,99 +223,21 @@ class NotificationService(NotificationRecorder):
 
     def is_projectable(self, payload: dict) -> bool:
         """Cheap pre-filter: could this log frame produce a notification?"""
-        if draft_from_log_payload(payload) is not None or is_workflow_gate_frame(payload):
+        if draft_from_log_payload(payload) is not None:
             return True
         return self._reply_ready_enabled and is_final_output(payload)
 
     async def project_log_entries(
         self, session: Session, entries: list[SessionLogEntry]
     ) -> list[Notification]:
-        """Project STORED session-log rows; returns (and broadcasts) only new rows.
-
-        A decided workflow gate settles its item, after this batch is recorded: a gate
-        opened and decided within one batch still leaves one settled item.
-        """
+        """Project STORED session-log rows; returns (and broadcasts) only new rows."""
         context = self._context(session)
         candidates: list[NotificationCandidate] = []
-        decided: list[WorkflowGateFrame] = []
         for entry in sorted(entries, key=lambda item: item.seq):
             if entry.session_id != session.id:
                 raise ValueError("Every projected log row must belong to the session")
             candidates.extend(self._candidates_for_entry(context, entry))
-            gate = self._workflow_gate(entry)
-            if gate is None:
-                continue
-            if not gate.pending:
-                decided.append(gate)
-            elif gate.waits_for_person:
-                candidates.append(self._workflow_gate_candidate(context, gate, entry.seq))
-        created = await self._record(candidates)
-        await self._settle_workflow_gates(context, decided)
-        return created
-
-    @staticmethod
-    def _workflow_gate(entry: SessionLogEntry) -> WorkflowGateFrame | None:
-        """The gate a log row carries. An unreadable frame is reported and skipped.
-
-        Raising would hold back the whole session log, every other notification
-        included, for a frame no retry can change.
-        """
-        if not is_workflow_gate_frame(entry.payload):
-            return None
-        try:
-            return workflow_gate_from_log_payload(entry.payload)
-        except ValueError as exc:
-            get_observability().count("volundr.notifications.workflow_gate_frame_malformed")
-            logger.error(
-                "Session %s log seq %d is an unreadable workflow gate, so no notification "
-                "tracks it: %s",
-                entry.session_id,
-                entry.seq,
-                exc,
-            )
-            return None
-
-    def _workflow_gate_candidate(
-        self, context: _SessionContext, gate: WorkflowGateFrame, session_seq: int
-    ) -> NotificationCandidate:
-        draft = NotificationDraft(
-            kind=NotificationKind.ATTENTION,
-            severity=NotificationSeverity.WARNING,
-            title=_bounded(f"{context.session_name}: {gate.title}", MAX_TITLE_CHARS),
-            body=_bounded(
-                gate.prompt or _DEFAULT_ATTENTION_PROMPTS[WORKFLOW_GATE_INPUT_KIND],
-                MAX_BODY_CHARS,
-            ),
-        )
-        return self._candidate(
-            context,
-            dedupe_key=workflow_gate_dedupe_key(context.session_id, gate.id),
-            draft=draft,
-            source=NotificationSource.SYSTEM,
-            session_seq=session_seq,
-            metadata=gate.notification_metadata(),
-        )
-
-    async def _settle_workflow_gates(
-        self, context: _SessionContext, gates: list[WorkflowGateFrame]
-    ) -> None:
-        """Close each decided gate's item: read, resolved and sent again to live readers.
-
-        A gate that never raised one (an agent's, a silent one, or one opened before
-        Forge projected gates) has nothing to settle.
-        """
-        for gate in gates:
-            dedupe_key = workflow_gate_dedupe_key(context.session_id, gate.id)
-            await self.retire_system_attention(context.owner_id, dedupe_key=dedupe_key)
-            resolved = await self._repository.resolve(
-                context.owner_id,
-                [notification_id(dedupe_key)],
-                resolved_at=datetime.now(UTC),
-                resolved_by=None,
-                resolution=gate.summary or None,
-            )
-            for row in resolved:
-                await self._broadcast(row)
+        return await self._record(candidates)
 
     def _candidates_for_entry(
         self, context: _SessionContext, entry: SessionLogEntry
@@ -404,8 +317,7 @@ class NotificationService(NotificationRecorder):
         """Acknowledge the owner's unread attention items once the question is settled.
 
         Only items above the owner's read watermark can be unread; each is marked read
-        individually, so the rest of the feed's read state is untouched. A workflow
-        gate's item is left alone: it outlives the turn and settles when it is decided.
+        individually, so the rest of the feed's read state is untouched.
         """
         owner = session.owner_id or ""
         if not owner:
@@ -416,12 +328,7 @@ class NotificationService(NotificationRecorder):
             page = await self._repository.list_for_session(
                 session.id, after=after, limit=self._attention_retire_page_size
             )
-            attention = [
-                item
-                for item in page
-                if item.kind == NotificationKind.ATTENTION
-                and item.metadata.get("input_kind") != WORKFLOW_GATE_INPUT_KIND
-            ]
+            attention = [item for item in page if item.kind == NotificationKind.ATTENTION]
             if attention:
                 already = await self._repository.read_ids(owner, [item.id for item in attention])
                 for item in attention:
@@ -508,20 +415,6 @@ class NotificationService(NotificationRecorder):
                 await self._repository.mark_read(owner, item_id)
                 retired += 1
         return retired
-
-    async def retire_system_attention(self, owner_id: str, *, dedupe_key: str) -> bool:
-        """Acknowledge the owner's unread system attention item recorded under ``dedupe_key``.
-
-        Mirrors :meth:`retire_resident_attention`: only that item is marked read.
-        ``False`` when it was never recorded or is already read.
-        """
-        item_id = notification_id(dedupe_key)
-        if await self._repository.get(item_id) is None:
-            return False
-        if item_id in await self._repository.read_ids(owner_id, [item_id]):
-            return False
-        await self._repository.mark_read(owner_id, item_id)
-        return True
 
     async def submit_for_resident(
         self,
