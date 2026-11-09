@@ -569,7 +569,6 @@
 /* A run member's role, ahead of its long name so it is never what is cut off. */
 .forge-session-row__role {
   flex-shrink: 0;
-  font-weight: 600;
   color: var(--color-text-primary);
 }
 .forge-session-row__role + .forge-session-row__title {
@@ -1004,10 +1003,19 @@
   background: var(--color-critical);
 }
 
-.forge-session-row__title {
+.forge-session-row__title,
+.forge-session-row__role {
   font-size: 13.5px;
   font-weight: 600;
   line-height: 1.45;
+}
+
+/* A run member's row is one line, as its worker row under the open run is: its state sits
+   at the end of the line, not on a second one. */
+.forge-session-row__member-state {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 11px;
 }
 
 .forge-session-row__metadata {

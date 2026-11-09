@@ -188,6 +188,10 @@ describe('SessionsPage — the open room’s workers', () => {
 
       expect(await screen.findByTestId('pod-entry-rev-role')).toHaveTextContent('Security-auditor');
       expect(screen.getByTestId('pod-entry-coder-role')).toHaveTextContent('Coder');
+      // One line, as under the open run: the state ends the line, no second line under it.
+      const row = screen.getByTestId('pod-entry-coder');
+      expect(within(row).getByTestId('pod-entry-coder-state')).toBeInTheDocument();
+      expect(row.querySelector('.forge-session-row__metadata')).toBeNull();
       // The run's own session has no parent: it is named, not given a role.
       expect(screen.queryByTestId('pod-entry-lead-role')).toBeNull();
     } finally {

@@ -461,6 +461,16 @@ function PodEntry({
                   data-testid={`session-unread-dot-${session.id}`}
                 />
               )}
+              {memberRole && (
+                <span
+                  className="forge-session-state forge-session-row__member-state"
+                  data-state={session.state}
+                  title={timeFact ?? undefined}
+                  data-testid={`pod-entry-${session.id}-state`}
+                >
+                  {SESSION_STATE_LABELS[session.state]}
+                </span>
+              )}
             </div>
             {/* Two lines, as in Lexi: the workspace waits for Details; an agent's own
                 summary of the work is worth a line of its own. */}
@@ -488,43 +498,46 @@ function PodEntry({
                   )}
                 />
               )}
-            {/* Lexi's second line: host · model · role, then the state on the right. */}
-            <div className="forge-session-row__metadata">
-              {forgeLabel && (
-                <span className="forge-session-row__host" title={`Host: ${forgeLabel}`}>
-                  {forgeLabel}
-                </span>
-              )}
-              <span
-                className="forge-session-harness"
-                data-harness={harness}
-                title={originBadge ? `Imported from ${originBadge}` : session.model}
-                data-testid={originBadge ? `session-origin-badge-${session.id}` : undefined}
-              >
-                {modelLabel}
-              </span>
-              {coordinatorWorkers !== undefined && (
+            {/* Lexi's second line: host · model · role, then the state on the right. A run's
+                member has its state on its one line; its host and model are its run's. */}
+            {!memberRole && (
+              <div className="forge-session-row__metadata">
+                {forgeLabel && (
+                  <span className="forge-session-row__host" title={`Host: ${forgeLabel}`}>
+                    {forgeLabel}
+                  </span>
+                )}
                 <span
-                  className="forge-session-row__leads"
-                  data-testid={`session-leads-${session.id}`}
+                  className="forge-session-harness"
+                  data-harness={harness}
+                  title={originBadge ? `Imported from ${originBadge}` : session.model}
+                  data-testid={originBadge ? `session-origin-badge-${session.id}` : undefined}
                 >
-                  {leadLabel(session, coordinatorWorkers)}
+                  {modelLabel}
                 </span>
-              )}
-              {unreadNote ? (
-                <span className="forge-session-new" data-testid={`session-new-${session.id}`}>
-                  {unreadLabel(session, now)}
-                </span>
-              ) : (
-                <span
-                  className="forge-session-state"
-                  data-state={session.state}
-                  title={timeFact ?? undefined}
-                >
-                  {SESSION_STATE_LABELS[session.state]}
-                </span>
-              )}
-            </div>
+                {coordinatorWorkers !== undefined && (
+                  <span
+                    className="forge-session-row__leads"
+                    data-testid={`session-leads-${session.id}`}
+                  >
+                    {leadLabel(session, coordinatorWorkers)}
+                  </span>
+                )}
+                {unreadNote ? (
+                  <span className="forge-session-new" data-testid={`session-new-${session.id}`}>
+                    {unreadLabel(session, now)}
+                  </span>
+                ) : (
+                  <span
+                    className="forge-session-state"
+                    data-state={session.state}
+                    title={timeFact ?? undefined}
+                  >
+                    {SESSION_STATE_LABELS[session.state]}
+                  </span>
+                )}
+              </div>
+            )}
             {showDetails && (
               <div className="forge-session-row__details">
                 {timeFact && (
