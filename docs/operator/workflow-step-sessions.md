@@ -82,7 +82,12 @@ the step's durable state and records any close it missed.
 
 ## Gates and cancel
 
-A gate is a step that waits for a person. The Work board and the run's review page
+A gate is a step that waits for a person. A gate opens on its first delivery, so a gate
+reached from alternative branches never waits for the ones not taken. A gate that declares
+`joinMode: all` instead opens once every forward edge into it (from each producer of that
+edge) holds an unused delivery of the current generation, like an `all` end; that is how
+"Code, Review and Merge" holds its approval until the reviewer and the security auditor
+have both passed. The Work board and the run's review page
 decide it through Ting's own gate routes, which resolve it in the engine (recording who,
 when and why); nothing is forwarded to a session.
 

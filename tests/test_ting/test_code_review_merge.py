@@ -1,4 +1,4 @@
-"""The one shipped workflow: code, review and security review in parallel, then merge.
+"""The one shipped workflow: code, review and security review in parallel, an approval, then merge.
 
 Driven event by event through the real step engine, the way harness sessions would close
 the steps, and checked against Ting's runnable-graph validator.
@@ -9,12 +9,14 @@ from __future__ import annotations
 import pytest
 
 from tests.test_ting.step_support import Run, bundled, make_run
+from ting.domain.step_engine import GATE_FEEDBACK_KEY
 from ting.domain.step_graph import NodeKind, compile_step_graph
 from ting.domain.workflow_document import validate_workflow_graph
 from ting.domain.workflow_steps import (
     ActorKind,
     GateActor,
     GateDecision,
+    GateRefusedError,
     StepFencingError,
     StepKind,
     StepState,
@@ -42,6 +44,16 @@ async def check(run: Run, reviewer: str, verdict: str) -> None:
 
 def person() -> GateActor:
     return GateActor(ActorKind.PERSON, "alice")
+
+
+async def approve(run: Run, note: str = "") -> None:
+    await run.engine.resolve_gate(run.run_id, "code-approve", GateDecision.APPROVE, person(), note)
+
+
+async def pass_both_and_approve(run: Run) -> None:
+    await check(run, "reviewer", "pass")
+    await check(run, "security-auditor", "pass")
+    await approve(run)
 
 
 # --- shape --------------------------------------------------------------------------
@@ -83,31 +95,85 @@ def test_no_rework_edge_has_a_round_limit() -> None:
     graph = bundled(NAME).graph
 
     rework = [edge for edge in graph["edges"] if edge.get("rework")]
-    assert len(rework) == 3
+    assert len(rework) == 4
     assert not [edge for edge in rework if "maxIterations" in edge]
 
 
 # --- the happy path -----------------------------------------------------------------
 
 
-async def test_the_checks_run_in_parallel_and_the_merge_waits_for_both(run: Run) -> None:
+async def test_the_checks_run_in_parallel_and_the_gate_opens_only_when_both_pass(run: Run) -> None:
     await reach_checks(run)
 
     assert {step.member for step in run.state.open_steps()} == {"reviewer", "security-auditor"}
     await check(run, "reviewer", "pass")
-    assert run.steps("code-merge") == []
+    assert run.steps("code-approve") == []
 
     await check(run, "security-auditor", "pass")
 
+    gate = run.current("code-approve")
+    assert (gate.kind, gate.state) == (StepKind.GATE, StepState.WAITING)
+    assert {item.member for item in gate.inputs} == {"reviewer", "security-auditor"}
+    assert run.steps("code-merge") == []
+
+
+async def test_nothing_merges_until_a_person_approves(run: Run) -> None:
+    await reach_checks(run)
+    await check(run, "reviewer", "pass")
+    await check(run, "security-auditor", "pass")
+
+    assert run.steps("code-merge") == []
+    assert run.finished_with() is None
+    await approve(run, "ship it")
+
     merge = run.current("code-merge")
     assert merge.member == "coder"
-    assert {item.member for item in merge.inputs} == {"reviewer", "security-auditor"}
+    assert [item.event_type for item in merge.inputs] == ["merge.approved"]
+
+
+async def test_an_agent_may_not_approve_the_merge(run: Run) -> None:
+    await reach_checks(run)
+    await check(run, "reviewer", "pass")
+    await check(run, "security-auditor", "pass")
+
+    with pytest.raises(GateRefusedError, match="waits for a person"):
+        await run.engine.resolve_gate(
+            run.run_id,
+            "code-approve",
+            GateDecision.APPROVE,
+            GateActor(ActorKind.AGENT, "coder"),
+            "",
+        )
+    assert run.steps("code-merge") == []
+
+
+async def test_a_person_asking_for_changes_sends_the_work_back_and_both_check_again(
+    run: Run,
+) -> None:
+    await reach_checks(run)
+    await check(run, "reviewer", "pass")
+    await check(run, "security-auditor", "pass")
+
+    await run.engine.resolve_gate(
+        run.run_id, "code-approve", GateDecision.REQUEST_CHANGES, person(), "rename the flag"
+    )
+
+    assert run.steps("code-merge") == []
+    coder = run.current("code-implement")
+    assert (coder.attempt, coder.generation) == (2, 1)
+    assert run.sessions.delivered[-1].inputs[0].payload["outcome"] == {
+        GATE_FEEDBACK_KEY: "rename the flag"
+    }
+    await run.close(coder, "pass")
+    assert {step.member for step in run.state.open_steps()} == {"reviewer", "security-auditor"}
+    await pass_both_and_approve(run)
+    await run.close(run.current("code-merge"), "pass")
+    assert run.finished_with() == "engine.run.completed"
 
 
 async def test_the_run_ends_only_when_the_coder_reports_the_merge_done(run: Run) -> None:
     await reach_checks(run)
-    await check(run, "reviewer", "pass")
-    await check(run, "security-auditor", "pass")
+    await pass_both_and_approve(run)
 
     assert run.finished_with() is None
     await run.close(run.current("code-merge"), "pass", {"summary": "merged"})
@@ -152,8 +218,7 @@ async def test_either_check_asking_for_changes_sends_the_work_back_and_both_chec
     # The check that passed the first change does not carry over to the new one.
     assert {step.member for step in run.state.open_steps()} == {"reviewer", "security-auditor"}
     assert {step.generation for step in run.state.open_steps()} == {1}
-    await check(run, "reviewer", "pass")
-    await check(run, "security-auditor", "pass")
+    await pass_both_and_approve(run)
     await run.close(run.current("code-merge"), "pass")
     assert run.finished_with() == "engine.run.completed"
 
@@ -168,8 +233,7 @@ async def test_the_work_goes_round_as_often_as_the_checks_ask(run: Run) -> None:
 
     assert run.finished_with() is None
     assert run.current("code-checks", "reviewer").generation == 6
-    await check(run, "reviewer", "pass")
-    await check(run, "security-auditor", "pass")
+    await pass_both_and_approve(run)
     await run.close(run.current("code-merge"), "pass")
     assert run.finished_with() == "engine.run.completed"
 
@@ -217,8 +281,7 @@ async def test_a_merge_that_cannot_land_waits_for_a_person_and_never_completes_t
     run: Run,
 ) -> None:
     await reach_checks(run)
-    await check(run, "reviewer", "pass")
-    await check(run, "security-auditor", "pass")
+    await pass_both_and_approve(run)
 
     await run.close(run.current("code-merge"), "blocked", {"reason": "merge conflict"})
 

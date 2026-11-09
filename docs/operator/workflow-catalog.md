@@ -335,9 +335,9 @@ observability exporter settings) can be supplied the same way.
 ## Archived bundled workflows
 
 One workflow ships: **Code, Review and Merge**. The coder implements a change, the reviewer
-and the security auditor check it in parallel, and the coder merges it once both pass.
-Either check can send the work back to the coder, with no round limit, and a coder that
-cannot finish waits at a "Coder blocked" gate for a person. The other 18 bundled workflows
+and the security auditor check it in parallel, a person approves the merge once both pass,
+and the coder then merges. Either check, or the person, can send the work back to the coder,
+with no round limit, and a coder that cannot finish waits at a "Coder blocked" gate. The other 18 bundled workflows
 and 45 built-in personas are archived under `archive/`, outside the packaged tree. They are
 not shipped, served or seeded, and `archive/README.md` says how to restore one and which
 product surfaces still name them. A Ting whose file catalog was migrated while they shipped

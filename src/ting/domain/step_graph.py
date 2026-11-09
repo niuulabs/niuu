@@ -294,7 +294,7 @@ def _compile_node(
         id=node_id,
         kind=kind,
         label=str(raw.get("label") or node_id),
-        join_mode=str(raw.get("joinMode") or DEFAULT_JOIN_MODE),
+        join_mode=str(raw.get("joinMode") or _default_join_mode(kind)),
         execution_mode=str(raw.get("executionMode") or DEFAULT_EXECUTION_MODE),
         max_concurrent=_optional_int(raw.get("maxConcurrent")),
         members=_compile_members(raw, persona_definitions) if kind is NodeKind.STAGE else (),
@@ -309,6 +309,15 @@ def _compile_node(
         blocked_event=str(raw.get("blockedEvent") or "").strip(),
         deadline_seconds=_optional_float(raw.get("deadlineSeconds")),
     )
+
+
+def _default_join_mode(kind: NodeKind) -> str:
+    """What a node that does not say joins like.
+
+    A gate opens on its first delivery unless the graph says ``joinMode: all``: a gate
+    reached from alternative branches must not wait for the branches that were not taken.
+    """
+    return JOIN_ANY if kind is NodeKind.GATE else DEFAULT_JOIN_MODE
 
 
 def _compile_members(

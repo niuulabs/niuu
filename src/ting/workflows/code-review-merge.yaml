@@ -2,8 +2,8 @@ schema_version: 1
 id: 5b95a49b-471c-5ef1-b20b-5b156b070568
 name: Code, Review and Merge
 description: The coder implements a change, the reviewer and the security auditor check it in parallel,
-  and the coder merges it once both pass. Either reviewer can send the work back to the coder, with no
-  limit on the rounds.
+  and once both pass a person approves the merge and the coder merges it. Either reviewer, or the
+  person, can send the work back to the coder, with no limit on the rounds.
 version: 1.0.0
 persona_dependencies:
   coder:
@@ -52,6 +52,7 @@ graph:
       - code.requested
       - review.changes_requested
       - security.changes_requested
+      - merge.changes_requested
       - code.unblocked
     position:
       x: 352
@@ -79,20 +80,34 @@ graph:
   - id: code-merge
     kind: stage
     label: Merge the change
-    description: Both checks passed. Merge the reviewed change into the repository's target branch. If
+    description: A person approved the merge. Merge the reviewed change into the repository's target branch. If
       a hosted pull or merge request exists for it, merge that request with the host's normal merge
       path. Otherwise merge the working branch into the repository's default branch (main when there
       is no obvious default) and push. Report the change as done only when the merge is pushed. When
       the merge cannot be completed (a conflict, a protected branch, failing checks), report blocked
       and say why; never report a merge that did not land.
     executionMode: sequential
-    joinMode: all
+    joinMode: any
     stageMembers:
     - personaId: coder
       model: claude-opus-5-5
       consumesEventTypes:
-      - review.passed
-      - security.passed
+      - merge.approved
+    position:
+      x: 1408
+      y: 280
+  - id: code-approve
+    kind: gate
+    label: Approve merge
+    condition: Merging lands the change on the target branch.
+    mode: human_approval
+    pendingBehavior: help_needed
+    approvalEvent: merge.approved
+    changesRequestedEvent: merge.changes_requested
+    instructions: The reviewer and the security auditor both passed this change. Read their findings and
+      the diff, and approve only a change you are willing to merge. Otherwise request changes with
+      specifics, and the coder continues in this same run.
+    joinMode: all
     position:
       x: 1056
       y: 280
@@ -103,6 +118,7 @@ graph:
       the work goes back to the coder.
     mode: human_approval
     pendingBehavior: help_needed
+    joinMode: any
     approvalEvent: code.unblocked
     changesRequestedEvent: code.unblocked
     instructions: Read the coder's stated reason, then answer it or change what was asked. The coder
@@ -118,7 +134,7 @@ graph:
     passingVerdicts:
     - pass
     position:
-      x: 1408
+      x: 1760
       y: 280
   edges:
   - id: edge-request-to-implement
@@ -148,14 +164,23 @@ graph:
     target: code-implement
     label: security.changes_requested -> security.changes_requested
     rework: true
-  - id: edge-review-to-merge
+  - id: edge-review-to-approve
     source: code-checks
-    target: code-merge
+    target: code-approve
     label: review.passed -> review.passed
-  - id: edge-security-to-merge
+  - id: edge-security-to-approve
     source: code-checks
-    target: code-merge
+    target: code-approve
     label: security.passed -> security.passed
+  - id: edge-approve-to-merge
+    source: code-approve
+    target: code-merge
+    label: merge.approved -> merge.approved
+  - id: edge-approve-to-implement
+    source: code-approve
+    target: code-implement
+    label: merge.changes_requested -> merge.changes_requested
+    rework: true
   - id: edge-merge-to-blocked
     source: code-merge
     target: code-blocked

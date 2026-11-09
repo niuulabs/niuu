@@ -17,7 +17,8 @@ keeps the lists, the archive and the packaging in step.
 
 * Workflow: `code-review-merge` (Code, Review and Merge). The coder implements, the
   reviewer and the security auditor check the change in parallel, and the coder merges
-  once both pass. Either check can send the work back to the coder, with no round limit.
+  once both pass and a person approves the merge. Either check, or the person, can send the work
+  back to the coder, with no round limit.
 * Personas: `coder`, `reviewer`, `security-auditor`.
 
 
