@@ -81,12 +81,7 @@ export function isCustomPersona(
 export function matchesPersonaQuery(persona: PersonaSummary, query: string): boolean {
   const needle = query.trim().toLowerCase();
   if (!needle) return true;
-  return [
-    persona.name,
-    persona.summary,
-    persona.producesEvent,
-    ...persona.consumesEvents,
-  ]
+  return [persona.name, persona.summary, persona.producesEvent, ...persona.consumesEvents]
     .join(' ')
     .toLowerCase()
     .includes(needle);

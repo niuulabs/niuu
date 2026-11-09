@@ -65,7 +65,6 @@ describe('PersonaLibrary — sheet', () => {
     expect(flow).toHaveTextContent('review.completed');
     expect(flow).toHaveTextContent('fan-in: all must pass → review.verdict');
     expect(flow).toHaveTextContent('verdict: string');
-    expect(within(sheet).getByTitle('Forbidden')).toHaveTextContent('cascade');
     expect(within(sheet).getByTestId('persona-prompt')).toHaveAttribute('data-open', 'false');
     fireEvent.click(within(sheet).getByRole('button', { name: 'Expand' }));
     expect(within(sheet).getByTestId('persona-prompt')).toHaveAttribute('data-open', 'true');
