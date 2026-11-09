@@ -1690,6 +1690,71 @@ describe('SessionChat', () => {
     expect(screen.getByText('Shipped.')).toBeInTheDocument();
   });
 
+  it('lets a click close a turn the tool-calls eye opened', () => {
+    localStorage.clear();
+    const asked = new Date('2026-11-05T12:00:00Z');
+    render(
+      <SessionChat
+        {...defaultProps}
+        messages={[
+          { id: 'q', role: 'user', content: 'Ship it', createdAt: asked, status: 'done' },
+          {
+            id: 'w',
+            role: 'assistant',
+            content: 'Checking the tree.',
+            createdAt: new Date(asked.getTime() + 10_000),
+            status: 'done',
+            parts: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }],
+          },
+          {
+            id: 'a',
+            role: 'assistant',
+            content: 'Shipped.',
+            createdAt: new Date(asked.getTime() + 20_000),
+            status: 'done',
+          },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('internal-toggle'));
+    const worked = screen.getByTestId('worked-toggle');
+    expect(worked).toHaveAttribute('aria-expanded', 'true');
+
+    fireEvent.click(worked);
+
+    expect(worked).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('worked-steps')).not.toBeInTheDocument();
+  });
+
+  it("folds a coordinator room's work by default, even with the tool-calls eye on", () => {
+    localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
+    render(
+      <SessionChat
+        {...defaultProps}
+        connected
+        participants={
+          new Map([
+            [participant.peerId, participant],
+            [participant2.peerId, participant2],
+          ])
+        }
+        messages={[
+          userMessage,
+          { ...roomAssistantMessage, id: 'a1', content: 'Reviewer work' },
+          { ...roomAssistantMessage, id: 'a2', content: 'Reviewer answer' },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('internal-toggle'));
+    const worked = screen.getByRole('button', { name: /^Reviewer: Worked/ });
+    expect(worked).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Reviewer work')).not.toBeInTheDocument();
+
+    fireEvent.click(worked);
+
+    expect(screen.getByText('Reviewer work')).toBeInTheDocument();
+  });
+
   it('keeps failed room work visible in compact view', () => {
     localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
     render(
@@ -1923,6 +1988,11 @@ describe('SessionChat', () => {
     fireEvent.change(screen.getByLabelText('Copy button'), { target: { value: 'hover' } });
     expect(localStorage.getItem('niuu.compactUx.copyMode')).toBe('hover');
     expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
+    // Without the action bar, copy sits on the footer's line with the time, not a line above.
+    fireEvent.change(screen.getByLabelText('Copy button'), { target: { value: 'inline' } });
+    fireEvent.click(screen.getByLabelText('Message actions'));
+    const copy = screen.getByRole('button', { name: 'Copy message' });
+    expect(copy.closest('.niuu-chat-assistant-footer')).not.toBeNull();
   });
   it('leaves the display controls to a host that places them in its own toolbar', () => {
     render(

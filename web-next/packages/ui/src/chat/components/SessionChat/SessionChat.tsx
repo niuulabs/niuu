@@ -431,18 +431,12 @@ export function SessionChat({
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [newMessageCount, setNewMessageCount] = useState(0);
   const conversationView = useConversationView();
-  const [expandedTurns, setExpandedTurns] = useState<ReadonlySet<string>>(new Set());
+  // What the operator chose for a turn's "Worked" disclosure: it wins over every default
+  // (the tool-calls eye, the coordinator's folded view), so a click always opens or closes it.
+  const [turnChoices, setTurnChoices] = useState<ReadonlyMap<string, boolean>>(new Map());
 
-  const toggleTurn = useCallback((turnId: string) => {
-    setExpandedTurns((prev) => {
-      const next = new Set(prev);
-      if (next.has(turnId)) {
-        next.delete(turnId);
-      } else {
-        next.add(turnId);
-      }
-      return next;
-    });
+  const toggleTurn = useCallback((turnId: string, expanded: boolean) => {
+    setTurnChoices((prev) => new Map(prev).set(turnId, !expanded));
   }, []);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1074,10 +1068,12 @@ export function SessionChat({
     // The "show tool calls and results" eye (showInternal) reveals the work
     // inline: when it is on, every turn's intermediary steps (tool calls/results)
     // are expanded without needing to click each "Worked" disclosure.
+    // A coordinator's room folds each worker's work by default: the room reads as who did
+    // what, and each turn's tools open on a click. Elsewhere the eye opens them all.
     const expanded =
-      expandedTurns.has(turn.id) ||
-      showInternal ||
-      turn.intermediaries.some((message) => message.status === 'error');
+      turnChoices.get(turn.id) ??
+      ((showInternal && !roomView) ||
+        turn.intermediaries.some((message) => message.status === 'error'));
     const turnRunning =
       turn.final?.status === 'running' || turn.intermediaries.some((m) => m.status === 'running');
 
@@ -1117,7 +1113,7 @@ export function SessionChat({
             <button
               type="button"
               className="niuu-chat-worked-trigger"
-              onClick={() => toggleTurn(turn.id)}
+              onClick={() => toggleTurn(turn.id, expanded)}
               aria-expanded={expanded}
               data-testid="worked-toggle"
             >
