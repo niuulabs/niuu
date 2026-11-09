@@ -16,7 +16,6 @@ from volundr.domain.models import (
     HostedLaunch,
     Session,
     SessionStatus,
-    hosted_endpoint,
 )
 from volundr.domain.ports import PersonaNotPlayableError
 from volundr.domain.services.forge_session_launch import (
@@ -419,8 +418,8 @@ class ForgeService:
         )
         return self._member_in(session, unit)
 
-    @staticmethod
-    def _member_in(member: Session, unit: Session | None) -> Session:
+    def _member_in(self, member: Session, unit: Session | None) -> Session:
+        """``member`` as its unit shows it, at the endpoint its runtime names for it."""
         if unit is None:
             return member.model_copy(
                 update={
@@ -430,7 +429,7 @@ class ForgeService:
                     "error": f"its unit session {member.hosted_by} is gone",
                 }
             )
-        return member.hosted_in(unit)
+        return member.hosted_in(unit, self._session_service.member_chat_endpoint(member))
 
     async def _hosted_views(self, sessions: list[Session]) -> list[Session]:
         unit_ids = {
@@ -469,7 +468,7 @@ class ForgeService:
                 "session_definition": launch.definition or member.session_definition,
                 "workload_type": launch.workload_type,
                 "workload_config": workload_config,
-                "chat_endpoint": None,
+                "chat_endpoint": self._session_service.member_chat_endpoint(member),
                 "code_endpoint": None,
                 "error": None,
                 "updated_at": datetime.now(UTC),
@@ -501,7 +500,8 @@ class ForgeService:
             await self._prepare_member(m, principal, launch_spec=launch_spec) for m in members
         ]
         unit_config = {
-            **root.workload_config,
+            # The pool execution the service pinned stays on the row; a caller may not send it.
+            **{k: v for k, v in root.workload_config.items() if k != "_compute_execution"},
             HOSTED_MEMBERS_KEY: [{"id": str(m.id), "port": m.hosted_port} for m in members],
         }
         try:
@@ -524,14 +524,7 @@ class ForgeService:
                 await repository.update(original)
             raise
         for member in prepared:
-            endpoint = (
-                hosted_endpoint(started.chat_endpoint, member.hosted_port)
-                if started.chat_endpoint
-                else None
-            )
-            await self._publish_updated(
-                await repository.update(member.model_copy(update={"chat_endpoint": endpoint}))
-            )
+            await self._publish_updated(member)
         return started
 
     async def _start_member(
@@ -557,23 +550,21 @@ class ForgeService:
         if not effective.can_start():
             raise SessionStateError(member.id, "start", effective.status)
         prepared = await self._prepare_member(member, principal, launch_spec=launch_spec)
+        try:
+            await self._session_service.restart_hosted_member(prepared, principal)
+        except BaseException:
+            # The member did not restart: it is as it was, not recorded under a new launch.
+            await self._session_service._repository.update(member)
+            raise
         await self._publish_updated(prepared)
-        return prepared.hosted_in(unit)
+        return self._member_in(prepared, unit)
 
-    async def _end_member(self, member: Session) -> Session:
-        """End a member's launch: STOPPED (a failed member keeps why), credential retired."""
-        if member.status in (SessionStatus.STOPPED, SessionStatus.ARCHIVED):
-            return member
-        ended = member.with_cleared_endpoints()
-        if member.status != SessionStatus.FAILED:
-            ended = ended.with_status(SessionStatus.STOPPED).model_copy(update={"error": None})
-        stored = await self._session_service._repository.update(ended)
-        await self._session_service._cancel_secret_requests(member.id)
-        await self._session_service._retire_mesh_identity(
-            member.id, launch_id_of(member.workload_config)
+    async def _end_member(
+        self, member: Session, principal: Principal | None, *, unit_running: bool
+    ) -> Session:
+        return await self._session_service.end_hosted_member(
+            member, principal, unit_running=unit_running
         )
-        await self._publish_updated(stored)
-        return stored
 
     async def _stop_member(self, member: Session, principal: Principal | None) -> Session:
         """Stop one member's Skuld and harness; the unit and the other members keep running."""
@@ -589,8 +580,10 @@ class ForgeService:
         effective = member.hosted_in(unit)
         if not effective.can_stop():
             raise SessionStateError(member.id, "stop", effective.status)
-        stopped = await self._end_member(member.model_copy(update={"status": effective.status}))
-        return stopped.hosted_in(unit)
+        stopped = await self._end_member(
+            member.model_copy(update={"status": effective.status}), principal, unit_running=True
+        )
+        return self._member_in(stopped, unit)
 
     def _resolve_session_definition(
         self,
@@ -765,7 +758,7 @@ class ForgeService:
             members = await self._session_service._repository.list_hosted(session.id)
             stopped = await self._session_service.stop_session(session_id, principal=principal)
             for member in members:
-                await self._end_member(member)
+                await self._end_member(member, principal, unit_running=False)
             return stopped
         return await self._session_service.stop_session(session_id, principal=principal)
 

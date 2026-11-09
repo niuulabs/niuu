@@ -26,6 +26,12 @@ from urllib.parse import urlsplit
 
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
+from volundr.adapters.outbound.hosted_member_harness import (
+    DEFAULT_POLL_SECONDS,
+    DEFAULT_REQUEST_SECONDS,
+    DEFAULT_RESTART_WAIT_SECONDS,
+    MemberHarnessControl,
+)
 from volundr.adapters.outbound.local_process import (
     FORGE_MCP_GRANTS_ENV,
     FORGE_MCP_TOKEN_ENV,
@@ -38,10 +44,15 @@ from volundr.adapters.outbound.mesh_settings import (
     mesh_with_defaults,
     parse_mesh_settings,
 )
-from volundr.adapters.outbound.vm_hosted_unit import HostedMemberLaunch
 from volundr.domain.models import HOSTED_MEMBERS_KEY as UNIT_MEMBERS_KEY
 from volundr.domain.models import Session, SessionSpec, SessionStatus
-from volundr.domain.ports import CredentialStorePort, PodManager, PodStartResult
+from volundr.domain.ports import (
+    CredentialStorePort,
+    HostedMemberLaunch,
+    HostedUnitError,
+    PodManager,
+    PodStartResult,
+)
 from volundr.domain.services.forge_session_launch import launch_id_of
 from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
 
@@ -260,7 +271,15 @@ _FORGE_MCP_ENV_NAMES = frozenset(
 
 #: What a member's container sets for itself after the common environment, so the common
 #: value is dropped.
-_MEMBER_OWN_ENV = frozenset({"SKULD__PORT", "SKULD__HOST", "SKULD__SESSION__WORKSPACE_DIR"})
+_MEMBER_OWN_ENV = frozenset(
+    {
+        "SKULD__PORT",
+        "SKULD__HOST",
+        "SKULD__SESSION__WORKSPACE_DIR",
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+    }
+)
 
 
 #: Where a pod's nng PUB socket listens, and the port k8s discovery dials it on.
@@ -314,6 +333,9 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
         mesh: dict | str | None = None,
         mesh_nng_port: int = DEFAULT_MESH_NNG_PORT,
         unit_mesh_dir: str = DEFAULT_UNIT_MESH_DIR,
+        hosted_member_restart_wait_seconds: float = DEFAULT_RESTART_WAIT_SECONDS,
+        hosted_member_poll_seconds: float = DEFAULT_POLL_SECONDS,
+        hosted_member_request_seconds: float = DEFAULT_REQUEST_SECONDS,
         **_extra: object,
     ):
         """``volundr_api_url`` is where a session pod reaches this Forge (the cluster-side
@@ -323,6 +345,11 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
         that has one and no URL is refused."""
         self._namespace = namespace
         self._kubeconfig = kubeconfig
+        self._harness = MemberHarnessControl(
+            restart_wait_seconds=hosted_member_restart_wait_seconds,
+            poll_seconds=hosted_member_poll_seconds,
+            request_seconds=hosted_member_request_seconds,
+        )
         self._base_path = base_path
         self._ingress_class = ingress_class
         self._ingress_backend = ingress_backend
@@ -1549,7 +1576,7 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
             if recorded:
                 raise ValueError(
                     f"Unit {root.id} was started with members {sorted(recorded)} but no "
-                    "launch for them reached the pod manager (SessionSpec.members): Forge "
+                    "launch for them came from the member source: Forge "
                     "must render each member's spec before it starts the root"
                 )
             return
@@ -1683,6 +1710,7 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
             {**mount, "name": own_names.get(mount["name"], mount["name"])}
             for mount in (spec.pod_spec.volume_mounts if spec.pod_spec else ())
         ]
+        member_home = f"/volundr/sessions/{root.id}/members/{port}/home"
         env = self._build_env(member, spec, mesh=mesh)
         env = [e for e in env if e["name"] not in _MEMBER_OWN_ENV]
         env.extend(
@@ -1693,6 +1721,10 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
                     "name": "SKULD__SESSION__WORKSPACE_DIR",
                     "value": f"/volundr/sessions/{root.id}/workspace",
                 },
+                # The agent state of a member is its own (two members never share a Codex
+                # database or a Claude session store); the checkout and HOME are the unit's.
+                {"name": "CODEX_HOME", "value": f"{member_home}/.codex"},
+                {"name": "CLAUDE_CONFIG_DIR", "value": f"{member_home}/.claude"},
             ]
         )
         container: dict[str, Any] = {
@@ -1754,6 +1786,42 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
             connect_host=parts.hostname,
             connect_port=parts.port or 80,
         )
+
+    async def stop_hosted_member(self, member: Session) -> None:
+        """End one member's harness: its container lives with the pod, its Skuld is asked."""
+        await self._harness.stop(member, await self.broker_target(member))
+
+    async def restart_hosted_member(self, member: Session) -> None:
+        """Restart one member's harness under its new launch, and record that launch.
+
+        The member's Secret is rewritten with the credential of the new launch (building the
+        launch does it), then its Skuld replaces its process once the volume carries it.
+        A container of the pod cannot be restarted through the API.
+        """
+        launch = await self.hosted_member_launch(member)
+        launch_id = launch_id_of(launch.session.workload_config) or ""
+        await self._harness.restart(member, await self.broker_target(member), launch_id)
+        await self._record_member_launch(member, launch_id)
+
+    async def _record_member_launch(self, member: Session, launch_id: str) -> None:
+        """Note on the Deployment that the member's container now runs under ``launch_id``."""
+        await self._ensure_client()
+        name = self._release_name(member)
+        deployment = await self._read_deployment(name)
+        if deployment is None:
+            raise HostedUnitError(f"The unit's Deployment {name} is gone; member {member.id} ended")
+        entries = json.loads(
+            ((deployment.metadata.annotations or {}).get(MEMBERS_ANNOTATION)) or "[]"
+        )
+        for entry in entries:
+            if entry["id"] == str(member.id):
+                entry["launch"] = launch_id
+        await self._get_api("AppsV1Api").patch_namespaced_deployment(
+            name=name,
+            namespace=self._namespace,
+            body={"metadata": {"annotations": {MEMBERS_ANNOTATION: json.dumps(entries)}}},
+        )
+        self._member_failures.pop(str(member.id), None)
 
     async def _unit_pod(self, release_name: str) -> Any:
         """The unit's pod, newest first; None while the Deployment has not made one."""
@@ -1997,11 +2065,11 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
     ) -> PodStartResult:
         """Start Deployment + Service + Ingress for the session.
 
-        A unit root's members (``spec.members``, one launch each) become containers of the
+        A unit root's members (the member source's launches, one each) become containers of the
         same pod. Everything is checked and rendered before the cluster is touched, so a
         unit that cannot start whole starts nothing.
         """
-        members = tuple(getattr(spec, "members", None) or ())
+        members = await self.hosted_member_launches(session)
         self._require_members(session, members)
         spec = self._with_brokered_credentials(spec)
         deployment = self._build_deployment_manifest(session, spec, members)

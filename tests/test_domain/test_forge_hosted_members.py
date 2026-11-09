@@ -17,9 +17,9 @@ from volundr.domain.models import (
     Principal,
     Session,
     SessionStatus,
-    hosted_endpoint,
     hosted_status,
 )
+from volundr.domain.ports import HostedUnitError
 from volundr.domain.services.forge import (
     DEFAULT_HOSTED_MEMBER_BASE_PORT,
     ForgeService,
@@ -27,7 +27,7 @@ from volundr.domain.services.forge import (
     HostedUnitInUseError,
 )
 from volundr.domain.services.forge_session_launch import launch_id_of
-from volundr.domain.services.session import SessionStateError
+from volundr.domain.services.session import SessionNotFoundError, SessionStateError
 
 RUN = uuid4()
 PRINCIPAL = Principal(user_id=OWNER, email="owner@example.com", tenant_id=TENANT, roles=[])
@@ -37,8 +37,8 @@ OTHER = Principal(user_id="someone-else", email="x@example.com", tenant_id=TENAN
 class Unit:
     """A Forge app plus the ForgeService on top of its session service."""
 
-    def __init__(self, base_port: int = DEFAULT_HOSTED_MEMBER_BASE_PORT) -> None:
-        self.app: ForgeApp = build_forge_app()
+    def __init__(self, base_port: int = DEFAULT_HOSTED_MEMBER_BASE_PORT, **service_kwargs) -> None:
+        self.app: ForgeApp = build_forge_app(**service_kwargs)
         self.forge = ForgeService(
             self.app.session_service,
             session_participant_service=make_session_participant_service(self.app.session_service),
@@ -363,22 +363,34 @@ class TestStatusAndEndpoint:
         await unit.app.set_status(root.id, SessionStatus.RUNNING)
         assert (await unit.forge.get_session(coder.id)).status == SessionStatus.RUNNING
 
-    async def test_a_members_endpoint_is_the_units_address_and_its_port(self, unit: Unit):
+    async def test_a_members_endpoint_is_the_one_its_runtime_names(self, unit: Unit):
+        """Forge asks the pod manager, as it does for an ordinary session at its start."""
         root = await unit.root()
         coder = await unit.member(root, "coder-1")
         reviewer = await unit.member(root, "reviewer-1", member="reviewer")
-        await unit.start(root)
+        await unit.start_and_run(root)
+        pod_manager = unit.app.pod_manager
+        pod_manager.initial_chat_endpoint = lambda s: (
+            f"wss://gw.example.com/s/{s.id}/session" if s.hosted_by else None
+        )
 
-        unit_session = await unit.forge.get_session(root.id)
         coder_view = await unit.forge.get_session(coder.id)
         reviewer_view = await unit.forge.get_session(reviewer.id)
 
-        assert unit_session.chat_endpoint == "wss://chat.example.com/session"
-        assert coder_view.chat_endpoint == f"wss://chat.example.com:{coder.hosted_port}/session"
-        assert (
-            reviewer_view.chat_endpoint == f"wss://chat.example.com:{reviewer.hosted_port}/session"
-        )
+        assert coder_view.chat_endpoint == f"wss://gw.example.com/s/{coder.id}/session"
+        assert reviewer_view.chat_endpoint == f"wss://gw.example.com/s/{reviewer.id}/session"
         assert coder_view.code_endpoint is None
+
+    async def test_a_member_whose_runtime_names_no_endpoint_is_reached_through_forges_proxy(
+        self, unit: Unit
+    ):
+        root = await unit.root()
+        coder = await unit.member(root, "coder-1")
+        await unit.start_and_run(root)
+
+        view = await unit.forge.get_session(coder.id)
+
+        assert view.chat_endpoint == f"ws://localhost:8080/s/{coder.id}/session"
 
     async def test_every_route_that_reaches_a_session_gets_the_members_own_target(self, unit: Unit):
         root = await unit.root()
@@ -388,11 +400,11 @@ class TestStatusAndEndpoint:
         session, base = await unit.forge.get_session_proxy_target(coder.id)
 
         assert session.id == coder.id
-        assert base == f"https://chat.example.com:{coder.hosted_port}"
+        assert base == f"http://localhost:8080/s/{coder.id}"
         authorized = await unit.forge.get_authorized_session(
             coder.id, principal=PRINCIPAL, action="read"
         )
-        assert authorized.chat_endpoint == f"wss://chat.example.com:{coder.hosted_port}/session"
+        assert authorized.chat_endpoint == f"ws://localhost:8080/s/{coder.id}/session"
 
     async def test_listing_shows_members_as_their_unit_shows_them(self, unit: Unit):
         root = await unit.root()
@@ -402,7 +414,7 @@ class TestStatusAndEndpoint:
         listed = {s.id: s for s in await unit.forge.list_sessions(principal=PRINCIPAL)}
 
         assert listed[coder.id].status == SessionStatus.RUNNING
-        assert listed[coder.id].chat_endpoint.endswith(f":{coder.hosted_port}/session")
+        assert listed[coder.id].chat_endpoint == f"ws://localhost:8080/s/{coder.id}/session"
 
     async def test_a_member_whose_unit_is_gone_reads_as_failed_with_the_reason(self, unit: Unit):
         root = await unit.root()
@@ -429,13 +441,6 @@ class TestStatusAndEndpoint:
         assert hosted_status(SessionStatus.RUNNING, SessionStatus.STOPPED) == SessionStatus.STOPPED
         assert hosted_status(SessionStatus.RUNNING, SessionStatus.ARCHIVED) == SessionStatus.STOPPED
         assert hosted_status(SessionStatus.ARCHIVED, up) == SessionStatus.ARCHIVED
-
-    def test_endpoint_derivation(self):
-        assert hosted_endpoint("ws://10.0.0.5:8081/session", 8083) == "ws://10.0.0.5:8083/session"
-        assert hosted_endpoint("wss://host/s/abc/session", 8082) == "wss://host:8082/s/abc/session"
-        assert hosted_endpoint("ws://[::1]:8081/session", 8082) == "ws://[::1]:8082/session"
-        with pytest.raises(ValueError, match="no host"):
-            hosted_endpoint("/s/abc/session", 8082)
 
     def test_a_session_is_only_shown_by_its_own_unit(self):
         unit = Session(name="u")
@@ -471,7 +476,8 @@ class TestStop:
         stopped = await unit.forge.stop_session(coder.id, principal=PRINCIPAL)
 
         assert stopped.status == SessionStatus.STOPPED
-        assert unit.app.pod_manager.stop_calls == []  # no pod to stop for a member
+        # The runtime stopped the member's own process; the unit's pod was not touched.
+        assert [s.id for s in unit.app.pod_manager.stop_calls] == [coder.id]
         assert (await unit.forge.get_session(root.id)).status == SessionStatus.RUNNING
         assert (await unit.forge.get_session(reviewer.id)).status == SessionStatus.RUNNING
         assert (await unit.forge.get_session(coder.id)).status == SessionStatus.STOPPED
@@ -493,12 +499,38 @@ class TestStop:
         await unit.start_and_run(root)
         first = launch_id_of((await unit.stored(coder)).workload_config)
         await unit.forge.stop_session(coder.id, principal=PRINCIPAL)
+        restarted_with = []
+
+        async def restart(member):
+            restarted_with.append(launch_id_of(member.workload_config))
+
+        unit.app.pod_manager.restart_hosted_member = restart
 
         restarted = await unit.forge.start_session(coder.id, principal=PRINCIPAL)
 
         assert restarted.status == SessionStatus.RUNNING
-        assert launch_id_of((await unit.stored(coder)).workload_config) != first
+        second = launch_id_of((await unit.stored(coder)).workload_config)
+        assert second != first
+        assert restarted_with == [second]  # the runtime was asked to restart it, under that launch
         assert len(unit.app.pod_manager.start_calls) == 1  # still the unit's one start
+
+    async def test_a_restart_the_runtime_cannot_do_fails_loudly_and_changes_nothing(
+        self, unit: Unit
+    ):
+        root = await unit.root()
+        coder = await unit.member(root, "coder-1")
+        await unit.start_and_run(root)
+        await unit.forge.stop_session(coder.id, principal=PRINCIPAL)
+        before = await unit.stored(coder)
+
+        with pytest.raises(HostedUnitError, match="cannot start one member of a unit again"):
+            await unit.forge.start_session(coder.id, principal=PRINCIPAL)
+
+        after = await unit.stored(coder)
+        assert (after.status, launch_id_of(after.workload_config)) == (
+            SessionStatus.STOPPED,
+            launch_id_of(before.workload_config),
+        )
 
     async def test_a_running_member_is_not_started_again(self, unit: Unit):
         root = await unit.root()
@@ -598,3 +630,222 @@ class TestOwnTranscriptAndCredential:
         assert coder_row.hosted_by == reviewer_row.hosted_by == root.id  # update kept hosting
         assert coder_row.workload_config["workflow_member"] == "coder"
         assert reviewer_row.workload_config["workflow_member"] == "reviewer"
+
+
+class TestEndingMembers:
+    async def test_a_member_whose_process_was_not_stopped_is_not_recorded_as_stopped(
+        self, unit: Unit
+    ):
+        root = await unit.root()
+        coder = await unit.member(root, "coder-1")
+        await unit.start_and_run(root)
+        unit.app.pod_manager.stop_success = False
+
+        with pytest.raises(RuntimeError, match="Pod stop failed"):
+            await unit.forge.stop_session(coder.id, principal=PRINCIPAL)
+
+        assert (await unit.forge.get_session(coder.id)).status == SessionStatus.RUNNING
+
+    async def test_a_runtime_that_answers_false_for_a_member_stop_is_an_error(self, unit: Unit):
+        root = await unit.root()
+        coder = await unit.member(root, "coder-1")
+        await unit.start_and_run(root)
+
+        async def stop(member):
+            return False
+
+        unit.app.pod_manager.stop = stop
+
+        with pytest.raises(HostedUnitError, match="did not stop member"):
+            await unit.forge.stop_session(coder.id, principal=PRINCIPAL)
+
+        assert (await unit.forge.get_session(coder.id)).status == SessionStatus.RUNNING
+
+    async def test_stopping_the_unit_removes_every_members_credential_secret(self):
+        removed = []
+
+        class Projection:
+            def supports(self, runtime_backend):
+                return True
+
+            async def remove(self, session_id):
+                removed.append(session_id)
+
+        unit = Unit(forge_session_projection=Projection())
+        root = await unit.root()
+        coder = await unit.member(root, "coder-1")
+        reviewer = await unit.member(root, "reviewer-1", member="reviewer")
+        await unit.start_and_run(root)
+
+        await unit.forge.stop_session(root.id, principal=PRINCIPAL)
+
+        assert sorted(removed, key=str) == sorted([root.id, coder.id, reviewer.id], key=str)
+
+    async def test_stopping_one_member_removes_only_its_secret(self):
+        removed = []
+
+        class Projection:
+            def supports(self, runtime_backend):
+                return True
+
+            async def remove(self, session_id):
+                removed.append(session_id)
+
+        unit = Unit(forge_session_projection=Projection())
+        root = await unit.root()
+        coder = await unit.member(root, "coder-1")
+        await unit.member(root, "reviewer-1", member="reviewer")
+        await unit.start_and_run(root)
+
+        await unit.forge.stop_session(coder.id, principal=PRINCIPAL)
+
+        assert removed == [coder.id]
+
+
+class TestMemberSource:
+    """The one seam every pod manager resolves a unit's members through."""
+
+    async def test_each_member_gets_its_own_spec_and_credential(self, unit: Unit):
+        root = await unit.root()
+        coder = await unit.member(root, "coder-1", system_prompt="write it")
+        reviewer = await unit.member(root, "reviewer-1", member="reviewer")
+        await unit.start(root)
+
+        launches = await unit.app.session_service.hosted_member_launches(root.id)
+
+        assert [launch.session.id for launch in launches] == [coder.id, reviewer.id]
+        credentials = [launch.spec.forge_session for launch in launches]
+        assert all(credentials)
+        verified = [unit.app.tokens.verify(c.token) for c in credentials]
+        assert [v.session_id for v in verified] == [str(coder.id), str(reviewer.id)]
+        assert len({c.launch_id for c in credentials}) == 2
+
+    async def test_one_member_can_be_asked_for_alone(self, unit: Unit):
+        root = await unit.root()
+        await unit.member(root, "coder-1")
+        reviewer = await unit.member(root, "reviewer-1", member="reviewer")
+        await unit.start(root)
+
+        launches = await unit.app.session_service.hosted_member_launches(root.id, reviewer.id)
+
+        assert [launch.session.id for launch in launches] == [reviewer.id]
+
+    async def test_a_session_that_is_not_a_member_is_refused(self, unit: Unit):
+        root = await unit.root()
+        await unit.member(root, "coder-1")
+        await unit.start(root)
+
+        with pytest.raises(HostedUnitError, match="is not a member of unit"):
+            await unit.app.session_service.hosted_member_launches(root.id, uuid4())
+
+    async def test_a_unit_this_process_did_not_start_has_nobody_to_build_for(self, unit: Unit):
+        root = await unit.root()
+        await unit.member(root, "coder-1")
+
+        with pytest.raises(HostedUnitError, match="was not started by this Forge process"):
+            await unit.app.session_service.hosted_member_launches(root.id)
+
+    async def test_a_member_runs_where_its_unit_was_placed(self, unit: Unit):
+        root = await unit.root()
+        coder = await unit.member(root, "coder-1")
+        await unit.start(root)
+        started = await unit.stored(root)
+        await unit.app.sessions.update(
+            started.model_copy(
+                update={
+                    "workload_config": {
+                        **started.workload_config,
+                        "compute_profile": "valhalla-vm",
+                        "host_selector": {"pool": "valhalla"},
+                    }
+                }
+            )
+        )
+
+        await unit.app.session_service.hosted_member_launches(root.id)
+
+        placed = (await unit.stored(coder)).workload_config
+        assert placed["compute_profile"] == "valhalla-vm"
+        assert placed["host_selector"] == {"pool": "valhalla"}
+
+    async def test_a_unit_started_again_does_not_send_its_pinned_execution_back(self, unit: Unit):
+        root = await unit.root()
+        await unit.member(root, "coder-1")
+        await unit.start_and_run(root)
+        running = await unit.stored(root)
+        await unit.app.sessions.update(
+            running.model_copy(
+                update={
+                    "workload_config": {**running.workload_config, "_compute_execution": {"p": 1}}
+                }
+            )
+        )
+        await unit.forge.stop_session(root.id, principal=PRINCIPAL)
+
+        await unit.start(root)  # the service refuses a caller that sends the pin itself
+
+        assert len(unit.app.pod_manager.start_calls) == 2
+
+    async def test_the_pod_manager_resolves_the_members_it_recorded(self, unit: Unit):
+        root = await unit.root()
+        coder = await unit.member(root, "coder-1")
+        await unit.start(root)
+        pod_manager = unit.app.pod_manager
+        pod_manager.configure_hosted_members(unit.app.session_service.hosted_member_launches)
+
+        launches = await pod_manager.hosted_member_launches(await unit.stored(root))
+        one = await pod_manager.hosted_member_launch(await unit.stored(coder))
+
+        assert [launch.session.id for launch in launches] == [coder.id]
+        assert one.session.id == coder.id
+
+    async def test_a_manager_without_a_source_refuses_a_unit_with_members(self, unit: Unit):
+        root = await unit.root()
+        await unit.member(root, "coder-1")
+        await unit.start(root)
+        pod_manager = unit.app.pod_manager
+        pod_manager._hosted_members = None
+
+        with pytest.raises(HostedUnitError, match="no member source"):
+            await pod_manager.hosted_member_launches(await unit.stored(root))
+
+    async def test_a_source_that_answers_other_members_is_refused(self, unit: Unit):
+        root = await unit.root()
+        await unit.member(root, "coder-1")
+        await unit.start(root)
+        pod_manager = unit.app.pod_manager
+
+        async def wrong(unit_id, member_id):
+            return []
+
+        pod_manager.configure_hosted_members(wrong)
+
+        with pytest.raises(HostedUnitError, match="fixed when its unit starts"):
+            await pod_manager.hosted_member_launches(await unit.stored(root))
+
+    async def test_a_root_with_no_members_needs_no_source(self, unit: Unit):
+        root = await unit.root()
+        await unit.start(root)
+
+        assert await unit.app.pod_manager.hosted_member_launches(await unit.stored(root)) == ()
+
+    async def test_the_unit_is_started_with_the_principal_that_asked(self, unit: Unit):
+        root = await unit.root()
+        await unit.member(root, "coder-1")
+        await unit.start(root)
+
+        assert unit.app.session_service._unit_principals[root.id] == PRINCIPAL
+        await unit.forge.stop_session(root.id, principal=PRINCIPAL)
+        assert root.id not in unit.app.session_service._unit_principals
+
+    async def test_an_unknown_unit_has_no_members(self, unit: Unit):
+        with pytest.raises(SessionNotFoundError):
+            await unit.app.session_service.hosted_member_launches(uuid4())
+
+    async def test_only_a_member_of_a_unit_can_be_restarted(self, unit: Unit):
+        plain = await unit.app.session(name="plain")
+
+        with pytest.raises(HostedUnitError, match="is not a member of a unit"):
+            await unit.app.session_service.restart_hosted_member(plain, PRINCIPAL)
+        with pytest.raises(HostedUnitError, match="is not a member of a unit"):
+            await unit.app.pod_manager.hosted_member_launch(plain)

@@ -6,7 +6,6 @@ from uuid import UUID, uuid4
 
 from tests.support.forge_session import PREFIX, ForgeApp, build_forge_app
 from volundr.domain.models import SessionStatus
-from volundr.domain.services.forge import DEFAULT_HOSTED_MEMBER_BASE_PORT
 
 RUN = str(uuid4())
 
@@ -111,11 +110,14 @@ async def test_starting_the_root_starts_the_unit_with_all_members_and_one_pod():
         assert member["status"] == "running"
 
 
-async def test_a_members_endpoint_is_the_units_address_and_its_own_port():
+async def test_a_members_endpoint_is_the_one_its_runtime_names():
     forge = build_forge_app()
     root_id, member_ids = await _unit(forge)
     forge.client.post(f"{PREFIX}/sessions/{root_id}/start")
     await _run(forge, root_id)
+    forge.pod_manager.initial_chat_endpoint = lambda s: (
+        f"wss://gw.example.com/s/{s.id}/session" if s.hosted_by else None
+    )
 
     root = forge.client.get(f"{PREFIX}/sessions/{root_id}").json()
     endpoints = [
@@ -124,10 +126,7 @@ async def test_a_members_endpoint_is_the_units_address_and_its_own_port():
     ]
 
     assert root["chat_endpoint"] == "wss://chat.example.com/session"
-    assert endpoints == [
-        f"wss://chat.example.com:{DEFAULT_HOSTED_MEMBER_BASE_PORT}/session",
-        f"wss://chat.example.com:{DEFAULT_HOSTED_MEMBER_BASE_PORT + 1}/session",
-    ]
+    assert endpoints == [f"wss://gw.example.com/s/{member_id}/session" for member_id in member_ids]
 
 
 async def test_a_members_status_follows_the_unit_and_a_listing_agrees():

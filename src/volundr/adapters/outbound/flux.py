@@ -9,7 +9,7 @@ import copy
 import logging
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any
 from uuid import UUID
 
 from niuu.adapters.flux import (
@@ -21,7 +21,14 @@ from niuu.adapters.flux import (
 )
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
+from volundr.adapters.outbound.hosted_member_harness import (
+    DEFAULT_POLL_SECONDS,
+    DEFAULT_REQUEST_SECONDS,
+    DEFAULT_RESTART_WAIT_SECONDS,
+    MemberHarnessControl,
+)
 from volundr.adapters.outbound.k8s_startup_stages import pod_startup_stages
+from volundr.adapters.outbound.mesh_settings import require_unit_mesh
 from volundr.domain.models import (
     HOSTED_MEMBERS_KEY,
     Session,
@@ -29,7 +36,8 @@ from volundr.domain.models import (
     SessionStatus,
     _deep_merge,
 )
-from volundr.domain.ports import PodManager, PodStartResult
+from volundr.domain.ports import HostedMemberLaunch, PodManager, PodStartResult
+from volundr.domain.services.forge_session_launch import launch_id_of
 from volundr.domain.session_startup import StartupStage
 
 logger = logging.getLogger(__name__)
@@ -75,19 +83,6 @@ _POD_LEVEL_VALUES: tuple[str, ...] = (
 _MEMBER_POD_ADDITIONS: tuple[str, ...] = ("init_containers", "extra_containers", "service_account")
 
 
-class HostedMemberLaunch(Protocol):
-    """One member of a unit, as Forge launches it: its session and its own spec.
-
-    ``spec`` is what the contributor pipeline produced for the member as if it were started
-    on its own, including its Forge credential projected into a Secret of its own (so its
-    pod spec mounts that Secret). Forge hands the members of a unit root to the pod manager
-    on ``SessionSpec.members``.
-    """
-
-    session: Session
-    spec: SessionSpec
-
-
 class FluxPodManager(
     FluxHelmReleases,
     BrokeredCredentialPodManager,
@@ -128,6 +123,9 @@ class FluxPodManager(
         codex_auth_kwargs: dict | None = None,
         session_service_port: int = 8080,
         unit_mesh_dir: str = "/tmp/niuu-mesh",
+        hosted_member_restart_wait_seconds: float = DEFAULT_RESTART_WAIT_SECONDS,
+        hosted_member_poll_seconds: float = DEFAULT_POLL_SECONDS,
+        hosted_member_request_seconds: float = DEFAULT_REQUEST_SECONDS,
         **_extra: object,
     ):
         """``session_service_port`` is the skuld chart's ``service.port``: the
@@ -150,6 +148,11 @@ class FluxPodManager(
                 f"FluxPodManager: unit_mesh_dir must be an absolute path: {unit_mesh_dir!r}"
             )
         self._unit_mesh_dir = unit_mesh_dir.rstrip("/")
+        self._harness = MemberHarnessControl(
+            restart_wait_seconds=hosted_member_restart_wait_seconds,
+            poll_seconds=hosted_member_poll_seconds,
+            request_seconds=hosted_member_request_seconds,
+        )
         self._chart_name = chart_name
         self._chart_version = chart_version
         self._source_ref_kind = source_ref_kind
@@ -223,7 +226,7 @@ class FluxPodManager(
                 f"Session {session.id} is a member of unit {session.hosted_by}: it runs in "
                 "that unit's pod and starts with it (start the unit's root session)"
             )
-        members = tuple(getattr(spec, "members", ()) or ())
+        members = await self.hosted_member_launches(session)
         self._require_members(session, members)
         spec = self._with_brokered_credentials(spec)
         release_name = self._release_name(session)
@@ -314,7 +317,7 @@ class FluxPodManager(
             if recorded:
                 raise ValueError(
                     f"Unit {root.id} was started with members {sorted(recorded)} but no "
-                    "launch for them reached the Flux pod manager (SessionSpec.members): "
+                    "launch for them came from the member source: "
                     "Forge must render each member's spec before it starts the root"
                 )
             return
@@ -362,6 +365,11 @@ class FluxPodManager(
         container and no other.
         """
         mesh_dir = self._unit_mesh_dir
+        require_unit_mesh(
+            values.get("mesh") or {},
+            unit_id=root.id,
+            where="the release values (values.mesh, from the session defaults or the launch)",
+        )
         _use_unit_mesh(values, mesh_dir)
         values["unit"] = {"meshDir": mesh_dir}
         pod_volumes = list(values.get("extraVolumes") or [])
@@ -418,6 +426,23 @@ class FluxPodManager(
         values["session"] = {**(values.get("session") or {}), "id": str(member.id)}
         values["extraVolumes"] = _own_volumes(values, index)
         return values
+
+    async def stop_hosted_member(self, member: Session) -> None:
+        """End one member's harness: its container lives with the pod, its Skuld is asked."""
+        await self._harness.stop(member, await self.broker_target(member))
+
+    async def restart_hosted_member(self, member: Session) -> None:
+        """Restart one member's harness under its new launch.
+
+        The member's Secret is rewritten with the credential of the new launch (building the
+        launch does it), then its Skuld replaces its process once the volume carries it.
+        """
+        launch = await self.hosted_member_launch(member)
+        await self._harness.restart(
+            member,
+            await self.broker_target(member),
+            launch_id_of(launch.session.workload_config) or "",
+        )
 
     async def stop(self, session: Session) -> bool:
         """Delete the HelmRelease CR for the session.

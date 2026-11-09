@@ -15,6 +15,8 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
+from niuu.cap_telemetry import record_cap_hit
+
 #: OpenShell's peer-workload limits (``openshell_sandbox_backend::peer_workloads``).
 MAX_PEER_WORKLOADS = 16
 MAX_PEER_NAME_LENGTH = 40
@@ -214,12 +216,14 @@ def check_unit_size(members: int, *, unit: object) -> None:
     """
     if members <= MAX_PEER_WORKLOADS:
         return
-    raise ValueError(
+    message = (
         f"Unit {unit} hosts {members} member sessions, but OpenShell admits at most "
         f"{MAX_PEER_WORKLOADS} peer workloads per sandbox and each member is one; give the "
         f"workflow at most {MAX_PEER_WORKLOADS} members, or run it on a runtime without "
         "this bound (Kubernetes or a VM)"
     )
+    record_cap_hit("openshell.max_peer_workloads", message)
+    raise ValueError(message)
 
 
 def check_peer_workload_name(name: object) -> str:

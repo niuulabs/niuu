@@ -73,6 +73,7 @@ def unit(setup):  # noqa: F811
         ]
     )
     manager.configure_hosted_members(source)
+    manager._mesh = {"enabled": True}
     return manager, repository, runtime, session, members, source
 
 
@@ -128,6 +129,7 @@ async def test_a_session_without_members_is_started_as_before(setup):  # noqa: F
 
 async def test_a_unit_cannot_start_without_a_way_to_resolve_its_members(setup):  # noqa: F811
     manager, _, _, _, _, _, session = setup
+    manager._mesh = {"enabled": True}
     session = hosting(session, [member_launch(session, 8082, persona="coder")])
 
     with pytest.raises(HostedUnitError, match="configure_hosted_members"):
@@ -278,3 +280,46 @@ async def test_a_members_chat_endpoint_is_the_proxy_route_of_its_own_id(unit):
     endpoint = manager.initial_chat_endpoint(member)
 
     assert endpoint.endswith(f"/s/{member.id}/session")
+
+
+async def test_a_unit_with_the_mesh_off_is_refused_before_a_machine_is_claimed(unit):
+    manager, repository, runtime, session, members, source = unit
+    manager._mesh = {}
+
+    with pytest.raises(HostedUnitError, match="mesh is off in this VM pod manager"):
+        await manager.start(session, spec_of(session))
+
+    source.assert_not_awaited()
+    runtime.stage_forge_session.assert_not_called()
+
+
+async def test_forge_asks_for_a_members_restart_explicitly(unit):
+    manager, _, runtime, _, members = await started_unit(unit)
+    runtime.member_running.return_value = True
+    runtime.member_ready.return_value = True
+    restarted = launched(members[0], "launch-2")
+    unit[5].side_effect = None
+    unit[5].return_value = [restarted]
+
+    await manager.restart_hosted_member(restarted.session)
+
+    runtime.restart_member.assert_awaited_once()
+    assert runtime.restart_member.await_args.args[2] == members[0].session.id
+    # It is the new launch now, so the status sweep does not restart it again.
+    assert await manager.status(restarted.session) == SessionStatus.RUNNING
+    runtime.restart_member.assert_awaited_once()
+
+
+async def test_a_member_of_a_unit_with_no_machine_cannot_be_restarted(unit):
+    manager, _, _, _, members, _ = unit
+
+    with pytest.raises(HostedUnitError, match="holds no machine or slot"):
+        await manager.restart_hosted_member(members[0].session)
+
+
+async def test_stopping_one_member_by_the_default_hook_stops_its_skuld(unit):
+    manager, _, runtime, _, members = await started_unit(unit)
+
+    await manager.stop_hosted_member(members[0].session)
+
+    runtime.stop_member.assert_awaited_once()

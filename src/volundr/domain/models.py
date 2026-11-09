@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, Literal
-from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -838,27 +837,29 @@ class Session(BaseModel):
         """True for a member session that runs inside another session's unit."""
         return self.hosted_by is not None
 
-    def hosted_in(self, unit: Session) -> Session:
-        """This member as the unit shows it: status and endpoint follow ``unit``.
+    def hosted_in(self, unit: Session, chat_endpoint: str | None = None) -> Session:
+        """This member as the unit shows it: its status follows ``unit``.
 
         A member has no pod of its own. While its unit is coming up or running the member
         reads as the unit does, except that a member stopped or failed on its own stays
         so; when the unit is stopping, stopped, failed or archived, every member reads as
-        the unit does. The broker endpoint is the unit's address with the member's port.
+        the unit does. ``chat_endpoint`` is where the member's runtime says its page is
+        (the pod manager names it; the unit's address is not derived); it shows only while
+        the member is up.
         """
         if self.hosted_by != unit.id or self.hosted_port is None:
             raise ValueError(f"Session {self.id} is not a member of unit {unit.id}")
         status = hosted_status(self.status, unit.status)
-        if status in _HOSTED_LIVE_STATUSES and unit.chat_endpoint:
-            chat_endpoint = hosted_endpoint(unit.chat_endpoint, self.hosted_port)
-        else:
-            chat_endpoint = None
         error = self.error
         if status == SessionStatus.FAILED and unit.status == SessionStatus.FAILED:
             error = unit.error or error
         return self.model_copy(
-            update={"status": status, "chat_endpoint": chat_endpoint, "code_endpoint": None}
-            | ({"error": error} if error != self.error else {})
+            update={
+                "status": status,
+                "chat_endpoint": chat_endpoint if status in _HOSTED_LIVE_STATUSES else None,
+                "code_endpoint": None,
+                "error": error,
+            }
         )
 
 
@@ -920,19 +921,6 @@ def hosted_status(own: SessionStatus, unit: SessionStatus) -> SessionStatus:
     if unit in (SessionStatus.STOPPING, SessionStatus.FAILED):
         return unit
     return SessionStatus.STOPPED
-
-
-def hosted_endpoint(unit_chat_endpoint: str, port: int) -> str:
-    """A member's broker endpoint: the unit's address with the member's port.
-
-    Scheme, host and path are the unit's; only the port is the member's. A runtime that
-    routes members by path instead of by port names the member's broker target itself.
-    """
-    parts = urlsplit(unit_chat_endpoint)
-    if not parts.hostname:
-        raise ValueError(f"Unit endpoint has no host: {unit_chat_endpoint!r}")
-    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
-    return urlunsplit((parts.scheme, f"{host}:{port}", parts.path, parts.query, parts.fragment))
 
 
 class ExternalSessionRecord(BaseModel):

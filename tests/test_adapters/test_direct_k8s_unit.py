@@ -23,6 +23,7 @@ from volundr.domain.models import (
     SessionSpec,
     SessionStatus,
 )
+from volundr.domain.ports import HostedUnitError
 from volundr.domain.services.forge_session_launch import with_forge_mcp
 
 CREDENTIAL_PATH = "/var/run/secrets/niuu-forge-session"
@@ -86,6 +87,17 @@ def _member_spec(member: Session, **extra_values) -> SessionSpec:
             volume_mounts=({"name": volume, "mountPath": CREDENTIAL_PATH, "readOnly": True},),
         ),
     )
+
+
+async def _start(manager, root: Session, spec: SessionSpec):
+    """Start ``root`` with the manager composed as Forge composes it: a member source."""
+    members = list(getattr(spec, "members", ()) or ())
+
+    async def source(unit_id, member_id):
+        return [m for m in members if member_id in (None, m.session.id)]
+
+    manager.configure_hosted_members(source)
+    return await manager.start(root, spec)
 
 
 def _unit(**root_values) -> tuple[Session, list[Launch], SessionSpec]:
@@ -313,7 +325,7 @@ class TestRefusals:
     def test_members_that_did_not_arrive_are_refused(self, manager) -> None:
         root, _, spec = _unit()
 
-        with pytest.raises(ValueError, match="no launch for them reached"):
+        with pytest.raises(ValueError, match="came from the member source"):
             manager._require_members(root, ())
 
     def test_members_that_differ_from_the_recorded_ones_are_refused(self, manager) -> None:
@@ -462,7 +474,7 @@ class TestStart:
             patch.object(manager, "_apply_resource", AsyncMock()) as apply,
             pytest.raises(ValueError, match="nodeSelector"),
         ):
-            await manager.start(root, spec)
+            await _start(manager, root, spec)
 
         custom.assert_not_called()
         apply.assert_not_called()
@@ -475,7 +487,7 @@ class TestStart:
             patch.object(manager, "_apply_custom_resource", AsyncMock()),
             patch.object(manager, "_apply_resource", AsyncMock()) as apply,
         ):
-            result = await manager.start(root, spec)
+            result = await _start(manager, root, spec)
 
         applied = [c.kwargs["api_class"] for c in apply.call_args_list]
         assert applied.count("AppsV1Api") == 1
@@ -503,7 +515,7 @@ class TestStart:
             patch.object(manager, "_apply_custom_resource", AsyncMock()),
             patch.object(manager, "_apply_resource", AsyncMock()) as apply,
         ):
-            await manager.start(root, spec)
+            await _start(manager, root, spec)
 
         deployment = next(
             c.kwargs["manifest"]
@@ -750,3 +762,126 @@ class TestStop:
             assert await manager.stop(root) is True
 
         assert delete.call_args_list[0].args[2] == f"skuld-{root.id}"
+
+
+class TestMemberHomes:
+    def test_each_member_keeps_its_own_agent_state(self, manager) -> None:
+        root, launches, spec = _unit()
+
+        _, pod = _pod(manager, root, spec)
+
+        by_name = {
+            c["name"]: {e["name"]: e.get("value") for e in c.get("env", [])}
+            for c in pod["containers"]
+        }
+        for launch in launches:
+            port = launch.session.hosted_port
+            home = f"/volundr/sessions/{root.id}/members/{port}/home"
+            env = by_name[f"member-{port}"]
+            assert env["CODEX_HOME"] == f"{home}/.codex"
+            assert env["CLAUDE_CONFIG_DIR"] == f"{home}/.claude"
+        assert by_name["member-8082"]["CODEX_HOME"] != by_name["member-8083"]["CODEX_HOME"]
+        assert "CODEX_HOME" not in by_name["skuld"]
+
+    def test_a_launch_that_sets_a_home_itself_does_not_share_it(self, manager) -> None:
+        root, launches, spec = _unit()
+        launches[0].spec.pod_spec = PodSpecAdditions(
+            env=({"name": "CODEX_HOME", "value": "/home/user/.codex"},),
+            volumes=launches[0].spec.pod_spec.volumes,
+            volume_mounts=launches[0].spec.pod_spec.volume_mounts,
+        )
+
+        _, pod = _pod(manager, root, spec)
+
+        member = next(c for c in pod["containers"] if c["name"] == "member-8082")
+        values = [e["value"] for e in member["env"] if e["name"] == "CODEX_HOME"]
+        assert values == [f"/volundr/sessions/{root.id}/members/8082/home/.codex"]
+
+
+class TestMemberHarness:
+    """A container of the pod is stopped and restarted by asking the member's own Skuld."""
+
+    @staticmethod
+    def _wired(manager, handler):
+        import httpx
+
+        from volundr.adapters.outbound.hosted_member_harness import MemberHarnessControl
+
+        manager._harness = MemberHarnessControl(
+            restart_wait_seconds=5,
+            poll_seconds=0.001,
+            request_seconds=5,
+            transport=httpx.MockTransport(handler),
+        )
+
+    async def test_stop_asks_the_members_skuld(self, manager) -> None:
+        import httpx
+
+        root, launches, spec = _unit()
+        member = launches[0].session
+        seen = []
+
+        def handler(request):
+            seen.append((request.method, request.url.path))
+            return httpx.Response(200, json={"status": "stopped"})
+
+        self._wired(manager, handler)
+
+        await manager.stop_hosted_member(member)
+
+        assert seen == [("POST", f"/s/{root.id}/m/{member.id}/api/harness/stop")]
+
+    async def test_restart_records_the_new_launch_on_the_deployment(self, manager) -> None:
+        import httpx
+
+        root, launches, spec = _unit()
+        old = launches[0].session
+        new = old.model_copy(update={"workload_config": _config("launch-2")})
+        manager.configure_hosted_members(
+            lambda unit_id, member_id: _answer([Launch(new, launches[0].spec)])
+        )
+        deployment = _deployment(manager, root, spec)
+        apps = MagicMock()
+        apps.patch_namespaced_deployment = AsyncMock()
+        calls = []
+
+        def handler(request):
+            calls.append((request.method, request.url.path, request.content))
+            return httpx.Response(200, json={"status": "ok"})
+
+        self._wired(manager, handler)
+        with (
+            patch.object(manager, "_ensure_client", AsyncMock()),
+            patch.object(manager, "_read_deployment", AsyncMock(return_value=deployment)),
+            patch.object(manager, "_get_api", return_value=apps),
+        ):
+            await manager.restart_hosted_member(new)
+
+        assert calls[0][:2] == ("POST", f"/s/{root.id}/m/{new.id}/api/harness/restart")
+        assert b"launch-2" in calls[0][2]
+        patched = apps.patch_namespaced_deployment.call_args.kwargs["body"]["metadata"]
+        recorded = {
+            e["id"]: e["launch"] for e in json.loads(patched["annotations"][MEMBERS_ANNOTATION])
+        }
+        assert recorded[str(new.id)] == "launch-2"
+        assert recorded[str(launches[1].session.id)] == "launch-1"
+
+    async def test_a_restart_with_the_deployment_gone_is_an_error(self, manager) -> None:
+        import httpx
+
+        root, launches, spec = _unit()
+        member = launches[0].session
+        manager.configure_hosted_members(
+            lambda unit_id, member_id: _answer([Launch(member, launches[0].spec)])
+        )
+        self._wired(manager, lambda request: httpx.Response(200, json={"status": "ok"}))
+        with (
+            patch.object(manager, "_ensure_client", AsyncMock()),
+            patch.object(manager, "_read_deployment", AsyncMock(return_value=None)),
+            pytest.raises(HostedUnitError, match="is gone"),
+        ):
+            await manager.restart_hosted_member(member)
+
+
+async def _answer(launches):
+    return launches

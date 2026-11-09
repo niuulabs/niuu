@@ -52,6 +52,7 @@ from skuld.conversation_snapshot import ConversationSnapshotTooLargeError, prepa
 from skuld.event_log import FORGE_SESSIONS_PATH
 from skuld.file_routes import register_file_routes
 from skuld.forge_mcp.routes import register_forge_mcp_routes
+from skuld.harness_control import HarnessControl, HarnessControlError
 from skuld.path_security import (
     UnsafePathError,
     resolve_contained_path,
@@ -89,6 +90,7 @@ class _BrokerProxy:
 
 
 broker = _BrokerProxy()
+harness_control = HarnessControl(lambda: _broker_getter())
 
 
 def bind_broker(getter: Callable[[], Any], log_buffer: deque[dict]) -> None:
@@ -1639,6 +1641,41 @@ async def send_directed_room_message(request: Request, body: _DirectedRoomMessag
         raise HTTPException(404, str(exc))
 
     return {"status": "sent", "message_id": message_id}
+
+
+class _HarnessRestartRequest(BaseModel):
+    launch_id: str = Field(
+        min_length=1,
+        description="The launch whose credential the new process must read.",
+    )
+
+
+@app.post("/api/harness/stop")
+async def stop_harness() -> dict:
+    """Stop this member's harness and broker work; the process stays up and idle.
+
+    For a member of a workflow run's unit (its pod or sandbox cannot stop one member from
+    outside). Idempotent. Unlisted in the room-role table, so owner only.
+    """
+    try:
+        await harness_control.stop()
+    except HarnessControlError as exc:
+        raise HTTPException(exc.status, {"error": exc.code, "message": str(exc)}) from exc
+    return {"status": "stopped"}
+
+
+@app.post("/api/harness/restart")
+async def restart_harness(body: _HarnessRestartRequest) -> dict:
+    """Stop this member's harness and replace the process, re-reading its credential.
+
+    409 ``credential_stale`` until the credential file carries ``launch_id``; the caller
+    asks again. The process is replaced after this answer is sent.
+    """
+    try:
+        await harness_control.restart(body.launch_id)
+    except HarnessControlError as exc:
+        raise HTTPException(exc.status, {"error": exc.code, "message": str(exc)}) from exc
+    return {"status": "restarting"}
 
 
 @app.post("/api/room/notice")

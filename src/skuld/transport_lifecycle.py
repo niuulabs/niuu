@@ -455,6 +455,9 @@ class TransportLifecycleMixin:
         Reports chronicle summary to Volundr API before stopping the
         transport, so the CLI process is still alive for summary generation.
         """
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
         logger.info("Broker shutting down")
         self._startup_ready = False
         self._startup_state = "stopping"

@@ -67,6 +67,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_WORKSPACES_DIR = "~/.niuu/workspaces"
 # Broker-owned present-file staging for local sessions, under the workspaces dir.
 LOCAL_PRESENTED_FILES_DIR = ".forge-presented"
+
+#: Under the workspaces directory, one directory per member of a unit holding that member's
+#: own agent state (its CODEX_HOME and CLAUDE_CONFIG_DIR): two members never share a Codex
+#: database or a Claude session store, though they share the checkout and the host HOME.
+LOCAL_MEMBER_HOMES_DIR = ".forge-members"
 # Where a local session's ephemeral Mimir mounts live, under its workspace.
 LOCAL_MIMIR_DIR = ".mimir-local"
 DEFAULT_CLAUDE_BINARY = "claude"
@@ -698,15 +703,6 @@ class LocalProcessPodManager(PodManager):
     # process's environment only) and ``ProcessInfo``; the checkout is shared and the mesh
     # is a registry file in a directory only this run's Skulds are given.
 
-    def configure_hosted_members(self, source: HostedMemberSource) -> None:
-        """Attach what resolves a unit root's members (their sessions and own specs).
-
-        A unit root starts its members with it, and each member's persona, prompts and
-        credential come from its own contributor pipeline. Starting a unit root with no
-        source is an error, never a unit without its members.
-        """
-        self._hosted_members = source
-
     @staticmethod
     def _unit_member_ids(session: Session) -> list[str]:
         """The members a unit root was started with; empty for any other session."""
@@ -1023,6 +1019,20 @@ class LocalProcessPodManager(PodManager):
         with suppress(ProcessLookupError):
             os.killpg(group, signal.SIGKILL)
             logger.warning("Sent SIGKILL to process group %d after timeout", group)
+
+    async def restart_hosted_member(self, member: Session) -> None:
+        """Start a member's Skuld again in its unit's process group, under its new launch."""
+        info = self._processes.get(str(member.id))
+        if info is None:
+            raise HostedUnitError(
+                f"Member session {member.id} has no process on this host, so it cannot be "
+                "started again; stop the run and start it again"
+            )
+        if not await self._restart_member_if_new_launch(member, info):
+            raise HostedUnitError(
+                f"Member session {member.id} was not restarted: its unit {member.hosted_by} is "
+                "not running on this host, or the process already runs under its current launch"
+            )
 
     async def _restart_member_if_new_launch(self, member: Session, info: ProcessInfo) -> bool:
         """Start a member's Skuld again, in place, when Forge recorded a new launch for it.
@@ -1359,6 +1369,10 @@ class LocalProcessPodManager(PodManager):
         env["SKULD__PRESENTED_FILES_DIR"] = str(
             self._workspaces_dir / LOCAL_PRESENTED_FILES_DIR / session_id
         )
+        if session.hosted_by is not None:
+            member_home = self._workspaces_dir / LOCAL_MEMBER_HOMES_DIR / session_id
+            env["CODEX_HOME"] = str(member_home / ".codex")
+            env["CLAUDE_CONFIG_DIR"] = str(member_home / ".claude")
 
         # Volundr API URL so Skuld can post chronicles/timeline events back
         server_host = self._server_host

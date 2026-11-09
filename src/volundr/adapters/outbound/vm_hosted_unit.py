@@ -18,14 +18,18 @@ This module is what the pod manager and the VM runtimes share about that:
 from __future__ import annotations
 
 import copy
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.compute import MachineBootstrap, SlotLease
-from volundr.domain.models import PodSpecAdditions, Session, SessionSpec
+from volundr.domain.models import PodSpecAdditions, SessionSpec
+from volundr.domain.ports import (  # noqa: F401  (the seam lives in the port)
+    HostedMemberLaunch,
+    HostedMemberSource,
+    HostedUnitError,
+)
 
 #: ``spec.values`` key the pod manager puts a unit's members under for the runtime.
 HOSTED_MEMBERS_KEY = "hostedMembers"
@@ -40,28 +44,6 @@ FORGE_SESSIONS_DIRECTORY = "/etc/niuu/forge-sessions"
 UNIT_MESH_SOURCE = "/run/niuu/session/mesh"
 UNIT_MESH_TARGET = "/run/niuu/mesh"
 UNIT_MESH_REGISTRY = f"{UNIT_MESH_TARGET}/peers.json"
-
-
-@dataclass(frozen=True)
-class HostedMemberLaunch:
-    """A member of the unit as its own start prepared it.
-
-    ``spec`` is what the contributor pipeline made for the member (its persona, prompts and
-    environment); ``spec.forge_session`` is the credential minted for the member's launch,
-    held in memory by the runtime and written into the guest, never stored.
-    """
-
-    session: Session
-    spec: SessionSpec
-
-
-#: Resolves members of a unit, one launch each, ordered by port: the unit root's id and, to
-#: start one member again in place, that member's id (None for every member of the unit).
-HostedMemberSource = Callable[[UUID, UUID | None], Awaitable[Sequence[HostedMemberLaunch]]]
-
-
-class HostedUnitError(RuntimeError):
-    """A unit cannot be hosted as configured; the message names the remedy."""
 
 
 def member_container(base: str, port: int) -> str:
