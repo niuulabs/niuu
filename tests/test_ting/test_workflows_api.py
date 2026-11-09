@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import httpx
 import jwt
 import pytest
 from fastapi import FastAPI, HTTPException, Request
@@ -2163,6 +2164,34 @@ class TestPrepareWorkflowLaunch:
         assert caught.value.detail == (
             "This workflow cannot run on this Forge: security-auditor on gpt-5.6-terra "
             "(test-harness): allowed_tools:file_read: Codex reads files only through shell."
+        )
+
+    async def test_a_forge_that_cannot_check_refuses_the_launch_with_its_reason(self) -> None:
+        workflow = _make_research_workflow()
+        adapter = RecordingVolundrPort(name="cpu", target_id="cpu-1")
+
+        async def unreachable(members, *, auth_token=None, principal=None):
+            request = httpx.Request("POST", "http://forge/api/v1/forge/sessions/playability")
+            raise httpx.HTTPStatusError(
+                "Forge could not check the run's personas: Method Not Allowed",
+                request=request,
+                response=httpx.Response(405, request=request),
+            )
+
+        adapter.check_playability = unreachable  # type: ignore[method-assign]
+
+        with pytest.raises(HTTPException) as caught:
+            await self._prepare(
+                self._request(),
+                workflow,
+                adapter,
+                launch=WorkflowLaunchBody(prompt="run it", model="claude-fable-5-1"),
+                pinned_workflow_snapshot=self._members_snapshot(workflow.name),
+            )
+
+        assert caught.value.status_code == 502
+        assert caught.value.detail == (
+            "The run was not started: Forge could not check the run's personas: Method Not Allowed"
         )
 
     async def test_a_member_with_no_model_refuses_the_launch(self) -> None:
