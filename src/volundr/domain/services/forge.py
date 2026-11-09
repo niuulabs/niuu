@@ -35,6 +35,7 @@ from volundr.domain.workflow_session import (
     WORKFLOW_RUN_ID_KEY,
     WORKFLOW_RUN_ROOM_KEY,
     WORKFLOW_STEP_HOST_KEY,
+    WORKFLOW_TOPICS_KEY,
 )
 
 if TYPE_CHECKING:
@@ -305,6 +306,9 @@ class ForgeService:
         event_filters = getattr(data, "workflow_event_filters", None)
         if isinstance(event_filters, dict):
             workload_config[WORKFLOW_EVENT_FILTERS_KEY] = dict(event_filters)
+        topics = getattr(data, "workflow_topics", None)
+        if isinstance(topics, list):
+            workload_config[WORKFLOW_TOPICS_KEY] = list(topics)
         orchestration = getattr(data, "workflow_orchestration", None)
         if isinstance(orchestration, str):
             workload_config[WORKFLOW_ORCHESTRATION_KEY] = orchestration

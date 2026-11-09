@@ -32,6 +32,8 @@ WORKFLOW_PERSONA_ALIAS_KEY = "workflow_persona_alias"
 #: The member's ``eventFilters`` from the workflow: a mapping of names to strings. Empty takes
 #: every offer of the member's topics.
 WORKFLOW_EVENT_FILTERS_KEY = "workflow_event_filters"
+#: Every topic the workflow routes to a member: it subscribes to them on top of its persona's.
+WORKFLOW_TOPICS_KEY = "workflow_topics"
 
 #: Who decides the run's next step: ``engine`` (Ting's engine) or ``session`` (a coordinator
 #: agent in the run's root).
@@ -64,6 +66,7 @@ WORKFLOW_STEPS_ENV_NAMES = {
     "personaAlias": "PERSONA_ALIAS",
     "orchestratorPeerId": "ORCHESTRATOR_PEER_ID",
     "eventFilters": "EVENT_FILTERS",
+    "topics": "TOPICS",
     "orchestration": "ORCHESTRATION",
 }
 

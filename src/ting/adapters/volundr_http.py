@@ -275,6 +275,7 @@ class VolundrHTTPAdapter(VolundrPort):
                     "workflow_member": request.member,
                     "workflow_persona_alias": request.persona_alias,
                     "workflow_event_filters": dict(request.event_filters),
+                    "workflow_topics": list(request.topics),
                     "workflow_orchestration": request.orchestration,
                     **({"hosted_by": request.hosted_by} if request.hosted_by else {}),
                     **({"system_prompt": request.system_prompt} if request.system_prompt else {}),

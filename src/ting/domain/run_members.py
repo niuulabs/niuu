@@ -59,6 +59,26 @@ def run_orchestration(snapshot: Mapping[str, Any]) -> str:
     return str(mode)
 
 
+def member_topics(snapshot: Mapping[str, Any], member: str) -> tuple[str, ...]:
+    """Every topic the workflow routes to the member: its stages' ``consumesEventTypes``.
+
+    A member takes an offer only on a topic it subscribes to, and the engine offers a stage to
+    the members whose stage names the topic, so the member must subscribe to all of them, not
+    only to its persona's own ``consumes`` (the merge stage gives the coder ``merge.approved``).
+    """
+    topics: set[str] = set()
+    for raw in _stage_members(snapshot):
+        if str(raw.get("personaId") or "") != member:
+            continue
+        declared = raw.get("consumesEventTypes")
+        if not isinstance(declared, list):
+            declared = raw.get("consumes_event_types")
+        for topic in declared if isinstance(declared, list) else []:
+            if str(topic).strip():
+                topics.add(str(topic).strip())
+    return tuple(sorted(topics))
+
+
 def member_event_filters(snapshot: Mapping[str, Any], member: str) -> dict[str, str]:
     """The member's ``eventFilters``: the one set all of its stages give it, else empty.
 

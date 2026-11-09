@@ -78,6 +78,7 @@ def test_workflow_steps_are_off_unless_forge_marks_the_session_a_step_host():
         "persona_alias": "",
         "orchestrator_peer_id": "",
         "event_filters": {},
+        "topics": [],
     }
     steps = SkuldSettings(**config).workflow_steps
     assert not steps.enabled and not steps.root
@@ -90,6 +91,7 @@ STEP_MEMBER_VALUES = {
     "personaAlias": "reviewer-alias",
     "orchestratorPeerId": "root-session-1",
     "eventFilters": {"language": "python"},
+    "topics": ["code.changed", "review.requested"],
     "orchestration": "session",
 }
 
@@ -110,9 +112,11 @@ def test_a_step_host_session_reaches_runtime_configuration():
         "persona_alias": "reviewer-alias",
         "orchestrator_peer_id": "root-session-1",
         "event_filters": {"language": "python"},
+        "topics": ["code.changed", "review.requested"],
         "orchestration": "session",
     }
     steps = SkuldSettings(**config).workflow_steps
+    assert steps.topics == ["code.changed", "review.requested"]
     assert steps.enabled is True
     assert steps.run_id == "run-1"
     assert steps.member == "reviewer"

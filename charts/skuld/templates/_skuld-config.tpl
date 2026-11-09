@@ -118,6 +118,7 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
       persona_alias: {{ .Values.workflowSteps.personaAlias | toJson }}
       orchestrator_peer_id: {{ .Values.workflowSteps.orchestratorPeerId | toJson }}
       event_filters: {{ .Values.workflowSteps.eventFilters | toJson }}
+      topics: {{ .Values.workflowSteps.topics | default list | toJson }}
       {{- with .Values.workflowSteps.orchestration }}
       orchestration: {{ . | toJson }}
       {{- end }}

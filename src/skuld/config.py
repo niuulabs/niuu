@@ -1199,6 +1199,15 @@ class WorkflowStepsConfig(BaseModel):
             "offer and says which filter did not match. Empty takes every offer of its topics."
         ),
     )
+    topics: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Every topic the workflow routes to this member (its stages' consumesEventTypes). "
+            "The member subscribes to them on top of its persona's own topics: the engine "
+            "offers a stage to the members its stage names on that topic, which need not be "
+            "one the persona declares (the merge stage gives the coder merge.approved)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _coherent(self) -> Self:

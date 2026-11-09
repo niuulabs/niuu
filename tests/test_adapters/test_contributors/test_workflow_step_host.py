@@ -20,6 +20,7 @@ MEMBER_FIELDS = {
     "workflow_member": "coder",
     "workflow_persona_alias": "coder-alias",
     "workflow_event_filters": {"language": "python"},
+    "workflow_topics": ["code.requested", "merge.approved"],
     "workflow_orchestration": "engine",
 }
 
@@ -40,6 +41,7 @@ def _member_steps() -> dict:
         "personaAlias": "coder-alias",
         "orchestratorPeerId": str(ROOT_ID),
         "eventFilters": {"language": "python"},
+        "topics": ["code.requested", "merge.approved"],
         "orchestration": "engine",
     }
 
@@ -48,6 +50,16 @@ async def test_a_step_host_launch_enables_every_workflow_step_setting() -> None:
     result = await WorkflowStepHostContributor(join_mesh=False).contribute(_session(), _step_host())
 
     assert result.values == {"workflowSteps": _member_steps()}
+
+
+async def test_a_member_launched_without_topics_subscribes_to_its_personas_own() -> None:
+    fields = {key: value for key, value in MEMBER_FIELDS.items() if key != "workflow_topics"}
+
+    result = await WorkflowStepHostContributor(join_mesh=False).contribute(
+        _session(), SessionContext(workload_config={"workflow_step_host": True, **fields})
+    )
+
+    assert result.values["workflowSteps"]["topics"] == []
 
 
 async def test_a_members_orchestrator_is_the_session_that_hosts_it() -> None:

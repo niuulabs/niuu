@@ -293,6 +293,7 @@ A workflow run's sessions take part in the run's mesh: each **member** takes the
 | `workflowSteps.member` | string | `""` | The member's name in the workflow stage (`workflow_steps.member`) |
 | `workflowSteps.personaAlias` | string | `""` | The alias the workflow gives the member's pinned persona (`workflow_steps.persona_alias`); the offer carries one contract per alias and the member finds its own by this |
 | `workflowSteps.orchestratorPeerId` | string | `""` | The mesh peer id of the run's root (`workflow_steps.orchestrator_peer_id`), which is the root session's id; a member takes offers published by this peer and no other |
+| `workflowSteps.topics` | list | `[]` | Every topic the workflow routes to the member (`workflow_steps.topics`, its stages' `consumesEventTypes`); it subscribes to them on top of its persona's own topics |
 | `workflowSteps.eventFilters` | object | `{}` | The member's `eventFilters` from the workflow (`workflow_steps.event_filters`); each key must equal the value in the offered inputs' payload, else the member passes the offer. Empty takes every offer of its topics |
 | `workflowSteps.orchestration` | string | `""` | Who decides the run's next step, `engine` or `session` (`workflow_steps.orchestration`); empty keeps Skuld's default, `engine` |
 

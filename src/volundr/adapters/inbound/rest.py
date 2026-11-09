@@ -789,6 +789,14 @@ class SessionCreate(BaseModel):
             "because only the workflow knows whether the member has filters."
         ),
     )
+    workflow_topics: list[str] | None = Field(
+        default=None,
+        description=(
+            "Every topic the workflow routes to the member (its stages' consumesEventTypes). "
+            "The member subscribes to them on top of its persona's own topics, so an offer of a "
+            "stage the workflow gives it reaches it. Only with workflow_step_host."
+        ),
+    )
     workflow_orchestration: Literal["engine", "session"] | None = Field(
         default=None,
         description=(
@@ -965,11 +973,13 @@ class SessionCreate(BaseModel):
         if (
             self.workflow_persona_alias is not None
             or self.workflow_event_filters is not None
+            or self.workflow_topics is not None
             or self.workflow_orchestration is not None
         ):
             raise ValueError(
-                "workflow_persona_alias, workflow_event_filters and workflow_orchestration "
-                "belong to a workflow step host: send them with workflow_step_host"
+                "workflow_persona_alias, workflow_event_filters, workflow_topics and "
+                "workflow_orchestration belong to a workflow step host: send them with "
+                "workflow_step_host"
             )
         return self
 
