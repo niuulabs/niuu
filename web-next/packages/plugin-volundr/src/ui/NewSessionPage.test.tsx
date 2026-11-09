@@ -46,7 +46,6 @@ function persona(name: string): PersonaSummary {
     color: '#fff',
     summary: `${name} summary`,
     permissionMode: 'ask',
-    allowedTools: [],
     iterationBudget: 3,
     isBuiltin: true,
     hasOverride: false,

@@ -3,14 +3,13 @@ import {
   cn,
   EventPicker,
   SchemaEditor,
-  ToolPicker,
   ValidationSummary,
   MountChip,
 } from '@niuulabs/ui';
 import type { FieldType, PersonaRole } from '@niuulabs/domain';
 import type { PersonaDetail, PersonaCreateRequest, PersonaConsumesEvent } from '../ports';
 import { validatePersona } from './validatePersona';
-import { SEED_EVENT_CATALOG, SEED_TOOL_REGISTRY } from '../catalog';
+import { SEED_EVENT_CATALOG } from '../catalog';
 import './PersonaForm.css';
 
 const PERMISSION_MODES = ['default', 'safe', 'loose'] as const;
@@ -131,8 +130,6 @@ function detailToRequest(d: PersonaDetail): PersonaCreateRequest {
     summary: d.summary,
     description: d.description,
     systemPromptTemplate: d.systemPromptTemplate,
-    allowedTools: d.allowedTools,
-    forbiddenTools: d.forbiddenTools,
     permissionMode: d.permissionMode,
     iterationBudget: d.iterationBudget,
     llmThinkingEnabled: d.llm.thinkingEnabled,
@@ -210,8 +207,6 @@ export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormPr
 function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProps) {
   const [form, setForm] = useState<PersonaCreateRequest>(() => detailToRequest(persona));
   const [dirty, setDirty] = useState(false);
-  const [showAllowPicker, setShowAllowPicker] = useState(false);
-  const [showDenyPicker, setShowDenyPicker] = useState(false);
 
   const validationErrors = validatePersona(form, SEED_EVENT_CATALOG);
   const update = useCallback(
@@ -394,88 +389,6 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
               />
             </label>
           </div>
-        </Section>
-
-        {/* Tool access */}
-        <Section
-          title="Tool access"
-          subtitle={`Enforced at dispatch. Destructive tools (${form.allowedTools.filter((t) => SEED_TOOL_REGISTRY.find((r) => r.id === t)?.destructive).length} granted) require permission_mode ≥ normal.`}
-        >
-          <FieldRow label={`allowed (${form.allowedTools.length})`}>
-            <div className="niuu:flex niuu:flex-wrap niuu:gap-1 niuu:mb-2">
-              {form.allowedTools.map((toolId) => {
-                const tool = SEED_TOOL_REGISTRY.find((t) => t.id === toolId);
-                return (
-                  <span
-                    key={toolId}
-                    className={cn(
-                      'niuu:inline-flex niuu:items-center niuu:gap-1 niuu:px-2 niuu:py-0 niuu:rounded niuu:text-xs niuu:font-mono',
-                      tool?.destructive
-                        ? 'niuu:bg-critical/10 niuu:text-critical niuu:border niuu:border-critical/30'
-                        : 'niuu:bg-bg-tertiary niuu:text-text-secondary niuu:border niuu:border-border',
-                    )}
-                  >
-                    {tool?.destructive && (
-                      <span className="niuu:inline-block niuu:w-1.5 niuu:h-1.5 niuu:rounded-full niuu:bg-critical" />
-                    )}
-                    {toolId}
-                    <button
-                      type="button"
-                      aria-label={`Remove ${toolId} from allow list`}
-                      onClick={() =>
-                        update(
-                          'allowedTools',
-                          form.allowedTools.filter((t) => t !== toolId),
-                        )
-                      }
-                      className="niuu:ml-0.5 niuu:text-text-muted niuu:hover:text-text-primary niuu:border-0 niuu:bg-transparent niuu:cursor-pointer"
-                    >
-                      ×
-                    </button>
-                  </span>
-                );
-              })}
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowAllowPicker(true)}
-              className="niuu:text-sm niuu:text-text-secondary niuu:border niuu:border-dashed niuu:border-border niuu:px-2 niuu:py-0.5 niuu:rounded niuu:cursor-pointer niuu:hover:border-brand niuu:hover:text-text-primary niuu:bg-transparent"
-            >
-              + grant tool
-            </button>
-          </FieldRow>
-          <FieldRow label={`forbidden (${form.forbiddenTools.length})`}>
-            <div className="niuu:flex niuu:flex-wrap niuu:gap-1 niuu:mb-2">
-              {form.forbiddenTools.map((toolId) => (
-                <span
-                  key={toolId}
-                  className="niuu:inline-flex niuu:items-center niuu:gap-1 niuu:px-2 niuu:py-0 niuu:rounded niuu:text-xs niuu:font-mono niuu:bg-bg-tertiary niuu:text-text-secondary niuu:border niuu:border-border"
-                >
-                  {toolId}
-                  <button
-                    type="button"
-                    aria-label={`Remove ${toolId} from deny list`}
-                    onClick={() =>
-                      update(
-                        'forbiddenTools',
-                        form.forbiddenTools.filter((t) => t !== toolId),
-                      )
-                    }
-                    className="niuu:ml-0.5 niuu:text-text-muted niuu:hover:text-text-primary niuu:border-0 niuu:bg-transparent niuu:cursor-pointer"
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowDenyPicker(true)}
-              className="niuu:text-sm niuu:text-text-secondary niuu:border niuu:border-dashed niuu:border-border niuu:px-2 niuu:py-0.5 niuu:rounded niuu:cursor-pointer niuu:hover:border-brand niuu:hover:text-text-primary niuu:bg-transparent"
-            >
-              + deny tool
-            </button>
-          </FieldRow>
         </Section>
 
         {/* Produces */}
@@ -706,40 +619,6 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
 
         {/* Iteration budget is now inside Runtime section */}
       </div>
-
-      {/* ToolPicker modals */}
-      <ToolPicker
-        open={showAllowPicker}
-        onOpenChange={setShowAllowPicker}
-        registry={SEED_TOOL_REGISTRY}
-        selected={form.allowedTools}
-        excluded={form.forbiddenTools}
-        onToggle={(id) => {
-          update(
-            'allowedTools',
-            form.allowedTools.includes(id)
-              ? form.allowedTools.filter((t) => t !== id)
-              : [...form.allowedTools, id],
-          );
-        }}
-        label="Allow list — select tools"
-      />
-      <ToolPicker
-        open={showDenyPicker}
-        onOpenChange={setShowDenyPicker}
-        registry={SEED_TOOL_REGISTRY}
-        selected={form.forbiddenTools}
-        excluded={form.allowedTools}
-        onToggle={(id) => {
-          update(
-            'forbiddenTools',
-            form.forbiddenTools.includes(id)
-              ? form.forbiddenTools.filter((t) => t !== id)
-              : [...form.forbiddenTools, id],
-          );
-        }}
-        label="Deny list — select tools"
-      />
     </div>
   );
 }

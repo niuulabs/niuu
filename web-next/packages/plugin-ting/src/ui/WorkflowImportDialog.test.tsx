@@ -39,7 +39,6 @@ describe('WorkflowImportDialog', () => {
           message: 'The local revision differs.',
           definition: {
             permission_mode: 'read_only',
-            allowed_tools: ['Read', 'Search'],
             system_prompt_template: 'Review the proposed change.',
           },
         },
@@ -71,7 +70,6 @@ describe('WorkflowImportDialog', () => {
           {
             name: 'local-reviewer',
             permissionMode: 'default',
-            allowedTools: [],
             iterationBudget: 10,
             isBuiltin: false,
             hasOverride: false,

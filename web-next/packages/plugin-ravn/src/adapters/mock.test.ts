@@ -40,7 +40,6 @@ describe('createMockPersonaStore', () => {
     const store = createMockPersonaStore();
     const reviewer = await store.getPersona('reviewer');
     expect(reviewer).toMatchObject({
-      forbiddenTools: ['write', 'bash', 'apply_patch'],
       llm: { thinkingEnabled: true, maxTokens: 8192 },
       produces: { schemaDef: { verdict: 'string', confidence: 'number', findings: 'array' } },
       consumes: { schemaDef: { diff: 'string', scope: 'string' } },
@@ -87,8 +86,6 @@ describe('createMockPersonaStore', () => {
       summary: 'Custom persona',
       description: 'Custom description',
       systemPromptTemplate: 'Custom system prompt',
-      allowedTools: ['read'],
-      forbiddenTools: [],
       permissionMode: 'default',
       iterationBudget: 10,
       llmThinkingEnabled: false,
@@ -124,8 +121,6 @@ describe('createMockPersonaStore', () => {
       summary: 'Updated coder',
       description: 'Updated description',
       systemPromptTemplate: 'Updated prompt',
-      allowedTools: ['read', 'write', 'bash'],
-      forbiddenTools: [],
       permissionMode: 'default',
       iterationBudget: 50,
       llmThinkingEnabled: true,
@@ -152,8 +147,6 @@ describe('createMockPersonaStore', () => {
         summary: '',
         description: '',
         systemPromptTemplate: '',
-        allowedTools: [],
-        forbiddenTools: [],
         permissionMode: 'default',
         iterationBudget: 0,
         llmThinkingEnabled: false,

@@ -63,13 +63,13 @@ export function groupPersonaFamilies(personas: PersonaSummary[]): PersonaFamily[
  * ("Research framer"); then what it emits says more.
  */
 export function personaTagline(
-  persona: Pick<PersonaSummary, 'name' | 'summary' | 'producesEvent' | 'allowedTools'>,
+  persona: Pick<PersonaSummary, 'name' | 'summary' | 'producesEvent'>,
 ): string {
   const summary = persona.summary.trim();
   const echoesName = summary.toLowerCase() === humanizePersonaName(persona.name).toLowerCase();
   if (summary && !echoesName) return summary;
   if (persona.producesEvent) return `emits ${persona.producesEvent}`;
-  return `${persona.allowedTools.length} tools`;
+  return summary;
 }
 
 export function isCustomPersona(
@@ -86,7 +86,6 @@ export function matchesPersonaQuery(persona: PersonaSummary, query: string): boo
     persona.summary,
     persona.producesEvent,
     ...persona.consumesEvents,
-    ...persona.allowedTools,
   ]
     .join(' ')
     .toLowerCase()

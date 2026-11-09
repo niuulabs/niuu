@@ -35,14 +35,6 @@ export function validatePersona(
     });
   }
 
-  const overlap = req.allowedTools.filter((t) => req.forbiddenTools.includes(t));
-  if (overlap.length > 0) {
-    errors.push({
-      field: 'tools',
-      message: `Allow and deny lists must be disjoint — overlap: ${overlap.join(', ')}`,
-    });
-  }
-
   const catalogNames = new Set(catalog.map((e) => e.name));
 
   if (req.producesEventType && !catalogNames.has(req.producesEventType)) {

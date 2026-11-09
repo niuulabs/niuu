@@ -53,12 +53,10 @@ describe('personaTagline', () => {
     ).toBe('emits x.y');
   });
 
-  it('falls to the tool count when it emits nothing', () => {
-    expect(
-      personaTagline(
-        persona('closer', { summary: 'Closer', producesEvent: '', allowedTools: ['git'] }),
-      ),
-    ).toBe('1 tools');
+  it('falls to the summary when it emits nothing', () => {
+    expect(personaTagline(persona('closer', { summary: 'Closer', producesEvent: '' }))).toBe(
+      'Closer',
+    );
   });
 
   it('humanizes names', () => {
@@ -73,9 +71,9 @@ describe('filters', () => {
     expect(isCustomPersona(persona('a', { isBuiltin: false }))).toBe(true);
   });
 
-  it('searches names, events and tools', () => {
+  it('searches names, summaries and events', () => {
     expect(matchesPersonaQuery(persona('reviewer'), 'code.changed')).toBe(true);
-    expect(matchesPersonaQuery(persona('reviewer'), 'GIT')).toBe(true);
+    expect(matchesPersonaQuery(persona('reviewer'), 'REVIEWER')).toBe(true);
     expect(matchesPersonaQuery(persona('reviewer'), '')).toBe(true);
     expect(matchesPersonaQuery(persona('reviewer'), 'kubernetes')).toBe(false);
   });
@@ -98,7 +96,6 @@ describe('persona drafts', () => {
     expect(buildDraftPersona('night-watch')).toMatchObject({
       name: 'night-watch',
       summary: 'Night watch',
-      allowedTools: [],
       consumesEvents: [],
     });
   });

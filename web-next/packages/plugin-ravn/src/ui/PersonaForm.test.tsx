@@ -13,8 +13,6 @@ const MOCK_PERSONA: PersonaDetail = {
   summary: 'A test persona',
   description: 'Used in tests',
   permissionMode: 'default',
-  allowedTools: ['read', 'write'],
-  forbiddenTools: [],
   iterationBudget: 20,
   isBuiltin: false,
   hasOverride: false,
@@ -46,7 +44,7 @@ describe('PersonaForm', () => {
     });
     expect(screen.getByText('Identity')).toBeInTheDocument();
     expect(screen.getByText('Runtime')).toBeInTheDocument();
-    expect(screen.getByText('Tool access')).toBeInTheDocument();
+    expect(screen.queryByText('Tool access')).not.toBeInTheDocument();
     expect(screen.getByText('Produces')).toBeInTheDocument();
     expect(screen.getByText('Consumes')).toBeInTheDocument();
     expect(screen.getByText('Fan-in')).toBeInTheDocument();

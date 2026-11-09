@@ -55,7 +55,6 @@ interface RawPersonaSummary {
   color: string;
   summary: string;
   permission_mode: string;
-  allowed_tools: string[];
   iteration_budget: number;
   is_builtin: boolean;
   has_override: boolean;
@@ -67,7 +66,6 @@ interface RawPersonaSummary {
 interface RawPersonaDetail extends RawPersonaSummary {
   description: string;
   system_prompt_template: string;
-  forbidden_tools: string[];
   llm: RawPersonaLLM & { temperature?: number };
   produces: RawPersonaProduces;
   consumes: RawPersonaConsumes;
@@ -90,7 +88,6 @@ function toSummary(raw: RawPersonaSummary): PersonaSummary {
     color: raw.color,
     summary: raw.summary,
     permissionMode: raw.permission_mode,
-    allowedTools: raw.allowed_tools,
     iterationBudget: raw.iteration_budget,
     isBuiltin: raw.is_builtin,
     hasOverride: raw.has_override,
@@ -105,7 +102,6 @@ function toDetail(raw: RawPersonaDetail): PersonaDetail {
     ...toSummary(raw),
     description: raw.description,
     systemPromptTemplate: raw.system_prompt_template,
-    forbiddenTools: raw.forbidden_tools,
     llm: {
       thinkingEnabled: raw.llm.thinking_enabled,
       maxTokens: raw.llm.max_tokens,
@@ -144,8 +140,6 @@ function toRequestBody(req: PersonaCreateRequest): Record<string, unknown> {
     summary: req.summary,
     description: req.description,
     system_prompt_template: req.systemPromptTemplate,
-    allowed_tools: req.allowedTools,
-    forbidden_tools: req.forbiddenTools,
     permission_mode: req.permissionMode,
     iteration_budget: req.iterationBudget,
     llm_thinking_enabled: req.llmThinkingEnabled,
