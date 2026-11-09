@@ -46,8 +46,14 @@ def person() -> GateActor:
     return GateActor(ActorKind.PERSON, "alice")
 
 
+async def decide(run: Run, gate: str, decision: GateDecision, note: str = "") -> None:
+    """A person resolves a gate; the members then take up the offer it publishes."""
+    await run.engine.resolve_gate(run.run_id, gate, decision, person(), note)
+    await run.pump()
+
+
 async def approve(run: Run, note: str = "") -> None:
-    await run.engine.resolve_gate(run.run_id, "code-approve", GateDecision.APPROVE, person(), note)
+    await decide(run, "code-approve", GateDecision.APPROVE, note)
 
 
 async def pass_both_and_approve(run: Run) -> None:
@@ -154,16 +160,18 @@ async def test_a_person_asking_for_changes_sends_the_work_back_and_both_check_ag
     await check(run, "reviewer", "pass")
     await check(run, "security-auditor", "pass")
 
-    await run.engine.resolve_gate(
-        run.run_id, "code-approve", GateDecision.REQUEST_CHANGES, person(), "rename the flag"
-    )
+    await decide(run, "code-approve", GateDecision.REQUEST_CHANGES, "rename the flag")
 
     assert run.steps("code-merge") == []
     coder = run.current("code-implement")
     assert (coder.attempt, coder.generation) == (2, 1)
-    assert run.sessions.delivered[-1].inputs[0].payload["outcome"] == {
-        GATE_FEEDBACK_KEY: "rename the flag"
-    }
+    reoffered = run.offers[-1]
+    assert (reoffered["node_id"], reoffered["attempt"], reoffered["generation"]) == (
+        "code-implement",
+        2,
+        1,
+    )
+    assert reoffered["inputs"][0]["payload"]["outcome"] == {GATE_FEEDBACK_KEY: "rename the flag"}
     await run.close(coder, "pass")
     assert {step.member for step in run.state.open_steps()} == {"reviewer", "security-auditor"}
     await pass_both_and_approve(run)
@@ -184,8 +192,9 @@ async def test_the_run_ends_only_when_the_coder_reports_the_merge_done(run: Run)
     assert "code.merged" in run.event_types()
     assert run.state.open_steps() == ()
     # One session per member, reused for the implement and the merge steps.
-    assert len(run.sessions.created) == len(set(run.sessions.created))
-    assert sum(1 for run_id, member in run.sessions.sessions if member == "coder") == 1
+    assert run.sessions.launches == [(run.run_id, ("coder", "reviewer", "security-auditor"))]
+    coder_steps = run.steps("code-implement", "coder") + run.steps("code-merge", "coder")
+    assert {step.session_id for step in coder_steps} == {"session-coder"}
 
 
 # --- rework -------------------------------------------------------------------------
@@ -269,9 +278,7 @@ async def test_a_coder_that_cannot_finish_waits_for_a_person_instead_of_dead_end
     assert (gate.kind, gate.state) == (StepKind.GATE, StepState.WAITING)
     assert run.finished_with() is None
 
-    await run.engine.resolve_gate(
-        run.run_id, "code-blocked", GateDecision.APPROVE, person(), "use the other token"
-    )
+    await decide(run, "code-blocked", GateDecision.APPROVE, "use the other token")
 
     coder = run.current("code-implement")
     assert (coder.attempt, coder.generation) == (2, 1)
