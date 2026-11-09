@@ -4554,6 +4554,7 @@ function LiveSessionDetailPageInner({
                             historyError={chat.historyError}
                             onRetryHistory={chat.retryHistory}
                             participants={chat.participants}
+                            hostPeerId={sessionId}
                             workerSessionIds={workerSessionIds}
                             focusedWorkerId={focusedWorkerId}
                             onFocusWorker={onFocusWorker}
@@ -4633,6 +4634,7 @@ function LiveSessionDetailPageInner({
                           connected={false}
                           historyLoaded={!transcriptQuery.isLoading}
                           participants={replayParticipants}
+                          hostPeerId={sessionId}
                           workerSessionIds={workerSessionIds}
                           focusedWorkerId={focusedWorkerId}
                           onFocusWorker={onFocusWorker}

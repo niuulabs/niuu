@@ -162,6 +162,11 @@ export interface SessionChatProps {
   /** Room participants map (peerId → meta) */
   participants?: ReadonlyMap<string, RoomParticipant>;
   /**
+   * The mesh peer of the session whose room this is (its session id). It leads its room;
+   * another session in it (a member of the workflow run it started) is one of its workers.
+   */
+  hostPeerId?: string;
+  /**
    * Ids of the worker sessions this session coordinates. They join the room's agents in the
    * Workers strip, resolved through the page's session links.
    */
@@ -335,6 +340,7 @@ export function SessionChat({
   olderHistoryError,
   onLoadOlderHistory,
   participants = new Map(),
+  hostPeerId,
   workerSessionIds,
   showWorkersStrip = true,
   aboveComposer,
@@ -478,8 +484,8 @@ export function SessionChat({
 
   // The coordinator's workers: the room's agents, their outcomes and the order of their flow.
   const workers = useMemo(
-    () => roomWorkers(participantsMap, meshEvents, messages),
-    [participantsMap, meshEvents, messages],
+    () => roomWorkers(participantsMap, meshEvents, messages, hostPeerId),
+    [participantsMap, meshEvents, messages, hostPeerId],
   );
   const stages = useMemo(() => workerStages(workers), [workers]);
   const hasWorkers = workers.length > 0;
