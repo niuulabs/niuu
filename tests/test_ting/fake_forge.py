@@ -1,8 +1,8 @@
-"""A fake Forge for the step-session adapter: sessions, step delivery and stops, recorded.
+"""A fake Forge for the step-session adapter: sessions, offers, session logs and stops, recorded.
 
 It implements the slice of ``VolundrPort`` that workflow steps use, with Forge's own
-rules where they matter to Ting: session names are unique, a step is delivered to one
-session, and re-delivering an activation is idempotent.
+rules where they matter to Ting: session names are unique, an offer is handed to a run's
+root, and a session's durable log is read a page at a time.
 
 A run is one unit, as on Forge: a root created with ``hosts_members`` is held (``created``),
 members are created ``hosted_by`` it while it is held (a member for a root that started, for
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -25,6 +26,8 @@ from ting.ports.volundr import (
     ActivityEvent,
     ActivityStreamConnected,
     ForgeProjectRef,
+    PublicSessionLogEntry,
+    PublicSessionLogPage,
     StepSessionRequest,
     VolundrPort,
     VolundrSession,
@@ -36,10 +39,15 @@ class FakeForge(VolundrPort):
         self._name = name
         self.sessions: dict[str, VolundrSession] = {}
         self.create_requests: list[StepSessionRequest] = []
-        self.deliveries: list[tuple[str, dict[str, Any]]] = []
         self.stopped: list[str] = []
         self.started: list[str] = []
-        self.step_states: dict[tuple[str, str], dict[str, Any]] = {}
+        #: Per session id: its durable log, as Forge serves it (``get_public_session_log_page``).
+        self.session_logs: dict[str, list[PublicSessionLogEntry]] = {}
+        #: (session id, after, limit) of each log page asked for, in order.
+        self.log_reads: list[tuple[str, int, int]] = []
+        self.fail_log: Exception | None = None
+        #: Sessions whose log answers ``has_more`` without ever advancing (a broken Forge).
+        self.stalled_logs: set[str] = set()
         #: Forge projects by id, and the ids ensure_project created.
         self.projects: dict[str, ForgeProjectRef] = {}
         self.projects_created: list[str] = []
@@ -57,7 +65,6 @@ class FakeForge(VolundrPort):
         #: Every call that changed a session's lifecycle, in order: ("start" | "stop", id).
         self.lifecycle: list[tuple[str, str]] = []
         self.fail_create: Exception | None = None
-        self.fail_deliver: Exception | None = None
         self.fail_stop: set[str] = set()
         #: idempotency key -> (session id, stored notification), as Forge's feed keeps them.
         self.notifications: dict[str, tuple[str, dict[str, Any]]] = {}
@@ -170,13 +177,6 @@ class FakeForge(VolundrPort):
         self.sessions[session.id] = session
         return session
 
-    async def deliver_workflow_step(
-        self, session_id, activation, *, auth_token=None, principal=None
-    ):
-        if self.fail_deliver is not None:
-            raise self.fail_deliver
-        self.deliveries.append((session_id, activation))
-
     async def submit_session_notification(self, session_id, draft, *, idempotency_key):
         self.notification_calls += 1
         if self.fail_notify is not None:
@@ -193,10 +193,36 @@ class FakeForge(VolundrPort):
         self.resolved.setdefault(notification_id, resolution)
         return {"id": notification_id, "resolution": self.resolved[notification_id]}
 
-    async def get_workflow_step(
-        self, session_id, activation_id, *, auth_token=None, principal=None
+    def log_entry(
+        self, session_id: str, payload: dict[str, Any], *, kind: str = "workflow_step"
+    ) -> PublicSessionLogEntry:
+        """Append a record to a session's durable log, numbered as Forge numbers it."""
+        entries = self.session_logs.setdefault(session_id, [])
+        entry = PublicSessionLogEntry(
+            session_id=session_id,
+            seq=len(entries) + 1,
+            kind=kind,
+            payload=payload,
+            ts=datetime(2026, 11, 8, 9, 0, tzinfo=UTC),
+        )
+        entries.append(entry)
+        return entry
+
+    async def get_public_session_log_page(
+        self, session_id, *, after, limit, auth_token=None, principal=None
     ):
-        return self.step_states.get((session_id, activation_id))
+        self.log_reads.append((session_id, after, limit))
+        if self.fail_log is not None:
+            raise self.fail_log
+        entries = self.session_logs.get(session_id, [])
+        if session_id in self.stalled_logs:
+            return PublicSessionLogPage(entries=(), scanned_through=after, has_more=True)
+        later = [entry for entry in entries if entry.seq > after]
+        page = tuple(later[:limit])
+        scanned = page[-1].seq if page else max(after, entries[-1].seq if entries else after)
+        return PublicSessionLogPage(
+            entries=page, scanned_through=scanned, has_more=len(later) > len(page)
+        )
 
     async def list_sessions(self, *, auth_token=None, principal=None):
         return list(self.sessions.values())

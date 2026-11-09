@@ -1,11 +1,12 @@
 """The step ledger: what a workflow run has activated, closed and decided.
 
-A workflow run advances one *step activation* at a time. Ting activates a step for
-a persona (or opens a gate, or a wait), a harness session closes it, and the step
-engine (``ting.domain.step_engine``) decides what activates next. Everything the
-engine needs is in two durable collections, kept per run:
+A workflow run advances by *offers*. Ting offers a stage's work on the run's mesh (or opens
+a gate, or a wait); every member whose persona takes that kind of work picks the offer up, and
+each pickup is a *step activation* of its own that its harness session closes. The step engine
+(``ting.domain.step_engine``) decides what is offered next. Everything the engine needs is in
+two durable collections, kept per run:
 
-* ``WorkflowStep`` rows, one per activation, with the state the activation is in;
+* ``WorkflowStep`` rows, one per offer and one per pickup, with the state each is in;
 * ``RunEvent`` rows, an append-only log of every outcome event and every engine
   transition, so a run can be replayed and audited.
 
@@ -45,6 +46,17 @@ EVENT_DELIVERY_COALESCED = "engine.delivery.coalesced"
 EVENT_END_REJECTED = "engine.end.rejected"
 EVENT_CLOSE_REJECTED = "engine.close.rejected"
 EVENT_STEP_UNCLOSED = "engine.step.unclosed"
+#: The handoff over the mesh: an offer opened or queued, published (again), picked up,
+#: passed by a member, refused by one; a member reporting it listens, or being restarted.
+EVENT_OFFER_OPENED = "engine.offer.opened"
+EVENT_OFFER_QUEUED = "engine.offer.queued"
+EVENT_OFFER_PUBLISHED = "engine.offer.published"
+EVENT_OFFER_PICKED_UP = "engine.offer.picked_up"
+EVENT_OFFER_PASSED = "engine.offer.passed"
+EVENT_OFFER_REFUSED = "engine.offer.refused"
+EVENT_UNIT_LAUNCHED = "engine.unit.launched"
+EVENT_MEMBER_LISTENING = "engine.member.listening"
+EVENT_MEMBER_RESTARTED = "engine.member.restarted"
 #: Stuck detection (NIU-1181): a flag raised on an open step, and a recovery action taken on one.
 EVENT_STEP_FLAGGED = "engine.step.flagged"
 EVENT_RECOVERY = "engine.recovery"
@@ -70,7 +82,12 @@ SUBWORKFLOW_BLOCKED_VERDICT = "blocked"
 
 
 class StepKind(StrEnum):
+    #: A member's pickup of an offer: the work one harness session holds.
     STAGE_MEMBER = "stage_member"
+    #: What one event produced for one stage node, offered to every member that takes its work.
+    #: It is open until a member picks it up (or every member passed, or its deadline passes);
+    #: the pickups are the steps that do the work.
+    OFFER = "offer"
     GATE = "gate"
     WAIT = "wait"
     END = "end"
@@ -113,10 +130,8 @@ class FlagKind(StrEnum):
 
     #: The step is past its ``deadline_at``.
     OVERDUE = "overdue"
-    #: The step is active but has no session after the start grace.
-    NOT_STARTED = "not_started"
-    #: The step has a session but the session does not know the activation.
-    UNDELIVERED = "undelivered"
+    #: An offer was published and no member picked it up within the pickup grace.
+    UNCLAIMED = "unclaimed"
     #: A turn ended with the step still open.
     UNCLOSED = "unclosed"
     #: The step's Forge session failed, stopped or no longer exists.
@@ -157,6 +172,15 @@ class StepFencingError(StepEngineError):
         self.activation_id = activation_id
         self.reason = reason
         super().__init__(f"close of activation {activation_id} rejected: {reason}")
+
+
+class HandoffRefusedError(StepEngineError):
+    """A session's report about the handoff (listening, pickup, pass, refusal) does not fit the run.
+
+    The report names a session that is not the run's member it claims to be, an offer the
+    run never made, or one the run has moved past. Nothing is recorded; the caller logs it
+    at error and the engine has counted it.
+    """
 
 
 class InvalidEndingError(StepEngineError):
@@ -260,6 +284,12 @@ class WorkflowStep:
     deadline_at: datetime | None = None
     activated_at: datetime | None = None
     closed_at: datetime | None = None
+    #: The offer a pickup took up, as the offer's id (the offer row's own id for an offer).
+    offer_id: str | None = None
+    #: When the member reported the pickup; ``None`` for rows that are not a pickup.
+    picked_up_at: datetime | None = None
+    #: Who decides what is offered: ``engine`` (Ting) or ``session`` (a coordinator agent).
+    orchestration: str = "engine"
 
     def __post_init__(self) -> None:
         if (self.state is StepState.WAITING) != (self.waiting_on is not None):

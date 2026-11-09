@@ -13,9 +13,7 @@ import pytest
 from ting.adapters.forge_step_sessions import (
     FORGE_SESSION_NAME_MAX,
     ForgeStepSessions,
-    RunUnit,
     StepSessionError,
-    activation_body,
     run_room_name,
     step_session_name,
     step_session_tag,
@@ -23,15 +21,8 @@ from ting.adapters.forge_step_sessions import (
 from ting.domain.models import Saga, SagaStatus, WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.run_thread import FORGE_OBJECTIVE_MAX, RunProjectError, run_objective
 from ting.ports.volundr import ForgeProjectRef, RunRoomRequest, SessionMembership
-from ting.ports.workflow_steps import (
-    DeliveredEvent,
-    PersonaRef,
-    SessionLiveness,
-    SessionNotReadyError,
-    StepActivation,
-)
+from ting.ports.workflow_steps import PersonaRef, RunUnit, SessionLiveness
 
-from . import workflow_step_contract as contract
 from .fake_forge import FakeForge, FakeForgeFactory, FakeSagas
 
 PERSONA_DOCUMENT = {
@@ -100,36 +91,6 @@ def _sessions(campaign: WorkflowCampaign, forge: FakeForge | None = None, **kwar
         **{"sagas": FakeSagas(), **kwargs},
     )
     return adapter, forge
-
-
-def _activation(**overrides) -> StepActivation:
-    values = {
-        "run_id": UUID(contract.RUN_ID),
-        "activation_id": UUID(contract.ACTIVATION_ID),
-        "node_id": "implement",
-        "node_label": "Implement",
-        "member": "coder",
-        "attempt": 1,
-        "generation": 0,
-        "session_id": "ses-1",
-        "inputs": (
-            DeliveredEvent(
-                seq=2,
-                event_type="work.requested",
-                edge_id="e1",
-                node_id="go",
-                member=None,
-                payload={"outcome": {"prompt": "add an endpoint"}},
-            ),
-        ),
-        "deadline_at": datetime(2026, 11, 8, 12, 0, tzinfo=UTC),
-        "valid_verdicts": ("implemented", "blocked"),
-        "outcome_schema": {"summary": {"type": "string", "description": "what changed"}},
-        "verdict_events": {"implemented": "code.ready", "blocked": "work.blocked"},
-        "workflow_name": "Build",
-    }
-    values.update(overrides)
-    return StepActivation(**values)
 
 
 async def _launched(campaign: WorkflowCampaign, forge: FakeForge | None = None, **kwargs):
@@ -539,61 +500,6 @@ async def test_a_member_session_with_another_tag_is_refused() -> None:
         await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
 
 
-async def test_delivery_posts_the_contract_body_with_rendered_instructions() -> None:
-    campaign = _campaign(id=UUID(contract.RUN_ID))
-    sessions, forge = _sessions(campaign)
-
-    await sessions.deliver(_activation())
-
-    [(session_id, body)] = forge.deliveries
-    assert session_id == "ses-1"
-    assert set(body) == contract.ACTIVATION_KEYS
-    instructions = body.pop("instructions")
-    expected = dict(contract.ACTIVATION_BODY)
-    expected.pop("instructions")
-    assert body == expected
-    assert "workflow_step_close" in instructions
-    assert "add an endpoint" in instructions
-
-
-@pytest.mark.parametrize("status", [502, 503, 504])
-async def test_a_session_whose_endpoint_does_not_answer_yet_is_not_ready(status: int) -> None:
-    campaign = _campaign(id=UUID(contract.RUN_ID))
-    sessions, forge = _sessions(campaign)
-    request = httpx.Request("POST", "http://forge/x")
-    forge.fail_deliver = httpx.HTTPStatusError(
-        "Service endpoint is not reachable", request=request, response=httpx.Response(status)
-    )
-
-    with pytest.raises(SessionNotReadyError, match="not reachable"):
-        await sessions.deliver(_activation())
-
-
-async def test_a_session_forge_cannot_connect_to_is_not_ready() -> None:
-    campaign = _campaign(id=UUID(contract.RUN_ID))
-    sessions, forge = _sessions(campaign)
-    forge.fail_deliver = httpx.ConnectError("connection refused")
-
-    with pytest.raises(SessionNotReadyError, match="ConnectError"):
-        await sessions.deliver(_activation())
-
-
-async def test_a_delivery_forge_refuses_is_raised() -> None:
-    campaign = _campaign(id=UUID(contract.RUN_ID))
-    sessions, forge = _sessions(campaign)
-    forge.fail_deliver = RuntimeError("409: another step is open")
-
-    with pytest.raises(RuntimeError, match="another step is open"):
-        await sessions.deliver(_activation())
-
-
-def test_an_activation_without_a_schema_or_deadline_sends_nulls() -> None:
-    body = activation_body(_activation(outcome_schema=None, deadline_at=None))
-
-    assert body["outcome_schema"] is None
-    assert body["deadline_at"] is None
-
-
 async def test_stopping_a_run_stops_its_members_first_then_its_root_and_no_other_session() -> None:
     campaign = _two_members()
     sessions, forge = _sessions(campaign, _in_project())
@@ -668,37 +574,13 @@ def test_session_names_are_forge_labels_within_the_limit() -> None:
 @pytest.mark.parametrize(
     ("status", "liveness"),
     [
-        ("running", SessionLiveness.RUNNING),
-        ("starting", SessionLiveness.STARTING),
-        ("provisioning", SessionLiveness.STARTING),
-        ("stopped", SessionLiveness.STOPPED),
-        ("stopping", SessionLiveness.STOPPED),
-        ("archived", SessionLiveness.STOPPED),
-        ("failed", SessionLiveness.FAILED),
-    ],
-)
-async def test_a_session_is_observed_by_the_status_forge_reports(
-    status: str, liveness: SessionLiveness
-) -> None:
-    campaign = _campaign()
-    forge = FakeForge()
-    session_id = forge.add_session("wf-add-endpoint-abc123-coder", "workflow:x", status=status)
-    sessions, _ = _sessions(campaign, forge)
-
-    observed = await sessions.observe(campaign.id, session_id, uuid4())
-
-    assert observed.liveness is liveness
-    assert observed.reported is None
-
-
-@pytest.mark.parametrize(
-    ("status", "liveness"),
-    [
         ("created", SessionLiveness.STARTING),
         ("starting", SessionLiveness.STARTING),
         ("provisioning", SessionLiveness.STARTING),
         ("running", SessionLiveness.RUNNING),
         ("stopped", SessionLiveness.STOPPED),
+        ("stopping", SessionLiveness.STOPPED),
+        ("archived", SessionLiveness.STOPPED),
         ("failed", SessionLiveness.FAILED),
     ],
 )
@@ -711,7 +593,7 @@ async def test_liveness_is_the_status_forge_reports_and_asks_nothing_of_the_sess
     sessions, _ = _sessions(campaign, forge)
 
     assert await sessions.session_liveness(campaign.id, session_id) is liveness
-    assert forge.deliveries == []
+    assert forge.room_offers == [] and forge.log_reads == []
 
 
 async def test_liveness_of_a_session_forge_no_longer_has_is_gone() -> None:
@@ -719,31 +601,6 @@ async def test_liveness_of_a_session_forge_no_longer_has_is_gone() -> None:
     sessions, _ = _sessions(campaign)
 
     assert await sessions.session_liveness(campaign.id, "ses-404") is SessionLiveness.GONE
-
-
-async def test_a_session_forge_no_longer_has_is_gone() -> None:
-    campaign = _campaign()
-    sessions, _ = _sessions(campaign)
-
-    observed = await sessions.observe(campaign.id, "ses-404", uuid4())
-
-    assert observed.liveness is SessionLiveness.GONE
-
-
-async def test_a_running_session_reports_what_it_holds_of_the_step() -> None:
-    campaign = _campaign()
-    forge = FakeForge()
-    session_id = forge.add_session("wf-add-endpoint-abc123-coder", "workflow:x")
-    activation_id = uuid4()
-    held = {"state": "closed", "attempt": 1, "ending": {"kind": "done"}}
-    forge.step_states[(session_id, str(activation_id))] = held
-    sessions, _ = _sessions(campaign, forge)
-
-    known = await sessions.observe(campaign.id, session_id, activation_id)
-    unknown = await sessions.observe(campaign.id, session_id, uuid4())
-
-    assert known.reported == held
-    assert unknown.liveness is SessionLiveness.RUNNING and unknown.reported is None
 
 
 # --- restarting a member in place ---------------------------------------------------

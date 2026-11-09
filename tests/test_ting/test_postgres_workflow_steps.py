@@ -110,6 +110,9 @@ def _step_row(run_id: Any, **changes: Any) -> dict[str, Any]:
         "created_at": NOW,
         "activated_at": NOW,
         "closed_at": None,
+        "offer_id": None,
+        "picked_up_at": None,
+        "orchestration": "engine",
     }
     row.update(changes)
     return row
@@ -273,7 +276,7 @@ async def test_save_step_upserts_every_column_as_parameters(
 
     query, args = connection.executed[1]
     assert "INSERT INTO workflow_steps" in query and "ON CONFLICT (id) DO UPDATE" in query
-    assert "$19" in query and "$20" not in query
+    assert "$22" in query and "$23" not in query
     assert args[:9] == (
         step.id,
         run_id,
@@ -288,7 +291,7 @@ async def test_save_step_upserts_every_column_as_parameters(
     assert json.loads(args[9]) == [step.inputs[0].to_json()]
     assert json.loads(args[11]) == {"o": 1} and json.loads(args[13]) == {"e": 2}
     assert json.loads(args[14]) == waiting.to_json()
-    assert args[15:] == (NOW, NOW, NOW, None)
+    assert args[15:] == (NOW, NOW, NOW, None, None, None, "engine")
 
 
 async def test_a_step_that_is_not_waiting_saves_no_handle(
@@ -404,10 +407,10 @@ async def test_raising_a_flag_is_one_insert_that_reports_whether_it_was_new(
     flag = StepFlag(
         run_id=run_id,
         activation_id=activation_id,
-        kind=FlagKind.NOT_STARTED,
+        kind=FlagKind.UNCLAIMED,
         since=NOW,
         raised_at=NOW,
-        detail="no session",
+        detail="no member took it up",
     )
 
     async with repository.transaction(run_id) as tx:
@@ -418,7 +421,7 @@ async def test_raising_a_flag_is_one_insert_that_reports_whether_it_was_new(
 
     query, args = connection.executed[1]
     assert "ON CONFLICT (activation_id, kind) DO NOTHING" in query
-    assert args == (activation_id, "not_started", run_id, NOW, NOW, "no session")
+    assert args == (activation_id, "unclaimed", run_id, NOW, NOW, "no member took it up")
     assert (first, again) == (True, False)
 
 
@@ -447,64 +450,172 @@ async def test_a_flags_automatic_action_is_claimed_once_and_its_outcome_recorded
 
     async with repository.transaction(run_id) as tx:
         connection.fetchrow_result = {"activation_id": activation_id}
-        first = await tx.claim_flag_action(activation_id, FlagKind.NOT_STARTED, at=NOW)
+        first = await tx.claim_flag_action(activation_id, FlagKind.SESSION_GONE, at=NOW)
         connection.fetchrow_result = None
-        second = await tx.claim_flag_action(activation_id, FlagKind.NOT_STARTED, at=NOW)
-        await tx.finish_flag_action(activation_id, FlagKind.NOT_STARTED, at=NOW, error="boom")
+        second = await tx.claim_flag_action(activation_id, FlagKind.SESSION_GONE, at=NOW)
+        await tx.finish_flag_action(activation_id, FlagKind.SESSION_GONE, at=NOW, error="boom")
 
     claim_query, claim_args = connection.executed[1]
     finish_query, finish_args = connection.executed[3]
     assert "action_at IS NULL" in claim_query and "RETURNING" in claim_query
-    assert claim_args == (activation_id, "not_started", NOW)
+    assert claim_args == (activation_id, "session_gone", NOW)
     assert (first, second) == (True, False)
     assert "SET action_done_at = $3, action_error = $4" in finish_query
-    assert finish_args == (activation_id, "not_started", NOW, "boom")
+    assert finish_args == (activation_id, "session_gone", NOW, "boom")
 
 
-async def test_claiming_a_delivery_is_one_conditional_update(
-    repository: PostgresWorkflowStepRepository, connection: _Connection
-) -> None:
-    activation_id = uuid4()
-    connection.fetchrow_result = {"id": activation_id}
-
-    assert await repository.claim_delivery(activation_id, "session-1", at=NOW) is True
-    query, args = connection.executed[0]
-    assert "UPDATE workflow_steps SET delivered_at = $3" in query
-    for condition in ("session_id = $2", "state = 'active'", "delivered_at IS NULL"):
-        assert condition in query
-    assert args == (activation_id, "session-1", NOW)
-
-    connection.fetchrow_result = None
-    assert await repository.claim_delivery(activation_id, "session-1", at=NOW) is False
+# --- offers and pickups (migration 000060) -----------------------------------------------
 
 
-async def test_undelivered_steps_are_the_active_bound_stage_members_not_delivered(
+async def test_load_reads_an_offer_and_the_pickup_that_took_it_up(
     repository: PostgresWorkflowStepRepository, connection: _Connection
 ) -> None:
     run_id = uuid4()
-    row = _step_row(run_id)
-    connection.fetch_results.append([row])
+    offer = _step_row(
+        run_id,
+        kind="offer",
+        member=None,
+        state="done",
+        session_id=None,
+        attempt=1,
+        orchestration="session",
+    )
+    offer["offer_id"] = str(offer["id"])
+    picked_up = NOW.replace(minute=2)
+    pickup = _step_row(run_id, offer_id=offer["offer_id"], picked_up_at=picked_up)
+    connection.fetch_results = [[offer, pickup], [], []]
 
-    steps = await repository.undelivered_steps()
+    state = await repository.load(run_id)
 
-    assert [step.id for step in steps] == [row["id"]]
-    query = connection.executed[0][0]
-    for condition in (
-        "state = 'active'",
-        "kind = 'stage_member'",
-        "session_id IS NOT NULL",
-        "delivered_at IS NULL",
-    ):
-        assert condition in query
+    read_offer, read_pickup = state.steps
+    assert (read_offer.kind, read_offer.member, read_offer.session_id) == (
+        StepKind.OFFER,
+        None,
+        None,
+    )
+    assert read_offer.offer_id == str(read_offer.id)
+    assert read_offer.picked_up_at is None
+    assert read_offer.orchestration == "session"
+    assert read_pickup.kind is StepKind.STAGE_MEMBER
+    assert read_pickup.offer_id == read_offer.offer_id
+    assert read_pickup.picked_up_at == picked_up
+    assert read_pickup.orchestration == "engine"
 
 
-async def test_releasing_a_delivery_clears_the_claim_of_that_session_only(
+async def test_find_step_reads_the_offer_columns(
     repository: PostgresWorkflowStepRepository, connection: _Connection
 ) -> None:
-    activation_id = uuid4()
+    row = _step_row(uuid4(), offer_id="offer-1", picked_up_at=NOW)
+    connection.fetchrow_result = row
 
-    await repository.release_delivery(activation_id, "session-1")
+    found = await repository.find_step(row["id"])
 
-    query, args = connection.executed[0]
-    assert "SET delivered_at = NULL" in query and "session_id = $2" in query
-    assert args == (activation_id, "session-1")
+    assert found is not None
+    assert (found.offer_id, found.picked_up_at, found.orchestration) == ("offer-1", NOW, "engine")
+
+
+async def test_save_step_writes_an_offer_row_with_its_own_id_as_the_offer_id(
+    repository: PostgresWorkflowStepRepository, connection: _Connection
+) -> None:
+    run_id = uuid4()
+    offer_id = uuid4()
+    offer = WorkflowStep(
+        id=offer_id,
+        run_id=run_id,
+        node_id="review",
+        member=None,
+        kind=StepKind.OFFER,
+        attempt=1,
+        generation=0,
+        state=StepState.ACTIVE,
+        created_at=NOW,
+        deadline_at=NOW,
+        activated_at=NOW,
+        offer_id=str(offer_id),
+        orchestration="session",
+    )
+
+    async with repository.transaction(run_id) as tx:
+        await tx.save_step(offer)
+
+    _, args = connection.executed[1]
+    assert args[3:5] == (None, "offer")
+    assert args[8] is None  # an offer has no session of its own
+    assert args[19:] == (str(offer_id), None, "session")
+
+
+async def test_save_step_writes_a_pickup_with_the_offer_it_took_up_and_when(
+    repository: PostgresWorkflowStepRepository, connection: _Connection
+) -> None:
+    run_id = uuid4()
+    pickup = WorkflowStep(
+        id=uuid4(),
+        run_id=run_id,
+        node_id="review",
+        member="reviewer",
+        kind=StepKind.STAGE_MEMBER,
+        attempt=1,
+        generation=0,
+        state=StepState.ACTIVE,
+        created_at=NOW,
+        session_id="session-r",
+        activated_at=NOW,
+        offer_id="offer-1",
+        picked_up_at=NOW,
+    )
+
+    async with repository.transaction(run_id) as tx:
+        await tx.save_step(pickup)
+
+    _, args = connection.executed[1]
+    assert args[19:] == ("offer-1", NOW, "engine")
+
+
+async def test_saving_a_step_again_updates_its_offer_and_pickup_but_keeps_who_orchestrates(
+    repository: PostgresWorkflowStepRepository, connection: _Connection
+) -> None:
+    run_id = uuid4()
+    step = WorkflowStep(
+        id=uuid4(),
+        run_id=run_id,
+        node_id="n",
+        member="m",
+        kind=StepKind.STAGE_MEMBER,
+        attempt=1,
+        generation=0,
+        state=StepState.ACTIVE,
+        created_at=NOW,
+    )
+
+    async with repository.transaction(run_id) as tx:
+        await tx.save_step(step)
+
+    query = connection.executed[1][0]
+    update = query.split("DO UPDATE SET", 1)[1]
+    assert "offer_id = EXCLUDED.offer_id" in update
+    assert "picked_up_at = EXCLUDED.picked_up_at" in update
+    assert "orchestration" not in update  # fixed when the row is made
+
+
+@pytest.mark.parametrize("kind", ["overdue", "unclaimed", "unclosed", "session_gone"])
+async def test_load_reads_every_flag_kind_the_ledger_allows(
+    repository: PostgresWorkflowStepRepository, connection: _Connection, kind: str
+) -> None:
+    run_id = uuid4()
+    step = _step_row(run_id)
+    connection.fetch_results = [[step], [], [_flag_row(run_id, step["id"], kind=kind)]]
+
+    state = await repository.load(run_id)
+
+    assert [flag.kind for flag in state.flags] == [FlagKind(kind)]
+
+
+async def test_a_flag_kind_the_migration_dropped_is_not_read_silently(
+    repository: PostgresWorkflowStepRepository, connection: _Connection
+) -> None:
+    run_id = uuid4()
+    step = _step_row(run_id)
+    connection.fetch_results = [[step], [], [_flag_row(run_id, step["id"], kind="not_started")]]
+
+    with pytest.raises(ValueError, match="not_started"):
+        await repository.load(run_id)

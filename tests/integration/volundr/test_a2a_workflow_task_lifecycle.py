@@ -30,6 +30,7 @@ from tests.integration.helpers.sse import start_server
 from tests.test_ting.test_a2a_tasks import RecordingVolundrFactory, RecordingVolundrPort
 from ting.adapters.campaign_step_definitions import CampaignStepRunDefinitions
 from ting.adapters.forge_step_sessions import ForgeStepSessions
+from ting.adapters.offer_signing import MeshOfferSigner
 from ting.adapters.postgres_a2a_launches import PostgresA2ALaunchReservationRepository
 from ting.adapters.postgres_sagas import PostgresSagaRepository
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
@@ -149,8 +150,9 @@ def _step_engine(pool, campaign_repo, factory) -> WorkflowRuns:
                 sagas=PostgresSagaRepository(pool),
                 default_model="gpt-5.5",
             ),
+            offers=MeshOfferSigner(signer=None, required=False),
             definitions=CampaignStepRunDefinitions(campaign_repo),
-            settings=EngineSettings(step_deadline_seconds=600.0, session_poll_seconds=0.01),
+            settings=EngineSettings(step_deadline_seconds=600.0),
         ),
         steps=steps,
         campaigns=campaign_repo,
@@ -237,17 +239,15 @@ async def test_a2a_task_lifecycle_runs_on_the_step_engine_over_postgres(
 
         ledger = await PostgresWorkflowStepRepository(txn_pool).load(campaign.id)
         assert ledger.launched
-        [step] = [item for item in ledger.steps if item.member == "tool-smith"]
-        assert step.state.value == "active"
-        assert step.session_id == "session-1"
+        # The stage is offered, not delivered: the offer is outstanding in the ledger until
+        # the member reports it listens, and nobody has taken it up.
+        [offer] = [item for item in ledger.steps if item.kind.value == "offer"]
+        assert offer.state.value == "active"
+        assert [item for item in ledger.steps if item.member == "tool-smith"] == []
+        assert forge.room_offers == []
 
         assert [request.member for request in forge.step_session_requests] == ["tool-smith"]
         assert forge.step_session_requests[0].persona_definition["id"] == "tool-smith"
-        [(session_id, activation)] = forge.delivered_steps
-        assert session_id == "session-1"
-        assert activation["activation_id"] == str(step.id)
-        assert activation["valid_verdicts"] == ["built"]
-        assert "Launch then cancel this A2A integration task." in activation["instructions"]
 
         fetched = await client.post(
             _A2A_PATH, headers=_headers(), json=_request("GetTask", {"id": task["id"]})
@@ -260,7 +260,7 @@ async def test_a2a_task_lifecycle_runs_on_the_step_engine_over_postgres(
         )
         assert canceled.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
         # Canceling the run stopped its sessions.
-        assert forge.stopped == ["session-1"]
+        assert "session-1" in forge.stopped
 
     stored = await campaign_repo.get_campaign(campaign.id)
     assert stored is not None
@@ -342,6 +342,6 @@ async def test_ravn_a2a_tool_build_backend_commissions_real_workflow_task(
         assert campaign.status is WorkflowCampaignStatus.RUNNING
         assert campaign.session_id == ""
         assert [request.member for request in forge.step_session_requests] == ["tool-smith"]
-        assert len(forge.delivered_steps) == 1
+        assert forge.room_offers == []
     finally:
         await _stop_server(ting_server)

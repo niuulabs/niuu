@@ -83,28 +83,32 @@ def fan_in_run() -> Run:
     )
 
 
-async def test_any_join_activates_for_every_delivery_and_a_sequential_node_queues() -> None:
+async def test_any_join_offers_for_every_delivery_and_a_busy_member_queues_the_next() -> None:
     run = fan_in_run()
     await run.launch()
     await run.close(run.current("make", "a1"), "ok")
     await run.close(run.current("make", "a2"), "ok")
 
-    # Each event activates the consumer; a sequential node runs one at a time.
-    assert run.states("take") == ["active", "pending"]
-    queued = run.steps("take")[1]
-    assert queued.session_id is None and queued.deadline_at is None
-    assert "engine.step.queued" in run.event_types()
+    # Each event is offered; the consumer holds the first, so the second offer waits its turn.
+    assert run.states("take") == ["active"]
+    taken, queued = run.offer_rows("take")
+    assert (taken.state, queued.state) == (StepState.DONE, StepState.PENDING)
+    assert queued.deadline_at is None and queued.activated_at is None
+    assert "engine.offer.queued" in run.event_types()
+    assert [o["node_id"] for o in run.offers] == ["make", "take"]  # the second waits
 
     await run.close(run.steps("take")[0], "ok")
 
     assert run.states("take") == ["done", "active"]
     promoted = run.steps("take")[1]
-    assert promoted.session_id == "session-s" and promoted.activated_at is not None
+    assert promoted.session_id == "session-s"
+    take_offers = [o for o in run.offers if o["node_id"] == "take"]
+    assert [o["offer_id"] for o in take_offers][-1] == promoted.offer_id == str(queued.id)
+    assert [o.state for o in run.offer_rows("take")] == [StepState.DONE, StepState.DONE]
     assert any(
-        e.event_type == "engine.step.activated" and e.payload.get("promoted_from_queue")
+        e.event_type == "engine.offer.opened" and e.payload.get("promoted_from_queue")
         for e in run.state.events
     )
-    assert run.sessions.delivered[-1].activation_id == promoted.id
 
 
 async def test_a_member_never_has_two_active_steps_even_in_a_parallel_node() -> None:
@@ -130,14 +134,16 @@ async def test_a_member_never_has_two_active_steps_even_in_a_parallel_node() -> 
     await run.close(run.current("make", "a1"), "ok")
     await run.close(run.current("make", "a2"), "ok")
 
-    # One session runs one step at a time, whatever the node allows.
-    assert run.states("take") == ["active", "pending"]
+    # One session runs one step at a time, whatever the node allows: the second offer waits.
+    assert run.states("take") == ["active"]
+    assert [o.state for o in run.offer_rows("take")] == [StepState.DONE, StepState.PENDING]
 
 
-async def test_max_concurrent_limits_a_parallel_node() -> None:
+async def test_max_concurrent_bounds_a_nodes_outstanding_offers_and_working_pickups() -> None:
     run = custom_run(
         [
             trigger("go"),
+            stage("src", [member("p1"), member("p2"), member("p3")], execution="parallel"),
             stage(
                 "make",
                 [member("a1"), member("a2"), member("a3")],
@@ -146,20 +152,81 @@ async def test_max_concurrent_limits_a_parallel_node() -> None:
             ),
             end(),
         ],
-        [edge("e1", "go", "make", "go"), edge("e2", "make", "done", "work.item")],
-        {name: persona({"ok": "work.item"}, ["go"]) for name in ("a1", "a2", "a3")},
+        [
+            edge("e0", "go", "src", "go"),
+            edge("e1", "src", "make", "x.one"),
+            edge("e2", "src", "make", "x.two"),
+            edge("e3", "src", "make", "x.three"),
+            edge("e4", "make", "done", "work.item"),
+        ],
+        {
+            "p1": persona({"ok": "x.one"}, ["go"]),
+            "p2": persona({"ok": "x.two"}, ["go"]),
+            "p3": persona({"ok": "x.three"}, ["go"]),
+            "a1": persona({"ok": "work.item"}, ["x.one"]),
+            "a2": persona({"ok": "work.item"}, ["x.two"]),
+            "a3": persona({"ok": "work.item"}, ["x.three"]),
+        },
     )
     await run.launch()
+    for producer in ("p1", "p2", "p3"):
+        await run.close(run.current("src", producer), "ok")
 
-    assert sorted(run.states("make")) == ["active", "active", "pending"]
-    queued = next(step for step in run.steps("make") if step.state is StepState.PENDING)
-    first = next(step for step in run.steps("make") if step.state is StepState.ACTIVE)
+    # Two pickups work; the third offer is not published until a place frees up.
+    assert sorted(run.states("make")) == ["active", "active"]
+    assert [o.state for o in run.offer_rows("make")] == [
+        StepState.DONE,
+        StepState.DONE,
+        StepState.PENDING,
+    ]
+    assert [o["topic"] for o in run.offers if o["node_id"] == "make"] == ["x.one", "x.two"]
+    first = run.steps("make", "a1")[0]
 
     await run.close(first, "ok")
 
-    # Closing one frees a place, and the queued step takes it.
-    assert run.steps("make", queued.member)[0].state is StepState.ACTIVE
+    # Closing one frees a place, and the queued offer takes it.
+    assert run.steps("make", "a3")[0].state is StepState.ACTIVE
     assert sorted(run.states("make")) == ["active", "active", "done"]
+    assert [o["topic"] for o in run.offers if o["node_id"] == "make"][-1] == "x.three"
+
+
+async def test_a_parked_step_holds_its_member_but_no_place_in_a_sequential_node() -> None:
+    run = custom_run(
+        [
+            trigger("go"),
+            stage("src", [member("p1"), member("p2")], execution="parallel"),
+            stage("make", [member("a1"), member("a2")], execution="sequential"),
+            end(),
+        ],
+        [
+            edge("e0", "go", "src", "go"),
+            edge("e1", "src", "make", "x.one"),
+            edge("e2", "src", "make", "x.two"),
+            edge("e3", "make", "done", "work.item"),
+        ],
+        {
+            "p1": persona({"ok": "x.one"}, ["go"]),
+            "p2": persona({"ok": "x.two"}, ["go"]),
+            "a1": persona({"ok": "work.item"}, ["x.one"]),
+            "a2": persona({"ok": "work.item"}, ["x.two"]),
+        },
+    )
+    await run.launch()
+    await run.close(run.current("src", "p1"), "ok")
+    await run.close(run.current("src", "p2"), "ok")
+    # The node works one thing at a time: a1 has it, so a2's offer waits.
+    assert run.states("make") == ["active"]
+    assert [o.state for o in run.offer_rows("make")] == [StepState.DONE, StepState.PENDING]
+    parked = Ending.waiting(
+        WaitingOn(WaitingOnKind.PERSON, "alice", datetime(2026, 11, 9, tzinfo=UTC))
+    )
+
+    await run.engine.record_close(run.current("make", "a1").id, "session-a1", 1, parked)
+    await run.pump()
+
+    # A parked step holds no place in the node, so the next offer goes out to its free member.
+    assert sorted(run.states("make")) == ["active", "waiting"]
+    assert run.steps("make", "a2")[0].state is StepState.ACTIVE
 
 
 async def test_event_filters_decide_what_a_member_consumes() -> None:
@@ -441,7 +508,9 @@ async def test_a_stage_deadline_defaults_to_config_and_a_node_can_override_it() 
     )
     await plain.launch()
     step = plain.current("work")
-    assert step.deadline_at == step.activated_at + timedelta(seconds=STEP_DEADLINE_SECONDS)
+    (offer,) = plain.offer_rows("work")
+    assert offer.deadline_at == offer.activated_at + timedelta(seconds=STEP_DEADLINE_SECONDS)
+    assert step.deadline_at == offer.deadline_at  # a pickup keeps its offer's deadline
 
     tight = custom_run(
         [trigger("go"), stage("work", [member("w")], deadlineSeconds=30), end()],
@@ -450,7 +519,9 @@ async def test_a_stage_deadline_defaults_to_config_and_a_node_can_override_it() 
     )
     await tight.launch()
     step = tight.current("work")
-    assert step.deadline_at == step.activated_at + timedelta(seconds=30)
+    (offer,) = tight.offer_rows("work")
+    assert offer.deadline_at == offer.activated_at + timedelta(seconds=30)
+    assert step.deadline_at == offer.deadline_at
 
 
 def wait_run(node: dict) -> Run:
@@ -494,6 +565,7 @@ async def test_a_timer_wait_parks_the_run_until_it_is_observed() -> None:
         await run.engine.record_close(parked.id, None, 1, Ending.done())
 
     await run.engine.record_close(parked.id, None, 1, Ending.with_verdict("observed"))
+    await run.pump()
 
     assert run.steps("pause")[0].state is StepState.DONE
     assert run.current("after")
@@ -541,6 +613,7 @@ async def test_a_subworkflow_parks_as_a_wait_and_continues_when_its_children_joi
         await run.engine.record_close(parked.id, None, 1, Ending.with_verdict("observed"))
 
     await run.engine.record_close(parked.id, None, 1, Ending.with_verdict("joined"))
+    await run.pump()
 
     assert run.current("after")
 
@@ -620,6 +693,7 @@ async def test_a_workflow_with_several_triggers_needs_the_one_to_launch() -> Non
         await run.engine.launch(StepRunRequest(run.run_id, {}, trigger_node_id="work"))
 
     await run.engine.launch(StepRunRequest(run.run_id, {}, trigger_node_id="second"))
+    await run.pump()
     assert run.current("work").inputs[0].node_id == "second"
 
 
@@ -654,7 +728,7 @@ def test_next_actions_does_nothing_for_a_finished_run() -> None:
         RunState(run_id, (), events),
         events[-1],
         now=now,
-        settings=EngineSettings(step_deadline_seconds=1.0, session_poll_seconds=0.01),
+        settings=EngineSettings(step_deadline_seconds=1.0),
     )
 
     assert actions == []
@@ -674,18 +748,19 @@ def test_an_event_from_a_node_the_graph_lacks_is_an_engine_error() -> None:
             RunState(run_id, (), (stray,)),
             stray,
             now=now,
-            settings=EngineSettings(step_deadline_seconds=1.0, session_poll_seconds=0.01),
+            settings=EngineSettings(step_deadline_seconds=1.0),
         )
 
 
 def test_engine_settings_need_a_positive_deadline() -> None:
     with pytest.raises(ValueError, match="positive"):
-        EngineSettings(step_deadline_seconds=0, session_poll_seconds=1.0)
+        EngineSettings(step_deadline_seconds=0)
 
 
-def test_engine_settings_need_a_positive_session_poll() -> None:
-    with pytest.raises(ValueError, match="session_poll_seconds must be positive"):
-        EngineSettings(step_deadline_seconds=1.0, session_poll_seconds=0)
+def test_engine_settings_no_longer_poll_a_session() -> None:
+    """A step has no session of its own to wait for: the removed knob is refused, not ignored."""
+    with pytest.raises(TypeError, match="session_poll_seconds"):
+        EngineSettings(step_deadline_seconds=1.0, session_poll_seconds=0.01)  # type: ignore[call-arg]
 
 
 def test_activation_ids_are_deterministic_per_run_node_member_and_attempt() -> None:
@@ -948,7 +1023,7 @@ def test_an_event_from_a_member_the_graph_does_not_expect_fills_no_join_slot() -
             RunState(run_id, (), events),
             stray,
             now=now,
-            settings=EngineSettings(step_deadline_seconds=1.0, session_poll_seconds=0.01),
+            settings=EngineSettings(step_deadline_seconds=1.0),
         )
 
 
@@ -1068,6 +1143,7 @@ async def test_a_join_all_gate_does_not_reuse_deliveries_an_earlier_opening_cons
     await run.engine.resolve_gate(
         run.run_id, "approve", GateDecision.REQUEST_CHANGES, GateActor(ActorKind.PERSON, "p"), ""
     )
+    await run.pump()
 
     # The change went round: the gate needs both checks of the new generation again.
     await run.close(run.current("fix"), "ok")

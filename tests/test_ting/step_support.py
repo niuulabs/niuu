@@ -1,19 +1,21 @@
 """Test support for the step engine: an in-memory ledger, fake sessions and a driver.
 
 The engine is exercised through its real service with the real bundled workflows;
-only the ports (ledger storage, harness sessions, run definitions) are faked.
+only the ports (ledger storage, the run's unit of sessions, the offer signer, run
+definitions) are faked. ``Run`` plays the members the way their Skuld would: it reports
+each member listening, and picks up (or passes) every offer the engine publishes.
 """
 
 from __future__ import annotations
 
 import asyncio
 import copy
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from ting.domain.models import WorkflowDefinition
@@ -28,16 +30,14 @@ from ting.domain.workflow_steps import (
     RunState,
     StepFlag,
     StepKind,
-    StepState,
     WorkflowStep,
 )
 from ting.ports.workflow_steps import (
     LedgerTransaction,
+    OfferSigner,
     PersonaRef,
+    RunUnit,
     SessionLiveness,
-    SessionNotReadyError,
-    StepActivation,
-    StepObservation,
     StepRunDefinition,
     StepRunDefinitions,
     StepSessionPort,
@@ -45,7 +45,13 @@ from ting.ports.workflow_steps import (
 )
 
 STEP_DEADLINE_SECONDS = 600.0
-SESSION_POLL_SECONDS = 0.01
+#: How Skuld mints a pickup's activation id (``skuld.workflow_steps``): same offer, same id.
+_ACTIVATION_NAMESPACE = UUID("6f1c9a52-0d3e-4c7b-9a41-2b8e5d7f1c30")
+
+
+def minted_activation_id(offer_id: str, session_id: str, attempt: int) -> UUID:
+    """The activation id Skuld mints for a pickup: one offer, session and attempt, one id."""
+    return uuid5(_ACTIVATION_NAMESPACE, f"{offer_id}:{session_id}:{attempt}")
 
 
 def bundled(name: str) -> WorkflowDefinition:
@@ -147,8 +153,6 @@ class InMemoryStepRepository(WorkflowStepRepository):
         self.steps: dict[UUID, WorkflowStep] = {}
         self.events: dict[UUID, list[RunEvent]] = {}
         self.flags: dict[tuple[UUID, FlagKind], StepFlag] = {}
-        #: activation id -> when it was delivered (``delivered_at``).
-        self.delivered: dict[UUID, datetime] = {}
         self._locks: dict[UUID, asyncio.Lock] = {}
 
     def snapshot(self, run_id: UUID) -> RunState:
@@ -192,71 +196,41 @@ class InMemoryStepRepository(WorkflowStepRepository):
     async def load(self, run_id: UUID) -> RunState:
         return self.snapshot(run_id)
 
-    async def claim_delivery(self, activation_id: UUID, session_id: str, *, at: datetime) -> bool:
-        step = self.steps.get(activation_id)
-        if (
-            step is None
-            or step.state is not StepState.ACTIVE
-            or step.session_id != session_id
-            or activation_id in self.delivered
-        ):
-            return False
-        self.delivered[activation_id] = at
-        return True
-
-    async def release_delivery(self, activation_id: UUID, session_id: str) -> None:
-        step = self.steps.get(activation_id)
-        if step is not None and step.session_id == session_id:
-            self.delivered.pop(activation_id, None)
-
-    async def undelivered_steps(self) -> list[WorkflowStep]:
-        return [
-            step
-            for step in sorted(self.steps.values(), key=lambda s: (s.created_at, str(s.id)))
-            if step.state is StepState.ACTIVE
-            and step.kind is StepKind.STAGE_MEMBER
-            and step.session_id
-            and step.id not in self.delivered
-        ]
-
 
 class FakeSessions(StepSessionPort):
-    """Kept-alive sessions, one per (run, member), and a record of every delivery."""
+    """The run's unit: a root and one session per member, and a record of every offer."""
 
     def __init__(self) -> None:
-        self.sessions: dict[tuple[UUID, str], str] = {}
-        self.created: list[tuple[UUID, str]] = []
-        self.delivered: list[StepActivation] = []
+        self.units: dict[UUID, RunUnit] = {}
+        self.launches: list[tuple[UUID, tuple[str, ...]]] = []
+        #: Every body handed to the root's ``offer`` operation, in order.
+        self.offers: list[dict[str, Any]] = []
         self.stopped: list[UUID] = []
-        self.fail_ensure: set[str] = set()
-        self.fail_deliver: set[str] = set()
-        #: Per member: how many more deliveries answer "not ready" before one lands.
-        self.not_ready: dict[str, int] = {}
-        #: Per session id: what ``observe`` says. Unlisted sessions are running and hold nothing.
+        self.fail_launch = False
+        #: How many publications fail before one lands (the root's broker is not up).
+        self.fail_publish = 0
+        #: Per session id: what ``session_liveness`` says. Unlisted sessions are running.
         self.liveness: dict[str, SessionLiveness] = {}
         self.failures: dict[str, str] = {}
-        #: Per (session id, activation id): the session's durable record of the step.
-        self.reported: dict[tuple[str, UUID], dict[str, Any]] = {}
         self.fail_observe: set[str] = set()
         self.replaced: list[tuple[UUID, str, str | None]] = []
         self.fail_replace = False
 
-    async def ensure_session(self, run_id: UUID, member: str, persona_ref: PersonaRef) -> str:
-        if member in self.fail_ensure:
-            raise RuntimeError(f"no capacity for {member}")
-        key = (run_id, member)
-        if key not in self.sessions:
-            self.sessions[key] = f"session-{member}"
-            self.created.append(key)
-        return self.sessions[key]
+    async def launch_run(self, run_id: UUID, members: Mapping[str, PersonaRef]) -> RunUnit:
+        if self.fail_launch:
+            raise RuntimeError("no capacity for the run's unit")
+        self.launches.append((run_id, tuple(members)))
+        if run_id not in self.units:
+            self.units[run_id] = RunUnit(
+                root_id=f"root-{run_id}", members={alias: f"session-{alias}" for alias in members}
+            )
+        return self.units[run_id]
 
-    async def deliver(self, activation: StepActivation) -> None:
-        if activation.member in self.fail_deliver:
-            raise RuntimeError(f"{activation.member} is unreachable")
-        if self.not_ready.get(activation.member, 0) > 0:
-            self.not_ready[activation.member] -= 1
-            raise SessionNotReadyError(f"{activation.member} does not answer yet")
-        self.delivered.append(activation)
+    async def publish_offer(self, run_id: UUID, offer: Mapping[str, Any]) -> None:
+        if self.fail_publish > 0:
+            self.fail_publish -= 1
+            raise RuntimeError("the root's broker is not up yet")
+        self.offers.append(dict(offer))
 
     async def stop_run_sessions(self, run_id: UUID) -> None:
         self.stopped.append(run_id)
@@ -269,20 +243,6 @@ class FakeSessions(StepSessionPort):
             raise ConnectionError(f"cannot ask {session_id}")
         return self.liveness.get(session_id, SessionLiveness.RUNNING)
 
-    async def observe(self, run_id: UUID, session_id: str, activation_id: UUID) -> StepObservation:
-        if session_id in self.fail_observe:
-            raise ConnectionError(f"cannot ask {session_id}")
-        liveness = self.liveness.get(session_id, SessionLiveness.RUNNING)
-        if liveness is not SessionLiveness.RUNNING:
-            return StepObservation(liveness)
-        reported = self.reported.get((session_id, activation_id))
-        if reported is None and any(
-            item.activation_id == activation_id and item.session_id == session_id
-            for item in self.delivered
-        ):
-            reported = {"state": "active", "activation_id": str(activation_id), "ending": None}
-        return StepObservation(liveness, reported)
-
     async def replace_session(
         self,
         run_id: UUID,
@@ -291,13 +251,23 @@ class FakeSessions(StepSessionPort):
         replaces: str | None,
     ) -> str:
         if self.fail_replace:
-            raise RuntimeError("cannot create a replacement session")
+            raise RuntimeError("cannot restart the member")
         self.replaced.append((run_id, member, replaces))
-        fresh = f"session-{member}-r{len(self.replaced) + 1}"
-        self.sessions[(run_id, member)] = fresh
-        if replaces is not None:
-            self.liveness[replaces] = SessionLiveness.STOPPED
-        return fresh
+        return replaces or f"session-{member}"
+
+
+class FakeSigner(OfferSigner):
+    """Signs as Ting would, and remembers what it signed."""
+
+    def __init__(self) -> None:
+        self.signed: list[dict[str, Any]] = []
+        self.unsigned = False
+
+    def sign(self, offer: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        if self.unsigned:
+            return None
+        self.signed.append(dict(offer))
+        return {"signed_by": "service:ting", "offer_id": offer["offer_id"]}
 
 
 class FixedDefinitions(StepRunDefinitions):
@@ -344,6 +314,15 @@ class Run:
     run_id: UUID
     definition: StepRunDefinition
     clock: list[datetime] = field(default_factory=list)
+    signer: FakeSigner = field(default_factory=FakeSigner)
+    #: Members whose Skuld passes every offer instead of taking it up.
+    passers: set[str] = field(default_factory=set)
+    #: Members that never report listening (their session is still booting).
+    deaf: set[str] = field(default_factory=set)
+    #: Play the members after every call that can publish an offer.
+    auto: bool = True
+    _answered: set[tuple[str, str]] = field(default_factory=set)
+    _started: set[str] = field(default_factory=set)
 
     @property
     def state(self) -> RunState:
@@ -354,13 +333,100 @@ class Run:
         return compile_step_graph(self.definition.graph, self.definition.persona_definitions)
 
     async def launch(self, payload: dict[str, Any] | None = None) -> RunState:
-        return await self.engine.launch(StepRunRequest(self.run_id, payload or {}))
+        await self.engine.launch(StepRunRequest(self.run_id, payload or {}))
+        return await self.pump()
+
+    # -- the members, as their Skuld plays them -------------------------------
+
+    @property
+    def offers(self) -> list[dict[str, Any]]:
+        """The ``step.offered`` payload of every offer handed to the root, in order."""
+        return [body["offer"] for body in self.sessions.offers]
+
+    def addressed(self, offer: dict[str, Any]) -> list[str]:
+        return [contract["persona"]["alias"] for contract in offer["contracts"]]
+
+    async def listen(self, member: str, start_id: str = "start-1") -> RunState:
+        """Report a member listening (its subscriptions are up)."""
+        unit = self.sessions.units[self.run_id]
+        self._started.add(member)
+        return await self.engine.note_listening(
+            run_id=self.run_id,
+            session_id=unit.members[member],
+            member=member,
+            start_id=start_id,
+        )
+
+    def activation_id(self, offer: dict[str, Any], member: str) -> UUID:
+        unit = self.sessions.units[self.run_id]
+        return uuid5(
+            _ACTIVATION_NAMESPACE, f"{offer['offer_id']}:{unit.members[member]}:{offer['attempt']}"
+        )
+
+    async def pickup(self, offer: dict[str, Any], member: str) -> WorkflowStep:
+        """A member takes the offer up; returns the step its pickup made."""
+        unit = self.sessions.units[self.run_id]
+        activation = self.activation_id(offer, member)
+        await self.engine.note_picked_up(
+            run_id=self.run_id,
+            session_id=unit.members[member],
+            member=member,
+            offer_id=UUID(offer["offer_id"]),
+            activation_id=activation,
+            attempt=offer["attempt"],
+        )
+        self._answered.add((offer["offer_id"], member))
+        step = self.state.step(activation)
+        assert step is not None
+        return step
+
+    async def decline(self, offer: dict[str, Any], member: str, reason: str = "filters") -> None:
+        """A member passes the offer: it is not its to take."""
+        unit = self.sessions.units[self.run_id]
+        await self.engine.note_passed(
+            run_id=self.run_id,
+            session_id=unit.members[member],
+            member=member,
+            offer_id=UUID(offer["offer_id"]),
+            reason=reason,
+        )
+        self._answered.add((offer["offer_id"], member))
+
+    async def pump(self) -> RunState:
+        """Play every member: listen once, then take up or pass each offer published so far."""
+        if not self.auto or self.run_id not in self.sessions.units:
+            return self.state
+        for member in self.sessions.units[self.run_id].members:
+            if member not in self._started and member not in self.deaf:
+                await self.listen(member)
+        for offer in list(self.offers):
+            for member in self.addressed(offer):
+                if (offer["offer_id"], member) in self._answered:
+                    continue
+                if member in self.deaf:
+                    continue
+                if member in self.passers:
+                    await self.decline(offer, member)
+                    continue
+                await self.pickup(offer, member)
+        return self.state
 
     def steps(self, node_id: str, member: str | None = None) -> list[WorkflowStep]:
+        """The pickups (and gate, wait and end steps) of a node; its offers are ``offer_rows``."""
         return [
             step
             for step in self.state.steps
-            if step.node_id == node_id and (member is None or step.member == member)
+            if step.node_id == node_id
+            and step.kind is not StepKind.OFFER
+            and (member is None or step.member == member)
+        ]
+
+    def offer_rows(self, node_id: str) -> list[WorkflowStep]:
+        """The ledger rows of a node's offers, oldest first."""
+        return [
+            step
+            for step in self.state.steps
+            if step.node_id == node_id and step.kind is StepKind.OFFER
         ]
 
     def current(self, node_id: str, member: str | None = None) -> WorkflowStep:
@@ -384,17 +450,19 @@ class Run:
         verdict: str,
         outcome: dict[str, Any] | None = None,
     ) -> RunState:
-        return await self.engine.record_close(
+        await self.engine.record_close(
             step.id,
             step.session_id,
             step.attempt,
             Ending.with_verdict(verdict, outcome=outcome or {}),
         )
+        return await self.pump()
 
     async def fail(self, step: WorkflowStep, reason: str) -> RunState:
-        return await self.engine.record_close(
+        await self.engine.record_close(
             step.id, step.session_id, step.attempt, Ending.failed(reason)
         )
+        return await self.pump()
 
     def finished_with(self) -> str | None:
         for event in self.state.events:
@@ -425,20 +493,20 @@ def make_run(
         ticks[0] = ticks[0] + timedelta(seconds=1)
         return ticks[0]
 
+    signer = FakeSigner()
     engine = WorkflowStepEngine(
         repository=repository,
         sessions=sessions,
+        offers=signer,
         definitions=FixedDefinitions(definition),
-        settings=EngineSettings(
-            step_deadline_seconds=STEP_DEADLINE_SECONDS, session_poll_seconds=SESSION_POLL_SECONDS
-        ),
+        settings=EngineSettings(step_deadline_seconds=STEP_DEADLINE_SECONDS),
         clock=clock,
     )
     if monkeypatch is not None and recorder is not None:
         monkeypatch.setattr(
             "ting.domain.services.workflow_step_engine.get_observability", lambda: recorder
         )
-    return Run(engine, repository, sessions, uuid4(), definition, ticks)
+    return Run(engine, repository, sessions, uuid4(), definition, ticks, signer)
 
 
 def custom_run(
@@ -466,13 +534,13 @@ def custom_run(
         ticks[0] = ticks[0] + timedelta(seconds=1)
         return ticks[0]
 
+    signer = FakeSigner()
     engine = WorkflowStepEngine(
         repository=repository,
         sessions=sessions,
+        offers=signer,
         definitions=FixedDefinitions(definition),
-        settings=EngineSettings(
-            step_deadline_seconds=STEP_DEADLINE_SECONDS, session_poll_seconds=SESSION_POLL_SECONDS
-        ),
+        settings=EngineSettings(step_deadline_seconds=STEP_DEADLINE_SECONDS),
         clock=clock,
     )
-    return Run(engine, repository, sessions, uuid4(), definition, ticks)
+    return Run(engine, repository, sessions, uuid4(), definition, ticks, signer)

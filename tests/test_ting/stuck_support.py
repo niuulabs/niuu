@@ -1,10 +1,16 @@
-"""A run on the real step engine, session adapter and sweep, with a fake Forge and a clock.
+"""A run on the real step engine, run service and sweep, with fake sessions and a clock.
 
-The engine, the run service, the Forge step-session adapter, the campaign projector and
-the stuck-step sweep are real; the ledger storage, Forge and the campaign repository are
-in memory, and time is a clock the test moves. The workflow is ``go -> make -> done``
-where ``make`` is a parallel stage of two members (``alpha`` and ``bravo``) that each hand
-off ``work.item``, so one branch can be stuck while the other carries on.
+The engine, the run service, the campaign projector and the stuck-step sweep are real; the
+ledger storage, the run's unit of sessions, the offer signer and the campaign repository are
+in memory (``step_support``), and time is a clock the test moves. A Forge stand-in serves the
+durable session logs the sweep reads back (``LogForge``). The workflow is
+``go -> make -> done`` where ``make`` is a parallel stage of two members (``alpha`` and
+``bravo``) that take the same work and each hand off ``work.item``, so one pickup can be
+stuck while the other carries on.
+
+``harness.run`` plays the members the way their Skuld does (listening, then picking up every
+offer published); set ``harness.run.auto = False``, ``passers`` or ``deaf`` before
+``launch`` to play them otherwise.
 """
 
 from __future__ import annotations
@@ -13,8 +19,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from ting.adapters.campaign_step_definitions import CampaignStepRunDefinitions
-from ting.adapters.forge_step_sessions import ForgeStepSessions
+from niuu.domain.workflow_step import WORKFLOW_STEP_FRAME
+from ting.adapters.campaign_step_definitions import (
+    CampaignStepRunDefinitions,
+    definition_of_snapshot,
+)
 from ting.adapters.memory_event_bus import InMemoryEventBus
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
@@ -28,22 +37,23 @@ from ting.domain.workflow_steps import (
     RunEvent,
     RunState,
     StepFlag,
+    StepKind,
     StepState,
     WorkflowStep,
 )
 from ting.ports.event_bus import TingEvent
-from ting.ports.volundr import StepSessionRequest, VolundrSession
+from ting.ports.volundr import PublicSessionLogEntry, PublicSessionLogPage
 
-from .fake_forge import FakeForge, FakeForgeFactory, FakeSagas
 from .graph_builders import edge, end, stage, trigger
-from .step_support import InMemoryStepRepository
+from .step_support import FakeSessions, FakeSigner, InMemoryStepRepository, Run
 
 OWNER = "user-1"
 SLUG = "add-endpoint-0123456789ab"
 START = datetime(2026, 11, 8, 9, 0, tzinfo=UTC)
 STEP_DEADLINE_SECONDS = 600.0
-START_GRACE_SECONDS = 120.0
+PICKUP_GRACE_SECONDS = 120.0
 SWEEP_INTERVAL_SECONDS = 60.0
+CATCH_UP_PAGE_SIZE = 50
 
 
 class Clock:
@@ -59,53 +69,53 @@ class Clock:
         self.now = self.now + timedelta(seconds=seconds)
 
 
-class KnowingForge(FakeForge):
-    """A Forge whose sessions are running and know the steps delivered to them."""
+class LogForge:
+    """The slice of a Forge the run service reads: each session's durable log, in pages."""
 
     def __init__(self) -> None:
-        super().__init__()
-        self.forgotten: set[tuple[str, str]] = set()
+        self.logs: dict[str, list[PublicSessionLogEntry]] = {}
+        #: Sessions whose log cannot be read (Forge does not answer for them).
         self.unreachable: set[str] = set()
+        self.reads: list[tuple[str, int]] = []
 
-    async def create_step_session(
-        self, request: StepSessionRequest, *, auth_token=None, principal=None
-    ):
-        created = await super().create_step_session(request)
-        self.set_status(created.id, "running")
-        return created
+    def append(self, session_id: str, frame: dict[str, Any]) -> None:
+        """A ``workflow_step`` frame Skuld wrote into the session's durable log."""
+        entries = self.logs.setdefault(session_id, [])
+        entries.append(
+            PublicSessionLogEntry(
+                session_id=session_id,
+                seq=len(entries) + 1,
+                kind=WORKFLOW_STEP_FRAME,
+                payload=frame,
+                ts=START,
+            )
+        )
 
-    async def deliver_workflow_step(
-        self, session_id, activation, *, auth_token=None, principal=None
-    ):
-        await super().deliver_workflow_step(session_id, activation)
-        self.forgotten.discard((session_id, activation["activation_id"]))
-
-    async def get_workflow_step(
-        self, session_id, activation_id, *, auth_token=None, principal=None
-    ):
+    async def get_public_session_log_page(
+        self, session_id: str, *, after: int, limit: int, auth_token=None, principal=None
+    ) -> PublicSessionLogPage:
         if session_id in self.unreachable:
-            raise ConnectionError(f"session {session_id} does not answer")
-        if (session_id, activation_id) in self.forgotten:
-            return None
-        explicit = self.step_states.get((session_id, activation_id))
-        if explicit is not None:
-            return explicit
-        for delivered_to, body in self.deliveries:
-            if delivered_to == session_id and body["activation_id"] == activation_id:
-                return {
-                    "activation_id": activation_id,
-                    "run_id": body["run_id"],
-                    "attempt": body["attempt"],
-                    "state": "active",
-                    "ending": None,
-                }
-        return None
+            raise ConnectionError(f"Forge does not answer for session {session_id}")
+        self.reads.append((session_id, after))
+        pending = [entry for entry in self.logs.get(session_id, []) if entry.seq > after]
+        page = pending[:limit]
+        scanned = page[-1].seq if page else after
+        return PublicSessionLogPage(
+            entries=tuple(page), scanned_through=scanned, has_more=len(pending) > limit
+        )
 
-    async def get_session(self, session_id, *, auth_token=None, principal=None):
-        return self.sessions.get(session_id)
 
-    def delete_session(self, session_id: str) -> None:
-        del self.sessions[session_id]
+class ForgeFactory:
+    """Resolves every owner's connection to the one ``LogForge``."""
+
+    def __init__(self, forge: LogForge) -> None:
+        self._forge = forge
+
+    async def for_connection(self, owner_id: str, connection_id: str) -> LogForge:
+        return self._forge
+
+    async def primary_for_owner(self, owner_id: str) -> LogForge:
+        return self._forge
 
 
 class Campaigns:
@@ -208,16 +218,15 @@ class StuckHarness:
 
     def __init__(self) -> None:
         self.clock = Clock()
-        self.forge = KnowingForge()
+        self.forge = LogForge()
         self.campaigns = Campaigns()
         self.steps = InMemoryStepRepository()
         self.bus = InMemoryEventBus()
-        factory = FakeForgeFactory(self.forge)
-        self.sessions = ForgeStepSessions(
-            volundr_factory=factory,  # type: ignore[arg-type]
-            campaigns=self.campaigns,  # type: ignore[arg-type]
-            sagas=FakeSagas(),
-        )
+        self.sessions = FakeSessions()
+        self.signer = FakeSigner()
+        self.campaign = make_campaign()
+        self.definitions = CampaignStepRunDefinitions(self.campaigns)  # type: ignore[arg-type]
+        factory = ForgeFactory(self.forge)
         self.projector = WorkflowCampaignProjector(
             repo=self.campaigns,  # type: ignore[arg-type]
             event_bus=self.bus,
@@ -226,10 +235,9 @@ class StuckHarness:
         self.engine = WorkflowStepEngine(
             repository=self.steps,
             sessions=self.sessions,
-            definitions=CampaignStepRunDefinitions(self.campaigns),  # type: ignore[arg-type]
-            settings=EngineSettings(
-                step_deadline_seconds=STEP_DEADLINE_SECONDS, session_poll_seconds=0.01
-            ),
+            offers=self.signer,
+            definitions=self.definitions,
+            settings=EngineSettings(step_deadline_seconds=STEP_DEADLINE_SECONDS),
             clock=self.clock,
         )
         self.runs = WorkflowRuns(
@@ -238,6 +246,7 @@ class StuckHarness:
             campaigns=self.campaigns,  # type: ignore[arg-type]
             sink=self.projector,
             volundr_factory=factory,  # type: ignore[arg-type]
+            catch_up_page_size=CATCH_UP_PAGE_SIZE,
         )
         self.sweeper = StuckStepSweeper(
             engine=self.engine,
@@ -245,12 +254,24 @@ class StuckHarness:
             steps=self.steps,
             campaigns=self.campaigns,  # type: ignore[arg-type]
             sessions=self.sessions,
+            definitions=self.definitions,
             event_bus=self.bus,
-            settings=StuckSettings(start_grace_seconds=START_GRACE_SECONDS),
+            settings=StuckSettings(pickup_grace_seconds=PICKUP_GRACE_SECONDS),
             interval_seconds=SWEEP_INTERVAL_SECONDS,
             clock=self.clock,
         )
-        self.campaign = make_campaign()
+        #: The members, played the way their Skuld plays them.
+        self.run = Run(
+            engine=self.engine,
+            repository=self.steps,
+            sessions=self.sessions,
+            run_id=self.campaign.id,
+            definition=definition_of_snapshot(
+                self.campaign.workflow_snapshot, run_id=self.campaign.id
+            ),
+            clock=[self.clock.now],
+            signer=self.signer,
+        )
 
     async def _launched(self, run_id: UUID) -> bool:
         return (await self.steps.load(run_id)).launched
@@ -258,8 +279,15 @@ class StuckHarness:
     # -- driving ---------------------------------------------------------------
 
     async def launch(self) -> None:
+        """Launch the run; the members then listen and take up what is offered."""
         await self.campaigns.save_campaign(self.campaign)
         await self.runs.launch(self.campaign, {"prompt": "add an endpoint"})
+        await self.play()
+
+    async def play(self) -> RunState:
+        """Let the members answer what has been published, then project the run."""
+        await self.run.pump()
+        return await self.runs.refresh(self.campaign.id)
 
     async def sweep(self) -> dict[FlagKind, int]:
         return await self.sweeper.sweep_once()
@@ -278,13 +306,29 @@ class StuckHarness:
         return self.campaigns.items[self.campaign.id]
 
     def step(self, member: str, attempt: int | None = None) -> WorkflowStep:
+        """The member's pickup (the newest attempt unless one is named)."""
         found = [
             step
             for step in self.state.steps
-            if step.member == member and (attempt is None or step.attempt == attempt)
+            if step.kind is StepKind.STAGE_MEMBER
+            and step.member == member
+            and (attempt is None or step.attempt == attempt)
         ]
         assert found, f"no step for {member}"
-        return found[-1]
+        return max(found, key=lambda step: step.attempt)
+
+    def offers(self, node_id: str = "make") -> list[WorkflowStep]:
+        """The ledger rows of the node's offers, oldest first."""
+        return self.run.offer_rows(node_id)
+
+    def offer(self, node_id: str = "make", attempt: int | None = None) -> WorkflowStep:
+        found = [o for o in self.offers(node_id) if attempt is None or o.attempt == attempt]
+        assert found, f"no offer at {node_id}"
+        return max(found, key=lambda offer: offer.attempt)
+
+    def published(self) -> list[dict[str, Any]]:
+        """The ``step.offered`` payload of every publication, in order."""
+        return self.run.offers
 
     def flags(self, *, live: bool = True) -> list[StepFlag]:
         return list(self.state.live_flags() if live else self.state.flags)
@@ -299,14 +343,60 @@ class StuckHarness:
         return [e for e in self.bus.get_log(1000) if e.event == "workflow.step_flagged"]
 
     def session_of(self, member: str) -> str:
-        return self.step(member).session_id or ""
-
-    def session(self, session_id: str) -> VolundrSession:
-        return self.forge.sessions[session_id]
-
-    def deliveries_of(self, member: str) -> list[dict[str, Any]]:
-        return [body for _, body in self.forge.deliveries if body["member"] == member]
+        return self.sessions.units[self.campaign.id].members[member]
 
     def with_state(self, step: WorkflowStep, state: StepState, **changes: Any) -> None:
-        """Rewrite a step in the ledger, to stage a crash or a half-finished start."""
+        """Rewrite a step in the ledger, to stage a state the engine reached some other way."""
         self.steps.steps[step.id] = step.with_state(state, **changes)
+
+    # -- what a session's durable log holds ---------------------------------------
+
+    def log_pickup(self, offer_payload: dict[str, Any], member: str) -> UUID:
+        """The member's Skuld wrote a pickup frame the activity stream never delivered."""
+        activation = self.run.activation_id(offer_payload, member)
+        self.forge.append(
+            self.session_of(member),
+            {
+                "step": {
+                    "run_id": str(self.campaign.id),
+                    "activation_id": str(activation),
+                    "attempt": offer_payload["attempt"],
+                    "member": member,
+                    "offer_id": offer_payload["offer_id"],
+                    "state": "active",
+                    "ending": None,
+                }
+            },
+        )
+        return activation
+
+    def log_close(self, step: WorkflowStep, verdict: str = "ok") -> None:
+        """The member's Skuld wrote the close of its step into its durable log."""
+        self.forge.append(
+            step.session_id or "",
+            {
+                "step": {
+                    "run_id": str(self.campaign.id),
+                    "activation_id": str(step.id),
+                    "attempt": step.attempt,
+                    "member": step.member,
+                    "offer_id": step.offer_id,
+                    "state": "closed",
+                    "ending": {"kind": "verdict", "verdict": verdict, "outcome": {}},
+                }
+            },
+        )
+
+    def log_pass(self, offer_payload: dict[str, Any], member: str, reason: str = "filters") -> None:
+        """The member's Skuld wrote that it passed the offer."""
+        self.forge.append(
+            self.session_of(member),
+            {
+                "passed": {
+                    "run_id": str(self.campaign.id),
+                    "member": member,
+                    "offer_id": offer_payload["offer_id"],
+                    "reason": reason,
+                }
+            },
+        )

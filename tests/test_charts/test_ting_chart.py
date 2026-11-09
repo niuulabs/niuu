@@ -226,7 +226,6 @@ class TestConfigMapTemplate:
                             "stuckDetection": {
                                 "enabled": False,
                                 "sweepIntervalSeconds": 45,
-                                "startGraceSeconds": 90,
                             }
                         }
                     },
@@ -236,10 +235,31 @@ class TestConfigMapTemplate:
 
         assert default.workflow_steps.stuck.enabled is True
         assert default.workflow_steps.stuck.sweep_interval_seconds == 120.0
-        assert default.workflow_steps.stuck.start_grace_seconds == 600.0
         assert tuned.workflow_steps.stuck.enabled is False
         assert tuned.workflow_steps.stuck.sweep_interval_seconds == 45.0
-        assert tuned.workflow_steps.stuck.start_grace_seconds == 90.0
+
+    def test_offer_pickup_renders_from_values_into_settings(self, tmp_path):
+        default = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
+        tuned = Settings(
+            **_config_from_rendered(
+                _render_ting_chart(
+                    tmp_path,
+                    {"workflowSteps": {"pickupGraceSeconds": 45, "catchUpPageSize": 25}},
+                )
+            )
+        )
+
+        assert default.workflow_steps.pickup_grace_seconds == 300.0
+        assert default.workflow_steps.catch_up_page_size == 200
+        assert tuned.workflow_steps.pickup_grace_seconds == 45.0
+        assert tuned.workflow_steps.catch_up_page_size == 25
+
+    def test_the_removed_session_and_start_settings_are_not_rendered(self, tmp_path):
+        """Ting rejects a removed key loudly, so the chart must never write one."""
+        config = _config_from_rendered(_render_ting_chart(tmp_path, {}))
+
+        assert "session_poll_seconds" not in config["workflow_steps"]
+        assert "start_grace_seconds" not in config["workflow_steps"]["stuck"]
 
     def test_default_values_render_the_documented_watcher_defaults(self, tmp_path):
         settings = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))

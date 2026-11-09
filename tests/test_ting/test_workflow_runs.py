@@ -27,23 +27,27 @@ from ting.domain.services.gate_notifications import GateNotifier
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.services.workflow_runs import WorkflowRuns, ending_of
 from ting.domain.services.workflow_step_engine import WorkflowStepEngine
-from ting.domain.step_engine import EngineSettings
+from ting.domain.step_engine import EngineSettings, unit_root, unit_sessions
 from ting.domain.workflow_steps import (
+    EVENT_OFFER_PASSED,
     ActorKind,
     EndingKind,
     GateActor,
     GateDecision,
     InvalidEndingError,
+    RunState,
     RunStateError,
     StepFencingError,
+    StepKind,
     StepState,
     WaitingOnKind,
+    WorkflowStep,
 )
 from ting.ports.volundr import ActivityEvent
 
 from .fake_forge import FakeForge, FakeForgeFactory, FakeSagas
 from .graph_builders import edge, end, stage, trigger
-from .step_support import InMemoryStepRepository
+from .step_support import FakeSigner, InMemoryStepRepository, Recorder, minted_activation_id
 
 OWNER = "user-1"
 NOW = datetime(2026, 11, 8, 9, 0, tzinfo=UTC)
@@ -164,76 +168,113 @@ def _campaign(snapshot: dict | None = None) -> WorkflowCampaign:
 
 
 class Harness:
-    def __init__(self, snapshot: dict | None = None) -> None:
+    """A run on the real engine and Forge adapter, with the members played over the activity stream.
+
+    ``play`` is what the members' Skuld does: report each member listening (so the engine
+    publishes its waiting offers to the root's room) and pick up every offer the root was handed.
+    Every report goes through the real subscriber, as it would come off Forge's stream.
+    """
+
+    def __init__(self, snapshot: dict | None = None, *, catch_up_page_size: int = 200) -> None:
         self.forge = FakeForge()
         self.campaigns = _Campaigns()
         self.steps = InMemoryStepRepository()
         self.bus = InMemoryEventBus()
-        factory = FakeForgeFactory(self.forge)
+        self.factory = FakeForgeFactory(self.forge)
         self.projector = WorkflowCampaignProjector(
             repo=self.campaigns,  # type: ignore[arg-type]
             event_bus=self.bus,
             run_launched=lambda run_id: self._launched(run_id),
         )
-        engine = WorkflowStepEngine(
+        self.signer = FakeSigner()
+        self.engine = WorkflowStepEngine(
             repository=self.steps,
             sessions=ForgeStepSessions(
-                volundr_factory=factory,  # type: ignore[arg-type]
+                volundr_factory=self.factory,  # type: ignore[arg-type]
                 campaigns=self.campaigns,  # type: ignore[arg-type]
                 sagas=FakeSagas(),
             ),
+            offers=self.signer,
             definitions=CampaignStepRunDefinitions(self.campaigns),  # type: ignore[arg-type]
-            settings=EngineSettings(step_deadline_seconds=600.0, session_poll_seconds=0.01),
+            settings=EngineSettings(step_deadline_seconds=600.0),
         )
-        self.runs = WorkflowRuns(
-            engine=engine,
+        self._page_size = catch_up_page_size
+        self.runs = self._new_runs()
+        self.campaign = _campaign(snapshot)
+        self._listening: set[str] = set()
+        self._taken: set[tuple[str, str]] = set()
+
+    def _new_runs(self) -> WorkflowRuns:
+        runs = WorkflowRuns(
+            engine=self.engine,
             steps=self.steps,
             campaigns=self.campaigns,  # type: ignore[arg-type]
             sink=self.projector,
-            volundr_factory=factory,  # type: ignore[arg-type]
+            volundr_factory=self.factory,  # type: ignore[arg-type]
             gate_notifier=GateNotifier(
-                volundr_factory=factory,  # type: ignore[arg-type]
+                volundr_factory=self.factory,  # type: ignore[arg-type]
                 public_origin="https://niuu.example/",
             ),
+            catch_up_page_size=self._page_size,
         )
         self.subscriber = SessionActivitySubscriber(
-            volundr_factory=factory,  # type: ignore[arg-type]
+            volundr_factory=self.factory,  # type: ignore[arg-type]
             tracker_factory=SimpleNamespace(),  # type: ignore[arg-type]
             dispatcher_repo=SimpleNamespace(),  # type: ignore[arg-type]
             event_bus=self.bus,
             config=WatcherConfig(),
-            workflow_runs=self.runs,
+            workflow_runs=runs,
         )
-        self.campaign = _campaign(snapshot)
+        return runs
+
+    def restart_ting(self) -> None:
+        """A new process: the run service starts again with no memory of how far it read."""
+        self.runs = self._new_runs()
 
     async def _launched(self, run_id: UUID) -> bool:
         return (await self.steps.load(run_id)).launched
 
-    async def launch(self) -> None:
+    async def launch(self, *, pickups: bool = True) -> None:
         await self.campaigns.save_campaign(self.campaign)
         await self.runs.launch(self.campaign, {"prompt": "add an endpoint"})
+        await self.play(pickups=pickups)
 
     @property
     def current(self) -> WorkflowCampaign:
         return self.campaigns.items[self.campaign.id]
 
-    def last_delivery(self) -> tuple[str, dict]:
-        return self.forge.deliveries[-1]
+    async def state(self) -> RunState:
+        return await self.steps.load(self.campaign.id)
 
-    async def harness_closes(self, ending: dict, *, session_id: str | None = None) -> None:
-        """The session answers the step it was last given, as Skuld would report it."""
-        delivered_to, body = self.last_delivery()
+    async def members(self) -> dict[str, str]:
+        """Member alias -> the session of the run's unit that plays it."""
+        return unit_sessions(await self.state())
+
+    @property
+    def offers(self) -> list[dict]:
+        """The ``step.offered`` payload of every offer handed to the root's room, in order."""
+        return [body["offer"] for _, body in self.forge.room_offers]
+
+    def offer_for(self, node_id: str, attempt: int | None = None) -> dict:
+        found = [
+            offer
+            for offer in self.offers
+            if offer["node_id"] == node_id and (attempt is None or offer["attempt"] == attempt)
+        ]
+        assert found, f"no offer for {node_id!r} (attempt {attempt}) was published"
+        return found[-1]
+
+    async def report(self, session_id: str, event: str, **fields) -> None:
+        """Feed the subscriber one ``workflow_step`` report, as Forge's stream would carry it."""
         await self.subscriber._on_activity_event(
             ActivityEvent(
-                session_id=session_id or delivered_to,
+                session_id=session_id,
                 state="idle",
                 metadata={
                     "workflow_step": {
-                        "event": "closed",
-                        "run_id": body["run_id"],
-                        "activation_id": body["activation_id"],
-                        "attempt": body["attempt"],
-                        "ending": ending,
+                        "event": event,
+                        "run_id": str(self.campaign.id),
+                        **fields,
                     }
                 },
                 owner_id=OWNER,
@@ -242,8 +283,98 @@ class Harness:
             OWNER,
         )
 
-    async def harness_says(self, verdict: str, **fields) -> None:
-        await self.harness_closes({"kind": "verdict", "verdict": verdict, **fields})
+    async def play(self, *, pickups: bool = True) -> None:
+        """Every member listens once; with ``pickups``, each takes up each offer addressed to it."""
+        members = await self.members()
+        for member, session_id in members.items():
+            if member in self._listening:
+                continue
+            self._listening.add(member)
+            await self.report(session_id, "listening", member=member, start_id="start-1")
+        if not pickups:
+            return
+        for offer in list(self.offers):
+            for contract in offer["contracts"]:
+                member = contract["persona"]["alias"]
+                if (offer["offer_id"], member) in self._taken:
+                    continue
+                self._taken.add((offer["offer_id"], member))
+                await self.report(
+                    members[member],
+                    "picked_up",
+                    member=member,
+                    offer_id=offer["offer_id"],
+                    activation_id=str(activation_id(offer, members[member])),
+                    attempt=offer["attempt"],
+                )
+
+    async def open_step(self, member: str | None = None) -> WorkflowStep:
+        """The one step a member holds open right now."""
+        held = [
+            step
+            for step in (await self.state()).steps
+            if step.is_open
+            and step.kind is not StepKind.OFFER
+            and step.member is not None
+            and (member is None or step.member == member)
+        ]
+        assert len(held) == 1, [(s.node_id, s.member, s.state.value) for s in held]
+        return held[0]
+
+    def closed_report(self, step: WorkflowStep, ending: dict) -> dict:
+        return {
+            "offer_id": step.offer_id,
+            "activation_id": str(step.id),
+            "attempt": step.attempt,
+            "ending": ending,
+        }
+
+    async def harness_closes(
+        self, ending: dict, *, member: str | None = None, session_id: str | None = None
+    ) -> None:
+        """The member closes the step it holds, as Skuld would report it; the others then play."""
+        step = await self.open_step(member)
+        await self.report(
+            session_id or step.session_id or "", "closed", **self.closed_report(step, ending)
+        )
+        await self.play()
+
+    async def harness_says(self, verdict: str, *, member: str | None = None, **fields) -> None:
+        await self.harness_closes({"kind": "verdict", "verdict": verdict, **fields}, member=member)
+
+    def frame(self, step: dict) -> dict:
+        """A ``workflow_step`` record of a session's durable log, as Skuld writes it."""
+        return {"type": "workflow_step", "step": {"run_id": str(self.campaign.id), **step}}
+
+    def passed_frame(self, offer: dict, member: str, reason: str = "filters") -> dict:
+        return {
+            "type": "workflow_step",
+            "passed": {
+                "offer_id": offer["offer_id"],
+                "run_id": str(self.campaign.id),
+                "node_id": offer["node_id"],
+                "member": member,
+                "reason": reason,
+            },
+        }
+
+    def pickup_frame(
+        self, offer: dict, member: str, session_id: str, *, state: str = "active", **extra
+    ) -> dict:
+        return self.frame(
+            {
+                "activation_id": str(activation_id(offer, session_id)),
+                "attempt": offer["attempt"],
+                "offer_id": offer["offer_id"],
+                "member": member,
+                "state": state,
+                **extra,
+            }
+        )
+
+
+def activation_id(offer: dict, session_id: str) -> UUID:
+    return minted_activation_id(offer["offer_id"], session_id, offer["attempt"])
 
 
 @pytest.fixture
@@ -254,50 +385,59 @@ def harness() -> Harness:
 async def test_a_run_goes_from_launch_through_a_rework_and_a_gate_to_a_completed_campaign(
     harness: Harness,
 ) -> None:
-    # -- launch: the first member's session is created and handed the first step.
+    # -- launch: one unit, a root and a session per member, and the first step offered.
     await harness.launch()
 
-    [coder_request] = harness.forge.create_requests
-    assert coder_request.member == "coder"
+    [room] = harness.forge.run_room_requests
+    assert room.hosts_members is True
+    coder_request, reviewer_request = harness.forge.create_requests
+    assert (coder_request.member, reviewer_request.member) == ("coder", "reviewer")
+    assert coder_request.hosted_by == reviewer_request.hosted_by
     assert coder_request.persona_definition == _snapshot()["persona_definitions"]["coder"]
     assert coder_request.tracker_issue_id == "workflow:add-endpoint-0123456789ab"
     assert coder_request.model == "claude-sonnet-4-6"
-    coder_session, body = harness.last_delivery()
-    assert body["node_id"] == "implement" and body["member"] == "coder"
-    assert body["valid_verdicts"] == ["implemented"]
-    assert body["outcome_schema"] == {"summary": {"type": "string", "description": "what you did"}}
-    assert "add an endpoint" in body["instructions"]
-    assert "workflow_step_close" in body["instructions"]
+    # The reviewer's stage names no model, so it runs on the launch's.
+    assert reviewer_request.model == "claude-opus-launch"
+    members = await harness.members()
+    assert set(members) == {"coder", "reviewer"}
+    [offer] = harness.offers
+    assert offer["node_id"] == "implement" and offer["topic"] == "work.requested"
+    [contract] = offer["contracts"]
+    assert contract["persona"]["alias"] == "coder"
+    assert contract["valid_verdicts"] == ["implemented"]
+    assert contract["outcome_schema"] == {
+        "summary": {"type": "string", "description": "what you did"}
+    }
+    assert "add an endpoint" in offer["instructions"]
+    [(root_session, _)] = harness.forge.room_offers
+    assert root_session == (await harness.state()).events[1].payload["root_id"]
     assert harness.current.status is WorkflowCampaignStatus.RUNNING
     assert harness.current.active_stage_id == "implement"
     assert harness.current.session_id == ""
 
-    # -- the coder implements: the reviewer gets its own session and the coder's outcome.
+    # -- the coder implements: the reviewer is offered the coder's outcome, on its own session.
     await harness.harness_says("implemented", outcome={"summary": "first try"}, note="done")
 
-    reviewer_session, review_body = harness.last_delivery()
-    assert reviewer_session != coder_session
-    # The reviewer's stage names no model, so it runs on the launch's.
-    assert harness.forge.create_requests[1].model == "claude-opus-launch"
-    assert review_body["node_id"] == "review" and review_body["member"] == "reviewer"
-    assert "first try" in review_body["instructions"]
+    review_offer = harness.offer_for("review")
+    assert "first try" in review_offer["instructions"]
+    assert [c["persona"]["alias"] for c in review_offer["contracts"]] == ["reviewer"]
+    reviewer_step = await harness.open_step("reviewer")
+    assert reviewer_step.session_id == members["reviewer"] != members["coder"]
     assert harness.current.active_stage_id == "review"
 
-    # -- the reviewer rejects: a rework. The coder is activated again on its own session.
+    # -- the reviewer rejects: a rework. The coder is offered the work again, on its own session.
     await harness.harness_says("fail", note="the null case crashes")
 
-    again_session, rework_body = harness.last_delivery()
-    assert again_session == coder_session
-    assert rework_body["member"] == "coder"
-    assert (rework_body["attempt"], rework_body["generation"]) == (2, 1)
-    assert "the null case crashes" in rework_body["instructions"]
-    assert "rework generation 1" in rework_body["instructions"]
+    rework_offer = harness.offer_for("implement", attempt=2)
+    assert (rework_offer["attempt"], rework_offer["generation"]) == (2, 1)
+    assert "the null case crashes" in rework_offer["instructions"]
+    assert "rework generation 1" in rework_offer["instructions"]
+    assert (await harness.open_step("coder")).session_id == members["coder"]
     assert harness.current.active_stage_id == "implement"
 
     # -- the coder fixes it and the reviewer passes it on the same sessions: no new ones.
     await harness.harness_says("implemented", outcome={"summary": "fixed"})
-    assert harness.last_delivery()[0] == reviewer_session
-    assert harness.last_delivery()[1]["attempt"] == 2
+    assert harness.offer_for("review", attempt=2)["attempt"] == 2
     await harness.harness_says("pass", note="looks right")
 
     assert len(harness.forge.create_requests) == 2
@@ -329,7 +469,7 @@ async def test_a_run_goes_from_launch_through_a_rework_and_a_gate_to_a_completed
     assert harness.current.active_stage_id is None
     assert PENDING_GATES_KEY not in harness.current.metadata
     assert {s.status for s in harness.current.stage_state} == {"complete"}
-    assert sorted(harness.forge.stopped) == sorted([coder_session, reviewer_session])
+    assert set(harness.forge.stopped) == {root_session, *members.values()}
     [answered] = await harness.runs.gates(harness.current)
     assert (answered["status"], answered["decided_by"], answered["notes"]) == (
         "approved",
@@ -352,10 +492,12 @@ async def test_a_gate_request_for_changes_sends_the_work_back_to_the_coder(
         by=GateActor(ActorKind.PERSON, "alice"),
         note="add a test",
     )
+    await harness.play()
 
-    _, body = harness.last_delivery()
-    assert body["member"] == "coder" and body["generation"] == 1
-    assert "add a test" in body["instructions"]
+    offer = harness.offer_for("implement", attempt=2)
+    assert offer["generation"] == 1
+    assert "add a test" in offer["instructions"]
+    assert (await harness.open_step("coder")).generation == 1
     assert harness.current.status is WorkflowCampaignStatus.RUNNING
 
 
@@ -363,34 +505,39 @@ async def test_a_close_from_a_session_that_does_not_own_the_step_is_fenced(
     harness: Harness, caplog
 ) -> None:
     await harness.launch()
+    step = await harness.open_step("coder")
+    before = await harness.state()
 
     with caplog.at_level("ERROR", logger="ting.domain.services.activity_subscriber"):
-        await harness.harness_says("implemented", outcome={"summary": "x"})
-        before = len(harness.forge.deliveries)
-        # A different close of the same activation, from the right session: the step is
-        # done. (The same close again is a repeat delivery and is accepted silently.)
-        delivered_to, _ = harness.forge.deliveries[0]
-        body = harness.forge.deliveries[0][1]
-        await harness.subscriber._on_activity_event(
-            ActivityEvent(
-                session_id=delivered_to,
-                state="idle",
-                metadata={
-                    "workflow_step": {
-                        "event": "closed",
-                        "run_id": body["run_id"],
-                        "activation_id": body["activation_id"],
-                        "attempt": 1,
-                        "ending": {"kind": "failed", "note": "second thoughts"},
-                    }
-                },
-                owner_id=OWNER,
-            ),
-            harness.forge,
-            OWNER,
+        await harness.report(
+            (await harness.members())["reviewer"],
+            "closed",
+            **harness.closed_report(step, {"kind": "verdict", "verdict": "implemented"}),
         )
 
-    assert len(harness.forge.deliveries) == before
+    # The ledger keeps a note of the rejection; no step moved.
+    assert (await harness.state()).steps == before.steps
+    assert any("was rejected" in record.getMessage() for record in caplog.records)
+
+
+async def test_a_different_close_of_a_step_that_is_done_is_rejected_loudly(
+    harness: Harness, caplog
+) -> None:
+    await harness.launch()
+    step = await harness.open_step("coder")
+    await harness.harness_says("implemented", outcome={"summary": "x"})
+    before = await harness.state()
+
+    # The same session closes the same activation again, but with another ending: not a repeat.
+    with caplog.at_level("ERROR", logger="ting.domain.services.activity_subscriber"):
+        await harness.report(
+            step.session_id or "",
+            "closed",
+            **harness.closed_report(step, {"kind": "failed", "failure_reason": "second thoughts"}),
+        )
+
+    assert (await harness.state()).steps == before.steps
+    assert (await harness.state()).step(step.id).state is StepState.DONE  # type: ignore[union-attr]
     assert any("was rejected" in record.getMessage() for record in caplog.records)
 
 
@@ -398,104 +545,172 @@ async def test_the_same_close_delivered_again_changes_nothing_and_is_not_rejecte
     harness: Harness, caplog
 ) -> None:
     await harness.launch()
+    step = await harness.open_step("coder")
+    ending = {"kind": "verdict", "verdict": "implemented", "outcome": {"summary": "x"}}
 
     with caplog.at_level("ERROR", logger="ting.domain.services.activity_subscriber"):
-        await harness.harness_says("implemented", outcome={"summary": "x"})
-        state = await harness.steps.load(harness.campaign.id)
-        before = len(harness.forge.deliveries)
-        delivered_to, body = harness.forge.deliveries[0]
-        repeat = ActivityEvent(
-            session_id=delivered_to,
-            state="idle",
-            metadata={
-                "workflow_step": {
-                    "event": "closed",
-                    "run_id": body["run_id"],
-                    "activation_id": body["activation_id"],
-                    "attempt": 1,
-                    "ending": {
-                        "kind": "verdict",
-                        "verdict": "implemented",
-                        "outcome": {"summary": "x"},
-                    },
-                }
-            },
-            owner_id=OWNER,
-        )
+        await harness.harness_closes(ending)
+        state = await harness.state()
+        offers = len(harness.forge.room_offers)
         for _ in range(3):
-            await harness.subscriber._on_activity_event(repeat, harness.forge, OWNER)
+            await harness.report(
+                step.session_id or "", "closed", **harness.closed_report(step, ending)
+            )
 
-    assert len(harness.forge.deliveries) == before
-    assert await harness.steps.load(harness.campaign.id) == state
+    assert len(harness.forge.room_offers) == offers
+    assert await harness.state() == state
     assert not any("was rejected" in record.getMessage() for record in caplog.records)
+
+
+async def test_a_pickup_and_a_listening_delivered_again_change_nothing(harness: Harness) -> None:
+    await harness.launch()
+    state = await harness.state()
+    members = await harness.members()
+    step = await harness.open_step("coder")
+
+    await harness.report(members["coder"], "listening", member="coder", start_id="start-1")
+    await harness.report(
+        members["coder"],
+        "picked_up",
+        member="coder",
+        offer_id=step.offer_id,
+        activation_id=str(step.id),
+        attempt=step.attempt,
+    )
+
+    assert await harness.state() == state
 
 
 async def test_a_verdict_the_persona_does_not_declare_changes_nothing(
     harness: Harness, caplog
 ) -> None:
     await harness.launch()
+    before = await harness.state()
 
     with caplog.at_level("ERROR", logger="ting.domain.services.activity_subscriber"):
         await harness.harness_says("approved-by-me")
 
-    assert len(harness.forge.deliveries) == 1
-    open_steps = (await harness.steps.load(harness.campaign.id)).open_steps()
-    assert [step.node_id for step in open_steps] == ["implement"]
+    assert (await harness.state()).steps == before.steps
+    assert [step.node_id for step in before.open_steps() if step.member] == ["implement"]
     assert any("was rejected" in record.getMessage() for record in caplog.records)
 
 
-async def test_a_session_that_cannot_be_created_fails_the_run_and_its_campaign(
+async def test_a_unit_that_cannot_be_created_stops_the_launch_and_leaves_nothing_recorded(
     harness: Harness,
 ) -> None:
     harness.forge.fail_create = RuntimeError("no capacity")
 
-    await harness.launch()
+    with pytest.raises(RuntimeError, match="no capacity"):
+        await harness.launch()
 
-    assert harness.current.status is WorkflowCampaignStatus.FAILED
-    assert "no session for 'coder'" in harness.current.metadata["failure_error"]
-    assert harness.current.metadata["failure_stage_id"] == "implement"
+    assert not (await harness.state()).launched
+    assert harness.forge.room_offers == []
 
 
-async def test_a_step_the_session_refuses_fails_the_run_naming_the_member(
+async def test_an_offer_the_root_cannot_take_is_loud_counted_and_published_again(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    recorder = Recorder()
+    monkeypatch.setattr(
+        "ting.domain.services.workflow_step_engine.get_observability", lambda: recorder
+    )
+    harness.forge.fail_offer = RuntimeError("422: the room has no offer operation")
+
+    with caplog.at_level(logging.ERROR, logger="ting.domain.services.workflow_step_engine"):
+        await harness.launch()
+
+    assert harness.offers == []
+    assert recorder.total("ting_workflow_offer_publish_failures_total") >= 1
+    assert any(
+        "Could not publish offer" in r.getMessage() and "no offer operation" in r.getMessage()
+        for r in caplog.records
+    )
+    assert harness.current.active_stage_id == "implement"
+
+    harness.forge.fail_offer = None
+    assert await harness.engine.publish_ready_offers(harness.campaign.id) == 1
+    await harness.play()
+
+    assert [offer["node_id"] for offer in harness.offers] == ["implement"]
+    assert (await harness.open_step("coder")).node_id == "implement"
+
+
+async def test_a_member_that_refuses_an_offer_is_counted_and_the_offer_stays_outstanding(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    recorder = Recorder()
+    monkeypatch.setattr(
+        "ting.domain.services.workflow_step_engine.get_observability", lambda: recorder
+    )
+    await harness.launch(pickups=False)
+    [offer] = harness.offers
+    members = await harness.members()
+
+    with caplog.at_level(logging.ERROR, logger="ting.domain.services.workflow_step_engine"):
+        await harness.report(
+            members["coder"],
+            "offer_refused",
+            member="coder",
+            offer_id=offer["offer_id"],
+            reason="busy",
+            detail="another step is open",
+        )
+
+    assert recorder.counted("ting_workflow_offer_refusals_total", reason="busy") == 1
+    assert any("refused offer" in r.getMessage() for r in caplog.records)
+    [row] = [s for s in (await harness.state()).steps if s.kind is StepKind.OFFER]
+    assert row.state is StepState.ACTIVE
+    assert harness.current.status is WorkflowCampaignStatus.RUNNING
+
+
+async def test_an_offer_published_report_from_the_root_repeats_what_ting_recorded(
     harness: Harness,
 ) -> None:
-    harness.forge.fail_deliver = RuntimeError("409: another step is open")
+    await harness.launch(pickups=False)
+    [offer] = harness.offers
+    state = await harness.state()
+    root_id = unit_root(state)
 
-    await harness.launch()
+    await harness.report(root_id, "offer_published", offer_id=offer["offer_id"])
 
-    assert harness.current.status is WorkflowCampaignStatus.FAILED
-    assert "delivery to 'coder' failed" in harness.current.metadata["failure_error"]
+    assert await harness.state() == state
+
+
+async def test_an_offer_published_report_from_a_member_is_rejected_loudly(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    await harness.launch(pickups=False)
+    [offer] = harness.offers
+    state = await harness.state()
+
+    with caplog.at_level(logging.ERROR, logger="ting.domain.services.activity_subscriber"):
+        await harness.report(
+            (await harness.members())["coder"], "offer_published", offer_id=offer["offer_id"]
+        )
+
+    assert await harness.state() == state
+    assert any("was rejected" in r.getMessage() for r in caplog.records)
 
 
 async def test_a_session_that_ends_its_turn_without_closing_leaves_the_step_open_and_counted(
     harness: Harness,
 ) -> None:
     await harness.launch()
-    delivered_to, body = harness.last_delivery()
+    step = await harness.open_step("coder")
 
-    await harness.subscriber._on_activity_event(
-        ActivityEvent(
-            session_id=delivered_to,
-            state="idle",
-            metadata={
-                "workflow_step": {
-                    "event": "unclosed",
-                    "run_id": body["run_id"],
-                    "activation_id": body["activation_id"],
-                    "attempt": body["attempt"],
-                }
-            },
-            owner_id=OWNER,
-        ),
-        harness.forge,
-        OWNER,
+    await harness.report(
+        step.session_id or "",
+        "unclosed",
+        activation_id=str(step.id),
+        attempt=step.attempt,
     )
 
-    state = await harness.steps.load(harness.campaign.id)
-    assert [step.state for step in state.steps if step.node_id == "implement"] == [StepState.ACTIVE]
+    state = await harness.state()
+    assert [s.state for s in state.steps if s.node_id == "implement" and s.member] == [
+        StepState.ACTIVE
+    ]
     [unclosed] = [e for e in state.events if e.event_type == "engine.step.unclosed"]
-    assert unclosed.payload["session_id"] == delivered_to
-    assert len(harness.forge.deliveries) == 1
+    assert unclosed.payload["session_id"] == step.session_id
 
 
 async def test_cancelling_the_run_stops_its_sessions_and_cancels_the_campaign(
@@ -503,7 +718,7 @@ async def test_cancelling_the_run_stops_its_sessions_and_cancels_the_campaign(
 ) -> None:
     await harness.launch()
     await harness.harness_says("implemented")
-    reviewer = harness.last_delivery()[0]
+    members = await harness.members()
 
     await harness.runs.cancel(harness.current, "the owner changed their mind")
 
@@ -511,71 +726,305 @@ async def test_cancelling_the_run_stops_its_sessions_and_cancels_the_campaign(
     assert harness.current.metadata["cancel_reason"] == "the owner changed their mind"
     assert "failure_error" not in harness.current.metadata
     assert harness.current.metadata["run_canceled"] is True
-    assert reviewer in harness.forge.stopped and len(harness.forge.stopped) == 2
+    assert members["reviewer"] in harness.forge.stopped
+    assert len(harness.forge.stopped) == 3  # the root and both members
 
 
-async def test_reconnecting_records_a_close_the_stream_missed(harness: Harness) -> None:
-    await harness.launch()
-    session, body = harness.last_delivery()
-    harness.forge.step_states[(session, body["activation_id"])] = {
-        "activation_id": body["activation_id"],
-        "state": "closed",
-        "attempt": 1,
-        "ending": {"kind": "verdict", "verdict": "implemented", "outcome": {"summary": "x"}},
-    }
+# -- catching up with the sessions' durable logs after the stream was down ---------------
+
+
+async def test_reconnecting_replays_a_pickup_and_a_close_the_stream_missed(
+    harness: Harness,
+) -> None:
+    await harness.launch(pickups=False)
+    [offer] = harness.offers
+    members = await harness.members()
+    harness.forge.log_entry(
+        members["coder"],
+        harness.pickup_frame(
+            offer,
+            "coder",
+            members["coder"],
+            state="closed",
+            ending={"kind": "verdict", "verdict": "implemented", "outcome": {"summary": "x"}},
+        ),
+    )
 
     await harness.runs.reconcile_owner(OWNER)
 
     assert harness.current.active_stage_id == "review"
-    assert harness.last_delivery()[1]["member"] == "reviewer"
+    assert harness.offer_for("review")["node_id"] == "review"
+    step = (await harness.state()).step(activation_id(offer, members["coder"]))
+    assert step is not None and step.state is StepState.DONE and step.verdict == "implemented"
 
 
 async def test_reconnecting_leaves_a_step_the_session_still_holds_open(harness: Harness) -> None:
-    await harness.launch()
-    session, body = harness.last_delivery()
-    harness.forge.step_states[(session, body["activation_id"])] = {
-        "activation_id": body["activation_id"],
-        "state": "active",
-        "attempt": 1,
-    }
+    await harness.launch(pickups=False)
+    [offer] = harness.offers
+    members = await harness.members()
+    harness.forge.log_entry(
+        members["coder"], harness.pickup_frame(offer, "coder", members["coder"], state="active")
+    )
 
     await harness.runs.reconcile_owner(OWNER)
 
-    assert len(harness.forge.deliveries) == 1
+    assert (await harness.open_step("coder")).node_id == "implement"
+    assert [o["node_id"] for o in harness.offers] == ["implement"]
     assert harness.current.active_stage_id == "implement"
 
 
-async def test_a_run_that_cannot_be_reconciled_is_loud_and_the_others_still_are(
+async def test_reconnecting_replays_a_waiting_frame_then_the_close_after_it(
+    harness: Harness,
+) -> None:
+    await harness.launch(pickups=False)
+    [offer] = harness.offers
+    members = await harness.members()
+    waiting = {
+        "kind": "waiting",
+        "note": "needs the design",
+        "waiting_on": {"kind": "person", "ref": "alice", "reason": "which shape?"},
+    }
+    harness.forge.log_entry(
+        members["coder"],
+        harness.pickup_frame(offer, "coder", members["coder"], state="waiting", ending=waiting),
+    )
+
+    await harness.runs.reconcile_owner(OWNER)
+
+    assert harness.current.status is WorkflowCampaignStatus.BLOCKED
+    assert (await harness.open_step("coder")).state is StepState.WAITING
+
+    harness.forge.log_entry(
+        members["coder"],
+        harness.pickup_frame(
+            offer,
+            "coder",
+            members["coder"],
+            state="closed",
+            ending={"kind": "verdict", "verdict": "implemented"},
+        ),
+    )
+    await harness.runs.reconcile_owner(OWNER)
+
+    assert harness.current.active_stage_id == "review"
+
+
+async def test_a_stale_waiting_frame_of_a_step_that_moved_on_is_skipped(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    await harness.launch()
+    [offer] = [o for o in harness.offers if o["node_id"] == "implement"]
+    members = await harness.members()
+    await harness.harness_says("implemented", outcome={"summary": "x"})
+    state = await harness.state()
+    harness.forge.log_entry(
+        members["coder"],
+        harness.pickup_frame(
+            offer,
+            "coder",
+            members["coder"],
+            state="waiting",
+            ending={
+                "kind": "waiting",
+                "waiting_on": {"kind": "person", "ref": "alice"},
+            },
+        ),
+    )
+    harness.restart_ting()
+
+    with caplog.at_level(logging.ERROR):
+        await harness.runs.reconcile_owner(OWNER)
+
+    assert await harness.state() == state
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+async def test_replaying_the_same_log_twice_changes_nothing(harness: Harness) -> None:
+    await harness.launch(pickups=False)
+    [offer] = harness.offers
+    members = await harness.members()
+    harness.forge.log_entry(
+        members["coder"],
+        harness.pickup_frame(
+            offer,
+            "coder",
+            members["coder"],
+            state="closed",
+            ending={"kind": "verdict", "verdict": "implemented"},
+        ),
+    )
+    await harness.runs.reconcile_owner(OWNER)
+    state = await harness.state()
+    published = len(harness.forge.room_offers)
+
+    harness.restart_ting()  # a new process reads the whole log again
+    await harness.runs.reconcile_owner(OWNER)
+
+    assert await harness.state() == state
+    assert len(harness.forge.room_offers) == published
+
+
+async def test_reconnecting_replays_a_pass_the_stream_missed(harness: Harness) -> None:
+    await harness.launch(pickups=False)
+    [offer] = harness.offers
+    members = await harness.members()
+    harness.forge.log_entry(members["coder"], harness.passed_frame(offer, "coder", "not mine"))
+
+    await harness.runs.reconcile_owner(OWNER)
+
+    [passed] = [e for e in (await harness.state()).events if e.event_type == EVENT_OFFER_PASSED]
+    assert (passed.payload["member"], passed.payload["reason"]) == ("coder", "not mine")
+    # The only member the offer was addressed to passed it: the run fails, saying why.
+    assert harness.current.status is WorkflowCampaignStatus.FAILED
+
+
+async def test_the_catch_up_reads_each_page_and_remembers_how_far_it_got() -> None:
+    harness = Harness(catch_up_page_size=2)
+    await harness.launch(pickups=False)
+    [offer] = harness.offers
+    members = await harness.members()
+    coder = members["coder"]
+    for _ in range(3):
+        harness.forge.log_entry(coder, {"type": "message"}, kind="message")
+    harness.forge.log_entry(coder, harness.pickup_frame(offer, "coder", coder, state="active"))
+
+    await harness.runs.reconcile_owner(OWNER)
+
+    reads = [read for read in harness.forge.log_reads if read[0] == coder]
+    assert reads == [(coder, 0, 2), (coder, 2, 2)]
+    assert (await harness.open_step("coder")).node_id == "implement"
+
+    harness.forge.log_reads.clear()
+    await harness.runs.reconcile_owner(OWNER)
+
+    assert [read for read in harness.forge.log_reads if read[0] == coder] == [(coder, 4, 2)]
+
+
+async def test_only_workflow_step_records_of_a_log_are_applied(harness: Harness) -> None:
+    await harness.launch(pickups=False)
+    [offer] = harness.offers
+    members = await harness.members()
+    harness.forge.log_entry(
+        members["coder"],
+        harness.pickup_frame(offer, "coder", members["coder"]),
+        kind="message",
+    )
+
+    await harness.runs.reconcile_owner(OWNER)
+
+    assert not [s for s in (await harness.state()).steps if s.member]
+
+
+async def test_a_frame_the_run_refuses_is_logged_at_error_and_the_next_one_still_applies(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    await harness.launch(pickups=False)
+    [offer] = harness.offers
+    members = await harness.members()
+    unknown = {**offer, "offer_id": str(uuid4())}
+    harness.forge.log_entry(
+        members["coder"], harness.pickup_frame(unknown, "coder", members["coder"])
+    )
+    harness.forge.log_entry(
+        members["coder"], harness.pickup_frame(offer, "coder", members["coder"])
+    )
+
+    with caplog.at_level(logging.ERROR, logger="ting.domain.services.workflow_runs"):
+        await harness.runs.reconcile_owner(OWNER)
+
+    assert any("was refused" in r.getMessage() for r in caplog.records)
+    assert (await harness.open_step("coder")).offer_id == offer["offer_id"]
+
+
+async def test_a_malformed_frame_is_logged_at_error_and_counted(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    await harness.launch(pickups=False)
+    members = await harness.members()
+    harness.forge.log_entry(
+        members["coder"], harness.frame({"member": "coder", "state": "active", "attempt": 1})
+    )
+    counted: list[str] = []
+    monkeypatch.setattr(
+        "ting.domain.services.workflow_runs.get_observability",
+        lambda: SimpleNamespace(count=lambda name, **_: counted.append(name)),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="ting.domain.services.workflow_runs"):
+        await harness.runs.reconcile_owner(OWNER)
+
+    assert counted == ["ting_workflow_step_reports_invalid_total"]
+    assert any("malformed workflow_step frame" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_log_that_has_more_but_does_not_advance_is_an_error(harness: Harness) -> None:
+    await harness.launch(pickups=False)
+    members = await harness.members()
+    harness.forge.stalled_logs.add(members["coder"])
+
+    with pytest.raises(RuntimeError, match="did not advance"):
+        await harness.runs.catch_up_run(harness.current)
+
+
+async def test_a_run_whose_log_cannot_be_read_is_loud_and_counted_not_skipped(
     harness: Harness,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    await harness.launch()
-    session, body = harness.last_delivery()
-    harness.forge.step_states[(session, body["activation_id"])] = {
-        "activation_id": body["activation_id"],
-        "state": "closed",
-        "attempt": 1,
-        "ending": {"kind": "verdict", "verdict": "implemented", "outcome": {"summary": "x"}},
-    }
+    await harness.launch(pickups=False)
+    harness.forge.fail_log = ConnectionError("forge is down")
+    counted: list[str] = []
+    monkeypatch.setattr(
+        "ting.domain.services.workflow_runs.get_observability",
+        lambda: SimpleNamespace(count=lambda name, **_: counted.append(name)),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        await harness.runs.reconcile_owner(OWNER)
+
+    assert counted == ["ting_workflow_run_reconcile_errors_total"]
+    [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert "add-endpoint-0123456789ab" in record.getMessage()
+    assert "ConnectionError: forge is down" in record.getMessage()
+    assert record.exc_info is not None
+
+
+async def test_a_run_that_cannot_be_caught_up_is_loud_and_the_others_still_are(
+    harness: Harness,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    await harness.launch(pickups=False)
+    [offer] = harness.offers
+    members = await harness.members()
+    harness.forge.log_entry(
+        members["coder"],
+        harness.pickup_frame(
+            offer,
+            "coder",
+            members["coder"],
+            state="closed",
+            ending={"kind": "verdict", "verdict": "implemented"},
+        ),
+    )
     broken = replace(
         harness.campaign, id=uuid4(), slug="broken-run", created_at=NOW - timedelta(days=1)
     )
-    # Listed first: the broken run is reconciled before the healthy one.
+    # Listed first: the broken run is caught up before the healthy one.
     harness.campaigns.items = {broken.id: broken, **harness.campaigns.items}
     counted: list[str] = []
     monkeypatch.setattr(
         "ting.domain.services.workflow_runs.get_observability",
         lambda: SimpleNamespace(count=lambda name, **_: counted.append(name)),
     )
-    real = harness.runs._reconcile_run
+    real = harness.runs.catch_up_run
 
-    async def reconcile(campaign: WorkflowCampaign) -> None:
+    async def catch_up(campaign: WorkflowCampaign) -> None:
         if campaign.id == broken.id:
             raise ConnectionError("forge is down")
         await real(campaign)
 
-    monkeypatch.setattr(harness.runs, "_reconcile_run", reconcile)
+    monkeypatch.setattr(harness.runs, "catch_up_run", catch_up)
 
     with caplog.at_level(logging.ERROR):
         await harness.runs.reconcile_owner(OWNER)
@@ -589,44 +1038,62 @@ async def test_a_run_that_cannot_be_reconciled_is_loud_and_the_others_still_are(
     assert harness.current.active_stage_id == "review"
 
 
-async def test_reconnecting_does_not_ask_a_session_that_is_still_starting(
-    harness: Harness, monkeypatch: pytest.MonkeyPatch
+async def test_a_run_whose_forge_no_longer_resolves_is_loud_not_skipped(
+    harness: Harness, caplog: pytest.LogCaptureFixture
 ) -> None:
-    await harness.launch()
-    session_id, _ = harness.last_delivery()
-    harness.forge.sessions[session_id] = replace(
-        harness.forge.sessions[session_id], status="starting"
-    )
+    await harness.launch(pickups=False)
+    harness.factory.forge = None
 
-    async def refused(*_args, **_kwargs):
-        raise AssertionError("a starting session's steps are not read")
+    with caplog.at_level(logging.ERROR):
+        await harness.runs.reconcile_owner(OWNER)
 
-    monkeypatch.setattr(harness.forge, "get_workflow_step", refused)
-
-    await harness.runs.reconcile_owner(OWNER)
-
-    assert harness.current.active_stage_id == "implement"
+    [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert "no Forge connection resolves" in record.getMessage()
 
 
-async def test_reconnecting_with_a_session_that_never_saw_the_step_changes_nothing(
+async def test_the_catch_up_ignores_other_owners_runs_and_runs_that_are_not_running(
     harness: Harness,
 ) -> None:
-    await harness.launch()
+    await harness.launch(pickups=False)
+
+    await harness.runs.reconcile_owner("someone-else")
+    assert harness.forge.log_reads == []
+
+    await harness.runs.cancel(harness.current, "stop")
+    harness.forge.log_reads.clear()
+    await harness.runs.catch_up_run(harness.current)
+    assert harness.forge.log_reads == []
+
+
+async def test_a_run_that_was_not_launched_has_nothing_to_catch_up_with(harness: Harness) -> None:
+    await harness.campaigns.save_campaign(harness.campaign)
 
     await harness.runs.reconcile_owner(OWNER)
 
-    assert harness.current.active_stage_id == "implement"
+    assert harness.forge.log_reads == []
+
+
+def test_a_catch_up_page_must_hold_at_least_one_frame(harness: Harness) -> None:
+    with pytest.raises(ValueError, match="catch_up_page_size"):
+        WorkflowRuns(
+            engine=harness.engine,
+            steps=harness.steps,
+            campaigns=harness.campaigns,  # type: ignore[arg-type]
+            sink=harness.projector,
+            volundr_factory=harness.factory,  # type: ignore[arg-type]
+            catch_up_page_size=0,
+        )
 
 
 async def test_a_close_that_names_another_runs_activation_is_fenced(harness: Harness) -> None:
     await harness.launch()
-    session, body = harness.last_delivery()
+    step = await harness.open_step("coder")
 
     with pytest.raises(StepFencingError, match="belongs to run"):
         await harness.runs.record_step_closed(
             run_id=uuid4(),
-            activation_id=UUID(body["activation_id"]),
-            session_id=session,
+            activation_id=step.id,
+            session_id=step.session_id or "",
             attempt=1,
             report={"kind": "verdict", "verdict": "implemented"},
         )
@@ -645,7 +1112,7 @@ async def test_a_waiting_ending_parks_the_step_and_a_later_close_is_accepted(
     )
 
     assert harness.current.status is WorkflowCampaignStatus.BLOCKED
-    [step] = [s for s in (await harness.steps.load(harness.campaign.id)).steps if s.member]
+    step = await harness.open_step("coder")
     assert step.state is StepState.WAITING
     assert (step.waiting_on.kind, step.waiting_on.ref) == (WaitingOnKind.PERSON, "alice")
     assert "which API shape?" in step.note
@@ -653,7 +1120,7 @@ async def test_a_waiting_ending_parks_the_step_and_a_later_close_is_accepted(
     await harness.harness_says("implemented", outcome={"summary": "after the answer"})
 
     assert harness.current.status is WorkflowCampaignStatus.RUNNING
-    assert harness.last_delivery()[1]["member"] == "reviewer"
+    assert harness.offer_for("review")["contracts"][0]["persona"]["alias"] == "reviewer"
 
 
 # -- the ending a session reports, as the engine reads it -----------------------------------
@@ -767,12 +1234,12 @@ async def test_an_unclosed_report_from_a_session_that_does_not_own_the_step_is_f
     harness: Harness,
 ) -> None:
     await harness.launch()
-    _, body = harness.last_delivery()
+    step = await harness.open_step("coder")
 
     with pytest.raises(StepFencingError, match="does not own the step"):
         await harness.runs.record_step_unclosed(
             run_id=harness.campaign.id,
-            activation_id=UUID(body["activation_id"]),
+            activation_id=step.id,
             session_id="somebody-else",
             attempt=1,
         )
@@ -800,7 +1267,7 @@ async def reach_the_gate(harness: Harness) -> str:
     """Launch and pass the change through review; returns the reviewer's session."""
     await harness.launch()
     await harness.harness_says("implemented", outcome={"summary": "x"})
-    reviewer_session = harness.last_delivery()[0]
+    reviewer_session = (await harness.members())["reviewer"]
     await harness.harness_says("pass", note="looks right")
     return reviewer_session
 

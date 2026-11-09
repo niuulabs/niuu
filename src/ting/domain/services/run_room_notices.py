@@ -1,10 +1,12 @@
-"""A workflow run's steps, gates and end, as its Coordinator's notices in the run's room.
+"""A workflow run's gates and end, as its Coordinator's notices in the run's room.
 
-A run's room is a session of its own (no agent) that every member of the run is nested under;
-its members share their work into it. The run's coordinator is Ting, so Ting posts what the
-run does there: each member's step starting and closing with its verdict, each gate opening
-and being decided, and the run ending. A notice is shown in the room and sent to no one: it
-goes through Forge's room ``notice`` operation, never through a step delivery or the mesh.
+A run's room is the session of the run's root (a Skuld with no agent) that every member of the
+run is hosted by. What members do on the run's mesh (an offer, each pickup and pass, each
+outcome) reaches the room as ``workflow`` events the root stores and shows, so Ting no longer
+posts step notices: the mesh events replace them. What the mesh does not carry is the part of
+the run Ting decides on its own, a gate opening and being decided and the run ending, and Ting
+posts those. A notice is shown in the room and sent to no one: it goes through Forge's room
+``notice`` operation.
 
 Each notice is keyed by its step and phase. Forge's room shows a notice posted again once, and
 this process posts each key once; a notice Forge could not post is logged at error, counted,
@@ -51,34 +53,11 @@ def run_notices(
     notices: list[RoomNotice] = []
     for step in sorted(state.steps, key=lambda item: item.created_at):
         label = labels.get(step.node_id) or step.node_id
-        if step.kind is StepKind.STAGE_MEMBER:
-            notices.extend(_member_notices(step, label))
-        elif step.kind is StepKind.GATE:
+        if step.kind is StepKind.GATE:
             notices.extend(_gate_notices(step, label, gates.get(str(step.id)) or {}))
     ended = _ENDED.get(status)
     if ended:
         notices.append(RoomNotice(id=f"{campaign.id}:{status.value}", text=ended))
-    return notices
-
-
-def _member_notices(step: WorkflowStep, label: str) -> list[RoomNotice]:
-    member = step.member or "A member"
-    notices: list[RoomNotice] = []
-    if step.activated_at is not None:
-        again = f" (attempt {step.attempt})" if step.attempt > 1 else ""
-        rework = f", rework {step.generation}" if step.generation else ""
-        notices.append(
-            RoomNotice(id=f"{step.id}:started", text=f"{member} started {label}{again}{rework}.")
-        )
-    if step.state is StepState.DONE:
-        verdict = step.verdict or "done"
-        note = f" {step.note}" if step.note else ""
-        notices.append(
-            RoomNotice(id=f"{step.id}:closed", text=f"{member} closed {label}: {verdict}.{note}")
-        )
-    elif step.state is StepState.FAILED:
-        reason = f" {step.note}" if step.note else ""
-        notices.append(RoomNotice(id=f"{step.id}:failed", text=f"{member} failed {label}.{reason}"))
     return notices
 
 

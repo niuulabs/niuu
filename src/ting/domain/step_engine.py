@@ -30,39 +30,52 @@ in the event payload, else in ``payload.fields``, else in ``payload.outcome``.
 
 Joins
 -----
-A consumed delivery activates the member right away, unless a join must be satisfied
-first. A *group* is the set of (edge, producer) slots that deliver one target event to
-the member; the producers of an edge are the stage members whose persona can produce
-its source event, or the source node itself.
+A consumed delivery offers the node right away, unless a join must be satisfied first.
+A *group* is the set of (edge, producer) slots that deliver one target event to the
+member; the producers of an edge are the stage members whose persona can produce its
+source event *and that picked the source node's work up* in the current generation (or
+produced the event being delivered), or the source node itself when it is not a stage.
 
-* ``joinMode: all`` on the target: the member activates when every *group* of
-  forward (non-rework) edges it consumes holds an unconsumed event of the current
+* ``joinMode: all`` on the target: the node is offered when every *group* of
+  forward (non-rework) edges its members consume holds an unconsumed event of the current
   generation from every producer. A late event from a producer replaces its earlier
-  one; an event is consumed by the activation that used it.
-* ``joinMode: any`` (and ``merge``): each consumed delivery activates the member.
+  one; an event is consumed by the offer that used it.
+* ``joinMode: any`` (and ``merge``): each consumed delivery offers the node.
 * ``reviewVerdictPolicy`` on the target: whatever the join mode, the policy's event
-  type is a quorum: its group must be complete (every reviewer has delivered) before
-  the member activates. Rework edges join too when they carry the policy's event.
-* A delivery over a rework edge that is not a quorum activates the member at once:
+  type is a quorum: its group must be complete (every reviewer that picked the work up
+  has delivered) before the node is offered. Rework edges join too when they carry the
+  policy's event.
+* A delivery over a rework edge that is not a quorum offers the node at once:
   a rework edge says "go back and redo", not "wait for the rest".
 
-Only events of the current generation count toward a join. A new activation always
-carries the events it consumed in ``inputs``.
+Only events of the current generation count toward a join. An offer always carries the
+events it consumed in ``inputs``.
+
+Offers and pickups
+------------------
+A stage is not run by activating members one by one. What a delivery produces for a stage
+node is one *offer*: a ledger row of kind ``offer`` that Ting publishes on the run's mesh,
+on the topic the delivery's target event names. Every member whose persona consumes that
+topic receives it, and each decides for itself (its pin, its ``eventFilters``) to pick it
+up or to pass. A pickup is a step of its own, created when the member reports it
+(``ting.domain.services.workflow_step_engine``), so a join counts the members that picked
+the work up, not the members the graph lists.
 
 Concurrency
 -----------
-``executionMode: sequential`` allows one active member in the node at a time;
-``parallel`` allows ``maxConcurrent`` (unbounded when it is not set). A session runs
-one step at a time, so a member never has two active steps in a run either. A step
-that cannot start yet is created ``pending`` and started, oldest first, when a slot
-frees. Waiting steps do not hold a slot: they are parked, not working.
+``executionMode: sequential`` allows one offer or working pickup in the node at a time;
+``parallel`` allows ``maxConcurrent`` (unbounded when it is not set). A member works one
+step at a time (its Skuld refuses an offer while it holds a step, parked or not), so an
+offer waits while any member it is addressed to holds a step or an offer outstanding. An
+offer that cannot go out yet is created ``pending`` and published, oldest first, when it
+can. A waiting step holds no concurrency slot, but it does hold its member.
 
 Rework and generations
 ----------------------
 An edge back to an earlier node is marked ``rework: true``. When a join fires over a
 rework edge the edge is *taken*: the run enters a new generation, every step still open
-in older generations becomes ``stale`` (its late close is rejected), and the member
-activates in the new generation, so downstream reviewers run again against the new
+in older generations becomes ``stale`` (its late close is rejected), and the node
+is offered in the new generation, so downstream reviewers run again against the new
 revision. Every round is recorded with its iteration number. There is no round limit:
 a loop ends when its steps decide the work is done, or an operator aborts the run. A
 workflow's author may set ``maxIterations`` on the edge; taking it more often than that
@@ -109,15 +122,19 @@ from ting.domain.workflow_steps import (
     EVENT_END_REJECTED,
     EVENT_GATE_OPENED,
     EVENT_GATE_RESOLVED,
+    EVENT_MEMBER_LISTENING,
+    EVENT_MEMBER_RESTARTED,
+    EVENT_OFFER_OPENED,
+    EVENT_OFFER_PUBLISHED,
+    EVENT_OFFER_QUEUED,
     EVENT_REWORK_TAKEN,
     EVENT_RUN_CANCELED,
-    EVENT_STEP_ACTIVATED,
     EVENT_STEP_CANCELED,
     EVENT_STEP_CLOSED,
     EVENT_STEP_FAILED,
-    EVENT_STEP_QUEUED,
     EVENT_STEP_STALE,
     EVENT_STEP_WAITING,
+    EVENT_UNIT_LAUNCHED,
     EVENT_WAIT_OPENED,
     REVIEW_PASS_VERDICTS,
     SUBWORKFLOW_BLOCKED_VERDICT,
@@ -155,26 +172,22 @@ class EngineSettings:
     """Engine knobs, from Ting's configuration."""
 
     step_deadline_seconds: float
-    #: Seconds between asking a starting session whether it is up yet.
-    session_poll_seconds: float
 
     def __post_init__(self) -> None:
         if not self.step_deadline_seconds > 0:
             raise ValueError("step_deadline_seconds must be positive")
-        if not self.session_poll_seconds > 0:
-            raise ValueError("session_poll_seconds must be positive")
 
 
 @dataclass(frozen=True)
-class ActivateStep:
-    """Start a stage member's step (new, or promoted from pending). A session must run it."""
+class OfferStep:
+    """Offer a stage node's work (new, or promoted from pending): publish it on the run's mesh."""
 
     step: WorkflowStep
 
 
 @dataclass(frozen=True)
 class QueueStep:
-    """Record a stage member's step that cannot start yet."""
+    """Record an offer that cannot go out yet."""
 
     step: WorkflowStep
 
@@ -235,7 +248,7 @@ class FailRun:
 
 
 Action = (
-    ActivateStep
+    OfferStep
     | QueueStep
     | OpenGate
     | OpenWait
@@ -289,13 +302,15 @@ def plan_retry(
     now: datetime,
     settings: EngineSettings,
 ) -> list[Action]:
-    """Replace a stage member's step by a new attempt of the same node and member.
+    """Replace a stage member's step by a new offer of the same node.
 
-    The new attempt consumes the inputs the old one did and belongs to the same
+    The new offer consumes the inputs the old step did and belongs to the same
     generation. A step that is still open is canceled first, so a late close from its
     session finds a step that is no longer ``active`` and is fenced out; a failed step
-    is already closed. The attempt starts at once unless the node's concurrency holds
-    it back, in which case it is queued like any other and starts when a slot frees.
+    is already closed. The offer goes out at once unless the node's concurrency or a
+    busy member holds it back, in which case it is queued like any other and goes out
+    when it can. It is offered to every member that takes the node's work, since an
+    offer has no addressee.
     """
     planner = _Planner(graph, state, now=now, settings=settings)
     planner.supersede(step, reason)
@@ -644,6 +659,8 @@ def _outcome_payload(
         "attempt": step.attempt,
         "activation_id": str(step.id),
     }
+    if step.offer_id:
+        payload["offer_id"] = step.offer_id
     if evidence:
         payload["evidence"] = evidence
     if extra:
@@ -728,19 +745,30 @@ class _Planner:
             self._deliver_end(event, edge, target)
 
     def _deliver_stage(self, event: RunEvent, edge: EdgeSpec, target: NodeSpec) -> None:
-        for member in target.members:
-            if self._ended:
-                return
-            if edge.target_event not in member.consumes:
-                continue
-            if not event_matches_filters(event.payload, member.event_filters):
-                continue
+        """Offer the stage once every member it is meant for has its join complete.
+
+        The members meant for it are those that consume the delivered event and whose
+        ``eventFilters`` match it. The offer carries one set of inputs: the members' own when
+        they agree, else all of them oldest first, since an offer has one body for everyone.
+        """
+        eligible = [
+            member
+            for member in target.members
+            if edge.target_event in member.consumes
+            and event_matches_filters(event.payload, member.event_filters)
+        ]
+        if not eligible or self._ended:
+            return
+        chosen: dict[int, StepInput] = {}
+        for member in eligible:
             inputs = self._join_inputs(event, edge, target, member)
             if inputs is None:
-                continue
-            if not self._take_reworks(inputs, event):
                 return
-            self._create_step(target, StepKind.STAGE_MEMBER, member.alias, inputs)
+            chosen.update({item.seq: item for item in inputs})
+        inputs = tuple(sorted(chosen.values(), key=lambda item: item.seq))
+        if not self._take_reworks(inputs, event):
+            return
+        self._create_offer(target, inputs)
 
     def _deliver_waiting(
         self,
@@ -777,7 +805,7 @@ class _Planner:
             return
         if not self._take_reworks(inputs, event):
             return
-        self._create_step(target, kind, None, inputs)
+        self._create_step(target, kind, inputs)
 
     def _deliver_end(self, event: RunEvent, edge: EdgeSpec, target: NodeSpec) -> None:
         if target.passing_verdicts and event.verdict not in target.passing_verdicts:
@@ -798,7 +826,7 @@ class _Planner:
         inputs = self._end_inputs(event, edge, target)
         if inputs is None:
             return
-        attempt = self._next_attempt(target.id, None)
+        attempt = self._next_attempt(target.id)
         step = WorkflowStep(
             id=activation_id_for(self._state.run_id, target.id, None, attempt),
             run_id=self._state.run_id,
@@ -837,8 +865,10 @@ class _Planner:
         all_join = target.join_mode == JOIN_ALL and not edge.rework
         if not (all_join or quorum):
             return (_input_of(event, edge),)
-        groups = self._groups(target, member, only=edge.target_event if not all_join else None)
-        consumed = self._consumed(target.id, member.alias)
+        groups = self._groups(
+            target, member, event, only=edge.target_event if not all_join else None
+        )
+        consumed = self._consumed(target.id)
         chosen: list[StepInput] = []
         for slots in groups.values():
             for slot_edge, producer in slots:
@@ -878,7 +908,7 @@ class _Planner:
         for incoming in self._graph.incoming(target.id):
             if incoming.rework:
                 continue
-            for producer in self._graph.producers(incoming):
+            for producer in self._producers(incoming, event):
                 candidates = [
                     candidate
                     for candidate in self._events
@@ -903,17 +933,42 @@ class _Planner:
         for incoming in self._graph.incoming(target.id):
             if incoming.rework:
                 continue
-            for producer in self._graph.producers(incoming):
+            for producer in self._producers(incoming, event):
                 found = self._latest_for_end(incoming, producer, target, event)
                 if found is None:
                     return None
                 chosen.append(_input_of(found, incoming))
         return tuple(chosen)
 
+    def _producers(self, edge: EdgeSpec, event: RunEvent) -> tuple[str | None, ...]:
+        """Who must have delivered an edge's source event for a join over it to hold.
+
+        For a stage source: the members whose persona can produce the event and that picked
+        the stage's work up in the current generation, plus the member that produced the
+        event being delivered. A member that was offered the work and passed, or never
+        listened, is not waited for. Any other source produces on its own behalf.
+        """
+        source = self._graph.nodes[edge.source]
+        if source.kind is not NodeKind.STAGE:
+            return (None,)
+        picked = {
+            step.member
+            for step in self._steps.values()
+            if step.kind is StepKind.STAGE_MEMBER
+            and step.node_id == source.id
+            and step.generation == self._generation
+        }
+        return tuple(
+            alias
+            for alias in self._graph.producers(edge)
+            if alias in picked or (event.node_id == source.id and alias == event.member)
+        )
+
     def _groups(
         self,
         target: NodeSpec,
         member: MemberSpec,
+        event: RunEvent,
         *,
         only: str | None,
     ) -> dict[str, list[tuple[EdgeSpec, str | None]]]:
@@ -925,7 +980,7 @@ class _Planner:
                 continue
             if incoming.rework and only != event_type:
                 continue
-            for producer in self._graph.producers(incoming):
+            for producer in self._producers(incoming, event):
                 groups.setdefault(event_type, []).append((incoming, producer))
         return groups
 
@@ -972,11 +1027,12 @@ class _Planner:
             and candidate.member == producer
         )
 
-    def _consumed(self, node_id: str, alias: str) -> set[int]:
+    def _consumed(self, node_id: str) -> set[int]:
+        """The events an offer of this node (or a pickup of one) has used."""
         return {
             item.seq
             for step in self._steps.values()
-            if step.node_id == node_id and step.member == alias
+            if step.node_id == node_id
             for item in step.inputs
         }
 
@@ -1046,24 +1102,11 @@ class _Planner:
         self,
         node: NodeSpec,
         kind: StepKind,
-        member: str | None,
         inputs: tuple[StepInput, ...],
     ) -> None:
-        attempt = self._next_attempt(node.id, member)
-        step_id = activation_id_for(self._state.run_id, node.id, member, attempt)
-        if kind is StepKind.STAGE_MEMBER:
-            start = self._can_start(node, member or "")
-            step = self._stage_step(node, member or "", step_id, attempt, inputs, active=start)
-            self._steps[step.id] = step
-            self.actions.append(ActivateStep(step) if start else QueueStep(step))
-            self.actions.append(
-                RecordEvent(
-                    EVENT_STEP_ACTIVATED if start else EVENT_STEP_QUEUED,
-                    _step_ref(step) | {"inputs": [item.to_json() for item in inputs]},
-                    source_activation_id=step.id,
-                )
-            )
-            return
+        """Park a gate, wait or subworkflow node as a waiting step."""
+        attempt = self._next_attempt(node.id)
+        step_id = activation_id_for(self._state.run_id, node.id, None, attempt)
         step = self._waiting_step(node, kind, step_id, attempt, inputs)
         self._steps[step.id] = step
         opened = EVENT_GATE_OPENED if kind is StepKind.GATE else EVENT_WAIT_OPENED
@@ -1077,29 +1120,46 @@ class _Planner:
             )
         )
 
-    def _stage_step(
-        self,
-        node: NodeSpec,
-        member: str,
-        step_id: UUID,
-        attempt: int,
-        inputs: tuple[StepInput, ...],
-        *,
-        active: bool,
-    ) -> WorkflowStep:
-        return WorkflowStep(
+    def _create_offer(self, node: NodeSpec, inputs: tuple[StepInput, ...]) -> None:
+        """Offer a stage node's work: out now, or queued while it cannot go out."""
+        attempt = self._next_attempt(node.id)
+        step_id = activation_id_for(self._state.run_id, node.id, None, attempt)
+        pending = WorkflowStep(
             id=step_id,
             run_id=self._state.run_id,
             node_id=node.id,
-            member=member,
-            kind=StepKind.STAGE_MEMBER,
+            member=None,
+            kind=StepKind.OFFER,
             attempt=attempt,
             generation=self._generation,
-            state=StepState.ACTIVE if active else StepState.PENDING,
+            state=StepState.PENDING,
             created_at=self._now,
             inputs=inputs,
-            deadline_at=self._deadline(node) if active else None,
-            activated_at=self._now if active else None,
+            offer_id=str(step_id),
+        )
+        out = self._can_offer(pending)
+        step = self._opened(pending) if out else pending
+        self._steps[step.id] = step
+        self.actions.append(OfferStep(step) if out else QueueStep(step))
+        self.actions.append(
+            RecordEvent(
+                EVENT_OFFER_OPENED if out else EVENT_OFFER_QUEUED,
+                _step_ref(step)
+                | {
+                    "offer_id": step.offer_id,
+                    "topic": offer_topic(step),
+                    "inputs": [item.to_json() for item in inputs],
+                },
+                source_activation_id=step.id,
+            )
+        )
+
+    def _opened(self, offer: WorkflowStep) -> WorkflowStep:
+        """The queued offer as it is once it goes out: active, with its deadline."""
+        return offer.with_state(
+            StepState.ACTIVE,
+            activated_at=self._now,
+            deadline_at=self._deadline(self._graph.nodes[offer.node_id]),
         )
 
     def _waiting_step(
@@ -1151,24 +1211,54 @@ class _Planner:
         )
         return self._now + timedelta(seconds=seconds)
 
-    def _next_attempt(self, node_id: str, member: str | None) -> int:
+    def _next_attempt(self, node_id: str) -> int:
+        """The next offer (or gate, wait, end) attempt of a node: pickups carry their offer's."""
         return 1 + max(
             (
                 step.attempt
                 for step in self._steps.values()
-                if step.node_id == node_id and step.member == member
+                if step.node_id == node_id and step.kind is not StepKind.STAGE_MEMBER
             ),
             default=0,
         )
 
-    def _can_start(self, node: NodeSpec, member: str) -> bool:
-        active = [step for step in self._steps.values() if step.state is StepState.ACTIVE]
-        if any(step.member == member for step in active):
+    def _can_offer(self, offer: WorkflowStep) -> bool:
+        """Whether the offer may go out: its members are free and its node has room.
+
+        A member is held by a step it works or has parked, and by an offer outstanding
+        for it (it may take that one at any moment). The node's concurrency counts its
+        outstanding offers and its working pickups.
+        """
+        node = self._graph.nodes[offer.node_id]
+        held = self._held_members(excluding=offer.id)
+        if any(member.alias in held for member in offer_members(self._graph, offer)):
             return False
         limit = node.concurrency_limit
         if limit is None:
             return True
-        return sum(1 for step in active if step.node_id == node.id) < limit
+        busy = sum(
+            1
+            for step in self._steps.values()
+            if step.node_id == node.id
+            and step.id != offer.id
+            and step.state is StepState.ACTIVE
+            and step.kind in (StepKind.OFFER, StepKind.STAGE_MEMBER)
+        )
+        return busy < limit
+
+    def _held_members(self, *, excluding: UUID) -> set[str]:
+        held: set[str] = set()
+        for step in self._steps.values():
+            if step.id == excluding:
+                continue
+            if step.kind is StepKind.STAGE_MEMBER and step.state in (
+                StepState.ACTIVE,
+                StepState.WAITING,
+            ):
+                held.add(step.member or "")
+            elif step.kind is StepKind.OFFER and step.state is StepState.ACTIVE:
+                held.update(member.alias for member in offer_members(self._graph, step))
+        return held
 
     def _open_steps(self) -> list[WorkflowStep]:
         return [step for step in self._steps.values() if step.is_open]
@@ -1181,29 +1271,35 @@ class _Planner:
         self._steps[step.id] = step.with_state(StepState.CANCELED)
 
     def reactivate(self, step: WorkflowStep) -> None:
-        """Activate the next attempt of ``step``'s node and member on the same inputs."""
-        self._create_step(
-            self._graph.nodes[step.node_id], StepKind.STAGE_MEMBER, step.member, step.inputs
-        )
+        """Offer ``step``'s node again, as the next attempt, on the same inputs."""
+        self._create_offer(self._graph.nodes[step.node_id], step.inputs)
 
     def promote_pending(self) -> None:
         if self._ended:
             return
-        for step in list(self._steps.values()):
-            if step.state is not StepState.PENDING or step.member is None:
+        pending = sorted(
+            (
+                step
+                for step in self._steps.values()
+                if step.state is StepState.PENDING and step.kind is StepKind.OFFER
+            ),
+            key=lambda step: (step.created_at, step.attempt),
+        )
+        for step in pending:
+            if not self._can_offer(step):
                 continue
-            node = self._graph.nodes[step.node_id]
-            if not self._can_start(node, step.member):
-                continue
-            promoted = step.with_state(
-                StepState.ACTIVE, activated_at=self._now, deadline_at=self._deadline(node)
-            )
+            promoted = self._opened(step)
             self._steps[promoted.id] = promoted
-            self.actions.append(ActivateStep(promoted))
+            self.actions.append(OfferStep(promoted))
             self.actions.append(
                 RecordEvent(
-                    EVENT_STEP_ACTIVATED,
-                    _step_ref(promoted) | {"promoted_from_queue": True},
+                    EVENT_OFFER_OPENED,
+                    _step_ref(promoted)
+                    | {
+                        "offer_id": promoted.offer_id,
+                        "topic": offer_topic(promoted),
+                        "promoted_from_queue": True,
+                    },
                     source_activation_id=promoted.id,
                 )
             )
@@ -1246,6 +1342,71 @@ class _Planner:
         return "; ".join(parts)
 
 
+def unit_sessions(state: RunState) -> dict[str, str]:
+    """Stage member alias -> its session id, as the run's unit was launched; empty if none."""
+    for event in state.events:
+        if event.event_type != EVENT_UNIT_LAUNCHED:
+            continue
+        members = event.payload.get("members")
+        if isinstance(members, Mapping):
+            return {str(alias): str(session) for alias, session in members.items()}
+    return {}
+
+
+def unit_root(state: RunState) -> str:
+    """The run's root session id, or empty when the run has no unit."""
+    for event in state.events:
+        if event.event_type == EVENT_UNIT_LAUNCHED:
+            return str(event.payload.get("root_id") or "")
+    return ""
+
+
+def listening_members(state: RunState) -> dict[str, str]:
+    """Stage member alias -> session id, for the members that listen right now.
+
+    A member listens from its ``listening`` report until the engine restarts it; a restarted
+    member listens again only once it reports so.
+    """
+    listening: dict[str, str] = {}
+    for event in state.events:
+        member = str(event.payload.get("member") or "")
+        if event.event_type == EVENT_MEMBER_LISTENING:
+            listening[member] = str(event.payload.get("session_id") or "")
+        elif event.event_type == EVENT_MEMBER_RESTARTED:
+            listening.pop(member, None)
+    return listening
+
+
+def offer_publications(state: RunState) -> dict[str, list[datetime]]:
+    """Offer id -> when the offer was published (and republished), oldest first."""
+    published: dict[str, list[datetime]] = {}
+    for event in state.events:
+        if event.event_type == EVENT_OFFER_PUBLISHED:
+            published.setdefault(str(event.payload.get("offer_id") or ""), []).append(
+                event.created_at
+            )
+    return published
+
+
+def offer_topic(offer: WorkflowStep) -> str:
+    """The topic an offer goes out on: the target event of the delivery that completed it.
+
+    An offer's inputs are the events it consumed; the newest is the one whose arrival made
+    the node ready, so its target event is the kind of work being offered.
+    """
+    if not offer.inputs:
+        raise StepEngineError(f"offer {offer.id} consumed no event, so it names no topic")
+    return max(offer.inputs, key=lambda item: item.seq).event_type
+
+
+def offer_members(graph: StepGraph, offer: WorkflowStep) -> tuple[MemberSpec, ...]:
+    """The members an offer is addressed to: those of its node whose persona takes its topic."""
+    topic = offer_topic(offer)
+    return tuple(
+        member for member in graph.nodes[offer.node_id].members if topic in member.consumes
+    )
+
+
 def _input_of(event: RunEvent, edge: EdgeSpec) -> StepInput:
     return StepInput(
         seq=event.seq,
@@ -1258,13 +1419,13 @@ def _input_of(event: RunEvent, edge: EdgeSpec) -> StepInput:
 
 __all__ = [
     "Action",
-    "ActivateStep",
     "CancelStep",
     "ClosePlan",
     "CompleteRun",
     "EngineSettings",
     "FailRun",
     "MarkStale",
+    "OfferStep",
     "OpenGate",
     "OpenWait",
     "QueueStep",
@@ -1273,8 +1434,14 @@ __all__ = [
     "cancel_actions",
     "event_matches_filters",
     "next_actions",
+    "listening_members",
+    "offer_members",
+    "offer_publications",
+    "offer_topic",
     "plan_close",
     "plan_gate_resolution",
     "plan_retry",
     "review_join",
+    "unit_root",
+    "unit_sessions",
 ]

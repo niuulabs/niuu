@@ -1967,29 +1967,6 @@ class TestStepSessions:
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_deliver_workflow_step_posts_the_activation_body(
-        self, adapter: VolundrHTTPAdapter
-    ):
-        route = respx.post(f"{SESSIONS_URL}/ses-1/workflow/steps").mock(
-            return_value=httpx.Response(202, json={})
-        )
-
-        await adapter.deliver_workflow_step("ses-1", contract.ACTIVATION_BODY)
-
-        assert json.loads(route.calls[0].request.content) == contract.ACTIVATION_BODY
-
-    @pytest.mark.asyncio
-    @respx.mock
-    async def test_a_step_the_session_refuses_stays_loud(self, adapter: VolundrHTTPAdapter):
-        respx.post(f"{SESSIONS_URL}/ses-1/workflow/steps").mock(
-            return_value=httpx.Response(409, json={"detail": "session has another open step"})
-        )
-
-        with pytest.raises(httpx.HTTPStatusError, match="another open step"):
-            await adapter.deliver_workflow_step("ses-1", contract.ACTIVATION_BODY)
-
-    @pytest.mark.asyncio
-    @respx.mock
     async def test_a_session_notification_is_submitted_with_its_idempotency_key(
         self, adapter: VolundrHTTPAdapter
     ):
@@ -2037,36 +2014,3 @@ class TestStepSessions:
 
         with pytest.raises(httpx.HTTPStatusError, match="not found"):
             await adapter.resolve_notification("n-1", resolution="x")
-
-    @pytest.mark.asyncio
-    @respx.mock
-    async def test_get_workflow_step_reads_the_durable_state(self, adapter: VolundrHTTPAdapter):
-        state = {
-            "activation_id": contract.ACTIVATION_ID,
-            "state": "closed",
-            "ending": contract.CLOSED_METADATA["workflow_step"]["ending"],
-        }
-        respx.get(f"{SESSIONS_URL}/ses-1/workflow/steps/{contract.ACTIVATION_ID}").mock(
-            return_value=httpx.Response(200, json=state)
-        )
-
-        assert await adapter.get_workflow_step("ses-1", contract.ACTIVATION_ID) == state
-
-    @pytest.mark.asyncio
-    @respx.mock
-    async def test_a_step_the_session_does_not_know_is_none(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1/workflow/steps/{contract.ACTIVATION_ID}").mock(
-            return_value=httpx.Response(404, json={})
-        )
-
-        assert await adapter.get_workflow_step("ses-1", contract.ACTIVATION_ID) is None
-
-    @pytest.mark.asyncio
-    @respx.mock
-    async def test_an_unreadable_step_state_is_an_error(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1/workflow/steps/{contract.ACTIVATION_ID}").mock(
-            return_value=httpx.Response(200, json=["not", "an", "object"])
-        )
-
-        with pytest.raises(ValueError, match="expected an object"):
-            await adapter.get_workflow_step("ses-1", contract.ACTIVATION_ID)
