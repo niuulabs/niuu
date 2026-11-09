@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -655,6 +656,25 @@ class Session(BaseModel):
         ),
     )
 
+    hosted_by: UUID | None = Field(
+        default=None,
+        description=(
+            "The unit-root session whose unit (pod, VM, VM slot, sandbox or process group) "
+            "runs this session. A hosted member has no pod of its own: its status and "
+            "endpoint follow the unit, but its transcript, credential, log and outcome stay "
+            "its own."
+        ),
+    )
+    hosted_port: int | None = Field(
+        default=None,
+        ge=1,
+        le=65535,
+        description=(
+            "The port of this member's broker inside its unit, assigned when the member is "
+            "created (the unit's member base port plus its index). Unique within a unit."
+        ),
+    )
+
     short_description: str | None = Field(
         default=None,
         description=(
@@ -807,6 +827,112 @@ class Session(BaseModel):
                 "updated_at": now,
             }
         )
+
+    @property
+    def is_unit_root(self) -> bool:
+        """True for a session created to host a run's members (see ``HostedLaunch``)."""
+        return isinstance(self.workload_config.get(HOSTED_UNIT_KEY), dict)
+
+    @property
+    def is_hosted(self) -> bool:
+        """True for a member session that runs inside another session's unit."""
+        return self.hosted_by is not None
+
+    def hosted_in(self, unit: Session) -> Session:
+        """This member as the unit shows it: status and endpoint follow ``unit``.
+
+        A member has no pod of its own. While its unit is coming up or running the member
+        reads as the unit does, except that a member stopped or failed on its own stays
+        so; when the unit is stopping, stopped, failed or archived, every member reads as
+        the unit does. The broker endpoint is the unit's address with the member's port.
+        """
+        if self.hosted_by != unit.id or self.hosted_port is None:
+            raise ValueError(f"Session {self.id} is not a member of unit {unit.id}")
+        status = hosted_status(self.status, unit.status)
+        if status in _HOSTED_LIVE_STATUSES and unit.chat_endpoint:
+            chat_endpoint = hosted_endpoint(unit.chat_endpoint, self.hosted_port)
+        else:
+            chat_endpoint = None
+        error = self.error
+        if status == SessionStatus.FAILED and unit.status == SessionStatus.FAILED:
+            error = unit.error or error
+        return self.model_copy(
+            update={"status": status, "chat_endpoint": chat_endpoint, "code_endpoint": None}
+            | ({"error": error} if error != self.error else {})
+        )
+
+
+#: ``workload_config`` key of a unit root: the root's own launch (a ``HostedLaunch``), held
+#: until the unit starts. Its presence is what makes a session a unit root.
+HOSTED_UNIT_KEY = "hosted_unit"
+
+#: ``workload_config`` key of a member: its launch (a ``HostedLaunch``), held until its unit
+#: starts, because a member is never started on its own.
+HOSTED_LAUNCH_KEY = "hosted_launch"
+
+#: ``workload_config`` key Forge adds to a unit root's launch: the members the unit starts
+#: with, ``[{"id": ..., "port": ...}]``. A run's members are fixed when its unit starts.
+HOSTED_MEMBERS_KEY = "hosted_members"
+
+#: Statuses in which a hosted member has an endpoint to show.
+_HOSTED_LIVE_STATUSES = frozenset(
+    {SessionStatus.STARTING, SessionStatus.PROVISIONING, SessionStatus.RUNNING}
+)
+
+#: Statuses a member can hold on its own while its unit is up.
+_HOSTED_OWN_STATUSES = frozenset(
+    {
+        SessionStatus.STOPPING,
+        SessionStatus.STOPPED,
+        SessionStatus.FAILED,
+        SessionStatus.ARCHIVED,
+    }
+)
+
+
+class HostedLaunch(BaseModel):
+    """What a session in a unit is launched with, kept until the unit starts.
+
+    An ordinary session passes these to the service when it starts. A unit root and its
+    members are created first and started together, so the arguments are kept on the
+    session and the start reads them back.
+    """
+
+    definition: str | None = None
+    launch_spec: str | None = None
+    terminal_restricted: bool = False
+    credential_names: list[str] = Field(default_factory=list)
+    integration_ids: list[str] = Field(default_factory=list)
+    resource_config: dict = Field(default_factory=dict)
+    system_prompt: str = ""
+    initial_prompt: str = ""
+    workload_type: str = "session"
+
+
+def hosted_status(own: SessionStatus, unit: SessionStatus) -> SessionStatus:
+    """The status of a hosted member given its own stored status and its unit's."""
+    if own == SessionStatus.ARCHIVED:
+        return SessionStatus.ARCHIVED
+    if unit in _HOSTED_LIVE_STATUSES:
+        return own if own in _HOSTED_OWN_STATUSES else unit
+    if unit == SessionStatus.CREATED:
+        return SessionStatus.CREATED
+    if unit in (SessionStatus.STOPPING, SessionStatus.FAILED):
+        return unit
+    return SessionStatus.STOPPED
+
+
+def hosted_endpoint(unit_chat_endpoint: str, port: int) -> str:
+    """A member's broker endpoint: the unit's address with the member's port.
+
+    Scheme, host and path are the unit's; only the port is the member's. A runtime that
+    routes members by path instead of by port names the member's broker target itself.
+    """
+    parts = urlsplit(unit_chat_endpoint)
+    if not parts.hostname:
+        raise ValueError(f"Unit endpoint has no host: {unit_chat_endpoint!r}")
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    return urlunsplit((parts.scheme, f"{host}:{port}", parts.path, parts.query, parts.fragment))
 
 
 class ExternalSessionRecord(BaseModel):
