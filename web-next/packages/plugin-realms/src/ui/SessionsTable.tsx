@@ -31,7 +31,7 @@ export function SessionsTable({ sessions }: { sessions: VolundrSession[] }) {
               data-testid={`session-depth-${row.depth}`}
             >
               <Link
-                to={'/volundr/session/$sessionId' as never}
+                to={'/volundr/sessions/$sessionId' as never}
                 params={{ sessionId: row.session.id } as never}
                 className="niuu:text-text-primary"
               >

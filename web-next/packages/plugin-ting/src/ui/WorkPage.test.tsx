@@ -782,7 +782,7 @@ describe('WorkPage', () => {
     await screen.findByTestId('work-detail');
     expect(screen.getByRole('link', { name: 'Open session' })).toHaveAttribute(
       'href',
-      '/volundr/session/$sessionId',
+      '/volundr/sessions/$sessionId',
     );
     expect(screen.getByRole('link', { name: 'Open definition' })).toHaveAttribute(
       'href',

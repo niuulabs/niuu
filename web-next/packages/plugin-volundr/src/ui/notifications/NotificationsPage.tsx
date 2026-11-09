@@ -157,7 +157,7 @@ export function NotificationsPage() {
   function openSession(notification: SessionNotification) {
     if (!notification.sessionId) return;
     void navigate({
-      to: '/volundr/session/$sessionId',
+      to: '/volundr/sessions/$sessionId',
       params: { sessionId: notification.sessionId },
       hash: notificationAnchorId(notification.id),
     } as never);

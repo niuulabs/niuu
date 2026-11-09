@@ -93,7 +93,7 @@ function SessionLink({
   return (
     <li>
       <Link
-        to={'/volundr/session/$sessionId' as never}
+        to={'/volundr/sessions/$sessionId' as never}
         params={{ sessionId } as never}
         search={{ ...(instanceId ? { instance_id: instanceId } : {}), returnTo } as never}
       >

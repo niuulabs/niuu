@@ -197,7 +197,7 @@ describe('RunReviewPage', () => {
     // The session the run works in opens on its live page.
     expect(screen.getByRole('link', { name: 'Infra Change Flow run' })).toHaveAttribute(
       'href',
-      '/volundr/session/session-9',
+      '/volundr/sessions/session-9',
     );
     expect(screen.getByText('Ready to merge.')).toBeInTheDocument();
   });
@@ -294,7 +294,7 @@ describe('RunReviewPage', () => {
     expect(screen.getByText('pinned', { selector: 'strong' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Coordinator' })).toHaveAttribute(
       'href',
-      '/volundr/session/coord-9',
+      '/volundr/sessions/coord-9',
     );
     // Opened from nowhere in particular, the way back is the ticket's board.
     expect(screen.getByRole('link', { name: /Back to the A2A board/ })).toHaveAttribute(
@@ -311,7 +311,7 @@ describe('RunReviewPage', () => {
     expect(screen.getByRole('heading', { name: 'Plan NIU-1125 only' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Infra Change Flow run' })).toHaveAttribute(
       'href',
-      '/volundr/session/session-9',
+      '/volundr/sessions/session-9',
     );
     expect(screen.getByRole('link', { name: /Back to Artifacts/ })).toBeInTheDocument();
   });
@@ -623,11 +623,11 @@ describe('RunReviewPage', () => {
 
     expect(await screen.findByRole('link', { name: 'Coder' })).toHaveAttribute(
       'href',
-      '/volundr/session/session-coder',
+      '/volundr/sessions/session-coder',
     );
     expect(screen.getByRole('link', { name: 'Reviewer' })).toHaveAttribute(
       'href',
-      '/volundr/session/session-reviewer',
+      '/volundr/sessions/session-reviewer',
     );
     expect(publications).toHaveBeenCalledWith(
       'valhalla',

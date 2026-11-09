@@ -461,7 +461,7 @@ function WorkDetailView({
         <div className="ting-work-detail__actions">
           {item.session && item.actions.includes('openSession') ? (
             <Link
-              to={'/volundr/session/$sessionId' as never}
+              to={'/volundr/sessions/$sessionId' as never}
               params={{ sessionId: item.session.id } as never}
               search={
                 {

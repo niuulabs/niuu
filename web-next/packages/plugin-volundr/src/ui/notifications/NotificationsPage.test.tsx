@@ -216,7 +216,7 @@ describe('NotificationsPage', () => {
       screen.getByRole('button', { name: /Benchmark run crashed — open gpu-bench/ }),
     );
     expect(navigate).toHaveBeenCalledWith({
-      to: '/volundr/session/$sessionId',
+      to: '/volundr/sessions/$sessionId',
       params: { sessionId: 'sess-bench' },
       hash: 'notification-n-horde-4',
     });

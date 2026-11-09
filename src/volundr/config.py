@@ -1668,7 +1668,7 @@ class NotificationsConfig(BaseModel):
         description="Label for this Forge host in delivered messages; empty uses its hostname.",
     )
     session_link_path: str = Field(
-        default="/volundr/session/{session_id}#notification-{notification_id}",
+        default="/volundr/sessions/{session_id}#notification-{notification_id}",
         description="Deep-link path for a session notification ({session_id}, {notification_id}).",
     )
     feed_link_path: str = Field(
