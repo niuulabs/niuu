@@ -4,6 +4,15 @@ from __future__ import annotations
 
 import pytest
 
+# Delivery must name its producers and Forge policies: no delivery workflow ships.
+DELIVERY_WIRING = {
+    "enabled": True,
+    "review_producers": {"code": "code-reviewer"},
+    "integration_review_producer": "integration-verifier",
+    "evidence_policy_id": "delivery-evidence",
+    "integration_policy_id": "delivery-integration",
+}
+
 
 async def test_shared_integrations_database_closes_separate_pool(monkeypatch):
     from contextlib import asynccontextmanager
@@ -119,7 +128,7 @@ class TestWorkflowExecutionRouterMounting:
         from ting.config import Settings
         from ting.main import create_app
 
-        settings = Settings(workflow_execution={"enabled": True, "delivery": {"enabled": True}})
+        settings = Settings(workflow_execution={"enabled": True, "delivery": DELIVERY_WIRING})
         app = create_app(settings)
         paths = _mounted_paths(app)
 
@@ -164,7 +173,7 @@ def test_delivery_enabled_without_review_authenticator_raises_with_remedy():
             kwargs={},
             seed_bundled=True,
         ),
-        workflow_execution={"enabled": True, "delivery": {"enabled": True}},
+        workflow_execution={"enabled": True, "delivery": DELIVERY_WIRING},
     )
     app = create_app(settings)
 

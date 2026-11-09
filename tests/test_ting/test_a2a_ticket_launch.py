@@ -12,9 +12,9 @@ from uuid import uuid4
 
 import pytest
 
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
 from ting.domain.models import SagaBoardWorkflow, WorkflowCampaignStatus
-from ting.system_workflows import load_system_workflows
 
 from .test_a2a_tasks import (
     InMemoryA2ALaunchRepository,

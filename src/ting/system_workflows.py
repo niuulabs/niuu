@@ -38,8 +38,36 @@ ARCHIVED_SYSTEM_WORKFLOW_IDS: frozenset[UUID] = frozenset(
     {
         # "Code & Review Flow"
         UUID("03dba0d8-4f29-560a-a4e1-1fc7e5f9ee23"),
+        # "Developer Delivery"
+        UUID("ca01b422-7ab7-4614-901b-8784ef65c76e"),
+        # "Developer Integration"
+        UUID("f776d181-ed63-4e3a-b5c4-7b128e4d2094"),
+        # "Developer Planning"
+        UUID("195d5026-7adb-4ce7-97ee-fb1e18ea4c3a"),
+        # "Developer Workstream"
+        UUID("98133eab-cd89-44d1-b32d-26c82f99dddc"),
         # "Infra Change Flow"
         UUID("0b51b458-0aeb-5a1b-8f79-d805834491e3"),
+        # "Research Campaign"
+        UUID("1bfc01b1-4d01-5d20-86e1-2956dff11464"),
+        # "Research Thread"
+        UUID("4e7ebec4-0cfa-4567-98dd-2ee4ce0bc308"),
+        # "Research Thread — Breadth"
+        UUID("42951d75-dd82-4596-92ea-1c0a6ef4b965"),
+        # "Research Thread — Contrarian"
+        UUID("5777251e-7ff1-47f7-b182-d040ed9a7a2f"),
+        # "Research Thread — Depth"
+        UUID("bf5f97dd-d89b-4f3e-a8fc-ea61a42685a5"),
+        # "Reviewed Delivery Flow"
+        UUID("7c1f7d52-6a0e-5f0a-9d3e-2b7d9a4e8c11"),
+        # "Saga Planning"
+        UUID("a4c7067a-ac22-5b64-bde1-ec8ad1507e73"),
+        # "Specification Stack"
+        UUID("96ecf5df-18a0-542b-9df6-aef6aef6a5db"),
+        # "Ticket Planning Flow"
+        UUID("3f0e6a14-9b2d-5c47-8e61-4d7a2c91b5e3"),
+        # "Ticket Work Flow"
+        UUID("9a41d7c6-3e52-5b08-a7f4-6c1e0d2b8f37"),
         # "Tracker Delivery Flow"
         UUID("3f444455-6b63-53c2-b057-3205345a56da"),
     }
@@ -65,24 +93,40 @@ RETIRED_SYSTEM_WORKFLOW_IDS: frozenset[UUID] = (
 logger = logging.getLogger(__name__)
 
 
-def load_system_workflows(path: Path = BUNDLED_SYSTEM_WORKFLOWS_PATH) -> list[WorkflowDefinition]:
-    """Load and validate every packaged workflow document."""
+def load_system_workflows(
+    path: Path = BUNDLED_SYSTEM_WORKFLOWS_PATH,
+    *,
+    persona_source: PersonaPort | None = None,
+    allow_archived: bool = False,
+) -> list[WorkflowDefinition]:
+    """Load and validate every packaged workflow document.
+
+    ``allow_archived`` exists for tests that load the archived documents as fixtures
+    (``tests/support/full_catalogue.py``); nothing that ships passes it, and a shipped
+    directory holding an archived workflow stays a startup error.
+    """
     if not path.is_dir():
         raise WorkflowDocumentError(f"Bundled workflow directory does not exist: {path}")
     workflows: list[WorkflowDefinition] = []
     seen: set[UUID] = set()
-    persona_source = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
+    persona_source = persona_source or FilesystemPersonaAdapter(
+        persona_dirs=[], include_builtin=True
+    )
+    retired = RETIRED_SYSTEM_WORKFLOW_IDS - (
+        ARCHIVED_SYSTEM_WORKFLOW_IDS if allow_archived else set()
+    )
     for document_path in sorted(path.glob("*.yaml")):
         workflow = load_bundled_workflow(
             document_path,
             persona_source=persona_source,
             bundle_root=path.parent,
+            allow_archived=allow_archived,
         )
         if workflow.id in seen:
             raise WorkflowDocumentError(
                 f"Duplicate bundled workflow id {workflow.id} in {document_path}"
             )
-        if workflow.id in RETIRED_SYSTEM_WORKFLOW_IDS:
+        if workflow.id in retired:
             raise WorkflowDocumentError(
                 f"Bundled workflow {document_path} uses retired system workflow id "
                 f"{workflow.id}; give it a new id or remove it from "
@@ -100,13 +144,14 @@ def load_bundled_workflow(
     *,
     persona_source: PersonaPort | None = None,
     bundle_root: Path | None = None,
+    allow_archived: bool = False,
 ) -> WorkflowDefinition:
     """Load a package workflow with immutable built-in persona source documents."""
     try:
         document = load_workflow_document(document_path.read_text(encoding="utf-8"))
     except (OSError, WorkflowDocumentError) as exc:
         raise WorkflowDocumentError(f"Invalid bundled workflow {document_path}: {exc}") from exc
-    if document.id in ARCHIVED_SYSTEM_WORKFLOW_IDS:
+    if document.id in ARCHIVED_SYSTEM_WORKFLOW_IDS and not allow_archived:
         raise WorkflowDocumentError(
             f"Bundled workflow {document_path} is archived (id {document.id}) and must not "
             "ship. Move it back to archive/workflows, or restore it properly: remove its id "
@@ -128,6 +173,7 @@ def load_bundled_workflow(
         bundle_root=root,
         persona_source=source,
         lineage=(),
+        allow_archived=allow_archived,
     )
     # Whole-graph validation that needs a copied stage's exact content — edge
     # endpoints, review-verdict-policy quorum membership, reviewAttestation's
@@ -172,6 +218,7 @@ def _load_bundled_definitions(
     bundle_root: Path,
     persona_source: PersonaPort,
     lineage: tuple[UUID, ...],
+    allow_archived: bool,
 ) -> tuple[dict[str, dict], dict[str, dict]]:
     if document.id in lineage:
         cycle = " -> ".join(str(item) for item in (*lineage, document.id))
@@ -179,7 +226,7 @@ def _load_bundled_definitions(
     current_lineage = (*lineage, document.id)
     persona_definitions: dict[str, dict] = {}
     for alias, dependency in document.persona_dependencies.items():
-        if dependency.id in ARCHIVED_BUILTIN_PERSONAS:
+        if dependency.id in ARCHIVED_BUILTIN_PERSONAS and not allow_archived:
             raise WorkflowDocumentError(
                 archived_persona_message(
                     dependency.id,
@@ -196,7 +243,7 @@ def _load_bundled_definitions(
 
     workflow_definitions: dict[str, dict] = {}
     for alias, dependency in document.workflow_dependencies.items():
-        if dependency.id in ARCHIVED_SYSTEM_WORKFLOW_IDS:
+        if dependency.id in ARCHIVED_SYSTEM_WORKFLOW_IDS and not allow_archived:
             raise WorkflowDocumentError(
                 f"Bundled workflow {document_path} dependency {alias!r} is the archived "
                 f"workflow {dependency.id}. Drop the dependency, or restore the workflow "
@@ -234,6 +281,7 @@ def _load_bundled_definitions(
             bundle_root=bundle_root,
             persona_source=persona_source,
             lineage=current_lineage,
+            allow_archived=allow_archived,
         )
         workflow_definitions[alias] = {
             "document": workflow_document_payload(child),

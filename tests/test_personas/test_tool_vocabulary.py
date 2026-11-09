@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from personas.adapters.loader import FilesystemPersonaAdapter
@@ -140,7 +142,7 @@ def test_the_digest_follows_the_authored_spelling_so_existing_pins_stay_valid() 
 def test_every_builtin_persona_speaks_only_the_vocabulary_and_one_mode_spelling() -> None:
     source = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
     names = source.list_builtin_names()
-    assert len(names) == 46
+    assert len(names) == 5
     for name in names:
         config = source.load(name)
         assert config is not None
@@ -152,7 +154,11 @@ def test_every_builtin_persona_speaks_only_the_vocabulary_and_one_mode_spelling(
 
 
 def test_a_builtin_that_could_only_use_retired_tools_is_closed_not_opened() -> None:
-    source = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
+    # These three are archived, not shipped; their documents still follow the rule.
+    source = FilesystemPersonaAdapter(
+        persona_dirs=[str(Path(__file__).resolve().parents[2] / "archive" / "personas")],
+        include_builtin=False,
+    )
     for name in ("developer-coordinator", "developer-integration-verifier", "research-coordinator"):
         config = source.load(name)
         assert config is not None

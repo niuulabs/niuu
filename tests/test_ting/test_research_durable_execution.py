@@ -23,6 +23,7 @@ import pytest
 from fastapi import HTTPException
 
 from personas.adapters.loader import FilesystemPersonaAdapter
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from tests.test_ting.test_research_api import (
     InMemoryWorkflowCampaignRepository,
     InMemoryWorkflowRepository,
@@ -36,7 +37,6 @@ from ting.api.workflow_execution_launch import durable_parent_node_id
 from ting.api.workflow_executions import resolve_optional_workflow_execution_repo
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_execution import ExecutionState
-from ting.system_workflows import load_system_workflows
 
 _CAMPAIGNS_URL = "/api/v1/ting/research/campaigns"
 

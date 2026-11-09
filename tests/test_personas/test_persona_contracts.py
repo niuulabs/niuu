@@ -512,7 +512,9 @@ class TestFilesystemPersonaAdapterLoadInjection:
 class TestPersonaContractE2E:
     def test_persona_without_contract_unchanged(self) -> None:
         """Loading ticket-coordinator (no produces) → no outcome block in system prompt."""
-        loader = FilesystemPersonaAdapter()
+        loader = FilesystemPersonaAdapter(
+            persona_dirs=[str(Path(__file__).resolve().parents[2] / "archive" / "personas")]
+        )
         persona = loader.load("ticket-coordinator")
         assert persona is not None
         assert "---outcome---" not in persona.system_prompt_template

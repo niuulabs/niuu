@@ -308,7 +308,19 @@ class TestConfigMapTemplate:
 
     def test_delivery_is_enabled_explicitly_on_top_of_the_generic_blocks(self, tmp_path):
         rendered = _render_ting_chart(
-            tmp_path, {"workflowExecution": {"enabled": True, "delivery": {"enabled": True}}}
+            tmp_path,
+            {
+                "workflowExecution": {
+                    "enabled": True,
+                    "delivery": {
+                        "enabled": True,
+                        "reviewProducers": {"code": "code-reviewer"},
+                        "integrationReviewProducer": "integration-verifier",
+                        "evidencePolicyId": "delivery-evidence",
+                        "integrationPolicyId": "delivery-integration",
+                    },
+                }
+            },
         )
         workflow_execution = _config_from_rendered(rendered)["workflow_execution"]
 
@@ -318,7 +330,7 @@ class TestConfigMapTemplate:
             entry["condition_type"] for entry in workflow_execution["wait_observers"]
         }
         assert condition_types == {"timer", "forge.checks", "forge.merge"}
-        assert workflow_execution["delivery"]["evidence_policy_id"] == "developer-workstream"
+        assert workflow_execution["delivery"]["evidence_policy_id"] == "delivery-evidence"
 
     def test_delivery_disabled_renders_generic_execution_with_no_forge_observers(self, tmp_path):
         """A deployment can run only the generic fan-out/join/wait pack.

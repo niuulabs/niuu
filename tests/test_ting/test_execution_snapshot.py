@@ -5,12 +5,13 @@ from dataclasses import replace
 
 import pytest
 
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from tests.test_ting.test_delivery_execution import _execution, _proposal
 from ting.delivery.domain import make_children
 from ting.domain.execution_snapshot import pinned_child_workflow
 from ting.domain.workflow_execution import ChildTemplate, WorkflowExecutionError
 from ting.domain.workflow_snapshot import build_workflow_snapshot
-from ting.system_workflows import BUNDLED_SYSTEM_WORKFLOWS_PATH, load_system_workflows
+from ting.system_workflows import BUNDLED_SYSTEM_WORKFLOWS_PATH
 
 
 def frozen_execution():

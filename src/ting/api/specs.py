@@ -427,7 +427,15 @@ async def _resolve_spec_workflow(
     for workflow in workflows:
         if workflow.name == _DEFAULT_SPEC_WORKFLOW_NAME:
             return await _selected_version(repo, workflow, workflow_version)
-    raise HTTPException(status_code=404, detail="Specification Stack workflow not found")
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            f"No specification workflow is available: no workflow is tagged 'specification' "
+            f"and {_DEFAULT_SPEC_WORKFLOW_NAME!r} is no longer bundled (archived, see "
+            "archive/README.md). Create a workflow tagged 'specification', or restore the "
+            "archived one."
+        ),
+    )
 
 
 async def _selected_version(

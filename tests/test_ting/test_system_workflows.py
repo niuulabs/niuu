@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 
+from tests.support.full_catalogue import load_full_catalogue
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import workflow_document_revision
@@ -82,8 +83,13 @@ class _InMemoryWorkflowRepository(WorkflowRepository):
         return self._workflows.pop(workflow_id, None) is not None
 
 
-def test_load_system_workflows_only_keeps_supported_catalog() -> None:
-    workflows = load_system_workflows()
+def test_the_shipped_catalogue_is_the_tool_and_skill_builder() -> None:
+    assert {workflow.name for workflow in load_system_workflows()} == {"Tool & Skill Builder"}
+
+
+def test_the_full_archived_catalogue_still_loads_with_its_graph_shapes() -> None:
+    """The archived documents stay valid fixtures: they load with the archived personas."""
+    workflows = load_full_catalogue()
 
     names = {workflow.name for workflow in workflows}
     assert names == {
@@ -94,9 +100,12 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "Research Thread — Contrarian",
         "Saga Planning",
         "Specification Stack",
+        "Tracker Delivery Flow",
         "Reviewed Delivery Flow",
         "Ticket Planning Flow",
         "Ticket Work Flow",
+        "Code & Review Flow",
+        "Infra Change Flow",
         "Tool & Skill Builder",
         "Developer Delivery",
         "Developer Planning",
@@ -343,23 +352,7 @@ async def test_seed_system_workflows_preserves_authored_and_obsolete_entries() -
 
     saved = await seed_system_workflows(repo)
     names = {workflow.name for workflow in saved}
-    assert names == {
-        "Research Campaign",
-        "Research Thread",
-        "Research Thread — Breadth",
-        "Research Thread — Depth",
-        "Research Thread — Contrarian",
-        "Saga Planning",
-        "Specification Stack",
-        "Reviewed Delivery Flow",
-        "Ticket Planning Flow",
-        "Ticket Work Flow",
-        "Tool & Skill Builder",
-        "Developer Delivery",
-        "Developer Planning",
-        "Developer Workstream",
-        "Developer Integration",
-    }
+    assert names == {"Tool & Skill Builder"}
 
     current_catalog = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
     assert {workflow.name for workflow in current_catalog} == names | {obsolete.name}
@@ -499,7 +492,7 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
     the current packaged definition, and that a second pass is a no-op.
     """
     seed = next(
-        workflow for workflow in load_system_workflows() if workflow.name == "Research Campaign"
+        workflow for workflow in load_full_catalogue() if workflow.name == "Research Campaign"
     )
     assert seed.version == "2.1.2"
     legacy = replace(
@@ -579,7 +572,7 @@ async def test_seed_reclassifies_orphaned_never_versioned_row_as_authored(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "workflow",
-    [workflow for workflow in load_system_workflows() if "mimir" in str(workflow.graph)],
+    [workflow for workflow in load_full_catalogue() if "mimir" in str(workflow.graph)],
     ids=lambda workflow: workflow.name,
 )
 async def test_bundled_memory_wells_provision_without_a_stored_integration(workflow) -> None:

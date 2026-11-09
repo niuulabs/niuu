@@ -25,6 +25,7 @@ from niuu.domain.delivery import (
     WorkspaceAllocation,
 )
 from niuu.domain.services.token_scope import VALKYRIE_BUILD_TOKEN_USE
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from tests.test_ting.test_delivery_execution import (
     MemoryRepository,
     RecordingGateway,
@@ -53,7 +54,6 @@ from ting.domain.workflow_execution import (
     WorkflowExecutionError,
 )
 from ting.domain.workflow_steps import EVENT_RUN_LAUNCHED, RunEvent
-from ting.system_workflows import load_system_workflows
 
 from .fake_workflow_runs import FakeWorkflowRuns
 

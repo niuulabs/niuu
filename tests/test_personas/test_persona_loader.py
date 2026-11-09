@@ -59,6 +59,13 @@ for _p in _BUILTIN_PERSONAS_DIR.glob("*.yaml"):
     if _cfg is not None:
         _BUILTIN_PERSONAS[_p.stem] = _cfg
 
+# The archived personas are not shipped; their documents stay valid and tested.
+_ARCHIVED_PERSONAS: dict[str, PersonaConfig] = {}
+for _p in (Path(__file__).resolve().parents[2] / "archive" / "personas").glob("*.yaml"):
+    _cfg = _loader.load_from_file(_p)
+    if _cfg is not None:
+        _ARCHIVED_PERSONAS[_p.stem] = _cfg
+
 
 # ---------------------------------------------------------------------------
 # safe_bool
@@ -314,7 +321,7 @@ class TestListBuiltinNames:
         assert "coder" in names
         assert "reviewer" in names
         assert "security-auditor" in names
-        assert "ticket-coordinator" in names
+        assert "capability-publisher" in names
         assert "sidekick" not in names
 
 
@@ -328,7 +335,7 @@ class TestTrackerDeliveryPersonas:
         assert "./.skuld-tools/bin/tracker_issue" in cfg.system_prompt_template
 
     def test_closer_uses_explicit_tracker_shim_path(self) -> None:
-        cfg = _BUILTIN_PERSONAS["closer"]
+        cfg = _ARCHIVED_PERSONAS["closer"]
         assert "./.skuld-tools/bin/tracker_issue" in cfg.system_prompt_template
 
     def test_returns_sorted_list(self) -> None:
@@ -533,7 +540,7 @@ def test_every_built_in_persona_says_what_it_does_and_when_to_talk_to_it() -> No
     adapter = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
     names = adapter.list_builtin_names()
 
-    assert len(names) == 46
+    assert len(names) == 5
     for name in names:
         persona = adapter.load(name)
         assert persona.description, f"built-in persona {name!r} has no description"

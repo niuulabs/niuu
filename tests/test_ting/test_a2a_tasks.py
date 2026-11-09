@@ -29,6 +29,7 @@ from niuu.domain.models import Principal
 from personas.adapters.loader import FilesystemPersonaAdapter
 from personas.domain.persona import PersonaConfig, PersonaConsumes, PersonaProduces
 from personas.domain.persona_document import portable_persona_from_config
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from ting.adapters.campaign_step_definitions import CampaignStepRunDefinitions
 from ting.adapters.forge_step_sessions import ForgeStepSessions, step_session_name
 from ting.api.a2a import (
@@ -64,7 +65,6 @@ from ting.ports.volundr import (
 )
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
-from ting.system_workflows import load_system_workflows
 
 from .fake_forge import FakeSagas
 from .step_support import InMemoryStepRepository

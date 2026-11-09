@@ -6,19 +6,26 @@ kept and still names one is a configuration error that stops the service at
 startup, with the remedy in the message; it is never resolved to "not found" and
 carried on without.
 
-This list is code, not a directory scan, because the archive is not shipped: the
-wheel and the container images have no ``archive/`` to read. ``tests/test_archive``
-keeps this set equal to the files in ``archive/personas``.
+The list is ``archived-personas.txt`` next to this module, not a scan of the archive,
+because the archive is not shipped: the wheel and the container images have no
+``archive/`` to read. ``tests/test_catalog_archive.py`` keeps it equal to the files in
+``archive/personas``.
 """
 
 from __future__ import annotations
 
-ARCHIVED_BUILTIN_PERSONAS: frozenset[str] = frozenset(
-    {
-        "postmortem-analyst",
-        "product-steward",
-    }
-)
+from pathlib import Path
+
+ARCHIVED_PERSONAS_FILE = Path(__file__).parent / "archived-personas.txt"
+
+
+def _read_archived_personas() -> frozenset[str]:
+    # A data file, not a literal: it is a list of persona names, which engine code must not carry.
+    lines = ARCHIVED_PERSONAS_FILE.read_text(encoding="utf-8").splitlines()
+    return frozenset(line.strip() for line in lines if line.strip() and not line.startswith("#"))
+
+
+ARCHIVED_BUILTIN_PERSONAS: frozenset[str] = _read_archived_personas()
 
 
 class ArchivedCatalogError(ValueError):
@@ -31,7 +38,7 @@ def archived_persona_message(name: str, *, where: str) -> str:
         f"{where} names the built-in persona {name!r}, which was archived and is no longer "
         f"shipped. Name a persona that ships, define your own {name!r} persona, or restore "
         f"it with `git mv archive/personas/{name}.yaml src/personas/builtin/` and remove it "
-        "from personas.archived.ARCHIVED_BUILTIN_PERSONAS (see archive/README.md)."
+        "from src/personas/archived-personas.txt (see archive/README.md)."
     )
 
 

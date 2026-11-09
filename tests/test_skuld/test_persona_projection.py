@@ -546,8 +546,18 @@ def test_an_unknown_transport_cannot_play_a_persona() -> None:
 
 
 def _builtins() -> list[PortablePersonaDefinition]:
-    source = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
-    documents = [source.load_current_portable(name) for name in source.list_builtin_names()]
+    # The shipped personas and the archived ones: the archived documents must stay projectable.
+    source = FilesystemPersonaAdapter(
+        persona_dirs=[str(Path(__file__).resolve().parents[2] / "archive" / "personas")],
+        include_builtin=True,
+    )
+    names = sorted(
+        {
+            *source.list_builtin_names(),
+            *(p.stem for p in Path(source._persona_dirs[0]).glob("*.yaml")),
+        }
+    )
+    documents = [source.load_current_portable(name) for name in names]
     return [document for document in documents if document is not None]
 
 

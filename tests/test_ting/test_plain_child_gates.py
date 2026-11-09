@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 
+from tests.support.full_catalogue import full_catalogue_root
 from ting.adapters import plain_child_gates
 from ting.adapters.plain_child_gates import (
     SchemaOnlyChildResultVerifier,
@@ -14,7 +15,6 @@ from ting.adapters.plain_child_gates import (
 )
 from ting.domain.workflow_document import WorkflowDocument, load_workflow_document
 from ting.domain.workflow_execution import WorkflowExecutionError
-from ting.system_workflows import BUNDLED_SYSTEM_WORKFLOWS_PATH
 
 
 def _pinned(monkeypatch: pytest.MonkeyPatch, workflow: object) -> None:
@@ -22,9 +22,7 @@ def _pinned(monkeypatch: pytest.MonkeyPatch, workflow: object) -> None:
 
 
 def _bundled(name: str) -> WorkflowDocument:
-    return load_workflow_document(
-        (BUNDLED_SYSTEM_WORKFLOWS_PATH / name).read_text(encoding="utf-8")
-    )
+    return load_workflow_document((full_catalogue_root() / name).read_text(encoding="utf-8"))
 
 
 @pytest.mark.asyncio

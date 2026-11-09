@@ -7,14 +7,12 @@ from typing import Any
 import pytest
 import yaml
 
+from tests.support.full_catalogue import full_catalogue_root
 from ting.domain.workflow_document import WorkflowDocumentError, load_workflow_document
-from ting.system_workflows import BUNDLED_SYSTEM_WORKFLOWS_PATH
 
 
 def _document(**graph_overrides: Any) -> str:
-    source = (BUNDLED_SYSTEM_WORKFLOWS_PATH / "reviewed-delivery-flow.yaml").read_text(
-        encoding="utf-8"
-    )
+    source = (full_catalogue_root() / "reviewed-delivery-flow.yaml").read_text(encoding="utf-8")
     document = yaml.safe_load(source)
     document["graph"].update(graph_overrides)
     return yaml.safe_dump(document, sort_keys=False)

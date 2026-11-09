@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 import yaml
+from scripts.prepare_delivery_proof import build_config
 
 from cli.commands.platform import _resolve_local_pod_manager_env
 from cli.config import CLISettings
 from cli.services.compose_bundle import platform_environment
-from scripts.prepare_delivery_proof import build_config
 from ting.config import WorkflowExecutionConfig
 from volundr.config import DeliveryConfig
 

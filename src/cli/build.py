@@ -92,6 +92,8 @@ DATA_FILE_MAPPINGS = [
     (REPO_ROOT / "migrations" / "*.sql", "cli/migrations/"),
     (REPO_ROOT / "migrations" / "lineage-aliases.json", "cli/migrations/"),
     (REPO_ROOT / "migrations" / "ting" / "*.sql", "cli/migrations/ting/"),
+    # The archived built-in persona names, read at import by personas.archived
+    (REPO_ROOT / "src" / "personas" / "archived-personas.txt", "personas/"),
 ]
 
 # Imports to exclude from the binary
