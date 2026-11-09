@@ -327,9 +327,8 @@ class TmuxInteractiveTransport(CLITransport):
         self._effort_control_timeout = effort_control_timeout_s
         self._forge_session_id = session_id or "skuld-interactive"
         self._tool_policy = claude_tool_policy
-        # A policy that decides the permission mode is a boundary the node's own mode and
-        # agent teams must not widen.
-        bounded = claude_tool_policy is not None and claude_tool_policy.sets_permission_mode
+        # A policy is a boundary the node's own mode and agent teams must not widen.
+        bounded = claude_tool_policy is not None
         self._skip_permissions = skip_permissions and not bounded
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams and not bounded

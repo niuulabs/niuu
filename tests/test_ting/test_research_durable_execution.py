@@ -177,32 +177,16 @@ def _workflow_with_nodes(nodes: list[dict]) -> WorkflowDefinition:
     )
 
 
-def _snapshot_with_tools(tools: list[str]) -> dict:
-    return {
-        "persona_definitions": {
-            "coordinator": {"id": "coordinator", "definition": {"allowed_tools": tools}}
-        }
-    }
-
-
 def test_durable_parent_node_is_the_single_subworkflow_node() -> None:
     workflow = _workflow_with_nodes(
         [{"id": "stage", "kind": "stage"}, {"id": "fan-out", "kind": "subworkflow"}]
     )
-    assert durable_parent_node_id(workflow, {}) == "fan-out"
+    assert durable_parent_node_id(workflow) == "fan-out"
 
 
-def test_durable_parent_node_is_none_without_fan_out_or_coordinator_tools() -> None:
+def test_durable_parent_node_is_none_without_fan_out() -> None:
     workflow = _workflow_with_nodes([{"id": "stage", "kind": "stage"}])
-    assert durable_parent_node_id(workflow, _snapshot_with_tools(["mimir_read"])) is None
-    assert durable_parent_node_id(workflow, None) is None
-
-
-def test_coordinator_tools_without_a_subworkflow_node_are_rejected() -> None:
-    workflow = _workflow_with_nodes([{"id": "stage", "kind": "stage"}])
-    with pytest.raises(HTTPException) as caught:
-        durable_parent_node_id(workflow, _snapshot_with_tools(["workflow_execution_expand"]))
-    assert caught.value.status_code == 422
+    assert durable_parent_node_id(workflow) is None
 
 
 def test_several_subworkflow_nodes_are_rejected() -> None:
@@ -210,5 +194,5 @@ def test_several_subworkflow_nodes_are_rejected() -> None:
         [{"id": "one", "kind": "subworkflow"}, {"id": "two", "kind": "subworkflow"}]
     )
     with pytest.raises(HTTPException) as caught:
-        durable_parent_node_id(workflow, {})
+        durable_parent_node_id(workflow)
     assert caught.value.status_code == 422

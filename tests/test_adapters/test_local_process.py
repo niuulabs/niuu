@@ -1182,7 +1182,7 @@ class TestProcessSpawning:
             "schema_version": 1,
             "id": "reviewer",
             "revision": "content-0123456789abcdef",
-            "definition": {"name": "reviewer", "allowed_tools": ["file_read"]},
+            "definition": {"name": "reviewer", "permission_mode": "read_only"},
         }
         spec = SessionSpec(
             values={"session": {"persona": persona, "systemPrompt": "Focus on migrations."}},

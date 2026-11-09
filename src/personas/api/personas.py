@@ -6,7 +6,7 @@ import logging
 from dataclasses import replace as _dc_replace
 
 from fastapi import APIRouter, HTTPException, Path, Query, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from personas.domain.permission_mode import parse_optional_permission_mode
 from personas.domain.persona import (
@@ -17,7 +17,11 @@ from personas.domain.persona import (
     PersonaProduces,
     persona_to_yaml,
 )
-from personas.domain.persona_document import PersonaDocumentError, PortablePersonaDefinition
+from personas.domain.persona_document import (
+    PersonaDocumentError,
+    PortablePersonaDefinition,
+    refuse_tool_restrictions,
+)
 from personas.ports.persona import PersonaRegistryPort
 
 logger = logging.getLogger(__name__)
@@ -73,7 +77,6 @@ class PersonaSummary(BaseModel):
             "empty when the persona defers to the configured default"
         ),
     )
-    allowed_tools: list[str] = Field(description="Explicitly allowed tool groups")
     iteration_budget: int = Field(description="Maximum agent iterations (0 = unlimited)")
     is_builtin: bool = Field(description="Whether this is a built-in persona")
     has_override: bool = Field(description="Whether a user file overrides the built-in")
@@ -94,7 +97,6 @@ class PersonaSummary(BaseModel):
         return cls(
             name=name,
             permission_mode=config.permission_mode,
-            allowed_tools=config.allowed_tools,
             iteration_budget=config.iteration_budget,
             is_builtin=is_builtin,
             has_override=has_override,
@@ -110,7 +112,6 @@ class PersonaDetail(PersonaSummary):
     system_prompt_template: str = Field(
         description="System prompt template (may include outcome injection)",
     )
-    forbidden_tools: list[str] = Field(description="Explicitly forbidden tool groups")
     llm: PersonaLLMResponse = Field(description="LLM configuration")
     produces: PersonaProducesResponse = Field(description="Output event schema")
     consumes: PersonaConsumesResponse = Field(description="Input event configuration")
@@ -140,7 +141,6 @@ class PersonaDetail(PersonaSummary):
         return cls(
             name=name,
             permission_mode=config.permission_mode,
-            allowed_tools=config.allowed_tools,
             iteration_budget=config.iteration_budget,
             is_builtin=is_builtin,
             has_override=has_override,
@@ -148,7 +148,6 @@ class PersonaDetail(PersonaSummary):
             outcome_events=dict(config.produces.event_type_map),
             consumes_events=config.consumes.event_types,
             system_prompt_template=config.system_prompt_template,
-            forbidden_tools=config.forbidden_tools,
             llm=PersonaLLMResponse(
                 primary_alias=config.llm.primary_alias,
                 thinking_enabled=config.llm.thinking_enabled,
@@ -188,8 +187,6 @@ class PersonaCreate(BaseModel):
         description="Unique persona name (alphanumeric, hyphens, underscores)",
     )
     system_prompt_template: str = Field(default="", description="System prompt template text")
-    allowed_tools: list[str] = Field(default_factory=list, description="Allowed tool groups")
-    forbidden_tools: list[str] = Field(default_factory=list, description="Forbidden tool groups")
     permission_mode: str = Field(default="", description="Permission mode")
     iteration_budget: int = Field(default=0, ge=0, description="Max iterations (0 = unlimited)")
     llm_primary_alias: str = Field(default="", description="LLM alias")
@@ -204,13 +201,19 @@ class PersonaCreate(BaseModel):
     fan_in_strategy: str = Field(default="merge", description="Fan-in strategy")
     fan_in_contributes_to: str = Field(default="", description="Parent event type")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_tool_restrictions(cls, data: object) -> object:
+        """Refuse a body that still carries ``allowed_tools`` or ``forbidden_tools``."""
+        if isinstance(data, dict):
+            refuse_tool_restrictions(str(data.get("name") or "<unnamed>"), data)
+        return data
+
     def to_persona_config(self) -> PersonaConfig:
         """Build a PersonaConfig from this request."""
         return PersonaConfig(
             name=self.name,
             system_prompt_template=self.system_prompt_template,
-            allowed_tools=self.allowed_tools,
-            forbidden_tools=self.forbidden_tools,
             permission_mode=self.permission_mode,
             iteration_budget=self.iteration_budget,
             llm=PersonaLLMConfig(

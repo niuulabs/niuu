@@ -39,8 +39,6 @@ def _mock_row(**overrides):
             "summary": "Custom agent",
             "description": "Custom agent description",
             "system_prompt_template": "You are custom.",
-            "allowed_tools": ["file_read"],
-            "forbidden_tools": [],
             "permission_mode": "default",
             "iteration_budget": 7,
             "llm_primary_alias": "balanced",
@@ -67,7 +65,6 @@ class _BuiltinLoader:
             "coder": PersonaConfig(
                 name="coder",
                 system_prompt_template="Builtin coder.",
-                allowed_tools=["file_read"],
                 permission_mode="workspace-write",
                 iteration_budget=40,
             )
@@ -138,6 +135,19 @@ class TestPortablePersonas:
         with pytest.raises(ValueError, match="declares an 'executor' block.*Remove"):
             await registry.get_current_portable_persona("user-1", "custom-agent")
 
+    @pytest.mark.parametrize("key", ["allowed_tools", "forbidden_tools"])
+    async def test_stored_persona_still_carrying_a_tool_restriction_is_refused(self, key):
+        registry, pool = _make_registry()
+        row = _mock_row()
+        row["config_json"][key] = ["file_read"]
+        pool.fetch.return_value = [row]
+
+        with pytest.raises(
+            ValueError,
+            match=rf"persona custom-agent: {key} is not supported: per-harness tool restrictions",
+        ):
+            await registry.get_current_portable_persona("user-1", "custom-agent")
+
 
 class TestListPersonas:
     async def test_merges_builtin_and_user_personas(self):
@@ -188,8 +198,6 @@ class TestGetPersona:
                     "summary": "Overridden coder",
                     "description": "Overridden coder",
                     "system_prompt_template": "Override prompt.",
-                    "allowed_tools": ["file_read", "file_write"],
-                    "forbidden_tools": [],
                     "permission_mode": "default",
                     "iteration_budget": 11,
                     "llm_primary_alias": "balanced",
@@ -238,8 +246,6 @@ class TestSavePersona:
             "summary": "Custom agent",
             "description": "Custom agent description",
             "system_prompt_template": "You are custom.",
-            "allowed_tools": ["file_read"],
-            "forbidden_tools": [],
             "permission_mode": "safe",
             "iteration_budget": 7,
             "llm_primary_alias": "balanced",
@@ -272,6 +278,18 @@ class TestSavePersona:
 
         pool.execute.assert_not_awaited()
 
+    @pytest.mark.parametrize("key", ["allowed_tools", "forbidden_tools"])
+    async def test_refuses_a_payload_that_carries_a_tool_restriction(self, key):
+        registry, pool = _make_registry()
+
+        with pytest.raises(
+            ValueError,
+            match=rf"persona custom-agent: {key} is not supported.*remove allowed_tools",
+        ):
+            await registry.save_persona("user-1", {"name": "custom-agent", key: []})
+
+        pool.execute.assert_not_awaited()
+
 
 class TestDeletePersona:
     async def test_returns_true_when_row_deleted(self):
@@ -298,8 +316,6 @@ class TestParsePayload:
                         "summary": "Custom agent",
                         "description": "Custom agent",
                         "system_prompt_template": "You are custom.",
-                        "allowed_tools": [],
-                        "forbidden_tools": [],
                         "permission_mode": "default",
                         "iteration_budget": 0,
                         "llm_primary_alias": "",
@@ -356,8 +372,6 @@ class TestHelperNormalization:
             {
                 "name": "coder",
                 "letter": "zebra",
-                "allowed_tools": ["file_read", ""],
-                "forbidden_tools": ["rm"],
                 "permission_mode": "workspace-write",
                 "iteration_budget": "9",
                 "llm_primary_alias": "fast",

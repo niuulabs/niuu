@@ -1,9 +1,8 @@
 """The persona model: a role a worker plays in a workflow or team.
 
-A persona says what a role is: its prompt, the tools it may and may not use, its
-permission mode, the events it consumes and produces, and how its output combines
-with parallel peers. It does not say which harness runs the role; the workflow step
-or spec decides that.
+A persona says what a role is: its prompt, its permission mode, the events it consumes and
+produces, and how its output combines with parallel peers. It does not say which harness
+runs the role; the workflow step or spec decides that.
 
 Persona YAML format::
 
@@ -11,8 +10,6 @@ Persona YAML format::
     description: Implements features and fixes bugs in a repository, with tests.
     system_prompt_template: |
       You are a focused coding agent. ...
-    allowed_tools: [file_read, file_write, shell, web_fetch, plan, "mimir:search"]
-    forbidden_tools: [web_search]
     permission_mode: workspace_write
     llm:
       thinking_enabled: true
@@ -43,8 +40,7 @@ import yaml
 
 from niuu.domain.outcome import OutcomeField, OutcomeSchema, generate_outcome_instruction
 from personas.domain.permission_mode import PermissionMode, parse_optional_permission_mode
-from personas.domain.persona_document import PersonaDocumentError
-from personas.domain.tool_vocabulary import validate_tool_names
+from personas.domain.persona_document import PersonaDocumentError, refuse_tool_restrictions
 
 EXECUTOR_REMOVED_MESSAGE = (
     "Persona {name!r} declares an 'executor' block. A persona no longer names the "
@@ -69,7 +65,7 @@ class PersonaVoiceConfig:
     ``voices`` maps a realtime provider (``grok-voice``, ``openai-realtime``) to the
     provider's voice name; a persona with no voices does not take voice calls.
     ``style`` is how the persona speaks. ``tools`` names the tools a voice call may
-    use, inside ``allowed_tools``; empty means none. ``grok`` holds Grok Voice
+    use; empty means none. ``grok`` holds Grok Voice
     session fields (reasoning, turn detection, transcription key terms) sent as is.
     """
 
@@ -146,8 +142,6 @@ class PersonaConfig:
     #: can choose whom to talk to. Never injected into a prompt.
     description: str = ""
     system_prompt_template: str = ""
-    allowed_tools: list[str] = field(default_factory=list)
-    forbidden_tools: list[str] = field(default_factory=list)
     permission_mode: str = ""
     parsed_permission_mode: PermissionMode | None = field(init=False, default=None, compare=False)
     llm: PersonaLLMConfig = field(default_factory=PersonaLLMConfig)
@@ -188,10 +182,6 @@ class PersonaConfig:
             d["description"] = self.description
         if self.system_prompt_template:
             d["system_prompt_template"] = self.system_prompt_template
-        if self.allowed_tools:
-            d["allowed_tools"] = list(self.allowed_tools)
-        if self.forbidden_tools:
-            d["forbidden_tools"] = list(self.forbidden_tools)
         if self.permission_mode:
             d["permission_mode"] = str(self.permission_mode)
 
@@ -412,13 +402,12 @@ def parse_persona(text: str) -> PersonaConfig | None:
     Returns ``None`` on empty input or YAML that is not a persona mapping with a
     name. Handles the ``produces``, ``consumes`` and ``fan_in`` sections.
 
-    Raises :class:`ValueError` when ``permission_mode`` is not a known mode or a tool list
-    names a tool outside the neutral vocabulary (``personas.domain.tool_vocabulary``; the
-    message lists the valid set), and
+    Raises :class:`ValueError` when ``permission_mode`` is not a known mode, and
     :class:`~personas.domain.persona_document.PersonaDocumentError` when the document
-    still carries an ``executor`` block. A persona no longer names the
-    harness that runs it, and a document that does must be corrected rather than read
-    with the block dropped.
+    still carries an ``executor`` block or a tool restriction (``allowed_tools``,
+    ``forbidden_tools``). A persona no longer names the harness that runs it, and
+    per-harness tool restrictions are not available yet; a document that carries either
+    must be corrected rather than read with it dropped.
     """
     if not text.strip():
         return None
@@ -438,6 +427,8 @@ def parse_persona(text: str) -> PersonaConfig | None:
     if "executor" in raw:
         raise PersonaDocumentError(EXECUTOR_REMOVED_MESSAGE.format(name=name))
 
+    refuse_tool_restrictions(name, raw)
+
     llm_raw: dict[str, Any] = {}
     if isinstance(raw.get("llm"), dict):
         llm_raw = raw["llm"]
@@ -448,15 +439,6 @@ def parse_persona(text: str) -> PersonaConfig | None:
         max_tokens=safe_int(llm_raw.get("max_tokens", 0)),
     )
 
-    allowed = raw.get("allowed_tools", [])
-    forbidden = raw.get("forbidden_tools", [])
-    for field_name, tools in (("allowed_tools", allowed), ("forbidden_tools", forbidden)):
-        if not isinstance(tools, list):
-            continue
-        try:
-            validate_tool_names(field_name, tools)
-        except ValueError as exc:
-            raise ValueError(f"Persona {name!r}: {exc}") from exc
     delivery_workspace_actions = raw.get("delivery_workspace_actions", [])
     raw_permission_mode = raw.get("permission_mode")
 
@@ -464,8 +446,6 @@ def parse_persona(text: str) -> PersonaConfig | None:
         name=name,
         description=str(raw.get("description") or "").strip(),
         system_prompt_template=str(raw.get("system_prompt_template", "")),
-        allowed_tools=list(allowed) if isinstance(allowed, list) else [],
-        forbidden_tools=list(forbidden) if isinstance(forbidden, list) else [],
         permission_mode="" if raw_permission_mode is None else str(raw_permission_mode),
         llm=llm,
         iteration_budget=safe_int(raw.get("iteration_budget", 0)),

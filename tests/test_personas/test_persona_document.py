@@ -16,6 +16,7 @@ from personas.domain.persona_document import (
     PersonaDependencyResolutionError,
     PersonaDocumentError,
     PortablePersonaCollection,
+    PortablePersonaDefinition,
     parse_portable_persona,
     portable_persona_from_config,
     portable_persona_yaml,
@@ -28,8 +29,6 @@ def _complete_persona(prompt: str = "First line.\nSecond line.\n") -> PersonaCon
         name="reviewer",
         description="Reviews pull requests for correctness.",
         system_prompt_template=prompt,
-        allowed_tools=["file_read", "git"],
-        forbidden_tools=["shell"],
         permission_mode="read-only",
         llm=PersonaLLMConfig(
             primary_alias="powerful",
@@ -110,6 +109,57 @@ def test_portable_persona_rejects_an_executor_field() -> None:
 
     with pytest.raises(PersonaDocumentError, match="unsupported field.*executor"):
         parse_portable_persona(document)
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"allowed_tools": ["file_read"]}, "persona worker: allowed_tools is not supported"),
+        ({"forbidden_tools": ["shell"]}, "persona worker: forbidden_tools is not supported"),
+        (
+            {"allowed_tools": [], "forbidden_tools": []},
+            "persona worker: allowed_tools and forbidden_tools are not supported",
+        ),
+    ],
+)
+def test_portable_persona_refuses_tool_restrictions_even_when_empty(
+    fields: dict[str, list[str]], message: str
+) -> None:
+    document = {
+        "schema_version": 1,
+        "id": "worker",
+        "revision": "content-1234567890abcdef",
+        "definition": {"name": "worker", **fields},
+    }
+
+    with pytest.raises(PersonaDocumentError, match=message) as raised:
+        parse_portable_persona(document)
+
+    assert "per-harness tool restrictions are not available yet" in str(raised.value)
+    assert "remove allowed_tools (and forbidden_tools) from the persona" in str(raised.value)
+
+
+def test_a_portable_persona_built_directly_refuses_tool_restrictions_too() -> None:
+    with pytest.raises(PersonaDocumentError, match="allowed_tools is not supported"):
+        PortablePersonaDefinition(
+            id="worker",
+            revision="content-1234567890abcdef",
+            definition={"name": "worker", "allowed_tools": ["file_read"]},
+        )
+
+
+def test_pinning_a_workflow_scoped_persona_with_a_tool_restriction_is_refused() -> None:
+    """Ting pins a workflow's personas through this resolution; the refusal reaches it too."""
+    scoped = {
+        "schema_version": 1,
+        "id": "worker",
+        "revision": "content-1234567890abcdef",
+        "definition": {"name": "worker", "forbidden_tools": ["shell"]},
+    }
+    pin = {"id": "worker", "revision": "content-1234567890abcdef", "digest": "sha256:" + "0" * 64}
+
+    with pytest.raises(PersonaDocumentError, match="persona worker: forbidden_tools is not"):
+        resolve_persona_dependencies({"worker": pin}, {"worker": scoped}, None)
 
 
 def test_persona_dependency_rejects_path_traversal_identifier() -> None:

@@ -21,7 +21,6 @@ from skuld.personas.registry import projector_for
 from skuld.service_manager import ServiceManager
 from skuld.session_artifacts import _capture_git_workspace_checkpoint
 from skuld.session_runtime import write_private_file
-from skuld.transports.mcp_config import mcp_server_names
 
 logger = logging.getLogger("skuld.broker")
 
@@ -179,14 +178,10 @@ class TransportLifecycleMixin:
             runtime_dir=self._session_runtime.root,
             request_prompt=self._settings.session.system_prompt,
             mcp_servers=tuple(kwargs.get("mcp_servers") or ()),
-            platform_mcp_servers=tuple(mcp_server_names(self._builtin_mcp_servers())),
             node_skip_permissions=self._settings.skip_permissions,
             node_claude_permission_mode=self._settings.claude_permission_mode,
             node_approval_policy=self._settings.approval_policy,
             node_sandbox=self._settings.sandbox,
-            supports_read_only_mcp_boundary=bool(
-                getattr(cls, "supports_read_only_mcp_boundary", False)
-            ),
         )
         projection = projector_for(adapter_path).project(persona, context)
         projection.require_playable(persona.id, adapter_path)

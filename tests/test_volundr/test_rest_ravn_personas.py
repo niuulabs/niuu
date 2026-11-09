@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from unittest.mock import AsyncMock
 
+import pytest
 import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -157,8 +158,6 @@ def _make_payload(name: str) -> dict:
         "summary": "Custom coding persona",
         "description": "Custom coding persona for testing.",
         "system_prompt_template": "You are a custom coding persona.",
-        "allowed_tools": ["file_read", "file_write"],
-        "forbidden_tools": [],
         "permission_mode": "default",
         "iteration_budget": 12,
         "llm_thinking_enabled": True,
@@ -360,10 +359,11 @@ class TestRavnPersonaRoutes:
         assert missing.status_code == 404
 
 
-def test_validate_rejects_overlapping_tool_lists() -> None:
+@pytest.mark.parametrize("key", ["allowed_tools", "forbidden_tools"])
+def test_validate_refuses_a_tool_restriction(key: str) -> None:
     client, _ = _make_client()
     payload = _make_payload("validation-agent")
-    payload["forbidden_tools"] = ["file_read"]
+    payload[key] = ["file_read"]
 
     resp = client.post(
         "/api/v1/ravn/personas/validate",
@@ -371,41 +371,38 @@ def test_validate_rejects_overlapping_tool_lists() -> None:
         headers={"Authorization": "Bearer token"},
     )
 
-    assert resp.status_code == 200
-    assert resp.json()["valid"] is False
-    assert "allowed_tools and forbidden_tools overlap" in resp.json()["errors"][0]
+    assert resp.status_code == 422
+    detail = str(resp.json()["detail"])
+    assert f"persona validation-agent: {key} is not supported" in detail
+    assert "per-harness tool restrictions are not available yet" in detail
 
 
-def test_validate_rejects_a_tool_outside_the_neutral_vocabulary() -> None:
+@pytest.mark.parametrize("key", ["allowed_tools", "forbidden_tools"])
+def test_create_and_replace_refuse_a_tool_restriction_before_saving(key: str) -> None:
     client, _ = _make_client()
-    payload = _make_payload("validation-agent")
-    payload["allowed_tools"] = ["terminal"]
-
-    resp = client.post(
-        "/api/v1/ravn/personas/validate",
-        json=payload,
-        headers={"Authorization": "Bearer token"},
-    )
-
-    assert resp.status_code == 200
-    assert resp.json()["valid"] is False
-    assert "use shell" in resp.json()["errors"][0]
-    assert "file_read" in resp.json()["errors"][0]
-
-
-def test_create_and_replace_refuse_a_retired_tool_before_saving() -> None:
-    client, _ = _make_client()
-    payload = _make_payload("retired-tool-agent")
-    payload["forbidden_tools"] = ["cascade"]
+    payload = _make_payload("restricted-agent")
     headers = {"Authorization": "Bearer token"}
 
+    assert client.post("/api/v1/ravn/personas", json=payload, headers=headers).status_code == 201
+
+    payload[key] = []
     created = client.post("/api/v1/ravn/personas", json=payload, headers=headers)
+    replaced = client.put("/api/v1/ravn/personas/restricted-agent", json=payload, headers=headers)
 
     assert created.status_code == 422
-    assert "retired Ravn runtime" in created.json()["detail"]
-
-    payload["forbidden_tools"] = []
-    assert client.post("/api/v1/ravn/personas", json=payload, headers=headers).status_code == 201
-    payload["allowed_tools"] = ["bash"]
-    replaced = client.put("/api/v1/ravn/personas/retired-tool-agent", json=payload, headers=headers)
     assert replaced.status_code == 422
+    assert f"{key} is not supported" in created.json()["detail"][0]["msg"]
+    assert f"{key} is not supported" in replaced.json()["detail"][0]["msg"]
+
+
+def test_the_persona_answers_carry_no_tool_lists() -> None:
+    client, _ = _make_client()
+    headers = {"Authorization": "Bearer token"}
+    client.post("/api/v1/ravn/personas", json=_make_payload("plain-agent"), headers=headers)
+
+    detail = client.get("/api/v1/ravn/personas/plain-agent", headers=headers).json()
+    summaries = client.get("/api/v1/ravn/personas", headers=headers).json()
+
+    assert "allowed_tools" not in detail
+    assert "forbidden_tools" not in detail
+    assert all("allowed_tools" not in summary for summary in summaries)

@@ -52,7 +52,6 @@ def client(loader: FilesystemPersonaAdapter) -> TestClient:
 _CUSTOM_PERSONA = {
     "name": "test-agent",
     "system_prompt_template": "You are a test agent.",
-    "allowed_tools": ["file_read"],
     "permission_mode": "read-only",
     "iteration_budget": 5,
 }
@@ -114,7 +113,8 @@ def test_get_builtin_returns_correct_fields(client: TestClient) -> None:
     # coder specific checks
     assert data["permission_mode"] == "workspace_write"
     assert data["iteration_budget"] == 40
-    assert "file_read" in data["allowed_tools"]
+    assert "allowed_tools" not in data
+    assert "forbidden_tools" not in data
 
 
 def test_get_custom_persona(client: TestClient, tmp_persona_dir: Path) -> None:
@@ -184,6 +184,40 @@ def test_create_persona_409_if_builtin(client: TestClient) -> None:
     payload = {"name": "coder"}
     resp = client.post("/api/v1/ravn/personas", json=payload)
     assert resp.status_code == 409
+
+
+@pytest.mark.parametrize("key", ["allowed_tools", "forbidden_tools"])
+def test_create_persona_refuses_a_tool_restriction(
+    client: TestClient, tmp_persona_dir: Path, key: str
+) -> None:
+    payload = {"name": "restricted-agent", "system_prompt_template": "x", key: ["file_read"]}
+
+    resp = client.post("/api/v1/ravn/personas", json=payload)
+
+    assert resp.status_code == 422
+    detail = str(resp.json()["detail"])
+    assert f"persona restricted-agent: {key} is not supported" in detail
+    assert "per-harness tool restrictions are not available yet" in detail
+    assert not (tmp_persona_dir / "restricted-agent.yaml").exists()
+
+
+def test_put_refuses_a_tool_restriction(client: TestClient, tmp_persona_dir: Path) -> None:
+    payload = {"name": "coder", "allowed_tools": []}
+
+    resp = client.put("/api/v1/ravn/personas/coder", json=payload)
+
+    assert resp.status_code == 422
+    assert "allowed_tools is not supported" in str(resp.json()["detail"])
+    assert not (tmp_persona_dir / "coder.yaml").exists()
+
+
+def test_validate_refuses_a_tool_restriction(client: TestClient) -> None:
+    resp = client.post(
+        "/api/v1/ravn/personas/validate", json={"name": "x", "forbidden_tools": ["shell"]}
+    )
+
+    assert resp.status_code == 422
+    assert "forbidden_tools is not supported" in str(resp.json()["detail"])
 
 
 def test_create_persona_rejects_path_traversal(client: TestClient) -> None:

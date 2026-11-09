@@ -92,8 +92,6 @@ def _format_answer_message(questions: list[dict[str, Any]], answers: object) -> 
 class PersistentSubprocessTransport(CLITransport):
     """Long-lived Claude subprocess driven via stream-json stdin/stdout."""
 
-    supports_read_only_mcp_boundary = True
-
     def __init__(
         self,
         workspace_dir: str,
@@ -122,9 +120,7 @@ class PersistentSubprocessTransport(CLITransport):
         self._read_only_mcp_only = read_only_mcp_only
         self._allowed_mcp_tools = list(allowed_mcp_tools or [])
         self._tool_policy = claude_tool_policy
-        bounded = read_only_mcp_only or (
-            claude_tool_policy is not None and claude_tool_policy.sets_permission_mode
-        )
+        bounded = read_only_mcp_only or claude_tool_policy is not None
         self._skip_permissions = skip_permissions and not bounded
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams and not bounded
@@ -334,7 +330,7 @@ class PersistentSubprocessTransport(CLITransport):
             )
             if self._allowed_mcp_tools:
                 cmd.extend(["--allowedTools", ",".join(self._allowed_mcp_tools)])
-        elif self._tool_policy is not None and self._tool_policy.sets_permission_mode:
+        elif self._tool_policy is not None:
             cmd.extend(self._tool_policy.cli_args())
         elif self._ask_user_question_enabled:
             # Do NOT pass --permission-mode bypassPermissions in this mode —
@@ -347,9 +343,6 @@ class PersistentSubprocessTransport(CLITransport):
             cmd.extend(["--permission-prompt-tool", "stdio"])
         elif self._skip_permissions:
             cmd.extend(["--permission-mode", self._claude_permission_mode])
-        if self._tool_policy is not None and not self._tool_policy.sets_permission_mode:
-            # A persona that only forbids a few tools leaves the node's mode in place.
-            cmd.extend(self._tool_policy.cli_args())
         # ``--resume`` applies when re-spawning after a crash or when a
         # resume id was seeded for an imported session. Otherwise the first
         # spawn has no session yet — Claude assigns one in its first

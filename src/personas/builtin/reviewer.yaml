@@ -207,8 +207,6 @@ system_prompt_template: |
   - [ ] Each finding explains what's wrong AND how to fix
   - [ ] Verdict matches findings (no critical issues → can pass)
 
-allowed_tools: ["mimir:read", "mimir:write", file_read, file_write, git, shell, web_fetch, web_search, tracker]
-forbidden_tools: []
 permission_mode: workspace_write
 
 llm:

@@ -172,8 +172,6 @@ system_prompt_template: |
   - [ ] No debug code or print statements left
   - [ ] Changes are minimal and focused
 
-allowed_tools: ["mimir:search", "mimir:read", "mimir:write", file_read, file_write, git, shell, web_fetch, web_search, plan, tracker]
-forbidden_tools: []
 permission_mode: workspace_write
 
 llm:

@@ -4,22 +4,22 @@ name: Code, Review and Merge
 description: The coder implements a change, the reviewer and the security auditor check it in parallel,
   and once both pass a person approves the merge and the coder merges it. Either reviewer, or the
   person, can send the work back to the coder, with no limit on the rounds.
-version: 1.0.0
+version: 1.0.1
 persona_dependencies:
   coder:
     id: coder
-    revision: content-6c648f6dd3dafec8
-    digest: sha256:6c648f6dd3dafec85cc2090c32b1400feee7acab2a2fd4fe17a3b0ce90521c69
+    revision: content-cbed467fe31e6a38
+    digest: sha256:cbed467fe31e6a386a358c8639692af6029f37c6519959deede45c94133e852f
     path: personas/coder.yaml
   reviewer:
     id: reviewer
-    revision: content-8b9a792f57d3aeea
-    digest: sha256:8b9a792f57d3aeea4003c7207bc6451344c9cb0aa927efc55bfd681799d37c05
+    revision: content-039da8c883774a89
+    digest: sha256:039da8c883774a8976a014336b5b8dc7f41a481dae5670c89325d819b911b5fb
     path: personas/reviewer.yaml
   security-auditor:
     id: security-auditor
-    revision: content-372ca2715f0fb1c9
-    digest: sha256:372ca2715f0fb1c9318735489792df2af63bd7138cd72358ccf07f96e5a8b76a
+    revision: content-6334e5df6b032086
+    digest: sha256:6334e5df6b032086671d13779dd22770da446ea198505b8b504b54f3608771a5
     path: personas/security-auditor.yaml
 graph:
   tags:

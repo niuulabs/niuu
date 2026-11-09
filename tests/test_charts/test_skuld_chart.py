@@ -19,7 +19,6 @@ PERSONA_DOCUMENT = {
     "definition": {
         "name": "reviewer",
         "system_prompt_template": 'Review "carefully".\n\nNever <edit> & never push.',
-        "allowed_tools": ["file_read", "git_read"],
         "permission_mode": "read_only",
     },
 }

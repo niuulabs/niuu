@@ -131,7 +131,6 @@ def test_round_trip_load(personas_app: FastAPI) -> None:
                 "name": "integ-coder",
                 "system_prompt_template": "You are an integration test coder.",
                 "permission_mode": "workspace-write",
-                "allowed_tools": ["file_read", "git"],
                 "iteration_budget": 30,
             },
         )
@@ -143,7 +142,6 @@ def test_round_trip_load(personas_app: FastAPI) -> None:
         assert config.name == "integ-coder"
         assert config.system_prompt_template == "You are an integration test coder."
         assert config.permission_mode == "workspace-write"
-        assert config.allowed_tools == ["file_read", "git"]
         assert config.iteration_budget == 30
 
 

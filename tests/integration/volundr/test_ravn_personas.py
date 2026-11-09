@@ -21,8 +21,6 @@ def _payload(name: str) -> dict:
         "summary": "Custom coding persona",
         "description": "Custom coding persona for integration testing.",
         "system_prompt_template": "You are a custom coding persona.",
-        "allowed_tools": ["file_read", "file_write"],
-        "forbidden_tools": [],
         "permission_mode": "default",
         "iteration_budget": 12,
         "llm_primary_alias": "claude-sonnet-4-6",

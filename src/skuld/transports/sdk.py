@@ -303,8 +303,6 @@ def _format_answer_message(questions: list[dict[str, Any]], answers: object) -> 
 class SDKTransport(CLITransport):
     """Claude SDK-backed transport that preserves existing broker event shapes."""
 
-    supports_read_only_mcp_boundary = True
-
     def __init__(
         self,
         workspace_dir: str,
@@ -343,11 +341,9 @@ class SDKTransport(CLITransport):
         self._read_only_mcp_only = read_only_mcp_only
         self._allowed_mcp_tools = list(allowed_mcp_tools or [])
         self._tool_policy = claude_tool_policy
-        # A policy that decides the permission mode is a boundary: nothing the node's own
-        # mode, agent teams or the permission callback would allow may widen it.
-        bounded = read_only_mcp_only or (
-            claude_tool_policy is not None and claude_tool_policy.sets_permission_mode
-        )
+        # A policy is a boundary: nothing the node's own mode, agent teams or the permission
+        # callback would allow may widen it.
+        bounded = read_only_mcp_only or claude_tool_policy is not None
         self._skip_permissions = skip_permissions and not bounded
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams and not bounded

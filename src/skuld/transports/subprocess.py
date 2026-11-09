@@ -58,8 +58,6 @@ class _RetryableClaudeError(RuntimeError):
 class SubprocessTransport(CLITransport):
     """Spawn Claude per turn, resuming the logical session between invocations."""
 
-    supports_read_only_mcp_boundary = True
-
     def __init__(
         self,
         workspace_dir: str,
@@ -82,9 +80,7 @@ class SubprocessTransport(CLITransport):
         self._read_only_mcp_only = read_only_mcp_only
         self._allowed_mcp_tools = list(allowed_mcp_tools or [])
         self._tool_policy = claude_tool_policy
-        bounded = read_only_mcp_only or (
-            claude_tool_policy is not None and claude_tool_policy.sets_permission_mode
-        )
+        bounded = read_only_mcp_only or claude_tool_policy is not None
         self._skip_permissions = skip_permissions and not bounded
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams and not bounded

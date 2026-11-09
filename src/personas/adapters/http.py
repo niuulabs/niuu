@@ -49,6 +49,7 @@ from personas.domain.persona import (
 from personas.domain.persona_document import (
     PortablePersonaDefinition,
     parse_portable_persona,
+    refuse_tool_restrictions,
     validate_persona_identifier,
 )
 from personas.ports.persona import PersonaPort
@@ -167,14 +168,13 @@ class HttpPersonaAdapter(PersonaPort):
         ``event_type_map``, etc.) are parsed identically to the filesystem
         adapter — no data loss for personas that declare an outcome schema.
         """
+        refuse_tool_restrictions(str(data.get("name") or "<unnamed>"), data)
         llm = data.get("llm") or {}
         permission_mode = str(data.get("permission_mode") or "")
 
         return PersonaConfig(
             name=data["name"],
             system_prompt_template=data.get("system_prompt_template", ""),
-            allowed_tools=list(data.get("allowed_tools") or []),
-            forbidden_tools=list(data.get("forbidden_tools") or []),
             permission_mode=PERSONA_API_PERMISSION_MODES.get(permission_mode, permission_mode),
             iteration_budget=int(data.get("iteration_budget") or 0),
             llm=PersonaLLMConfig(

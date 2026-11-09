@@ -1,6 +1,6 @@
 """Tests for niuu.domain.llm_merge — exhaustive merge matrix."""
 
-import logging
+import pytest
 
 from niuu.domain.llm_merge import concat_prompt_extras, merge_llm
 
@@ -141,64 +141,31 @@ class TestMergeLlmInheritance:
 
 
 # ---------------------------------------------------------------------------
-# merge_llm — security keys
+# merge_llm — tool restrictions
 # ---------------------------------------------------------------------------
 
 
-class TestMergeLlmSecurityKeys:
-    def test_allowed_tools_dropped_from_global(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="niuu.domain.llm_merge"):
-            result = merge_llm(
-                defaults={"model": "gpt-4"},
-                global_override={"allowed_tools": ["bash", "read"]},
-            )
-        assert "allowed_tools" not in result
-        assert "dropping security key" in caplog.text
+class TestMergeLlmToolRestrictionsRefused:
+    @pytest.mark.parametrize("key", ["allowed_tools", "forbidden_tools"])
+    @pytest.mark.parametrize("layer", ["defaults", "global_override", "persona_override"])
+    def test_a_layer_that_carries_a_tool_restriction_raises(self, key, layer):
+        layers = {"defaults": {"model": "gpt-4"}}
+        layers[layer] = {**layers.get(layer, {}), key: ["bash"]}
 
-    def test_forbidden_tools_dropped_from_global(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="niuu.domain.llm_merge"):
-            result = merge_llm(
-                defaults={"model": "gpt-4"},
-                global_override={"forbidden_tools": ["rm"]},
-            )
-        assert "forbidden_tools" not in result
-        assert "dropping security key" in caplog.text
+        with pytest.raises(ValueError, match=rf"{layer} sets {key}.*not available yet"):
+            merge_llm(**layers)
 
-    def test_allowed_tools_dropped_from_persona(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="niuu.domain.llm_merge"):
-            result = merge_llm(
-                defaults={"model": "gpt-4"},
-                persona_override={"allowed_tools": ["bash"]},
-            )
-        assert "allowed_tools" not in result
-        assert "dropping security key" in caplog.text
+    def test_a_restriction_is_refused_even_when_empty(self):
+        with pytest.raises(ValueError, match="allowed_tools"):
+            merge_llm(global_override={"allowed_tools": []})
 
-    def test_forbidden_tools_dropped_from_persona(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="niuu.domain.llm_merge"):
-            result = merge_llm(
-                defaults={"model": "gpt-4"},
-                persona_override={"forbidden_tools": ["rm"]},
-            )
-        assert "forbidden_tools" not in result
-        assert "dropping security key" in caplog.text
-
-    def test_security_keys_in_defaults_are_kept(self):
-        """Defaults (persona config) ARE allowed to set security keys."""
+    def test_other_keys_pass_through(self):
         result = merge_llm(
-            defaults={"allowed_tools": ["bash", "read"], "forbidden_tools": ["rm"]},
+            defaults={"model": "gpt-4"},
+            global_override={"model": "claude-sonnet", "thinking_enabled": True},
+            persona_override={"max_tokens": 16000},
         )
-        assert result["allowed_tools"] == ["bash", "read"]
-        assert result["forbidden_tools"] == ["rm"]
-
-    def test_non_security_keys_pass_through(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="niuu.domain.llm_merge"):
-            result = merge_llm(
-                defaults={"model": "gpt-4"},
-                global_override={"model": "claude-sonnet", "thinking_enabled": True},
-                persona_override={"max_tokens": 16000},
-            )
         assert result == {"model": "claude-sonnet", "thinking_enabled": True, "max_tokens": 16000}
-        assert "dropping security key" not in caplog.text
 
 
 # ---------------------------------------------------------------------------

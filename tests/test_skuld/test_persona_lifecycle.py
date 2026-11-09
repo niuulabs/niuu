@@ -21,7 +21,6 @@ from skuld.config import SkuldSettings
 from skuld.personas import registry
 from skuld.personas.projection import PersonaProjectionError
 from skuld.transports.claude_policy import ClaudeToolPolicy
-from skuld.transports.owned_codex_process import OwnedCodexProcess
 
 SESSION_ID = "0b6c1d7e-3f0a-4a8e-9a57-6a9c2f1d0e11"
 ADAPTERS = {
@@ -42,11 +41,11 @@ ADAPTERS = {
 REVIEWER = {
     "name": "reviewer",
     "system_prompt_template": "You review code and change nothing.",
-    "allowed_tools": ["file_read", "git_read"],
-    "forbidden_tools": ["file_write", "shell", "git"],
     "permission_mode": "read_only",
 }
-SHELL_REVIEWER = {**REVIEWER, "allowed_tools": ["file_read", "shell"], "forbidden_tools": []}
+READ_ONLY_TOOLS = (
+    "Read,Glob,Grep,WebFetch,WebSearch,TodoWrite,TaskCreate,TaskUpdate,TaskGet,TaskList"
+)
 OPEN = {"name": "open", "system_prompt_template": "You help."}
 
 
@@ -119,7 +118,7 @@ def test_persistent_claude_gets_the_boundary_and_the_instructions_on_every_spawn
     assert "--resume" not in cold
     assert flag(warm, "--resume") == "abc"
     for argv in (cold, warm):
-        assert flag(argv, "--tools") == "Read,Glob,Grep,Bash"
+        assert flag(argv, "--tools") == f"{READ_ONLY_TOOLS},Bash"
         assert flag(argv, "--permission-mode") == "dontAsk"
         assert "--strict-mcp-config" in argv
         assert "Bash(git diff *)" in flag(argv, "--allowedTools")
@@ -133,7 +132,7 @@ def test_persistent_claude_gets_the_boundary_and_the_instructions_on_every_spawn
     }
 
 
-async def test_a_node_in_bypass_mode_does_not_widen_a_closed_persona(tmp_path: Path) -> None:
+async def test_a_node_in_bypass_mode_does_not_widen_a_read_only_persona(tmp_path: Path) -> None:
     node = broker(
         tmp_path,
         "persistent",
@@ -149,11 +148,11 @@ async def test_a_node_in_bypass_mode_does_not_widen_a_closed_persona(tmp_path: P
     assert "bypassPermissions" not in argv
 
 
-def test_a_forbid_only_persona_adds_to_the_nodes_own_mode(tmp_path: Path) -> None:
+def test_a_persona_without_a_restricting_mode_leaves_the_nodes_own_mode(tmp_path: Path) -> None:
     node = broker(
         tmp_path,
         "persistent",
-        {**OPEN, "forbidden_tools": ["web_search"]},
+        {**OPEN, "permission_mode": "workspace_write"},
         skip_permissions=True,
         claude_permission_mode="acceptEdits",
     )
@@ -161,8 +160,9 @@ def test_a_forbid_only_persona_adds_to_the_nodes_own_mode(tmp_path: Path) -> Non
     argv = node._create_transport()._build_command()
 
     assert flag(argv, "--permission-mode") == "acceptEdits"
-    assert flag(argv, "--disallowedTools") == "WebSearch"
     assert "--tools" not in argv
+    assert "--allowedTools" not in argv
+    assert "--disallowedTools" not in argv
 
 
 async def test_subprocess_claude_resends_the_persona_on_resume(tmp_path: Path) -> None:
@@ -179,7 +179,7 @@ async def test_subprocess_claude_resends_the_persona_on_resume(tmp_path: Path) -
     argv = list(spawn.call_args[0])
     assert flag(argv, "--resume") == "sess-existing"
     assert "You review code and change nothing." in flag(argv, "--append-system-prompt")
-    assert flag(argv, "--tools") == "Read,Glob,Grep,Bash"
+    assert flag(argv, "--tools") == f"{READ_ONLY_TOOLS},Bash"
     assert flag(argv, "--permission-mode") == "dontAsk"
 
 
@@ -214,7 +214,7 @@ async def test_sdk_claude_appends_to_its_own_prompt_and_runs_deny_by_default(
     assert appended.index("You review code and change nothing.") < appended.index(
         "Mind the migrations."
     )
-    assert options.tools == ["Read", "Glob", "Grep", "Bash"]
+    assert options.tools == [*READ_ONLY_TOOLS.split(","), "Bash"]
     assert options.permission_mode == "dontAsk"
     assert "Bash(git status *)" in options.allowed_tools
     assert options.strict_mcp_config is True
@@ -222,27 +222,12 @@ async def test_sdk_claude_appends_to_its_own_prompt_and_runs_deny_by_default(
     assert "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS" not in options.env
 
 
-async def test_sdk_claude_uses_the_mcp_only_boundary_for_a_persona_with_no_built_in_tools(
-    tmp_path: Path,
-) -> None:
-    transport = broker(
-        tmp_path,
-        "sdk",
-        {"name": "linear-only", "allowed_tools": ["mcp:linear"]},
-        mcp_servers=[{"name": "linear", "type": "http", "url": "https://mcp.example/linear"}],
-    )._create_transport()
-
-    assert transport._read_only_mcp_only is True
-    assert set(transport._allowed_mcp_tools) == {"mcp__linear", "mcp__forge"}
-    assert set(transport._mcp_servers) == {"linear", "forge"}
-
-
 def test_tmux_claude_gets_the_boundary(tmp_path: Path) -> None:
     transport = broker(tmp_path, "tmux", REVIEWER, skip_permissions=True)._create_transport()
 
     argv = transport._interactive_argv()
 
-    assert flag(argv, "--tools") == "Read,Glob,Grep,Bash"
+    assert flag(argv, "--tools") == f"{READ_ONLY_TOOLS},Bash"
     assert argv.count("--permission-mode") == 1
     assert flag(argv, "--permission-mode") == "dontAsk"
     assert "You review code and change nothing." in flag(argv, "--append-system-prompt")
@@ -255,7 +240,7 @@ async def test_sdk_websocket_claude_gets_the_boundary_and_follows_the_nodes_mode
     open_ = broker(
         tmp_path,
         "sdk_websocket",
-        {**OPEN, "forbidden_tools": ["web_search"]},
+        {**OPEN, "permission_mode": "workspace_write"},
         skip_permissions=True,
         claude_permission_mode="acceptEdits",
     )
@@ -273,9 +258,9 @@ async def test_sdk_websocket_claude_gets_the_boundary_and_follows_the_nodes_mode
 
     assert argvs[0].count("--permission-mode") == 1
     assert flag(argvs[0], "--permission-mode") == "dontAsk"
-    assert flag(argvs[0], "--tools") == "Read,Glob,Grep,Bash"
+    assert flag(argvs[0], "--tools") == f"{READ_ONLY_TOOLS},Bash"
     assert flag(argvs[1], "--permission-mode") == "acceptEdits"
-    assert flag(argvs[1], "--disallowedTools") == "WebSearch"
+    assert "--tools" not in argvs[1]
 
 
 # ----------------------------------------------------------------------- codex
@@ -326,7 +311,6 @@ async def test_codex_exec_carries_the_persona_in_every_invocation(tmp_path: Path
         {
             "name": "ro",
             "system_prompt_template": "You inspect.",
-            "forbidden_tools": ["web_search", "web_fetch"],
             "permission_mode": "read_only",
         },
         request_prompt="Be brief.",
@@ -347,73 +331,27 @@ async def test_codex_exec_carries_the_persona_in_every_invocation(tmp_path: Path
     assert flag(argv, "--sandbox") == "read-only"
     assert "approval_policy='never'" in argv
     assert "--dangerously-bypass-approvals-and-sandbox" not in argv
-    assert 'web_search="disabled"' in argv
-    assert "features.shell_tool" not in " ".join(argv)
     developer = next(a for a in argv if a.startswith("developer_instructions="))
     assert developer.index("You inspect.") < developer.index("Be brief.")
 
 
-async def test_codex_app_server_is_started_without_the_web_tool_the_persona_forbids(
+def test_codex_refuses_the_modes_it_cannot_enforce(tmp_path: Path) -> None:
+    node = broker(tmp_path, "codex_ws", {"name": "c", "permission_mode": "deny_all"})
+
+    with pytest.raises(PersonaProjectionError, match="permission_mode:deny_all"):
+        node._create_transport()
+
+
+def test_codex_app_server_runs_a_workspace_write_persona_in_the_workspace_sandbox(
     tmp_path: Path,
 ) -> None:
     transport = broker(
-        tmp_path, "codex_ws", {"name": "w", "forbidden_tools": ["web_search", "web_fetch"]}
-    )._create_transport()
-    process = MagicMock(stdout=None, stderr=None, pid=1)
-
-    with (
-        patch(
-            "skuld.transports.codex_ws.asyncio.create_subprocess_exec", new_callable=AsyncMock
-        ) as spawn,
-        patch("skuld.transports.codex_ws.resolve_codex_cli", return_value="/bin/codex"),
-        patch(
-            "skuld.transports.codex_ws.ensure_codex_tool_shims",
-            return_value=(tmp_path / "bin", {}),
-        ),
-        # On Linux the transport records the child's /proc identity; the fake pid
-        # is not a real child, and ownership is not what this test is about.
-        patch.object(OwnedCodexProcess, "record_child"),
-    ):
-        spawn.return_value = process
-        await transport._spawn_app_server()
-
-    argv = list(spawn.call_args[0])
-    assert 'web_search="disabled"' in argv
-    assert not any(a.startswith("features.shell_tool") for a in argv)
-
-
-def test_codex_exec_cannot_isolate_mcp_so_it_refuses_a_closed_persona(tmp_path: Path) -> None:
-    node = broker(tmp_path, "codex", {"name": "c", "allowed_tools": ["shell"]})
-
-    with pytest.raises(PersonaProjectionError, match="cannot isolate MCP servers"):
-        node._create_transport()
-
-
-def test_codex_refuses_a_persona_that_needs_files_but_forbids_the_shell(tmp_path: Path) -> None:
-    node = broker(tmp_path, "codex_ws", {"name": "np", "forbidden_tools": ["shell", "git"]})
-
-    with pytest.raises(PersonaProjectionError, match="only through its shell tool"):
-        node._create_transport()
-
-
-def test_codex_app_server_isolates_an_mcp_only_persona(tmp_path: Path) -> None:
-    transport = broker(
-        tmp_path,
-        "codex_ws",
-        {"name": "mcp-only", "allowed_tools": ["mcp:linear"], "permission_mode": "workspace_write"},
-        mcp_servers=[
-            {"name": "linear", "type": "http", "url": "https://mcp.example/linear"},
-            {"name": "jira", "type": "http", "url": "https://mcp.example/jira"},
-        ],
+        tmp_path, "codex_ws", {"name": "w", "permission_mode": "workspace_write"}
     )._create_transport()
 
-    assert transport._shell_tool_enabled is False
-    assert transport._web_search_enabled is False
-    assert transport._read_only_mcp_only is True
-    assert sorted(server["name"] for server in transport._mcp_servers) == ["forge", "linear"]
     assert transport._permission_thread_params() == {
         "approvalPolicy": "never",
-        "sandbox": "read-only",
+        "sandbox": "workspace-write",
     }
 
 
@@ -482,11 +420,7 @@ def test_persona_files_exist_only_in_the_per_start_runtime_dir(tmp_path: Path) -
 
 
 def test_the_status_says_what_was_projected_and_what_was_only_stated(tmp_path: Path) -> None:
-    node = broker(
-        tmp_path,
-        "persistent",
-        {**OPEN, "allowed_tools": ["shell"], "permission_mode": "workspace_write"},
-    )
+    node = broker(tmp_path, "persistent", {**OPEN, "permission_mode": "workspace_write"})
 
     node._create_transport()
 
@@ -494,7 +428,7 @@ def test_the_status_says_what_was_projected_and_what_was_only_stated(tmp_path: P
     assert status["id"] == "open"
     assert status["revision"] == "content-0123456789abcdef"
     assert status["engine"] == "claude"
-    assert "claude_tool_policy" in status["projected"]
+    assert status["projected"] == ["system_prompt"]
     assert status["notes"] == [
         "permission_mode:workspace_write: Claude cannot confine a shell or an edit tool to the "
         "workspace; the session runtime is the boundary"
@@ -593,17 +527,18 @@ async def test_a_started_broker_reports_no_failed_start(tmp_path: Path) -> None:
 
 async def test_a_tampered_persona_document_fails_startup(tmp_path: Path) -> None:
     node = broker(tmp_path, "persistent", OPEN)
-    node._settings.session.persona["definition"]["allowed_tools"] = ["terminal"]
+    node._settings.session.persona["definition"]["allowed_tools"] = ["file_read"]
 
     await node.startup()
 
     status = node.startup_status()
     assert status["ready"] is False
-    assert "Unknown persona tool 'terminal'" in status["error"]
+    assert "persona open: allowed_tools is not supported" in status["error"]
+    assert "per-harness tool restrictions are not available yet" in status["error"]
 
 
 def test_the_class_the_policy_travels_in_is_a_plain_value() -> None:
     policy = ClaudeToolPolicy(tools=("Read",), allowed=("Read",))
 
     assert policy == ClaudeToolPolicy(tools=("Read",), allowed=("Read",))
-    assert policy.sets_permission_mode is False
+    assert policy.permission_mode == "dontAsk"

@@ -19,7 +19,6 @@ import yaml
 from yaml.constructor import ConstructorError
 
 from personas.domain.permission_mode import parse_permission_mode
-from personas.domain.tool_vocabulary import PersonaToolError, validate_tool_names
 
 PERSONA_DOCUMENT_SCHEMA_VERSION = 1
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -29,8 +28,6 @@ _PORTABLE_DEFINITION_FIELDS = frozenset(
         "name",
         "description",
         "system_prompt_template",
-        "allowed_tools",
-        "forbidden_tools",
         "permission_mode",
         "llm",
         "iteration_budget",
@@ -44,8 +41,30 @@ _PORTABLE_DEFINITION_FIELDS = frozenset(
 )
 
 
+#: Persona fields that restricted a role's tools. Restricting tools per harness is not available
+#: yet, so a persona that still carries one is refused rather than read with it ignored.
+REMOVED_TOOL_RESTRICTION_FIELDS: tuple[str, ...] = ("allowed_tools", "forbidden_tools")
+
+
 class PersonaDocumentError(ValueError):
     """A portable persona document or dependency pin is invalid."""
+
+
+def refuse_tool_restrictions(persona: str, document: Mapping[str, Any]) -> None:
+    """Raise :class:`PersonaDocumentError` when the persona still carries a tool restriction.
+
+    Any presence of ``allowed_tools`` or ``forbidden_tools`` is refused, an empty list included:
+    the persona must be corrected, not read with the restriction dropped.
+    """
+    present = [name for name in REMOVED_TOOL_RESTRICTION_FIELDS if name in document]
+    if not present:
+        return
+    fields = " and ".join(present)
+    verb = "is" if len(present) == 1 else "are"
+    raise PersonaDocumentError(
+        f"persona {persona}: {fields} {verb} not supported: per-harness tool restrictions are "
+        "not available yet; remove allowed_tools (and forbidden_tools) from the persona"
+    )
 
 
 class PersonaDependencyResolutionError(PersonaDocumentError):
@@ -319,7 +338,7 @@ def persona_mapping_compatibility_issues(
     required: PortablePersonaDefinition,
     candidate: PortablePersonaDefinition,
 ) -> list[str]:
-    """Describe event/capability incompatibilities for an intentional mapping."""
+    """Describe event incompatibilities for an intentional mapping."""
     issues: list[str] = []
     required_consumes = _string_set((required.definition.get("consumes") or {}).get("event_types"))
     candidate_consumes = _string_set(
@@ -335,11 +354,6 @@ def persona_mapping_compatibility_issues(
     if missing_produces:
         issues.append(f"does not produce events: {', '.join(sorted(missing_produces))}")
 
-    required_tools = _string_set(required.definition.get("allowed_tools"))
-    candidate_tools = _string_set(candidate.definition.get("allowed_tools"))
-    missing_tools = required_tools - candidate_tools if candidate_tools else set()
-    if missing_tools:
-        issues.append(f"does not request capabilities: {', '.join(sorted(missing_tools))}")
     return issues
 
 
@@ -377,6 +391,7 @@ def _coerce_dependency(raw: Any) -> PersonaDependency:
 
 
 def _validate_definition(persona_id: str, definition: Mapping[str, Any]) -> None:
+    refuse_tool_restrictions(persona_id, definition)
     unknown = set(definition) - _PORTABLE_DEFINITION_FIELDS
     if unknown:
         raise PersonaDocumentError(
@@ -392,9 +407,6 @@ def _validate_definition(persona_id: str, definition: Mapping[str, Any]) -> None
         )
     _validate_optional_string(definition, "description")
     _validate_optional_string(definition, "system_prompt_template")
-    _validate_string_list(definition, "allowed_tools")
-    _validate_string_list(definition, "forbidden_tools")
-    _validate_tools(persona_id, definition)
     _validate_optional_string(definition, "permission_mode")
     _validate_permission_mode(persona_id, definition)
     _validate_non_negative_int(definition, "iteration_budget")
@@ -409,17 +421,6 @@ def _validate_definition(persona_id: str, definition: Mapping[str, Any]) -> None
         json.dumps(definition, allow_nan=False, ensure_ascii=False, sort_keys=True)
     except (TypeError, ValueError, RecursionError) as exc:
         raise PersonaDocumentError("Portable persona definition must be JSON-serializable") from exc
-
-
-def _validate_tools(persona_id: str, definition: Mapping[str, Any]) -> None:
-    """Refuse a tool outside the neutral vocabulary; the message lists the valid set."""
-    for key in ("allowed_tools", "forbidden_tools"):
-        if key not in definition:
-            continue
-        try:
-            validate_tool_names(key, definition[key])
-        except PersonaToolError as exc:
-            raise PersonaDocumentError(f"Portable persona '{persona_id}': {exc}") from exc
 
 
 def _validate_permission_mode(persona_id: str, definition: Mapping[str, Any]) -> None:

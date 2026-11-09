@@ -7,9 +7,8 @@ For them a persona can only be its instructions, so:
 * the instructions are delivered where the transport takes them (appended to the harness's
   own prompt: OpenCode's per-message ``system`` part, Pi's ``--append-system-prompt``, dsh's
   ``DSH_SYSTEM_PROMPT``, Grok's ACP ``systemPrompt``);
-* any tool restriction (``allowed_tools``, ``forbidden_tools``) or restricting permission
-  mode (``read_only``, ``deny_all``, ``prompt``) is refused, because the harness would run
-  with every tool and write freely;
+* a restricting permission mode (``read_only``, ``deny_all``, ``prompt``) is refused, because
+  the harness would run with every tool and write freely;
 * a harness that cannot take instructions refuses a persona that has any.
 
 ``workspace_write`` is a note: these harnesses run inside the session runtime, which is the
@@ -55,19 +54,6 @@ class InstructionOnlyProjector:
     ) -> HarnessProjection:
         policy = PersonaPolicy.from_definition(persona.id, persona.definition)
         gaps: list[ProjectionGap] = []
-        for field_name, tools in (
-            ("allowed_tools", policy.allowed),
-            ("forbidden_tools", policy.forbidden),
-        ):
-            if tools:
-                listed = ", ".join(ref.text for ref in tools)
-                gaps.append(
-                    ProjectionGap(
-                        REFUSE,
-                        f"{field_name}:{listed}",
-                        f"{self.engine} cannot restrict its tools; it would run with all of them",
-                    )
-                )
         if policy.restricts_mode and policy.mode is not None:
             gaps.append(
                 ProjectionGap(
