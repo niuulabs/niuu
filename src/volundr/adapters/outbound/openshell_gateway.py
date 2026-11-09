@@ -54,16 +54,28 @@ from volundr.adapters.outbound.local_process import (
     FORGE_MCP_TOKEN_FILE_ENV,
     LocalProcessPodManager,
 )
-from volundr.adapters.outbound.mesh_settings import mesh_environment, parse_mesh_settings
+from volundr.adapters.outbound.mesh_settings import (
+    mesh_environment,
+    mesh_with_defaults,
+    parse_mesh_settings,
+)
 from volundr.adapters.outbound.openshell_binaries import CLAUDE_CODE_BINARIES, CODEX_BINARIES
 from volundr.adapters.outbound.openshell_contract import (
     DEFAULT_SANDBOX_ATTACHABLE_LABELS,
     OPENSHELL_WORKSPACE,
+    UNIT_MEMBER_ROOT,
+    UNIT_MESH_DIRECTORY,
+    UNIT_MESH_REGISTRY,
+    UNIT_MESH_VOLUME,
     check_peer_workloads,
     check_pod_metadata_keys,
     check_policy_allows_egress,
+    check_unit_size,
     check_volume_mounts,
     network_mode,
+    unit_member_directory,
+    unit_member_name,
+    unit_member_volume,
 )
 from volundr.adapters.outbound.openshell_resident_workspace import (
     ANNOTATION_MIGRATION_DIGEST,
@@ -110,6 +122,12 @@ from volundr.adapters.outbound.resident_container_spec import (
 from volundr.adapters.outbound.resident_container_spec import (
     runtime_processes_from_values as _shared_runtime_processes_from_values,
 )
+from volundr.adapters.outbound.vm_hosted_unit import (
+    HostedMemberLaunch,
+    HostedMemberSource,
+    HostedUnitError,
+)
+from volundr.domain.models import HOSTED_MEMBERS_KEY as UNIT_MEMBERS_KEY
 from volundr.domain.models import (
     CredentialEnrollment,
     CredentialEnrollmentPoll,
@@ -144,6 +162,7 @@ from volundr.domain.ports import (
     ResidentRuntimeRepository,
     SessionRepository,
 )
+from volundr.domain.services.forge_session_launch import launch_id_of
 from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
 from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
 
@@ -336,6 +355,21 @@ class OpenShellCredentialContext:
 class OpenShellProviderGrant:
     provider_name: str
     profile_id: str
+
+
+@dataclass(frozen=True)
+class OpenShellUnit:
+    """What a workflow run's members add to the sandbox the root's start creates.
+
+    ``values`` are the root's values with the unit's volumes, mounts and one peer workload
+    per member; ``files`` are the members' credential, environment and auth files, written
+    with the root's before the peers are released; ``providers`` are the members' provider
+    grants, attached to the one sandbox.
+    """
+
+    values: dict[str, Any]
+    files: dict[str, bytes]
+    providers: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -1297,6 +1331,14 @@ class OpenShellGatewayPodManager(
         # Held while a deploy, restart or reconcile owns a resident's processes.
         self._resident_process_locks: dict[str, asyncio.Lock] = {}
         self._resident_forwarders: dict[str, OpenShellTcpForwarder] = {}
+        # Resolves a unit root's members (their sessions and own specs); see
+        # configure_hosted_members.
+        self._hosted_members: HostedMemberSource | None = None
+        # A unit root's sandbox, and the launch each member's peer workload was started
+        # with. Held in memory, so they are known only to the Forge that started the unit.
+        self._unit_sandboxes: dict[str, str] = {}
+        self._member_launches: dict[str, str] = {}
+        self._member_failures: dict[str, str] = {}
         self._provider_grants: dict[str, tuple[OpenShellProviderGrant, ...]] = {}
         self._credential_store: CredentialStorePort | None = None
         self._session_repository: SessionRepository | None = None
@@ -1641,6 +1683,8 @@ class OpenShellGatewayPodManager(
 
     def session_proxy_target(self, session: Session) -> SessionProxyTarget | None:
         """Resolve the OpenShell service route used by Niuu's session proxy."""
+        if session.hosted_by is not None:
+            return self._member_proxy_target(session)
         if len(self._sandbox_name(session)) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
             sandbox = self._client.get_sandbox(self._sandbox_name(session))
             if sandbox is None or not sandbox.ready:
@@ -1800,6 +1844,12 @@ class OpenShellGatewayPodManager(
         return current is not None and current.state is state
 
     async def start(self, session: Session, spec: SessionSpec) -> PodStartResult:
+        if session.hosted_by is not None:
+            raise HostedUnitError(
+                f"Session {session.id} is a member of unit {session.hosted_by}: a member "
+                "starts with its unit, never on its own"
+            )
+        members = await self._resolve_unit_members(session)
         self._begin_progress(session.id, exposes_service=self._exposes_service(session))
         spec = self._with_brokered_credentials(spec)
         check_policy_allows_egress(
@@ -1823,6 +1873,8 @@ class OpenShellGatewayPodManager(
             files={}, providers=(), environment={}, process_environment={}
         )
         grants: tuple[OpenShellProviderGrant, ...] = ()
+        unit_grants: list[OpenShellProviderGrant] = []
+        unit: OpenShellUnit | None = None
         for env_key in SECRET_ENV_KEYS:
             env.pop(env_key, None)
         labels = {
@@ -1851,6 +1903,9 @@ class OpenShellGatewayPodManager(
             )
             credential_context = await self._resolve_credential_env(session, spec)
             env.update(credential_context.environment)
+            if members:
+                unit = await self._plan_unit(session, spec, members, env, unit_grants)
+                spec = replace(spec, values=unit.values)
             forge_session_files, forge_session_env = _forge_session_projection(
                 spec, token_path=f"{self._sandbox_home}/{FORGE_SESSION_TOKEN_FILE}"
             )
@@ -1881,7 +1936,11 @@ class OpenShellGatewayPodManager(
             if self._driver_config.keys() & driver_config.keys():
                 raise ValueError("OpenShell operator and session driver configuration overlap")
             driver_config = {**self._driver_config, **driver_config}
-            provider_names = (*platform_providers, *credential_context.providers)
+            provider_names = (
+                *platform_providers,
+                *credential_context.providers,
+                *(unit.providers if unit else ()),
+            )
             grants = tuple(
                 OpenShellProviderGrant(provider_name=name, profile_id=name)
                 for name in provider_names
@@ -1925,7 +1984,11 @@ class OpenShellGatewayPodManager(
                 ),
             )
             self._set_stage(session.id, STAGE_READY, StartupStageState.DONE, _sandbox_report(ready))
-            projected_files = {**credential_context.files, **forge_session_files}
+            projected_files = {
+                **credential_context.files,
+                **forge_session_files,
+                **(unit.files if unit else {}),
+            }
             for process in runtime_processes:
                 projected_files.update(process.files)
             if projected_files:
@@ -1991,21 +2054,7 @@ class OpenShellGatewayPodManager(
             self._set_stage(session.id, STAGE_SKULD, StartupStageState.ACTIVE)
             # ExecSandbox env values reject newlines; command arguments are
             # shell-quoted by exec_detached and preserve the original prose.
-            session_values = spec.values.get("session", {})
-            prompts = [
-                f"SKULD__SESSION__{name}={session_values[key]}"
-                for name, key in (
-                    ("INITIAL_PROMPT", "initialPrompt"),
-                    ("SYSTEM_PROMPT", "systemPrompt"),
-                )
-                if session_values.get(key)
-            ]
-            if persona := session_values.get("persona"):
-                prompts.append(
-                    "SKULD__SESSION__PERSONA=" + json.dumps(persona, separators=(",", ":"))
-                )
-            if workflow_steps_enabled(spec.values):
-                prompts.append(f"{WORKFLOW_STEPS_ENABLED_ENV}=true")
+            prompts = [f"{key}={value}" for key, value in self._prompt_environment(spec).items()]
             command = (
                 ["env", *prompts, *self._sandbox_command] if prompts else self._sandbox_command
             )
@@ -2048,12 +2097,21 @@ class OpenShellGatewayPodManager(
                 if legacy is not None:
                     await asyncio.to_thread(self._client.stop_sandbox, sandbox_name)
                 else:
-                    await self._cleanup_resources(sandbox_name, grants)
+                    await self._cleanup_resources(
+                        sandbox_name, tuple(dict.fromkeys((*grants, *unit_grants)))
+                    )
             except Exception:
                 logger.exception("OpenShell launch rollback failed for session %s", session.id)
             raise
         if service_url:
             self._service_urls[session_id] = service_url.rstrip("/")
+        if members:
+            self._unit_sandboxes[session_id] = sandbox_name
+            for member in members:
+                launch = launch_id_of(member.session.workload_config)
+                if launch is not None:
+                    self._member_launches[str(member.session.id)] = launch
+                self._member_failures.pop(str(member.session.id), None)
         self._provider_grants[session_id] = grants
         self._set_stage(session.id, STAGE_BROKER, StartupStageState.ACTIVE)
 
@@ -2062,6 +2120,346 @@ class OpenShellGatewayPodManager(
             code_endpoint=self._code_endpoint(session),
             pod_name=sandbox_name,
         )
+
+    # ------------------------------------------------------------------
+    # A workflow run's unit: the root is the sandbox's primary, each member a peer workload
+    # ------------------------------------------------------------------
+    #
+    # A run is one sandbox (docs/design/workflow-mesh-handoff.md, section 2). The root's
+    # Skuld is the primary; every member is a peer workload, a container of the same pod
+    # that runs its own Skuld. Containers of a pod share loopback, so the mesh is nng on
+    # 127.0.0.1 discovered through a registry file in an ``emptyDir`` they all mount. The
+    # workspace volume is shared (one checkout); each member's credential, environment
+    # file and home are in an ``emptyDir`` only that member's container (and the primary,
+    # which writes it) mounts.
+
+    def configure_hosted_members(self, source: HostedMemberSource) -> None:
+        """Attach what resolves a unit root's members (their sessions and own specs).
+
+        A unit root starts its members with it, and each member's persona, prompts, grants
+        and credential come from its own contributor pipeline. Starting a unit root with no
+        source is an error, never a sandbox without its members.
+        """
+        self._hosted_members = source
+
+    @staticmethod
+    def _unit_member_ids(session: Session) -> list[str]:
+        """The members a unit root was started with; empty for any other session."""
+        members = session.workload_config.get(UNIT_MEMBERS_KEY) or []
+        return [str(member["id"]) for member in members]
+
+    def _sandbox_of(self, session: Session) -> str:
+        """The sandbox ``session`` runs in: its own, or its unit's for a member."""
+        if session.hosted_by is None:
+            return self._sandbox_name(session)
+        return self._unit_sandboxes.get(str(session.hosted_by)) or (
+            f"forge-{session.hosted_by.hex[:13]}"
+        )
+
+    def _unit_mesh(self, root_id: str) -> dict:
+        """The mesh of a unit: nng on loopback, found through the registry in the shared dir."""
+        enabled = self._mesh.get("enabled")
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() == "true"
+        if not enabled:
+            raise HostedUnitError(
+                f"Unit {root_id} hosts a workflow run, whose members hand steps to each other "
+                "over the mesh, but this OpenShell pod manager's mesh is off: set "
+                "`mesh.enabled: true` in its configuration"
+            )
+        return mesh_with_defaults(
+            self._mesh,
+            {"discovery_adapters": [{"adapter": "registry", "path": UNIT_MESH_REGISTRY}]},
+        )
+
+    async def _resolve_unit_members(self, root: Session) -> list[HostedMemberLaunch]:
+        """The members of a unit root, checked against what the unit recorded at its start.
+
+        Refused here, before anything is created: a run too large for one sandbox's peer
+        workloads, members that differ from the recorded ones, and a member without a
+        broker port of its own (the peers share the pod's loopback, so each needs one).
+        """
+        recorded = self._unit_member_ids(root)
+        if not recorded:
+            return []
+        check_unit_size(len(recorded), unit=root.id)
+        if self._hosted_members is None:
+            raise HostedUnitError(
+                f"Session {root.id} is a unit that hosts {len(recorded)} member session(s), "
+                "but this OpenShell pod manager has no member source; compose it with "
+                "configure_hosted_members"
+            )
+        members = list(await self._hosted_members(root.id, None))
+        if sorted(str(m.session.id) for m in members) != sorted(recorded):
+            raise HostedUnitError(
+                f"The members resolved for unit {root.id} differ from the members it was "
+                "started with: a run's members are fixed when its unit starts"
+            )
+        ports = [self._service_port]
+        for member in members:
+            if member.session.hosted_by != root.id:
+                raise HostedUnitError(
+                    f"Session {member.session.id} was resolved for unit {root.id} but is "
+                    f"hosted by {member.session.hosted_by}"
+                )
+            if member.session.hosted_port is None:
+                raise HostedUnitError(f"Member {member.session.id} has no broker port")
+            ports.append(member.session.hosted_port)
+        if len(set(ports)) != len(ports):
+            raise HostedUnitError(
+                f"Unit {root.id} gives two Skulds the same port in the sandbox's shared "
+                f"loopback ({sorted(ports)}); the broker port {self._service_port} is the "
+                "root's"
+            )
+        return members
+
+    async def _plan_unit(
+        self,
+        root: Session,
+        spec: SessionSpec,
+        members: list[HostedMemberLaunch],
+        root_env: dict[str, str],
+        grants: list[OpenShellProviderGrant],
+    ) -> OpenShellUnit:
+        """Add the members to the root's launch: one peer workload each, and their files.
+
+        ``root_env`` gets the unit's mesh settings in place (the peers inherit it, and each
+        member's own file then sets what is its own). Every provider grant a member needs
+        is appended to ``grants`` the moment it exists, so a launch that fails part-way
+        rolls them back.
+        """
+        persistence = spec.values.get("persistence")
+        if not (isinstance(persistence, dict) and persistence.get("existingClaim")):
+            raise ValueError(
+                f"Unit {root.id} shares its checkout through the sandbox's workspace volume, "
+                "which this launch has none of (values.persistence.existingClaim): the "
+                "members would each get a copy of the checkout in their own container. "
+                "Configure the workspace claim for OpenShell sessions"
+            )
+        values = deepcopy(spec.values)
+        openshell = values.get("openshell")
+        if not isinstance(openshell, dict):
+            openshell = values["openshell"] = {}
+        if openshell.get("workloads"):
+            raise ValueError(
+                f"Unit {root.id} declares peer workloads of its own; a unit's peer workloads "
+                "are its members"
+            )
+        mesh_env = mesh_environment(self._unit_mesh(str(root.id)))
+        root_env.update(mesh_env)
+        mesh_mount = {"name": UNIT_MESH_VOLUME, "mount_path": UNIT_MESH_DIRECTORY}
+        volumes = [*deepcopy(openshell.get("volumes") or []), self._empty_dir(UNIT_MESH_VOLUME)]
+        agent_mounts = [*deepcopy(openshell.get("volumeMounts") or []), dict(mesh_mount)]
+        workloads: list[dict[str, Any]] = []
+        files: dict[str, bytes] = {}
+        providers: list[str] = []
+        for index, member in enumerate(members):
+            peer, member_files, member_providers = await self._plan_member(
+                index, member, root_env, mesh_env, mesh_mount, grants
+            )
+            directory = unit_member_directory(index)
+            volume = unit_member_volume(index)
+            volumes.append(self._empty_dir(volume))
+            agent_mounts.append({"name": volume, "mount_path": directory, "read_only": False})
+            workloads.append(peer)
+            files.update(member_files)
+            providers.extend(member_providers)
+        openshell["volumes"] = volumes
+        openshell["volumeMounts"] = agent_mounts
+        openshell["workloads"] = workloads
+        return OpenShellUnit(values=values, files=files, providers=tuple(providers))
+
+    @staticmethod
+    def _empty_dir(name: str) -> dict[str, Any]:
+        return {"name": name, "empty_dir": {}}
+
+    async def _plan_member(
+        self,
+        index: int,
+        member: HostedMemberLaunch,
+        root_env: dict[str, str],
+        mesh_env: dict[str, str],
+        mesh_mount: dict[str, Any],
+        grants: list[OpenShellProviderGrant],
+    ) -> tuple[dict[str, Any], dict[str, bytes], list[str]]:
+        """One member's peer workload, its files and the provider grants it needs."""
+        session = member.session
+        spec = self._with_brokered_credentials(member.spec)
+        check_policy_allows_egress(
+            self._network_policies, (spec.values.get("openshell") or {}).get("egress") or []
+        )
+        directory = unit_member_directory(index)
+        home = f"{directory}/home"
+        env = self._build_env(session, spec)
+        for key in (*SECRET_ENV_KEYS, "SKULD__PERSISTENT_HOME_PATH"):
+            env.pop(key, None)
+        providers: list[str] = []
+        platform = await self._resolve_platform_provider(
+            session, api_urls=_resident_api_urls(spec.values)
+        )
+        grants.extend(
+            OpenShellProviderGrant(provider_name=name, profile_id=name) for name in platform
+        )
+        providers.extend(platform)
+        context = await self._resolve_credential_env(session, spec)
+        grants.extend(
+            OpenShellProviderGrant(provider_name=name, profile_id=name)
+            for name in context.providers
+        )
+        providers.extend(context.providers)
+        if context.process_environment:
+            raise ValueError(
+                "OpenShell workload containers require dynamic provider credentials, and "
+                f"member {session.id} materializes its environment; disable "
+                "materializeEnvironment"
+            )
+        token_files, token_env = _forge_session_projection(spec, token_path=f"{directory}/token")
+        env.update(context.environment)
+        env.update(mesh_env)
+        env.update(token_env)
+        env.update(self._prompt_environment(spec))
+        env.update(
+            {
+                "SKULD__HOST": "127.0.0.1",
+                "SKULD__PORT": str(session.hosted_port),
+                "SKULD__HOME_DIR": home,
+                "HOME": home,
+                "CODEX_HOME": f"{home}/.codex",
+                "CLAUDE_CONFIG_DIR": f"{home}/.claude",
+            }
+        )
+        files = {**token_files, **self._member_credential_files(context.files, home)}
+        env_path = f"{directory}/env"
+        files[env_path] = self._member_environment_file(env, root_env).encode("utf-8")
+        peer: dict[str, Any] = {
+            "name": unit_member_name(index),
+            "image": self._sandbox_image,
+            "command": [
+                "sh",
+                "-c",
+                'set -a; . "$1"; set +a; shift; exec "$@"',
+                "niuu-member",
+                env_path,
+                *self._sandbox_command,
+            ],
+            "environment": {},
+            "volume_mounts": [
+                dict(mesh_mount),
+                {"name": unit_member_volume(index), "mount_path": directory, "read_only": False},
+            ],
+        }
+        resources = self._resources_from_spec(spec)
+        if resources:
+            peer["resources"] = resources
+        return peer, files, providers
+
+    def _member_credential_files(self, files: dict[str, bytes], home: str) -> dict[str, bytes]:
+        """A member's agent credential files, moved from the sandbox home into its own home."""
+        moved: dict[str, bytes] = {}
+        shared = f"{self._sandbox_workspace.rstrip('/')}/"
+        for destination, content in files.items():
+            path = _sandbox_credential_path(destination, sandbox_home=self._sandbox_home)
+            if path.startswith(f"{self._sandbox_home}/") and not path.startswith(shared):
+                path = home + path.removeprefix(self._sandbox_home)
+            moved[path] = content
+        return moved
+
+    @staticmethod
+    def _member_environment_file(env: dict[str, str], root_env: dict[str, str]) -> str:
+        """The shell file a member's container sources before it runs Skuld.
+
+        Prompts and the persona may contain newlines, which a container environment passed
+        through the pod's driver config would carry in the pod spec; the file travels over
+        the file API instead. The peers inherit the root's environment, so whatever of the
+        root's session identity the member does not set itself is unset first.
+        """
+        inherited = sorted(
+            key
+            for key in root_env
+            if key.startswith("SKULD__") and key not in env and _valid_env_name(key)
+        )
+        lines = [f"unset {key}" for key in inherited]
+        lines.extend(
+            f"{key}={shlex.quote(value)}"
+            for key, value in sorted(env.items())
+            if _valid_env_name(key) and "\x00" not in value
+        )
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _prompt_environment(spec: SessionSpec) -> dict[str, str]:
+        """The session values ExecSandbox cannot carry as environment (newlines)."""
+        session_values = spec.values.get("session", {})
+        prompts = {
+            f"SKULD__SESSION__{name}": str(session_values[key])
+            for name, key in (
+                ("INITIAL_PROMPT", "initialPrompt"),
+                ("SYSTEM_PROMPT", "systemPrompt"),
+            )
+            if session_values.get(key)
+        }
+        if persona := session_values.get("persona"):
+            prompts["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
+        if workflow_steps_enabled(spec.values):
+            prompts[WORKFLOW_STEPS_ENABLED_ENV] = "true"
+        return prompts
+
+    def _member_proxy_target(self, member: Session) -> SessionProxyTarget | None:
+        """A member's broker, on its own port of the unit's sandbox, over the native tunnel."""
+        if member.hosted_port is None:
+            return None
+        sandbox = self._client.get_sandbox(self._sandbox_of(member))
+        if sandbox is None or not sandbox.ready:
+            return None
+        return self._tcp_proxy_target(str(member.id), sandbox.name, member.hosted_port)
+
+    async def broker_target(self, session: Session) -> SessionProxyTarget | None:
+        """Where Forge reaches a member's broker; None for any other session (its endpoint)."""
+        if session.hosted_by is None:
+            return None
+        target = await asyncio.to_thread(self._member_proxy_target, session)
+        if target is None:
+            raise ValueError(f"Member session {session.id} has no ready OpenShell broker")
+        return target
+
+    async def _member_status(self, member: Session) -> SessionStatus:
+        """A member's status: its unit's sandbox's, and failed when it cannot be the new launch.
+
+        The gateway reports a sandbox, not its peers, so a member reads as its sandbox does.
+        A member started again by itself gets a new launch and credential, which its running
+        peer workload cannot be given: OpenShell restarts a sandbox, never one of its peers.
+        """
+        sandbox = await asyncio.to_thread(self._client.get_sandbox, self._sandbox_of(member))
+        if sandbox is None:
+            return SessionStatus.STOPPED
+        status = _status_from_sandbox(sandbox)
+        member_id = str(member.id)
+        started = self._member_launches.get(member_id)
+        launch = launch_id_of(member.workload_config)
+        if status is SessionStatus.RUNNING and started and launch and started != launch:
+            self._member_failures[member_id] = (
+                "OpenShell cannot restart one peer workload of a sandbox, so this member "
+                "cannot run under its new launch; stop the run and start it again"
+            )
+            return SessionStatus.FAILED
+        return status
+
+    async def status_detail(self, session: Session) -> str | None:
+        return self._member_failures.get(str(session.id))
+
+    async def _release_member(self, member: Session) -> bool:
+        """Release what this controller holds for a member; its container is its unit's.
+
+        A peer workload lives and ends with its sandbox, so the member's Skuld keeps running
+        until the unit stops.
+        """
+        member_id = str(member.id)
+        forwarder = self._resident_forwarders.pop(member_id, None)
+        if forwarder is not None:
+            await asyncio.to_thread(forwarder.close)
+        self._member_launches.pop(member_id, None)
+        self._member_failures.pop(member_id, None)
+        return True
 
     def _exposes_service(self, session: Session) -> bool:
         """Whether start asks the gateway to expose the broker's port.
@@ -2098,6 +2496,13 @@ class OpenShellGatewayPodManager(
             await asyncio.to_thread(forwarder.close)
 
         self._service_urls.pop(str(session.id), None)
+        for member_id in self._unit_member_ids(session):
+            member_forwarder = self._resident_forwarders.pop(member_id, None)
+            if member_forwarder is not None:
+                await asyncio.to_thread(member_forwarder.close)
+            self._member_launches.pop(member_id, None)
+            self._member_failures.pop(member_id, None)
+        self._unit_sandboxes.pop(str(session.id), None)
         sandbox_name = self._sandbox_name(session)
         grants = self._provider_grants.pop(str(session.id), ())
         sandbox = await asyncio.to_thread(self._client.get_sandbox, sandbox_name)
@@ -2117,6 +2522,8 @@ class OpenShellGatewayPodManager(
         Deletion does not wait for a stop: a sandbox whose pod already failed
         never reaches STOPPED, but DeleteSandbox removes it all the same.
         """
+        if session.hosted_by is not None:
+            return await self._release_member(session)
         sandbox_name, _, grants = await self._release_session_handles(session)
         try:
             return await self._cleanup_resources(sandbox_name, grants)
@@ -2129,6 +2536,8 @@ class OpenShellGatewayPodManager(
             ) from exc
 
     async def stop(self, session: Session) -> bool:
+        if session.hosted_by is not None:
+            return await self._release_member(session)
         sandbox_name, sandbox, grants = await self._release_session_handles(session)
         if sandbox is not None and (sandbox.labels or {}).get("volundr.niuu.io/storage") != "forge":
             # Legacy volumes are owned by the Sandbox CR: deleting it also
@@ -2185,6 +2594,8 @@ class OpenShellGatewayPodManager(
         return await self._cleanup_resources(sandbox_name, grants)
 
     async def status(self, session: Session) -> SessionStatus:
+        if session.hosted_by is not None:
+            return await self._member_status(session)
         sandbox = await asyncio.to_thread(self._client.get_sandbox, self._sandbox_name(session))
         if sandbox is None:
             return SessionStatus.STOPPED
@@ -4704,7 +5115,7 @@ class OpenShellGatewayPodManager(
 
     async def wait_for_ready(self, session: Session, timeout: float) -> SessionStatus:
         try:
-            await self._wait_for_sandbox_name(self._sandbox_name(session), timeout)
+            await self._wait_for_sandbox_name(self._sandbox_of(session), timeout)
         except (RuntimeError, TimeoutError):
             return SessionStatus.FAILED
         return await self.status(session)
@@ -6061,7 +6472,7 @@ def _sandbox_credential_path(destination: str, *, sandbox_home: str = "/sandbox"
     if not normalized.is_absolute() or ".." in normalized.parts:
         raise RuntimeError(f"OpenShell credential file path is invalid: {destination!r}")
     normalized_path = str(normalized)
-    allowed_roots = (sandbox_home, "/sandbox/workspace", "/run/secrets")
+    allowed_roots = (sandbox_home, "/sandbox/workspace", "/run/secrets", UNIT_MEMBER_ROOT)
     if not any(
         normalized_path == root or normalized_path.startswith(root + "/") for root in allowed_roots
     ):
@@ -6077,7 +6488,11 @@ def _credential_file_archives(files: dict[str, bytes]) -> list[tuple[str, bytes]
     grouped: dict[str, dict[str, bytes]] = {}
     for destination, content in files.items():
         path = _sandbox_credential_path(destination)
-        extraction_root = "/run/secrets" if path.startswith("/run/secrets/") else "/sandbox"
+        extraction_root = "/sandbox"
+        if path.startswith("/run/secrets/"):
+            extraction_root = "/run/secrets"
+        elif path.startswith(f"{UNIT_MEMBER_ROOT}/"):
+            extraction_root = "/tmp"
         grouped.setdefault(extraction_root, {})[path] = content
     return [
         (root, _credential_file_archive(group, extraction_root=root))
@@ -6090,6 +6505,11 @@ def _credential_file_archives(files: dict[str, bytes]) -> list[tuple[str, bytes]
 #: GNU tar replaces a symlink with a new, empty directory when it extracts a
 #: directory entry of that name.
 _LINKED_SANDBOX_DIRECTORIES = frozenset({"/sandbox/workspace"})
+
+
+def _is_unit_mount(path: str) -> bool:
+    """Whether ``path`` is the unit's member root or a member's mounted directory."""
+    return path == UNIT_MEMBER_ROOT or str(PurePosixPath(path).parent) == UNIT_MEMBER_ROOT
 
 
 def _credential_file_archive(
@@ -6115,6 +6535,11 @@ def _credential_file_archive(
                 if parent_str == ".":
                     continue
                 if parent_str in directories:
+                    continue
+                if _is_unit_mount(str(root / parent)):
+                    # The volume the unit mounts there provides the directory; tar must
+                    # not try to change the mode of a mount point it does not own.
+                    directories.add(parent_str)
                     continue
                 if str(root / parent) in _LINKED_SANDBOX_DIRECTORIES:
                     # Extracted through whatever is there: a link, or a directory
