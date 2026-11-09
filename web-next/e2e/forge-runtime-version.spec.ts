@@ -67,7 +67,7 @@ test('runtime inspection shows loading, version mismatch and retry without resta
     if (path.endsWith('/conversation'))
       return route.fulfill({ json: { turns: [], total_turns: 0 } });
     return route.fulfill({
-      json: path.includes('/workflow/gates') ? { gates: [] } : path.includes('/stats') ? {} : [],
+      json: path.includes('/stats') ? {} : [],
     });
   });
   await page.goto('/volundr/sessions');

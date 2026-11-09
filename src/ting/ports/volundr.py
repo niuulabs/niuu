@@ -130,6 +130,25 @@ class StepSessionRequest:
 
 
 @dataclass(frozen=True)
+class RunRoomRequest:
+    """The session that is a workflow run's room: a Skuld with no agent of its own.
+
+    It hosts the run's thread: every member session of the run is nested under it
+    (``membership`` of the members names it as their parent) and shares its work into it.
+    """
+
+    name: str
+    #: The session record needs a model; the room runs no agent, so it never uses it.
+    model: str
+    tracker_issue_id: str
+    run_id: str
+    membership: SessionMembership
+    repo: str = ""
+    branch: str = ""
+    base_branch: str = ""
+
+
+@dataclass(frozen=True)
 class VolundrSession:
     """Minimal session info returned from Volundr."""
 
@@ -398,6 +417,31 @@ class VolundrPort(ABC):
     ) -> VolundrSession:
         """Create the harness session that hosts a run's steps for one stage member."""
         raise NotImplementedError(f"{type(self).__name__} cannot create workflow step sessions")
+
+    async def create_run_room(
+        self,
+        request: RunRoomRequest,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> VolundrSession:
+        """Create the session that is a workflow run's room (no agent of its own)."""
+        raise NotImplementedError(f"{type(self).__name__} cannot create workflow run rooms")
+
+    async def post_room_notice(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        notice_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        """Post a notice in the room a session hosts, as its Coordinator; sent to no one.
+
+        ``notice_id`` keys it, so a notice posted again is shown once.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot post room notices")
 
     async def deliver_workflow_step(
         self,

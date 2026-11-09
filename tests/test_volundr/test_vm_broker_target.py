@@ -226,11 +226,6 @@ _OWNER = Principal(user_id="owner-1", email="o@example.test", tenant_id="default
     [
         (
             "post",
-            "/api/v1/forge/sessions/{sid}/workflow/gates/g1/resolve",
-            {"decision": "approved", "notes": "", "source": "human"},
-        ),
-        (
-            "post",
             "/api/v1/forge/sessions/{sid}/help/requests/help-1/answer",
             {"answer": "yes", "source": "a2a"},
         ),

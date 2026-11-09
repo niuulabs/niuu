@@ -80,13 +80,11 @@ async function fixture(page: Page) {
         },
       });
     return route.fulfill({
-      json: path.includes('/workflow/gates')
-        ? { gates: [] }
-        : path.includes('/features/modules')
-          ? [{ key: 'chat', scope: 'session', enabled: true, label: 'Chat', order: 0 }]
-          : path.includes('/stats')
-            ? {}
-            : [],
+      json: path.includes('/features/modules')
+        ? [{ key: 'chat', scope: 'session', enabled: true, label: 'Chat', order: 0 }]
+        : path.includes('/stats')
+          ? {}
+          : [],
     });
   });
   return { requests, control };

@@ -1146,6 +1146,7 @@ MESH_VALUES = {
     "consumesEventTypes": ["review.requested"],
     "publishEventTypes": ["review.done"],
     "publishedEventUrgency": 0.4,
+    "shareWork": True,
     "nng": {"pubSubAddress": "tcp://0.0.0.0:7001", "reqRepAddress": "tcp://0.0.0.0:7002"},
     "adapters": [{"adapter": "nats"}],
     "discoveryAdapters": [{"adapter": "event_bus", "heartbeat_interval_s": 5}],
@@ -1177,6 +1178,7 @@ MESH_KEYS = {
     "consumesEventTypes": "consumes_event_types",
     "publishEventTypes": "publish_event_types",
     "publishedEventUrgency": "published_event_urgency",
+    "shareWork": "share_work",
     "nng": "nng",
     "adapters": "adapters",
     "discoveryAdapters": "discovery_adapters",
@@ -1381,6 +1383,23 @@ class TestMeshOnNngInACluster:
 
         assert annotations["ravn.niuu.world/participant-type"] == "skuld"
         assert annotations["ravn.niuu.world/display-name"] == "wf-probe-coder"
+
+    def test_the_pod_announces_its_persona_and_topics_to_pod_discovery(self):
+        docs = self._docs(
+            "--set",
+            "mesh.enabled=true",
+            "--set",
+            "mesh.announce.persona=reviewer",
+            "--set-json",
+            'mesh.announce.consumes=["code.changed"]',
+            "--set-json",
+            'mesh.announce.emits=["code.changed","review.passed"]',
+        )
+        annotations = self._kind(docs, "Deployment")["spec"]["template"]["metadata"]["annotations"]
+
+        assert annotations["ravn.niuu.world/persona"] == "reviewer"
+        assert annotations["ravn.niuu.world/consumes"] == "code.changed"
+        assert annotations["ravn.niuu.world/emits"] == "code.changed,review.passed"
 
     def test_the_pod_gets_its_ip_its_realm_label_and_its_peer_id(self):
         docs = self._docs("--set", "mesh.enabled=true", "--set", "mesh.realmId=flock-a")
@@ -1623,3 +1642,37 @@ def test_a_runs_first_session_hosts_its_realms_room_and_keeps_its_agent():
     )
     # The host keeps its own agent: chat is not routed into the room.
     assert (room.routed, room.default_target_peer_id) == (False, "")
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_runs_room_session_runs_no_agent_of_its_own():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld",
+        "--set",
+        "mesh.enabled=true",
+        "--set",
+        "mesh.realmId=workflow-run-1",
+        "--set",
+        "room.enabled=true",
+        "--set",
+        "room.realmRoom=true",
+        "--set",
+        "room.routed=true",
+    )
+
+    assert SkuldSettings(**config).room.routed is True
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_run_member_shares_its_work_with_the_runs_room():
+    from skuld.config import SkuldSettings
+
+    shared = _rendered_skuld_config(
+        "skuld", "--set", "mesh.enabled=true", "--set", "mesh.shareWork=true"
+    )
+    ordinary = _rendered_skuld_config("skuld", "--set", "mesh.enabled=true")
+
+    assert SkuldSettings(**shared).mesh.share_work is True
+    assert SkuldSettings(**ordinary).mesh.share_work is False

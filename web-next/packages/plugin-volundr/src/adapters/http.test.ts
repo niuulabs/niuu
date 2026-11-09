@@ -301,7 +301,6 @@ const {
   normalizeSecretTypeInfo,
   normalizeMessages,
   normalizeConversationHistory,
-  normalizeWorkflowGate,
   normalizeLogLevel,
   normalizeLogs,
   normalizeAggregateParticipants,
@@ -706,20 +705,6 @@ describe('__testables', () => {
           created_at: new Date(0).toISOString(),
         }),
       ],
-    });
-
-    expect(normalizeWorkflowGate({ id: 'gate-1' })).toMatchObject({
-      node_id: '',
-      activation_id: '',
-      label: 'gate-1',
-      condition: '',
-      status: 'pending',
-      pending_behavior: 'help_needed',
-      approvers: [],
-      auto_forward_after: '30m',
-      attempt: 1,
-      source: 'human',
-      summary: '',
     });
 
     expect(normalizeLogLevel(undefined)).toBe('info');
@@ -1141,132 +1126,6 @@ describe('buildVolundrHttpAdapter', () => {
     ).rejects.toThrow('Forge returned no turn for gone');
   });
 
-  it('getWorkflowGates calls GET /sessions/:id/workflow/gates', async () => {
-    const client = makeClient();
-    client.get.mockResolvedValueOnce({
-      gates: [
-        {
-          id: 'gate-1',
-          node_id: 'spec-prd-gate',
-          activation_id: 'activation-1',
-          label: 'PRD approval gate',
-          condition: 'Review the PRD',
-          status: 'pending',
-          pending_behavior: 'help_needed',
-          approvers: ['human'],
-          auto_forward_after: '30m',
-          requested_at: '2026-05-20T12:00:00Z',
-          updated_at: '2026-05-20T12:00:00Z',
-          triggered_by_event_type: 'spec.prd.ready_for_gate',
-          approval_event_type: 'spec.prd.approved',
-          changes_requested_event_type: 'spec.prd.changes_requested',
-          attempt: 1,
-          summary: 'Please review the PRD.',
-        },
-      ],
-    });
-
-    const gates = await buildVolundrHttpAdapter(client).getWorkflowGates('sess-1');
-
-    expect(client.get).toHaveBeenCalledWith('/sessions/sess-1/workflow/gates');
-    expect(gates).toEqual([
-      expect.objectContaining({
-        id: 'gate-1',
-        node_id: 'spec-prd-gate',
-        pending_behavior: 'help_needed',
-      }),
-    ]);
-  });
-
-  it('resolveWorkflowGate posts the human decision', async () => {
-    const client = makeClient();
-    client.post.mockResolvedValueOnce({
-      id: 'gate-1',
-      node_id: 'spec-prd-gate',
-      activation_id: 'activation-1',
-      label: 'PRD approval gate',
-      condition: 'Review the PRD',
-      status: 'approved',
-      pending_behavior: 'help_needed',
-      approvers: ['human'],
-      auto_forward_after: '30m',
-      requested_at: '2026-05-20T12:00:00Z',
-      updated_at: '2026-05-20T12:02:00Z',
-      triggered_by_event_type: 'spec.prd.ready_for_gate',
-      approval_event_type: 'spec.prd.approved',
-      changes_requested_event_type: 'spec.prd.changes_requested',
-      attempt: 1,
-      decision: 'APPROVE',
-      notes: 'Looks good.',
-      source: 'human',
-      summary: 'PRD approved by human reviewer.',
-    });
-
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        id: 'gate-1',
-        node_id: 'spec-prd-gate',
-        label: 'PRD approval gate',
-        status: 'approved',
-        decision: 'APPROVE',
-      }),
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const gate = await buildVolundrHttpAdapter(client).resolveWorkflowGate('sess-1', 'gate-1', {
-      decision: 'APPROVE',
-      notes: 'Looks good.',
-      source: 'human',
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost:8080/api/v1/forge/sessions/sess-1/workflow/gates/gate-1/resolve',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({
-          decision: 'APPROVE',
-          notes: 'Looks good.',
-          source: 'human',
-        }),
-      }),
-    );
-    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers as HeadersInit);
-    expect(headers.get('x-niuu-workflow-gate-intent')).toBe('resolve');
-    expect(gate.status).toBe('approved');
-    expect(gate.decision).toBe('APPROVE');
-  });
-
-  it('resolveWorkflowGate surfaces API detail errors and unknown fallbacks', async () => {
-    const client = makeClient();
-
-    vi.stubGlobal(
-      'fetch',
-      vi
-        .fn()
-        .mockResolvedValueOnce({
-          ok: false,
-          status: 400,
-          json: async () => ({ detail: 'not allowed' }),
-        })
-        .mockResolvedValueOnce({
-          ok: false,
-          status: 500,
-          json: async () => ({ nope: true }),
-        }),
-    );
-
-    const svc = buildVolundrHttpAdapter(client);
-
-    await expect(
-      svc.resolveWorkflowGate('sess-1', 'gate-1', { decision: 'APPROVE' } as any),
-    ).rejects.toThrow('API request failed: 400 not allowed');
-    await expect(
-      svc.resolveWorkflowGate('sess-1', 'gate-1', { decision: 'APPROVE' } as any),
-    ).rejects.toThrow('API request failed: 500 Unknown error');
-  });
-
   it('getSession calls GET /sessions/:id', async () => {
     const client = makeClient();
     await buildVolundrHttpAdapter(client).getSession('s1');
@@ -1336,74 +1195,7 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.get).not.toHaveBeenCalledWith('/sessions/shared-id');
   });
 
-  function gateSession(gateStatus: string, status = 'running') {
-    return {
-      id: 's1',
-      name: 'tracker-delivery-flow',
-      source: { type: 'git', repo: 'https://github.com/niuulabs/niuu', branch: 'regin' },
-      status,
-      model: 'gpt-5.6-terra',
-      activity_state: 'idle',
-      needs_attention: false,
-      activity_metadata: {
-        help_needed: {
-          reason: 'needs_human_approval',
-          context: {
-            mode: 'human_approval',
-            gate_label: 'Delivery blocked',
-            gate_status: gateStatus,
-          },
-        },
-      },
-    };
-  }
-
-  it.each([
-    ['pending', true],
-    ['approved', false],
-  ] as const)(
-    'confirms a gate its metadata records against its gates: %s there waits on the person: %s',
-    async (liveStatus, waits) => {
-      const client = makeClient();
-      client.get.mockResolvedValueOnce(gateSession('pending')).mockResolvedValueOnce({
-        gates: [
-          {
-            id: 'g1',
-            label: 'Delivery blocked',
-            status: liveStatus,
-            pending_behavior: 'help_needed',
-          },
-        ],
-      });
-
-      const session = await buildVolundrHttpAdapter(client).getSession('s1');
-
-      expect(client.get).toHaveBeenLastCalledWith('/sessions/s1/workflow/gates');
-      expect(session.needsAttention).toBe(waits);
-    },
-  );
-
-  it('asks nothing more of a session whose metadata records no pending gate', async () => {
-    const client = makeClient();
-    client.get.mockResolvedValueOnce(gateSession('approved'));
-
-    const session = await buildVolundrHttpAdapter(client).getSession('s1');
-
-    expect(client.get).toHaveBeenCalledTimes(1);
-    expect(session.needsAttention).toBe(false);
-  });
-
-  it('does not ask a stopped session for its gates', async () => {
-    const client = makeClient();
-    client.get.mockResolvedValueOnce(gateSession('pending', 'stopped'));
-
-    const session = await buildVolundrHttpAdapter(client).getSession('s1');
-
-    expect(client.get).toHaveBeenCalledTimes(1);
-    expect(session.needsAttention).toBe(false);
-  });
-
-  it('does not read a question without a gate as a waiting gate', async () => {
+  it('does not read a recorded question as a waiting session', async () => {
     const client = makeClient();
     client.get.mockResolvedValueOnce({
       id: 's1',

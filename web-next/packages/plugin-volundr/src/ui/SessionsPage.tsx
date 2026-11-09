@@ -636,6 +636,8 @@ function PodEntry({
 interface OpenRoom {
   sessionId: string;
   workers: readonly Worker[];
+  /** Workers that are sessions of their own (a workflow run's members), nested under the room. */
+  sessionWorkerIds: ReadonlySet<string>;
   focusedPeerId: string | null;
   onSelect: (sessionId: string, peerId: string) => void;
 }
@@ -645,6 +647,7 @@ const WORKER_STATUS_TEXT: Record<Worker['status'], string> = {
   idle: 'Idle',
   error: 'Error',
   left: 'Left',
+  stopped: 'Stopped',
 };
 
 /** A worker in the open session's room, under its coordinator: picking it shows only its output. */
@@ -697,6 +700,10 @@ function SessionTreeEntry({
   openRoom?: OpenRoom | null;
 }) {
   const roomWorkers = openRoom?.sessionId === node.session.id ? openRoom.workers : [];
+  // Under the open room, a nested session that is one of its workers (a workflow run's
+  // member) is listed as the room's worker: its verdict, and picking it shows its work there.
+  const roomWorkerIds = new Set(roomWorkers.map((worker) => worker.peerId));
+  const children = node.children.filter((child) => !roomWorkerIds.has(child.session.id));
   const hasChildren = node.children.length > 0 || roomWorkers.length > 0;
   const [folded, setFolded] = useForgePreference(
     `tree.${node.session.clusterId}.${node.session.id}`,
@@ -730,7 +737,7 @@ function SessionTreeEntry({
                 onSelect={() => openRoom.onSelect(node.session.id, worker.peerId)}
               />
             ))}
-          {node.children.map((child) => (
+          {children.map((child) => (
             <SessionTreeEntry
               key={child.session.id}
               node={child}
@@ -803,8 +810,11 @@ function PodGroup({
   // A project folder stays listed with nothing in it; other groups only hold sessions.
   if (sessions.length === 0 && !folder) return null;
 
+  // A worker that is also a nested session is counted once, with the nested sessions.
   const roomWorkerCount = (s: Session) =>
-    openRoom?.sessionId === s.id ? openRoom.workers.length : 0;
+    openRoom?.sessionId === s.id
+      ? openRoom.workers.filter((worker) => !openRoom.sessionWorkerIds.has(worker.peerId)).length
+      : 0;
   const renderRow = (s: Session, depth = 0) => (
     <PodEntry
       key={s.id}
@@ -1206,11 +1216,16 @@ export function SessionsPage() {
         ? {
             sessionId: room.sessionId,
             workers: room.workers,
+            sessionWorkerIds: new Set(
+              room.workers
+                .filter((worker) => allSessions.some((session) => session.id === worker.peerId))
+                .map((worker) => worker.peerId),
+            ),
             focusedPeerId,
             onSelect: (sessionId, peerId) => setFocusedWorker({ sessionId, peerId }),
           }
         : null,
-    [room, resolvedSelectedSessionId, focusedPeerId, showProjectHome],
+    [room, resolvedSelectedSessionId, focusedPeerId, showProjectHome, allSessions],
   );
   // While a project's home is open no session is the open one.
   const listSelectedId = showProjectHome ? null : resolvedSelectedSessionId;

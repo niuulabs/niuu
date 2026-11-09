@@ -141,13 +141,11 @@ async function fixture(page: Page, markdown?: string) {
         ? session
         : path.endsWith('/sessions')
           ? [session]
-          : path.includes('/workflow/gates')
-            ? { gates: [] }
-            : path.includes('/features/modules')
-              ? [{ key: 'chat', scope: 'session', enabled: true, label: 'Chat', order: 0 }]
-              : path.includes('/stats')
-                ? {}
-                : [],
+          : path.includes('/features/modules')
+            ? [{ key: 'chat', scope: 'session', enabled: true, label: 'Chat', order: 0 }]
+            : path.includes('/stats')
+              ? {}
+              : [],
     });
   });
   return { requests, downloads, visibility, sockets, controls };

@@ -1,6 +1,6 @@
 """Tests for WorkflowStepHostContributor."""
 
-from uuid import uuid4
+import pytest
 
 from volundr.adapters.outbound.contributors.workflow_step_host import (
     WorkflowStepHostContributor,
@@ -8,7 +8,6 @@ from volundr.adapters.outbound.contributors.workflow_step_host import (
 )
 from volundr.domain.models import GitSource, Session
 from volundr.domain.ports import SessionContext
-from volundr.domain.projects import SessionCoordination, SessionReference
 
 RUN_ID = "9d8e8e8c-0c72-4283-a7c9-77c85263aa7b"
 
@@ -34,7 +33,7 @@ async def test_a_step_host_of_a_run_joins_the_mesh_in_its_runs_realm() -> None:
 
     assert result.values == {
         "workflowSteps": {"enabled": True},
-        "mesh": {"enabled": True, "realmId": f"workflow-{RUN_ID}"},
+        "mesh": {"enabled": True, "realmId": f"workflow-{RUN_ID}", "shareWork": True},
     }
 
 
@@ -66,52 +65,63 @@ async def test_an_ordinary_launch_contributes_nothing() -> None:
     ).values == {}
 
 
-def _in_project(*, parent: str | None = None) -> Session:
-    return Session(
-        name="wf-run-coder",
-        model="gpt",
-        source=GitSource(),
-        coordination=SessionCoordination(
-            project_id=uuid4(),
-            role="coder",
-            parent=SessionReference(instance_id="valhalla", session_id=parent) if parent else None,
-        ),
-    )
-
-
-async def test_the_runs_first_session_hosts_the_runs_room() -> None:
+async def test_a_runs_room_hosts_the_runs_room_and_runs_no_agent() -> None:
     result = await WorkflowStepHostContributor().contribute(
-        _in_project(), _step_host(workflow_run_id=RUN_ID, workflow_member="coder")
+        _session(),
+        SessionContext(workload_config={"workflow_run_room": True, "workflow_run_id": RUN_ID}),
     )
 
-    assert result.values["room"] == {
-        "enabled": True,
-        "environmentId": f"workflow-{RUN_ID}",
-        "realmRoom": True,
+    assert result.values == {
+        "mesh": {"enabled": True, "realmId": f"workflow-{RUN_ID}"},
+        "room": {
+            "enabled": True,
+            "environmentId": f"workflow-{RUN_ID}",
+            "realmRoom": True,
+            "routed": True,
+        },
     }
 
 
-async def test_a_later_member_is_a_worker_of_the_room_not_another_host() -> None:
+async def test_a_member_shares_its_work_with_the_runs_room_and_hosts_none() -> None:
     result = await WorkflowStepHostContributor().contribute(
-        _in_project(parent=str(uuid4())),
-        _step_host(workflow_run_id=RUN_ID, workflow_member="reviewer"),
+        _session(), _step_host(workflow_run_id=RUN_ID, workflow_member="reviewer")
     )
 
     assert "room" not in result.values
-    assert result.values["mesh"] == {"enabled": True, "realmId": f"workflow-{RUN_ID}"}
+    assert result.values["mesh"]["shareWork"] is True
 
 
-async def test_a_run_in_no_project_or_without_the_mesh_hosts_no_room() -> None:
-    no_project = await WorkflowStepHostContributor().contribute(
-        _session(), _step_host(workflow_run_id=RUN_ID)
-    )
-    no_mesh = await WorkflowStepHostContributor(join_mesh=False).contribute(
-        _in_project(), _step_host(workflow_run_id=RUN_ID)
-    )
-    declined = await WorkflowStepHostContributor(host_run_room=False).contribute(
-        _in_project(), _step_host(workflow_run_id=RUN_ID)
+async def test_a_runs_room_on_a_forge_without_it_is_refused() -> None:
+    context = SessionContext(workload_config={"workflow_run_room": True, "workflow_run_id": RUN_ID})
+
+    with pytest.raises(ValueError, match="host_run_room"):
+        await WorkflowStepHostContributor(host_run_room=False).contribute(_session(), context)
+    with pytest.raises(ValueError, match="mesh"):
+        await WorkflowStepHostContributor(join_mesh=False).contribute(_session(), context)
+
+
+async def test_a_member_announces_its_persona_and_topics_from_its_pinned_persona() -> None:
+    document = {
+        "schema_version": 1,
+        "id": "reviewer",
+        "revision": "r1",
+        "definition": {
+            "name": "reviewer",
+            "consumes": {"event_types": ["code.changed"]},
+            "produces": {
+                "event_type": "review.passed",
+                "event_type_map": {"needs_changes": "review.changes_requested"},
+            },
+        },
+    }
+
+    result = await WorkflowStepHostContributor().contribute(
+        _session(), _step_host(workflow_run_id=RUN_ID, persona_definition=document)
     )
 
-    assert "room" not in no_project.values
-    assert "room" not in no_mesh.values
-    assert "room" not in declined.values
+    assert result.values["mesh"]["announce"] == {
+        "persona": "reviewer",
+        "consumes": ["code.changed"],
+        # Every Skuld session also publishes code.changed after each turn.
+        "emits": ["code.changed", "review.changes_requested", "review.passed"],
+    }

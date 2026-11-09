@@ -91,6 +91,7 @@ import type {
 } from '../models/volundr.model';
 import { useSessionDetail, useSessionList } from './hooks/useSessionStore';
 import { coordinationOf, isCoordinationRole, leaderTag } from '../domain/projectTree';
+import { withRunMembers } from '../domain/runRoom';
 import { buildSessionLinks } from './sessions/sessionLinks';
 import { CoordinatorTag, WorkerOf } from './detail/Coordination';
 import { DecisionDock } from './detail/DecisionDock';
@@ -3385,12 +3386,6 @@ function LiveSessionDetailPageInner({
     staleTime: Infinity,
   });
   const livePreview = livePreviewQuery.data ?? LIVE_PREVIEW_DISABLED;
-  const workflowGatesQuery = useQuery({
-    queryKey: ['volundr', 'workflow-gates', sessionId, instanceId ?? null],
-    queryFn: () => volundr.getWorkflowGates(sessionId),
-    enabled: Boolean(sessionId) && isRunning,
-    refetchInterval: isRunning ? 5_000 : false,
-  });
   // A session that failed before its first message never had a broker, so it
   // has no transcript to replay; asking for one only earns a misleading error.
   const failedBeforeStart =
@@ -3449,27 +3444,7 @@ function LiveSessionDetailPageInner({
     [transcriptTurns],
   );
   const replayMeshEvents = useMemo(() => meshEventsFromTurns(transcriptTurns), [transcriptTurns]);
-  const workflowGates = useMemo(() => workflowGatesQuery.data ?? [], [workflowGatesQuery.data]);
   const activeHumanGate = useMemo(() => {
-    const nativeGate = workflowGates.find(
-      (gate) =>
-        gate.status === 'pending' &&
-        gate.pending_behavior === 'help_needed' &&
-        !dismissedHumanGateIds.has(gate.id),
-    );
-    if (nativeGate) {
-      return {
-        source: 'native' as const,
-        eventId: nativeGate.id,
-        gate: nativeGate,
-        summary:
-          nativeGate.summary ||
-          `${nativeGate.label} is waiting for human approval before the workflow can continue.`,
-        reason: nativeGate.condition || undefined,
-        recommendation: 'Approve to continue or request changes to send the workflow back.',
-      };
-    }
-
     const latest = [...chat.meshEvents]
       .reverse()
       .find(
@@ -3489,7 +3464,6 @@ function LiveSessionDetailPageInner({
     const participant = chat.participants.get(latest.participantId);
     if (!participant) return null;
     return {
-      source: 'legacy' as const,
       eventId,
       event: {
         summary: latest.summary || 'Workflow gate is waiting for human approval.',
@@ -3505,20 +3479,10 @@ function LiveSessionDetailPageInner({
         participantType: participant.participantType,
       },
     };
-  }, [chat.meshEvents, chat.participants, dismissedHumanGateIds, workflowGates]);
+  }, [chat.meshEvents, chat.participants, dismissedHumanGateIds]);
   const attentionItems = useMemo(() => {
-    const pendingGates = workflowGates.filter(
-      (gate) =>
-        gate.status === 'pending' &&
-        gate.pending_behavior === 'help_needed' &&
-        !dismissedHumanGateIds.has(gate.id),
-    );
-    const gates: SessionGateSummary[] = pendingGates.map((gate) => ({
-      id: gate.id,
-      title: gate.label,
-      detail: gate.summary || 'Waiting for your approval.',
-    }));
-    if (activeHumanGate?.source === 'legacy') {
+    const gates: SessionGateSummary[] = [];
+    if (activeHumanGate) {
       gates.push({
         id: activeHumanGate.eventId,
         title: activeHumanGate.participant.displayName || 'Workflow gate',
@@ -3530,13 +3494,7 @@ function LiveSessionDetailPageInner({
       permissions: chat.pendingPermissions,
       inputRequests: chat.pendingInputRequests,
     });
-  }, [
-    activeHumanGate,
-    chat.pendingInputRequests,
-    chat.pendingPermissions,
-    dismissedHumanGateIds,
-    workflowGates,
-  ]);
+  }, [activeHumanGate, chat.pendingInputRequests, chat.pendingPermissions]);
   const checklist = useMemo(
     () => resolveChecklist(chat.plan, chat.messages),
     [chat.plan, chat.messages],
@@ -3558,6 +3516,20 @@ function LiveSessionDetailPageInner({
   );
   const isCoordinator =
     liveSession?.coordination?.role === 'coordinator' || coordination.workers.length > 0;
+  // A workflow run's first session hosts the run's room: its members are in it from Forge's
+  // record, whether the room is live or the run has finished.
+  const runHost = useMemo(
+    () => (liveSession ? { id: sessionId, runId: liveSession.runId } : null),
+    [liveSession, sessionId],
+  );
+  const roomParticipants = useMemo(
+    () => withRunMembers(chat.participants, runHost, coordination.workers),
+    [chat.participants, runHost, coordination.workers],
+  );
+  const replayRoomParticipants = useMemo(
+    () => withRunMembers(replayParticipants, runHost, coordination.workers),
+    [replayParticipants, runHost, coordination.workers],
+  );
   const hasCoordinator = Boolean(liveSession?.coordination?.parent);
   const openSession = useCallback(
     (id: string) =>
@@ -3637,14 +3609,14 @@ function LiveSessionDetailPageInner({
   const ravnWorkers = useMemo(
     () =>
       isReady
-        ? roomWorkers(chat.participants, chat.meshEvents, chat.messages, sessionId)
-        : roomWorkers(replayParticipants, replayMeshEvents, replayMessages, sessionId),
+        ? roomWorkers(roomParticipants, chat.meshEvents, chat.messages, sessionId)
+        : roomWorkers(replayRoomParticipants, replayMeshEvents, replayMessages, sessionId),
     [
       isReady,
-      chat.participants,
+      roomParticipants,
       chat.meshEvents,
       chat.messages,
-      replayParticipants,
+      replayRoomParticipants,
       replayMeshEvents,
       replayMessages,
       sessionId,
@@ -3704,27 +3676,13 @@ function LiveSessionDetailPageInner({
         next.add(activeHumanGate.eventId);
         return next;
       });
-      if (activeHumanGate.source === 'native') {
-        void volundr
-          .resolveWorkflowGate(sessionId, activeHumanGate.gate.id, {
-            decision,
-            notes,
-            source: 'human',
-          })
-          .then(() =>
-            queryClient.invalidateQueries({
-              queryKey: ['volundr', 'workflow-gates', sessionId],
-            }),
-          );
-        return;
-      }
       void chat.sendDirectedMessages(
         [activeHumanGate.participant],
         notes ? `${decision}\n\n${notes}` : decision,
         [],
       );
     },
-    [activeHumanGate, chat, queryClient, sessionId, volundr],
+    [activeHumanGate, chat],
   );
 
   const resolvedActiveTab =
@@ -3995,7 +3953,6 @@ function LiveSessionDetailPageInner({
         queryClient.cancelQueries({ queryKey: ['volundr', 'conversation-history', sessionId] }),
         queryClient.cancelQueries({ queryKey: ['volundr', 'domain-session', sessionId] }),
         queryClient.cancelQueries({ queryKey: ['volundr', 'filetree', sessionId] }),
-        queryClient.cancelQueries({ queryKey: ['volundr', 'workflow-gates', sessionId] }),
       ]);
       await volundr.deleteSession(liveSession.id, cleanup);
       setDeleteDialogOpen(false);
@@ -4004,7 +3961,6 @@ function LiveSessionDetailPageInner({
       queryClient.removeQueries({ queryKey: ['volundr', 'conversation-history', sessionId] });
       queryClient.removeQueries({ queryKey: ['volundr', 'domain-session', sessionId] });
       queryClient.removeQueries({ queryKey: ['volundr', 'filetree', sessionId] });
-      queryClient.removeQueries({ queryKey: ['volundr', 'workflow-gates', sessionId] });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['volundr', 'domain-sessions'] }),
         queryClient.invalidateQueries({ queryKey: ['volundr', 'history'] }),
@@ -4112,47 +4068,25 @@ function LiveSessionDetailPageInner({
   }
 
   // A waiting decision sits by the composer, folded to a strip, as Lexi keeps its questions.
-  const gateRequestedAt = !activeHumanGate
-    ? Number.NaN
-    : activeHumanGate.source === 'native'
-      ? Date.parse(activeHumanGate.gate.requested_at ?? '')
-      : activeHumanGate.event.timestamp.getTime();
+  const gateRequestedAt = activeHumanGate ? activeHumanGate.event.timestamp.getTime() : Number.NaN;
   const gateWaitingLabel = Number.isFinite(gateRequestedAt)
     ? compactDuration(Math.max(0, minuteNow - gateRequestedAt))
     : undefined;
   const decisionDock = activeHumanGate ? (
     <DecisionDock
-      title={
-        activeHumanGate.source === 'native'
-          ? activeHumanGate.gate.label
-          : activeHumanGate.event.summary || 'Workflow gate'
-      }
+      title={activeHumanGate.event.summary || 'Workflow gate'}
       waiting={gateWaitingLabel}
     >
       <WorkflowHumanGateCard
         title={
-          activeHumanGate.source === 'native'
-            ? activeHumanGate.gate.label
-            : activeHumanGate.participant.displayName ||
-              activeHumanGate.participant.persona ||
-              activeHumanGate.event.persona ||
-              'Workflow gate'
+          activeHumanGate.participant.displayName ||
+          activeHumanGate.participant.persona ||
+          activeHumanGate.event.persona ||
+          'Workflow gate'
         }
-        summary={
-          activeHumanGate.source === 'native'
-            ? activeHumanGate.summary
-            : activeHumanGate.event.summary || 'Workflow gate'
-        }
-        reason={
-          activeHumanGate.source === 'native'
-            ? activeHumanGate.reason
-            : activeHumanGate.event.reason
-        }
-        recommendation={
-          activeHumanGate.source === 'native'
-            ? activeHumanGate.recommendation
-            : activeHumanGate.event.recommendation
-        }
+        summary={activeHumanGate.event.summary || 'Workflow gate'}
+        reason={activeHumanGate.event.reason}
+        recommendation={activeHumanGate.event.recommendation}
         comments={review.comments}
         onApprove={(notes) => {
           handleHumanGateReply('APPROVE', notes);
@@ -4553,7 +4487,9 @@ function LiveSessionDetailPageInner({
                             onLoadOlderHistory={chat.loadOlderHistory}
                             historyError={chat.historyError}
                             onRetryHistory={chat.retryHistory}
-                            participants={chat.participants}
+                            participants={roomParticipants}
+                            hostPeerId={sessionId}
+                            hostLabel={leaderTag(liveSession?.coordination?.role)}
                             workerSessionIds={workerSessionIds}
                             focusedWorkerId={focusedWorkerId}
                             onFocusWorker={onFocusWorker}
@@ -4632,7 +4568,9 @@ function LiveSessionDetailPageInner({
                           chatEndpoint={chatEndpoint}
                           connected={false}
                           historyLoaded={!transcriptQuery.isLoading}
-                          participants={replayParticipants}
+                          participants={replayRoomParticipants}
+                          hostPeerId={sessionId}
+                          hostLabel={leaderTag(liveSession?.coordination?.role)}
                           workerSessionIds={workerSessionIds}
                           focusedWorkerId={focusedWorkerId}
                           onFocusWorker={onFocusWorker}

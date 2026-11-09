@@ -33,6 +33,10 @@ class FakeForge(VolundrPort):
         #: Forge projects by id, and the ids ensure_project created.
         self.projects: dict[str, ForgeProjectRef] = {}
         self.projects_created: list[str] = []
+        self.run_room_requests: list = []
+        #: (session id, text, notice id) of each notice posted in a room.
+        self.room_notices: list[tuple[str, str, str]] = []
+        self.fail_notice: Exception | None = None
         self.fail_create: Exception | None = None
         self.fail_deliver: Exception | None = None
         self.fail_stop: set[str] = set()
@@ -60,6 +64,27 @@ class FakeForge(VolundrPort):
             )
             self.projects_created.append(project_id)
         return self.projects[project_id]
+
+    async def post_room_notice(
+        self, session_id, content, *, notice_id, auth_token=None, principal=None
+    ):
+        if self.fail_notice is not None:
+            raise self.fail_notice
+        self.room_notices.append((session_id, content, notice_id))
+
+    async def create_run_room(self, request, *, auth_token=None, principal=None):
+        if any(session.name == request.name for session in self.sessions.values()):
+            raise RuntimeError(f"a session named {request.name!r} already exists")
+        self.run_room_requests.append(request)
+        session = VolundrSession(
+            id=f"room-{len(self.run_room_requests)}",
+            name=request.name,
+            status="creating",
+            tracker_issue_id=request.tracker_issue_id,
+            project_id=request.membership.project_id,
+        )
+        self.sessions[session.id] = session
+        return session
 
     async def create_step_session(self, request, *, auth_token=None, principal=None):
         if self.fail_create is not None:

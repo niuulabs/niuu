@@ -129,6 +129,7 @@ export function DeliverablesSection({ files }: { files: readonly PresentedFileRe
                   path: file.fileId,
                   name: file.name,
                   ...(file.mime ? { mime: file.mime } : {}),
+                  ...(file.sessionId ? { sessionId: file.sessionId } : {}),
                 })
               }
             >

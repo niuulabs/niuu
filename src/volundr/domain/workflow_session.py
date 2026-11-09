@@ -24,6 +24,10 @@ WORKFLOW_RUN_ID_KEY = "workflow_run_id"
 #: The workflow stage member (persona id) the session serves.
 WORKFLOW_MEMBER_KEY = "workflow_member"
 
+#: ``True`` when the session is its workflow run's room: a Skuld with no agent of its own that
+#: hosts the run's thread, every member of the run nested under it.
+WORKFLOW_RUN_ROOM_KEY = "workflow_run_room"
+
 
 #: Top-level key of the session spec values that carries the step-host setting
 #: (``values.workflowSteps.enabled``); the skuld chart renders it as ``workflow_steps.enabled``.

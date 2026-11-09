@@ -260,8 +260,6 @@ export interface VolundrSession {
   startup?: SessionStartup | null;
   /** True when the session is blocked waiting on the user (awaiting_input). */
   needsAttention?: boolean;
-  /** Its broker's metadata records a pending human gate; its gates say whether one still waits. */
-  gateRecorded?: boolean;
   ownerId?: string;
   tenantId?: string;
   instanceId?: string;
@@ -330,31 +328,6 @@ export interface ExternalSession {
   workspaceAllowed: boolean;
   /** Volundr session id when the session has already been imported. */
   importedSessionId: string | null;
-}
-
-export type WorkflowGateStatus = 'pending' | 'approved' | 'changes_requested';
-export type WorkflowGatePendingBehavior = 'silent' | 'notify_only' | 'help_needed';
-
-export interface VolundrWorkflowGate {
-  id: string;
-  node_id: string;
-  activation_id: string;
-  label: string;
-  condition: string;
-  status: WorkflowGateStatus;
-  pending_behavior: WorkflowGatePendingBehavior;
-  approvers: string[];
-  auto_forward_after: string;
-  requested_at: string;
-  updated_at: string;
-  triggered_by_event_type: string;
-  approval_event_type: string;
-  changes_requested_event_type: string;
-  attempt: number;
-  decision?: string | null;
-  notes?: string;
-  source?: string;
-  summary?: string;
 }
 
 export interface VolundrStats {

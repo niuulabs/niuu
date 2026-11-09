@@ -1293,6 +1293,9 @@ async def present_host_file(
     )
     broker._append_turn(turn)
     await broker._channels.broadcast({"type": "conversation.turn", "turn": asdict(turn)})
+    if broker._work_sharer is not None:
+        # A run's member: the run's room lists the file with the run's deliverables.
+        await broker._work_sharer.presented(dict(turn.parts[0]["input"]))
     logger.info(
         "present-file: staged %s (%d bytes) as %s",
         repr(name),
@@ -1430,6 +1433,15 @@ class _DirectedRoomMessageRequest(BaseModel):
     content: str
     source: str = "external"
     participant_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class _RoomNoticeRequest(BaseModel):
+    """A notice for the room this session hosts: shown as its Coordinator, sent to no one."""
+
+    content: str = Field(min_length=1)
+    #: Keys the notice, so one posted again is shown once.
+    notice_id: str = Field(min_length=1, max_length=200)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -1623,6 +1635,20 @@ async def send_directed_room_message(request: Request, body: _DirectedRoomMessag
         raise HTTPException(404, str(exc))
 
     return {"status": "sent", "message_id": message_id}
+
+
+@app.post("/api/room/notice")
+async def post_room_notice(body: _RoomNoticeRequest) -> dict:
+    """Post a notice in this session's room (owner only: unlisted in the room-role table)."""
+    try:
+        await broker.post_room_notice(
+            body.content, notice_id=body.notice_id, metadata=body.metadata
+        )
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    return {"status": "posted", "notice_id": body.notice_id}
 
 
 @app.post("/api/room/session-message")

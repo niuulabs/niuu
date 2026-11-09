@@ -80,6 +80,8 @@ class TestVolundrPort:
             "inspect_delivery_integration_chain",
             "get_current_portable_persona",
             "create_step_session",
+            "create_run_room",
+            "post_room_notice",
             "deliver_workflow_step",
             "get_workflow_step",
             "submit_session_notification",

@@ -42,13 +42,11 @@ test('native text/tool anchors survive live completion, snapshot repair and lega
           ? session
           : path.endsWith('/sessions')
             ? [session]
-            : path.includes('/workflow/gates')
-              ? { gates: [] }
-              : path.includes('/diff')
-                ? { files: [] }
-                : path.includes('/stats')
-                  ? {}
-                  : [];
+            : path.includes('/diff')
+              ? { files: [] }
+              : path.includes('/stats')
+                ? {}
+                : [];
     return route.fulfill({ json });
   });
   let socket: WebSocketRoute | undefined;

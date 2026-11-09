@@ -140,6 +140,7 @@ from ting.domain.services.resource_authorization import (
     AuthorizedWorkflowRepository,
 )
 from ting.domain.services.review_engine import ReviewEngine
+from ting.domain.services.run_room_notices import RunRoomNotifier
 from ting.domain.services.ticket_advance import TicketAdvancer
 from ting.domain.services.ticket_coordinator import TicketCoordinatorService
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
@@ -1414,6 +1415,7 @@ def create_app(
                     volundr_factory=app.state.volundr_factory,
                     public_origin=settings.notification.public_origin,
                 ),
+                room_notifier=RunRoomNotifier(volundr_factory=app.state.volundr_factory),
             )
             workflow_campaign_projector.bind_runs(workflow_runs)
             dispatch_svc.bind_workflow_runs(workflow_runs, workflow_campaign_repo)

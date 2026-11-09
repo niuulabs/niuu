@@ -15,12 +15,13 @@ from ting.adapters.forge_step_sessions import (
     ForgeStepSessions,
     StepSessionError,
     activation_body,
+    run_room_name,
     step_session_name,
     step_session_tag,
 )
 from ting.domain.models import Saga, SagaStatus, WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.run_thread import FORGE_OBJECTIVE_MAX, RunProjectError, run_objective
-from ting.ports.volundr import ForgeProjectRef, SessionMembership
+from ting.ports.volundr import ForgeProjectRef, SessionMembership, VolundrSession
 from ting.ports.workflow_steps import (
     DeliveredEvent,
     PersonaRef,
@@ -687,13 +688,24 @@ async def test_a_run_launched_into_a_project_puts_each_member_in_it() -> None:
 
     await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
 
+    # The run's room comes first: a session of its own, the coordinator of the run.
+    [room] = forge.run_room_requests
+    assert room.name == "wf-add-endpoint-abc123"
+    assert room.tracker_issue_id == "workflow:add-endpoint-abc123"
+    assert room.membership == SessionMembership(
+        project_id=PROJECT_ID,
+        role="coordinator",
+        objective="Build: Add the export endpoint",
+        labels=("workflow-run:add-endpoint-abc123",),
+    )
     [request] = forge.create_requests
-    # The run's first session is the root of its thread: it nests under nothing.
     assert request.membership == SessionMembership(
         project_id=PROJECT_ID,
         role="coder",
         objective="Build: Add the export endpoint",
         labels=("workflow-run:add-endpoint-abc123",),
+        parent_instance_id="forge-a",
+        parent_session_id="room-1",
     )
     # A project the run was launched into already exists; Ting creates none.
     assert forge.projects_created == []
@@ -774,24 +786,24 @@ REVIEWER_REF = PersonaRef(
 )
 
 
-async def test_a_runs_later_sessions_nest_under_its_first_one() -> None:
+async def test_every_member_nests_under_the_runs_one_room() -> None:
     campaign = _two_members()
     sessions, forge = _sessions(campaign, _in_project())
 
-    coder = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
     await sessions.ensure_session(campaign.id, "reviewer", REVIEWER_REF)
 
-    first, second = forge.create_requests
-    assert first.membership is not None and first.membership.parent_session_id == ""
-    assert second.membership is not None
-    assert (second.membership.parent_instance_id, second.membership.parent_session_id) == (
+    assert len(forge.run_room_requests) == 1
+    coder, reviewer = forge.create_requests
+    assert coder.membership.parent_session_id == "room-1"
+    assert (reviewer.membership.parent_instance_id, reviewer.membership.parent_session_id) == (
         "forge-a",
-        coder,
+        "room-1",
     )
-    assert second.membership.role == "reviewer"
+    assert reviewer.membership.role == "reviewer"
 
 
-async def test_members_that_start_together_still_make_one_thread() -> None:
+async def test_members_that_start_together_still_make_one_room() -> None:
     campaign = _two_members()
     sessions, forge = _sessions(campaign, _in_project())
     listed = forge.list_sessions
@@ -810,11 +822,11 @@ async def test_members_that_start_together_still_make_one_thread() -> None:
         sessions.ensure_session(campaign.id, "reviewer", REVIEWER_REF),
     )
 
-    roots = [r for r in forge.create_requests if not r.membership.parent_session_id]
-    assert len(roots) == 1
+    assert len(forge.run_room_requests) == 1
+    assert {r.membership.parent_session_id for r in forge.create_requests} == {"room-1"}
 
 
-async def test_a_replaced_first_session_keeps_the_thread_under_the_original() -> None:
+async def test_a_replaced_member_stays_in_the_runs_room() -> None:
     campaign = _two_members()
     sessions, forge = _sessions(campaign, _in_project())
     coder = await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
@@ -822,8 +834,38 @@ async def test_a_replaced_first_session_keeps_the_thread_under_the_original() ->
 
     await sessions.replace_session(campaign.id, "coder", PERSONA_REF, coder)
 
-    replacement = forge.create_requests[-1]
-    assert replacement.membership.parent_session_id == coder
+    assert len(forge.run_room_requests) == 1
+    assert forge.create_requests[-1].membership.parent_session_id == "room-1"
+
+
+async def test_a_session_with_the_rooms_name_but_another_tag_is_refused() -> None:
+    campaign = _with(_campaign(), forge_project_id=PROJECT_ID)
+    forge = _in_project()
+    forge.sessions["other"] = VolundrSession(
+        id="other", name="wf-add-endpoint-abc123", status="running", tracker_issue_id="NIU-1"
+    )
+    sessions, _ = _sessions(campaign, forge)
+
+    with pytest.raises(StepSessionError, match="not run add-endpoint-abc123's room"):
+        await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+
+
+async def test_a_run_in_no_project_has_no_room() -> None:
+    campaign = _with(_campaign())
+    sessions, forge = _sessions(campaign)
+
+    await sessions.ensure_session(campaign.id, "coder", PERSONA_REF)
+
+    assert forge.run_room_requests == []
+
+
+def test_a_room_name_fits_forge_limit_however_long_the_slug() -> None:
+    run_id = uuid4()
+    name = run_room_name("x" * 120, run_id)
+
+    assert len(name) <= FORGE_SESSION_NAME_MAX
+    assert name.startswith("wf-x")
+    assert run_room_name("short-run", run_id) == "wf-short-run"
 
 
 async def test_a_project_its_forge_lacks_stops_the_session_create() -> None:

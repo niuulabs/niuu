@@ -680,6 +680,8 @@ class Broker(
 
         # Mesh adapter — only active when mesh.enabled is True
         self._mesh_adapter: Any = None
+        #: Shares this session's work with its realm's room (``mesh.share_work``); None off.
+        self._work_sharer: Any = None
         self._mesh_attested: Any = None
         self._mesh_topics: MeshTopics | None = None
         self._mesh_identity: Any = None
@@ -1074,6 +1076,8 @@ class Broker(
                 "Mesh adapter started (peer_id=%s)",
                 self._mesh_adapter.peer_id,
             )
+            if mesh_cfg.share_work:
+                self._work_sharer = self._build_work_sharer(topics.persona_id or mesh_cfg.persona)
             # Listen again to what the session followed before a restart.
             await self.apply_restored_follows()
 
@@ -1260,6 +1264,22 @@ class Broker(
     def _log_refresh_failure(task: asyncio.Task) -> None:
         if not task.cancelled() and task.exception() is not None:
             logger.error("refreshing the nng peers failed", exc_info=task.exception())
+
+    def _build_work_sharer(self, persona: str) -> Any:
+        """What shares this member's replies, tool work and step closes with its realm's room."""
+        from skuld.shared_work import WorkSharer  # noqa: PLC0415
+
+        mesh = self._mesh_adapter._mesh
+
+        async def _publish(event: Any, topic: str) -> None:
+            await mesh.publish(event, topic)
+
+        return WorkSharer(
+            publish=_publish,
+            peer_id=self._mesh_adapter.peer_id,
+            persona=persona,
+            session_id=self.session_id,
+        )
 
     def _room_event_session(self) -> str | None:
         """The session the room's mesh events must be tagged with; None for a realm room.
@@ -1478,6 +1498,21 @@ class Broker(
             correlation_id=request_id or "",
             extra_payload=payload,
         )
+
+    async def post_room_notice(
+        self, content: str, *, notice_id: str, metadata: dict[str, Any] | None = None
+    ) -> None:
+        """Post a notice in the room this session hosts, as its Coordinator.
+
+        A notice is shown, never sent: no member is asked to act on it and no agent sees it.
+        A workflow run's coordinator (Ting) posts its steps, gates and the run's end here.
+        """
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled on this session")
+        host = self._observer_peer_id()
+        if not host:
+            raise RuntimeError("the room's host has not joined its mesh yet")
+        await self._room_bridge.post_notice(host, content, notice_id=notice_id, metadata=metadata)
 
     def _observer_peer_id(self) -> str:
         """Return Skuld's room participant id when available."""
@@ -2270,6 +2305,8 @@ class Broker(
                     if kind in {"tool_use", "tool_result"} and isinstance(identity, str):
                         self._live_tool_details.setdefault(identity, {})[kind] = block
             self._enqueue_event_log(data, ts=frame_ts)
+            if self._work_sharer is not None:
+                await self._work_sharer.cli_event(data)
 
         if event_type == "remote_control":
             # A remote-control transport reporting its pairing URL. Surface it as
@@ -2734,6 +2771,8 @@ class Broker(
             # Emit CLI turn as room_message so it shows participant color. A realm room's
             # host keeps its own agent: its reply is already its own turn, so it is not
             # copied into the room a second time.
+            if self._work_sharer is not None and content:
+                await self._work_sharer.reply(content)
             if self._room_bridge is not None and self._mesh_adapter is not None and content:
                 if self._room_copies_cli_replies():
                     await self._room_bridge.broadcast_cli_message(

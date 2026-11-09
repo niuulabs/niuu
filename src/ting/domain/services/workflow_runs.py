@@ -23,6 +23,7 @@ from niuu.observability import get_observability
 from ting.domain.campaign_run_projection import RunProjection, open_gates, project_run, run_gates
 from ting.domain.models import WorkflowCampaign
 from ting.domain.services.gate_notifications import GateNotifier
+from ting.domain.services.run_room_notices import RunRoomNotifier
 from ting.domain.services.workflow_step_engine import (
     Recovered,
     StepRunRequest,
@@ -129,6 +130,7 @@ class WorkflowRuns:
         sink: RunProjectionSink,
         volundr_factory: VolundrFactory,
         gate_notifier: GateNotifier | None = None,
+        room_notifier: RunRoomNotifier | None = None,
     ) -> None:
         self._engine = engine
         self._steps = steps
@@ -136,6 +138,7 @@ class WorkflowRuns:
         self._sink = sink
         self._factory = volundr_factory
         self._gate_notifier = gate_notifier
+        self._room_notifier = room_notifier
 
     async def launch(
         self,
@@ -388,6 +391,9 @@ class WorkflowRuns:
             # Before the no-change check: a sweep's refresh retries what Forge refused.
             await self._gate_notifier.sync(campaign, state)
         projection = project_run(campaign, state, now=datetime.now(UTC))
+        if self._room_notifier is not None:
+            # Also before the no-change check: a sweep's refresh retries what Forge refused.
+            await self._room_notifier.sync(campaign, state, projection.status)
         if not projection.differs_from(campaign):
             return
         await self._sink.apply_run_projection(campaign, projection)

@@ -19,7 +19,6 @@ This page covers how to operate the feature.
 | `system` | attention | A session starts waiting for its owner (a question, confirmation or permission request). | `attention:{session}:{state_since}[:{request_id}]` |
 | `operator` | any except reply_ready | `POST /api/v1/forge/sessions/{id}/notifications` | `submit:{session}:{principal}:{idempotency_key}` |
 | `agent` (direct) | milestone, decision, attention, error, info | The same direct submit made by the session itself with its own session credential, for example through the Forge-hosted MCP endpoint | `submit:{session}:agent:{owner}:{idempotency_key}` |
-| `system` | attention | A Work review gate is waiting for a person. Forge projects it from the gate's `workflow_gate` frame when the log batch is appended; see [Review gates](#review-gates). | `workflow-gate:{session}:{gate_id}` |
 | `operator` | attention | A gate of a Ting step-engine run is waiting for a person. Ting submits it on a session of the run and resolves it when the gate is decided; see [workflow step sessions](workflow-step-sessions.md#gates-and-cancel). | `submit:{session}:{principal}:workflow-gate:{run}:{activation}` |
 
 The notification id is a uuid5 of the dedupe key, so every retry maps to the same
@@ -193,49 +192,6 @@ the live event; the user's answer is an ordinary message to the session. A syste
 (AskUserQuestion, confirmation, permission) the session is blocked on, answered in the
 session's question card. Field rules: `docs/forge/session-notifications-contract.md` §12.
 
-## Review gates
-
-A Work workflow stops at a review gate until someone decides it. The session's broker
-writes the gate's state to the session log as a `workflow_gate` frame when the gate
-opens, and again when it is decided. Forge projects those frames, the same way it
-projects notification turns, so a gate needs no relay and no Work configuration.
-
-- **When a gate opens.** Forge records one `attention` / `warning` / `system` item
-  anchored to that log row (`session_seq`). It carries the session's
-  `coordination.project_id` in `project_id`, so project rules and
-  `GET /notifications?project_id=` select it, and the owner's "Needs-input pushes" rule
-  pushes it to their phone like a session's question. The title is the session name and
-  the gate's label. The body is the gate's summary, or its instructions when it has
-  none.
-- **Routing to the gate.** The item's `input_request` is
-  `{kind: "workflow_gate", request_id: <gate id>}`. A client decides it with
-  `POST /sessions/{session_id}/workflow/gates/{request_id}/resolve`, percent-encoding
-  the gate id, which contains colons. That route requires the header
-  `x-niuu-workflow-gate-intent: resolve`.
-- **When a gate is decided.** The decided frame settles the item, wherever the decision
-  was made: the Work page, the session page, the phone or an agent allowed to answer the
-  gate. The item is marked read and resolved, with `resolution` set to the gate's
-  outcome (for example "Review the result approved by Ada."), and is sent again as
-  `session_notification` so clients replace it in place.
-  `resolved_by_notification_id` stays null.
-- **Which gates notify.** Every gate that waits for a person. A gate in
-  `automated_approval` mode (an agent answers it) and a gate with
-  `pendingBehavior: silent` raise nothing. Evidence gates log no gate frame.
-
-**One item per opening.** The gate's id names its attempt, so a retried log append, or a
-Forge or session restart, keeps one item. A gate sent back with requested changes and
-opened again is a new attempt, and asks again. Only a decision settles the item: a
-session that finishes a turn or stops waiting on a question leaves it open.
-
-**What does not settle an item.** A session that stops or is deleted while its gate is
-pending decides nothing, so the item stays open. A restarted session restores its gate,
-which can still be decided. Resolve an abandoned item by hand
-(`PUT /notifications/{id}/resolve`). A gate that opened before this version has no item.
-
-An unreadable `workflow_gate` frame raises no item and never holds back the rest of its
-log batch, because no retry could change it. Forge logs it at error level with the
-session and seq and counts it on `volundr.notifications.workflow_gate_frame_malformed`.
-
 ## Images
 
 An agent attaches an image with `notify`'s `image` input: `{"file_id": …}` from
@@ -294,7 +250,8 @@ closed it; null when no notification did) and `resolution` (the operator's text,
 what the gate's decision was). A notification is resolved at most once: the first
 resolution is kept.
 
-Deciding a review gate resolves that gate's item; see [Review gates](#review-gates). A
+Ting resolves a review gate's notification when the gate is decided; see
+[workflow step sessions](workflow-step-sessions.md#gates-and-cancel). A
 person or an agent can also resolve one in three ways:
 
 - **By incident.** Give every notification about one incident the same `correlation_id`

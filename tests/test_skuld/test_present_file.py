@@ -106,6 +106,26 @@ def test_a_presented_file_records_where_it_was_in_the_session(client, tmp_path, 
     assert paths == ["/workspace/docs/plan.md", "/home/artifacts/diagram.svg"]
 
 
+def test_a_run_member_shares_what_it_presents_with_the_runs_room(client, tmp_path, monkeypatch):
+    from skuld import broker as bmod
+
+    shared: list = []
+
+    class _Sharer:
+        async def presented(self, record):
+            shared.append(record)
+
+    monkeypatch.setattr(bmod.broker, "_work_sharer", _Sharer())
+    (tmp_path / "review.md").write_text("# Review")
+
+    r = client.post("/api/present-file", json={"path": str(tmp_path / "review.md")})
+
+    assert r.status_code == 200, r.text
+    [record] = shared
+    assert record["file_id"] == r.json()["file_id"]
+    assert record["name"] == "review.md"
+
+
 def test_title_overrides_name(client, tmp_path):
     src = tmp_path / "raw.bin"
     src.write_bytes(b"x")

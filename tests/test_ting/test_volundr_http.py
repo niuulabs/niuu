@@ -1660,6 +1660,32 @@ class TestStepSessions:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_a_notice_goes_to_the_rooms_notice_operation(self, adapter: VolundrHTTPAdapter):
+        route = respx.post(f"{SESSIONS_URL}/room-1/room/notice").mock(
+            return_value=httpx.Response(200, json={"status": "posted"})
+        )
+
+        await adapter.post_room_notice(
+            "room-1", "coder closed Write the code: pass.", notice_id="s-1:closed"
+        )
+
+        assert json.loads(route.calls[0].request.content) == {
+            "content": "coder closed Write the code: pass.",
+            "notice_id": "s-1:closed",
+        }
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_notice_forge_refuses_is_raised(self, adapter: VolundrHTTPAdapter):
+        respx.post(f"{SESSIONS_URL}/room-1/room/notice").mock(
+            return_value=httpx.Response(503, json={"detail": "Room mode is not enabled"})
+        )
+
+        with pytest.raises(httpx.HTTPStatusError, match="Room mode is not enabled"):
+            await adapter.post_room_notice("room-1", "x", notice_id="n")
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_a_step_session_joins_the_runs_project_as_its_member(
         self, adapter: VolundrHTTPAdapter
     ):

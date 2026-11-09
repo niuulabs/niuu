@@ -1932,3 +1932,35 @@ describe('SessionChat', () => {
     expect(localStorage.getItem('niuu.compactUx.conversationFold')).toBe('expanded');
   });
 });
+
+describe("SessionChat — a workflow run's room", () => {
+  it("names the run's other sessions as the host session's workers", () => {
+    const onWorkersChange = vi.fn();
+    const participants = new Map<string, RoomParticipant>([
+      ['coder-session', { peerId: 'coder-session', persona: 'Skuld', participantType: 'skuld' }],
+      [
+        'reviewer-session',
+        {
+          peerId: 'reviewer-session',
+          persona: '',
+          displayName: 'wf-run-1-reviewer',
+          participantType: 'skuld',
+        },
+      ],
+    ]);
+
+    render(
+      <SessionChat
+        {...defaultProps}
+        participants={participants}
+        hostPeerId="coder-session"
+        onWorkersChange={onWorkersChange}
+      />,
+    );
+
+    expect(onWorkersChange).toHaveBeenCalledTimes(1);
+    expect(onWorkersChange.mock.calls[0]![0].map((w: { name: string }) => w.name)).toEqual([
+      'wf-run-1-reviewer',
+    ]);
+  });
+});
