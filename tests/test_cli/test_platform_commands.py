@@ -325,7 +325,8 @@ class TestDynamicUpCallback:
                 Path("~/.niuu/home").expanduser()
             )
             assert captured_environment["POD_MANAGER__KWARGS__CLAUDE_BINARY"] == "claude"
-            assert captured_environment["POD_MANAGER__KWARGS__MAX_CONCURRENT"] == "4"
+            # No session limit unless the operator sets one, so none is passed on.
+            assert "POD_MANAGER__KWARGS__MAX_CONCURRENT" not in captured_environment
             assert captured_environment["POD_MANAGER__KWARGS__SDK_PORT_START"] == "9100"
             assert captured_environment["GIT__VALIDATE_ON_CREATE"] == "false"
             assert "LOCAL_MOUNTS__ENABLED" not in os.environ
@@ -1388,7 +1389,7 @@ class TestHostsSwitch:
         assert "runtime_backend" not in pod_manager
         local = pod_manager["kwargs"]["local"]
         assert local["adapter"].endswith("LocalProcessPodManager")
-        assert local["kwargs"]["max_concurrent"] == 4
+        assert local["kwargs"]["max_concurrent"] is None
         assert pod_manager["kwargs"]["pool"] == {
             "adapter": "volundr.adapters.outbound.vm_pod_manager.VmPodManager",
             "kwargs": {"profile": "host", "pool_id": "local-hosts", "max_machines": 16},

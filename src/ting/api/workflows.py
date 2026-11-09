@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
 
@@ -882,7 +883,15 @@ async def _require_playable_members(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not members:
         return
-    verdicts = await forge.check_playability(members, auth_token=auth_token, principal=principal)
+    try:
+        verdicts = await forge.check_playability(
+            members, auth_token=auth_token, principal=principal
+        )
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"The run was not started: {exc}",
+        ) from exc
     refused = [verdict for verdict in verdicts if not verdict.playable]
     if refused:
         raise HTTPException(

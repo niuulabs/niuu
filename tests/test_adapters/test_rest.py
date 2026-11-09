@@ -1905,6 +1905,34 @@ class TestSessionRoomProxy:
         assert response.status_code == 403
         assert upstream is None
 
+    def test_the_owners_services_hand_the_runs_root_its_offer(
+        self, client: TestClient, repository: InMemorySessionRepository
+    ) -> None:
+        host = self._session(repository)
+
+        response, (args, _) = self._post_room(client, host, self.PRINCIPAL, operation="offer")
+
+        assert response.status_code == 200
+        assert args[1].endswith("/api/room/offer")
+
+    def test_a_session_can_never_hand_the_root_an_offer(
+        self, client: TestClient, repository: InMemorySessionRepository
+    ) -> None:
+        host = self._session(repository)
+        member = Principal(
+            user_id="dev-user",
+            email="",
+            tenant_id="default",
+            roles=[],
+            token_use="forge_session",
+            bound_session_id=str(uuid4()),
+        )
+
+        response, upstream = self._post_room(client, host, member, operation="offer")
+
+        assert response.status_code == 403
+        assert upstream is None
+
     def test_a_person_is_never_stamped_as_a_calling_session(
         self, client: TestClient, repository: InMemorySessionRepository
     ) -> None:

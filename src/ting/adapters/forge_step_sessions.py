@@ -45,6 +45,7 @@ from ting.domain.run_members import (
     RunMemberError,
     member_event_filters,
     member_model,
+    member_topics,
     member_values,
     run_orchestration,
 )
@@ -143,6 +144,7 @@ class _MemberPlan:
     document: dict[str, Any]
     extra_prompt: str
     event_filters: dict[str, str]
+    topics: tuple[str, ...]
 
 
 class ForgeStepSessions(StepSessionPort):
@@ -384,6 +386,7 @@ class ForgeStepSessions(StepSessionPort):
             document=document,
             extra_prompt=self._extra_prompt_of(campaign, member),
             event_filters=self._event_filters_of(campaign, member),
+            topics=member_topics(campaign.workflow_snapshot, member),
         )
 
     async def _project_ref(
@@ -476,6 +479,7 @@ class ForgeStepSessions(StepSessionPort):
                     persona_alias=persona_ref.alias,
                     orchestration=orchestration,
                     event_filters=plan.event_filters,
+                    topics=plan.topics,
                     repo=str(campaign.metadata.get("repo") or ""),
                     branch=str(campaign.metadata.get("branch") or ""),
                     base_branch=str(campaign.metadata.get("base_branch") or ""),

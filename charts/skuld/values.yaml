@@ -259,6 +259,9 @@ workflowSteps:
   orchestratorPeerId: ""
   # -- The member's eventFilters from the workflow; empty takes every offer of its topics
   eventFilters: {}
+  # -- Every topic the workflow routes to the member (its stages' consumesEventTypes); it
+  # subscribes to them on top of its persona's own topics
+  topics: []
   # -- Who decides the run's next step: engine or session. Empty keeps Skuld's default (engine)
   orchestration: ""
 

@@ -109,6 +109,10 @@ CODEX_GATEWAY_TOKEN_ENV = "NIUU_MODEL_GATEWAY_TOKEN"
 # when this is on; it defaults to off since Codex 0.152 (openai/codex#41744). The
 # session plan (Forge plan bar, Lexi plan dock) is built from those notifications.
 CODEX_PLAN_TOOL_OVERRIDE = ("tools.update_plan.enabled", "true")
+#: Codex's workspace-write sandbox also cuts the network unless told otherwise. A persona's
+#: ``workspace_write`` limits where it writes, not whether it reaches its remote: a coder must
+#: push, fetch and read the web. The session's runtime is the network boundary.
+CODEX_WORKSPACE_WRITE_NETWORK = ("sandbox_workspace_write.network_access", "true")
 
 
 def codex_gateway_overrides(gateway_url: str) -> list[tuple[str, str]]:
@@ -741,6 +745,8 @@ class CodexWebSocketTransport(CLITransport):
         for key, value in self._gateway_overrides:
             cmd.extend(["-c", f"{key}={value}"])
         cmd.extend(["-c", "=".join(CODEX_PLAN_TOOL_OVERRIDE)])
+        if self._sandbox == "workspace-write" and not self._skip_permissions:
+            cmd.extend(["-c", "=".join(CODEX_WORKSPACE_WRITE_NETWORK)])
         if self._shell_tool_enabled is not None:
             cmd.extend(["-c", f"features.shell_tool={str(self._shell_tool_enabled).lower()}"])
         if self._web_search_enabled is False:

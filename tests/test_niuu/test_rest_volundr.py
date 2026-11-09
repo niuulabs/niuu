@@ -1899,6 +1899,37 @@ def test_mesh_identity_refusals_pass_through_with_their_status() -> None:
 
 
 @respx.mock
+def test_playability_is_answered_by_the_forge_a_session_create_would_use() -> None:
+    """A mini-mode launch asks the root whether each member can play; the target Forge answers."""
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    body = {"members": [{"member": "coder", "model": "m", "persona_definition": {"id": "coder"}}]}
+    route = respx.post("http://alpha/api/v1/forge/sessions/playability").mock(
+        return_value=Response(200, json={"members": [{"member": "coder", "playable": True}]})
+    )
+
+    response = client.post("/api/v1/forge/sessions/playability", headers=_headers(), json=body)
+
+    assert response.status_code == 200
+    assert response.json() == {"members": [{"member": "coder", "playable": True}]}
+    assert json.loads(route.calls.last.request.content) == body
+
+
+@respx.mock
+def test_a_playability_refusal_passes_through_with_its_status() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.post("http://alpha/api/v1/forge/sessions/playability").mock(
+        return_value=Response(422, json={"detail": "no checker configured"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions/playability", headers=_headers(), json={"members": []}
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "no checker configured"}
+
+
+@respx.mock
 def test_activity_report_proxies_to_owner_with_body() -> None:
     """Broker activity heartbeats (incl. cli_session_id for resume) must reach
     the owning instance through the aggregate, not 404 at the gateway."""

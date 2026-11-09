@@ -25,7 +25,6 @@ from tests.support.workflow_steps import (
 from volundr.adapters.outbound import local_process as local_process_mod
 from volundr.adapters.outbound.local_process import (
     DEFAULT_CLAUDE_BINARY,
-    DEFAULT_MAX_CONCURRENT,
     DEFAULT_SDK_PORT_START,
     DEFAULT_STOP_TIMEOUT,
     LocalProcessPodManager,
@@ -71,7 +70,7 @@ def manager(tmp_workspaces: Path, tmp_state_file: Path) -> LocalProcessPodManage
     return LocalProcessPodManager(
         workspaces_dir=str(tmp_workspaces),
         claude_binary="/usr/bin/fake-claude",
-        max_concurrent=DEFAULT_MAX_CONCURRENT,
+        max_concurrent=16,
         sdk_port_start=DEFAULT_SDK_PORT_START,
         stop_timeout=DEFAULT_STOP_TIMEOUT,
         state_file=str(tmp_state_file),
@@ -2428,7 +2427,8 @@ class TestConstructor:
             workspaces_dir=str(tmp_workspaces),
             state_file=str(tmp_state_file),
         )
-        assert mgr._max_concurrent == DEFAULT_MAX_CONCURRENT
+        # No limit unless the operator sets one.
+        assert mgr._max_concurrent is None
         assert mgr._stop_timeout == DEFAULT_STOP_TIMEOUT
         assert mgr._claude_binary == DEFAULT_CLAUDE_BINARY
 
@@ -2443,7 +2443,7 @@ class TestConstructor:
             state_file=str(tmp_state_file),
             unknown_key="should not raise",
         )
-        assert mgr._max_concurrent == DEFAULT_MAX_CONCURRENT
+        assert mgr._max_concurrent is None
 
     def test_expanduser_paths(self) -> None:
         """Paths with ~ are expanded."""

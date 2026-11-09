@@ -1642,6 +1642,7 @@ class TestStepSessions:
                 persona_alias="coder",
                 orchestration="engine",
                 event_filters={"area": "backend"},
+                topics=("code.requested", "merge.approved"),
                 repo="https://github.com/niuulabs/volundr.git",
                 branch="feat/x",
                 base_branch="main",
@@ -1656,6 +1657,7 @@ class TestStepSessions:
         assert body["workflow_member"] == "coder"
         assert body["workflow_persona_alias"] == "coder"
         assert body["workflow_event_filters"] == {"area": "backend"}
+        assert body["workflow_topics"] == ["code.requested", "merge.approved"]
         assert body["workflow_orchestration"] == "engine"
         assert "metadata" not in body
         assert body["model"] == "claude-sonnet-4-6"

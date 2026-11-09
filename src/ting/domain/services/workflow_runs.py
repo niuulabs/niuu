@@ -486,7 +486,8 @@ class WorkflowRuns:
     async def catch_up_run(self, campaign: WorkflowCampaign) -> None:
         """Read the ``workflow_step`` frames of the run's member sessions and record them.
 
-        Skuld keeps each pickup, pass and close in the session's durable event log, which
+        Skuld keeps each listening report, pickup, pass and close in the session's durable
+        event log, which
         Forge serves (``GET /sessions/{id}/log``), so a report the activity stream dropped is
         read back from there. A frame already recorded is a repeat; one the run refuses is
         logged at error and skipped, so one stale frame never hides the ones after it.
@@ -525,6 +526,15 @@ class WorkflowRuns:
     ) -> None:
         """Record what one durable ``workflow_step`` frame says its session did."""
         try:
+            listening = frame.get("listening")
+            if isinstance(listening, Mapping):
+                await self.record_listening(
+                    run_id=UUID(str(listening["run_id"])),
+                    session_id=session_id,
+                    member=str(listening["member"]),
+                    start_id=str(listening["start_id"]),
+                )
+                return
             passed = frame.get("passed")
             if isinstance(passed, Mapping):
                 await self.record_passed(

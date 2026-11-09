@@ -789,6 +789,14 @@ class SessionCreate(BaseModel):
             "because only the workflow knows whether the member has filters."
         ),
     )
+    workflow_topics: list[str] | None = Field(
+        default=None,
+        description=(
+            "Every topic the workflow routes to the member (its stages' consumesEventTypes). "
+            "The member subscribes to them on top of its persona's own topics, so an offer of a "
+            "stage the workflow gives it reaches it. Only with workflow_step_host."
+        ),
+    )
     workflow_orchestration: Literal["engine", "session"] | None = Field(
         default=None,
         description=(
@@ -965,11 +973,13 @@ class SessionCreate(BaseModel):
         if (
             self.workflow_persona_alias is not None
             or self.workflow_event_filters is not None
+            or self.workflow_topics is not None
             or self.workflow_orchestration is not None
         ):
             raise ValueError(
-                "workflow_persona_alias, workflow_event_filters and workflow_orchestration "
-                "belong to a workflow step host: send them with workflow_step_host"
+                "workflow_persona_alias, workflow_event_filters, workflow_topics and "
+                "workflow_orchestration belong to a workflow step host: send them with "
+                "workflow_step_host"
             )
         return self
 
@@ -4418,7 +4428,7 @@ def create_router(
         request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
         operation: Literal[
-            "direct", "join", "leave", "workflow-events", "session-message", "notice"
+            "direct", "join", "leave", "workflow-events", "session-message", "notice", "offer"
         ] = Path(description="Room operation on the session's broker"),
     ) -> Response:
         """Reach a session's room through Forge, which can always route to its broker.
@@ -4426,13 +4436,16 @@ def create_router(
         A session's advertised origin may serve browsers only, and on a cluster
         the Forge host does not serve session paths, so services come through here.
         ``notice`` posts a notice as the room's Coordinator (a workflow run's steps, gates
-        and end, from Ting); a session-bound credential may never post one.
+        and end, from Ting); ``offer`` hands a workflow run's root the engine's signed step
+        offer to publish on the run's mesh. A session-bound credential may post neither.
         """
         principal = await extract_principal(request)
-        if operation == "notice" and principal.token_use == FORGE_SESSION_TOKEN_USE:
+        if operation in ("notice", "offer") and principal.token_use == FORGE_SESSION_TOKEN_USE:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="A session cannot post notices in a room; only its owner's services do",
+                detail=(
+                    f"A session cannot post a {operation} in a room; only its owner's services do"
+                ),
             )
         session = await forge.get_session(session_id)
         if session is None:

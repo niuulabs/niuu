@@ -5331,6 +5331,40 @@ def create_volundr_router(
             headers=headers,
         )
 
+    @router.post("/sessions/playability", operation_id="check_session_playability")
+    async def check_playability(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Whether each persona can be played on its model's harness, on the Forge a session
+        create would be placed on (the same instance resolution as ``POST /sessions``).
+
+        Forge's answer and status go through unchanged; nothing is created.
+        """
+        requested_instance_id = body.get("instance_id") or body.get("instanceId")
+        instance = await _resolve_target_instance(
+            service,
+            principal,
+            str(requested_instance_id) if requested_instance_id else None,
+            request=request,
+            embedded_app=embedded_forge_app,
+        )
+        upstream = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path="/sessions/playability",
+            json_body=body,
+            params=None,
+            embedded_app=embedded_forge_app,
+        )
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+        )
+
     @router.post("/sessions/{session_id}/mesh-identity", operation_id="issue_session_mesh_identity")
     async def mesh_identity(
         request: Request,

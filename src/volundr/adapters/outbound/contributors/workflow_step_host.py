@@ -61,6 +61,7 @@ from volundr.domain.workflow_session import (
     WORKFLOW_RUN_ROOM_KEY,
     WORKFLOW_STEP_HOST_KEY,
     WORKFLOW_STEPS_VALUES_KEY,
+    WORKFLOW_TOPICS_KEY,
 )
 
 #: Top-level key of the session spec values the skuld chart renders as Skuld's ``mesh``.
@@ -177,6 +178,9 @@ def _member_steps(session: Session, run_id: str, config: Mapping[str, Any]) -> d
         "personaAlias": alias,
         "orchestratorPeerId": str(session.hosted_by),
         "eventFilters": dict(filters),
+        # Every topic the workflow routes to the member; a request from before they were sent
+        # has none, and the member then subscribes to its persona's own topics only.
+        "topics": list(config.get(WORKFLOW_TOPICS_KEY) or []),
         "orchestration": orchestration,
     }
 

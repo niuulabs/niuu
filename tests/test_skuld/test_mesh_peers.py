@@ -57,6 +57,32 @@ class TestWhatASkuldAnnounces:
         topics = mesh_topics(_settings(role=" builder ", description=" Builds. "))
         assert (topics.role, topics.description) == ("builder", "Builds.")
 
+    def test_a_run_member_also_takes_the_topics_its_workflow_routes_to_it(self) -> None:
+        """The merge stage gives the coder merge.approved, which its persona does not declare."""
+        settings = SkuldSettings(
+            mesh=MeshConfig(enabled=True, peer_id="me"),
+            session={"id": "s", "persona": _persona(consumes=["code.requested"])},
+            workflow_steps={
+                "enabled": True,
+                "run_id": "run-1",
+                "member": "coder",
+                "persona_alias": "coder",
+                "orchestrator_peer_id": "root",
+                "topics": ["merge.approved", "code.requested"],
+            },
+        )
+
+        assert mesh_topics(settings).consumes == ("code.requested", "merge.approved")
+
+    def test_workflow_topics_mean_nothing_to_a_session_that_is_no_member(self) -> None:
+        settings = SkuldSettings(
+            mesh=MeshConfig(enabled=True, peer_id="me"),
+            session={"id": "s", "persona": _persona(consumes=["code.requested"])},
+            workflow_steps={"topics": ["merge.approved"]},
+        )
+
+        assert mesh_topics(settings).consumes == ("code.requested",)
+
     def test_a_persona_description_that_is_not_text_fails_loudly(self) -> None:
         persona = _persona(persona_id="reviewer")
         persona["definition"]["description"] = ["not", "text"]

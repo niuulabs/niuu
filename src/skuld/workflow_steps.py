@@ -117,6 +117,8 @@ OFFER_REFUSALS_COUNTER = "skuld.workflow.offer_refusals"
 
 #: A frame that records an offer this member passed, so Ting can read it from the durable log.
 _PASSED_KEY = "passed"
+#: The durable frame of a ``listening`` report (read back by Ting's catch-up).
+_LISTENING_KEY = "listening"
 
 _RUNNING_STATES = ("active", "tool_executing")
 _TURN_END_STATES = ("idle", "stopped", "error")
@@ -418,15 +420,21 @@ class WorkflowStepMixin:
         config = self._settings.workflow_steps
         if not config.enabled:
             return
-        await self._report_workflow_step(
-            {
-                "event": REPORT_LISTENING,
-                "run_id": config.run_id,
-                "member": config.member,
-                "start_id": self._workflow_start_id,
-                "topics": list(self._mesh_topics.consumes),
-            }
+        listening = {
+            "run_id": config.run_id,
+            "member": config.member,
+            "start_id": self._workflow_start_id,
+            "topics": list(self._mesh_topics.consumes),
+        }
+        # Durable first: Ting offers nothing until every member that takes a topic listens,
+        # and a report its activity stream missed (Ting restarted, the stream reconnected) is
+        # read back from this log. A listening report that is not stored would leave the run
+        # waiting on this member until the step's deadline, so not storing it fails the start.
+        await self._record_workflow_frame(
+            {"type": WORKFLOW_STEP_FRAME, _LISTENING_KEY: listening},
+            f"listening report of member {config.member}",
         )
+        await self._report_workflow_step({"event": REPORT_LISTENING, **listening})
         for step in list(self._workflow_steps.values()):
             if step.is_open:
                 await self._announce_pickup(step)
@@ -1050,6 +1058,9 @@ class WorkflowStepMixin:
                 continue
             if _PASSED_KEY in frame.payload:
                 self._offer_decisions[frame.payload[_PASSED_KEY]["offer_id"]] = OFFER_PASSED
+                continue
+            if _LISTENING_KEY in frame.payload:
+                # A start's listening report holds no step; this start reports its own.
                 continue
             step = WorkflowStep.from_frame(frame.payload)
             self._workflow_steps[step.activation_id] = step

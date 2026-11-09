@@ -127,6 +127,9 @@ class StepSessionRequest:
     #: The stage member's ``eventFilters``: each key must equal the value in the offered
     #: inputs' payload. Empty takes every offer of the member's topics.
     event_filters: Mapping[str, str] = field(default_factory=dict)
+    #: Every topic the workflow routes to the member (its stages' ``consumesEventTypes``): the
+    #: member subscribes to them on top of its persona's own.
+    topics: tuple[str, ...] = ()
     repo: str = ""
     branch: str = ""
     base_branch: str = ""

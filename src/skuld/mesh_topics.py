@@ -147,9 +147,13 @@ def mesh_topics(settings: SkuldSettings) -> MeshTopics:
             description=mesh.description.strip(),
         )
     persona = PortablePersonaDefinition.from_dict(raw)
+    steps = settings.workflow_steps
+    workflow_topics = steps.topics if steps.enabled else []
     return MeshTopics(
         consumes=_merged(
-            mesh.consumes_event_types, sorted(consumed_event_types(persona.definition))
+            mesh.consumes_event_types,
+            sorted(consumed_event_types(persona.definition)),
+            workflow_topics,
         ),
         produces=_merged(
             mesh.publish_event_types, sorted(produced_event_types(persona.definition))
