@@ -250,7 +250,8 @@ render the unit and carry the run's mesh settings into each member's Skuld.
 ## 10. Migration
 
 The work lands in the order of the build plan. When the handoff is deployed, runs still open
-are canceled with the reason `workflow handoff moved to the mesh; relaunch the run`.
+are canceled with the reason `canceled at upgrade: step handoff moved to the mesh`, by
+`WorkflowRuns.cancel_runs_open_before_mesh` at Ting's start.
 
 **Deleted:**
 - **Ting:** `StepSessionPort.deliver` and `observe`, `SessionNotReadyError`,

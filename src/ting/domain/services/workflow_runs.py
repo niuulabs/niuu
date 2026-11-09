@@ -30,7 +30,7 @@ from ting.domain.services.workflow_step_engine import (
     StepRunRequest,
     WorkflowStepEngine,
 )
-from ting.domain.step_engine import unit_sessions
+from ting.domain.step_engine import unit_root, unit_sessions
 from ting.domain.workflow_steps import (
     ActorKind,
     Ending,
@@ -53,6 +53,11 @@ from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_steps import WorkflowStepRepository
 
 logger = logging.getLogger(__name__)
+
+
+#: Why a run still open on the old HTTP step path is canceled at the upgrade. A run's steps
+#: are offered on the mesh to the members of its unit; a run launched before has neither.
+UPGRADE_CANCEL_REASON = "canceled at upgrade: step handoff moved to the mesh"
 
 
 class RunProjectionSink(Protocol):
@@ -403,6 +408,50 @@ class WorkflowRuns:
 
     async def pending_gates(self, campaign: WorkflowCampaign) -> list[dict[str, Any]]:
         return open_gates(campaign, await self._steps.load(campaign.id))
+
+    async def cancel_runs_open_before_mesh(self) -> list[UUID]:
+        """Cancel the runs launched before step handoff moved to the mesh; returns their ids.
+
+        A run launched by the mesh engine records its unit when it starts, and every
+        workflow with stage members has one. A launched, unfinished run of such a workflow
+        with no unit was launched by the old engine, whose steps were delivered to its
+        sessions over HTTP; nothing can offer them on the mesh, so it is canceled with
+        ``UPGRADE_CANCEL_REASON`` and its sessions are stopped. Runs with no stage members,
+        runs that finished and runs of the mesh engine are left alone, so calling this at
+        every start cancels nothing once the old runs are gone.
+
+        A run that cannot be canceled is logged at error and counted, and the others are
+        still canceled; it is tried again at the next start, because it is still open.
+        """
+        canceled: list[UUID] = []
+        for campaign in await self._campaigns.list_active_campaigns():
+            try:
+                state = await self._steps.load(campaign.id)
+                if not state.launched or state.finished or unit_root(state):
+                    continue
+                if not await self._engine.expects_unit(campaign.id):
+                    continue
+                await self.cancel(campaign, UPGRADE_CANCEL_REASON)
+            except Exception as exc:
+                logger.error(
+                    "Could not cancel run %s, launched before step handoff moved to the "
+                    "mesh: %s: %s; it is tried again at the next start",
+                    campaign.slug,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
+                get_observability().count(
+                    "ting_workflow_run_upgrade_cancel_errors_total",
+                    description=(
+                        "Workflow runs launched before step handoff moved to the mesh that "
+                        "could not be canceled at the upgrade."
+                    ),
+                )
+                continue
+            logger.warning("Canceled run %s: %s", campaign.slug, UPGRADE_CANCEL_REASON)
+            canceled.append(campaign.id)
+        return canceled
 
     async def reconcile_owner(self, owner_id: str) -> None:
         """Catch up on reports missed while the activity stream was down.

@@ -164,6 +164,7 @@ from volundr.domain.services import (
 )
 from volundr.domain.services.attachments_index import KINDS as ATTACHMENT_KINDS
 from volundr.domain.services.attachments_index import filter_attachments
+from volundr.domain.services.forge import HostedUnitNotFoundError
 from volundr.domain.services.forge_session_launch import (
     FORGE_MCP_KEY,
     ForgeMcpGrantChangeRefusedError,
@@ -199,10 +200,6 @@ from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import load_workspace_transcript
 
 logger = logging.getLogger(__name__)
-# How long Forge waits for a session's broker to accept or answer one workflow step call. The
-# broker only records the step (it injects it later), so a call that takes longer than this
-# means the broker is not answering, which the caller must hear about (409 after reconcile).
-_WORKFLOW_STEP_PROXY_TIMEOUT_SECONDS = 10.0
 # How long send_session_message holds the WS open waiting for the broker's
 # correlated delivery ACK before reporting the message as "pending" (the broker's
 # bounded retry then drives it to delivered/failed). Named so it is not a magic
@@ -535,11 +532,6 @@ def _live_body_has_in_progress_turn(payload: object) -> bool:
 
 _session_proxy_url = session_proxy_url
 _server_side_http_proxy_target = server_side_http_proxy_target
-
-#: A session on its way up: no broker to relay a workflow step call to yet.
-_BOOTING_SESSION_STATUSES = frozenset(
-    {SessionStatus.CREATED, SessionStatus.STARTING, SessionStatus.PROVISIONING}
-)
 
 
 def _fallback_workspace_logs(
@@ -3031,6 +3023,8 @@ def create_router(
             )
         except ForgeMcpGrantEscalationError as e:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+        except HostedUnitNotFoundError as e:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
         except (RepoValidationError, PersonaNotPlayableError) as e:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -3460,7 +3454,11 @@ def create_router(
     @router.delete(
         "/sessions/{session_id}",
         status_code=status.HTTP_204_NO_CONTENT,
-        responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        responses={
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
         tags=["Sessions"],
     )
     async def delete_session(
@@ -3482,6 +3480,9 @@ def create_router(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied to session {session_id}",
             )
+        except SessionStateError as exc:
+            # A unit root that still hosts members: delete the members first.
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except RuntimeError as exc:
             # The session's compute could not be removed; the session is kept.
             raise HTTPException(
@@ -5788,110 +5789,6 @@ def create_router(
                 ) from None
             preview_cache.put(sid, cache_key, jpeg, edge)
             return _jpeg_response(jpeg)
-
-    async def _proxy_workflow_step_call(
-        request: Request,
-        session_id: UUID,
-        method: Literal["GET", "POST"],
-        *path_segments: str,
-        body: dict | None = None,
-    ) -> Response:
-        """Relay one workflow step call to the session's broker, status and body unchanged.
-
-        Skuld answers a step delivery with 202 (accepted), 200 (the same activation again) or
-        409 (a different step is open), and the step state with 200 or 404. The caller (the
-        workflow engine) acts on exactly those, so none is re-mapped; a pod Forge cannot
-        reach is a 409 after the stale row is reconciled, never an accepted step.
-        """
-        action = "read" if method == "GET" else "update"
-        principal = await _optional_principal(request)
-        with _chronicle_errors():
-            authorized = await forge.get_authorized_session(
-                session_id, principal=principal, action=action
-            )
-        if authorized.status in _BOOTING_SESSION_STATUSES:
-            # Its broker is not serving yet, and its chat endpoint may already name a route
-            # (Forge's own session proxy, for an OpenShell sandbox) that refuses a call it
-            # cannot attribute. Say what is true: not up yet; the caller waits and retries.
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    f"Session {session_id} is {authorized.status.value}: its broker is not up "
-                    "yet; workflow step calls reach it once it is running"
-                ),
-            )
-        try:
-            session, base_url = await forge.get_session_proxy_target(session_id)
-            proxy_url, routing_headers = await _broker_request(
-                session, base_url, "api", "workflow", "steps", *path_segments
-            )
-        except LookupError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session not found: {session_id}",
-            )
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session {session_id} has no active endpoint",
-            )
-        headers: dict[str, str] = {}
-        auth = request.headers.get("authorization")
-        if auth:
-            headers["Authorization"] = auth
-        headers.update(routing_headers)
-        try:
-            async with httpx.AsyncClient(timeout=_WORKFLOW_STEP_PROXY_TIMEOUT_SECONDS) as client:
-                response = await client.request(method, proxy_url, headers=headers, json=body)
-        except httpx.RequestError as e:
-            reconciled = await forge.reconcile_session(session_id)
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Session {session_id} is no longer reachable; "
-                    f"reconciled to {reconciled.status.value if reconciled else 'unknown'}. "
-                    f"Workflow step call not delivered: {e}"
-                ),
-            )
-        return Response(
-            content=response.content,
-            status_code=response.status_code,
-            media_type=response.headers.get("content-type", "application/json"),
-        )
-
-    @router.post(
-        "/sessions/{session_id}/workflow/steps",
-        tags=["Sessions"],
-        responses={
-            200: {"description": "The same activation was already delivered; nothing changed"},
-            202: {"description": "The step was recorded and will be injected at a turn boundary"},
-            404: {"model": ErrorResponse},
-            409: {"model": ErrorResponse},
-        },
-    )
-    async def deliver_workflow_step(
-        request: Request,
-        body: dict,
-        session_id: UUID = Path(description="Unique session identifier"),
-    ) -> Response:
-        """Deliver a workflow step activation to a step-host session's broker."""
-        return await _proxy_workflow_step_call(request, session_id, "POST", body=body)
-
-    @router.get(
-        "/sessions/{session_id}/workflow/steps/{activation_id}",
-        tags=["Sessions"],
-        responses={
-            404: {"model": ErrorResponse},
-            409: {"model": ErrorResponse},
-        },
-    )
-    async def get_workflow_step(
-        request: Request,
-        session_id: UUID = Path(description="Unique session identifier"),
-        activation_id: UUID = Path(description="Workflow step activation identifier"),
-    ) -> Response:
-        """Return a workflow step's current durable state from the session's broker."""
-        return await _proxy_workflow_step_call(request, session_id, "GET", str(activation_id))
 
     @router.get(
         "/sessions/{session_id}/help/requests",

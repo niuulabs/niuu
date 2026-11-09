@@ -15,7 +15,7 @@ PERSONA_DEFINITION_KEY = "persona_definition"
 #: The persona catalog name to look up at launch (the alternative to a pinned document).
 PERSONA_NAME_KEY = "persona"
 
-#: ``True`` when Skuld must serve the workflow step API and offer ``workflow_step_close``.
+#: ``True`` when Skuld must take the run's offers from the mesh and offer ``workflow_step_close``.
 WORKFLOW_STEP_HOST_KEY = "workflow_step_host"
 
 #: The workflow run (campaign) id the session works for.

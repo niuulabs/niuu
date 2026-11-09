@@ -87,6 +87,15 @@ async def test_a_member_of_a_session_that_is_not_a_unit_is_refused_with_409():
     assert "not a unit" in refused.json()["detail"]
 
 
+async def test_a_member_of_a_unit_that_does_not_exist_is_refused_with_404():
+    forge = build_forge_app()
+
+    refused = await _create(forge, _member_body(str(uuid4()), "member-1"))
+
+    assert refused.status_code == 404
+    assert "does not exist" in refused.json()["detail"]
+
+
 async def test_a_member_cannot_name_a_unit_and_be_a_unit():
     forge = build_forge_app()
     root_id, _ = await _unit(forge, members=0)
@@ -211,7 +220,7 @@ async def test_a_unit_with_members_cannot_be_deleted_until_they_are():
 
     refused = forge.client.delete(f"{PREFIX}/sessions/{root_id}")
 
-    assert refused.status_code == 503  # the delete route's answer for "kept", with the reason
+    assert refused.status_code == 409
     assert "delete the members first" in refused.json()["detail"]
     assert forge.client.delete(f"{PREFIX}/sessions/{member_id}").status_code in (200, 204)
     assert forge.client.delete(f"{PREFIX}/sessions/{root_id}").status_code in (200, 204)

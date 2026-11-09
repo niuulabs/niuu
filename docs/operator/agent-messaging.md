@@ -757,6 +757,35 @@ messages; peers are trusted as flock members (realm-verified discovery), and the
 no message content. A peer that is not a Skuld cannot answer it; `ask` then still returns the
 answer or a deadline, never `blocked` or `not_started`.
 
+## Workflow events
+
+A workflow run's steps travel on the run's mesh as one event type, `workflow`, with a `kind`.
+Only Skuld makes them, so each is stamped and signed by the platform; a session cannot forge
+one with `mesh_publish`. Agents otherwise talk freely: every topic a persona declares stays as
+described above, and nothing here limits what they say.
+
+| Kind | Meaning | Sent by |
+|---|---|---|
+| `step.offered` | work for whoever does this kind of work: node, task, inputs, deadline, how to close it | the run's root, for the offer Ting posts to its `room/offer` operation |
+| `step.picked_up` | "I am doing it." | each member that takes the offer |
+| `step.passed` | "I received it and it is not mine": the node's filters for the member do not match | a member that received the offer and did not take it |
+| `step.outcome` | how the step ended: verdict, outcome, note, or waiting/failed with the reason | the member, when its agent calls `workflow_step_close` |
+
+An event of a kind Ting does not know is carried, shown in the root's room and reported, and
+Ting records nothing for it. Every workflow event carries `correlation_id` = the run id, so it
+is on the run's thread, which the root follows and stores. An offer is also published on the
+topic the node's members consume (for example `code.requested`), and an outcome on the topic
+it produces (for example `review.passed`), as information: work starts only from an offer.
+Event ids derive from the offer id or activation id, so a republished event is the same event.
+
+Only a session whose pinned persona declares the offer's topic under `consumes` takes an offer.
+A session that follows the topic at runtime (`mesh_subscribe`) sees it and does not take it. A
+member accepts only offers signed by the run's orchestrator (Ting's `service:ting` certificate),
+and refuses one whose contract differs from its own pin; the refusal is an error log and a
+report to Forge. Ting never joins the mesh and never relays between agents: it posts the offer
+to the root and records what the Skulds report to Forge. See
+[workflow step sessions](workflow-step-sessions.md).
+
 ## Room hosts relay envelopes
 
 A room host delivers to a member session that joined from another session

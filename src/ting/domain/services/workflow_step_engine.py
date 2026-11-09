@@ -308,16 +308,26 @@ class WorkflowStepEngine:
             await self._advance(ledger, graph, dispatched, now)
         return await self._after(ledger, definition, graph)
 
-    async def _launch_unit(
-        self, run_id: UUID, graph: StepGraph, definition: StepRunDefinition
-    ) -> RunUnit | None:
-        """Start the run's root and every stage member together; ``None`` for a run with none."""
+    async def expects_unit(self, run_id: UUID) -> bool:
+        """Whether the run's workflow has stage members, so a launched run has a unit."""
+        definition, graph = await self._definition(run_id)
+        return bool(self._stage_members(graph, definition))
+
+    @staticmethod
+    def _stage_members(graph: StepGraph, definition: StepRunDefinition) -> dict[str, PersonaRef]:
         members: dict[str, PersonaRef] = {}
         for node in graph.nodes.values():
             if node.kind is not NodeKind.STAGE:
                 continue
             for member in node.members:
                 members.setdefault(member.alias, definition.persona_refs[member.alias])
+        return members
+
+    async def _launch_unit(
+        self, run_id: UUID, graph: StepGraph, definition: StepRunDefinition
+    ) -> RunUnit | None:
+        """Start the run's root and every stage member together; ``None`` for a run with none."""
+        members = self._stage_members(graph, definition)
         if not members:
             return None
         return await self._sessions.launch_run(run_id, members)
