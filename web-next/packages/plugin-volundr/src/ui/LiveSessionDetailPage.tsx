@@ -93,7 +93,7 @@ import { useSessionDetail, useSessionList } from './hooks/useSessionStore';
 import { coordinationOf, isCoordinationRole, leaderTag } from '../domain/projectTree';
 import { withRunMembers } from '../domain/runRoom';
 import { buildSessionLinks } from './sessions/sessionLinks';
-import { CoordinatorTag, WorkerOf } from './detail/Coordination';
+import { CoordinatorTag, WorkerOf, WorkerTopics } from './detail/Coordination';
 import { DecisionDock } from './detail/DecisionDock';
 import { RightDock, type RightDockTab } from './detail/RightDock';
 import {
@@ -3622,6 +3622,13 @@ function LiveSessionDetailPageInner({
       sessionId,
     ],
   );
+  // When this page owns which worker is shown, it shows that worker's topics itself.
+  const workerFocusIsHosts = focusedWorkerId !== undefined && onFocusWorker !== undefined;
+  // The room worker shown on its own: what it listens for and emits sits behind the name's
+  // chevron with the session's other facts, not across the worker's header.
+  const focusedWorker = focusedWorkerId
+    ? ravnWorkers.find((worker) => worker.peerId === focusedWorkerId)
+    : undefined;
   const panelHasContent = sessionPanelHasContent({
     workerSessions: coordination.workers,
     ravnWorkers,
@@ -4268,6 +4275,7 @@ function LiveSessionDetailPageInner({
                           coordinated={isCoordinationRole(liveSession?.coordination?.role)}
                         />
                       ) : null}
+                      {focusedWorker ? <WorkerTopics worker={focusedWorker} /> : null}
                     </div>
                   </details>
                   {sessionProjectName ? (
@@ -4494,6 +4502,7 @@ function LiveSessionDetailPageInner({
                             focusedWorkerId={focusedWorkerId}
                             onFocusWorker={onFocusWorker}
                             onWorkersChange={onRoomWorkers}
+                            showWorkerEvents={!workerFocusIsHosts}
                             meshEvents={chat.meshEvents}
                             agentEvents={chat.agentEvents}
                             pendingPermissions={chat.pendingPermissions}
@@ -4575,6 +4584,7 @@ function LiveSessionDetailPageInner({
                           focusedWorkerId={focusedWorkerId}
                           onFocusWorker={onFocusWorker}
                           onWorkersChange={onRoomWorkers}
+                          showWorkerEvents={!workerFocusIsHosts}
                           meshEvents={replayMeshEvents}
                           plan={chat.plan}
                           agents={chat.agents}

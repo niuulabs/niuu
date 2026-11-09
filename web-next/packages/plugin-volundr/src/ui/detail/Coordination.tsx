@@ -1,3 +1,4 @@
+import type { Worker } from '@niuulabs/ui';
 import type { Session } from '../../domain/session';
 import './detail.css';
 
@@ -48,6 +49,32 @@ export function WorkerOf({
         'Worker'
       ) : (
         'Nested'
+      )}
+    </div>
+  );
+}
+
+/** What a room worker listens for and emits, shown with the session's facts when it is focused. */
+export function WorkerTopics({ worker }: { worker: Pick<Worker, 'name' | 'consumes' | 'emits'> }) {
+  if (worker.consumes.length === 0 && worker.emits.length === 0) return null;
+  return (
+    <div className="forge-worker-topics" data-testid="worker-topics">
+      <span className="forge-worker-topics__who">{worker.name}</span>
+      {worker.consumes.length > 0 && (
+        <span className="forge-worker-topics__group">
+          Listens for
+          {worker.consumes.map((type) => (
+            <code key={type}>{type}</code>
+          ))}
+        </span>
+      )}
+      {worker.emits.length > 0 && (
+        <span className="forge-worker-topics__group">
+          Emits
+          {worker.emits.map((type) => (
+            <code key={type}>{type}</code>
+          ))}
+        </span>
       )}
     </div>
   );

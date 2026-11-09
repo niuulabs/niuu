@@ -193,6 +193,11 @@ export interface SessionChatProps {
   onFocusWorker?: (peerId: string | null) => void;
   /** The room's workers whenever who they are or what they are doing changes. */
   onWorkersChange?: (workers: readonly Worker[]) => void;
+  /**
+   * Show a focused worker's topics (listens for, emits) in its sheet's header. Off when the
+   * host shows them itself, behind the session's details.
+   */
+  showWorkerEvents?: boolean;
   /** Mesh events for the cascade panel */
   meshEvents?: readonly MeshEvent[];
   /** Per-agent internal event frames */
@@ -350,6 +355,7 @@ export function SessionChat({
   focusedWorkerId,
   onFocusWorker,
   onWorkersChange,
+  showWorkerEvents = true,
   meshEvents = [],
   agentEvents = new Map(),
   pendingPermissions = [],
@@ -1506,6 +1512,7 @@ export function SessionChat({
                 events={agentEvents.get(sheetWorker.peerId) ?? []}
                 onClose={closeWorker}
                 onSendDirected={onSendDirected ? handleSendDirected : undefined}
+                showEvents={showWorkerEvents}
               />
             </ToolImageProvider>
           </HistoryDetailsContext.Provider>

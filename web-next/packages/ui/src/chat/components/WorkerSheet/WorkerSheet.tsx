@@ -33,6 +33,11 @@ export interface WorkerSheetProps {
     text: string,
     attachments: FileAttachment[],
   ) => void;
+  /**
+   * Show what the worker listens for and emits in the sheet's header. A host that shows them
+   * elsewhere (behind the session's details) turns this off so the header stays short.
+   */
+  showEvents?: boolean;
 }
 
 /** How far from the end the sheet still follows new activity. */
@@ -114,6 +119,7 @@ export function WorkerSheet({
   events,
   onClose,
   onSendDirected,
+  showEvents = true,
 }: WorkerSheetProps) {
   const sheetRef = useRef<HTMLElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -228,7 +234,7 @@ export function WorkerSheet({
           </div>
           {latest && <VerdictPill label={verdictLabel(latest.verdict)} tone={latest.tone} />}
         </div>
-        {(worker.consumes.length > 0 || worker.emits.length > 0) && (
+        {showEvents && (worker.consumes.length > 0 || worker.emits.length > 0) && (
           <div className="niuu-chat-sheet-events">
             {worker.consumes.length > 0 && (
               <span className="niuu-chat-sheet-event-group">

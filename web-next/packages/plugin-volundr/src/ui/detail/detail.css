@@ -139,3 +139,33 @@
 .forge-worker-of__link:hover {
   text-decoration: underline;
 }
+
+/* A focused room worker's topics, with the session's facts behind the name's chevron. */
+.forge-worker-topics {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.forge-worker-topics__who {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.forge-worker-topics__group {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.forge-worker-topics__group code {
+  padding: 0 5px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 5px;
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+}
