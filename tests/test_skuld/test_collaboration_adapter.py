@@ -704,6 +704,9 @@ async def test_a_notice_is_the_hosts_message_and_is_shown_once() -> None:
         if call.args[0]["type"] == "room_message"
     ]
     assert len(messages) == 1
+    assert messages[0]["metadata"] == {"messageType": "notice"}
+    [kept] = [t for t in turns if t.visibility == "public"]
+    assert kept.metadata["messageType"] == "notice"
     assert messages[0]["participantId"] == "room-session"
     [turn] = [t for t in turns if t.visibility == "public"]
     assert turn.content == "coder closed Write the code: pass."

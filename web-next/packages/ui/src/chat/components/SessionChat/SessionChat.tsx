@@ -540,7 +540,10 @@ export function SessionChat({
   const hasConversation = useMemo(
     () =>
       messages.some(
-        (m) => m.role === 'user' || (m.role === 'assistant' && !m.metadata?.messageType),
+        (m) =>
+          m.role === 'user' ||
+          (m.role === 'assistant' &&
+            (!m.metadata?.messageType || m.metadata.messageType === 'notice')),
       ),
     [messages],
   );

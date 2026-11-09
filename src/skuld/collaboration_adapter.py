@@ -464,6 +464,9 @@ class SkuldCollaborationAdapter(CollaborationRoom):
                 wire_event["failureKind"] = failure_kind
         if thread_id:
             wire_event["threadId"] = thread_id
+        message_type = str(metadata.get("messageType") or "")
+        if message_type:
+            wire_event["metadata"] = {"messageType": message_type}
         await self._channels.broadcast(wire_event)
         await self._handle_activity(
             participant,
@@ -730,7 +733,9 @@ class SkuldCollaborationAdapter(CollaborationRoom):
                 "content": content,
                 "visibility": "public",
                 "sourceEventId": notice_id,
-                "metadata": {**(metadata or {}), "room_notice": True},
+                # A notice is said once and stands alone: the chat never folds it into the
+                # host's work the way it folds a speaker's consecutive messages.
+                "metadata": {**(metadata or {}), "room_notice": True, "messageType": "notice"},
             },
         )
 

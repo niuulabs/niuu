@@ -549,6 +549,27 @@ describe('useSkuldChat', () => {
     });
   });
 
+  it("keeps a room host's notice marked as a notice", async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_message',
+          id: 'notice-1',
+          role: 'assistant',
+          content: 'coder closed Implement the change: pass.',
+          metadata: { messageType: 'notice' },
+          participant: { peer_id: 'room', persona: 'Skuld', participant_type: 'skuld' },
+        }),
+      );
+    });
+
+    expect(result.current.messages[0]?.metadata).toEqual({ messageType: 'notice' });
+  });
+
   it("threads a live room_message by Skuld's camelCase threadId", async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
     await waitFor(() => expect(result.current.historyLoaded).toBe(true));

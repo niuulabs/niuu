@@ -2401,6 +2401,10 @@ export function useSkuldChat(
                   participant: parseParticipantMeta(event.participant),
                   threadId: event.threadId ?? event.thread_id,
                   visibility: event.visibility,
+                  // A host's notice: the stored turn carries the same, so it reads alike on reload.
+                  ...(event.metadata?.messageType
+                    ? { metadata: { messageType: String(event.metadata.messageType) } }
+                    : {}),
                 },
               ];
             });

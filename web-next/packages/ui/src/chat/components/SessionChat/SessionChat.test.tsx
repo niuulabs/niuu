@@ -1564,6 +1564,37 @@ describe('SessionChat', () => {
 
   /* ── Thread groups ── */
 
+  it("never folds a room host's notices, each stands as said", () => {
+    localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
+    const notice = (id: string, content: string): ChatMessage => ({
+      ...roomAssistantMessage,
+      id,
+      content,
+      participant,
+      threadId: undefined,
+      metadata: { messageType: 'notice' },
+    });
+    render(
+      <SessionChat
+        {...defaultProps}
+        connected
+        participants={new Map([[participant.peerId, participant]])}
+        messages={[
+          notice('n1', 'coder started Implement the change.'),
+          notice('n2', 'coder closed Implement the change: pass.'),
+          notice('n3', 'reviewer started Review it.'),
+        ]}
+      />,
+    );
+    for (const text of [
+      'coder started Implement the change.',
+      'coder closed Implement the change: pass.',
+      'reviewer started Review it.',
+    ])
+      expect(screen.getByText(text)).toBeInTheDocument();
+    expect(screen.queryByTestId('worked-toggle')).not.toBeInTheDocument();
+  });
+
   it('folds room work per speaker and thread without hiding other answers', () => {
     localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
     const message = (
