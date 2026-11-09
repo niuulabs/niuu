@@ -1,12 +1,12 @@
-"""A workflow run's gates and end, as its Coordinator's notices in the run's room.
+"""A workflow run's request, gates and end, as its Coordinator's notices in the run's room.
 
 A run's room is the session of the run's root (a Skuld with no agent) that every member of the
 run is hosted by. What members do on the run's mesh (an offer, each pickup and pass, each
 outcome) reaches the room as ``workflow`` events the root stores and shows, so Ting no longer
 posts step notices: the mesh events replace them. What the mesh does not carry is the part of
-the run Ting decides on its own, a gate opening and being decided and the run ending, and Ting
-posts those. A notice is shown in the room and sent to no one: it goes through Forge's room
-``notice`` operation.
+the run Ting holds on its own, what the run was asked to do, a gate opening and being decided
+and the run ending, and Ting posts those. A notice is shown in the room and sent to no one: it
+goes through Forge's room ``notice`` operation.
 
 Each notice is keyed by its step and phase. Forge's room shows a notice posted again once, and
 this process posts each key once; a notice Forge could not post is logged at error, counted,
@@ -63,7 +63,7 @@ def run_notices(
     """What the run's room should show of the run so far, oldest first."""
     labels = _node_labels(campaign)
     gates = {gate["activation_id"]: gate for gate in run_gates(campaign, state)}
-    notices: list[RoomNotice] = []
+    notices: list[RoomNotice] = _request_notice(campaign)
     for step in sorted(state.steps, key=lambda item: item.created_at):
         label = labels.get(step.node_id) or step.node_id
         if step.kind is StepKind.GATE:
@@ -72,6 +72,19 @@ def run_notices(
     if ended:
         notices.append(RoomNotice(id=f"{campaign.id}:{status.value}", text=ended))
     return notices
+
+
+def _request_notice(campaign: WorkflowCampaign) -> list[RoomNotice]:
+    """What the run was asked to do, first in its room: the members' work answers it."""
+    prompt = str(campaign.metadata.get("prompt") or "").strip()
+    if not prompt:
+        return []
+    return [
+        RoomNotice(
+            id=f"{campaign.id}:request",
+            text=f"{campaign.workflow_name} started on this request:\n\n{prompt}",
+        )
+    ]
 
 
 def _gate_notices(step: WorkflowStep, label: str, gate: Mapping[str, Any]) -> list[RoomNotice]:

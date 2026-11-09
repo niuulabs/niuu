@@ -178,6 +178,23 @@ def test_a_run_that_failed_or_was_canceled_says_so(
     assert [notice.text for notice in notices] == [text]
 
 
+def test_a_run_first_says_what_it_was_asked_to_do() -> None:
+    campaign = replace(_campaign(), metadata={"prompt": "Add a char counter."})
+    gate = _gate(campaign.id, StepState.WAITING, NOW)
+
+    notices = run_notices(
+        campaign, RunState(campaign.id, steps=(gate,)), WorkflowCampaignStatus.BLOCKED
+    )
+
+    assert [(notice.id, notice.text) for notice in notices] == [
+        (
+            f"{campaign.id}:request",
+            "Code, Review and Merge started on this request:\n\nAdd a char counter.",
+        ),
+        (f"{gate.id}:open", "Approve the merge is waiting for a decision."),
+    ]
+
+
 async def test_notices_go_to_the_runs_room_once_each() -> None:
     campaign = _campaign()
     forge = FakeForge()
