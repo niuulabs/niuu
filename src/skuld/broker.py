@@ -194,6 +194,8 @@ logger = logging.getLogger("skuld.broker")
 
 #: What a workflow run's root announces itself as on the run's mesh: it runs no agent.
 RUN_ROOT_PERSONA = "coordinator"
+#: How a run's root is named in the run's room.
+RUN_ROOT_DISPLAY_NAME = "Coordinator"
 RUN_ROOT_DESCRIPTION = (
     "The run's root: it publishes the run's step offers and hosts its room; it runs no agent."
 )
@@ -1096,12 +1098,16 @@ class Broker(
             # Register Skuld + discovered mesh peers as room participants
             # so the browser UI shows them without a direct WebSocket.
             if self._room_bridge is not None:
+                # A run's root is the run's coordinator in its room too: the run's offers, its
+                # gates and its end are said by it, not by a broker called Skuld.
                 await self._room_bridge.register_mesh_peer(
                     peer_id=self._mesh_adapter.peer_id,
-                    persona="Skuld",
-                    display_name="Skuld",
+                    persona=RUN_ROOT_PERSONA if run_root else "Skuld",
+                    display_name=RUN_ROOT_DISPLAY_NAME if run_root else "Skuld",
                     subscribes_to=list(topics.consumes),
-                    emits=["code.changed", *topics.produces],
+                    emits=(
+                        list(topics.produces) if run_root else ["code.changed", *topics.produces]
+                    ),
                     tools=list(mesh_cfg.tools),
                     participant_type="skuld",
                     participant_kind="mesh",

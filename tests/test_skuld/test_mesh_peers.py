@@ -162,6 +162,45 @@ class TestBrokerAnnouncement:
         finally:
             await broker._mesh_adapter.stop()
 
+    async def test_a_runs_root_is_the_coordinator_in_its_room(self, tmp_path) -> None:
+        """The run's offers, gates and end are said in its room by its Coordinator."""
+
+        class _Room:
+            def __init__(self) -> None:
+                self.seated: list[dict] = []
+
+            async def register_mesh_peer(self, **seat) -> None:
+                self.seated.append(seat)
+
+            def has_participant(self, peer_id: str) -> bool:
+                return any(seat["peer_id"] == peer_id for seat in self.seated)
+
+            async def handle_collaboration_frame(self, peer_id: str, frame: dict) -> None:
+                return None
+
+        broker = _broker(tmp_path)
+        broker._settings.session.name = "wf-run-1"
+        broker._settings.mesh = MeshConfig(
+            enabled=True,
+            peer_id="root",
+            transport="in_process",
+            rpc_timeout_s=5.0,
+            attestation={"required": False},
+        )
+        broker._settings.workflow_steps = WorkflowStepsConfig(root=True, run_id="run-1")
+        room = _Room()
+        broker._room_bridge = room
+
+        await broker._start_mesh_adapter()
+        try:
+            own = next(seat for seat in room.seated if seat["peer_id"] == "root")
+            assert (own["persona"], own["display_name"]) == ("coordinator", "Coordinator")
+            assert "code.changed" not in own["emits"]
+        finally:
+            if broker._collaboration_mesh_bridge is not None:
+                await broker._collaboration_mesh_bridge.stop()
+            await broker._mesh_adapter.stop()
+
     def test_an_activity_change_before_the_mesh_starts_changes_nothing_else(self, tmp_path) -> None:
         broker = _broker(tmp_path)
 
