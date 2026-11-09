@@ -36,12 +36,19 @@ from typing import Any
 
 import httpx
 
+from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.contributors.session_mcp import MIMIR_MOUNT_PATH
 from volundr.adapters.outbound.mesh_settings import (
     mesh_environment,
     mesh_with_defaults,
     parse_mesh_settings,
 )
+from volundr.adapters.outbound.vm_hosted_unit import (
+    HostedMemberLaunch,
+    HostedMemberSource,
+    HostedUnitError,
+)
+from volundr.domain.models import HOSTED_MEMBERS_KEY as UNIT_MEMBERS_KEY
 from volundr.domain.models import (
     GitSource,
     LocalMountSource,
@@ -50,6 +57,7 @@ from volundr.domain.models import (
     SessionStatus,
 )
 from volundr.domain.ports import PodManager, PodStartResult, SessionCapacity
+from volundr.domain.services.forge_session_launch import launch_id_of
 from volundr.domain.services.session import SessionCapacityError
 from volundr.domain.workflow_session import WORKFLOW_STEPS_ENABLED_ENV, workflow_steps_enabled
 
@@ -73,6 +81,11 @@ DEFAULT_ALLOWED_MOUNT_PREFIXES: list[str] = []
 
 # Poll interval for wait_for_ready
 READY_POLL_INTERVAL = 0.5
+
+# A workflow run's unit keeps its mesh registry under the mesh directory, one directory per
+# root, so the Skulds of one run find each other and no other session's.
+UNIT_MESH_DIRECTORY = "units"
+UNIT_MESH_REGISTRY_FILE = "peers.json"
 
 
 def _public_loopback_host(host: str) -> str:
@@ -101,6 +114,12 @@ class ProcessInfo:
     state: ProcessState = ProcessState.STARTING
     error: str | None = None
     managed_by: str = "local_process"
+    #: The launch (``forge_mcp`` launch id) this process was started under.
+    launch_id: str | None = None
+    #: A unit root: the process group it leads, and the group its members were started in.
+    group: int | None = None
+    #: A unit member: the id of the unit root whose group it runs in.
+    hosted_by: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-safe dict."""
@@ -119,6 +138,9 @@ class ProcessInfo:
             state=ProcessState(data.get("state", data.get("status", "stopped"))),
             error=data.get("error"),
             managed_by=data.get("managed_by", "local_process"),
+            launch_id=data.get("launch_id"),
+            group=data.get("group"),
+            hosted_by=data.get("hosted_by"),
         )
 
 
@@ -330,10 +352,12 @@ class LocalProcessPodManager(PodManager):
         local sessions run without live preview."""
         self._workspaces_dir = Path(str(workspaces_dir)).expanduser()
         self._preview_router_auth = dict(preview_router_auth or {})
+        # What the operator set; a run's unit defaults its own registry over this.
+        self._operator_mesh = parse_mesh_settings(mesh)
         # Sessions on one machine find each other through one registry file beside the
         # workspaces; the operator only has to enable the mesh.
         self._mesh = mesh_with_defaults(
-            parse_mesh_settings(mesh),
+            self._operator_mesh,
             {
                 "discovery_adapters": [
                     {
@@ -367,6 +391,9 @@ class LocalProcessPodManager(PodManager):
         # SessionService can reconcile the DB row promptly instead of waiting for
         # the periodic sweep. Set via set_death_callback().
         self._death_callback: Callable[[str], Awaitable[None]] | None = None
+        # Resolves a unit root's members (their sessions and their own specs); see
+        # configure_hosted_members.
+        self._hosted_members: HostedMemberSource | None = None
 
         self._load_state()
 
@@ -431,6 +458,13 @@ class LocalProcessPodManager(PodManager):
     ) -> PodStartResult:
         """Provision workspace, spawn Claude process, return endpoints."""
         session_id = str(session.id)
+        if session.hosted_by is not None:
+            raise HostedUnitError(
+                f"Session {session.id} is a member of unit {session.hosted_by}: a member "
+                "starts with its unit, never on its own"
+            )
+        if self._unit_member_ids(session):
+            return await self._start_unit(session, spec)
 
         active = self._reconcile_active()
         if len(active) >= self._max_concurrent:
@@ -515,6 +549,9 @@ class LocalProcessPodManager(PodManager):
         if info.state not in (ProcessState.RUNNING, ProcessState.STARTING):
             return True
 
+        if info.group is not None:
+            return await self._stop_unit(session_id, info)
+
         monitor = self._monitors.pop(session_id, None)
         if monitor and not monitor.done():
             monitor.cancel()
@@ -541,6 +578,11 @@ class LocalProcessPodManager(PodManager):
 
         if info is None:
             return SessionStatus.STOPPED
+
+        if session.hosted_by is not None and await self._restart_member_if_new_launch(
+            session, info
+        ):
+            return SessionStatus.PROVISIONING
 
         match info.state:
             case ProcessState.STARTING:
@@ -644,6 +686,400 @@ class LocalProcessPodManager(PodManager):
         info.error = self._broker_startup_failures.get(session_id)
         info.state = ProcessState.FAILED
         self._persist_state()
+
+    # ------------------------------------------------------------------
+    # A workflow run's unit: the root and every member, one process group
+    # ------------------------------------------------------------------
+    #
+    # On a laptop a run is one local process group (docs/design/workflow-mesh-handoff.md,
+    # section 2): the root's Skuld leads the group and every member's Skuld joins it, so
+    # they start and stop together and nothing outside the group is touched. Each member
+    # stays its own Forge session with its own Skuld process, port, credential (in that
+    # process's environment only) and ``ProcessInfo``; the checkout is shared and the mesh
+    # is a registry file in a directory only this run's Skulds are given.
+
+    def configure_hosted_members(self, source: HostedMemberSource) -> None:
+        """Attach what resolves a unit root's members (their sessions and own specs).
+
+        A unit root starts its members with it, and each member's persona, prompts and
+        credential come from its own contributor pipeline. Starting a unit root with no
+        source is an error, never a unit without its members.
+        """
+        self._hosted_members = source
+
+    @staticmethod
+    def _unit_member_ids(session: Session) -> list[str]:
+        """The members a unit root was started with; empty for any other session."""
+        members = session.workload_config.get(UNIT_MEMBERS_KEY) or []
+        return [str(member["id"]) for member in members]
+
+    def _unit_registry(self, root_id: str) -> Path:
+        """The registry file the Skulds of one run find each other through."""
+        return (
+            self._workspaces_dir.parent
+            / "mesh"
+            / UNIT_MESH_DIRECTORY
+            / root_id
+            / UNIT_MESH_REGISTRY_FILE
+        )
+
+    def _unit_mesh(self, root_id: str) -> dict:
+        """The mesh of a run's unit: nng on loopback, discovered through the unit's registry.
+
+        Whatever the operator set stays as set; only the discovery default changes from the
+        machine-wide registry to this run's. A run needs the mesh, so it does not start on a
+        host whose mesh is off.
+        """
+        enabled = self._operator_mesh.get("enabled")
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() == "true"
+        if not enabled:
+            raise HostedUnitError(
+                f"Unit {root_id} hosts a workflow run, whose members hand steps to each other "
+                "over the mesh, but this host's mesh is off: set `mesh.enabled: true` in "
+                "config.yaml (the pod manager's `mesh`) and restart"
+            )
+        return mesh_with_defaults(
+            self._operator_mesh,
+            {
+                "discovery_adapters": [
+                    {"adapter": "registry", "path": str(self._unit_registry(root_id))}
+                ]
+            },
+        )
+
+    def initial_chat_endpoint(self, session: Session) -> str | None:
+        """A member's chat endpoint is Forge's own proxy route for the member, not its unit's."""
+        if session.hosted_by is None:
+            return None
+        server_host = _public_loopback_host(self._server_public_host)
+        return f"ws://{server_host}:{self._server_port}/s/{session.id}/session"
+
+    async def broker_target(self, session: Session) -> SessionProxyTarget | None:
+        """Where Forge reaches a member's broker: its own loopback port.
+
+        A member's endpoint is built from its unit's address, which names the root's route;
+        Forge's server-side calls to the member go to the member's own Skuld instead.
+        """
+        if session.hosted_by is None:
+            return None
+        info = self._processes.get(str(session.id))
+        if (
+            info is None
+            or info.port is None
+            or info.state
+            not in (
+                ProcessState.RUNNING,
+                ProcessState.STARTING,
+            )
+        ):
+            raise ValueError(f"Member session {session.id} has no running Skuld on this host")
+        return SessionProxyTarget(
+            service_url=f"http://127.0.0.1:{info.port}",
+            connect_host="127.0.0.1",
+            connect_port=info.port,
+        )
+
+    async def _resolve_members(self, root: Session) -> list[HostedMemberLaunch]:
+        """The unit's members as the source resolves them; they must be the recorded ones."""
+        if self._hosted_members is None:
+            raise HostedUnitError(
+                f"Session {root.id} is a unit that hosts {len(self._unit_member_ids(root))} "
+                "member session(s), but this local pod manager has no member source; compose "
+                "it with configure_hosted_members"
+            )
+        members = list(await self._hosted_members(root.id, None))
+        resolved = sorted(str(member.session.id) for member in members)
+        if resolved != sorted(self._unit_member_ids(root)):
+            raise HostedUnitError(
+                f"The members resolved for unit {root.id} ({resolved}) differ from the members "
+                f"it was started with ({sorted(self._unit_member_ids(root))}): a run's members "
+                "are fixed when its unit starts"
+            )
+        for member in members:
+            if member.session.hosted_by != root.id:
+                raise HostedUnitError(
+                    f"Session {member.session.id} was resolved for unit {root.id} but is "
+                    f"hosted by {member.session.hosted_by}"
+                )
+        return members
+
+    @staticmethod
+    def _source_key(session: Session) -> tuple | None:
+        """What a session's workspace source names, for the run's one-checkout check."""
+        source = session.source
+        if isinstance(source, GitSource) and source.repo:
+            return ("git", source.repo, source.branch, source.base_branch)
+        if isinstance(source, LocalMountSource) and source.local_path:
+            return ("local", str(Path(source.local_path).expanduser()))
+        if isinstance(source, LocalMountSource) and source.paths:
+            return ("mounts", tuple(sorted(m.host_path for m in source.paths)))
+        return None
+
+    async def _provision_unit_workspace(
+        self, root: Session, spec: SessionSpec, members: list[HostedMemberLaunch]
+    ) -> Path:
+        """The one checkout of the run, shared by the root and every member.
+
+        The root's own source wins when it names one; otherwise the members' must agree. A
+        member that names another repository or branch is refused: it would otherwise work
+        in a checkout of something it did not ask for.
+        """
+        wanted = {
+            session.id: self._source_key(session) for session in (root, *self._sessions(members))
+        }
+        distinct = {key for key in wanted.values() if key is not None}
+        if len(distinct) > 1:
+            raise HostedUnitError(
+                f"The sessions of unit {root.id} name different workspaces "
+                f"{sorted(map(str, distinct))}: a run's members share one checkout of one "
+                "repository and branch"
+            )
+        if wanted[root.id] is None:
+            for member in members:
+                if wanted[member.session.id] is not None:
+                    # The run's checkout lives under the root, cloned as the member asked.
+                    sourced = root.model_copy(update={"source": member.session.source})
+                    return await self._provision_workspace(sourced, member.spec)
+        return await self._provision_workspace(root, spec)
+
+    @staticmethod
+    def _sessions(members: list[HostedMemberLaunch]) -> list[Session]:
+        return [member.session for member in members]
+
+    async def _start_unit(self, root: Session, spec: SessionSpec) -> PodStartResult:
+        """Start the root and every member as one process group; nothing starts half."""
+        root_id = str(root.id)
+        members = await self._resolve_members(root)
+        mesh = self._unit_mesh(root_id)
+
+        active = self._reconcile_active()
+        needed = 1 + len(members)
+        if len(active) + needed > self._max_concurrent:
+            logger.warning(
+                "Max concurrent reached: %d/%d slots in use, unit %s needs %d",
+                len(active),
+                self._max_concurrent,
+                root_id[:8],
+                needed,
+            )
+            raise SessionCapacityError(
+                SessionCapacity(
+                    limit=self._max_concurrent,
+                    active=len(active),
+                    remedy=(
+                        f"{self._capacity_remedy()} (this run's unit needs {needed} free "
+                        f"slots: the root and {len(members)} member(s); "
+                        f"{self._max_concurrent - len(active)} are free)"
+                    ),
+                )
+            )
+        logger.info(
+            "Provisioning unit %s: the root and %d member(s) (%d/%d concurrent slots in use)",
+            root_id[:8],
+            len(members),
+            len(active),
+            self._max_concurrent,
+        )
+
+        workspace = await self._provision_unit_workspace(root, spec, members)
+        registry = self._unit_registry(root_id)
+        shutil.rmtree(registry.parent, ignore_errors=True)  # a fresh unit never inherits peers
+        registry.parent.mkdir(parents=True, exist_ok=True)
+
+        launches = [(root, spec, None), *((m.session, m.spec, root_id) for m in members)]
+        infos: list[ProcessInfo] = []
+        group: int | None = None
+        try:
+            for session, session_spec, hosted_by in launches:
+                session_id = str(session.id)
+                self._ready.discard(session_id)
+                self._broker_startup_failures.pop(session_id, None)
+                info = ProcessInfo(
+                    session_id=session_id,
+                    port=self._port_allocator.allocate(),
+                    workspace=str(workspace),
+                    state=ProcessState.STARTING,
+                    launch_id=launch_id_of(session.workload_config),
+                    hosted_by=hosted_by,
+                )
+                self._processes[session_id] = info
+                infos.append(info)
+                self._persist_state()
+                pid = await self._spawn_skuld(
+                    session,
+                    session_spec,
+                    workspace,
+                    info.port,
+                    mesh=mesh,
+                    process_group=0 if group is None else group,
+                )
+                info.pid = pid
+                if group is None:
+                    group = pid
+                    info.group = group
+                info.state = ProcessState.RUNNING
+                self._persist_state()
+        except Exception:
+            await self._abort_unit(infos, group)
+            raise
+
+        for info in infos:
+            self._after_spawn(info)
+
+        server_host = _public_loopback_host(self._server_public_host)
+        return PodStartResult(
+            chat_endpoint=f"ws://{server_host}:{self._server_port}/s/{root_id}/session",
+            code_endpoint=f"file://{workspace}",
+            pod_name=f"local-{root_id[:8]}",
+        )
+
+    def _after_spawn(self, info: ProcessInfo) -> None:
+        """Route to a spawned Skuld through the proxy, and watch it."""
+        if self._skuld_registry is not None and info.port is not None:
+            self._skuld_registry.register(info.session_id, info.port)
+        self._monitors[info.session_id] = asyncio.create_task(
+            self._monitor_process(info.session_id, info.pid),
+            name=f"monitor-{info.session_id}",
+        )
+
+    async def _abort_unit(self, infos: list[ProcessInfo], group: int | None) -> None:
+        """A unit that cannot start whole does not start: its group is ended and marked failed."""
+        if group is not None:
+            await self._terminate_group(group)
+        for info in infos:
+            if info.port is not None:
+                self._port_allocator.release(info.port)
+            info.state = ProcessState.FAILED
+        self._persist_state()
+
+    async def _stop_unit(self, root_id: str, root: ProcessInfo) -> bool:
+        """Stop the root and every member together: their group ends, nothing else does."""
+        members = [i for i in self._processes.values() if i.hosted_by == root_id]
+        for info in (root, *members):
+            monitor = self._monitors.pop(info.session_id, None)
+            if monitor and not monitor.done():
+                monitor.cancel()
+        if root.group is not None:
+            await self._terminate_group(root.group)
+        for info in (root, *members):
+            self._mark_stopped(info)
+        shutil.rmtree(self._unit_registry(root_id).parent, ignore_errors=True)
+        self._persist_state()
+        return True
+
+    def _mark_stopped(self, info: ProcessInfo) -> None:
+        if info.state not in (ProcessState.RUNNING, ProcessState.STARTING):
+            return
+        if info.port is not None:
+            self._port_allocator.release(info.port)
+        if self._skuld_registry is not None:
+            unregister = getattr(self._skuld_registry, "unregister", None)
+            if callable(unregister):
+                unregister(info.session_id)
+        info.state = ProcessState.STOPPED
+        self._ready.discard(info.session_id)
+        self._broker_startup_failures.pop(info.session_id, None)
+
+    async def _end_unit_after_root(self, root_id: str, root: ProcessInfo) -> list[str]:
+        """The root's Skuld exited: the unit is over, so its members' group ends with it.
+
+        A member cannot do a run's work without the root's room and mesh, and a run is one
+        unit, so the members are not left running. Returns the members that were running,
+        for the caller to report.
+        """
+        if root.group is None:
+            return []
+        members = [
+            i
+            for i in self._processes.values()
+            if i.hosted_by == root_id and i.state in (ProcessState.RUNNING, ProcessState.STARTING)
+        ]
+        for info in members:
+            monitor = self._monitors.pop(info.session_id, None)
+            if monitor and not monitor.done() and monitor is not asyncio.current_task():
+                monitor.cancel()
+        await self._terminate_group(root.group)
+        for info in members:
+            self._mark_stopped(info)
+        self._persist_state()
+        logger.warning(
+            "Unit root %s exited: stopped its %d running member(s)", root_id[:8], len(members)
+        )
+        return [info.session_id for info in members]
+
+    async def _terminate_group(self, group: int) -> None:
+        """SIGTERM a process group, wait for it to empty, then SIGKILL what is left."""
+        try:
+            os.killpg(group, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        for _ in range(self._stop_timeout * 2):
+            await asyncio.sleep(0.5)
+            try:
+                os.killpg(group, 0)
+            except ProcessLookupError:
+                return
+        with suppress(ProcessLookupError):
+            os.killpg(group, signal.SIGKILL)
+            logger.warning("Sent SIGKILL to process group %d after timeout", group)
+
+    async def _restart_member_if_new_launch(self, member: Session, info: ProcessInfo) -> bool:
+        """Start a member's Skuld again, in place, when Forge recorded a new launch for it.
+
+        Forge records a new launch (and a new credential) when a member is started again
+        inside its running unit; its process has to be replaced, in the unit's group, by one
+        started under that credential. Returns True when it restarted the member.
+        """
+        launch = launch_id_of(member.workload_config)
+        if launch is None or info.launch_id == launch:
+            return False
+        root_id = str(member.hosted_by)
+        root = self._processes.get(root_id)
+        if root is None or root.group is None or root.state is not ProcessState.RUNNING:
+            return False
+        if self._hosted_members is None:
+            raise HostedUnitError(
+                f"Member session {member.id} was started again in unit {root_id}, but this "
+                "local pod manager has no member source; compose it with "
+                "configure_hosted_members"
+            )
+        launches = list(await self._hosted_members(member.hosted_by, member.id))
+        if [str(m.session.id) for m in launches] != [str(member.id)]:
+            raise HostedUnitError(
+                f"The member source answered {[str(m.session.id) for m in launches]} for "
+                f"member {member.id}"
+            )
+        member_id = str(member.id)
+        monitor = self._monitors.pop(member_id, None)
+        if monitor and not monitor.done():
+            monitor.cancel()
+        if info.pid is not None:
+            await self._terminate_process(info.pid)
+        self._mark_stopped(info)
+        info.port = self._port_allocator.allocate()
+        info.state = ProcessState.STARTING
+        info.error = None
+        info.launch_id = launch_id_of(launches[0].session.workload_config)
+        self._persist_state()
+        try:
+            info.pid = await self._spawn_skuld(
+                launches[0].session,
+                launches[0].spec,
+                Path(info.workspace),
+                info.port,
+                mesh=self._unit_mesh(root_id),
+                process_group=root.group,
+            )
+        except Exception:
+            self._port_allocator.release(info.port)
+            info.state = ProcessState.FAILED
+            self._persist_state()
+            raise
+        info.state = ProcessState.RUNNING
+        self._persist_state()
+        self._after_spawn(info)
+        return True
 
     # ------------------------------------------------------------------
     # Workspace provisioning
@@ -861,8 +1297,15 @@ class LocalProcessPodManager(PodManager):
         spec: SessionSpec,
         workspace: Path,
         port: int,
+        *,
+        mesh: dict | None = None,
+        process_group: int | None = None,
     ) -> int:
         """Spawn a Skuld broker subprocess that internally manages Claude.
+
+        ``mesh`` replaces the manager's mesh settings for this process (a run's unit has its
+        own registry), and ``process_group`` places it in a group: 0 starts a new group it
+        leads, a pid joins that process's group.
 
         Returns:
             The PID of the spawned Skuld process.
@@ -900,7 +1343,7 @@ class LocalProcessPodManager(PodManager):
         # .room_role_source, default "deployment" — every other backend).
         env["SKULD__WS_AUTH__ROOM_ROLE_SOURCE"] = "proxy"
         env.update(self._preview_env(session_id))
-        env.update(mesh_environment(self._mesh))
+        env.update(mesh_environment(self._mesh if mesh is None else mesh))
         model = str(session.model or spec.values.get("model", "") or "").strip()
         env["SKULD__SESSION__MODEL"] = model
         env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)
@@ -953,6 +1396,7 @@ class LocalProcessPodManager(PodManager):
         # Multiple sessions may share a workspace; retain diagnostics from every
         # broker while preserving the path consumed by aggregation and archives.
         log_file = log_path.open("a", encoding="utf-8")
+        group_args = {} if process_group is None else {"process_group": process_group}
         try:
             process = await asyncio.create_subprocess_exec(
                 *skuld_cmd,
@@ -960,6 +1404,7 @@ class LocalProcessPodManager(PodManager):
                 stderr=log_file,
                 cwd=str(workspace),
                 env=env,
+                **group_args,
             )
         finally:
             log_file.close()
@@ -1177,7 +1622,10 @@ class LocalProcessPodManager(PodManager):
                     if callable(unregister):
                         unregister(session_id)
                 logger.info("Claude process exited pid=%d session=%s", pid, session_id)
+                ended = await self._end_unit_after_root(session_id, info)
                 await self._notify_death(session_id)
+                for member_id in ended:
+                    await self._notify_death(member_id)
         except asyncio.CancelledError:
             return
 
