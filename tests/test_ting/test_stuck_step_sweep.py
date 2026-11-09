@@ -474,6 +474,45 @@ async def test_an_offer_waiting_for_a_member_whose_session_ended_fails_without_w
     )
 
 
+async def test_a_failure_recorded_but_whose_sessions_could_not_be_stopped_is_not_a_lost_step(
+    recorder: Recorder, caplog: pytest.LogCaptureFixture
+) -> None:
+    harness = StuckHarness()
+    harness.run.deaf.add("alpha")
+    await harness.launch()
+    alpha_session = harness.session_of("alpha")
+    harness.sessions.liveness[alpha_session] = SessionLiveness.FAILED
+    harness.sessions.fail_stop = ConnectionError("the unit's pod is gone")
+
+    with caplog.at_level("ERROR"):
+        await harness.sweep()
+
+    # The offer and the run are recorded failed even though ending the unit's sessions failed.
+    assert harness.offer().state is StepState.FAILED
+    assert harness.state.finished
+    assert harness.current.status is WorkflowCampaignStatus.FAILED
+    # It is its own loud error and counted as such, never "could not fail step".
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("sessions could not all be stopped" in message for message in messages)
+    assert not any("Could not fail step" in message for message in messages)
+    assert recorder.counted("ting_workflow_run_stop_failures_total") == 1
+    assert (
+        recorder.counted(
+            "ting_workflow_step_auto_recovery_failures_total", action="stop_run_sessions"
+        )
+        == 1
+    )
+    assert (
+        recorder.counted("ting_workflow_step_auto_recovery_failures_total", action="fail_step") == 0
+    )
+    assert (
+        recorder.counted(
+            "ting_workflow_step_auto_recoveries_total", action="fail_step", kind="session_gone"
+        )
+        == 1
+    )
+
+
 @pytest.mark.parametrize("liveness", [SessionLiveness.STOPPED, SessionLiveness.GONE])
 async def test_a_stopped_or_deleted_member_session_fails_the_waiting_offer_with_its_state(
     liveness: SessionLiveness,

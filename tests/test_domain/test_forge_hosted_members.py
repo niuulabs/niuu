@@ -753,6 +753,30 @@ class TestEndingMembers:
 
         assert (await unit.forge.get_session(coder.id)).status == SessionStatus.RUNNING
 
+    async def test_a_member_of_a_unit_that_failed_is_ended_without_asking_its_gone_skuld(
+        self, unit: Unit
+    ):
+        root = await unit.root()
+        coder = await unit.member(root, "coder-1")
+        await unit.start_and_run(root)
+        failed_root = await unit.stored(root)
+        await unit.app.sessions.update(
+            failed_root.model_copy(
+                update={"status": SessionStatus.FAILED, "error": "the unit's pod never came up"}
+            )
+        )
+        # The unit's pod is gone, so no runtime can stop the member's process.
+        unit.app.pod_manager.stop_success = False
+
+        ended = await unit.forge.stop_session(coder.id, principal=PRINCIPAL)
+
+        assert unit.app.pod_manager.stop_calls == []
+        assert ended.status == SessionStatus.FAILED
+        assert ended.error == "the unit's pod never came up"
+        stored = await unit.stored(coder)
+        assert stored.status == SessionStatus.FAILED
+        assert stored.chat_endpoint is None
+
     async def test_stopping_the_unit_removes_every_members_credential_secret(self):
         removed = []
 

@@ -14,6 +14,7 @@ from uuid import uuid4
 import pytest
 
 from ting.domain.models import WorkflowCampaignStatus
+from ting.domain.services.workflow_step_engine import RunSessionsNotStoppedError
 from ting.domain.step_engine import listening_members
 from ting.domain.step_recovery import check_recoverable, check_run_open
 from ting.domain.step_stuck import Condition
@@ -624,6 +625,20 @@ async def test_failing_an_offer_ends_it_like_any_failed_step(offered: StuckHarne
     assert offered.state.finished
     [recovery] = recoveries(offered)
     assert recovery["action"] == "fail_step" and recovery["activation_id"] == str(offer.id)
+
+
+async def test_a_run_that_ended_but_whose_sessions_would_not_stop_is_recorded_and_raised(
+    offered: StuckHarness, recorder: Recorder
+) -> None:
+    offer = offered.offer()
+    offered.sessions.fail_stop = ConnectionError("the unit's pod is gone")
+
+    with pytest.raises(RunSessionsNotStoppedError, match="end is recorded.*pod is gone"):
+        await offered.engine.fail_step(offered.campaign.id, offer.id, "no one is home")
+
+    assert offered.offer().state is StepState.FAILED
+    assert offered.state.finished
+    assert recorder.counted("ting_workflow_run_stop_failures_total") == 1
 
 
 async def test_flags_resolve_with_how_they_ended(run: StuckHarness) -> None:

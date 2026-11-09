@@ -34,7 +34,10 @@ from uuid import UUID
 from niuu.observability import get_observability
 from ting.domain.models import WorkflowCampaign
 from ting.domain.services.workflow_runs import WorkflowRuns
-from ting.domain.services.workflow_step_engine import WorkflowStepEngine
+from ting.domain.services.workflow_step_engine import (
+    RunSessionsNotStoppedError,
+    WorkflowStepEngine,
+)
 from ting.domain.step_engine import listening_members, offer_members, unit_sessions
 from ting.domain.step_graph import compile_step_graph
 from ting.domain.step_stuck import Condition, StuckSettings, detect_stuck
@@ -360,6 +363,26 @@ class StuckStepSweeper:
         step = condition.step
         try:
             failed = await self._engine.fail_step(campaign.id, step.id, reason)
+        except RunSessionsNotStoppedError:
+            # The step and the run are recorded as failed; only ending the run's sessions
+            # failed. That is its own error (the adapter logged each session, the engine
+            # counted it), not a step that "stays flagged": the step is closed.
+            logger.error(
+                "Failed step %s (%s/%s) of run %s (%s) and recorded the run's end, but its "
+                "sessions could not all be stopped",
+                step.id,
+                step.node_id,
+                step.member,
+                campaign.slug,
+                condition.kind.value,
+                exc_info=True,
+            )
+            get_observability().count(
+                "ting_workflow_step_auto_recovery_failures_total",
+                attributes={"action": "stop_run_sessions"},
+                description="Automatic recoveries of stuck workflow steps that failed.",
+            )
+            failed = True
         except Exception:
             logger.error(
                 "Could not fail step %s (%s/%s) of run %s (%s); it stays flagged",

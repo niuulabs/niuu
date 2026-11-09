@@ -616,8 +616,15 @@ class ForgeService:
         effective = member.hosted_in(unit)
         if not effective.can_stop():
             raise SessionStateError(member.id, "stop", effective.status)
+        # A member has no process of its own to stop once its unit is down (failed, stopping
+        # or stopped): the unit's pod took every member's Skuld with it, and asking a Skuld
+        # that is gone is not a stop that can succeed. Ending the member then only ends its
+        # record, credential and identity. While the unit is up, a Skuld that cannot be
+        # asked is a real failure and is raised.
         stopped = await self._end_member(
-            member.model_copy(update={"status": effective.status}), principal, unit_running=True
+            member.model_copy(update={"status": effective.status}),
+            principal,
+            unit_running=unit.status in _LIVE_UNIT_STATUSES,
         )
         return self._member_in(stopped, unit)
 

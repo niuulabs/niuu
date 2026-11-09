@@ -127,6 +127,15 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+class RunSessionsNotStoppedError(RuntimeError):
+    """A run ended and the end is recorded, but its sessions could not all be stopped.
+
+    Raised after the commit, so the step, the run and their events are already as they
+    ended; only the unit's sessions are left running. A caller that fails a step must not
+    report the step as unrecorded because of this.
+    """
+
+
 @dataclass(frozen=True)
 class StepRunRequest:
     """A run to launch: the campaign it belongs to and the payload its trigger carries."""
@@ -1311,8 +1320,29 @@ class WorkflowStepEngine:
         if ledger.terminal is None:
             await self._publish_ready(ledger.run_id, definition, graph)
         else:
-            await self._sessions.stop_run_sessions(ledger.run_id)
+            await self._stop_sessions(ledger.run_id)
         return await self._repository.load(ledger.run_id)
+
+    async def _stop_sessions(self, run_id: UUID) -> None:
+        """End the unit of a run that finished; its end is already committed.
+
+        A failure is raised, never dropped, as one error that says what is recorded and
+        what is not, and it is counted.
+        """
+        try:
+            await self._sessions.stop_run_sessions(run_id)
+        except Exception as exc:
+            get_observability().count(
+                "ting_workflow_run_stop_failures_total",
+                description=(
+                    "Finished workflow runs whose sessions Ting could not stop; the run's end "
+                    "is recorded, its sessions may still be running."
+                ),
+            )
+            raise RunSessionsNotStoppedError(
+                f"run {run_id} ended and the end is recorded, but its sessions could not all "
+                f"be stopped: {exc}"
+            ) from exc
 
     # -- helpers ----------------------------------------------------------------
 
@@ -1457,7 +1487,7 @@ def _recovery_payload(
     }
 
 
-__all__ = ["Recovered", "StepRunRequest", "WorkflowStepEngine"]
+__all__ = ["Recovered", "RunSessionsNotStoppedError", "StepRunRequest", "WorkflowStepEngine"]
 
 
 def _unclosed_turn_recorded(

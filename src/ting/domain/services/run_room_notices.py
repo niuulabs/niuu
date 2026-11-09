@@ -11,6 +11,11 @@ posts those. A notice is shown in the room and sent to no one: it goes through F
 Each notice is keyed by its step and phase. Forge's room shows a notice posted again once, and
 this process posts each key once; a notice Forge could not post is logged at error, counted,
 and posted again on the run's next change. A run in no project has no room, so it posts none.
+
+A room whose root failed or stopped is down: nothing hosts it, so a post would only be refused
+and, once the run is finished, never retried. The notice is then recorded on the root's own
+record in Forge's notification feed, where the run's thread is still shown, so it reaches the
+owner.
 """
 
 from __future__ import annotations
@@ -20,6 +25,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from niuu.cap_telemetry import record_truncation
+from niuu.domain.notifications import MAX_TITLE_CHARS
 from niuu.observability import get_observability
 from ting.domain.campaign_run_projection import run_gates
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
@@ -34,6 +41,12 @@ _ENDED = {
     WorkflowCampaignStatus.FAILED: "The run failed.",
     WorkflowCampaignStatus.CANCELED: "The run was canceled.",
 }
+
+
+#: Statuses of a root whose Skuld no longer hosts the room (a root still being created or
+#: started is not down: its room comes up and a refused post is retried).
+_ROOM_DOWN_STATUSES = frozenset({"failed", "stopped", "stopping", "archived"})
+_ELLIPSIS = "…"
 
 
 @dataclass(frozen=True)
@@ -95,6 +108,11 @@ def run_room_of(
     return None
 
 
+def room_is_down(room: VolundrSession) -> bool:
+    """Whether the room's root is failed or ending: no Skuld hosts the room to take a post."""
+    return room.status.strip().lower() in _ROOM_DOWN_STATUSES
+
+
 class RunRoomNotifier:
     """Posts a run's steps, gates and end in the run's room, each once."""
 
@@ -120,6 +138,9 @@ class RunRoomNotifier:
         for notice in pending:
             self._done.add(notice.id)
             try:
+                if room_is_down(room):
+                    await self._record_on_root(forge, campaign, room, notice)
+                    continue
                 await forge.post_room_notice(room.id, notice.text, notice_id=notice.id)
             except Exception as exc:
                 self._done.discard(notice.id)
@@ -140,6 +161,57 @@ class RunRoomNotifier:
                 )
                 return
 
+    async def _record_on_root(
+        self,
+        forge: VolundrPort,
+        campaign: WorkflowCampaign,
+        room: VolundrSession,
+        notice: RoomNotice,
+    ) -> None:
+        """Record a notice on the root's record in Forge's feed, because its room is down.
+
+        The room is the root's Skuld; once the root failed or stopped nothing hosts the room
+        and a post would only be refused. The root's record is where the run's thread is
+        still shown, so the notice goes to the owner's notification feed on it. Forge's
+        refusal is raised like a refused post and retried on the run's next change.
+        """
+        title = notice.text
+        if len(title) > MAX_TITLE_CHARS:
+            title = title[: MAX_TITLE_CHARS - len(_ELLIPSIS)] + _ELLIPSIS
+            record_truncation(
+                f"forge notification title limit ({MAX_TITLE_CHARS} characters)",
+                what="a workflow run notice title",
+                kept=len(title),
+                total=len(notice.text),
+                remedy="the full text is on the run's review page",
+            )
+        key = f"workflow-run-notice:{notice.id}"
+        await forge.submit_session_notification(
+            room.id,
+            {
+                "kind": "info",
+                "severity": "info",
+                "title": title,
+                "body": f"{campaign.name}: {notice.text} The run's room is {room.status}.",
+                "links": [
+                    {
+                        "label": "Open the run",
+                        "url": f"/ting/review/run/{campaign.slug}",
+                        "kind": "url",
+                    }
+                ],
+                "correlation_id": key,
+            },
+            idempotency_key=key,
+        )
+        logger.warning(
+            "The room of run %s is %s, so notice %s was recorded on its root %s instead",
+            campaign.slug,
+            room.status,
+            notice.id,
+            room.id,
+        )
+
     async def _forge(self, campaign: WorkflowCampaign) -> VolundrPort:
         if campaign.connection_id:
             forge = await self._factory.for_connection(campaign.owner_id, campaign.connection_id)
@@ -150,4 +222,4 @@ class RunRoomNotifier:
         return forge
 
 
-__all__ = ["RoomNotice", "RunRoomNotifier", "run_notices", "run_room_of"]
+__all__ = ["RoomNotice", "RunRoomNotifier", "room_is_down", "run_notices", "run_room_of"]

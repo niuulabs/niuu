@@ -229,3 +229,41 @@ async def test_a_run_without_a_room_posts_nothing_and_keeps_its_notices() -> Non
     _with_room(forge, campaign)
     await notifier.sync(campaign, state, WorkflowCampaignStatus.BLOCKED)
     assert len(forge.room_notices) == 1
+
+
+async def test_the_end_of_a_run_whose_root_failed_is_recorded_on_the_root_not_posted() -> None:
+    campaign = _campaign()
+    forge = FakeForge()
+    room = _with_room(forge, campaign)
+    forge.sessions[room] = replace(forge.sessions[room], status="failed")
+    # A room post would be refused: nothing hosts the room any more.
+    forge.fail_notice = RuntimeError("the root's Skuld is gone")
+    notifier = RunRoomNotifier(volundr_factory=FakeForgeFactory(forge))
+
+    await notifier.sync(campaign, RunState(campaign.id, steps=()), WorkflowCampaignStatus.FAILED)
+
+    assert forge.room_notices == []
+    [(session_id, draft)] = forge.notifications.values()
+    assert session_id == room
+    assert draft["title"] == "The run failed."
+    assert draft["correlation_id"] == f"workflow-run-notice:{campaign.id}:failed"
+    assert "room is failed" in draft["body"]
+
+
+async def test_a_notice_recorded_on_a_down_root_that_forge_refused_is_tried_again() -> None:
+    campaign = _campaign()
+    forge = FakeForge()
+    room = _with_room(forge, campaign)
+    forge.sessions[room] = replace(forge.sessions[room], status="stopped")
+    notifier = RunRoomNotifier(volundr_factory=FakeForgeFactory(forge))
+    state = RunState(campaign.id, steps=())
+    forge.fail_notify = RuntimeError("feed unavailable")
+
+    await notifier.sync(campaign, state, WorkflowCampaignStatus.COMPLETED)
+    assert forge.notifications == {}
+
+    forge.fail_notify = None
+    await notifier.sync(campaign, state, WorkflowCampaignStatus.COMPLETED)
+
+    [(session_id, draft)] = forge.notifications.values()
+    assert (session_id, draft["title"]) == (room, "The run completed.")

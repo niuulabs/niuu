@@ -215,6 +215,8 @@ class FakeSessions(StepSessionPort):
         self.fail_observe: set[str] = set()
         self.replaced: list[tuple[UUID, str, str | None]] = []
         self.fail_replace = False
+        #: When set, stopping the run's sessions raises it (after trying every session).
+        self.fail_stop: Exception | None = None
 
     async def launch_run(self, run_id: UUID, members: Mapping[str, PersonaRef]) -> RunUnit:
         if self.fail_launch:
@@ -233,6 +235,8 @@ class FakeSessions(StepSessionPort):
         self.offers.append(dict(offer))
 
     async def stop_run_sessions(self, run_id: UUID) -> None:
+        if self.fail_stop is not None:
+            raise self.fail_stop
         self.stopped.append(run_id)
 
     async def session_failure(self, run_id: UUID, session_id: str) -> str:
