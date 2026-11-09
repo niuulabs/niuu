@@ -137,4 +137,66 @@ describe('HandoffRow', () => {
     fireEvent.click(row);
     expect(onOpenWorker).not.toHaveBeenCalled();
   });
+
+  describe("a run's workflow events", () => {
+    const line = (over: Partial<MeshDelegationEvent>) =>
+      event({ fromPersona: '', participantId: 'lead', ...over });
+
+    it('shows an offer from the coordinator to the members that do that kind of work', () => {
+      const offered = line({
+        eventType: 'code.requested',
+        preview: 'Offered Implement to anyone who does code.requested',
+      });
+      render(
+        <HandoffRow
+          event={offered}
+          parties={handoffParties(offered, room, workers)}
+          onOpenWorker={vi.fn()}
+        />,
+      );
+      const row = screen.getByTestId('handoff-row');
+      expect(row).toHaveTextContent('Coordinatorcoder');
+      expect(row).toHaveTextContent('Offered Implement to anyone who does code.requested');
+      expect(row).toHaveTextContent('code.requested');
+    });
+
+    it.each([
+      ['step.picked_up', 'coder picked up Implement'],
+      ['step.outcome', 'reviewer finished Review with verdict changes requested'],
+      ['gate.opened', 'A person must decide Approve before the run goes on'],
+      ['gate.decided', 'jozef approved approve'],
+      ['run.ended', 'The run completed'],
+      ['step.rescheduled', 'Workflow event step.rescheduled: host drained'],
+    ])('shows a %s line as one row with its kind and no recipients', (kind, preview) => {
+      const row = line({ eventType: kind, preview });
+      render(
+        <HandoffRow
+          event={row}
+          parties={handoffParties(row, room, workers)}
+          onOpenWorker={vi.fn()}
+        />,
+      );
+      const rendered = screen.getByTestId('handoff-row');
+      expect(rendered).toHaveTextContent(preview);
+      expect(rendered).toHaveTextContent(kind);
+      expect(screen.queryByLabelText('to')).toBeNull();
+    });
+
+    it('keeps the whole sentence as the tooltip, since the row cuts it to one line', () => {
+      const long = line({
+        eventType: 'run.ended',
+        preview: 'The run failed: the review step missed its deadline after three days',
+      });
+      render(
+        <HandoffRow
+          event={long}
+          parties={handoffParties(long, room, workers)}
+          onOpenWorker={vi.fn()}
+        />,
+      );
+      expect(
+        screen.getByTitle('The run failed: the review step missed its deadline after three days'),
+      ).toBeInTheDocument();
+    });
+  });
 });
