@@ -365,20 +365,6 @@ export function AssistantMessage({
           </div>
         )}
 
-        {(!uxPrefs.showMessageActions || uxPrefs.copyMode === 'hover') && (
-          <button
-            type="button"
-            className={cn(
-              'niuu-chat-action-btn niuu-chat-copy',
-              uxPrefs.copyMode === 'hover' && 'niuu-chat-copy--hover',
-            )}
-            onClick={handleCopy}
-            title={copied ? 'Copied' : 'Copy'}
-            aria-label="Copy message"
-          >
-            {copied ? <Check /> : <Copy />}
-          </button>
-        )}
         <MessageAttachments attachments={message.attachments} />
         {hasReasoning && (
           <div className="niuu-chat-reasoning">
@@ -427,6 +413,21 @@ export function AssistantMessage({
         <div className="niuu-chat-assistant-footer">
           {uxPrefs.timestamp !== 'never' && (
             <span className="niuu-chat-timestamp">{formatTime(message.createdAt)}</span>
+          )}
+          {/* Copy without the action bar sits on the footer's line, never a line of its own. */}
+          {(!uxPrefs.showMessageActions || uxPrefs.copyMode === 'hover') && (
+            <button
+              type="button"
+              className={cn(
+                'niuu-chat-action-btn niuu-chat-copy',
+                uxPrefs.copyMode === 'hover' && 'niuu-chat-copy--hover',
+              )}
+              onClick={handleCopy}
+              title={copied ? 'Copied' : 'Copy'}
+              aria-label="Copy message"
+            >
+              {copied ? <Check /> : <Copy />}
+            </button>
           )}
           {uxPrefs.showMessageActions && message.status !== 'running' && (
             <div className="niuu-chat-action-bar">
