@@ -300,6 +300,14 @@ class InMemoryEventBroadcaster(EventBroadcaster):
                 "startup": (
                     session.startup.model_dump(mode="json") if session.startup is not None else None
                 ),
+                # Where the session sits in its project: clients replace a cached session with
+                # this event, so leaving it out would drop a run's members from their run (and
+                # their project) on every update until the next list read put them back.
+                "coordination": (
+                    session.coordination.model_dump(mode="json")
+                    if session.coordination is not None
+                    else None
+                ),
             },
             timestamp=datetime.now(UTC),
         )

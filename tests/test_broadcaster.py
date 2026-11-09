@@ -22,6 +22,7 @@ from volundr.domain.models import (
     TimelineEventType,
     TimelineResponse,
 )
+from volundr.domain.projects import SessionCoordination, SessionReference
 from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
 
 
@@ -372,6 +373,38 @@ class TestInMemoryEventBroadcaster:
 
         assert "startup" in event.data
         assert event.data["startup"] is None
+
+    @pytest.mark.asyncio
+    async def test_session_event_carries_where_the_session_sits_in_its_project(
+        self,
+        broadcaster: InMemoryEventBroadcaster,
+        sample_session: Session,
+    ):
+        project_id, root_id = uuid4(), uuid4()
+        member = sample_session.model_copy(
+            update={
+                "coordination": SessionCoordination(
+                    project_id=project_id,
+                    role="reviewer",
+                    parent=SessionReference(instance_id="local", session_id=root_id),
+                    labels=["workflow-run:run-1"],
+                )
+            }
+        )
+
+        event = broadcaster.create_session_event(EventType.SESSION_UPDATED, member)
+        unplaced = broadcaster.create_session_event(EventType.SESSION_UPDATED, sample_session)
+
+        assert event.data["coordination"] == {
+            "project_id": str(project_id),
+            "role": "reviewer",
+            "parent": {"instance_id": "local", "session_id": str(root_id)},
+            "objective": "",
+            "context_revision": "",
+            "labels": ["workflow-run:run-1"],
+        }
+        assert "coordination" in unplaced.data
+        assert unplaced.data["coordination"] is None
 
     @pytest.mark.asyncio
     async def test_session_event_carries_needs_attention(
