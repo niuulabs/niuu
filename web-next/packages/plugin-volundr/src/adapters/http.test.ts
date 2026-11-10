@@ -3090,6 +3090,53 @@ describe('Forge project grouping contract', () => {
     expect(client.delete).toHaveBeenLastCalledWith('/projects/lexi/members/alice');
   });
 
+  it('reaches a project\u2019s team integrations on the host that owns the project', async () => {
+    const client = makeClient();
+    const service = buildVolundrHttpAdapter(client);
+    const project = { id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' as const };
+    const remote = { ...project, instance_id: 'ymir' };
+    await service.getTeamIntegrationCatalog(project);
+    expect(client.get).toHaveBeenLastCalledWith('/projects/lexi/integrations/catalog');
+    await service.getTeamIntegrations(remote);
+    expect(client.get).toHaveBeenLastCalledWith('/projects/lexi/integrations?instance_id=ymir');
+    await service.getTeamRoutes(project);
+    expect(client.get).toHaveBeenLastCalledWith('/projects/lexi/integrations/routes');
+    await service.getTeamIntegrationUsage(project);
+    expect(client.get).toHaveBeenLastCalledWith('/projects/lexi/integrations/usage');
+    await service.getTeamIntegrationUsage(project, '2026-11-01T00:00:00Z');
+    expect(client.get).toHaveBeenLastCalledWith(
+      '/projects/lexi/integrations/usage?before=2026-11-01T00%3A00%3A00Z',
+    );
+    const connect = {
+      slug: 'jira',
+      credential: { client_id: 'id', client_secret: 'secret' },
+      config: { site_url: 'https://acme.atlassian.net', cloud_id: 'c1' },
+    };
+    await service.connectTeamServiceAccount(project, connect);
+    expect(client.post).toHaveBeenLastCalledWith('/projects/lexi/integrations', connect);
+    await service.startTeamOAuth(project, 'slack', { channel: '#eng' });
+    expect(getDerivedClient('http://localhost:8080/api/v1').post).toHaveBeenCalledWith(
+      '/integrations/oauth/slack/authorize-team',
+      { project_id: 'lexi', config: { channel: '#eng' } },
+    );
+    await service.updateTeamIntegration(project, 'c 1', { enabled: false });
+    expect(client.patch).toHaveBeenLastCalledWith('/projects/lexi/integrations/c%201', {
+      enabled: false,
+    });
+    await service.removeTeamIntegration(project, 'c1');
+    expect(client.delete).toHaveBeenLastCalledWith('/projects/lexi/integrations/c1');
+    const route = {
+      connection_id: 'c1',
+      deliver_to: 'channel' as const,
+      channel: '#eng',
+      enabled: true,
+    };
+    await service.setTeamRoute(project, 'errors', route);
+    expect(client.put).toHaveBeenLastCalledWith('/projects/lexi/integrations/routes/errors', route);
+    await service.removeTeamRoute(project, 'errors');
+    expect(client.delete).toHaveBeenLastCalledWith('/projects/lexi/integrations/routes/errors');
+  });
+
   it('sends a description, a status and a checkout folder as the project’s own fields', async () => {
     const client = makeClient();
     client.patch.mockResolvedValue({ id: 'lexi' });

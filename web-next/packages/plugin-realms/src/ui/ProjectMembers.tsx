@@ -17,9 +17,9 @@ import {
   useViewer,
 } from '../application/useProjectMembers';
 
-const CONTROL =
+export const CONTROL =
   'niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-2.5 niuu:py-1.5 niuu:text-sm niuu:text-text-primary';
-const BUTTON =
+export const BUTTON =
   'niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:font-medium niuu:text-text-primary niuu:disabled:opacity-40';
 
 const ROLE_LABEL: Record<ProjectRole, string> = {

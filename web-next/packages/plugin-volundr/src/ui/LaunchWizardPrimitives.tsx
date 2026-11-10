@@ -112,24 +112,30 @@ export function SectionCard({
   title,
   description,
   icon,
+  actions,
   children,
 }: {
   title: string;
   description?: string;
   /** Optional picture rendered before the title. */
   icon?: ReactNode;
+  /** Optional controls on the right of the header, such as a primary button. */
+  actions?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <section className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">
-      <div className="niuu:mb-4 niuu:border-b niuu:border-border-subtle niuu:pb-3">
-        <h3 className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:font-medium niuu:text-text-primary">
-          {icon ? <span className="niuu:text-brand">{icon}</span> : null}
-          {title}
-        </h3>
-        {description ? (
-          <p className="niuu:mt-1 niuu:text-xs niuu:text-text-faint">{description}</p>
-        ) : null}
+      <div className="niuu:mb-4 niuu:flex niuu:items-start niuu:justify-between niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:pb-3">
+        <div>
+          <h3 className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:font-medium niuu:text-text-primary">
+            {icon ? <span className="niuu:text-brand">{icon}</span> : null}
+            {title}
+          </h3>
+          {description ? (
+            <p className="niuu:mt-1 niuu:text-xs niuu:text-text-faint">{description}</p>
+          ) : null}
+        </div>
+        {actions ? <div className="niuu:shrink-0">{actions}</div> : null}
       </div>
       <div className="niuu:flex niuu:flex-col niuu:gap-4">{children}</div>
     </section>

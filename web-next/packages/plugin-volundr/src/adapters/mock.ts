@@ -3,7 +3,14 @@
  */
 import type { SecretRequest } from '@niuulabs/domain';
 import type { IVolundrService } from '../ports/IVolundrService';
-import type { ForgeProject, ProjectMember } from '../models/volundr.model';
+import type {
+  ForgeProject,
+  ProjectMember,
+  TeamCatalogEntry,
+  TeamIntegration,
+  TeamIntegrationUse,
+  TeamRoute,
+} from '../models/volundr.model';
 import type { IClusterAdapter } from '../ports/IClusterAdapter';
 import type { ISessionStore } from '../ports/ISessionStore';
 import type { IPtyStream } from '../ports/IPtyStream';
@@ -1280,6 +1287,49 @@ const SEED_PROJECTS: ForgeProject[] = [
   },
 ];
 
+/** The team catalog the mock offers: Slack and Linear install as apps, Jira as a service account. */
+const MOCK_TEAM_CATALOG: TeamCatalogEntry[] = [
+  {
+    slug: 'slack',
+    name: 'Slack',
+    description: 'Team notifications as a Slack bot',
+    icon: 'slack',
+    integration_type: 'messaging',
+    config_schema: {
+      properties: { channel: { label: 'Team channel', type: 'string' } },
+    },
+    team_install: 'oauth',
+  },
+  {
+    slug: 'linear',
+    name: 'Linear',
+    description: 'Issues as the team bot',
+    icon: 'linear',
+    integration_type: 'issue_tracker',
+    config_schema: { properties: {} },
+    team_install: 'oauth',
+  },
+  {
+    slug: 'jira',
+    name: 'Jira',
+    description: 'Issues through a service account',
+    icon: 'jira',
+    integration_type: 'issue_tracker',
+    config_schema: {
+      required: ['site_url', 'cloud_id'],
+      properties: {
+        site_url: { label: 'Site URL', type: 'url' },
+        cloud_id: { label: 'Cloud ID', type: 'string' },
+        project_key: { label: 'Default project key', type: 'string' },
+      },
+    },
+    team_install: 'client_credentials',
+  },
+];
+
+/** How many uses the mock returns per page, so paging is exercised with few rows. */
+const MOCK_USAGE_PAGE_SIZE = 3;
+
 export function createMockVolundrService(): IVolundrService {
   const sessions = [...SEED_SESSIONS];
   const projects = SEED_PROJECTS.map((project) => ({ ...project }));
@@ -1309,6 +1359,64 @@ export function createMockVolundrService(): IVolundrService {
     const members = projectMembers.get(projectId);
     if (!members) throw new Error('Project not found');
     return members;
+  };
+  /** Team integrations, routes and uses by project id; the seed project has a Slack install. */
+  const teamIntegrations = new Map<string, TeamIntegration[]>();
+  const teamRoutes = new Map<string, TeamRoute[]>();
+  const teamUsage = new Map<string, TeamIntegrationUse[]>();
+  const seedTeamId = 'conn-slack-team';
+  teamIntegrations.set('project-yggdrasil', [
+    {
+      id: seedTeamId,
+      slug: 'slack',
+      integration_type: 'messaging',
+      config: { channel: '#eng' },
+      enabled: true,
+      connected_by: 'u1',
+      created_at: '2026-11-01T09:00:00Z',
+      updated_at: '2026-11-01T09:00:00Z',
+    },
+  ]);
+  teamUsage.set(
+    'project-yggdrasil',
+    ['5', '4', '3', '2', '1'].map((n) => ({
+      connection_id: seedTeamId,
+      action: 'post_message',
+      acting_for: 'u1',
+      actor: 'notifications',
+      subject: `#eng message ${n}`,
+      session_id: '',
+      occurred_at: `2026-11-0${n}T10:00:00Z`,
+    })),
+  );
+  const teamIntegrationsOf = (projectId: string): TeamIntegration[] => {
+    membersOf(projectId);
+    const existing = teamIntegrations.get(projectId);
+    if (existing) return existing;
+    const created: TeamIntegration[] = [];
+    teamIntegrations.set(projectId, created);
+    return created;
+  };
+  const addTeamIntegration = (
+    projectId: string,
+    slug: string,
+    config: Record<string, unknown>,
+  ): TeamIntegration => {
+    const entry = MOCK_TEAM_CATALOG.find((candidate) => candidate.slug === slug);
+    if (!entry) throw new Error(`Unknown integration: ${slug}`);
+    const now = new Date().toISOString();
+    const connection: TeamIntegration = {
+      id: `conn-${slug}-${teamIntegrationsOf(projectId).length + 1}`,
+      slug,
+      integration_type: entry.integration_type,
+      config,
+      enabled: true,
+      connected_by: 'u1',
+      created_at: now,
+      updated_at: now,
+    };
+    teamIntegrationsOf(projectId).push(connection);
+    return connection;
   };
   const projectRevisions = new Map<string, number>();
   const secretRequests = new Map(
@@ -1477,6 +1585,77 @@ export function createMockVolundrService(): IVolundrService {
       if (members[index]?.role === 'owner' && owners.length === 1)
         throw new Error('A project needs at least one owner');
       members.splice(index, 1);
+    },
+    getTeamIntegrationCatalog: async (project) => {
+      membersOf(project.id);
+      return MOCK_TEAM_CATALOG.map((entry) => ({ ...entry }));
+    },
+    getTeamIntegrations: async (project) =>
+      teamIntegrationsOf(project.id).map((connection) => ({ ...connection })),
+    connectTeamServiceAccount: async (project, connect) => {
+      const entry = MOCK_TEAM_CATALOG.find((candidate) => candidate.slug === connect.slug);
+      if (entry?.team_install !== 'client_credentials')
+        throw new Error('This integration is not installed with a service account');
+      const missing = (entry.config_schema.required ?? []).filter((key) => !connect.config[key]);
+      if (missing.length > 0) throw new Error(`Missing settings: ${missing.join(', ')}`);
+      return { ...addTeamIntegration(project.id, connect.slug, connect.config) };
+    },
+    // The mock completes the provider approval at once: the install exists when the url is issued.
+    startTeamOAuth: async (project, slug, config) => {
+      const entry = MOCK_TEAM_CATALOG.find((candidate) => candidate.slug === slug);
+      if (entry?.team_install !== 'oauth')
+        throw new Error('This integration is not an app install');
+      addTeamIntegration(project.id, slug, config);
+      return { url: `https://${slug}.example.com/oauth/authorize?team=${project.id}` };
+    },
+    updateTeamIntegration: async (project, connectionId, change) => {
+      const connection = teamIntegrationsOf(project.id).find((item) => item.id === connectionId);
+      if (!connection) throw new Error('That integration is not connected to this project');
+      Object.assign(connection, change);
+      return { ...connection };
+    },
+    removeTeamIntegration: async (project, connectionId) => {
+      const connections = teamIntegrationsOf(project.id);
+      const index = connections.findIndex((item) => item.id === connectionId);
+      if (index < 0) throw new Error('That integration is not connected to this project');
+      connections.splice(index, 1);
+      teamRoutes.set(
+        project.id,
+        (teamRoutes.get(project.id) ?? []).filter((route) => route.connection_id !== connectionId),
+      );
+    },
+    getTeamRoutes: async (project) => {
+      membersOf(project.id);
+      return (teamRoutes.get(project.id) ?? []).map((route) => ({ ...route }));
+    },
+    setTeamRoute: async (project, event, change) => {
+      if (!teamIntegrationsOf(project.id).some((item) => item.id === change.connection_id))
+        throw new Error('That integration is not connected to this project');
+      const route: TeamRoute = { event, ...change };
+      teamRoutes.set(project.id, [
+        ...(teamRoutes.get(project.id) ?? []).filter((existing) => existing.event !== event),
+        route,
+      ]);
+      return { ...route };
+    },
+    removeTeamRoute: async (project, event) => {
+      membersOf(project.id);
+      teamRoutes.set(
+        project.id,
+        (teamRoutes.get(project.id) ?? []).filter((route) => route.event !== event),
+      );
+    },
+    getTeamIntegrationUsage: async (project, before) => {
+      membersOf(project.id);
+      const uses = (teamUsage.get(project.id) ?? []).filter(
+        (use) => !before || (use.occurred_at ?? '') < before,
+      );
+      const items = uses.slice(0, MOCK_USAGE_PAGE_SIZE);
+      const last = items[items.length - 1];
+      return {
+        items: items.map((use) => ({ ...use })),
+        next_before: uses.length > items.length && last ? last.occurred_at : null,
+      };
     },
     getSessionProject: async (id) => {
       const session = sessions.find((item) => item.id === id);

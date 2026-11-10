@@ -2190,6 +2190,39 @@ export function buildVolundrHttpAdapter(
         projectMembersPath(project, `members/${encodeURIComponent(userId)}`),
       );
     },
+    getTeamIntegrationCatalog: (project) =>
+      forgeClient.get(projectMembersPath(project, 'integrations/catalog')),
+    getTeamIntegrations: (project) => forgeClient.get(projectMembersPath(project, 'integrations')),
+    connectTeamServiceAccount: (project, connect) =>
+      forgeClient.post(projectMembersPath(project, 'integrations'), connect),
+    startTeamOAuth: (project, slug, config) =>
+      sharedClient.post(`/integrations/oauth/${encodeURIComponent(slug)}/authorize-team`, {
+        project_id: project.id,
+        config,
+      }),
+    updateTeamIntegration: (project, connectionId, change) =>
+      forgeClient.patch(
+        projectMembersPath(project, `integrations/${encodeURIComponent(connectionId)}`),
+        change,
+      ),
+    removeTeamIntegration: async (project, connectionId) => {
+      await forgeClient.delete(
+        projectMembersPath(project, `integrations/${encodeURIComponent(connectionId)}`),
+      );
+    },
+    getTeamRoutes: (project) => forgeClient.get(projectMembersPath(project, 'integrations/routes')),
+    setTeamRoute: (project, event, route) =>
+      forgeClient.put(
+        projectMembersPath(project, `integrations/routes/${encodeURIComponent(event)}`),
+        route,
+      ),
+    removeTeamRoute: async (project, event) => {
+      await forgeClient.delete(
+        projectMembersPath(project, `integrations/routes/${encodeURIComponent(event)}`),
+      );
+    },
+    getTeamIntegrationUsage: (project, before) =>
+      forgeClient.get(projectMembersPath(project, 'integrations/usage', before ? { before } : {})),
     getSessionProject: async (id, options) => {
       const payload = await forgeClient.get<SessionProjectPayload>(
         sessionProjectPath(id, options?.instanceId),
