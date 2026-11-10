@@ -42,6 +42,14 @@ EVENTS = [
     _event(EventType.SESSION_NOTIFICATION, id="mine", owner_id="owner-a", tenant_id="t"),
     _event(EventType.SESSION_NOTIFICATION, id="theirs", owner_id="owner-b", tenant_id="t"),
     _event(EventType.SESSION_NOTIFICATION, id="elsewhere", owner_id="owner-c", tenant_id="z"),
+    # The same gate as "theirs", sent to its approver: the approver's own row.
+    _event(
+        EventType.SESSION_NOTIFICATION,
+        id="approvers-copy",
+        owner_id="owner-d",
+        tenant_id="t",
+        copy_of="theirs",
+    ),
     _event(EventType.HEARTBEAT),
 ]
 
@@ -71,7 +79,9 @@ async def _stream(
     ("headers", "expected"),
     [
         ({"x-auth-user-id": "owner-a", "x-auth-tenant": "t"}, {"mine"}),
+        ({"x-auth-user-id": "owner-d", "x-auth-tenant": "t"}, {"approvers-copy"}),
         (
+            # An admin sees the item once, not once per recipient.
             {"x-auth-user-id": "root", "x-auth-tenant": "t", "x-auth-roles": "volundr:admin"},
             {"mine", "theirs"},
         ),
@@ -90,7 +100,11 @@ async def test_notifications_are_owner_scoped(
     )
     assert response.status_code == 200
     text = response.text
-    delivered = {name for name in ("mine", "theirs", "elsewhere") if f'"{name}"' in text}
+    delivered = {
+        name
+        for name in ("mine", "theirs", "elsewhere", "approvers-copy")
+        if f'"id": "{name}"' in text or f'"id":"{name}"' in text
+    }
     assert delivered == expected
     assert "event: heartbeat" in text  # other event types are unchanged
 
@@ -102,7 +116,7 @@ async def test_bare_dev_app_without_identity_is_unscoped(
         repository, pod_manager, stats_repository, pricing_provider, identity=None, headers={}
     )
     text = response.text
-    assert text.count("event: session_notification") == 3
+    assert text.count("event: session_notification") == 4
 
 
 async def test_anonymous_caller_is_refused_when_identity_is_configured(

@@ -390,6 +390,10 @@ class _DescribeSessionArgs(_Args):
         }
 
 
+class _FindPeopleArgs(_Args):
+    topic: str | None = Field(default=None, min_length=1)
+
+
 # --------------------------------------------------------------------------- schemas
 
 _SESSION_ID_SCHEMA = {
@@ -756,6 +760,29 @@ _FEED_NOTIFY_DESCRIPTION += (
 )
 
 
+_FIND_PEOPLE_DESCRIPTION = (
+    "List the people on this session's project: each member's user_id, display name, role, "
+    "expertise (free text) and skills, and whether their role lets them answer gates "
+    "(`can_answer_gates`). Use it to judge who knows most about a topic. Niuu does not rank "
+    "them and the list is not filtered: the order is the order they joined, and you decide "
+    "who fits. `topic` is optional and only echoed back in the result so your own context "
+    "keeps what you were looking for; it does not filter or rank anything. To ask one of "
+    "them a question, use `ask_person`. A session that is not attached to a project has no "
+    "members and the call returns an error saying so, which is not the same as nobody "
+    "knowing."
+)
+
+_FIND_PEOPLE_SCHEMA = _object(
+    {
+        "topic": {
+            "type": ["string", "null"],
+            "minLength": 1,
+            "description": "What you want a person for. Echoed back only; never filters.",
+        }
+    }
+)
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """One tool: its MCP metadata, argument model and required grant."""
@@ -995,6 +1022,12 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         description=_DESCRIBE_SESSION_DESCRIPTION,
         input_schema=_DESCRIBE_SESSION_SCHEMA,
         args_model=_DescribeSessionArgs,
+    ),
+    ToolSpec(
+        name="find_people",
+        description=_FIND_PEOPLE_DESCRIPTION,
+        input_schema=_FIND_PEOPLE_SCHEMA,
+        args_model=_FindPeopleArgs,
     ),
     ToolSpec(
         name="list_notifications",
@@ -1701,6 +1734,12 @@ def _notification_summary(raw: dict[str, Any], *, max_body_chars: int) -> dict[s
     return summary
 
 
+def _person_summary(raw: dict[str, Any]) -> dict[str, Any]:
+    """One project member as the agent sees them: Forge's fields, unranked and unfiltered."""
+    keys = ("user_id", "display_name", "role", "expertise", "skills", "can_answer_gates")
+    return {key: raw.get(key) for key in keys}
+
+
 def _forge_error_text(tool: str, exc: ForgeApiError) -> str:
     if exc.status is None:
         return f"{tool} failed: Forge is unreachable ({exc.detail}). Try again later."
@@ -1777,6 +1816,7 @@ class ForgeMcpToolbox:
             "environment": self._environment,
             "notify": notify,
             "describe_session": self._describe_session,
+            "find_people": self._find_people,
             "report_artifact": self._report_artifact,
             "request_secret": self._request_secret,
             WORKFLOW_STEP_CLOSE_TOOL: self._workflow_step_close,
@@ -1941,6 +1981,23 @@ class ForgeMcpToolbox:
                 },
             }
         )
+
+    async def _find_people(self, args: _FindPeopleArgs) -> ToolResult:
+        session_id = self._host.session_id
+        if not session_id:
+            return ToolResult.error(
+                "find_people lists the people on your own Forge session's project, and this "
+                "agent is not running in a Forge session."
+            )
+        people = await self._client.list_session_people(session_id)
+        payload: dict[str, Any] = {
+            "session_id": session_id,
+            "people": [_person_summary(person) for person in people if isinstance(person, dict)],
+            "ranked": False,
+        }
+        if args.topic is not None:
+            payload["topic"] = args.topic
+        return self._ok(payload)
 
     # -- reads
 

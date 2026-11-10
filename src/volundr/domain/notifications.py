@@ -71,6 +71,29 @@ FEED_ONLY_KEY = "feed_only"
 PUSH_CATEGORY_KEY = "push_category"
 PUSH_DATA_KEY = "push_data"
 
+#: Metadata key of a recipient's copy: the id of the original notification (the session
+#: owner's), set on the copies sent to the other people who may answer it. The original
+#: carries no such key. Copies are how an item reaches everyone who can act on it (see
+#: :func:`asks_for_approver`) while each person keeps their own read state, delivery
+#: rules and feed row; settling any one of them settles the whole group.
+COPY_OF_KEY = "copy_of"
+
+#: Kinds that ask someone to decide or act: a workflow gate, a permission prompt, a
+#: question. Anyone whose role may answer them is told, not only the session's owner.
+#: Every other kind (a milestone, a reply, an error report) stays with the owner.
+APPROVER_KINDS: frozenset[NotificationKind] = frozenset(
+    {NotificationKind.ATTENTION, NotificationKind.DECISION}
+)
+
+
+def asks_for_approver(kind: NotificationKind, metadata: dict[str, Any]) -> bool:
+    """Whether a notification needs someone with approver authority to act on it.
+
+    The kind says it (``attention``: a gate, a permission prompt or a question the session
+    is blocked on; ``decision``: a choice), or the producer declared a question.
+    """
+    return kind in APPROVER_KINDS or metadata.get("question") is True
+
 
 def _metadata_text(metadata: dict[str, Any], key: str) -> str | None:
     value = metadata.get(key)
@@ -156,6 +179,12 @@ class Notification(BaseModel):
         return self.resolved_at is not None
 
     @property
+    def copy_of(self) -> UUID | None:
+        """The original this is a recipient's copy of, or ``None`` for an original."""
+        raw = _metadata_text(self.metadata, COPY_OF_KEY)
+        return UUID(raw) if raw is not None else None
+
+    @property
     def turn_id(self) -> str | None:
         """The transcript turn this notification anchors to, or ``None`` when it has none.
 
@@ -201,6 +230,7 @@ class Notification(BaseModel):
         """
         data = self.model_dump(mode="json", exclude={"dedupe_key", "metadata", "image"})
         data["turn_id"] = self.turn_id
+        data["copy_of"] = str(self.copy_of) if self.copy_of is not None else None
         data["resident_id"] = self.resident_id
         data["resident_session_id"] = self.resident_session_id
         # Question signals (F11b) live in metadata; null when the notice carries none.
@@ -271,7 +301,9 @@ class NotificationScope:
             is_admin=NOTIFICATION_ADMIN_ROLE in principal.roles,
         )
 
-    def allows(self, owner_id: str | None, tenant_id: str | None) -> bool:
+    def allows(
+        self, owner_id: str | None, tenant_id: str | None, *, recipient_copy: bool = False
+    ) -> bool:
         if self.everyone:
             return True
         roles = [NOTIFICATION_ADMIN_ROLE] if self.is_admin else []
@@ -281,6 +313,14 @@ class NotificationScope:
             tenant_id=self.tenant_id,
             owner_id=owner_id,
             notification_tenant_id=tenant_id,
+            recipient_copy=recipient_copy,
+        )
+
+    def allows_notification(self, notification: Notification) -> bool:
+        return self.allows(
+            notification.owner_id,
+            notification.tenant_id,
+            recipient_copy=notification.copy_of is not None,
         )
 
 

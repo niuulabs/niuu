@@ -34,6 +34,13 @@ class ForgeClient(ABC):
         """``GET /sessions/{id}``."""
 
     @abstractmethod
+    async def list_session_people(self, session_id: str) -> list[dict[str, Any]]:
+        """``GET /sessions/{id}/people``: the members of the session's project.
+
+        Forge answers 409 (raised as :class:`ForgeApiError`) when the session has no
+        project; an empty list would read as "nobody is on it"."""
+
+    @abstractmethod
     async def get_conversation(
         self, session_id: str, *, turns: int, instance_id: str | None
     ) -> dict[str, Any]:

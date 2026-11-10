@@ -29,6 +29,7 @@ from volundr.domain.notification_ports import (
     NotificationRuleRepository,
 )
 from volundr.domain.notifications import (
+    COPY_OF_KEY,
     ClaimedDelivery,
     DeliveryStatus,
     Notification,
@@ -258,7 +259,11 @@ def scope_clause(scope: NotificationScope, params: list[Any]) -> str:
         return f"owner_id = {user}"
     params.append(scope.tenant_id)
     tenant = f"${len(params)}"
-    return f"(owner_id = {user} OR COALESCE(tenant_id, '') IN ('', {tenant}))"
+    # Another person's recipient copy stays theirs: the admin sees the original.
+    return (
+        f"(owner_id = {user} OR (COALESCE(tenant_id, '') IN ('', {tenant}) "
+        f"AND metadata->>'{COPY_OF_KEY}' IS NULL))"
+    )
 
 
 def feed_sql(
@@ -401,17 +406,45 @@ class PostgresNotificationRepository(NotificationRepository):
         return NotificationPage(items=items, next_before=next_before)
 
     async def list_for_session(
-        self, session_id: UUID, *, after: int, limit: int
+        self, session_id: UUID, *, after: int, limit: int, reader: str | None = None
     ) -> list[Notification]:
         rows = await self._pool.fetch(
-            """SELECT * FROM forge_notifications
-               WHERE session_id = $1 AND seq > $2
-               ORDER BY seq ASC LIMIT $3""",
+            f"""SELECT * FROM forge_notifications n
+               WHERE n.session_id = $1 AND n.seq > $2
+               AND ($4::text IS NULL OR (
+                   (n.metadata->>'{COPY_OF_KEY}' IS NULL OR n.owner_id = $4)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM forge_notifications c
+                       WHERE c.session_id = n.session_id
+                       AND c.metadata->>'{COPY_OF_KEY}' = n.id::text
+                       AND c.owner_id = $4)))
+               ORDER BY n.seq ASC LIMIT $3""",
             session_id,
             after,
             limit,
+            reader,
         )
         return await attach_images(self._pool, [row_to_notification(row) for row in rows])
+
+    async def list_copies(self, original_ids: list[UUID]) -> list[Notification]:
+        if not original_ids:
+            return []
+        rows = await self._pool.fetch(
+            f"""SELECT * FROM forge_notifications
+               WHERE metadata->>'{COPY_OF_KEY}' = ANY($1::text[])
+               ORDER BY seq ASC""",
+            [str(original_id) for original_id in original_ids],
+        )
+        return await attach_images(self._pool, [row_to_notification(row) for row in rows])
+
+    async def copy_recipients(self, session_id: UUID) -> list[str]:
+        rows = await self._pool.fetch(
+            f"""SELECT DISTINCT owner_id FROM forge_notifications
+               WHERE session_id = $1 AND metadata->>'{COPY_OF_KEY}' IS NOT NULL
+               ORDER BY owner_id""",
+            session_id,
+        )
+        return [row["owner_id"] for row in rows]
 
     async def feed_counts(
         self, scope: NotificationScope, *, read_through_seq: int

@@ -61,6 +61,7 @@ class TestPolicyTable:
             ("GET", "/sessions/S", FORGE_SESSION_READ_SCOPE, Binding.OWNED),
             ("GET", "/sessions/S/conversation", FORGE_SESSION_READ_SCOPE, Binding.OWNED),
             ("GET", "/sessions/S/status", FORGE_SESSION_READ_SCOPE, Binding.OWNED),
+            ("GET", "/sessions/S/people", FORGE_SESSION_READ_SCOPE, Binding.OWN),
             ("GET", "/sessions/S/log", FORGE_SESSION_READ_SCOPE, Binding.OWNED),
             ("GET", "/sessions/S/transcript", FORGE_SESSION_READ_SCOPE, Binding.OWNED),
             (
@@ -128,6 +129,9 @@ class TestPolicyTable:
             ("GET", "/notifications/n/deliveries"),
             ("GET", "/sessions/stream"),
             ("GET", "/sessions/S/logs"),
+            ("POST", "/sessions/S/people"),
+            ("PUT", "/sessions/S/people"),
+            ("GET", "/sessions/S/people/bob"),
             ("GET", "/sessions/S/files"),
             ("POST", "/sessions/S/message-deliveries/r/claim"),
             # Supplying or declining a secret is the owner's alone.

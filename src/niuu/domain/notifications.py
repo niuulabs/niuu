@@ -599,15 +599,22 @@ def notification_visible_to(
     tenant_id: str | None,
     owner_id: str | None,
     notification_tenant_id: str | None,
+    recipient_copy: bool = False,
 ) -> bool:
     """Whether a reader may see a notification: its owner, or an admin of its tenant.
 
     Untenanted notifications are visible to every admin, matching how Forge scopes
     untenanted sessions. The feed query, the SSE filter and the Guild facade all
     apply this one rule so a reader never sees a different set live and on reload.
+
+    ``recipient_copy`` marks the copy of an item that was also sent to the people who may
+    act on it (a project's approvers, for instance). It is that person's own row, so only
+    they see it; an admin already sees the original and would otherwise see every copy too.
     """
     if owner_id and owner_id == user_id:
         return True
+    if recipient_copy:
+        return False
     if NOTIFICATION_ADMIN_ROLE not in roles:
         return False
     return not notification_tenant_id or notification_tenant_id == tenant_id

@@ -67,9 +67,22 @@ class NotificationRepository(ABC):
 
     @abstractmethod
     async def list_for_session(
-        self, session_id: UUID, *, after: int, limit: int
+        self, session_id: UUID, *, after: int, limit: int, reader: str | None = None
     ) -> list[Notification]:
-        """Return one session's notifications with ``seq > after``, ascending."""
+        """Return one session's notifications with ``seq > after``, ascending.
+
+        Without ``reader`` every row, whoever it belongs to. With one, the session's feed
+        as that person sees it: their own rows, and the originals of items they hold no
+        copy of, never another person's recipient copy (see ``COPY_OF_KEY``).
+        """
+
+    @abstractmethod
+    async def list_copies(self, original_ids: list[UUID]) -> list[Notification]:
+        """Every recipient copy of these originals (``metadata.copy_of``), any owner."""
+
+    @abstractmethod
+    async def copy_recipients(self, session_id: UUID) -> list[str]:
+        """The owners holding a recipient copy of something on this session, sorted."""
 
     @abstractmethod
     async def feed_counts(

@@ -103,6 +103,9 @@ class InMemoryNotificationStore:
         self.images = InMemoryNotificationImageRepository(self)
         self.image_scheduler = RecordingImageScheduler()
 
+    def notifications_by_id(self, notification_id: UUID) -> Notification:
+        return next(n for n in self.notifications.values() if n.id == notification_id)
+
     def image_of(self, notification_id: UUID) -> NotificationImage | None:
         row = self.image_rows.get(notification_id)
         return row.view() if row is not None else None
@@ -163,7 +166,7 @@ class InMemoryNotificationRepository(NotificationRepository):
         return [
             self.store.with_image(n)
             for n in self.store.notifications.values()
-            if scope.allows(n.owner_id, n.tenant_id)
+            if scope.allows_notification(n)
         ]
 
     async def get(self, notification_id: UUID) -> Notification | None:
@@ -201,14 +204,40 @@ class InMemoryNotificationRepository(NotificationRepository):
         return NotificationPage(items=page, next_before=page[-1].seq if more else None)
 
     async def list_for_session(
-        self, session_id: UUID, *, after: int, limit: int
+        self, session_id: UUID, *, after: int, limit: int, reader: str | None = None
     ) -> list[Notification]:
+        everything = list(self.store.notifications.values())
+        held = {n.copy_of for n in everything if n.copy_of is not None and n.owner_id == reader}
         items = [
             self.store.with_image(n)
-            for n in self.store.notifications.values()
-            if n.session_id == session_id and n.seq > after
+            for n in everything
+            if n.session_id == session_id
+            and n.seq > after
+            and (
+                reader is None or ((n.copy_of is None or n.owner_id == reader) and n.id not in held)
+            )
         ]
         return sorted(items, key=lambda n: n.seq)[:limit]
+
+    async def list_copies(self, original_ids: list[UUID]) -> list[Notification]:
+        wanted = set(original_ids)
+        return sorted(
+            (
+                self.store.with_image(n)
+                for n in self.store.notifications.values()
+                if n.copy_of in wanted
+            ),
+            key=lambda n: n.seq,
+        )
+
+    async def copy_recipients(self, session_id: UUID) -> list[str]:
+        return sorted(
+            {
+                n.owner_id
+                for n in self.store.notifications.values()
+                if n.session_id == session_id and n.copy_of is not None
+            }
+        )
 
     async def feed_counts(
         self, scope: NotificationScope, *, read_through_seq: int

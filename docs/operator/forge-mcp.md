@@ -121,7 +121,7 @@ key exists.
 
 | Grant | Adds scope | Tools |
 |---|---|---|
-| none | `forge:notify`, `forge:session:read`, `forge:session:secret` | `environment`, `notify`, `describe_session`, `list_notifications`, `list_sessions`, `get_session`, `session_transcript` |
+| none | `forge:notify`, `forge:session:read`, `forge:session:secret` | `environment`, `notify`, `describe_session`, `find_people`, `list_notifications`, `list_sessions`, `get_session`, `session_transcript` |
 | `message` | `forge:session:message` | `send_message`, `ask`, `message_status`, `room_post`, and `reply` when the answer goes to a session or a room (see [agent messaging](agent-messaging.md)) |
 | `lifecycle` | `forge:session:lifecycle` | `create_session`, `start_session`, `stop_session` (never delete or archive) |
 
@@ -204,6 +204,21 @@ effective `grants`, the offered `tools` and the credential in use
 (`forge_credential.kind`: `forge_session` or `broker`), never the token itself. Those
 are the grants actually minted into this launch's token, from all four sources. After
 an operator change they move only once the session restarts.
+
+## People on the session's project (`find_people`)
+
+`find_people` lists the members of the project the calling session is attached to:
+`user_id`, `display_name`, `role`, `expertise` (free text), `skills` (A2A `AgentSkill`
+entries) and `can_answer_gates` (the role is `approver` or `owner`). It is available to
+every session and needs no grant. Niuu does not rank the people: the list is in joining
+order and an optional `topic` argument is only echoed back, so the agent judges who knows
+most from what each member wrote about themselves.
+
+It calls `GET /api/v1/forge/sessions/{id}/people`, open to the session's owner, the
+participants of its room (invited ones and project members), tenant admins, and the
+session's own `forge_session` credential with `forge:session:read` (a token bound to
+another session gets 403). Only members of the session's own org are listed. A session
+that is not attached to a project is a **409** saying so, not an empty list.
 
 ## Secret requests (Forge REST)
 
@@ -309,6 +324,7 @@ session of the same owner.
 | `GET /sessions/{id}/notifications` | `forge:session:read` | owned |
 | `POST /sessions/{id}/notifications` (direct submit, recorded as `source=agent`) | `forge:notify` | own |
 | `GET /sessions` | `forge:session:read` | owner's sessions only |
+| `GET /sessions/{id}/people` (`find_people`) | `forge:session:read` | own |
 | `GET /sessions/{id}`, `/conversation`, `/conversation/turns/{turn}`, `/log`, `/log/head`, `/transcript`, `/transcript/download`, `/message-deliveries/{request_id}` | `forge:session:read` | owned |
 | `POST /sessions/{id}/messages` | `forge:session:message` | peer |
 | `POST /sessions` | `forge:session:lifecycle` | acts as the owner |

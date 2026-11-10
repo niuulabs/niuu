@@ -30,11 +30,12 @@ from volundr.domain.session_participants import (
     ParticipantStatus,
     RoomGrants,
     SelfInviteError,
+    SessionNotInProjectError,
     SessionParticipant,
-    compute_room_grants,
     room_role_for_project_role,
 )
 
+from .room_grants import RoomGrantSource
 from .session import SessionAccessDeniedError, SessionService
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ class SessionParticipantService:
         # configured decision that this host runs without projects (``projects.enabled:
         # false``): such a host has no session attached to a project either.
         self._project_members = project_members
+        self._room_grants = RoomGrantSource(repository, project_members)
         # Optional async hook: notified with (session_id, user_id) right after
         # a revoke commits, so the composition root can close an
         # ALREADY-OPEN proxied socket immediately instead of relying solely
@@ -310,16 +312,35 @@ class SessionParticipantService:
         Built from its ACTIVE, unexpired participant rows and from the members of the
         project it is attached to; the more senior of the two applies to a user in both.
         """
-        return compute_room_grants(
-            await self._repository.list_active_for_session(session.id),
-            await self._session_project_members(session),
-        )
+        return await self._room_grants.for_session(session)
 
-    async def _session_project_members(self, session: Session) -> list[ProjectMember]:
-        if self._project_members is None or session.coordination is None:
-            return []
-        members = await self._project_members.list_for_project(session.coordination.project_id)
-        return [m for m in members if m.tenant_id == session.tenant_id]
+    async def list_people(
+        self, session: Session, principal: Principal | None
+    ) -> list[ProjectMember]:
+        """The members of the project *session* is attached to, for anyone in its room.
+
+        Authorized by ``read_room`` like the room itself: the session's owner, its
+        participants, project members and tenant admins. Each member carries the role,
+        expertise and skills the project holds for them.
+
+        Raises:
+            PermissionError: Authorization is configured and no principal was given.
+            SessionAccessDeniedError: The policy denies ``read_room``.
+            SessionNotInProjectError: The session has no project (or this host runs
+                without projects), so there are no members to list.
+        """
+        await self.check_room_access(session, principal, "read_room")
+        if session.coordination is None:
+            raise SessionNotInProjectError(
+                f"Session {session.id} is not attached to a project, so it has no project "
+                "members. Attach it to a project (coordination.project_id) to list people."
+            )
+        if self._project_members is None:
+            raise SessionNotInProjectError(
+                f"Session {session.id} names a project, but this Forge runs without projects "
+                "(projects.enabled is false), so it cannot list the project's members."
+            )
+        return await self._room_grants.project_members(session)
 
     async def check_room_access(
         self, session: Session, principal: Principal | None, action: str

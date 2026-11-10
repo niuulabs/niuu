@@ -47,6 +47,7 @@ from volundr.domain.notification_ports import (
     NotificationRuleRepository,
 )
 from volundr.domain.notifications import (
+    COPY_OF_KEY,
     INTEGRATION_SINK,
     RESIDENT_ID_KEY,
     RESIDENT_SESSION_ID_KEY,
@@ -66,10 +67,12 @@ from volundr.domain.notifications import (
     NotificationScope,
     NotificationSinkInfo,
     NotificationValidationError,
+    asks_for_approver,
     attention_push_rule,
 )
 from volundr.domain.ports import EventBroadcaster, IntegrationRepository
 from volundr.domain.services.notification_images import notification_event
+from volundr.domain.services.room_grants import RoomGrantSource
 from volundr.domain.session_read_state import is_final_output
 
 logger = logging.getLogger(__name__)
@@ -196,6 +199,7 @@ class NotificationService(NotificationRecorder):
         integration_repository: IntegrationRepository | None = None,
         attention_retire_page_size: int = 200,
         guild_instance: GuildInstance | None = None,
+        room_grants: RoomGrantSource | None = None,
     ) -> None:
         if attention_retire_page_size < 1:
             raise ValueError("attention_retire_page_size must be positive")
@@ -218,6 +222,10 @@ class NotificationService(NotificationRecorder):
         self._engine_resolver = engine_resolver
         self._integrations = integration_repository
         self._instance_fields = guild_instance.fields() if guild_instance else {}
+        # Who may answer a session's gates and questions, besides its owner: its approvers
+        # (per-session grants and the roles of its project's members). ``None`` is a
+        # service built without room roles; it tells only the session's owner.
+        self._room_grants = room_grants
 
     # -- Projection --------------------------------------------------------
 
@@ -237,7 +245,7 @@ class NotificationService(NotificationRecorder):
             if entry.session_id != session.id:
                 raise ValueError("Every projected log row must belong to the session")
             candidates.extend(self._candidates_for_entry(context, entry))
-        return await self._record(candidates)
+        return await self._record(candidates, session)
 
     def _candidates_for_entry(
         self, context: _SessionContext, entry: SessionLogEntry
@@ -310,30 +318,48 @@ class NotificationService(NotificationRecorder):
             session_seq=None,
             metadata={"input_kind": kind, "request_id": request_id},
         )
-        created = await self._record([candidate])
+        created = await self._record([candidate], session)
         return created[0] if created else None
 
     async def retire_attention(self, session: Session) -> int:
-        """Acknowledge the owner's unread attention items once the question is settled.
+        """Acknowledge everyone's unread attention items once the question is settled.
 
-        Only items above the owner's read watermark can be unread; each is marked read
-        individually, so the rest of the feed's read state is untouched.
+        The question was put to the session's owner and to every approver who was told
+        (their recipient copies); it is settled for all of them at once. Only items above
+        a person's read watermark can be unread; each is marked read individually, so the
+        rest of the feed's read state is untouched. Returns how many were acknowledged.
         """
         owner = session.owner_id or ""
-        if not owner:
-            return 0
-        after = (await self._repository.get_watermark(owner)).read_through_seq
+        recipients = [owner] if owner else []
+        recipients += [
+            person
+            for person in await self._repository.copy_recipients(session.id)
+            if person != owner
+        ]
+        retired = 0
+        for recipient in recipients:
+            retired += await self._retire_attention_of(recipient, session)
+        return retired
+
+    async def _retire_attention_of(self, recipient: str, session: Session) -> int:
+        after = (await self._repository.get_watermark(recipient)).read_through_seq
         retired = 0
         while True:
             page = await self._repository.list_for_session(
                 session.id, after=after, limit=self._attention_retire_page_size
             )
-            attention = [item for item in page if item.kind == NotificationKind.ATTENTION]
+            attention = [
+                item
+                for item in page
+                if item.kind == NotificationKind.ATTENTION and item.owner_id == recipient
+            ]
             if attention:
-                already = await self._repository.read_ids(owner, [item.id for item in attention])
+                already = await self._repository.read_ids(
+                    recipient, [item.id for item in attention]
+                )
                 for item in attention:
                     if item.id not in already:
-                        await self._repository.mark_read(owner, item.id)
+                        await self._repository.mark_read(recipient, item.id)
                         retired += 1
             if len(page) < self._attention_retire_page_size:
                 return retired
@@ -503,7 +529,7 @@ class NotificationService(NotificationRecorder):
             session_seq=None,
             metadata={"submitted_by": principal.user_id},
         )
-        created = await self._record([candidate])
+        created = await self._record([candidate], session)
         if created:
             return created[0], True
         existing = await self._repository.get(candidate.id)
@@ -586,10 +612,18 @@ class NotificationService(NotificationRecorder):
             speak=draft.speak,
         )
 
-    async def _record(self, candidates: list[NotificationCandidate]) -> list[Notification]:
+    async def _record(
+        self, candidates: list[NotificationCandidate], session: Session | None = None
+    ) -> list[Notification]:
+        """Record ``candidates`` (with their recipients' copies); return the originals.
+
+        ``session`` is what the candidates are about; it decides who else is told of an
+        item that asks someone to act. Copies are stored, delivered and broadcast like any
+        row, but callers hear only of the originals they produced.
+        """
         if not candidates:
             return []
-        created = await self._repository.project(candidates)
+        created = await self._repository.project(await self._with_recipients(candidates, session))
         images_pending = False
         for notification in created:
             if (
@@ -603,9 +637,52 @@ class NotificationService(NotificationRecorder):
             await self._broadcast(notification)
         if images_pending:
             self._image_scheduler.wake()
-        for notification in created:
+        originals = [n for n in created if n.copy_of is None]
+        for notification in originals:
             await self._apply_resolutions(notification)
-        return created
+        return originals
+
+    async def _with_recipients(
+        self, candidates: list[NotificationCandidate], session: Session | None
+    ) -> list[NotificationCandidate]:
+        """Add a copy for every approver of ``session`` to each candidate that needs one.
+
+        An item that asks someone to decide or act (:func:`asks_for_approver`) goes to
+        everyone whose role may answer it: the session's owner (the candidate itself) and
+        each approver, whether per-session or through the session's project. Members who
+        may only watch or chat are not told, and a session with no project and no invited
+        approvers tells only its owner.
+
+        Copies are made only for an original this call is about to record: a replay of a
+        producer's retry finds the original already stored and adds nobody who became an
+        approver since, so an item already settled is never raised again.
+        """
+        if session is None or self._room_grants is None:
+            return candidates
+        if not any(asks_for_approver(c.kind, c.metadata) for c in candidates):
+            return candidates
+        approvers = (await self._room_grants.for_session(session)).approver_ids
+        expanded: list[NotificationCandidate] = []
+        for candidate in candidates:
+            expanded.append(candidate)
+            if not asks_for_approver(candidate.kind, candidate.metadata):
+                continue
+            if await self._repository.get(candidate.id) is not None:
+                continue
+            for person in sorted(approvers - {candidate.owner_id, ""}):
+                expanded.append(self._copy_for(candidate, person))
+        return expanded
+
+    @staticmethod
+    def _copy_for(candidate: NotificationCandidate, person: str) -> NotificationCandidate:
+        """``person``'s own row of ``candidate``: same item, theirs to read and settle."""
+        return candidate.model_copy(
+            update={
+                "dedupe_key": f"{candidate.dedupe_key}:copy:{person}",
+                "owner_id": person,
+                "metadata": {**candidate.metadata, COPY_OF_KEY: str(candidate.id)},
+            }
+        )
 
     async def _apply_resolutions(self, notification: Notification) -> None:
         """Resolve what a new notification closes (LEX-1442).
@@ -651,8 +728,47 @@ class NotificationService(NotificationRecorder):
                 resolved_at=now,
                 resolved_by=notification.id,
             )
+        resolved += await self._settle_group(
+            resolved, resolved_at=now, resolved_by=notification.id, resolution=None
+        )
         for row in resolved:
             await self._broadcast(row)
+
+    async def _settle_group(
+        self,
+        touched: list[Notification],
+        *,
+        resolved_at: datetime,
+        resolved_by: UUID | None,
+        resolution: str | None,
+    ) -> list[Notification]:
+        """Resolve everyone's row of each item in ``touched``; return the rows changed.
+
+        An item that went to several people is one item: once it is decided, every
+        recipient's row settles, whichever of them (or Ting, or a later notice) decided
+        it. Rows already resolved keep their first resolution, so this is safe to repeat
+        and finishes a group an earlier, interrupted call left half settled.
+        """
+        originals = {row.copy_of or row.id for row in touched}
+        rows = await self._repository.list_copies(sorted(originals, key=str))
+        for original_id in sorted({row.copy_of for row in touched if row.copy_of}, key=str):
+            original = await self._repository.get(original_id)
+            if original is not None:
+                rows.append(original)
+        open_by_owner: dict[str, list[UUID]] = {}
+        for row in rows:
+            if not row.resolved:
+                open_by_owner.setdefault(row.owner_id, []).append(row.id)
+        changed: list[Notification] = []
+        for owner, ids in open_by_owner.items():
+            changed += await self._repository.resolve(
+                owner,
+                ids,
+                resolved_at=resolved_at,
+                resolved_by=resolved_by,
+                resolution=resolution,
+            )
+        return changed
 
     async def resolve(
         self, principal: Principal, notification_id: UUID, *, resolution: str | None
@@ -660,20 +776,24 @@ class NotificationService(NotificationRecorder):
         """An operator resolves one notification by hand (idempotent)."""
         notification = await self._repository.get(notification_id)
         scope = NotificationScope.for_principal(principal)
-        if notification is None or not scope.allows(notification.owner_id, notification.tenant_id):
+        if notification is None or not scope.allows_notification(notification):
             raise NotificationNotFoundError(f"Notification not found: {notification_id}")
-        if notification.resolved:
-            return notification
-        changed = await self._repository.resolve(
-            notification.owner_id,
-            [notification_id],
-            resolved_at=datetime.now(UTC),
-            resolved_by=None,
-            resolution=resolution,
+        now = datetime.now(UTC)
+        changed: list[Notification] = []
+        if not notification.resolved:
+            changed = await self._repository.resolve(
+                notification.owner_id,
+                [notification_id],
+                resolved_at=now,
+                resolved_by=None,
+                resolution=resolution,
+            )
+        changed += await self._settle_group(
+            [notification], resolved_at=now, resolved_by=None, resolution=resolution
         )
         for row in changed:
             await self._broadcast(row)
-        return changed[0] if changed else await self._repository.get(notification_id)
+        return await self._repository.get(notification_id) or notification
 
     @property
     def instance_fields(self) -> dict[str, str]:
@@ -740,7 +860,9 @@ class NotificationService(NotificationRecorder):
         The caller has already authorized ``principal`` for the session.
         """
         watermark = await self._repository.get_watermark(principal.user_id)
-        items = await self._repository.list_for_session(session_id, after=after, limit=limit)
+        items = await self._repository.list_for_session(
+            session_id, after=after, limit=limit, reader=principal.user_id
+        )
         return await self._mark_stale(items), watermark.read_through_seq
 
     async def _mark_stale(self, items: list[Notification]) -> list[Notification]:
@@ -818,7 +940,7 @@ class NotificationService(NotificationRecorder):
     async def mark_read(self, principal: Principal, notification_id: UUID) -> NotificationReadState:
         notification = await self._repository.get(notification_id)
         scope = NotificationScope.for_principal(principal)
-        if notification is None or not scope.allows(notification.owner_id, notification.tenant_id):
+        if notification is None or not scope.allows_notification(notification):
             raise NotificationNotFoundError(f"Notification not found: {notification_id}")
         await self._repository.mark_read(principal.user_id, notification_id)
         return await self.get_read_state(principal)
@@ -832,7 +954,7 @@ class NotificationService(NotificationRecorder):
         """The stored image bytes, readable by exactly those who may read the item."""
         notification = await self._repository.get(notification_id)
         scope = NotificationScope.for_principal(principal)
-        if notification is None or not scope.allows(notification.owner_id, notification.tenant_id):
+        if notification is None or not scope.allows_notification(notification):
             raise NotificationNotFoundError(f"Notification not found: {notification_id}")
         content = await self._images.get_content(notification_id, variant)
         if content is None:
@@ -844,7 +966,7 @@ class NotificationService(NotificationRecorder):
     ) -> list[NotificationDelivery]:
         notification = await self._repository.get(notification_id)
         scope = NotificationScope.for_principal(principal)
-        if notification is None or not scope.allows(notification.owner_id, notification.tenant_id):
+        if notification is None or not scope.allows_notification(notification):
             raise NotificationNotFoundError(f"Notification not found: {notification_id}")
         return await self._deliveries.list_for_notification(notification_id)
 

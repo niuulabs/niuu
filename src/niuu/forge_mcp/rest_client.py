@@ -119,6 +119,13 @@ class RestForgeClient(ForgeClient):
             "GET", f"/sessions/{quote(session_id)}", params=self._instance_params(instance_id)
         )
 
+    async def list_session_people(self, session_id: str) -> list[dict[str, Any]]:
+        path = f"/sessions/{quote(session_id)}/people"
+        body = await self._request("GET", path)
+        if not isinstance(body, list):
+            raise ForgeApiError(f"unexpected response shape from {path}")
+        return body
+
     async def get_conversation(
         self, session_id: str, *, turns: int, instance_id: str | None
     ) -> dict[str, Any]:

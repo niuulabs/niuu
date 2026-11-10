@@ -95,11 +95,23 @@ def test_images_migration_is_additive_idempotent_and_goes_with_its_notification(
     assert down.strip() == "DROP TABLE IF EXISTS forge_notification_images;"
 
 
-def test_images_migration_is_followed_only_by_the_speak_and_resolved_migrations():
+def test_images_migration_is_followed_only_by_the_speak_resolved_and_copies_migrations():
     names = sorted(path.name for path in (ROOT / "migrations").glob("*.up.sql"))
     notifications = [name for name in names if "_forge_notification" in name]
-    assert notifications[-3:] == [
+    assert notifications[-4:] == [
         f"{IMAGES}.up.sql",
         "000097_forge_notification_speak.up.sql",
         "000098_forge_notification_resolved.up.sql",
+        "000120_forge_notification_copies.up.sql",
     ]
+
+
+def test_copies_migration_only_adds_an_idempotent_partial_index():
+    up = (ROOT / "migrations/000120_forge_notification_copies.up.sql").read_text()
+    statements = [s for s in re.sub(r"--[^\n]*", "", up).split(";") if s.strip()]
+    assert len(statements) == 1
+    assert statements[0].split()[:5] == ["CREATE", "INDEX", "IF", "NOT", "EXISTS"]
+    assert "(metadata->>'copy_of')" in up
+    assert "WHERE metadata->>'copy_of' IS NOT NULL" in up
+    down = (ROOT / "migrations/000120_forge_notification_copies.down.sql").read_text()
+    assert down.strip() == "DROP INDEX IF EXISTS idx_forge_notifications_copy_of;"

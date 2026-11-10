@@ -2889,6 +2889,7 @@ def create_router(
                 tenant_id=viewer.tenant_id,
                 owner_id=event.data.get("owner_id"),
                 notification_tenant_id=event.data.get("tenant_id"),
+                recipient_copy=event.data.get("copy_of") is not None,
             )
 
         async def event_generator():

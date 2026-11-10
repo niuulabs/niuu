@@ -92,6 +92,7 @@ from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.inbound.rest_session_participants import (
     create_session_participants_router,
 )
+from volundr.adapters.inbound.rest_session_people import create_session_people_router
 from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
 from volundr.adapters.inbound.rest_user_storage import create_user_storage_router
@@ -225,6 +226,7 @@ from volundr.domain.services.resident_runtime import (
     ResidentRuntimeNotFoundError,
     ResidentRuntimeService,
 )
+from volundr.domain.services.room_grants import RoomGrantSource
 from volundr.domain.services.secret_requests import SecretRequestService
 from volundr.domain.services.session_events import SessionEventStream
 from volundr.domain.services.session_participants import SessionParticipantService
@@ -361,6 +363,7 @@ def _create_notification_service(
     integration_repository: PostgresIntegrationRepository,
     session_lookup: SessionLookup,
     broker_target: BrokerTargetLookup,
+    room_grants: RoomGrantSource,
     guild_instance: GuildInstance | None = None,
 ) -> tuple[NotificationService, NotificationImageWorker] | None:
     """Compose the notification feed, rules, outbox and image worker
@@ -410,6 +413,7 @@ def _create_notification_service(
         engine_resolver=engine_resolver_for(cli_types, settings.default_definition),
         integration_repository=integration_repository,
         guild_instance=guild_instance,
+        room_grants=room_grants,
     )
     return service, image_worker
 
@@ -1409,9 +1413,25 @@ def create_app(
             if moved:
                 logger.info("Push devices: moved %d stored tokens into the credential store", moved)
             mapping_repository = PostgresMappingRepository(pool)
+            # Who holds a role in a session's room: the participant grants and the people
+            # on projects. Session authorization and the notification feed (who is told that
+            # something needs an approver) read the roles from the same two stores.
+            session_participant_repository = PostgresSessionParticipantRepository(pool)
+            project_member_repository = None
+            if settings.projects.enabled:
+                from volundr.domain.project_ports import ProjectMemberRepository
+
+                project_member_repository = import_class(
+                    settings.projects.member_repository_adapter
+                )(pool=pool, **settings.projects.member_repository_kwargs)
+                if not isinstance(project_member_repository, ProjectMemberRepository):
+                    raise TypeError("Project member adapter must implement ProjectMemberRepository")
             notification_feed = _create_notification_service(
                 settings,
                 pool,
+                room_grants=RoomGrantSource(
+                    session_participant_repository, project_member_repository
+                ),
                 broadcaster=broadcaster,
                 integration_repository=integration_repo,
                 guild_instance=guild_membership.instance if guild_membership else None,
@@ -1817,18 +1837,6 @@ def create_app(
                 broadcaster=broadcaster,
                 timeline_repository=timeline_repository,
             )
-            session_participant_repository = PostgresSessionParticipantRepository(pool)
-            # The people on projects hold a room role on the projects' sessions, so the
-            # participant service and the project service share one member store.
-            project_member_repository = None
-            if settings.projects.enabled:
-                from volundr.domain.project_ports import ProjectMemberRepository
-
-                project_member_repository = import_class(
-                    settings.projects.member_repository_adapter
-                )(pool=pool, **settings.projects.member_repository_kwargs)
-                if not isinstance(project_member_repository, ProjectMemberRepository):
-                    raise TypeError("Project member adapter must implement ProjectMemberRepository")
             session_participant_service = SessionParticipantService(
                 session_participant_repository,
                 session_service,
@@ -2336,6 +2344,9 @@ def create_app(
                     room_role_source=settings.pod_manager.room_role_source,
                     identity_header_names=settings.identity.kwargs,
                 )
+            )
+            app.include_router(
+                create_session_people_router(session_participant_service, session_service)
             )
 
             # Replay-as-live: paced re-emit of recorded frames over a WebSocket,

@@ -82,6 +82,14 @@ class ParticipantNotFoundError(LookupError):
     """No participant grant exists for this (session, user) pair."""
 
 
+class SessionNotInProjectError(ValueError):
+    """The session is not attached to a project, so it has no project members.
+
+    Distinct from "a project nobody is on": an empty list would read as "nobody here knows
+    anything" when the truth is that this session has no project at all.
+    """
+
+
 class ParticipantStateError(ValueError):
     """The requested transition is invalid for the grant's current state."""
 
