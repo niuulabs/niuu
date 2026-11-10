@@ -77,19 +77,25 @@ import {
   Square,
   SquareTerminal,
   Trash2,
+  Users,
 } from 'lucide-react';
 import type { IVolundrService } from '../ports/IVolundrService';
 import type { FileTreeNode, IFileSystemPort } from '../ports/IFileSystemPort';
-import type {
-  SessionChronicle,
-  VolundrAggregatedLog,
-  VolundrLogParticipant,
-  VolundrSession,
-  VolundrSessionTrace,
-  VolundrSessionTraceSpan,
-  VolundrSessionTraceSummary,
+import {
+  canAnswerGates,
+  isSharedSession,
+  sharedSessionLabel,
+  type ForgeProject,
+  type SessionChronicle,
+  type VolundrAggregatedLog,
+  type VolundrLogParticipant,
+  type VolundrSession,
+  type VolundrSessionTrace,
+  type VolundrSessionTraceSpan,
+  type VolundrSessionTraceSummary,
 } from '../models/volundr.model';
 import { useSessionDetail, useSessionList } from './hooks/useSessionStore';
+import { useSharedOwnerNames } from './hooks/useSharedOwnerNames';
 import { coordinationOf, isCoordinationRole, leaderTag } from '../domain/projectTree';
 import { withRunMembers } from '../domain/runRoom';
 import { buildSessionLinks } from './sessions/sessionLinks';
@@ -2439,13 +2445,32 @@ function normalizeForgeBadgeLabel(value: string): string {
   return titleCaseWord(trimmed);
 }
 
+const NO_PROJECTS: ForgeProject[] = [];
+const NO_INPUT_REQUESTS: never[] = [];
+
+/** What a viewer sees where an approver would answer a permission prompt. */
+function AwaitingApprover({ count }: { count: number }) {
+  return (
+    <div
+      role="status"
+      className="niuu:mx-4 niuu:mb-2 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-secondary"
+      data-testid="permission-awaiting-approver"
+    >
+      {count === 1
+        ? 'The agent is waiting for a permission an approver of this session must answer.'
+        : `The agent is waiting for ${count} permissions an approver of this session must answer.`}
+    </div>
+  );
+}
+
 function SourceMeta({ session }: { session: VolundrSession | null | undefined }) {
-  if (!session?.source) return null;
+  const source = session?.source;
+  if (!session || !source) return null;
   return (
     <SessionEnvironment
-      session={session}
-      repoUrl={normalizeRepoLink(session.source)}
-      repoLabel={session.source.type === 'git' ? formatRepoLabel(session.source.repo) : undefined}
+      session={{ ...session, source }}
+      repoUrl={normalizeRepoLink(source)}
+      repoLabel={source.type === 'git' ? formatRepoLabel(source.repo) : undefined}
     />
   );
 }
@@ -2505,17 +2530,20 @@ interface PrimaryStateAction {
 function sessionPrimaryAction({
   status,
   readOnly,
+  shared,
   onStop,
   onStart,
   onRestore,
 }: {
   status: VolundrSession['status'] | undefined;
   readOnly: boolean;
+  /** The caller shares the session without owning it: the lifecycle is the owner's. */
+  shared: boolean;
   onStop: () => void;
   onStart: () => void;
   onRestore: () => void;
 }): PrimaryStateAction | null {
-  if (!status) return null;
+  if (!status || shared) return null;
   if (status === 'archived') {
     return {
       icon: RotateCcw,
@@ -2671,7 +2699,7 @@ function DeleteSessionDialog({
   if (!open || !session) return null;
 
   const isManual = session.origin === 'manual';
-  const isLocalStorage = session.source.type === 'local_mount';
+  const isLocalStorage = session.source?.type === 'local_mount';
 
   function toggleCleanup(key: string) {
     setCleanupState((prev) => {
@@ -3396,6 +3424,11 @@ function LiveSessionDetailPageInner({
     });
   }, [domainState, instanceId, queryClient, sessionId]);
   const liveSession = liveSessionQuery.data;
+  // A person who shares the session without owning it reads its room view: no workspace, files,
+  // terminal or settings, only the conversation (and its gates, for an approver).
+  const shared = liveSession ? isSharedSession(liveSession) : false;
+  const mayAnswerGates = liveSession ? canAnswerGates(liveSession) : true;
+  const terminalVisible = terminalShown && !shared;
   const sessionStatus = liveSession?.status ?? null;
   const isRunning = sessionStatus === 'running';
   const chatEndpoint = normalizeSessionUrl(liveSession?.chatEndpoint ?? null);
@@ -3561,6 +3594,8 @@ function LiveSessionDetailPageInner({
     };
   }, [chat.meshEvents, chat.participants, dismissedHumanGateIds]);
   const attentionItems = useMemo(() => {
+    // What needs an approver is not "needs you" for a viewer, who cannot answer it.
+    if (!mayAnswerGates) return [];
     const gates: SessionGateSummary[] = [];
     if (activeHumanGate) {
       gates.push({
@@ -3576,7 +3611,13 @@ function LiveSessionDetailPageInner({
       permissions: chat.pendingPermissions,
       inputRequests: chat.pendingInputRequests,
     });
-  }, [activeHumanGate, runGate, chat.pendingInputRequests, chat.pendingPermissions]);
+  }, [
+    activeHumanGate,
+    runGate,
+    chat.pendingInputRequests,
+    chat.pendingPermissions,
+    mayAnswerGates,
+  ]);
   const checklist = useMemo(
     () => resolveChecklist(chat.plan, chat.messages),
     [chat.plan, chat.messages],
@@ -3609,7 +3650,7 @@ function LiveSessionDetailPageInner({
       ? workflowPreferredHeight
       : Math.min(
           workflowPreferredHeight,
-          workAreaHeight - CONVERSATION_MIN_HEIGHT - (terminalShown ? terminalHeight : 0),
+          workAreaHeight - CONVERSATION_MIN_HEIGHT - (terminalVisible ? terminalHeight : 0),
         );
   const workflowShown =
     workflowRunId !== null && workflowOpen && workflowHeight >= WORKFLOW_PANEL_HEIGHT.min;
@@ -3661,6 +3702,9 @@ function LiveSessionDetailPageInner({
   const sessionProjectName = projectsQuery.data?.find(
     (project) => project.id === sessionProjectId,
   )?.name;
+  const sharedCandidates = useMemo(() => (liveSession ? [liveSession] : []), [liveSession]);
+  const ownerNames = useSharedOwnerNames(sharedCandidates, projectsQuery.data ?? NO_PROJECTS);
+  const sharedOwnerName = liveSession?.ownerId ? ownerNames.get(liveSession.ownerId) : undefined;
   const sessionModel = liveSession?.model;
   const sessionSessionDefinition = liveSession?.sessionDefinition;
   const sessionOrigin = liveSession?.origin;
@@ -3748,7 +3792,8 @@ function LiveSessionDetailPageInner({
   const isSessionConnected = isReady && chat.connected;
 
   const { enabled: enabledTabs } = useSessionTabs();
-  const tabs = ALL_TABS.filter((tab) => enabledTabs.has(tab.id));
+  // The other tabs read the owner's workspace and records: a shared session has the chat.
+  const tabs = ALL_TABS.filter((tab) => enabledTabs.has(tab.id) && (!shared || tab.id === 'chat'));
 
   const handleToggleInternalMessages = useCallback(() => {
     const next = !showInternalMessages;
@@ -3825,6 +3870,7 @@ function LiveSessionDetailPageInner({
   // As Lexi's: ⌥⌘O quick opens a file into the dock, ⌥⌘→ shows or hides the dock and ⌃`
   // the terminal (Ctrl+Alt stands in for ⌥⌘ off a Mac).
   useEffect(() => {
+    if (shared) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.ctrlKey && !event.shiftKey && !event.altKey && event.code === 'Backquote') {
         event.preventDefault();
@@ -3844,7 +3890,7 @@ function LiveSessionDetailPageInner({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [toggleTerminal]);
+  }, [shared, toggleTerminal]);
 
   // The files the agent read or wrote, newest first: marked in the tree, first in quick open.
   const touchedPaths = useMemo(() => {
@@ -3943,43 +3989,45 @@ function LiveSessionDetailPageInner({
       }
     }
   });
-  const dockAddItems: MoreMenuItem[] = [
-    {
-      id: 'changes',
-      label: 'Changes',
-      icon: FileDiff,
-      onSelect: () => openPane({ kind: 'changes' }),
-    },
-    {
-      id: 'file',
-      label: 'Preview file…',
-      icon: FileText,
-      shortcut: '⌥⌘O',
-      disabled: !isRunning,
-      onSelect: () => setQuickOpen(true),
-    },
-    {
-      id: 'side',
-      label: 'Side chat',
-      icon: CornerDownRight,
-      disabled: !liveSession,
-      onSelect: () => openPane({ kind: 'side', childId: null }),
-    },
-    {
-      id: 'preview',
-      label: 'Live preview',
-      icon: Globe,
-      disabled: !isRunning || !livePreview.enabled,
-      onSelect: () => openPreviewPane(previewPorts[0] ?? null),
-    },
-    {
-      id: 'files',
-      label: 'Files',
-      icon: FolderOpen,
-      separated: true,
-      onSelect: () => openPane({ kind: 'files' }),
-    },
-  ];
+  const dockAddItems: MoreMenuItem[] = shared
+    ? []
+    : [
+        {
+          id: 'changes',
+          label: 'Changes',
+          icon: FileDiff,
+          onSelect: () => openPane({ kind: 'changes' }),
+        },
+        {
+          id: 'file',
+          label: 'Preview file…',
+          icon: FileText,
+          shortcut: '⌥⌘O',
+          disabled: !isRunning,
+          onSelect: () => setQuickOpen(true),
+        },
+        {
+          id: 'side',
+          label: 'Side chat',
+          icon: CornerDownRight,
+          disabled: !liveSession,
+          onSelect: () => openPane({ kind: 'side', childId: null }),
+        },
+        {
+          id: 'preview',
+          label: 'Live preview',
+          icon: Globe,
+          disabled: !isRunning || !livePreview.enabled,
+          onSelect: () => openPreviewPane(previewPorts[0] ?? null),
+        },
+        {
+          id: 'files',
+          label: 'Files',
+          icon: FolderOpen,
+          separated: true,
+          onSelect: () => openPane({ kind: 'files' }),
+        },
+      ];
 
   const handleSendReview = useCallback(() => {
     chat.sendMessage(formatReviewMessage(review.comments), []);
@@ -3997,14 +4045,17 @@ function LiveSessionDetailPageInner({
   );
 
   const permissionRenderer = useCallback(
-    (permissions: typeof chat.pendingPermissions, onRespond: typeof chat.respondToPermission) => (
-      <PermissionApprovalPanel
-        permissions={permissions}
-        onRespond={onRespond}
-        evaluateAutoApproval={evaluatePermissionAutoApproval}
-      />
-    ),
-    [chat, evaluatePermissionAutoApproval],
+    (permissions: typeof chat.pendingPermissions, onRespond: typeof chat.respondToPermission) =>
+      mayAnswerGates ? (
+        <PermissionApprovalPanel
+          permissions={permissions}
+          onRespond={onRespond}
+          evaluateAutoApproval={evaluatePermissionAutoApproval}
+        />
+      ) : (
+        <AwaitingApprover count={permissions.length} />
+      ),
+    [chat, evaluatePermissionAutoApproval, mayAnswerGates],
   );
 
   async function refreshSessionData() {
@@ -4102,6 +4153,7 @@ function LiveSessionDetailPageInner({
   const primaryStateAction = sessionPrimaryAction({
     status: liveSession?.status,
     readOnly: Boolean(readOnly),
+    shared,
     onStop: () => void handleStopSession(),
     onStart: () => void handleResumeSession(),
     onRestore: () => void handleRestoreSession(),
@@ -4119,7 +4171,7 @@ function LiveSessionDetailPageInner({
       disabled: sessionRead.pendingIds.has(readTarget.id),
     });
   }
-  if (!readOnly && openConnections) {
+  if (!readOnly && !shared && openConnections) {
     moreMenuItems.push({
       id: 'reconnect',
       label: 'Reconnect account',
@@ -4136,7 +4188,7 @@ function LiveSessionDetailPageInner({
       disabled: !canResendPromptToFlock,
     });
   }
-  if (!readOnly && liveSession && liveSession.status !== 'archived') {
+  if (!readOnly && !shared && liveSession && liveSession.status !== 'archived') {
     moreMenuItems.push({
       id: 'archive',
       label: 'Archive session',
@@ -4145,7 +4197,7 @@ function LiveSessionDetailPageInner({
       disabled: actionBusy !== null,
     });
   }
-  if (!readOnly) {
+  if (!readOnly && !shared) {
     moreMenuItems.push({
       id: 'delete',
       label: 'Delete session',
@@ -4237,7 +4289,7 @@ function LiveSessionDetailPageInner({
       key={sessionId}
       sessionId={sessionId}
       workspace={
-        liveSession?.source.type === 'local_mount'
+        liveSession?.source?.type === 'local_mount'
           ? (liveSession.source.local_path ?? liveSession.source.path)
           : undefined
       }
@@ -4306,13 +4358,17 @@ function LiveSessionDetailPageInner({
                       ) : null}
                       {!readOnly && liveSession && (
                         <span className="niuu-live-session__title-actions">
-                          <RenameSession sessionId={sessionId} name={sessionName} />
+                          {shared ? null : (
+                            <RenameSession sessionId={sessionId} name={sessionName} />
+                          )}
                           <PinSession sessionId={sessionId} name={sessionName} />
-                          <AssignSessionProject
-                            sessionId={sessionId}
-                            name={sessionName}
-                            instanceId={liveSession.instanceId}
-                          />
+                          {shared ? null : (
+                            <AssignSessionProject
+                              sessionId={sessionId}
+                              name={sessionName}
+                              instanceId={liveSession.instanceId}
+                            />
+                          )}
                         </span>
                       )}
                       <Subline
@@ -4413,6 +4469,21 @@ function LiveSessionDetailPageInner({
                       {sessionProjectName}
                     </span>
                   ) : null}
+                  {shared && liveSession?.room ? (
+                    <span
+                      className="niuu-live-session__project"
+                      data-testid="session-shared-badge"
+                      title={
+                        sharedOwnerName
+                          ? `Shared with you by ${sharedOwnerName}`
+                          : 'Shared with you'
+                      }
+                    >
+                      <Users aria-hidden="true" />
+                      {sharedSessionLabel(liveSession.room)}
+                      {sharedOwnerName ? ` · ${sharedOwnerName}` : ''}
+                    </span>
+                  ) : null}
                   {showDetails && sessionHandle ? (
                     <span className="niuu-live-session__handle" title={sessionHandle}>
                       {sessionHandle}
@@ -4491,18 +4562,22 @@ function LiveSessionDetailPageInner({
                     }
                   />
                 )}
-                <SessionToolbarButton
-                  icon={SquareTerminal}
-                  title={terminalOpen ? 'Hide the terminal (⌃`)' : 'Show the terminal (⌃`)'}
-                  active={terminalOpen}
-                  onClick={toggleTerminal}
-                />
-                <SessionToolbarButton
-                  icon={Columns2}
-                  title={dockOpen ? 'Hide the dock (⌥⌘→)' : 'Show the dock (⌥⌘→)'}
-                  active={dockOpen}
-                  onClick={() => dispatchDock({ type: 'toggle' })}
-                />
+                {shared ? null : (
+                  <>
+                    <SessionToolbarButton
+                      icon={SquareTerminal}
+                      title={terminalOpen ? 'Hide the terminal (⌃`)' : 'Show the terminal (⌃`)'}
+                      active={terminalOpen}
+                      onClick={toggleTerminal}
+                    />
+                    <SessionToolbarButton
+                      icon={Columns2}
+                      title={dockOpen ? 'Hide the dock (⌥⌘→)' : 'Show the dock (⌥⌘→)'}
+                      active={dockOpen}
+                      onClick={() => dispatchDock({ type: 'toggle' })}
+                    />
+                  </>
+                )}
                 {panelHasContent ? (
                   <SessionToolbarButton
                     icon={PanelRight}
@@ -4612,7 +4687,7 @@ function LiveSessionDetailPageInner({
                             showToolbar={false}
                             showDisplayControls={false}
                             showWorkersStrip={!workersInList}
-                            aboveComposer={decisionDock}
+                            aboveComposer={mayAnswerGates ? decisionDock : null}
                             showInternalToggle={false}
                             internalVisibility={showInternalMessages}
                             showTokenUsage={showTokenUsage}
@@ -4640,7 +4715,9 @@ function LiveSessionDetailPageInner({
                             meshEvents={chat.meshEvents}
                             agentEvents={chat.agentEvents}
                             pendingPermissions={chat.pendingPermissions}
-                            pendingInputRequests={chat.pendingInputRequests}
+                            pendingInputRequests={
+                              mayAnswerGates ? chat.pendingInputRequests : NO_INPUT_REQUESTS
+                            }
                             availableCommands={chat.availableCommands}
                             capabilities={chat.capabilities}
                             chatEndpoint={chatEndpoint}
@@ -4702,7 +4779,7 @@ function LiveSessionDetailPageInner({
                         <SessionChat
                           className="niuu:h-full"
                           // A stopped run's gate still waits: it is asked for here too.
-                          aboveComposer={decisionDock}
+                          aboveComposer={mayAnswerGates ? decisionDock : null}
                           showToolbar={false}
                           showDisplayControls={false}
                           showWorkersStrip={!workersInList}
@@ -4808,7 +4885,7 @@ function LiveSessionDetailPageInner({
                 </div>
               )}
             </div>
-            {shownPane && dockShown ? (
+            {shownPane && dockShown && !shared ? (
               <RightDock
                 tabs={dockTabs}
                 active={dock.active}
@@ -4923,7 +5000,7 @@ function LiveSessionDetailPageInner({
               }
             />
           ) : null}
-          {terminalShown ? (
+          {terminalVisible ? (
             <TerminalDock
               height={terminalHeight}
               edge={

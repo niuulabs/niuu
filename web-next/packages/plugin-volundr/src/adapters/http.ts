@@ -72,7 +72,9 @@ import type {
   SessionStartup,
   StartupStageState,
   ForgeProject,
+  SessionRoomRole,
 } from '../models/volundr.model';
+import { isSharedSession } from '../models/volundr.model';
 import { normalizeSecretRequest, type SecretRequestPayload } from './secretRequestWire';
 import { SessionForkError, SessionReadStateConflictError } from '../domain/session';
 import type { SessionRuntimeOffer } from '../domain/sessionRuntimes';
@@ -171,6 +173,13 @@ interface FileListPayload {
 }
 
 type SessionPayload = {
+  /** `room_summary` for a session the caller shares without owning (and the room view). */
+  kind?: 'room_summary';
+  room?: {
+    role: SessionRoomRole;
+    participant_status?: string;
+    expires_at?: string | null;
+  } | null;
   session_definition?: string | null;
   sessionDefinition?: string;
   coordination?: {
@@ -182,7 +191,8 @@ type SessionPayload = {
   } | null;
   id: string;
   name: string;
-  source: VolundrSession['source'];
+  /** Absent on a room summary: Forge withholds the workspace from a participant. */
+  source?: VolundrSession['source'];
   status: VolundrSession['status'];
   model: string;
   personaName?: string;
@@ -641,7 +651,16 @@ function normalizeSession(session: SessionPayload): VolundrSession {
           },
         }
       : {}),
-    source: session.source,
+    source: session.source ?? null,
+    ...(session.room
+      ? {
+          room: {
+            role: session.room.role,
+            participantStatus: session.room.participant_status ?? 'active',
+            expiresAt: session.room.expires_at ?? null,
+          },
+        }
+      : {}),
     status: session.status,
     model: session.model,
     sessionDefinition: session.sessionDefinition ?? session.session_definition ?? undefined,
@@ -676,6 +695,29 @@ function normalizeSession(session: SessionPayload): VolundrSession {
       ? { workedSeconds24h: session.worked_seconds_24h }
       : {}),
   };
+}
+
+/**
+ * Normalize a list of sessions one entry at a time. An entry that cannot be read is reported
+ * at error level and left out; it must not fail the whole host's list, which the sessions
+ * page would show as that Forge being unavailable, hiding every session the person can see.
+ */
+function normalizeSessionList(
+  payloads: readonly SessionPayload[],
+  listing: string,
+): VolundrSession[] {
+  const sessions: VolundrSession[] = [];
+  for (const payload of payloads) {
+    try {
+      sessions.push(normalizeSession(payload));
+    } catch (error) {
+      console.error(
+        `Forge returned a session entry in ${listing} that could not be read; it is not listed.`,
+        { id: (payload as { id?: unknown } | null)?.id ?? null, error },
+      );
+    }
+  }
+  return sessions;
 }
 
 function normalizeReadState(payload: ReadStatePayload): SessionReadState {
@@ -1590,9 +1632,10 @@ export function buildVolundrHttpAdapter(
     const scoped = options?.instanceId
       ? `${endpoint}${endpoint.includes('?') ? '&' : '?'}instance_id=${encodeURIComponent(options.instanceId)}`
       : endpoint;
-    const sessions = (await readSessionList(scoped, options?.signal))
-      .map(normalizeSession)
-      .map(keepNewerActivity);
+    const sessions = normalizeSessionList(
+      await readSessionList(scoped, options?.signal),
+      scoped,
+    ).map(keepNewerActivity);
     if (options?.instanceId) {
       for (const [id, session] of sessionCache) {
         if (session.instanceId === options.instanceId) sessionCache.delete(id);
@@ -1628,7 +1671,7 @@ export function buildVolundrHttpAdapter(
       throw new Error(`Invalid session changes from ${instanceId}`);
     }
     const listed = new Set(payload.ids);
-    const sessions = payload.sessions.map(normalizeSession);
+    const sessions = normalizeSessionList(payload.sessions, endpoint);
     // Mirror loadSessions/listArchivedSessions: this host's cached membership is
     // exactly what it lists now.
     if (archived) {
@@ -1661,14 +1704,39 @@ export function buildVolundrHttpAdapter(
     return sessionPath(sessionId, `/secret-requests/${encodeURIComponent(requestId)}${action}`);
   }
 
+  /**
+   * One session as the caller may read it. The owner, an admin and a tenant viewer read the
+   * full session. A person who shares the session (a project member or an invitee) is refused
+   * it ("read") and reads its room view instead ("read_room"): the same entry the list gave
+   * them, without the workspace. The list says which kind a session is, so a known shared
+   * session goes straight to the room view; otherwise the full read comes first, and a refusal
+   * (403, or the Guild facade's 404 for a node that refused) is answered by the room view.
+   */
+  async function readSessionPayload(
+    id: string,
+    options?: { instanceId?: string; signal?: AbortSignal },
+  ): Promise<SessionPayload | null> {
+    const read = (path: string) =>
+      options?.signal
+        ? forgeClient.get<SessionPayload | null>(path, { signal: options.signal })
+        : forgeClient.get<SessionPayload | null>(path);
+    const roomPath = sessionPath(id, '/room', options?.instanceId);
+    const cached = sessionCache.get(id);
+    if (cached && isSharedSession(cached)) return read(roomPath);
+    try {
+      const full = await read(sessionPath(id, '', options?.instanceId));
+      if (full) return full;
+    } catch (error) {
+      if (!(error instanceof ApiClientError) || error.status !== 403) throw error;
+    }
+    return read(roomPath);
+  }
+
   async function loadSession(
     id: string,
     options?: { instanceId?: string; signal?: AbortSignal },
   ): Promise<VolundrSession | null> {
-    const path = sessionPath(id, '', options?.instanceId);
-    const session = await (options?.signal
-      ? forgeClient.get<SessionPayload | null>(path, { signal: options.signal })
-      : forgeClient.get<SessionPayload | null>(path));
+    const session = await readSessionPayload(id, options);
     if (!session) {
       sessionCache.delete(id);
       publishSessions();
@@ -2323,12 +2391,11 @@ export function buildVolundrHttpAdapter(
     restoreSession: (sessionId) =>
       forgeClient.patch<void>(sessionPath(sessionId, '/restore'), undefined),
     listArchivedSessions: async (options) => {
-      const sessions = (
-        await readSessionList(
-          `/sessions?status=archived${options?.instanceId ? `&instance_id=${encodeURIComponent(options.instanceId)}` : ''}`,
-          options?.signal,
-        )
-      ).map(normalizeSession);
+      const archivedEndpoint = `/sessions?status=archived${options?.instanceId ? `&instance_id=${encodeURIComponent(options.instanceId)}` : ''}`;
+      const sessions = normalizeSessionList(
+        await readSessionList(archivedEndpoint, options?.signal),
+        archivedEndpoint,
+      );
       if (options?.instanceId) {
         for (const [id, owner] of archivedSessionOwners) {
           if (owner === options.instanceId) archivedSessionOwners.delete(id);

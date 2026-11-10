@@ -214,6 +214,7 @@ export {
 } from './ui/hooks/useNotifications';
 export { NewSessionPage } from './ui/NewSessionPage';
 export { useSessionList, useSessionDetail } from './ui/hooks/useSessionStore';
+export { useSharedOwnerNames, sharedProjects } from './ui/hooks/useSharedOwnerNames';
 export { useSessionRead, type UseSessionRead } from './ui/hooks/useSessionRead';
 export { sessionActivityTs, compareSessionsByActivity } from './ui/sessions/sessionLabels';
 export {
@@ -299,6 +300,8 @@ export type {
   StoredCredential,
   SecretType,
   SessionSource,
+  SessionRoom,
+  SessionRoomRole,
   ForgeProject,
   ForgeProjectChanges,
   ProjectRole,
@@ -340,4 +343,9 @@ export type {
 
 export { ForgeSessionSettings } from './ui/ForgeSessionSettings';
 
-export { PROJECT_ROLES } from './models/volundr.model';
+export {
+  PROJECT_ROLES,
+  isSharedSession,
+  canAnswerGates,
+  sharedSessionLabel,
+} from './models/volundr.model';

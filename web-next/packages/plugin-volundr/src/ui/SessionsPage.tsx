@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
@@ -53,6 +61,7 @@ import { usePinnedSessions } from './usePinnedSessions';
 import { ImportExternalSessionsDialog } from './ImportExternalSessionsDialog';
 import { useSessionList } from './hooks/useSessionStore';
 import { useSessionRead } from './hooks/useSessionRead';
+import { useSharedOwnerNames } from './hooks/useSharedOwnerNames';
 import { UnreadStream } from './UnreadStream';
 import {
   buildSessionTree,
@@ -72,6 +81,7 @@ import { useElementWidth } from './detail/useElementWidth';
 import { ProjectHome } from './ProjectHome';
 import { sessionHarness, type Session, type SessionState } from '../domain/session';
 import type { IVolundrService } from '../ports/IVolundrService';
+import { isSharedSession, sharedSessionLabel, type ForgeProject } from '../models/volundr.model';
 import { useForgePreference } from './useForgePreference';
 import {
   DOCK_WIDTH,
@@ -301,6 +311,10 @@ export function groupByForge(sessions: Session[]): SessionSection[] {
     }));
 }
 
+/** Who owns the sessions shared with the caller, by user id, where their project names them. */
+const NO_PROJECTS: ForgeProject[] = [];
+const SharedOwnerNames = createContext<ReadonlyMap<string, string>>(new Map());
+
 // ---------------------------------------------------------------------------
 // PodEntry — a single session row in the sidebar
 // ---------------------------------------------------------------------------
@@ -348,6 +362,11 @@ function PodEntry({
   readBusy?: boolean;
 }) {
   const primaryLabel = session.name || session.personaName || session.id;
+  const shared = session.room && isSharedSession(session) ? session.room : null;
+  const ownerNames = useContext(SharedOwnerNames);
+  const ownerName = session.ownerId ? ownerNames.get(session.ownerId) : undefined;
+  // A shared session is the owner's to rename, stop, archive, delete or file under a project.
+  const rowActions = shared ? undefined : onAction;
   const shownState = displayState ?? session.state;
   // A run's member leads with its role: its name repeats the run's and is cut off first.
   const memberRole =
@@ -519,6 +538,16 @@ function PodEntry({
                     {forgeLabel}
                   </span>
                 )}
+                {shared && (
+                  <span
+                    className="forge-session-row__shared"
+                    title={ownerName ? `Shared by ${ownerName}` : 'Shared with you'}
+                    data-testid={`session-shared-${session.id}`}
+                  >
+                    {sharedSessionLabel(shared)}
+                    {ownerName ? ` · ${ownerName}` : ''}
+                  </span>
+                )}
                 <span
                   className="forge-session-harness"
                   data-harness={harness}
@@ -578,7 +607,7 @@ function PodEntry({
           </div>
         )}
       </button>
-      {!collapsed && onAction && (
+      {!collapsed && rowActions && (
         <button
           type="button"
           className="forge-session-row__more"
@@ -590,7 +619,7 @@ function PodEntry({
           <MoreHorizontal size={18} />
         </button>
       )}
-      {!collapsed && onAction && (
+      {!collapsed && rowActions && (
         <div
           id={`session-actions-${session.id}`}
           className="forge-session-row__actions"
@@ -624,7 +653,7 @@ function PodEntry({
               data-action="stop"
               aria-label={`Stop ${primaryLabel}`}
               data-testid={`pod-entry-${session.id}-stop`}
-              onClick={() => onAction(session, 'stop')}
+              onClick={() => rowActions(session, 'stop')}
             >
               <Square />
             </button>
@@ -636,7 +665,7 @@ function PodEntry({
               title="Archive session"
               aria-label={`Archive ${primaryLabel}`}
               data-testid={`pod-entry-${session.id}-archive`}
-              onClick={() => onAction(session, 'archive')}
+              onClick={() => rowActions(session, 'archive')}
             >
               <Archive />
             </button>
@@ -647,7 +676,7 @@ function PodEntry({
               disabled={busy}
               title="Restore session"
               aria-label={`Restore ${primaryLabel}`}
-              onClick={() => onAction(session, 'restore')}
+              onClick={() => rowActions(session, 'restore')}
             >
               <RotateCcw />
             </button>
@@ -659,7 +688,7 @@ function PodEntry({
             data-action="delete"
             aria-label={`Delete ${primaryLabel}`}
             data-testid={`pod-entry-${session.id}-delete`}
-            onClick={() => onAction(session, 'delete')}
+            onClick={() => rowActions(session, 'delete')}
           >
             <Trash2 />
           </button>
@@ -1058,14 +1087,17 @@ export function SessionsPage() {
   const volundr = useService<IVolundrService>('volundr');
   const queryClient = useQueryClient();
   const sessionRead = useSessionRead();
+  const sessionsQuery = useSessionList();
+  const allSessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
+  const hasSharedSessions = useMemo(() => allSessions.some(isSharedSession), [allSessions]);
+  // Folders need the projects; so does naming who shared a session, wherever it is listed.
   const projects = useQuery({
     queryKey: ['volundr', 'projects'],
     queryFn: () => volundr.getProjects(),
-    enabled: sidebarMode === 'project',
+    enabled: sidebarMode === 'project' || hasSharedSessions,
     staleTime: 30_000,
   });
-
-  const sessionsQuery = useSessionList();
+  const ownerNames = useSharedOwnerNames(allSessions, projects.data ?? NO_PROJECTS);
   const connectionStates = sessionsQuery.sources.filter(
     (source) =>
       !source.archived ||
@@ -1073,19 +1105,19 @@ export function SessionsPage() {
         (other) => other.id === source.id && !other.archived && (other.loading || other.error),
       ),
   );
-  const allSessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
+  // Stopped sessions can be archived or deleted in bulk: only the caller's own, never a
+  // session shared with them.
+  const ownStopped = useCallback(
+    (session: Session) => session.state === 'terminated' && !isSharedSession(session),
+    [],
+  );
   const stoppedSessionCount = useMemo(
-    () => allSessions.filter((session) => session.state === 'terminated').length,
-    [allSessions],
+    () => allSessions.filter(ownStopped).length,
+    [allSessions, ownStopped],
   );
   const stoppedSessionIds = useMemo(
-    () =>
-      new Set(
-        allSessions
-          .filter((session) => session.state === 'terminated')
-          .map((session) => session.id),
-      ),
-    [allSessions],
+    () => new Set(allSessions.filter(ownStopped).map((session) => session.id)),
+    [allSessions, ownStopped],
   );
 
   const filterCounts = useMemo(
@@ -1129,8 +1161,8 @@ export function SessionsPage() {
     [filteredSessions, pinned],
   );
   const filteredStoppedSessions = useMemo(
-    () => filteredSessions.filter((session) => session.state === 'terminated'),
-    [filteredSessions],
+    () => filteredSessions.filter(ownStopped),
+    [filteredSessions, ownStopped],
   );
   const filteredStoppedIds = useMemo(
     () => new Set(filteredStoppedSessions.map((session) => session.id)),
@@ -1485,7 +1517,7 @@ export function SessionsPage() {
   );
 
   return (
-    <>
+    <SharedOwnerNames.Provider value={ownerNames}>
       <div
         ref={setPage}
         className="forge-sessions niuu:relative niuu:flex niuu:h-full"
@@ -2136,6 +2168,6 @@ export function SessionsPage() {
           await sessionsQuery.refetch();
         }}
       />
-    </>
+    </SharedOwnerNames.Provider>
   );
 }
