@@ -1054,9 +1054,9 @@ describe('mock project members', () => {
     ).toMatchObject({ role: 'owner', expertise: 'Ting' });
     await service.removeProjectMember(project, 'bram');
     await expect(
-      service.updateProjectMember(project, 'dev-user', { role: 'viewer' }),
+      service.updateProjectMember(project, 'u1', { role: 'viewer' }),
     ).rejects.toThrow('at least one owner');
-    await expect(service.removeProjectMember(project, 'dev-user')).rejects.toThrow(
+    await expect(service.removeProjectMember(project, 'u1')).rejects.toThrow(
       'at least one owner',
     );
     await expect(service.removeProjectMember(project, 'bram')).rejects.toThrow('not a member');

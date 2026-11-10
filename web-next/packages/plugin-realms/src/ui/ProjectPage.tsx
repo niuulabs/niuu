@@ -11,6 +11,7 @@ import {
 import { useForgeProjects, useUpdateProject } from '../application/useProjects';
 import { ArtifactList } from '@niuulabs/plugin-ting';
 import { RealmCard } from './RealmCard';
+import { ProjectMembers } from './ProjectMembers';
 import { SessionsTable } from './SessionsTable';
 import { NeedsYouError, TicketReviewRow } from './TicketReviewRow';
 
@@ -170,7 +171,12 @@ export function ProjectPage() {
             <ArtifactList projectId={projectId} />
           </SectionCard>
         </div>
-        {project ? <SharedSettings project={project} /> : null}
+        {project ? (
+          <div className="niuu:flex niuu:min-w-0 niuu:flex-col niuu:gap-4">
+            <ProjectMembers project={project} />
+            <SharedSettings project={project} />
+          </div>
+        ) : null}
       </div>
     </div>
   );

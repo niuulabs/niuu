@@ -1290,12 +1290,12 @@ export function createMockVolundrService(): IVolundrService {
       [
         {
           project_id: project.id,
-          user_id: 'dev-user',
+          user_id: 'u1',
           role: 'owner',
           expertise: '',
           skills: [],
-          display_name: 'You',
-          email: 'dev@localhost',
+          display_name: 'Dev',
+          email: 'dev@niuu.world',
         },
       ],
     ]),
@@ -1413,12 +1413,12 @@ export function createMockVolundrService(): IVolundrService {
       projectMembers.set(project.id, [
         {
           project_id: project.id,
-          user_id: 'dev-user',
+          user_id: 'u1',
           role: 'owner',
           expertise: '',
           skills: [],
-          display_name: 'You',
-          email: 'dev@localhost',
+          display_name: 'Dev',
+          email: 'dev@niuu.world',
         },
       ]);
       return { ...project };

@@ -339,3 +339,5 @@ export type {
 } from './domain/computeHosts';
 
 export { ForgeSessionSettings } from './ui/ForgeSessionSettings';
+
+export { PROJECT_ROLES } from './models/volundr.model';
