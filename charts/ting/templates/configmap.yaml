@@ -245,12 +245,16 @@ data:
     {{- $_ := set $attestation $key $value }}
     {{- end }}
     {{- end }}
-    {{- if $attestation }}
+    {{- /* Off unless the operator sets required: true, and then only with a key to sign with. */}}
+    {{- $required := eq (index $attestation "required" | default false) true }}
+    {{- $_ := set $attestation "required" $required }}
+    {{- if and $required (not (and .Values.workloadIdentity.enabled .Values.workloadIdentity.signingKey.existingSecret)) }}
+    {{- fail "mesh.attestation.required: true needs a key Ting signs with: enable workloadIdentity with signingKey.existingSecret (the key Forge signs with), or set mesh.attestation.required: false" }}
+    {{- end }}
 
-    # One decision about proof of who published a platform event; needs no setting.
+    # One decision about proof of who published a platform event.
     mesh:
       attestation: {{ toJson $attestation }}
-    {{- end }}
 
     workload_identity:
       enabled: {{ .Values.workloadIdentity.enabled | default false }}
