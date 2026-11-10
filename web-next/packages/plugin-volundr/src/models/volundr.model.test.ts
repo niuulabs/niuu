@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { canAnswerGates, isSharedSession, sharedSessionLabel } from './volundr.model';
+import {
+  canAnswerGates,
+  isInvitation,
+  isSharedSession,
+  roomRoleOfProjectRole,
+  sharedSessionLabel,
+} from './volundr.model';
 import type { SessionRoom } from './volundr.model';
 
 const room = (role: SessionRoom['role']): SessionRoom => ({
@@ -32,5 +38,35 @@ describe('shared session helpers', () => {
   it('labels a shared session with the role', () => {
     expect(sharedSessionLabel(room('approver'))).toBe('Shared · approver');
     expect(sharedSessionLabel(room('viewer'))).toBe('Shared · viewer');
+  });
+});
+
+describe('invitations', () => {
+  const invited = (role: SessionRoom['role']): SessionRoom => ({
+    role,
+    participantStatus: 'invited',
+    expiresAt: null,
+  });
+
+  it('is an invitation only while the grant is unanswered', () => {
+    expect(isInvitation({ room: invited('viewer') })).toBe(true);
+    expect(isInvitation({ room: room('viewer') })).toBe(false);
+    expect(isInvitation({})).toBe(false);
+  });
+
+  it('gives an invitee no say over gates, whatever role was offered', () => {
+    expect(canAnswerGates({ room: invited('approver') })).toBe(false);
+    expect(canAnswerGates({ room: invited('viewer') })).toBe(false);
+  });
+});
+
+describe('roomRoleOfProjectRole', () => {
+  it.each([
+    ['viewer', 'viewer'],
+    ['contributor', 'viewer'],
+    ['approver', 'approver'],
+    ['owner', 'approver'],
+  ] as const)('a project %s is a room %s', (projectRole, roomRole) => {
+    expect(roomRoleOfProjectRole(projectRole)).toBe(roomRole);
   });
 });

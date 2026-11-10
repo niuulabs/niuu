@@ -302,6 +302,11 @@ export type {
   SessionSource,
   SessionRoom,
   SessionRoomRole,
+  SessionParticipant,
+  SessionProjectPerson,
+  ParticipantCandidate,
+  ParticipantRole,
+  ParticipantStatus,
   ForgeProject,
   ForgeProjectChanges,
   ProjectRole,
@@ -346,6 +351,9 @@ export { ForgeSessionSettings } from './ui/ForgeSessionSettings';
 export {
   PROJECT_ROLES,
   isSharedSession,
+  isInvitation,
   canAnswerGates,
   sharedSessionLabel,
+  roomRoleOfProjectRole,
+  PARTICIPANT_ROLES,
 } from './models/volundr.model';

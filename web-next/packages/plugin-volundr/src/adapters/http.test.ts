@@ -3729,3 +3729,142 @@ describe('sessions shared through a room', () => {
     expect(client.get).toHaveBeenCalledWith('/sessions/shared-1?instance_id=thor');
   });
 });
+
+describe('who is in a chat', () => {
+  const grant = {
+    user_id: 'ivan',
+    display_name: 'Ivan Invitee',
+    role: 'approver',
+    status: 'invited',
+    invited_by: 'owner',
+    expires_at: null,
+  };
+
+  function listed(client: ReturnType<typeof makeClient>) {
+    client.get.mockResolvedValueOnce([
+      {
+        kind: 'room_summary',
+        id: 's1',
+        name: 'Fix it',
+        status: 'running',
+        model: 'm',
+        owner_id: 'owner',
+        owner_name: 'Olivia Owner',
+        instance_id: 'thor',
+        room: { role: 'viewer', participant_status: 'invited', expires_at: null },
+      },
+    ]);
+    return buildVolundrHttpAdapter(client);
+  }
+
+  it('reads who shared a session by name', async () => {
+    const [session] = await listed(makeClient()).getSessions();
+
+    expect(session?.ownerName).toBe('Olivia Owner');
+    expect(session?.room?.participantStatus).toBe('invited');
+  });
+
+  it("lists the chat's participants on the session's host, leaving out removed ones", async () => {
+    const client = makeClient();
+    const service = listed(client);
+    await service.getSessions();
+    client.get.mockResolvedValueOnce([grant, { ...grant, user_id: 'gone', status: 'revoked' }]);
+
+    const people = await service.getSessionParticipants('s1');
+
+    expect(client.get).toHaveBeenLastCalledWith('/sessions/s1/participants?instance_id=thor', {
+      signal: undefined,
+    });
+    expect(people).toEqual([
+      {
+        userId: 'ivan',
+        displayName: 'Ivan Invitee',
+        role: 'approver',
+        status: 'invited',
+        invitedBy: 'owner',
+        expiresAt: null,
+      },
+    ]);
+  });
+
+  it('reads project people with the room role the project gives', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce([
+      { user_id: 'a', display_name: 'Ann', role: 'owner' },
+      { user_id: 'b', role: 'contributor' },
+    ]);
+
+    const people = await buildVolundrHttpAdapter(client).getSessionProjectPeople('s1', {
+      instanceId: 'thor',
+    });
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/s1/people?instance_id=thor', {
+      signal: undefined,
+    });
+    expect(people).toEqual([
+      { userId: 'a', displayName: 'Ann', projectRole: 'owner', roomRole: 'approver' },
+      { userId: 'b', displayName: '', projectRole: 'contributor', roomRole: 'viewer' },
+    ]);
+  });
+
+  it('says a session with no project has no project people, and passes other failures on', async () => {
+    const client = makeClient();
+    const service = buildVolundrHttpAdapter(client);
+    client.get.mockRejectedValueOnce(new ApiClientError('not in a project', 409));
+    await expect(service.getSessionProjectPeople('s1')).resolves.toBeNull();
+
+    client.get.mockRejectedValueOnce(new ApiClientError('nope', 403));
+    await expect(service.getSessionProjectPeople('s1')).rejects.toThrow('nope');
+  });
+
+  it('searches the org for people to invite', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce([{ user_id: 'zed', display_name: 'Zed', email: 'z@x.test' }]);
+
+    const found = await buildVolundrHttpAdapter(client).getParticipantCandidates('s1', 'ze & co');
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/s1/participant-candidates?q=ze+%26+co', {
+      signal: undefined,
+    });
+    expect(found).toEqual([{ userId: 'zed', displayName: 'Zed', email: 'z@x.test' }]);
+  });
+
+  it("invites, accepts and removes through the chat's own routes", async () => {
+    const client = makeClient();
+    const service = listed(client);
+    await service.getSessions();
+    client.post.mockResolvedValue(grant);
+
+    const invited = await service.inviteSessionParticipant('s1', {
+      userId: 'ivan',
+      role: 'approver',
+    });
+    await service.acceptSessionInvitation('s1');
+    await service.removeSessionParticipant('s1', 'ivan@x.test');
+
+    expect(invited.status).toBe('invited');
+    expect(client.post).toHaveBeenNthCalledWith(1, '/sessions/s1/participants?instance_id=thor', {
+      user_id: 'ivan',
+      role: 'approver',
+    });
+    expect(client.post).toHaveBeenNthCalledWith(
+      2,
+      '/sessions/s1/participants/accept?instance_id=thor',
+    );
+    expect(client.delete).toHaveBeenCalledWith(
+      '/sessions/s1/participants/ivan%40x.test?instance_id=thor',
+    );
+  });
+
+  it('reads a granted participant as in the chat', () => {
+    expect(
+      __testables.normalizeSession({
+        id: 's2',
+        name: 'n',
+        status: 'running',
+        model: 'm',
+        room: { role: 'viewer', participant_status: 'active' },
+      } as never).room?.participantStatus,
+    ).toBe('active');
+  });
+});

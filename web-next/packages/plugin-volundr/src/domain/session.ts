@@ -64,6 +64,8 @@ export interface Session {
   room?: SessionRoom;
   /** Who owns the session; the person it is shared by when `room` says it is not the caller's. */
   ownerId?: string;
+  /** Who shared the session, by name, when the host knows. */
+  ownerName?: string;
   coordination?: SessionCoordination;
   id: string;
   ravnId: string;

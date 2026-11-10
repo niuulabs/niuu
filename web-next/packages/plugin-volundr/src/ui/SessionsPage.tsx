@@ -77,11 +77,17 @@ import {
 import { groupByState } from './sessions/groupByState';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
 import { SessionStartupHeadline } from './SessionStartupProgress';
+import { InvitationActions, InvitationPane, invitationLabel } from './SessionInvitation';
 import { useElementWidth } from './detail/useElementWidth';
 import { ProjectHome } from './ProjectHome';
 import { sessionHarness, type Session, type SessionState } from '../domain/session';
 import type { IVolundrService } from '../ports/IVolundrService';
-import { isSharedSession, sharedSessionLabel, type ForgeProject } from '../models/volundr.model';
+import {
+  isInvitation,
+  isSharedSession,
+  sharedSessionLabel,
+  type ForgeProject,
+} from '../models/volundr.model';
 import { useForgePreference } from './useForgePreference';
 import {
   DOCK_WIDTH,
@@ -313,6 +319,12 @@ export function groupByForge(sessions: Session[]): SessionSection[] {
 
 /** Who owns the sessions shared with the caller, by user id, where their project names them. */
 const NO_PROJECTS: ForgeProject[] = [];
+
+/** What the list does once an invitation is answered: open the session, or drop it. */
+const InvitationAnswered = createContext<{
+  joined: (sessionId: string) => void;
+  declined: (sessionId: string) => void;
+}>({ joined: () => undefined, declined: () => undefined });
 const SharedOwnerNames = createContext<ReadonlyMap<string, string>>(new Map());
 
 // ---------------------------------------------------------------------------
@@ -363,6 +375,8 @@ function PodEntry({
 }) {
   const primaryLabel = session.name || session.personaName || session.id;
   const shared = session.room && isSharedSession(session) ? session.room : null;
+  const invited = isInvitation(session);
+  const answered = useContext(InvitationAnswered);
   const ownerNames = useContext(SharedOwnerNames);
   const ownerName = session.ownerId ? ownerNames.get(session.ownerId) : undefined;
   // A shared session is the owner's to rename, stop, archive, delete or file under a project.
@@ -544,8 +558,10 @@ function PodEntry({
                     title={ownerName ? `Shared by ${ownerName}` : 'Shared with you'}
                     data-testid={`session-shared-${session.id}`}
                   >
-                    {sharedSessionLabel(shared)}
-                    {ownerName ? ` · ${ownerName}` : ''}
+                    {invited
+                      ? invitationLabel({ ...session, ownerName: session.ownerName ?? ownerName })
+                      : sharedSessionLabel(shared)}
+                    {!invited && ownerName ? ` · ${ownerName}` : ''}
                   </span>
                 )}
                 <span
@@ -607,6 +623,16 @@ function PodEntry({
           </div>
         )}
       </button>
+      {invited && !collapsed ? (
+        <div className="forge-session-row__invitation">
+          <InvitationActions
+            session={session}
+            stopPropagation
+            onJoined={() => answered.joined(session.id)}
+            onDeclined={() => answered.declined(session.id)}
+          />
+        </div>
+      ) : null}
       {!collapsed && rowActions && (
         <button
           type="button"
@@ -1402,6 +1428,26 @@ export function SessionsPage() {
     });
   }
 
+  // An invitation answered: joining opens the chat, declining drops the invitation.
+  function answerInvitation(sessionId: string, answer: 'joined' | 'declined') {
+    void sessionsQuery.refetch();
+    if (answer === 'joined') {
+      handleSelectSession(sessionId);
+      return;
+    }
+    if (sessionId !== resolvedSelectedSessionId) return;
+    setSelectedSessionId(null);
+    void navigate({ to: '/volundr/sessions', replace: true });
+  }
+  const invitationAnswered = {
+    joined: (sessionId: string) => answerInvitation(sessionId, 'joined'),
+    declined: (sessionId: string) => answerInvitation(sessionId, 'declined'),
+  };
+  const openInvitation =
+    allSessions.find(
+      (session) => session.id === resolvedSelectedSessionId && isInvitation(session),
+    ) ?? null;
+
   async function handleArchiveAllStopped() {
     if (archiveBusy || stoppedSessionCount === 0) return;
     setArchiveBusy(true);
@@ -1517,379 +1563,64 @@ export function SessionsPage() {
   );
 
   return (
-    <SharedOwnerNames.Provider value={ownerNames}>
-      <div
-        ref={setPage}
-        className="forge-sessions niuu:relative niuu:flex niuu:h-full"
-        data-detail-open={!!requestedSessionId || showProjectHome}
-        data-testid="sessions-page"
-      >
-        {/* ── Left sidebar: pod list ─────────────────────────────── */}
-        <nav
-          className={cn('forge-session-list niuu:relative niuu:shrink-0 niuu:overflow-hidden')}
-          style={
-            listFolded
-              ? {
-                  width: '48px',
-                  minWidth: '48px',
-                  maxWidth: '48px',
-                  flexBasis: '48px',
-                }
-              : {
-                  width: `${width}px`,
-                  minWidth: `${SIDEBAR_WIDTH.min}px`,
-                  maxWidth: `${SIDEBAR_WIDTH.max}px`,
-                  flexBasis: `${width}px`,
-                }
-          }
-          aria-label="Session list"
-          data-testid="pod-list-sidebar"
+    <InvitationAnswered.Provider value={invitationAnswered}>
+      <SharedOwnerNames.Provider value={ownerNames}>
+        <div
+          ref={setPage}
+          className="forge-sessions niuu:relative niuu:flex niuu:h-full"
+          data-detail-open={!!requestedSessionId || showProjectHome}
+          data-testid="sessions-page"
         >
-          {listFolded ? (
-            <div className="niuu:flex niuu:h-full niuu:flex-col niuu:overflow-hidden">
-              <div className="niuu:flex niuu:items-center niuu:justify-center niuu:border-b niuu:border-border-subtle niuu:py-2.5">
-                <button
-                  type="button"
-                  onClick={expandList}
-                  className="niuu:font-mono niuu:text-sm niuu:text-text-muted"
-                  data-testid="pod-sidebar-toggle"
-                  aria-label="Expand pods sidebar"
-                >
-                  ›
-                </button>
-              </div>
-              <div className="niuu:flex-1 niuu:overflow-y-auto niuu:py-2">
-                <PodGroup
-                  label="Pinned"
-                  groupKey="pinned"
-                  pinned
-                  sessions={pinnedSessions}
-                  selectedId={listSelectedId}
-                  onSelect={handleSelectSession}
-                  collapsed
-                />
-                {sidebarGroups.map((g) => (
+          {/* ── Left sidebar: pod list ─────────────────────────────── */}
+          <nav
+            className={cn('forge-session-list niuu:relative niuu:shrink-0 niuu:overflow-hidden')}
+            style={
+              listFolded
+                ? {
+                    width: '48px',
+                    minWidth: '48px',
+                    maxWidth: '48px',
+                    flexBasis: '48px',
+                  }
+                : {
+                    width: `${width}px`,
+                    minWidth: `${SIDEBAR_WIDTH.min}px`,
+                    maxWidth: `${SIDEBAR_WIDTH.max}px`,
+                    flexBasis: `${width}px`,
+                  }
+            }
+            aria-label="Session list"
+            data-testid="pod-list-sidebar"
+          >
+            {listFolded ? (
+              <div className="niuu:flex niuu:h-full niuu:flex-col niuu:overflow-hidden">
+                <div className="niuu:flex niuu:items-center niuu:justify-center niuu:border-b niuu:border-border-subtle niuu:py-2.5">
+                  <button
+                    type="button"
+                    onClick={expandList}
+                    className="niuu:font-mono niuu:text-sm niuu:text-text-muted"
+                    data-testid="pod-sidebar-toggle"
+                    aria-label="Expand pods sidebar"
+                  >
+                    ›
+                  </button>
+                </div>
+                <div className="niuu:flex-1 niuu:overflow-y-auto niuu:py-2">
                   <PodGroup
-                    key={g.id ?? g.label}
-                    label={g.label}
-                    groupKey={g.id ?? `${sidebarMode}:${g.label}`}
-                    hierarchical
-                    openRoom={openRoom}
-                    contextIds={nesting.contextIds}
-                    workerCounts={nesting.workerCounts}
-                    sessions={g.sessions}
+                    label="Pinned"
+                    groupKey="pinned"
+                    pinned
+                    sessions={pinnedSessions}
                     selectedId={listSelectedId}
                     onSelect={handleSelectSession}
-                    showDetails={details === '1'}
-                    onAction={(session, action) => void handleRowAction(session, action)}
-                    busyId={rowBusyId}
                     collapsed
                   />
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="niuu:flex niuu:h-full niuu:flex-col niuu:overflow-hidden">
-              <div className="forge-session-head">
-                <h2>Sessions</h2>
-                <TooltipProvider>
-                  <div className="forge-session-heading-actions">
-                    <Popover open={listMenuOpen} onOpenChange={setListMenuOpen}>
-                      <PopoverTrigger asChild>
-                        <button
-                          type="button"
-                          data-testid="session-list-menu"
-                          aria-label="Filter and group sessions"
-                          title="Filter and group sessions"
-                        >
-                          <ListFilter size={18} />
-                        </button>
-                      </PopoverTrigger>
-                      <PopoverContent side="bottom" align="start" className="forge-session-menu">
-                        <section aria-label="Show">
-                          <h3>Show</h3>
-                          {MENU_FILTERS.map((value) => {
-                            const count = filterCounts[value];
-                            // An empty state is noise; the chosen one always shows.
-                            if (count === 0 && filter !== value) return null;
-                            return (
-                              <button
-                                key={value}
-                                type="button"
-                                aria-pressed={filter === value}
-                                data-testid={`session-filter-${value}`}
-                                data-filter={value}
-                                onClick={() => handleSelectFilter(value)}
-                              >
-                                <span>{FILTER_LABELS[value]}</span>
-                                <span>{count}</span>
-                              </button>
-                            );
-                          })}
-                        </section>
-                        <section aria-label="Group by" data-testid="pod-group-mode">
-                          <h3>Group by</h3>
-                          {SIDEBAR_MODES.map((mode) => (
-                            <button
-                              key={mode}
-                              type="button"
-                              aria-pressed={sidebarMode === mode}
-                              data-testid={`pod-group-mode-${mode}`}
-                              onClick={() => {
-                                setSidebarMode(mode);
-                                // Folders exist only when grouped by project; their home goes with them.
-                                setOpenProjectId(null);
-                              }}
-                            >
-                              {SIDEBAR_MODE_LABELS[mode]}
-                            </button>
-                          ))}
-                        </section>
-                        <section aria-label="Display">
-                          <h3>Display</h3>
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={details === '1'}
-                              onChange={(event) => setDetails(event.target.checked ? '1' : '0')}
-                              aria-label="Show session details"
-                            />
-                            Details
-                          </label>
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={tokens === '1'}
-                              onChange={(event) => setTokens(event.target.checked ? '1' : '0')}
-                              aria-label="Show token usage"
-                            />
-                            Token usage
-                          </label>
-                        </section>
-                        {stoppedSessionCount > 0 && (
-                          <section aria-label="Manage stopped sessions">
-                            <h3>Stopped sessions · {stoppedSessionCount}</h3>
-                            <button
-                              type="button"
-                              data-testid="toggle-stopped-selection-button"
-                              aria-pressed={stoppedSelectionMode}
-                              onClick={() => {
-                                toggleStoppedSelection();
-                                setListMenuOpen(false);
-                              }}
-                            >
-                              <Check size={14} />
-                              {stoppedSelectionMode ? 'Cancel selection' : 'Select all stopped'}
-                            </button>
-                            <button
-                              type="button"
-                              disabled={archiveBusy || deleteBusy}
-                              data-testid="archive-stopped-button"
-                              onClick={() => void handleArchiveAllStopped()}
-                            >
-                              <Archive size={14} />
-                              {archiveBusy ? 'Archiving…' : 'Archive all stopped'}
-                            </button>
-                          </section>
-                        )}
-                      </PopoverContent>
-                    </Popover>
-                    <Tooltip
-                      content="Launch a new session"
-                      delayMs={100}
-                      className="forge-session-action-tooltip"
-                    >
-                      <button
-                        type="button"
-                        className="forge-session-launch"
-                        onClick={() => setLaunchOpen(true)}
-                        data-testid="pod-launch-button"
-                        aria-label="Launch a new session"
-                      >
-                        <Plus size={20} strokeWidth={2} />
-                      </button>
-                    </Tooltip>
-                    <Tooltip
-                      content="Import CLI sessions"
-                      delayMs={100}
-                      className="forge-session-action-tooltip"
-                    >
-                      <button
-                        type="button"
-                        onClick={() => setImportOpen(true)}
-                        data-testid="pod-import-button"
-                        aria-label="Import external CLI sessions"
-                      >
-                        <Download size={18} />
-                      </button>
-                    </Tooltip>
-                    <button
-                      type="button"
-                      onClick={() => setSidebarCollapsed(true)}
-                      data-testid="pod-sidebar-toggle"
-                      aria-label="Collapse pods sidebar"
-                    >
-                      <ChevronRight className="forge-session-collapse" size={19} />
-                    </button>
-                  </div>
-                </TooltipProvider>
-              </div>
-
-              <div className="forge-session-search-row">
-                <div className="forge-session-search">
-                  <Search aria-hidden="true" />
-                  <input
-                    type="search"
-                    placeholder="Find a session"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    data-testid="pod-search"
-                    aria-label="Filter sessions"
-                  />
-                  {voiceSearch.supported && (
-                    <button
-                      type="button"
-                      className="forge-session-voice"
-                      aria-pressed={voiceSearch.listening}
-                      aria-label={voiceSearch.listening ? 'Stop voice search' : 'Search by voice'}
-                      title={voiceSearch.listening ? 'Stop voice search' : 'Search by voice'}
-                      onClick={voiceSearch.toggle}
-                      data-testid="pod-search-voice"
-                    >
-                      <AudioLines size={13} aria-hidden="true" />
-                    </button>
-                  )}
-                </div>
-                {voiceSearch.error && (
-                  <p className="forge-session-voice-error" role="alert">
-                    {voiceSearch.error}
-                  </p>
-                )}
-              </div>
-              <div className="forge-session-quick" role="group" aria-label="Session states">
-                {QUICK_FILTERS.map((value) => {
-                  const count = filterCounts[value];
-                  if (count === 0 && filter !== value) return null;
-                  return (
-                    <button
-                      key={value}
-                      type="button"
-                      aria-pressed={filter === value}
-                      data-testid={`session-filter-${value}`}
-                      data-filter={value}
-                      onClick={() => handleSelectFilter(filter === value ? DEFAULT_FILTER : value)}
-                    >
-                      <span>{FILTER_LABELS[value]}</span>
-                      <span>{count}</span>
-                    </button>
-                  );
-                })}
-                <span className="forge-session-scope" data-testid="session-list-scope">
-                  {FILTER_LABELS[filter]} · {SIDEBAR_MODE_LABELS[sidebarMode]}
-                </span>
-              </div>
-
-              {connectionStates.some((source) => source.loading || source.error) && (
-                <div className="forge-session-source-status" aria-label="Host connections">
-                  {connectionStates
-                    .filter((source) => source.loading || source.error)
-                    .map((source) => (
-                      <p
-                        key={`${source.id}:${source.archived}`}
-                        role="status"
-                        title={source.error ?? undefined}
-                      >
-                        <span>
-                          {source.name}
-                          {source.archived ? ' archive' : ''}:{' '}
-                          {source.error
-                            ? source.stale
-                              ? 'unavailable · showing saved list'
-                              : 'unavailable'
-                            : 'loading…'}
-                        </span>
-                      </p>
-                    ))}
-                  {connectionStates.some((source) => source.error) && (
-                    <button type="button" onClick={() => void sessionsQuery.refetch()}>
-                      Retry host connections
-                    </button>
-                  )}
-                </div>
-              )}
-
-              <div className="forge-session-scroll niuu:flex-1 niuu:overflow-y-auto niuu:pb-1.5">
-                <PodGroup
-                  label="Pinned"
-                  groupKey="pinned"
-                  pinned
-                  workerCounts={nesting.workerCounts}
-                  sessions={pinnedSessions}
-                  selectedId={listSelectedId}
-                  onSelect={handleSelectSession}
-                  showDetails={details === '1'}
-                  onAction={(session, action) => void handleRowAction(session, action)}
-                  onReadChange={handleReadChange}
-                  readPendingIds={sessionRead.pendingIds}
-                  busyId={rowBusyId}
-                  selectableSessionIds={stoppedSelectionMode ? filteredStoppedIds : undefined}
-                  selectedSessionIds={resolvedSelectedStoppedIds}
-                  onToggleSelection={handleToggleStoppedSelection}
-                />
-                {sidebarMode === 'project' && projects.isLoading && (
-                  <p className="forge-session-project-status" role="status">
-                    Loading projects…
-                  </p>
-                )}
-                {sidebarMode === 'project' && projects.isError && (
-                  <p className="forge-session-project-status" role="status">
-                    Project names could not be refreshed. Sessions remain available.
-                  </p>
-                )}
-                {filteredSessions.length === 0 &&
-                  pinnedSessions.length === 0 &&
-                  !sessionsQuery.isLoading &&
-                  !sessionsQuery.isError && (
-                    <p className="niuu:p-4 niuu:text-sm niuu:text-text-muted">
-                      No sessions match these filters.
-                    </p>
-                  )}
-                {filter === 'unread' && (
-                  <div className="forge-unread-list" data-testid="unread-list">
-                    <p className="forge-unread-summary" data-testid="unread-list-summary">
-                      {unreadSessions.length === 0
-                        ? 'Nothing unread'
-                        : `${unreadSessions.length} ${unreadSessions.length === 1 ? 'session has' : 'sessions have'} new replies`}
-                    </p>
-                    {unreadSessions.map((session) => (
-                      <PodEntry
-                        key={session.id}
-                        session={session}
-                        unreadNote
-                        selected={session.id === requestedSessionId}
-                        onSelect={() => handleSelectSession(session.id)}
-                        showDetails={details === '1'}
-                        onAction={(target, action) => void handleRowAction(target, action)}
-                        onReadChange={handleReadChange}
-                        readBusy={sessionRead.pendingIds.has(session.id)}
-                        busy={!!rowBusyId}
-                      />
-                    ))}
-                  </div>
-                )}
-                {filter !== 'unread' &&
-                  sidebarGroups.map((g) => (
+                  {sidebarGroups.map((g) => (
                     <PodGroup
                       key={g.id ?? g.label}
                       label={g.label}
                       groupKey={g.id ?? `${sidebarMode}:${g.label}`}
                       hierarchical
-                      folder={
-                        sidebarMode === 'project' && g.id ? projectFolders.get(g.id) : undefined
-                      }
-                      folderSelected={!!g.id && g.id === openProjectId}
-                      onOpenFolder={g.id ? () => handleOpenProject(g.id!) : undefined}
-                      sectionLabel={sidebarMode === 'project' && !g.id}
                       openRoom={openRoom}
                       contextIds={nesting.contextIds}
                       workerCounts={nesting.workerCounts}
@@ -1898,276 +1629,607 @@ export function SessionsPage() {
                       onSelect={handleSelectSession}
                       showDetails={details === '1'}
                       onAction={(session, action) => void handleRowAction(session, action)}
-                      onReadChange={handleReadChange}
-                      readPendingIds={sessionRead.pendingIds}
                       busyId={rowBusyId}
-                      selectableSessionIds={stoppedSelectionMode ? filteredStoppedIds : undefined}
-                      selectedSessionIds={resolvedSelectedStoppedIds}
-                      onToggleSelection={handleToggleStoppedSelection}
+                      collapsed
                     />
                   ))}
+                </div>
               </div>
-              <footer
-                role="group"
-                className="forge-session-footer"
-                aria-label="Session list settings"
-              >
-                {actionError && (
-                  <div role="alert" className="niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-critical">
-                    {actionError}
-                  </div>
-                )}
-                {sessionRead.error && (
-                  <div
-                    role="alert"
-                    className="forge-session-read-error niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-critical"
-                    data-testid="session-read-error"
-                  >
-                    <span>{sessionRead.error}</span>
-                    <button type="button" onClick={sessionRead.clearError}>
-                      Dismiss
-                    </button>
-                  </div>
-                )}
-                {stoppedSelectionMode && (
-                  <div className="forge-session-maintenance" aria-label="Select stopped sessions">
-                    <div className="forge-session-footer-actions">
+            ) : (
+              <div className="niuu:flex niuu:h-full niuu:flex-col niuu:overflow-hidden">
+                <div className="forge-session-head">
+                  <h2>Sessions</h2>
+                  <TooltipProvider>
+                    <div className="forge-session-heading-actions">
+                      <Popover open={listMenuOpen} onOpenChange={setListMenuOpen}>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            data-testid="session-list-menu"
+                            aria-label="Filter and group sessions"
+                            title="Filter and group sessions"
+                          >
+                            <ListFilter size={18} />
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent side="bottom" align="start" className="forge-session-menu">
+                          <section aria-label="Show">
+                            <h3>Show</h3>
+                            {MENU_FILTERS.map((value) => {
+                              const count = filterCounts[value];
+                              // An empty state is noise; the chosen one always shows.
+                              if (count === 0 && filter !== value) return null;
+                              return (
+                                <button
+                                  key={value}
+                                  type="button"
+                                  aria-pressed={filter === value}
+                                  data-testid={`session-filter-${value}`}
+                                  data-filter={value}
+                                  onClick={() => handleSelectFilter(value)}
+                                >
+                                  <span>{FILTER_LABELS[value]}</span>
+                                  <span>{count}</span>
+                                </button>
+                              );
+                            })}
+                          </section>
+                          <section aria-label="Group by" data-testid="pod-group-mode">
+                            <h3>Group by</h3>
+                            {SIDEBAR_MODES.map((mode) => (
+                              <button
+                                key={mode}
+                                type="button"
+                                aria-pressed={sidebarMode === mode}
+                                data-testid={`pod-group-mode-${mode}`}
+                                onClick={() => {
+                                  setSidebarMode(mode);
+                                  // Folders exist only when grouped by project; their home goes with them.
+                                  setOpenProjectId(null);
+                                }}
+                              >
+                                {SIDEBAR_MODE_LABELS[mode]}
+                              </button>
+                            ))}
+                          </section>
+                          <section aria-label="Display">
+                            <h3>Display</h3>
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={details === '1'}
+                                onChange={(event) => setDetails(event.target.checked ? '1' : '0')}
+                                aria-label="Show session details"
+                              />
+                              Details
+                            </label>
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={tokens === '1'}
+                                onChange={(event) => setTokens(event.target.checked ? '1' : '0')}
+                                aria-label="Show token usage"
+                              />
+                              Token usage
+                            </label>
+                          </section>
+                          {stoppedSessionCount > 0 && (
+                            <section aria-label="Manage stopped sessions">
+                              <h3>Stopped sessions · {stoppedSessionCount}</h3>
+                              <button
+                                type="button"
+                                data-testid="toggle-stopped-selection-button"
+                                aria-pressed={stoppedSelectionMode}
+                                onClick={() => {
+                                  toggleStoppedSelection();
+                                  setListMenuOpen(false);
+                                }}
+                              >
+                                <Check size={14} />
+                                {stoppedSelectionMode ? 'Cancel selection' : 'Select all stopped'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={archiveBusy || deleteBusy}
+                                data-testid="archive-stopped-button"
+                                onClick={() => void handleArchiveAllStopped()}
+                              >
+                                <Archive size={14} />
+                                {archiveBusy ? 'Archiving…' : 'Archive all stopped'}
+                              </button>
+                            </section>
+                          )}
+                        </PopoverContent>
+                      </Popover>
+                      <Tooltip
+                        content="Launch a new session"
+                        delayMs={100}
+                        className="forge-session-action-tooltip"
+                      >
+                        <button
+                          type="button"
+                          className="forge-session-launch"
+                          onClick={() => setLaunchOpen(true)}
+                          data-testid="pod-launch-button"
+                          aria-label="Launch a new session"
+                        >
+                          <Plus size={20} strokeWidth={2} />
+                        </button>
+                      </Tooltip>
+                      <Tooltip
+                        content="Import CLI sessions"
+                        delayMs={100}
+                        className="forge-session-action-tooltip"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setImportOpen(true)}
+                          data-testid="pod-import-button"
+                          aria-label="Import external CLI sessions"
+                        >
+                          <Download size={18} />
+                        </button>
+                      </Tooltip>
                       <button
                         type="button"
-                        onClick={handleSelectAllVisibleStopped}
-                        disabled={filteredStoppedSessions.length === 0}
-                        data-testid="select-all-stopped-button"
+                        onClick={() => setSidebarCollapsed(true)}
+                        data-testid="pod-sidebar-toggle"
+                        aria-label="Collapse pods sidebar"
                       >
-                        Select visible ({filteredStoppedSessions.length})
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleClearStoppedSelection}
-                        disabled={deleteSelectionCount === 0}
-                        data-testid="clear-stopped-selection-button"
-                      >
-                        Clear
-                      </button>
-                      <button
-                        type="button"
-                        className="forge-session-delete"
-                        onClick={() => setDeleteStoppedOpen(true)}
-                        disabled={deleteSelectionCount === 0}
-                        data-testid="delete-selected-stopped-button"
-                      >
-                        <Trash2 size={14} />
-                        Delete selected ({deleteSelectionCount})
-                      </button>
-                      <button
-                        type="button"
-                        data-testid="cancel-stopped-selection-button"
-                        onClick={toggleStoppedSelection}
-                      >
-                        Cancel
+                        <ChevronRight className="forge-session-collapse" size={19} />
                       </button>
                     </div>
+                  </TooltipProvider>
+                </div>
+
+                <div className="forge-session-search-row">
+                  <div className="forge-session-search">
+                    <Search aria-hidden="true" />
+                    <input
+                      type="search"
+                      placeholder="Find a session"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      data-testid="pod-search"
+                      aria-label="Filter sessions"
+                    />
+                    {voiceSearch.supported && (
+                      <button
+                        type="button"
+                        className="forge-session-voice"
+                        aria-pressed={voiceSearch.listening}
+                        aria-label={voiceSearch.listening ? 'Stop voice search' : 'Search by voice'}
+                        title={voiceSearch.listening ? 'Stop voice search' : 'Search by voice'}
+                        onClick={voiceSearch.toggle}
+                        data-testid="pod-search-voice"
+                      >
+                        <AudioLines size={13} aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+                  {voiceSearch.error && (
+                    <p className="forge-session-voice-error" role="alert">
+                      {voiceSearch.error}
+                    </p>
+                  )}
+                </div>
+                <div className="forge-session-quick" role="group" aria-label="Session states">
+                  {QUICK_FILTERS.map((value) => {
+                    const count = filterCounts[value];
+                    if (count === 0 && filter !== value) return null;
+                    return (
+                      <button
+                        key={value}
+                        type="button"
+                        aria-pressed={filter === value}
+                        data-testid={`session-filter-${value}`}
+                        data-filter={value}
+                        onClick={() =>
+                          handleSelectFilter(filter === value ? DEFAULT_FILTER : value)
+                        }
+                      >
+                        <span>{FILTER_LABELS[value]}</span>
+                        <span>{count}</span>
+                      </button>
+                    );
+                  })}
+                  <span className="forge-session-scope" data-testid="session-list-scope">
+                    {FILTER_LABELS[filter]} · {SIDEBAR_MODE_LABELS[sidebarMode]}
+                  </span>
+                </div>
+
+                {connectionStates.some((source) => source.loading || source.error) && (
+                  <div className="forge-session-source-status" aria-label="Host connections">
+                    {connectionStates
+                      .filter((source) => source.loading || source.error)
+                      .map((source) => (
+                        <p
+                          key={`${source.id}:${source.archived}`}
+                          role="status"
+                          title={source.error ?? undefined}
+                        >
+                          <span>
+                            {source.name}
+                            {source.archived ? ' archive' : ''}:{' '}
+                            {source.error
+                              ? source.stale
+                                ? 'unavailable · showing saved list'
+                                : 'unavailable'
+                              : 'loading…'}
+                          </span>
+                        </p>
+                      ))}
+                    {connectionStates.some((source) => source.error) && (
+                      <button type="button" onClick={() => void sessionsQuery.refetch()}>
+                        Retry host connections
+                      </button>
+                    )}
                   </div>
                 )}
-                <div className="forge-session-footer-line">
-                  <p className="forge-session-today" data-testid="sessions-today">
-                    {workToday
-                      ? workToday.sessions === 0
-                        ? 'Last 24 h · no work recorded'
-                        : `Last 24 h · ${workToday.sessions} ${workToday.sessions === 1 ? 'session' : 'sessions'} · ${workedDuration(workToday.seconds)}`
-                      : `${listedSessionCount} ${listedSessionCount === 1 ? 'session' : 'sessions'}`}
-                  </p>
-                  <button
-                    type="button"
-                    className="forge-session-refresh"
-                    aria-label="Refresh sessions"
-                    title="Refresh sessions"
-                    disabled={sessionsQuery.isFetching}
-                    onClick={() => void sessionsQuery.refetch()}
-                    data-testid="sessions-refresh"
-                  >
-                    <RefreshCw size={13} aria-hidden="true" />
-                  </button>
+
+                <div className="forge-session-scroll niuu:flex-1 niuu:overflow-y-auto niuu:pb-1.5">
+                  <PodGroup
+                    label="Pinned"
+                    groupKey="pinned"
+                    pinned
+                    workerCounts={nesting.workerCounts}
+                    sessions={pinnedSessions}
+                    selectedId={listSelectedId}
+                    onSelect={handleSelectSession}
+                    showDetails={details === '1'}
+                    onAction={(session, action) => void handleRowAction(session, action)}
+                    onReadChange={handleReadChange}
+                    readPendingIds={sessionRead.pendingIds}
+                    busyId={rowBusyId}
+                    selectableSessionIds={stoppedSelectionMode ? filteredStoppedIds : undefined}
+                    selectedSessionIds={resolvedSelectedStoppedIds}
+                    onToggleSelection={handleToggleStoppedSelection}
+                  />
+                  {sidebarMode === 'project' && projects.isLoading && (
+                    <p className="forge-session-project-status" role="status">
+                      Loading projects…
+                    </p>
+                  )}
+                  {sidebarMode === 'project' && projects.isError && (
+                    <p className="forge-session-project-status" role="status">
+                      Project names could not be refreshed. Sessions remain available.
+                    </p>
+                  )}
+                  {filteredSessions.length === 0 &&
+                    pinnedSessions.length === 0 &&
+                    !sessionsQuery.isLoading &&
+                    !sessionsQuery.isError && (
+                      <p className="niuu:p-4 niuu:text-sm niuu:text-text-muted">
+                        No sessions match these filters.
+                      </p>
+                    )}
+                  {filter === 'unread' && (
+                    <div className="forge-unread-list" data-testid="unread-list">
+                      <p className="forge-unread-summary" data-testid="unread-list-summary">
+                        {unreadSessions.length === 0
+                          ? 'Nothing unread'
+                          : `${unreadSessions.length} ${unreadSessions.length === 1 ? 'session has' : 'sessions have'} new replies`}
+                      </p>
+                      {unreadSessions.map((session) => (
+                        <PodEntry
+                          key={session.id}
+                          session={session}
+                          unreadNote
+                          selected={session.id === requestedSessionId}
+                          onSelect={() => handleSelectSession(session.id)}
+                          showDetails={details === '1'}
+                          onAction={(target, action) => void handleRowAction(target, action)}
+                          onReadChange={handleReadChange}
+                          readBusy={sessionRead.pendingIds.has(session.id)}
+                          busy={!!rowBusyId}
+                        />
+                      ))}
+                    </div>
+                  )}
+                  {filter !== 'unread' &&
+                    sidebarGroups.map((g) => (
+                      <PodGroup
+                        key={g.id ?? g.label}
+                        label={g.label}
+                        groupKey={g.id ?? `${sidebarMode}:${g.label}`}
+                        hierarchical
+                        folder={
+                          sidebarMode === 'project' && g.id ? projectFolders.get(g.id) : undefined
+                        }
+                        folderSelected={!!g.id && g.id === openProjectId}
+                        onOpenFolder={g.id ? () => handleOpenProject(g.id!) : undefined}
+                        sectionLabel={sidebarMode === 'project' && !g.id}
+                        openRoom={openRoom}
+                        contextIds={nesting.contextIds}
+                        workerCounts={nesting.workerCounts}
+                        sessions={g.sessions}
+                        selectedId={listSelectedId}
+                        onSelect={handleSelectSession}
+                        showDetails={details === '1'}
+                        onAction={(session, action) => void handleRowAction(session, action)}
+                        onReadChange={handleReadChange}
+                        readPendingIds={sessionRead.pendingIds}
+                        busyId={rowBusyId}
+                        selectableSessionIds={stoppedSelectionMode ? filteredStoppedIds : undefined}
+                        selectedSessionIds={resolvedSelectedStoppedIds}
+                        onToggleSelection={handleToggleStoppedSelection}
+                      />
+                    ))}
                 </div>
-              </footer>
-            </div>
-          )}
-        </nav>
+                <footer
+                  role="group"
+                  className="forge-session-footer"
+                  aria-label="Session list settings"
+                >
+                  {actionError && (
+                    <div
+                      role="alert"
+                      className="niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-critical"
+                    >
+                      {actionError}
+                    </div>
+                  )}
+                  {sessionRead.error && (
+                    <div
+                      role="alert"
+                      className="forge-session-read-error niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-critical"
+                      data-testid="session-read-error"
+                    >
+                      <span>{sessionRead.error}</span>
+                      <button type="button" onClick={sessionRead.clearError}>
+                        Dismiss
+                      </button>
+                    </div>
+                  )}
+                  {stoppedSelectionMode && (
+                    <div className="forge-session-maintenance" aria-label="Select stopped sessions">
+                      <div className="forge-session-footer-actions">
+                        <button
+                          type="button"
+                          onClick={handleSelectAllVisibleStopped}
+                          disabled={filteredStoppedSessions.length === 0}
+                          data-testid="select-all-stopped-button"
+                        >
+                          Select visible ({filteredStoppedSessions.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleClearStoppedSelection}
+                          disabled={deleteSelectionCount === 0}
+                          data-testid="clear-stopped-selection-button"
+                        >
+                          Clear
+                        </button>
+                        <button
+                          type="button"
+                          className="forge-session-delete"
+                          onClick={() => setDeleteStoppedOpen(true)}
+                          disabled={deleteSelectionCount === 0}
+                          data-testid="delete-selected-stopped-button"
+                        >
+                          <Trash2 size={14} />
+                          Delete selected ({deleteSelectionCount})
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="cancel-stopped-selection-button"
+                          onClick={toggleStoppedSelection}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="forge-session-footer-line">
+                    <p className="forge-session-today" data-testid="sessions-today">
+                      {workToday
+                        ? workToday.sessions === 0
+                          ? 'Last 24 h · no work recorded'
+                          : `Last 24 h · ${workToday.sessions} ${workToday.sessions === 1 ? 'session' : 'sessions'} · ${workedDuration(workToday.seconds)}`
+                        : `${listedSessionCount} ${listedSessionCount === 1 ? 'session' : 'sessions'}`}
+                    </p>
+                    <button
+                      type="button"
+                      className="forge-session-refresh"
+                      aria-label="Refresh sessions"
+                      title="Refresh sessions"
+                      disabled={sessionsQuery.isFetching}
+                      onClick={() => void sessionsQuery.refetch()}
+                      data-testid="sessions-refresh"
+                    >
+                      <RefreshCw size={13} aria-hidden="true" />
+                    </button>
+                  </div>
+                </footer>
+              </div>
+            )}
+          </nav>
 
-        {/* ── Main content: session detail ───────────────────────── */}
-        {!listFolded && (
-          <SidebarResizer
-            label="Resize session list"
-            className="forge-session-resizer"
-            {...resizer}
-          />
-        )}
-
-        <div className="forge-session-detail niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col niuu:overflow-hidden">
-          <button
-            type="button"
-            className="forge-session-back"
-            onClick={() => {
-              setSelectedSessionId(null);
-              setOpenProjectId(null);
-              void navigate({ to: '/volundr/sessions' });
-            }}
-          >
-            ‹ Sessions
-          </button>
-          {sessionsQuery.isLoading && <LoadingState label="Loading sessions…" />}
-          {sessionsQuery.isError && (
-            <ErrorState
-              title="Failed to load sessions"
-              message={
-                sessionsQuery.error instanceof Error ? sessionsQuery.error.message : 'Unknown error'
-              }
+          {/* ── Main content: session detail ───────────────────────── */}
+          {!listFolded && (
+            <SidebarResizer
+              label="Resize session list"
+              className="forge-session-resizer"
+              {...resizer}
             />
           )}
-          {sessionsQuery.data && openProjectId !== null && (
-            <ProjectHome
-              key={openProjectId}
-              projectId={openProjectId}
-              name={openProjectGroup?.label ?? openProjectRecord?.name ?? openProjectId}
-              project={openProjectRecord}
-              sessions={allSessions}
-              workerCounts={nesting.workerCounts}
-              onOpenSession={handleSelectSession}
-              onNewSession={() => setLaunchOpen(true)}
-              onArchived={() => setOpenProjectId(null)}
-            />
-          )}
-          {sessionsQuery.data && showUnreadStream && (
-            <UnreadStream sessions={unreadSessions} onOpen={handleSelectSession} />
-          )}
-          {sessionsQuery.data &&
-            !showUnreadStream &&
-            !showProjectHome &&
-            !resolvedSelectedSessionId &&
-            requestedSessionId &&
-            connectionStates.some((source) => source.loading) && (
-              <LoadingState label="Loading selected session…" />
-            )}
-          {sessionsQuery.data &&
-            !showUnreadStream &&
-            !showProjectHome &&
-            !resolvedSelectedSessionId &&
-            !(requestedSessionId && connectionStates.some((source) => source.loading)) && (
-              <EmptyState
-                title="No session selected"
-                description="Select a session from the sidebar."
-              />
-            )}
-          {sessionsQuery.data &&
-            !showUnreadStream &&
-            !showProjectHome &&
-            resolvedSelectedSessionId && (
-              <LiveSessionDetailPage
-                key={resolvedSelectedSessionId}
-                sessionId={resolvedSelectedSessionId}
-                focusedWorkerId={focusedPeerId}
-                onFocusWorker={handleFocusWorker}
-                onRoomWorkers={handleRoomWorkers}
-                workersInList
-                onDockOpenChange={setDockOpen}
-                onBackToUnread={
-                  filter === 'unread'
-                    ? () => {
-                        setSelectedSessionId(null);
-                        void navigate({ to: '/volundr/sessions' });
-                      }
-                    : undefined
+
+          <div className="forge-session-detail niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col niuu:overflow-hidden">
+            <button
+              type="button"
+              className="forge-session-back"
+              onClick={() => {
+                setSelectedSessionId(null);
+                setOpenProjectId(null);
+                void navigate({ to: '/volundr/sessions' });
+              }}
+            >
+              ‹ Sessions
+            </button>
+            {sessionsQuery.isLoading && <LoadingState label="Loading sessions…" />}
+            {sessionsQuery.isError && (
+              <ErrorState
+                title="Failed to load sessions"
+                message={
+                  sessionsQuery.error instanceof Error
+                    ? sessionsQuery.error.message
+                    : 'Unknown error'
                 }
               />
             )}
-        </div>
-      </div>
-      <Dialog
-        open={deleteTarget !== null}
-        onOpenChange={(open) => {
-          if (!open && !rowBusyId) setDeleteTarget(null);
-        }}
-      >
-        <DialogContent
-          title="Delete session?"
-          description={`Permanently delete ${deleteTarget?.name || deleteTarget?.personaName || 'this session'} and its session record? This cannot be undone.`}
-        >
-          {actionError && <p role="alert">{actionError}</p>}
-          <div className="niuu:flex niuu:justify-end niuu:gap-3">
-            <button type="button" disabled={!!rowBusyId} onClick={() => setDeleteTarget(null)}>
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={!!rowBusyId}
-              className="niuu:text-critical"
-              onClick={() => {
-                if (deleteTarget) void handleRowAction(deleteTarget, 'delete', true);
-              }}
-            >
-              Delete permanently
-            </button>
+            {sessionsQuery.data && openProjectId !== null && (
+              <ProjectHome
+                key={openProjectId}
+                projectId={openProjectId}
+                name={openProjectGroup?.label ?? openProjectRecord?.name ?? openProjectId}
+                project={openProjectRecord}
+                sessions={allSessions}
+                workerCounts={nesting.workerCounts}
+                onOpenSession={handleSelectSession}
+                onNewSession={() => setLaunchOpen(true)}
+                onArchived={() => setOpenProjectId(null)}
+              />
+            )}
+            {sessionsQuery.data && showUnreadStream && (
+              <UnreadStream sessions={unreadSessions} onOpen={handleSelectSession} />
+            )}
+            {sessionsQuery.data &&
+              !showUnreadStream &&
+              !showProjectHome &&
+              !resolvedSelectedSessionId &&
+              requestedSessionId &&
+              connectionStates.some((source) => source.loading) && (
+                <LoadingState label="Loading selected session…" />
+              )}
+            {sessionsQuery.data &&
+              !showUnreadStream &&
+              !showProjectHome &&
+              !resolvedSelectedSessionId &&
+              !(requestedSessionId && connectionStates.some((source) => source.loading)) && (
+                <EmptyState
+                  title="No session selected"
+                  description="Select a session from the sidebar."
+                />
+              )}
+            {sessionsQuery.data &&
+              !showUnreadStream &&
+              !showProjectHome &&
+              resolvedSelectedSessionId &&
+              (openInvitation ? (
+                <InvitationPane
+                  session={openInvitation}
+                  onJoined={() => answerInvitation(openInvitation.id, 'joined')}
+                  onDeclined={() => answerInvitation(openInvitation.id, 'declined')}
+                />
+              ) : (
+                <LiveSessionDetailPage
+                  key={resolvedSelectedSessionId}
+                  sessionId={resolvedSelectedSessionId}
+                  focusedWorkerId={focusedPeerId}
+                  onFocusWorker={handleFocusWorker}
+                  onRoomWorkers={handleRoomWorkers}
+                  workersInList
+                  onDockOpenChange={setDockOpen}
+                  onBackToUnread={
+                    filter === 'unread'
+                      ? () => {
+                          setSelectedSessionId(null);
+                          void navigate({ to: '/volundr/sessions' });
+                        }
+                      : undefined
+                  }
+                />
+              ))}
           </div>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={deleteStoppedOpen}
-        onOpenChange={(open) => {
-          if (!deleteBusy) setDeleteStoppedOpen(open);
-        }}
-      >
-        <DialogContent
-          title="Delete Selected Stopped Sessions"
-          description="This removes the selected stopped sessions from the list. This action cannot be undone."
+        </div>
+        <Dialog
+          open={deleteTarget !== null}
+          onOpenChange={(open) => {
+            if (!open && !rowBusyId) setDeleteTarget(null);
+          }}
         >
-          <div className="niuu:space-y-4">
+          <DialogContent
+            title="Delete session?"
+            description={`Permanently delete ${deleteTarget?.name || deleteTarget?.personaName || 'this session'} and its session record? This cannot be undone.`}
+          >
             {actionError && <p role="alert">{actionError}</p>}
-            <div className="niuu:rounded-lg niuu:border niuu:border-red-500/25 niuu:bg-red-500/8 niuu:p-3 niuu:text-sm niuu:text-text-secondary">
-              {deleteSelectionCount === 1
-                ? 'Delete 1 stopped session?'
-                : `Delete ${deleteSelectionCount} stopped sessions?`}
-            </div>
-            {deleteSelectionPreview.length > 0 ? (
-              <div className="niuu:max-h-48 niuu:space-y-2 niuu:overflow-y-auto niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:p-3">
-                {deleteSelectionPreview.map((session) => (
-                  <div
-                    key={session.id}
-                    className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:font-mono niuu:text-xs niuu:text-text-secondary"
-                  >
-                    <span className="niuu:truncate">{session.personaName || session.id}</span>
-                    <span className="niuu:text-text-faint">{session.id}</span>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-            <div className="niuu:flex niuu:justify-end niuu:gap-2">
-              <button
-                type="button"
-                onClick={() => setDeleteStoppedOpen(false)}
-                className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:hover:bg-bg-secondary"
-              >
+            <div className="niuu:flex niuu:justify-end niuu:gap-3">
+              <button type="button" disabled={!!rowBusyId} onClick={() => setDeleteTarget(null)}>
                 Cancel
               </button>
               <button
                 type="button"
-                onClick={() => void handleDeleteSelectedStopped()}
-                disabled={deleteBusy || deleteSelectionCount === 0}
-                className="niuu:rounded-md niuu:bg-red-500 niuu:px-3 niuu:py-2 niuu:text-sm niuu:font-medium niuu:text-white niuu:hover:opacity-90 niuu:disabled:cursor-not-allowed niuu:disabled:opacity-50"
-                data-testid="confirm-delete-selected-stopped-button"
+                disabled={!!rowBusyId}
+                className="niuu:text-critical"
+                onClick={() => {
+                  if (deleteTarget) void handleRowAction(deleteTarget, 'delete', true);
+                }}
               >
-                {deleteBusy ? 'Deleting…' : `Delete ${deleteSelectionCount}`}
+                Delete permanently
               </button>
             </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-      <LaunchWizard open={launchOpen} onOpenChange={setLaunchOpen} />
-      <ImportExternalSessionsDialog
-        open={importOpen}
-        onOpenChange={setImportOpen}
-        onImported={async () => {
-          await sessionsQuery.refetch();
-        }}
-      />
-    </SharedOwnerNames.Provider>
+          </DialogContent>
+        </Dialog>
+        <Dialog
+          open={deleteStoppedOpen}
+          onOpenChange={(open) => {
+            if (!deleteBusy) setDeleteStoppedOpen(open);
+          }}
+        >
+          <DialogContent
+            title="Delete Selected Stopped Sessions"
+            description="This removes the selected stopped sessions from the list. This action cannot be undone."
+          >
+            <div className="niuu:space-y-4">
+              {actionError && <p role="alert">{actionError}</p>}
+              <div className="niuu:rounded-lg niuu:border niuu:border-red-500/25 niuu:bg-red-500/8 niuu:p-3 niuu:text-sm niuu:text-text-secondary">
+                {deleteSelectionCount === 1
+                  ? 'Delete 1 stopped session?'
+                  : `Delete ${deleteSelectionCount} stopped sessions?`}
+              </div>
+              {deleteSelectionPreview.length > 0 ? (
+                <div className="niuu:max-h-48 niuu:space-y-2 niuu:overflow-y-auto niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:p-3">
+                  {deleteSelectionPreview.map((session) => (
+                    <div
+                      key={session.id}
+                      className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:font-mono niuu:text-xs niuu:text-text-secondary"
+                    >
+                      <span className="niuu:truncate">{session.personaName || session.id}</span>
+                      <span className="niuu:text-text-faint">{session.id}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <div className="niuu:flex niuu:justify-end niuu:gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDeleteStoppedOpen(false)}
+                  className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:hover:bg-bg-secondary"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteSelectedStopped()}
+                  disabled={deleteBusy || deleteSelectionCount === 0}
+                  className="niuu:rounded-md niuu:bg-red-500 niuu:px-3 niuu:py-2 niuu:text-sm niuu:font-medium niuu:text-white niuu:hover:opacity-90 niuu:disabled:cursor-not-allowed niuu:disabled:opacity-50"
+                  data-testid="confirm-delete-selected-stopped-button"
+                >
+                  {deleteBusy ? 'Deleting…' : `Delete ${deleteSelectionCount}`}
+                </button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+        <LaunchWizard open={launchOpen} onOpenChange={setLaunchOpen} />
+        <ImportExternalSessionsDialog
+          open={importOpen}
+          onOpenChange={setImportOpen}
+          onImported={async () => {
+            await sessionsQuery.refetch();
+          }}
+        />
+      </SharedOwnerNames.Provider>
+    </InvitationAnswered.Provider>
   );
 }

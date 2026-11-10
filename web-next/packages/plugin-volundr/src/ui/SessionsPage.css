@@ -1230,3 +1230,8 @@
   white-space: nowrap;
   color: var(--color-brand-300);
 }
+
+/* Join or decline an invitation, under the row it belongs to. */
+.forge-session-row__invitation {
+  padding: 0 12px 8px 14px;
+}

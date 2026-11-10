@@ -836,6 +836,7 @@ function toDomainSession(session: VolundrSession): Session {
     ...(session.source ? { source: session.source } : {}),
     ...(session.room ? { room: session.room } : {}),
     ...(session.ownerId ? { ownerId: session.ownerId } : {}),
+    ...(session.ownerName ? { ownerName: session.ownerName } : {}),
     coordination: session.coordination,
     templateId: toSessionTemplateId(session),
     clusterId: toSessionClusterId(session),
@@ -903,6 +904,15 @@ function buildSplitVolundrService(
     updateProjectMember: (project, userId, change) =>
       forge.updateProjectMember(project, userId, change),
     removeProjectMember: (project, userId) => forge.removeProjectMember(project, userId),
+    getSessionParticipants: (id, options) => forge.getSessionParticipants(id, options),
+    getSessionProjectPeople: (id, options) => forge.getSessionProjectPeople(id, options),
+    getParticipantCandidates: (id, query, options) =>
+      forge.getParticipantCandidates(id, query, options),
+    inviteSessionParticipant: (id, invitation, options) =>
+      forge.inviteSessionParticipant(id, invitation, options),
+    acceptSessionInvitation: (id, options) => forge.acceptSessionInvitation(id, options),
+    removeSessionParticipant: (id, userId, options) =>
+      forge.removeSessionParticipant(id, userId, options),
     getSessionProject: (id, options) => forge.getSessionProject(id, options),
     assignSessionProject: (id, assignment, options) =>
       forge.assignSessionProject(id, assignment, options),
