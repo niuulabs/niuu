@@ -597,6 +597,9 @@ importers:
       '@niuulabs/ui':
         specifier: workspace:*
         version: link:../ui
+      js-yaml:
+        specifier: ^5.5.0
+        version: 5.5.0
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -610,6 +613,9 @@ importers:
       '@tanstack/react-router':
         specifier: ^1.170.46
         version: 1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@types/js-yaml':
+        specifier: ^4.0.9
+        version: 4.0.9
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0

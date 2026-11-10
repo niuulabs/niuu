@@ -3,7 +3,6 @@ import { useNavigate, useSearch } from '@tanstack/react-router';
 import { ChevronLeft, GitFork, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import { Dialog, DialogContent, ErrorState, LoadingState, PersonaAvatar } from '@niuulabs/ui';
 import type { PersonaSummary } from '@niuulabs/domain';
-import type { PersonaCreateRequest } from '../../ports';
 import {
   groupPersonaFamilies,
   isCustomPersona,
@@ -12,17 +11,11 @@ import {
   personaTagline,
   type PersonaSource,
 } from '../../application/personaFamilies';
-import { buildDraftPersona, personaNameProblem } from '../../application/personaDraft';
+import { personaNameProblem } from '../../application/personaDraft';
 import { usePersonas } from '../usePersonas';
-import {
-  useCreatePersona,
-  useDeletePersona,
-  useForkPersona,
-  usePersona,
-  useUpdatePersona,
-} from '../usePersona';
-import { PersonaForm } from '../PersonaForm';
+import { useDeletePersona, useForkPersona, usePersona } from '../usePersona';
 import { PersonaYaml } from '../PersonaYaml';
+import { PersonaEditor } from '../editor/PersonaEditor';
 import { PersonaSheet } from './PersonaSheet';
 import { errorText } from './errorText';
 import './library.css';
@@ -121,17 +114,17 @@ function NameDialog({
 
 function PersonaDetailPane({
   name,
-  taken,
+  personas,
   onSelect,
   onBack,
 }: {
   name: string;
-  taken: string[];
+  personas: readonly PersonaSummary[];
   onSelect: (name: string | null) => void;
   onBack: () => void;
 }) {
+  const taken = personas.map((persona) => persona.name);
   const persona = usePersona(name);
-  const update = useUpdatePersona(name);
   const fork = useForkPersona(name);
   const remove = useDeletePersona(name);
   const [view, setView] = useState<PersonaView>('sheet');
@@ -150,8 +143,18 @@ function PersonaDetailPane({
   const detail = persona.data;
   const custom = isCustomPersona(detail);
 
-  async function save(request: PersonaCreateRequest) {
-    await update.mutateAsync(request);
+  if (view === 'edit') {
+    return (
+      <div className="rw-body" data-testid="persona-body-edit">
+        <PersonaEditor
+          name={detail.name}
+          isBuiltin={detail.isBuiltin}
+          personas={personas}
+          onSaved={() => setView('sheet')}
+          onCancel={() => setView('sheet')}
+        />
+      </div>
+    );
   }
 
   return (
@@ -226,7 +229,6 @@ function PersonaDetailPane({
             type="button"
             className="rw-btn rw-btn--primary"
             onClick={() => setView('edit')}
-            disabled={view === 'edit'}
             data-testid="persona-edit"
           >
             <Pencil size={14} aria-hidden="true" />
@@ -241,27 +243,6 @@ function PersonaDetailPane({
           <div className="rw-yaml">
             <PersonaYaml name={detail.name} />
           </div>
-        )}
-        {view === 'edit' && (
-          <>
-            <div className="rw-editbar" role="status">
-              <span className="rw-editbar__text">
-                <strong>Editing {detail.name}</strong>
-                {detail.isBuiltin
-                  ? ' — saving writes an override; the built-in stays one reset away.'
-                  : ' — changes apply to agents the next time they load it.'}
-              </span>
-              <button type="button" className="rw-btn" onClick={() => setView('sheet')}>
-                Done
-              </button>
-            </div>
-            {update.isError && (
-              <p className="rw-inline-error" role="alert">
-                {errorText(update.error, 'Saving failed')}
-              </p>
-            )}
-            <PersonaForm persona={detail} onSave={save} isSaving={update.isPending} />
-          </>
         )}
       </div>
 
@@ -333,7 +314,6 @@ export function PersonaLibrary() {
   const search = useSearch({ strict: false }) as { persona?: unknown };
   const requested = typeof search.persona === 'string' ? search.persona : null;
   const personas = usePersonas();
-  const create = useCreatePersona();
   const [query, setQuery] = useState('');
   const [source, setSource] = useState<PersonaSource>('all');
   const [closed, setClosed] = useState<Record<string, boolean>>({});
@@ -388,7 +368,11 @@ export function PersonaLibrary() {
   }
 
   return (
-    <div className="rw" data-detail-open={Boolean(requested)} data-testid="persona-library">
+    <div
+      className="rw"
+      data-detail-open={Boolean(requested) || creating}
+      data-testid="persona-library"
+    >
       <aside className="rw-rail" aria-label="Personas">
         <div className="rw-rail__head">
           <div>
@@ -398,10 +382,8 @@ export function PersonaLibrary() {
           <button
             type="button"
             className="rw-btn rw-btn--primary"
-            onClick={() => {
-              create.reset();
-              setCreating(true);
-            }}
+            onClick={() => setCreating(true)}
+            disabled={creating}
             data-testid="persona-new"
           >
             <Plus size={14} aria-hidden="true" />
@@ -440,7 +422,7 @@ export function PersonaLibrary() {
           {families.length === 0 && (
             <p className="rw-rail__empty">
               {source === 'custom' && !query
-                ? 'No custom personas yet. Fork a built-in to make one.'
+                ? 'No custom personas yet. Create one with New, or fork a built-in.'
                 : 'No personas match.'}
             </p>
           )}
@@ -467,8 +449,11 @@ export function PersonaLibrary() {
                         key={persona.name}
                         type="button"
                         className="rw-prow"
-                        aria-current={persona.name === selectedName}
-                        onClick={() => select(persona.name)}
+                        aria-current={!creating && persona.name === selectedName}
+                        onClick={() => {
+                          setCreating(false);
+                          select(persona.name);
+                        }}
                         data-testid={`persona-row-${persona.name}`}
                       >
                         <PersonaAvatar role={persona.role} letter={persona.letter} size={24} />
@@ -489,11 +474,22 @@ export function PersonaLibrary() {
       </aside>
 
       <section className="rw-detail" data-testid="persona-detail">
-        {selectedName ? (
+        {creating ? (
+          <div className="rw-body" data-testid="persona-body-new">
+            <PersonaEditor
+              personas={list}
+              onSaved={(name) => {
+                setCreating(false);
+                select(name);
+              }}
+              onCancel={() => setCreating(false)}
+            />
+          </div>
+        ) : selectedName ? (
           <PersonaDetailPane
             key={selectedName}
             name={selectedName}
-            taken={list.map((persona) => persona.name)}
+            personas={list}
             onSelect={select}
             onBack={() => select(null)}
           />
@@ -506,27 +502,6 @@ export function PersonaLibrary() {
           </div>
         )}
       </section>
-
-      <NameDialog
-        key={`new:${creating}`}
-        title="New persona"
-        description="Starts from an empty sheet you fill in next."
-        submitLabel="Create"
-        initialName=""
-        taken={list.map((persona) => persona.name)}
-        pending={create.isPending}
-        error={create.error}
-        open={creating}
-        onOpenChange={setCreating}
-        onSubmit={(name) =>
-          create.mutate(buildDraftPersona(name), {
-            onSuccess: (created) => {
-              setCreating(false);
-              select(created.name);
-            },
-          })
-        }
-      />
     </div>
   );
 }

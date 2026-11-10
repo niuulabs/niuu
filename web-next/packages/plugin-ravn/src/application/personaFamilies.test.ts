@@ -8,7 +8,7 @@ import {
   matchesPersonaSource,
   personaTagline,
 } from './personaFamilies';
-import { buildDraftPersona, personaNameProblem } from './personaDraft';
+import { personaNameProblem } from './personaDraft';
 import { makePersonaSummary } from '../testing/fixtures';
 
 const persona = (name: string, extra = {}) => makePersonaSummary({ name, ...extra });
@@ -90,13 +90,5 @@ describe('persona drafts', () => {
     expect(personaNameProblem('Bad Name', [])).toMatch(/lowercase/);
     expect(personaNameProblem('reviewer', ['reviewer'])).toMatch(/already exists/);
     expect(personaNameProblem('night-watch', ['reviewer'])).toBeNull();
-  });
-
-  it('builds the smallest valid persona', () => {
-    expect(buildDraftPersona('night-watch')).toMatchObject({
-      name: 'night-watch',
-      summary: 'Night watch',
-      consumesEvents: [],
-    });
   });
 });
