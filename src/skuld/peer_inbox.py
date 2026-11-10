@@ -477,6 +477,13 @@ class PeerInboxMixin:
             urgent = any(entry.envelope.urgent for entry in waiting)
             if not urgent and not self._turn_boundary_open():
                 return False
+            # A person's answer is their own message in the conversation, not a peer turn.
+            answers = [e for e in waiting if e.envelope.sender.kind is PeerKind.PERSON]
+            if answers:
+                await self._hand_person_answers_to_agent(answers)
+                waiting = [e for e in waiting if e.envelope.sender.kind is not PeerKind.PERSON]
+                if not waiting:
+                    return True
             message_ids = [entry.envelope.message_id for entry in waiting]
             turn_id = peer_turn_id(str(self.session_id), message_ids)
             text = render_peer_turn(waiting)

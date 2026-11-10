@@ -3533,6 +3533,7 @@ class Broker(
         source: str,
         extra_metadata: dict[str, Any] | None = None,
         author: MessageAuthor | None = None,
+        model_note: str = "",
     ) -> asyncio.Task[None]:
         """Record a user turn, echo it to every client and deliver it to the transport.
 
@@ -3544,7 +3545,66 @@ class Broker(
         ``author`` is the verified person who sent it (None for a workflow step or any
         sender that is not a verified person). It is recorded on the turn, the durable log
         frame, the ``user_confirmed`` broadcast and the trace span, and once the session has
-        had more than one person it opens the message the model reads.
+        had more than one person it opens the message the model reads. ``model_note`` is
+        read by the model ahead of the message and never shown in the conversation.
+        """
+        await self._record_user_turn(
+            content_str,
+            msg_id=msg_id,
+            request_id=request_id,
+            source=source,
+            extra_metadata=extra_metadata,
+            author=author,
+        )
+        return self._spawn_user_delivery(
+            content_str, msg_id=msg_id, request_id=request_id, author=author, model_note=model_note
+        )
+
+    def _spawn_user_delivery(
+        self,
+        content_str: str,
+        *,
+        msg_id: str,
+        request_id: str | None,
+        author: MessageAuthor | None,
+        model_note: str = "",
+    ) -> asyncio.Task[None]:
+        """Deliver an already recorded user turn to the transport, in the background."""
+        # Fire-and-forget so the WS receive loop isn't pinned on a turn that may
+        # run for minutes (the transport serialises its own deliveries, so order
+        # holds). BUG-3 / INV-7: the delivery is wrapped so its OUTCOME is durable
+        # and observable — bounded retry on a transient failure, a VISIBLE failed
+        # turn on terminal failure — instead of being silently swallowed on a
+        # wedged input channel while the API says "sent". The redirect-vs-send
+        # routing is recomputed AT DELIVERY TIME (not snapshotted here) so a turn
+        # boundary that moves between accept and delivery routes correctly.
+        return asyncio.create_task(
+            self._deliver_user_message_and_ack(
+                content_str,
+                request_id=request_id,
+                msg_id=msg_id,
+                author=author,
+                model_note=model_note,
+            ),
+            name=f"transport-deliver-{msg_id}",
+        )
+
+    async def _record_user_turn(
+        self,
+        content_str: str,
+        *,
+        msg_id: str,
+        request_id: str | None,
+        source: str,
+        extra_metadata: dict[str, Any] | None = None,
+        author: MessageAuthor | None = None,
+        steering_state: str = "pending",
+    ) -> None:
+        """Record a user turn durably and echo it to every client, without delivering it.
+
+        ``steering_state`` is ``pending`` for a turn the transport will be handed next; a
+        turn the agent already has another way (an answer returned by the tool call that
+        waited for it) is recorded ``active``.
         """
         self._note_human_author(author)
         now = datetime.now(UTC)
@@ -3563,7 +3623,7 @@ class Broker(
                 # "active". Survives reconnect + REST since metadata is
                 # serialized with the turn.
                 metadata={
-                    "steering_state": "pending",
+                    "steering_state": steering_state,
                     **({"request_id": request_id} if request_id else {}),
                     **({TIMELINE_KEY: input_timeline} if input_timeline else {}),
                     **(extra_metadata or {}),
@@ -3594,29 +3654,11 @@ class Broker(
                 "id": msg_id,
                 "content": content_str,
                 "request_id": request_id,
-                "steering_state": "pending",
+                "steering_state": steering_state,
                 "created_at": now.isoformat(),
                 **({TIMELINE_KEY: input_timeline} if input_timeline else {}),
                 **({AUTHOR_KEY: author.to_dict()} if author is not None else {}),
             }
-        )
-
-        # Fire-and-forget so the WS receive loop isn't pinned on a turn that may
-        # run for minutes (the transport serialises its own deliveries, so order
-        # holds). BUG-3 / INV-7: the delivery is wrapped so its OUTCOME is durable
-        # and observable — bounded retry on a transient failure, a VISIBLE failed
-        # turn on terminal failure — instead of being silently swallowed on a
-        # wedged input channel while the API says "sent". The redirect-vs-send
-        # routing is recomputed AT DELIVERY TIME (not snapshotted here) so a turn
-        # boundary that moves between accept and delivery routes correctly.
-        return asyncio.create_task(
-            self._deliver_user_message_and_ack(
-                content_str,
-                request_id=request_id,
-                msg_id=msg_id,
-                author=author,
-            ),
-            name=f"transport-deliver-{msg_id}",
         )
 
     async def _try_route_pending_help_reply(self, data: dict, content: str) -> bool:
@@ -3841,6 +3883,7 @@ class Broker(
         request_id: str | None,
         msg_id: str,
         author: MessageAuthor | None = None,
+        model_note: str = "",
     ) -> None:
         """Deliver a user message to the transport with BOUNDED RETRY and a durable,
         observable outcome (SRD FR-5 / INV-7).
@@ -3865,6 +3908,8 @@ class Broker(
         """
         if await self._deliver_effort_command(content, msg_id, request_id):
             return
+        # What the model reads ahead of the message; the conversation shows the message alone.
+        content = f"{model_note}{content}"
         pending_q = len(self._pending_ask_user_questions)
         if pending_q:
             logger.warning(

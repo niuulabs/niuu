@@ -41,6 +41,18 @@ from skuld.peer_inbox import AnswerWait
 logger = logging.getLogger("skuld.broker")
 
 PERSON_QUESTION_TURN_PREFIX = "pq_"
+#: The answer is the answering person's own message in the conversation, with this id, so
+#: a client can tell which question it answers from the id alone (live or replayed).
+PERSON_ANSWER_TURN_PREFIX = "pa_"
+#: ``source`` of an answer's turn on the trace span.
+PERSON_ANSWER_SOURCE = "person_answer"
+
+
+def person_answer_turn_id(question_id: str) -> str:
+    """The id of the conversation turn that is the answer to ``question_id``."""
+    return f"{PERSON_ANSWER_TURN_PREFIX}{question_id}"
+
+
 #: The tool_use part the chat renders for a question put to a person; its input names who.
 PERSON_QUESTION_TOOL_NAME = "ask_person"
 
@@ -229,6 +241,17 @@ class PersonQuestionMixin:
                 sender_ws, data, "conflict", self._already_answered_message(question)
             )
             return
+        # The answer is the person's own message in the conversation, shown once. A call
+        # waiting for it returns it to the agent, so that turn is already the agent's;
+        # otherwise the next turn boundary hands it over (_hand_person_answers_to_agent).
+        await self._record_user_turn(
+            content,
+            msg_id=person_answer_turn_id(question_id),
+            request_id=None,
+            source=PERSON_ANSWER_SOURCE,
+            author=answerer,
+            steering_state="active" if question_id in self._peer_answer_waits else "pending",
+        )
         await self._emit_broker_frame(
             {
                 "type": PERSON_ANSWERED_FRAME,
@@ -242,6 +265,61 @@ class PersonQuestionMixin:
                 },
             }
         )
+
+    @staticmethod
+    def _person_answer_note(question: PersonQuestion | None, answerer: MessageAuthor) -> str:
+        """What the model reads ahead of an answer it was not waiting for: whose, and to what."""
+        if question is None:
+            return f"[{answerer.label} is answering a question you put to them with ask_person]\n\n"
+        for_whom = (
+            ""
+            if answerer.user_id == question.addressee_id
+            else f" on behalf of {question.addressee_name}"
+        )
+        return (
+            f"[{answerer.label} is answering{for_whom} the question you asked with ask_person "
+            f'(question {question.question_id}): "{question.question}"]\n\n'
+        )
+
+    async def _hand_person_answers_to_agent(self, entries: list[Any]) -> None:
+        """Give the agent answers no ask_person call took, as the people's own messages.
+
+        Called at a turn boundary with the inbox lock held. Each answer is delivered as a
+        human message (with a note naming the question) on the turn that already shows it,
+        so it appears once in the conversation; an answer accepted before its turn existed
+        (logged by an older broker) gets its turn here. Marked handed over durably first, so
+        a restart does not deliver it twice; a delivery that then fails marks the turn failed,
+        visibly, like any human message.
+        """
+        for entry in entries:
+            entry.injected = True
+        try:
+            await self._record_peer_entries(entries)
+        except Exception:
+            for entry in entries:
+                entry.injected = False
+            raise
+        for entry in entries:
+            envelope = entry.envelope
+            question = self.person_question(envelope.in_reply_to or "")
+            answerer = MessageAuthor(user_id=envelope.sender.id, display_name=envelope.sender.name)
+            turn_id = person_answer_turn_id(envelope.in_reply_to or envelope.message_id)
+            if not any(turn.id == turn_id for turn in self._conversation_turns):
+                await self._record_user_turn(
+                    envelope.content,
+                    msg_id=turn_id,
+                    request_id=None,
+                    source=PERSON_ANSWER_SOURCE,
+                    author=answerer,
+                )
+            await self._ensure_transport_started()
+            self._spawn_user_delivery(
+                envelope.content,
+                msg_id=turn_id,
+                request_id=None,
+                author=answerer,
+                model_note=self._person_answer_note(question, answerer),
+            )
 
     def _person_answer_refusal(
         self, question_id: str, content: str, author: MessageAuthor | None, approver: bool

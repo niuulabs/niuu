@@ -18,7 +18,7 @@ import pytest
 
 from niuu import cap_telemetry
 from niuu.domain.message_author import MessageAuthor
-from niuu.domain.peer_message import PeerKind, render_for_harness
+from niuu.domain.peer_message import PeerKind
 from niuu.domain.person_question import (
     PERSON_ANSWER_MESSAGE,
     PERSON_ANSWERED_FRAME,
@@ -27,9 +27,11 @@ from niuu.domain.person_question import (
 )
 from niuu.forge_mcp.models import ForgeApiError
 from skuld import peer_inbox
+from skuld.broker import Broker
 from skuld.channels import WebSocketChannel
 from skuld.forge_mcp import host as host_module
 from skuld.forge_mcp.host import ASK_OUTCOMES_COUNTER, BrokerForgeMcpHost
+from skuld.person_questions import PersonQuestion, person_answer_turn_id
 from tests.test_skuld.test_peer_inbox import SESSION_ID, _inbox_broker, _sent_texts, _settle
 
 ALICE = MessageAuthor(user_id="u-alice", display_name="Alice Liddell")
@@ -421,7 +423,7 @@ class TestWhenTheWaitEndsFirst:
         await _ask(host, deadline_s=0.05)
         assert cap_telemetry.cap_hit_counts() == {}
 
-    async def test_a_late_answer_is_delivered_at_the_next_turn_boundary(
+    async def test_a_late_answer_is_alices_own_message_handed_over_at_the_boundary(
         self, tmp_path, outcomes
     ) -> None:
         host, broker, forge = _world(tmp_path, activity="idle")
@@ -431,16 +433,52 @@ class TestWhenTheWaitEndsFirst:
         await _answer(broker, alice, "Use the staging key")
         await _settle()
 
+        # The agent reads it as a person's message, told which question it answers; no
+        # machine envelope.
         [text] = _sent_texts(broker)
-        assert "from Alice Liddell (person u-alice)" in text
-        assert f"[In reply to your message {QUESTION_ID}]" in text
-        assert "Use the staging key" in text
+        assert text.endswith("Use the staging key")
+        assert "Alice Liddell is answering the question you asked with ask_person" in text
+        assert QUESTION_ID in text and QUESTION in text
+        assert "[Message " not in text and "(person u-alice)" not in text
+        # The conversation shows it once, as Alice's message.
+        answers = [t for t in broker._conversation_turns if t.role == "user"]
+        assert [(t.id, t.content) for t in answers] == [
+            (person_answer_turn_id(QUESTION_ID), "Use the staging key")
+        ]
+        assert answers[0].author == {"user_id": "u-alice", "display_name": "Alice Liddell"}
         assert forge.requests[0]["json"]["answered_by_user_id"] == "u-alice"
-        assert (
-            render_for_harness(
-                broker._peer_inbox[person_answer_id(SESSION_ID, QUESTION_ID)].envelope
-            )
-            == text
+        assert broker._peer_inbox[person_answer_id(SESSION_ID, QUESTION_ID)].injected is True
+
+    async def test_an_answer_taken_by_the_waiting_call_is_shown_once_and_not_sent_again(
+        self, tmp_path, outcomes
+    ) -> None:
+        host, broker, _ = _world(tmp_path, activity="idle")
+        alice = _connect(broker, ALICE)
+        asking = asyncio.create_task(_ask(host))
+        await asyncio.sleep(0.05)
+
+        await _answer(broker, alice, "Use the staging key")
+        await asyncio.wait_for(asking, 2)
+        await _settle()
+
+        assert _sent_texts(broker) == []
+        [turn] = [t for t in broker._conversation_turns if t.role == "user"]
+        assert turn.id == person_answer_turn_id(QUESTION_ID)
+        assert turn.metadata["steering_state"] == "active"
+        confirmed = [f for f in alice.sent if f.get("type") == "user_confirmed"]
+        assert [f["id"] for f in confirmed] == [person_answer_turn_id(QUESTION_ID)]
+
+    async def test_an_approver_answering_for_the_person_is_named_as_such(self) -> None:
+        question = PersonQuestion(
+            question_id=QUESTION_ID,
+            addressee_id="u-alice",
+            addressee_name="Alice Liddell",
+            question=QUESTION,
+        )
+        note = Broker._person_answer_note(question, MessageAuthor("u-bob", "Bob"))
+        assert note.startswith("[Bob is answering on behalf of Alice Liddell the question")
+        assert Broker._person_answer_note(None, MessageAuthor("u-bob", "Bob")).startswith(
+            "[Bob is answering a question"
         )
 
     async def test_a_late_answer_waits_for_the_boundary_while_a_turn_runs(
