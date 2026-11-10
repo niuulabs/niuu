@@ -71,7 +71,6 @@ const MAX_ZOOM = 3.0;
 /** A viewer framing a whole workflow in a short or narrow panel may go below the editor's floor. */
 const VIEWER_MIN_ZOOM = 0.1;
 
-
 // ---------------------------------------------------------------------------
 // Node cards — one recipe for every kind: an icon tile, the step's name and who runs it.
 // The canvas lays every card out itself (left to right), so a card is selected, never
@@ -90,8 +89,7 @@ const CARD_ICON_PATHS = {
   bot: 'M8 8h8a3 3 0 013 3v5a3 3 0 01-3 3H8a3 3 0 01-3-3v-5a3 3 0 013-3zM12 4v4M9 13.5h.01M15 13.5h.01',
   bolt: 'M13 3L5 14h6l-1 7 8-11h-6z',
   clock: 'M12 4a8 8 0 110 16 8 8 0 010-16zM12 8v4l3 2',
-  stack:
-    'M10 8h7a2 2 0 012 2v7a2 2 0 01-2 2h-7a2 2 0 01-2-2v-7a2 2 0 012-2zM5 15V6a1 1 0 011-1h9',
+  stack: 'M10 8h7a2 2 0 012 2v7a2 2 0 01-2 2h-7a2 2 0 01-2-2v-7a2 2 0 012-2zM5 15V6a1 1 0 011-1h9',
   branch: 'M4 12h6l4-6h6M10 12l4 6h6',
   database:
     'M12 4c4 0 7 1.3 7 3s-3 3-7 3-7-1.3-7-3 3-3 7-3zM5 7v10c0 1.7 3 3 7 3s7-1.3 7-3V7M5 12c0 1.7 3 3 7 3s7-1.3 7-3',
@@ -132,14 +130,7 @@ function personaIcon(personaId: string | undefined): CardIconName {
 
 /** How a card is drawn: its tone (the tile's colour), icon and the line under its name. */
 export type WorkflowCardTone =
-  | 'agent'
-  | 'gate'
-  | 'trigger'
-  | 'wait'
-  | 'cond'
-  | 'end'
-  | 'resource'
-  | 'include';
+  'agent' | 'gate' | 'trigger' | 'wait' | 'cond' | 'end' | 'resource' | 'include';
 
 export interface WorkflowCardContent {
   tone: WorkflowCardTone;
@@ -187,7 +178,8 @@ export function workflowCardContent(
       const mode = node.mode ?? 'human_approval';
       return {
         tone: 'gate',
-        icon: mode === 'automated_approval' ? 'bot' : mode === 'human_approval' ? 'person' : 'review',
+        icon:
+          mode === 'automated_approval' ? 'bot' : mode === 'human_approval' ? 'person' : 'review',
         subtitle: GATE_DECIDER[mode] ?? mode,
         kindLabel: 'Gate step',
       };
@@ -409,12 +401,7 @@ function WaitUnconfiguredSockets({
     const selectedEvent = requestWaitEventType('continuation');
     if (selectedEvent) onStartConnect(selectedEvent);
   };
-  const socket = (
-    testId: string,
-    cx: number,
-    label: string,
-    activate: () => void,
-  ) => (
+  const socket = (testId: string, cx: number, label: string, activate: () => void) => (
     <circle
       data-testid={testId}
       className="workflow-socket"
@@ -496,8 +483,7 @@ export function stagePortLists(node: WorkflowStageNode, personas: PersonaEntry[]
 
 export function renderedStageHeight(node: WorkflowStageNode, personas: PersonaEntry[]) {
   const catalog = nodePortCatalog(node, { personas });
-  return workflowCardSize('stage', Math.max(catalog.inputs.length, catalog.outputs.length))
-    .height;
+  return workflowCardSize('stage', Math.max(catalog.inputs.length, catalog.outputs.length)).height;
 }
 
 export function splitEdgePorts(label?: string) {
@@ -743,7 +729,13 @@ function WorkflowEdgePath({
       <path
         d={d}
         fill="none"
-        markerEnd={feedback ? 'url(#arrowhead-rework)' : 'url(#arrowhead)'}
+        markerEnd={
+          feedback
+            ? 'url(#arrowhead-rework)'
+            : runPassed
+              ? 'url(#arrowhead-passed)'
+              : 'url(#arrowhead)'
+        }
         className="workflow-edge-line niuu:cursor-pointer"
         onClick={(e) => {
           e.stopPropagation();
@@ -2074,18 +2066,39 @@ export function GraphView({
         onDrop={handleDrop}
       >
         <defs>
-          <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-            <polygon className="workflow-arrow" points="0 0, 8 3, 0 6" />
-          </marker>
+          {/* Sized in the graph's own units, not the stroke's: a small head on a wide wire. */}
           <marker
-            id="arrowhead-rework"
-            markerWidth="8"
+            id="arrowhead"
+            markerUnits="userSpaceOnUse"
+            markerWidth="7"
             markerHeight="6"
-            refX="8"
+            refX="6.5"
             refY="3"
             orient="auto"
           >
-            <polygon className="workflow-arrow" data-tone="rework" points="0 0, 8 3, 0 6" />
+            <polygon className="workflow-arrow" points="0 0, 7 3, 0 6" />
+          </marker>
+          <marker
+            id="arrowhead-rework"
+            markerUnits="userSpaceOnUse"
+            markerWidth="7"
+            markerHeight="6"
+            refX="6.5"
+            refY="3"
+            orient="auto"
+          >
+            <polygon className="workflow-arrow" data-tone="rework" points="0 0, 7 3, 0 6" />
+          </marker>
+          <marker
+            id="arrowhead-passed"
+            markerUnits="userSpaceOnUse"
+            markerWidth="7"
+            markerHeight="6"
+            refX="6.5"
+            refY="3"
+            orient="auto"
+          >
+            <polygon className="workflow-arrow" data-tone="passed" points="0 0, 7 3, 0 6" />
           </marker>
         </defs>
         <g

@@ -117,7 +117,9 @@
   border: 1px solid var(--color-border);
   border-radius: 14px;
   background: var(--color-bg-secondary);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18), 0 8px 22px rgb(0 0 0 / 0.16);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.18),
+    0 8px 22px rgb(0 0 0 / 0.16);
   color: var(--color-text-primary);
   font-family: var(--font-sans);
   user-select: none;
@@ -243,8 +245,8 @@ g[role='button']:hover > foreignObject > .workflow-card {
   stroke: var(--color-text-secondary);
 }
 .workflow-socket[data-wiring='forward'] {
-  fill: var(--status-emerald);
-  stroke: var(--status-emerald);
+  fill: var(--color-brand);
+  stroke: var(--color-brand);
 }
 .workflow-socket[data-wiring='rework'] {
   fill: var(--status-amber);
@@ -270,8 +272,10 @@ g[role='button']:hover > foreignObject > .workflow-card {
 }
 
 /* ── Wires: what a step says, written on the way to the step that starts on it ───────── */
+/* Coloured by the outcome they carry: on to a later step in the brand's colour, work sent
+   back in amber, as the outcome dots they leave from. */
 .workflow-edge-line {
-  stroke: var(--color-text-faint);
+  stroke: color-mix(in srgb, var(--color-brand) 60%, transparent);
   stroke-linecap: round;
   stroke-width: 2;
 }
@@ -288,10 +292,13 @@ g[role='button']:hover > foreignObject > .workflow-card {
   stroke-width: 2.5;
 }
 .workflow-arrow {
-  fill: var(--color-text-faint);
+  fill: var(--color-brand);
 }
 .workflow-arrow[data-tone='rework'] {
   fill: var(--status-amber);
+}
+.workflow-arrow[data-tone='passed'] {
+  fill: var(--status-emerald);
 }
 .workflow-wire-pill rect {
   fill: var(--color-bg-primary);
