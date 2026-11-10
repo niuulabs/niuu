@@ -290,6 +290,55 @@ class TestFindingTheInvitation:
         )
 
 
+class TestListingThePeople:
+    def test_the_owner_sees_everyone_with_a_grant_by_name_and_status(self, forge):
+        forge.invite(role="approver")
+        forge.invite(user_id="zed")
+        forge.client.post(f"{forge.path}/participants/accept", headers=_headers("invitee"))
+
+        response = forge.client.get(f"{forge.path}/participants", headers=_headers("owner"))
+
+        assert response.status_code == 200
+        rows = {row["user_id"]: row for row in response.json()}
+        assert rows["invitee"]["display_name"] == "Ivan Invitee"
+        assert (rows["invitee"]["role"], rows["invitee"]["status"]) == ("approver", "active")
+        assert (rows["zed"]["display_name"], rows["zed"]["status"]) == ("Zed Zimmer", "invited")
+
+    def test_a_joined_participant_may_see_the_list_and_an_invitee_may_not(self, forge):
+        forge.invite()
+        forge.invite(user_id="zed")
+        forge.client.post(f"{forge.path}/participants/accept", headers=_headers("invitee"))
+
+        assert (
+            forge.client.get(f"{forge.path}/participants", headers=_headers("invitee")).status_code
+            == 200
+        )
+        assert (
+            forge.client.get(f"{forge.path}/participants", headers=_headers("zed")).status_code
+            == 403
+        )
+
+    def test_a_participant_may_leave(self, forge):
+        forge.invite()
+        forge.client.post(f"{forge.path}/participants/accept", headers=_headers("invitee"))
+
+        left = forge.client.delete(
+            f"{forge.path}/participants/invitee", headers=_headers("invitee")
+        )
+
+        assert left.status_code == 204
+        assert forge.listed("invitee") is None
+
+    def test_a_participant_may_not_remove_someone_else(self, forge):
+        forge.invite()
+        forge.invite(user_id="zed")
+        forge.client.post(f"{forge.path}/participants/accept", headers=_headers("invitee"))
+
+        refused = forge.client.delete(f"{forge.path}/participants/zed", headers=_headers("invitee"))
+
+        assert refused.status_code == 403
+
+
 class TestCandidates:
     def _candidates(self, forge, user="owner", **params):
         return forge.client.get(

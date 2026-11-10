@@ -179,6 +179,9 @@ class ParticipantResponse(BaseModel):
 
     session_id: UUID
     user_id: str
+    display_name: str = Field(
+        default="", description="The person's name where the directory has one (listings only)"
+    )
     tenant_id: str
     role: str
     status: str
@@ -188,10 +191,13 @@ class ParticipantResponse(BaseModel):
     expires_at: datetime | None = None
 
     @classmethod
-    def from_participant(cls, participant: SessionParticipant) -> ParticipantResponse:
+    def from_participant(
+        cls, participant: SessionParticipant, display_name: str = ""
+    ) -> ParticipantResponse:
         return cls(
             session_id=participant.session_id,
             user_id=participant.user_id,
+            display_name=display_name,
             tenant_id=participant.tenant_id,
             role=participant.role.value,
             status=participant.status.value,
@@ -423,7 +429,10 @@ def create_session_participants_router(
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN, "Not authorized to list participants"
             ) from None
-        return [ParticipantResponse.from_participant(p) for p in participants]
+        names = await service.display_names({p.user_id for p in participants})
+        return [
+            ParticipantResponse.from_participant(p, names.get(p.user_id, "")) for p in participants
+        ]
 
     if room_role_source == "remote":
 
