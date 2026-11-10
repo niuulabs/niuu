@@ -629,3 +629,17 @@ async def test_participation_of_an_owner_an_invitee_a_member_and_a_stranger():
 
     await service.revoke(session, OWNER, "invitee")
     assert await service.participation(session, INVITEE) == (None, None)
+
+
+async def test_display_names_name_who_the_directory_knows_and_nobody_else():
+    user_repository = _user_repository()
+    people = {
+        "olivia": User(id="olivia", email="olivia@example.test", display_name="Olivia Owner"),
+        "mail-only": User(id="mail-only", email="mail@example.test", display_name=""),
+    }
+    user_repository.get.side_effect = lambda user_id: people.get(user_id)
+    service, _ = await _service(user_repository)
+
+    names = await service.display_names({"olivia", "mail-only", "ghost"})
+
+    assert names == {"olivia": "Olivia Owner", "mail-only": "mail@example.test"}

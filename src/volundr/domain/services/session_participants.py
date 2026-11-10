@@ -245,6 +245,20 @@ class SessionParticipantService:
             session, invitation, resolution=resolution
         )
 
+    async def display_names(self, user_ids: set[str]) -> dict[str, str]:
+        """The name each of these people goes by (display name, else email), where known.
+
+        For the owner of a session shared with someone: the room summary names who shared
+        it. A person the directory does not know has no entry, never a made-up name.
+        """
+        names: dict[str, str] = {}
+        for user_id in sorted(user_ids):
+            user = await self._user_repository.get(user_id)
+            name = (user.display_name or user.email) if user is not None else ""
+            if name:
+                names[user_id] = name
+        return names
+
     async def participation(
         self, session: Session, principal: Principal
     ) -> tuple[str | None, SessionParticipant | None]:

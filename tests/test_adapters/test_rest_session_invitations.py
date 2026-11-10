@@ -214,6 +214,8 @@ class TestFindingTheInvitation:
         assert summary["owner_id"] == "owner"
         assert summary["room"]["role"] == "approver"
         assert summary["room"]["participant_status"] == "invited"
+        # The invitee sees who invited them, by name, with no project to look it up in.
+        assert summary["owner_name"] == "Olivia Owner"
 
     def test_an_invitation_carries_no_room_content(self, forge):
         forge.invite()
