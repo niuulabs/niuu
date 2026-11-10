@@ -193,7 +193,7 @@ async function configure(
 }
 
 async function openEditor(page: Page) {
-  await page.goto(`/ting/workflows?id=${workflowId}`);
+  await page.goto(`/ting/workflows?workflow=${workflowId}`);
   await expect(page.getByTestId('workflow-builder')).toBeVisible();
   await page.getByTestId('zoom-fit').click();
 }
@@ -439,13 +439,13 @@ test('historical versions remain viewable, editable, and launch exactly', async 
   await expect(page.getByTestId('workflow-version-picker')).toHaveValue('0.9.0');
   await expect(page.getByTestId('workflow-editor-mode')).toHaveText('Viewing');
 
-  await page.getByTestId('launch-workflow').click();
+  await expect(page.getByTestId('launch-workflow')).toHaveCount(0);
   await page.getByTestId('workflow-launch-prompt').fill('Run the historical workflow');
-  await page.getByRole('button', { name: 'Launch', exact: true }).click();
+  await page.getByTestId('catalog-workflow-launch').click();
   await expect.poll(() => launchBody?.workflow_version).toBe('0.9.0');
   await expect(page).toHaveURL(/\/volundr\/sessions\/historical-session$/);
 
-  await page.goto(`/ting/workflows?id=${workflowId}`);
+  await page.goto(`/ting/workflows?workflow=${workflowId}`);
   await expect(page.getByTestId('workflow-builder')).toBeVisible();
   await page.getByTestId('workflow-version-picker').selectOption('0.9.0');
   await editWorkflow(page);
@@ -463,7 +463,6 @@ test('Edit stays blocked until a requested historical document is loaded', async
   await page.getByTestId('workflow-version-picker').selectOption('0.9.0');
   await expect(page.getByTestId('workflow-versions-loading')).toBeVisible();
   await expect(page.getByTestId('edit-workflow')).toBeDisabled();
-  await expect(page.getByTestId('launch-workflow')).toBeDisabled();
 
   releaseVersion();
   await expect(page.getByTestId('workflow-version-picker')).toHaveValue('0.9.0');
@@ -476,7 +475,7 @@ test('workflow catalog exposes a loading state before the real editor mounts', a
     release = resolve;
   });
   await configure(page, { loading });
-  await page.goto('/ting/workflows/build');
+  await page.goto('/ting/workflows');
   await expect(page.getByText(/Loading workflows/i)).toBeVisible();
   await expect(page.getByTestId('workflow-builder')).toHaveCount(0);
   release();
@@ -487,7 +486,7 @@ test('workflow catalog failure is visible and never replaced by a fake editor', 
   page,
 }) => {
   await configure(page, { fail: true });
-  await page.goto('/ting/workflows/build');
+  await page.goto('/ting/workflows');
   await expect(page.getByRole('alert')).toContainText('API request failed: 500', {
     timeout: 20_000,
   });
@@ -587,7 +586,7 @@ test('child exploration returns to the exact historical parent draft', async ({ 
 test('editor gives long names room alongside the Work navigation', async ({ page }) => {
   await page.setViewportSize({ width: 2048, height: 950 });
   await configure(page, { name: 'Research Campaign copy for cross-team investigation' });
-  await page.goto('/ting/workflows/build');
+  await page.goto('/ting/workflows');
   const title = page.getByTestId('builder-title');
   await expect(title).toHaveText('Research Campaign copy for cross-team investigation');
   await expect(page.getByRole('navigation', { name: 'Workflow execution' })).toHaveCount(0);

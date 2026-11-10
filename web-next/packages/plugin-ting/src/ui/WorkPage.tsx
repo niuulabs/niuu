@@ -475,8 +475,8 @@ function WorkDetailView({
           ) : null}
           {item.workflow && item.actions.includes('openDefinition') ? (
             <Link
-              to={'/ting/workflows/build' as never}
-              search={{ id: item.workflow.id, version: item.workflow.version } as never}
+              to={'/ting/workflows' as never}
+              search={{ workflow: item.workflow.id, version: item.workflow.version } as never}
             >
               Open definition
             </Link>
