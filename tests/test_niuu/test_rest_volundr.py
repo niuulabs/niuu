@@ -2562,6 +2562,48 @@ def test_native_history_import_preserves_conflict_response() -> None:
 
 
 @respx.mock
+def test_a_participants_room_view_is_found_on_the_node_that_refuses_the_full_session() -> None:
+    session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    full = respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}").mock(
+        return_value=Response(403, json={"detail": "Access denied"})
+    )
+    summary = {
+        "kind": "room_summary",
+        "id": session_id,
+        "name": "shared",
+        "room": {"role": "approver", "participant_status": "active", "expires_at": None},
+        "chat_endpoint": "/s/session/ws",
+    }
+    room = respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}/room").mock(
+        return_value=Response(200, json=summary)
+    )
+
+    response = client.get(f"/api/v1/forge/sessions/{session_id}/room", headers=_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["kind"] == "room_summary"
+    assert body["room"]["role"] == "approver"
+    assert body["instance_id"] == "alpha"
+    assert room.calls.last.request.headers["authorization"] == "Bearer test-token"
+    assert not full.called
+
+
+@respx.mock
+def test_a_room_view_no_node_grants_is_not_found() -> None:
+    session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}/room").mock(
+        return_value=Response(403, json={"detail": "Access denied"})
+    )
+
+    response = client.get(f"/api/v1/forge/sessions/{session_id}/room", headers=_headers())
+
+    assert response.status_code == 404
+
+
+@respx.mock
 def test_session_people_come_from_the_owning_node() -> None:
     session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
     client = _client([_instance("alpha", base_url="http://alpha")])

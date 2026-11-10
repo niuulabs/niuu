@@ -2409,6 +2409,30 @@ def create_volundr_router(
         )
         return payload
 
+    @router.get("/sessions/{session_id}/room")
+    async def get_session_room(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """The room view of a session, for a person who shares it without owning it.
+
+        A project member or invitee is refused ``GET /sessions/{id}`` by the node that
+        holds the session, so the owner lookup behind it never finds the node. This
+        looks for the session through its room view, which the node grants to every
+        participant (and to the owner), and names the node that answers.
+        """
+        _, payload = await _find_runtime_owner(
+            service,
+            principal,
+            request,
+            f"/sessions/{session_id}/room",
+            f"Session not found: {session_id}",
+            embedded_app=embedded_forge_app,
+            local_scope=_local_session_scope(request),
+        )
+        return payload
+
     @router.post("/sessions", status_code=status.HTTP_201_CREATED)
     async def create_session(
         request: Request,
