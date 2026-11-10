@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useParams } from '@tanstack/react-router';
-import { SectionCard, type ForgeProject } from '@niuulabs/plugin-volundr';
+import { SectionCard, useSharedOwnerNames, type ForgeProject } from '@niuulabs/plugin-volundr';
 import { EmptyState, ErrorState, LoadingState, ProjectIcon } from '@niuulabs/ui';
 import {
   orderCards,
@@ -70,6 +70,8 @@ function SharedSettings({ project }: { project: ForgeProject }) {
   );
 }
 
+const NO_PROJECTS: ForgeProject[] = [];
+
 /** A project: the workspaces that serve it and what they share. */
 export function ProjectPage() {
   const { projectId } = useParams({ strict: false }) as { projectId: string };
@@ -77,6 +79,11 @@ export function ProjectPage() {
   const home = useRealmsHome();
   const sessions = useVolundrSessions();
   const project = projects.data?.find((entry) => entry.id === projectId) ?? null;
+  const projectSessions = useMemo(
+    () => (sessions.data ?? []).filter((session) => session.coordination?.projectId === projectId),
+    [sessions.data, projectId],
+  );
+  const ownerNames = useSharedOwnerNames(projectSessions, project ? [project] : NO_PROJECTS);
 
   if (home.isLoading || projects.isLoading) return <LoadingState label="Loading project…" />;
   if (home.error ?? projects.error)
@@ -103,9 +110,6 @@ export function ProjectPage() {
   }
   const tickets = ticketsOf(cards);
   const waiting = tickets.length;
-  const projectSessions = (sessions.data ?? []).filter(
-    (session) => session.coordination?.projectId === projectId,
-  );
 
   return (
     <div
@@ -165,7 +169,7 @@ export function ProjectPage() {
             )}
           </SectionCard>
           <SectionCard title={`Sessions · ${projectSessions.length}`}>
-            <SessionsTable sessions={projectSessions} />
+            <SessionsTable sessions={projectSessions} ownerNames={ownerNames} />
           </SectionCard>
           <SectionCard title="Artifacts">
             <ArtifactList projectId={projectId} />

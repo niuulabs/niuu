@@ -253,6 +253,16 @@ export interface SessionStartup {
   progressError: string | null;
 }
 
+/** What a person may do in a room (`niuu.room_access`): chat, also answer gates, everything. */
+export type SessionRoomRole = 'viewer' | 'approver' | 'owner';
+
+/** The caller's own standing in a session's room, as Forge reports it for a shared session. */
+export interface SessionRoom {
+  role: SessionRoomRole;
+  participantStatus: string;
+  expiresAt: string | null;
+}
+
 export interface VolundrSession {
   sessionDefinition?: string;
   /** The Ting workflow run this session works for (the slug of its `workflow:` tag). */
@@ -260,7 +270,17 @@ export interface VolundrSession {
   coordination?: SessionCoordination;
   id: string;
   name: string;
-  source: SessionSource;
+  /**
+   * The workspace the session was launched from. `null` when Forge withheld it: a person
+   * who shares a session without owning it gets a room summary, which never carries the
+   * repository, branch or paths. Check `room` first; there is no stand-in source.
+   */
+  source: SessionSource | null;
+  /**
+   * The caller's standing in the session's room. Present when Forge answered with a room
+   * summary (a shared session, or the owner's own room view); absent on a full session.
+   */
+  room?: SessionRoom;
   status: SessionStatus;
   model: string;
   personaName?: string;
@@ -305,6 +325,29 @@ export interface VolundrSession {
    * it, and only a host that records turn spans.
    */
   workedSeconds24h?: number;
+}
+
+/**
+ * True when the caller reaches the session through a room grant (a project membership or a
+ * per-session invite) and does not own it. Such a session has no source, code endpoint,
+ * files or settings to show; it has its room: chat at `chatEndpoint`, and gates for approvers.
+ */
+export function isSharedSession(session: Pick<VolundrSession, 'room'>): boolean {
+  return session.room !== undefined && session.room.role !== 'owner';
+}
+
+/** How a shared session reads in a list: "Shared · approver". */
+export function sharedSessionLabel(room: SessionRoom): string {
+  return `Shared · ${room.role}`;
+}
+
+/**
+ * Whether the caller may answer a session's gates and permission prompts: `approver` and up in
+ * its room, or anyone who reads the full session. The server enforces it; this decides only
+ * whether to offer the control.
+ */
+export function canAnswerGates(session: Pick<VolundrSession, 'room'>): boolean {
+  return session.room === undefined || session.room.role !== 'viewer';
 }
 
 /**
