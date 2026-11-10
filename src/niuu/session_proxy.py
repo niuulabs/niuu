@@ -740,6 +740,11 @@ async def _proxy_ws(
         original_rank = ROOM_ROLE_RANK.get(room_role or "", -1)
         return ROOM_ROLE_RANK[current_role] >= original_rank
 
+    # Resolved before the bridge's catch-all below: a failed lookup must surface as an
+    # error, not as a silently refused socket.
+    display_name = await skuld_reg.resolve_display_name(
+        _forwarded_principal(websocket, principal, dev_identity=skuld_reg.dev_identity)
+    )
     tracking_key = (session_id, user_id or "")
     skuld_reg.track_connection(*tracking_key, websocket)
     try:
@@ -775,9 +780,7 @@ async def _proxy_ws(
                 dev_identity=skuld_reg.dev_identity,
                 principal=principal,
                 room_role=room_role,
-                display_name=await skuld_reg.resolve_display_name(
-                    _forwarded_principal(websocket, principal, dev_identity=skuld_reg.dev_identity)
-                ),
+                display_name=display_name,
             ),
             connect_kwargs=connect_kwargs,
             on_connected=_mark_connected,

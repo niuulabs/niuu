@@ -427,6 +427,7 @@ def _create_notification_delivery(
     integration_repository: Any,
     credential_store: Any,
     device_repository: Any,
+    team: Any = None,
 ) -> NotificationDelivery | None:
     """Compose the outbox dispatcher (``notifications.dispatcher.enabled``).
 
@@ -446,6 +447,7 @@ def _create_notification_delivery(
         credential_store=credential_store,
         device_repository=device_repository,
         push_channel=push_channel,
+        team=team,
     )
 
 
@@ -1442,6 +1444,13 @@ def create_app(
             notification_service, notification_image_worker = notification_feed or (None, None)
             app.state.notification_service = notification_service
             app.state.notification_image_worker = notification_image_worker
+            from niuu.adapters.postgres_integration_usage import PostgresIntegrationUsageLog
+            from volundr.domain.services.notification_dispatcher import TeamDelivery
+
+            async def _recipient_email(user_id: str) -> str | None:
+                user = await user_repository.get(user_id)
+                return user.email if user is not None else None
+
             notification_delivery = _create_notification_delivery(
                 settings,
                 pool,
@@ -1449,6 +1458,10 @@ def create_app(
                 integration_repository=integration_repo,
                 credential_store=credential_store,
                 device_repository=device_repository,
+                team=TeamDelivery(
+                    recipient_email=_recipient_email,
+                    usage=PostgresIntegrationUsageLog(integration_pool),
+                ),
             )
             # The Guild push gateway (push.gateway.enabled): this node pushes for
             # every Guild node's notifications. Configured-but-impossible (an
@@ -1916,6 +1929,7 @@ def create_app(
 
             # Projects add durable coordination metadata to ordinary Forge sessions.
             project_service = None
+            project_integration_service = None
             if settings.projects.enabled:
                 from volundr.domain.project_ports import ProjectRepository, ProjectWorkspace
                 from volundr.domain.services.projects import ProjectService
@@ -1946,6 +1960,27 @@ def create_app(
                     users=user_repository,
                 )
                 app.state.project_service = project_service
+                from niuu.adapters.postgres_integration_usage import PostgresIntegrationUsageLog
+                from volundr.domain.services.client_credentials import ClientCredentialsMinter
+                from volundr.domain.services.oauth_token_refresh import (
+                    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                )
+                from volundr.domain.services.project_integrations import (
+                    ProjectIntegrationService,
+                )
+
+                integration_usage_log = PostgresIntegrationUsageLog(integration_pool)
+                project_integration_service = ProjectIntegrationService(
+                    project_service,
+                    integrations=integration_repo,
+                    credentials=credential_store,
+                    registry=integration_registry,
+                    rules=PostgresNotificationRuleRepository(pool),
+                    usage=integration_usage_log,
+                    minter=ClientCredentialsMinter(DEFAULT_REQUEST_TIMEOUT_SECONDS),
+                    usage_page_size=project_config.team_usage_page_size,
+                )
+                app.state.project_integration_service = project_integration_service
 
             # Create and include routers
             forge_router = create_router(
@@ -1972,6 +2007,7 @@ def create_app(
                 preview_min_edge=settings.tool_result_preview.min_edge,
                 preview_edge_limit=settings.tool_result_preview.max_edge,
                 project_service=project_service,
+                project_integration_service=project_integration_service,
                 runtime_build=build_identity()
                 if pod_manager.runtime_backend == "process"
                 else None,
@@ -2093,6 +2129,19 @@ def create_app(
                     credential_lock=PostgresCredentialRefreshLock(pool),
                 )
             )
+            if project_integration_service is not None:
+                from volundr.adapters.inbound.rest_oauth import create_team_oauth_router
+
+                app.include_router(
+                    create_team_oauth_router(
+                        oauth_config=settings.oauth,
+                        integration_registry=integration_registry,
+                        credential_store=credential_store,
+                        integration_repo=integration_repo,
+                        team_integrations=project_integration_service,
+                        oauth_clients=oauth_clients,
+                    )
+                )
             app.include_router(create_canonical_tracker_router(tracker_service=tracker_service))
             app.include_router(create_canonical_issues_router(integration_repo, tracker_factory))
 

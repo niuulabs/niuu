@@ -253,6 +253,19 @@ class CatalogEntryResponse(BaseModel):
         ),
         examples=["anthropic"],
     )
+    team_install: str = Field(
+        default="",
+        description=(
+            "How a project owner installs this for the project's team: 'oauth' (the "
+            "provider's app or bot install) or 'client_credentials' (a service account). "
+            "Empty when only personal connections are possible."
+        ),
+        examples=["oauth"],
+    )
+    team_only: bool = Field(
+        default=False,
+        description="Only a project team can install it (a Slack bot); not a personal connection",
+    )
 
     @classmethod
     def from_definition(
@@ -297,6 +310,8 @@ class CatalogEntryResponse(BaseModel):
                 else None
             ),
             model_vendor=defn.model_vendor,
+            team_install=str(defn.team_install.method) if defn.team_install else "",
+            team_only=bool(defn.team_install and defn.team_install.team_only),
         )
 
 
@@ -841,6 +856,14 @@ def _build_integrations_router(
         if definition is not None:
             integration_type = definition.integration_type
             adapter = definition.adapter
+            if definition.team_install is not None and definition.team_install.team_only:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=(
+                        f"{definition.name} is installed for a project team; a project owner "
+                        "connects it from the project's Team integrations"
+                    ),
+                )
 
         if not integration_type:
             raise HTTPException(

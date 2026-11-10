@@ -1406,6 +1406,31 @@ async def test_get_project_returns_the_project_and_its_host_id(
 
 
 @respx.mock
+async def test_list_member_project_ids_reads_the_callers_projects(
+    adapter: VolundrHTTPAdapter,
+) -> None:
+    other = "0d3b2f6e-1111-4222-8333-444455556666"
+    route = respx.get(PROJECTS_URL).mock(
+        return_value=httpx.Response(
+            200, json=[{"id": PROJECT_ID, "name": "Shop"}, {"id": other, "name": "Docs"}]
+        )
+    )
+
+    assert await adapter.list_member_project_ids(auth_token="tok") == [PROJECT_ID, other]
+    assert route.calls.last.request.headers["authorization"] == "Bearer tok"
+
+
+@respx.mock
+async def test_list_member_project_ids_raises_when_forge_refuses(
+    adapter: VolundrHTTPAdapter,
+) -> None:
+    respx.get(PROJECTS_URL).mock(return_value=httpx.Response(503))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await adapter.list_member_project_ids()
+
+
+@respx.mock
 async def test_get_project_answers_none_for_a_project_this_forge_does_not_know(
     adapter: VolundrHTTPAdapter,
 ) -> None:

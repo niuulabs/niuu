@@ -116,10 +116,10 @@ export function BoardBandMenu({
         <div role="menu" aria-label={`${name} options`} className="ting-board-band-menu__list">
           <Link
             role="menuitem"
-            to={'/ting/workflows/build' as never}
-            search={{ id: workflowId } as never}
+            to={'/ting/workflows' as never}
+            search={{ workflow: workflowId } as never}
           >
-            Open in the builder
+            Open workflow
           </Link>
           {index > 0 ? (
             <button

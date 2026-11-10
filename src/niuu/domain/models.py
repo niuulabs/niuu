@@ -98,6 +98,67 @@ class IntegrationConnection:
     created_at: datetime
     updated_at: datetime
     slug: str = ""  # references IntegrationDefinition.slug
+    #: Set when a Forge project owns the connection (a team integration); ``owner_id``
+    #: is then :func:`project_owner_id` of it, never a person.
+    project_id: str | None = None
+    #: The person who installed a project connection; empty for a person's own.
+    connected_by: str = ""
+
+    def __post_init__(self) -> None:
+        if self.project_id and self.owner_id != project_owner_id(self.project_id):
+            raise ValueError(
+                f"Integration connection {self.id} belongs to project {self.project_id}; "
+                f"its owner_id must be {project_owner_id(self.project_id)!r}"
+            )
+        if not self.project_id and self.owner_id.startswith(_PROJECT_OWNER_PREFIX):
+            raise ValueError(
+                f"Integration connection {self.id} has a project owner but no project_id"
+            )
+
+
+@dataclass(frozen=True)
+class IntegrationUsage:
+    """One use of a team (project) connection: who it acted for, and what it did.
+
+    ``acting_for`` is the person on whose behalf the team's bot acted (a member, or
+    the owner of the session or run). ``actor`` is what made the call: ``forge``,
+    ``ting``, ``notifications`` or a session id. ``subject`` names what was touched,
+    such as an issue key or a Slack channel.
+    """
+
+    connection_id: str
+    project_id: str
+    action: str
+    acting_for: str = ""
+    actor: str = ""
+    subject: str = ""
+    session_id: str = ""
+    occurred_at: datetime | None = None
+    id: str = ""
+
+
+#: Credential owner type of a person's own connection.
+USER_CREDENTIAL_OWNER = "user"
+#: Credential owner type of a connection a Forge project owns.
+PROJECT_CREDENTIAL_OWNER = "project"
+_PROJECT_OWNER_PREFIX = "project:"
+
+
+def project_owner_id(project_id: str | UUID) -> str:
+    """The ``owner_id`` of a connection the project owns: never a person's id."""
+    return f"{_PROJECT_OWNER_PREFIX}{project_id}"
+
+
+def credential_owner(connection: IntegrationConnection) -> tuple[str, str]:
+    """``(owner_type, owner_id)`` under which ``connection``'s credential is stored.
+
+    A project connection's credential belongs to the project, a person's to that
+    person. Every credential read for a connection goes through here so a team
+    connection can never resolve to someone's personal credential.
+    """
+    if connection.project_id:
+        return PROJECT_CREDENTIAL_OWNER, str(connection.project_id)
+    return USER_CREDENTIAL_OWNER, connection.owner_id
 
 
 #: Slug of a registered push device (``volundr.adapters.outbound.integration_device_tokens``).

@@ -215,6 +215,76 @@ export interface ProjectMemberChange {
   expertise?: string;
   skills?: MemberSkill[];
 }
+/** How a project owner installs a catalog entry for the whole team. */
+export type TeamInstallMethod = 'oauth' | 'client_credentials';
+
+/** One field a catalog entry's config asks for. */
+export interface TeamConfigField {
+  label?: string;
+  type?: string;
+  description?: string;
+}
+
+/** A catalog entry as the project's owners see it (snake_case, as the API sends it). */
+export interface TeamCatalogEntry {
+  slug: string;
+  name: string;
+  description?: string;
+  icon: string;
+  integration_type: string;
+  config_schema: { required?: string[]; properties?: Record<string, TeamConfigField> };
+  team_install: TeamInstallMethod;
+}
+
+/** An integration the project owns: the team's bot, never a person. */
+export interface TeamIntegration {
+  id: string;
+  slug: string;
+  integration_type: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
+  connected_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type TeamRouteEvent = 'needs_decision' | 'person_question' | 'progress' | 'errors';
+export type TeamDeliverTo = 'channel' | 'recipient';
+
+/** What one kind of event does with the team's messaging connection. */
+export interface TeamRoute {
+  event: TeamRouteEvent;
+  connection_id: string;
+  deliver_to: TeamDeliverTo;
+  channel: string;
+  enabled: boolean;
+}
+
+export type TeamRouteChange = Omit<TeamRoute, 'event'>;
+
+/** One use of a team connection. */
+export interface TeamIntegrationUse {
+  connection_id: string;
+  action: string;
+  acting_for: string;
+  actor: string;
+  subject: string;
+  session_id: string;
+  occurred_at: string | null;
+}
+
+/** A page of uses, newest first; `next_before` is set while older ones remain. */
+export interface TeamIntegrationUsagePage {
+  items: TeamIntegrationUse[];
+  next_before: string | null;
+}
+
+export interface TeamServiceAccountConnect {
+  slug: string;
+  credential: { client_id: string; client_secret: string };
+  config: Record<string, string>;
+}
+
 export interface SessionProjectMembership {
   sessionId: string;
   revision: number;

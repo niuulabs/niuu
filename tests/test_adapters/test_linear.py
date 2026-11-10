@@ -587,3 +587,15 @@ class TestCreateIssue:
             await adapter.update_issue("NIU-1", title="T")
         with pytest.raises(TrackerRequestError, match="Nothing to update"):
             await adapter.update_issue("NIU-1")
+
+
+def test_adapter_sends_an_access_token_as_bearer():
+    adapter = LinearAdapter(access_token="oauth-token")
+    assert adapter._gql._client.headers["Authorization"] == "Bearer oauth-token"
+
+
+def test_adapter_requires_exactly_one_credential():
+    with pytest.raises(ValueError):
+        LinearAdapter()
+    with pytest.raises(ValueError):
+        LinearAdapter(api_key="k", access_token="t")

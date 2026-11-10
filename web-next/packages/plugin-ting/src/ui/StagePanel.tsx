@@ -62,7 +62,7 @@ export function StagePanel({
       </p>
       {workflow.id ? (
         <div className="ting-board-panel__links">
-          <Link to={'/ting/workflows/build' as never} search={{ id: workflow.id } as never}>
+          <Link to={'/ting/workflows' as never} search={{ workflow: workflow.id } as never}>
             Open workflow
           </Link>
         </div>

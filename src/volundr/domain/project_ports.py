@@ -94,7 +94,8 @@ class ProjectMemberRepository(ABC):
         """Every project membership *user_id* holds in *tenant_id*."""
 
     @abstractmethod
-    async def get(self, project_id: UUID, user_id: str) -> ProjectMember | None: ...
+    async def get(self, project_id: UUID, user_id: str) -> ProjectMember | None:
+        """The member *user_id* of the project, or ``None`` when they are not on it."""
 
     @abstractmethod
     async def add(self, member: ProjectMember) -> ProjectMember:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from niuu.domain.models import credential_owner
 from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_env, mcp_token_path
 from volundr.domain.models import Session
 from volundr.domain.ports import (
@@ -123,7 +124,7 @@ class IntegrationContributor(SessionContributor):
                         server["auth_prefix"] = spec.auth_prefix
                         if self._credential_store and context.runtime_backend != "openshell":
                             stored = await self._credential_store.get(
-                                "user", session.owner_id, conn.credential_name
+                                *credential_owner(conn), conn.credential_name
                             )
                             if stored and stored.metadata.get("renewal_owner") == OAUTH_ENGINE:
                                 server["credential_format"] = "oauth"

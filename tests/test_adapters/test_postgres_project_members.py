@@ -192,10 +192,12 @@ async def test_remove_deletes_unless_it_is_the_last_owner():
     connection.fetch.return_value = [{"user_id": "alice"}]
     connection.fetchrow.return_value = {"user_id": "bob"}
     repo = PostgresProjectMemberRepository(pool)
-    assert await repo.remove(PROJECT, "bob") is True
+    removed_bob = await repo.remove(PROJECT, "bob")
+    assert removed_bob is True
     assert "DELETE FROM project_members" in connection.fetchrow.call_args.args[0]
     connection.fetchrow.return_value = None
-    assert await repo.remove(PROJECT, "ghost") is False
+    removed_ghost = await repo.remove(PROJECT, "ghost")
+    assert removed_ghost is False
     with pytest.raises(LastOwnerError):
         await repo.remove(PROJECT, "alice")
 

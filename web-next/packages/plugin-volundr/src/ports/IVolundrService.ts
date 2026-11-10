@@ -48,6 +48,13 @@ import type {
   SessionParticipant,
   SessionProjectPerson,
   SessionProjectMembership,
+  TeamCatalogEntry,
+  TeamIntegration,
+  TeamIntegrationUsagePage,
+  TeamRoute,
+  TeamRouteChange,
+  TeamRouteEvent,
+  TeamServiceAccountConnect,
   VolundrIdentity,
   VolundrUser,
   VolundrTenant,
@@ -272,6 +279,40 @@ export interface IVolundrService {
     change: ProjectMemberChange,
   ): Promise<ProjectMember>;
   removeProjectMember(project: ForgeProject, userId: string): Promise<void>;
+  /** What the project's owners can install for the team. */
+  getTeamIntegrationCatalog(project: ForgeProject): Promise<TeamCatalogEntry[]>;
+  /** The integrations the project owns, readable by every member. */
+  getTeamIntegrations(project: ForgeProject): Promise<TeamIntegration[]>;
+  /** Connect a provider service account (client credentials) for the team. Owners only. */
+  connectTeamServiceAccount(
+    project: ForgeProject,
+    connect: TeamServiceAccountConnect,
+  ): Promise<TeamIntegration>;
+  /** Start a provider app install for the team; the person approves at the returned url. */
+  startTeamOAuth(
+    project: ForgeProject,
+    slug: string,
+    config: Record<string, string>,
+  ): Promise<{ url: string }>;
+  updateTeamIntegration(
+    project: ForgeProject,
+    connectionId: string,
+    change: { config?: Record<string, unknown>; enabled?: boolean },
+  ): Promise<TeamIntegration>;
+  removeTeamIntegration(project: ForgeProject, connectionId: string): Promise<void>;
+  /** Where each kind of event goes. An event with no route goes nowhere. */
+  getTeamRoutes(project: ForgeProject): Promise<TeamRoute[]>;
+  setTeamRoute(
+    project: ForgeProject,
+    event: TeamRouteEvent,
+    route: TeamRouteChange,
+  ): Promise<TeamRoute>;
+  removeTeamRoute(project: ForgeProject, event: TeamRouteEvent): Promise<void>;
+  /** Uses of the team's connections, newest first; `before` pages to older ones. */
+  getTeamIntegrationUsage(
+    project: ForgeProject,
+    before?: string,
+  ): Promise<TeamIntegrationUsagePage>;
   /**
    * Everyone with a grant in one chat (invited or joined), for its owner, admins and the
    * people already in it. A removed grant is not listed.

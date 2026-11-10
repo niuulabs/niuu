@@ -1067,6 +1067,82 @@ describe('mock project members', () => {
   });
 });
 
+describe('mock team integrations', () => {
+  const project = {
+    id: 'project-yggdrasil',
+    name: 'Yggdrasil',
+    slug: 'y',
+    status: 'active' as const,
+  };
+
+  it('offers the catalog and connects a service account with its required settings', async () => {
+    const service = createMockVolundrService();
+    expect((await service.getTeamIntegrationCatalog(project)).map((e) => e.slug)).toContain('jira');
+    await expect(
+      service.connectTeamServiceAccount(project, {
+        slug: 'jira',
+        credential: { client_id: 'i', client_secret: 's' },
+        config: {},
+      }),
+    ).rejects.toThrow('Missing settings: site_url, cloud_id');
+    await expect(
+      service.connectTeamServiceAccount(project, {
+        slug: 'slack',
+        credential: { client_id: 'i', client_secret: 's' },
+        config: {},
+      }),
+    ).rejects.toThrow('not installed with a service account');
+    const jira = await service.connectTeamServiceAccount(project, {
+      slug: 'jira',
+      credential: { client_id: 'i', client_secret: 's' },
+      config: { site_url: 'https://acme.atlassian.net', cloud_id: 'c' },
+    });
+    expect((await service.getTeamIntegrations(project)).map((c) => c.id)).toContain(jira.id);
+    await expect(service.startTeamOAuth(project, 'jira', {})).rejects.toThrow('not an app install');
+    expect((await service.startTeamOAuth(project, 'linear', {})).url).toContain('linear');
+  });
+
+  it('routes events, drops routes with their connection and pages uses', async () => {
+    const service = createMockVolundrService();
+    const [slack] = await service.getTeamIntegrations(project);
+    const route = {
+      connection_id: slack!.id,
+      deliver_to: 'channel' as const,
+      channel: '#eng',
+      enabled: true,
+    };
+    await service.setTeamRoute(project, 'errors', route);
+    await service.setTeamRoute(project, 'errors', { ...route, deliver_to: 'recipient' });
+    expect(await service.getTeamRoutes(project)).toEqual([
+      { event: 'errors', ...route, deliver_to: 'recipient' },
+    ]);
+    await service.removeTeamRoute(project, 'errors');
+    expect(await service.getTeamRoutes(project)).toEqual([]);
+    await expect(
+      service.setTeamRoute(project, 'errors', { ...route, connection_id: 'nope' }),
+    ).rejects.toThrow('not connected');
+
+    const first = await service.getTeamIntegrationUsage(project);
+    expect(first.items).toHaveLength(3);
+    const second = await service.getTeamIntegrationUsage(project, first.next_before!);
+    expect(second.items).toHaveLength(2);
+    expect(second.next_before).toBeNull();
+
+    await service.setTeamRoute(project, 'progress', route);
+    expect(
+      await service.updateTeamIntegration(project, slack!.id, { enabled: false }),
+    ).toMatchObject({ enabled: false });
+    await service.removeTeamIntegration(project, slack!.id);
+    expect(await service.getTeamRoutes(project)).toEqual([]);
+    await expect(service.removeTeamIntegration(project, slack!.id)).rejects.toThrow(
+      'not connected',
+    );
+    await expect(service.updateTeamIntegration(project, slack!.id, {})).rejects.toThrow(
+      'not connected',
+    );
+  });
+});
+
 describe('mock session read state', () => {
   it('marks a session unread and read, advancing the revision each time', async () => {
     const service = createMockVolundrService();

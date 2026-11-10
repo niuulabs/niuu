@@ -19,8 +19,7 @@
   background: var(--color-bg-secondary);
 }
 
-.ting-workflow-catalog__heading,
-.ting-workflow-catalog__header {
+.ting-workflow-catalog__heading {
   display: flex;
   min-height: 60px;
   align-items: center;
@@ -35,7 +34,6 @@
   margin-bottom: var(--space-3);
 }
 
-.ting-workflow-catalog h1,
 .ting-workflow-catalog__heading h2 {
   margin: 0;
   font-size: var(--text-xl);
@@ -49,17 +47,29 @@
   font-size: 15px;
 }
 
-.ting-workflow-catalog__detail {
+.ting-workflow-catalog__canvas {
+  display: flex;
   flex: 1;
   min-width: 0;
   min-height: 0;
-  overflow-y: auto;
-  padding: 0 var(--space-6) var(--space-6);
+  flex-direction: column;
 }
 
-.ting-workflow-catalog__header {
-  margin-inline: calc(-1 * var(--space-6));
-  padding-inline: var(--space-6);
+.ting-workflow-catalog__canvas > [data-testid='workflow-builder'] {
+  flex: 1;
+}
+
+.ting-workflow-catalog__run {
+  display: flex;
+  flex: 0 0 360px;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--space-5);
+  overflow-y: auto;
+  border-left: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+  padding: var(--space-4);
 }
 
 .ting-workflow-catalog__scope {
@@ -75,7 +85,6 @@
   overflow-wrap: anywhere;
 }
 
-.ting-workflow-catalog__builder,
 .ting-workflow-catalog__launch-button {
   display: inline-flex;
   min-height: 36px;
@@ -99,24 +108,10 @@
   opacity: 0.5;
 }
 
-.ting-workflow-catalog__preview {
-  min-width: 0;
-  overflow-x: auto;
-  border-bottom: 1px solid var(--color-border-subtle);
-  padding-bottom: var(--space-5);
-}
-
 .ting-workflow-catalog__section-title {
   margin-bottom: var(--space-3);
   font-size: var(--text-sm);
   font-weight: 600;
-}
-
-.ting-workflow-catalog__panels {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
-  align-items: start;
-  gap: var(--space-6);
 }
 
 .ting-workflow-catalog__launch {
@@ -145,7 +140,7 @@
     [data-theme='deep-blue'],
     [data-theme='dark-blue']
   )
-  .ting-workflow-catalog__sidebar {
+  :is(.ting-workflow-catalog__sidebar, .ting-workflow-catalog__run) {
   background: var(--color-panel-quiet);
 }
 
@@ -160,6 +155,12 @@
   border-color: transparent;
   background: var(--color-selection-surface);
   box-shadow: inset 3px 0 var(--color-selection-edge);
+}
+
+@media (max-width: 1280px) {
+  .ting-workflow-catalog__run {
+    flex-basis: 300px;
+  }
 }
 
 @media (max-width: 760px) {
@@ -179,15 +180,15 @@
     border-bottom: 1px solid var(--color-border-subtle);
   }
 
-  .ting-workflow-catalog__detail {
+  .ting-workflow-catalog__canvas {
     flex: none;
-    overflow: visible;
-    padding-inline: var(--space-4);
+    min-height: 480px;
   }
 
-  .ting-workflow-catalog__header {
-    flex-wrap: wrap;
-    margin-inline: calc(-1 * var(--space-4));
-    padding-inline: var(--space-4);
+  .ting-workflow-catalog__run {
+    flex: none;
+    overflow: visible;
+    border-left: 0;
+    border-top: 1px solid var(--color-border-subtle);
   }
 }

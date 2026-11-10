@@ -41,6 +41,7 @@ from volundr.domain.services.notification_dispatcher import (
     DispatcherSettings,
     NotificationDispatcher,
     NotificationRenderer,
+    TeamDelivery,
 )
 from volundr.domain.services.notification_images import (
     ImageWorkerSettings,
@@ -116,6 +117,7 @@ def create_notification_delivery(
     credential_store: CredentialStorePort | None,
     device_repository: DeviceTokenRepository | None,
     push_channel: NotificationChannel | None,
+    team: TeamDelivery | None = None,
 ) -> NotificationDelivery | None:
     """Build the outbox dispatcher, or ``None`` when delivery is switched off.
 
@@ -154,6 +156,7 @@ def create_notification_delivery(
         sinks,
         notification_renderer(config, public_origin),
         dispatcher_settings(config),
+        team=team,
     )
     return NotificationDelivery(dispatcher=dispatcher, sinks=sinks)
 

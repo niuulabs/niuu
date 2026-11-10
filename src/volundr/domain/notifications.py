@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from niuu.domain.models import Principal
+from niuu.domain.models import Principal, project_owner_id
 from niuu.domain.notifications import (
     NOTIFICATION_ADMIN_ROLE,
     NOTIFICATION_IMAGE_THUMB_VARIANT,
@@ -41,6 +41,7 @@ from niuu.domain.notifications import (
     notification_visible_to,
     severity_rank,
 )
+from niuu.domain.person_question import ASKED_PERSON_KEY
 
 # Protocol limits for owner rules. Like the draft limits in the shared contract they
 # bound what a client may persist per rule; they are not tunables.
@@ -626,6 +627,101 @@ def attention_push_rule(owner_id: str, sink: str, now: datetime) -> Notification
     )
 
 
+class TeamRouteEvent(StrEnum):
+    """What a project's team route forwards to the team's messaging integration."""
+
+    #: A gate, a permission prompt or a choice waiting on someone (attention, decision),
+    #: other than a question put to one person.
+    NEEDS_DECISION = "needs_decision"
+    #: A question an agent put to one member (``ask_person``).
+    PERSON_QUESTION = "person_question"
+    #: Milestones and finished replies.
+    PROGRESS = "progress"
+    #: Errors a session reported.
+    ERRORS = "errors"
+
+
+class TeamDeliverTo(StrEnum):
+    """Where a team route sends what it selects."""
+
+    #: One post per item in a team channel (the originals, never each person's copy).
+    CHANNEL = "channel"
+    #: A direct message to each person the item is for (every person's row).
+    RECIPIENT = "recipient"
+
+
+#: Rule ``config`` keys of a project's team route.
+TEAM_EVENT_KEY = "team_event"
+TEAM_DELIVER_TO_KEY = "deliver_to"
+TEAM_CHANNEL_KEY = "channel"
+#: Rule ``config`` key holding the project a team route belongs to.
+TEAM_PROJECT_KEY = "project_id"
+
+
+@dataclass(frozen=True)
+class TeamRoute:
+    """A project's team route, read from a rule the project owns."""
+
+    project_id: str
+    event: TeamRouteEvent
+    deliver_to: TeamDeliverTo
+    channel: str = ""
+
+
+def team_route(rule: NotificationRuleSpec, owner_id: str) -> TeamRoute | None:
+    """The team route ``rule`` holds when a project owns it (``owner_id``), else ``None``.
+
+    A project-owned rule that does not name a valid route raises: it would otherwise
+    select nothing and the team would never hear of anything.
+    """
+    project_id = rule.config.get(TEAM_PROJECT_KEY)
+    if not isinstance(project_id, str) or owner_id != project_owner_id(project_id):
+        return None
+    try:
+        return TeamRoute(
+            project_id=project_id,
+            event=TeamRouteEvent(rule.config[TEAM_EVENT_KEY]),
+            deliver_to=TeamDeliverTo(rule.config[TEAM_DELIVER_TO_KEY]),
+            channel=str(rule.config.get(TEAM_CHANNEL_KEY) or ""),
+        )
+    except (KeyError, ValueError) as exc:
+        raise ValueError(
+            f"Team route {rule.name!r} of project {project_id} is malformed ({exc}); "
+            "set it again from the project's Team integrations"
+        ) from None
+
+
+def team_event_selects(event: TeamRouteEvent, notification: Notification) -> bool:
+    """Whether ``notification`` is the kind of item ``event`` forwards."""
+    asked = notification.metadata.get(ASKED_PERSON_KEY)
+    match event:
+        case TeamRouteEvent.PERSON_QUESTION:
+            return bool(asked)
+        case TeamRouteEvent.NEEDS_DECISION:
+            return notification.kind in APPROVER_KINDS and not asked
+        case TeamRouteEvent.PROGRESS:
+            return notification.kind in (NotificationKind.MILESTONE, NotificationKind.REPLY_READY)
+        case TeamRouteEvent.ERRORS:
+            return notification.kind is NotificationKind.ERROR
+    return False
+
+
+def _team_route_selects(route: TeamRoute, notification: Notification) -> bool:
+    if notification.project_id != route.project_id:
+        return False
+    if route.deliver_to is TeamDeliverTo.CHANNEL and notification.copy_of is not None:
+        return False
+    return team_event_selects(route.event, notification)
+
+
+def rule_owner_keys(notification: Notification) -> list[str]:
+    """Owners whose rules may select ``notification``: its person, and its project."""
+    keys = [notification.owner_id]
+    if notification.project_id:
+        keys.append(project_owner_id(notification.project_id))
+    return keys
+
+
 def rules_matching(
     notification: Notification, rules: list[NotificationRule]
 ) -> list[NotificationRule]:
@@ -638,13 +734,18 @@ def rules_matching(
     """
     if notification.metadata.get(FEED_ONLY_KEY) is True:
         return []
-    return [
-        rule
-        for rule in rules
-        if rule.enabled
-        and rule.owner_id == notification.owner_id
-        and rule.match.matches(notification)
-    ]
+    selected: list[NotificationRule] = []
+    for rule in rules:
+        if not rule.enabled:
+            continue
+        route = team_route(rule, rule.owner_id)
+        if route is not None:
+            if _team_route_selects(route, notification):
+                selected.append(rule)
+            continue
+        if rule.owner_id == notification.owner_id and rule.match.matches(notification):
+            selected.append(rule)
+    return selected
 
 
 class DeliveryStatus(StrEnum):

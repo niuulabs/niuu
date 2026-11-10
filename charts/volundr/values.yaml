@@ -1040,6 +1040,8 @@ envoy:
       - /api/v1/integrations/oauth/callback
       - /api/v1/integrations/oauth/mcp/callback
       - /api/v1/integrations/oauth/mcp/client-metadata
+      # A project team's app install returns here (Forge owns team installs).
+      - /api/v1/forge/integrations/oauth/callback
       - /api/v1/identity/auth/config
       - /api/v1/tokens/workload/exchange
       - /api/v1/tokens/workload/jwks
