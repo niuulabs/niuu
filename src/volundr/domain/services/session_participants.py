@@ -52,11 +52,13 @@ class InvitationNotices(Protocol):
 
     async def invitation_sent(
         self, session: Session, participant: SessionParticipant, *, invited_by_name: str
-    ) -> None: ...
+    ) -> None:
+        """Tell *participant* they were invited into *session* by *invited_by_name*."""
 
     async def invitation_settled(
         self, session: Session, participant: SessionParticipant, *, resolution: str
-    ) -> None: ...
+    ) -> None:
+        """Close the invitee's notice once the invitation is answered; *resolution* says how."""
 
 
 class SessionParticipantService:
