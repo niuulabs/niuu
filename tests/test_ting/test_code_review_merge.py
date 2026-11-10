@@ -38,8 +38,12 @@ async def reach_checks(run: Run) -> None:
     await run.close(run.current("code-implement"), "pass", {"summary": "done"})
 
 
+#: Each check is its own step of the workflow.
+CHECK_NODE = {"reviewer": "code-review", "security-auditor": "code-security"}
+
+
 async def check(run: Run, reviewer: str, verdict: str) -> None:
-    await run.close(run.current("code-checks", reviewer), verdict)
+    await run.close(run.current(CHECK_NODE[reviewer], reviewer), verdict)
 
 
 def person() -> GateActor:
@@ -71,6 +75,18 @@ def test_it_is_the_only_shipped_workflow_and_uses_only_the_three_shipped_persona
     assert workflow.name == NAME
     assert set(workflow.persona_dependencies) == MEMBERS
     assert not workflow.workflow_dependencies
+
+
+def test_each_check_is_its_own_step_with_one_persona() -> None:
+    graph = compile_step_graph(bundled(NAME).graph, bundled(NAME).persona_definitions)
+    stages = {node.id: node for node in graph.nodes.values() if node.kind is NodeKind.STAGE}
+
+    assert {node_id: [m.alias for m in node.members] for node_id, node in stages.items()} == {
+        "code-implement": ["coder"],
+        "code-review": ["reviewer"],
+        "code-security": ["security-auditor"],
+        "code-merge": ["coder"],
+    }
 
 
 def test_the_runnable_graph_validator_accepts_it_with_the_persona_contracts() -> None:
@@ -241,7 +257,7 @@ async def test_the_work_goes_round_as_often_as_the_checks_ask(run: Run) -> None:
         await run.close(run.current("code-implement"), "pass")
 
     assert run.finished_with() is None
-    assert run.current("code-checks", "reviewer").generation == 6
+    assert run.current("code-review", "reviewer").generation == 6
     await pass_both_and_approve(run)
     await run.close(run.current("code-merge"), "pass")
     assert run.finished_with() == "engine.run.completed"
@@ -255,9 +271,9 @@ async def test_the_first_ask_for_changes_wins_and_the_other_check_of_that_change
 
     # The coder has one piece of work, and the auditor's step on the old change is stale.
     assert len([step for step in run.steps("code-implement") if step.is_open]) == 1
-    assert run.states("code-checks", "security-auditor") == ["stale"]
+    assert run.states("code-security", "security-auditor") == ["stale"]
     with pytest.raises(StepFencingError):
-        await run.close(run.steps("code-checks", "security-auditor")[0], "fail")
+        await run.close(run.steps("code-security", "security-auditor")[0], "fail")
 
     await run.close(run.current("code-implement"), "pass")
     assert run.steps("code-merge") == []
