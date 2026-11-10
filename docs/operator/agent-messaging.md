@@ -652,9 +652,12 @@ publishes, with the same machinery as the mesh, and whoever acts on an event che
   `niuu.mesh.platform_events.SigningBus` using `start_platform_signer`, or its events are
   refused by whoever acts on them. A service deployed on its own (Ting in its own pod) signs
   only if it holds the workload-identity signing key (`workloadIdentity.signingKey` in its
-  chart); without it, with signing required and a bus configured (`sleipnir.enabled`), it
-  refuses to start and says so. A Ting with no bus publishes and acts on no platform events,
-  so it needs no key. Keeping
+  chart). Ting signs its workflow step offers as well as its bus events, so with signing
+  required it needs the key whether or not it has a bus, and refuses to start without one.
+  The Ting chart leaves signing off (`mesh.attestation.required: false`) unless you turn it
+  on; with `required: true` it needs `workloadIdentity.enabled` and
+  `workloadIdentity.signingKey.existingSecret` and refuses to render without them. Set it to
+  match the Volundr chart's `mesh.attestation.required`. Keeping
   mesh peers off the platform event subjects with bus permissions (NATS subject permissions,
   a RabbitMQ user per session) remains a worthwhile extra layer
 

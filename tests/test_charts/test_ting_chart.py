@@ -695,13 +695,46 @@ def test_ting_chart_ships_no_flock_flow_resources(tmp_path: Path) -> None:
     assert "flockFlows" not in (CHART_DIR / "values.yaml").read_text(encoding="utf-8")
 
 
-def test_mesh_signing_renders_nothing_by_default_and_the_one_switch_when_set(tmp_path):
+def test_mesh_signing_is_off_unless_turned_on(tmp_path):
     default = _config_from_rendered(_render_ting_chart(tmp_path, {}))
-    assert "mesh" not in default
-    assert Settings(**default).mesh.attestation.required is True
+    assert default["mesh"] == {"attestation": {"required": False}}
+    assert Settings(**default).mesh.attestation.required is False
 
-    off = _config_from_rendered(
-        _render_ting_chart(tmp_path, {"mesh": {"attestation": {"required": False}}})
+    unset = _config_from_rendered(
+        _render_ting_chart(tmp_path, {"mesh": {"attestation": {"required": None}}})
     )
-    assert off["mesh"] == {"attestation": {"required": False}}
-    assert Settings(**off).mesh.attestation.required is False
+    assert Settings(**unset).mesh.attestation.required is False
+
+
+def test_mesh_signing_on_renders_with_the_workload_identity_key(tmp_path):
+    on = _config_from_rendered(
+        _render_ting_chart(
+            tmp_path,
+            {
+                "mesh": {"attestation": {"required": True}},
+                "workloadIdentity": {
+                    "enabled": True,
+                    "signingKey": {"existingSecret": "forge-signing-key"},
+                },
+            },
+        )
+    )
+    assert on["mesh"] == {"attestation": {"required": True}}
+    assert Settings(**on).mesh.attestation.required is True
+
+
+@pytest.mark.parametrize(
+    "workload_identity",
+    [
+        {},
+        {"enabled": True},
+        {"enabled": False, "signingKey": {"existingSecret": "forge-signing-key"}},
+    ],
+)
+def test_mesh_signing_on_without_a_signing_key_refuses_to_render(tmp_path, workload_identity):
+    error = _render_ting_chart_expect_failure(
+        tmp_path,
+        {"mesh": {"attestation": {"required": True}}, "workloadIdentity": workload_identity},
+    )
+    assert "mesh.attestation.required: true needs a key Ting signs with" in error
+    assert "signingKey.existingSecret" in error
