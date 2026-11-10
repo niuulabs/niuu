@@ -171,6 +171,28 @@ def test_the_offered_contract_of_a_bundled_persona_matches_what_ting_activates_w
     assert offered.outcome_schema == contract.outcome_schema
 
 
+@pytest.mark.parametrize("name", _BUNDLED)
+def test_every_bundled_persona_says_when_to_report_each_of_its_verdicts(name: str) -> None:
+    contract = persona_contract_of(_document(name))
+    pin = PersonaPin(alias=name, id=name, revision="1", digest="sha256:abc")
+
+    offered = StepContract.from_persona(pin, contract)
+
+    assert set(contract.verdict_when) == set(contract.valid_verdicts)
+    assert all(text.strip() for text in contract.verdict_when.values())
+    assert offered.verdict_when == dict(contract.verdict_when)
+
+
+def test_an_offer_whose_guidance_differs_from_the_members_pin_is_a_mismatch() -> None:
+    contract = persona_contract_of(_document("reviewer"))
+    pin = PersonaPin(alias="reviewer", id="reviewer", revision="1", digest="sha256:abc")
+    derived = StepContract.from_persona(pin, contract)
+    offered = derived.model_copy(update={"verdict_when": {"pass": "Whenever."}})
+
+    assert "verdict_when" in (offered.mismatch(derived) or "")
+    assert derived.mismatch(derived) is None
+
+
 _CLOSE_HOWTO = (
     "## Closing the step\n\n"
     "This step's activation id is `0b6ac9e6-0a5e-4b49-9b0e-7a3f4d6f4a10`. It is the "

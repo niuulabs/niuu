@@ -611,11 +611,31 @@ def _validate_llm(value: Any) -> None:
     _validate_non_negative_int(llm, "max_tokens")
 
 
+def _validate_verdict_guidance(when: Any, event_type_map: Mapping[str, Any]) -> None:
+    """``produces.when``: for each verdict the persona maps, when to report it, in words."""
+    if when is None:
+        return
+    if not isinstance(when, dict):
+        raise PersonaDocumentError(
+            "Portable persona definition.produces.when must map each verdict to when to report it"
+        )
+    for verdict, text in when.items():
+        if not isinstance(verdict, str) or (event_type_map and verdict not in event_type_map):
+            raise PersonaDocumentError(
+                f"Portable persona definition.produces.when names verdict {verdict!r}, which "
+                f"produces.event_type_map does not map; the verdicts are {sorted(event_type_map)}"
+            )
+        if not isinstance(text, str) or not text.strip():
+            raise PersonaDocumentError(
+                f"Portable persona definition.produces.when.{verdict} must say when to report it"
+            )
+
+
 def _validate_event_contract(value: Any, *, produces: bool) -> None:
     field = "produces" if produces else "consumes"
     allowed = {"schema"}
     if produces:
-        allowed.update({"event_type", "event_type_map"})
+        allowed.update({"event_type", "event_type_map", "when"})
     else:
         allowed.update({"event_types", "injects"})
     contract = _validate_mapping(value, field=field, allowed=allowed)
@@ -633,6 +653,7 @@ def _validate_event_contract(value: Any, *, produces: bool) -> None:
                     "Portable persona definition.produces.event_type_map must map "
                     "strings to strings"
                 )
+        _validate_verdict_guidance(contract.get("when"), event_type_map or {})
     else:
         _validate_string_list(contract, "event_types")
         _validate_string_list(contract, "injects")

@@ -200,6 +200,10 @@ produces:
     pass: security.passed
     fail: security.changes_requested
     needs_review: security.changes_requested
+  when:
+    pass: You found no security issues in the committed change.
+    needs_review: The change has security issues that need attention but are not directly exploitable.
+    fail: The change has an exploitable vulnerability that must be fixed, or there is no committed change to audit.
   schema:
     verdict:
       type: enum

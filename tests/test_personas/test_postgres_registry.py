@@ -424,6 +424,7 @@ class TestHelperNormalization:
                     "pass": "review.passed",
                     "needs_changes": "review.changes_requested",
                 },
+                when={"pass": "The change is ready to merge."},
             ),
         )
 
@@ -432,3 +433,4 @@ class TestHelperNormalization:
 
         assert payload["produces_event_map"] == config.produces.event_type_map
         assert restored.produces.event_type_map == config.produces.event_type_map
+        assert restored.produces.when == {"pass": "The change is ready to merge."}

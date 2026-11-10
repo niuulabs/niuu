@@ -60,6 +60,10 @@ class PersonaProducesResponse(BaseModel):
 
     event_type: str
     event_type_map: dict[str, str] = Field(default_factory=dict)
+    when: dict[str, str] = Field(
+        default_factory=dict,
+        description="Per verdict, when the persona reports it (the persona's own rule)",
+    )
     schema_def: dict[str, str]
 
 
@@ -519,6 +523,7 @@ def _to_detail(view: PersonaView) -> PersonaDetailResponse:
         produces=PersonaProducesResponse(
             event_type=str(payload["produces_event_type"]),
             event_type_map=dict(payload.get("produces_event_map") or {}),
+            when=dict(payload.get("produces_when") or {}),
             schema_def=dict(payload["produces_schema"]),
         ),
         consumes=PersonaConsumesResponse(

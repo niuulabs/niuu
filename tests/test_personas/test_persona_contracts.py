@@ -257,6 +257,41 @@ class TestParseProduces:
 # ---------------------------------------------------------------------------
 
 
+class TestParseVerdictGuidance:
+    def test_parses_when_to_report_each_verdict(self) -> None:
+        p = parse_produces(
+            {
+                "event_type_map": {"pass": "x.done", "blocked": "x.blocked"},
+                "when": {"pass": " Done. "},
+            }
+        )
+        assert p.when == {"pass": "Done."}
+
+    def test_no_guidance_is_none(self) -> None:
+        assert parse_produces({"event_type_map": {"pass": "x.done"}}).when == {}
+
+    def test_guidance_for_an_unmapped_verdict_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="names verdict 'later'"):
+            parse_produces({"event_type_map": {"pass": "x.done"}, "when": {"later": "Some day."}})
+
+    def test_empty_guidance_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="must say when to report 'pass'"):
+            parse_produces({"event_type_map": {"pass": "x.done"}, "when": {"pass": ""}})
+
+    def test_guidance_that_is_not_a_mapping_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="must map each verdict"):
+            parse_produces({"event_type_map": {"pass": "x.done"}, "when": "always"})
+
+    def test_guidance_survives_a_round_trip(self) -> None:
+        config = PersonaConfig(
+            name="guided",
+            produces=PersonaProduces(
+                event_type_map={"pass": "x.done"}, when={"pass": "The work is done."}
+            ),
+        )
+        assert config.to_dict()["produces"]["when"] == {"pass": "The work is done."}
+
+
 class TestParseConsumes:
     def test_none_returns_empty(self) -> None:
         c = parse_consumes(None)

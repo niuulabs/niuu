@@ -224,6 +224,10 @@ produces:
     pass: review.passed
     needs_changes: review.changes_requested
     fail: review.changes_requested
+  when:
+    pass: The committed change is ready to merge, with no blocking issues.
+    needs_changes: The change has issues that should be fixed before merging; list each with file:line and how to fix it.
+    fail: The change has critical issues, or there is no committed change to review.
   schema:
     verdict:
       type: enum

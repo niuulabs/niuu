@@ -49,6 +49,10 @@ class PersonaProducesResponse(BaseModel):
         description="Outcome field values mapped to their emitted event types",
     )
     schema_def: dict = Field(alias="schema", description="Output schema field definitions")
+    when: dict[str, str] = Field(
+        default_factory=dict,
+        description="For each verdict, when the persona should report it",
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -156,6 +160,7 @@ class PersonaDetail(PersonaSummary):
             produces=PersonaProducesResponse(
                 event_type=config.produces.event_type,
                 event_type_map=dict(config.produces.event_type_map),
+                when=dict(config.produces.when),
                 schema=produces_schema,
             ),  # type: ignore[call-arg]
             consumes=PersonaConsumesResponse(

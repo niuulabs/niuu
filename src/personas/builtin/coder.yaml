@@ -190,6 +190,11 @@ produces:
     blocked: code.blocked
     help_needed: code.blocked
     fail: code.blocked
+  when:
+    pass: The change is implemented, tested, committed and pushed, so reviewers can read the exact diff.
+    blocked: You cannot go on without something you lack, such as access, credentials or a missing dependency; say what in the note.
+    help_needed: You need a person to decide, such as between valid approaches or on business rules; ask one concrete question.
+    fail: You tried and the change cannot be done as asked, or it could not be committed and pushed; say why.
   schema:
     verdict:
       type: enum

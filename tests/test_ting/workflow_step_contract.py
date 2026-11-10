@@ -52,6 +52,7 @@ OFFERED_PAYLOAD = {
             "verdict_events": {"implemented": "code.ready", "blocked": "work.blocked"},
             "default_event": "",
             "outcome_schema": {"summary": {"type": "string", "description": "what changed"}},
+            "verdict_when": {},
         }
     ],
 }

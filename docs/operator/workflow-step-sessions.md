@@ -99,7 +99,22 @@ consume.
 The offer carries what the session is told: the workflow, step, valid endings and verdicts,
 outcome schema, deadline, and the rendered instructions: the inputs (the payloads of the
 outcomes that led to the step, with their verdicts and notes) and the exact way to close the
-step with the `workflow_step_close` tool.
+step with the `workflow_step_close` tool. Each verdict is listed with the event it hands off
+and, where the persona says (`produces.when`), when to report it, so the session picks its
+verdict from the persona's own rule:
+
+```yaml
+produces:
+  event_type_map:
+    pass: review.passed
+    needs_changes: review.changes_requested
+  when:
+    pass: The committed change is ready to merge, with no blocking issues.
+    needs_changes: The change has issues that should be fixed before merging.
+```
+
+A `when` for a verdict the persona does not map, or an empty one, is refused when the persona
+is loaded.
 
 The session closes the step through that tool. Skuld publishes `step.outcome` on the mesh and
 reports the close to Forge as session activity (`metadata.workflow_step`, event `closed`),

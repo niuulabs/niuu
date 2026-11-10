@@ -109,6 +109,8 @@ class PersonaContract:
     consumes: tuple[str, ...] = ()
     #: The persona's ``produces.schema`` exactly as its document states it; ``None`` when absent.
     outcome_schema: Mapping[str, Any] | None = None
+    #: For each verdict, when to report it (``produces.when``); empty when the persona says not.
+    verdict_when: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def produced_events(self) -> frozenset[str]:
@@ -148,6 +150,7 @@ def persona_contract_of(definition: Mapping[str, Any]) -> PersonaContract:
     )
     raw_consumes = consumes.get("event_types")
     raw_schema = produces.get("schema")
+    raw_when = produces.get("when")
     return PersonaContract(
         produces_map=event_map,
         produces_event=str(produces.get("event_type") or ""),
@@ -155,6 +158,11 @@ def persona_contract_of(definition: Mapping[str, Any]) -> PersonaContract:
         if isinstance(raw_consumes, list)
         else (),
         outcome_schema=dict(raw_schema) if isinstance(raw_schema, Mapping) and raw_schema else None,
+        verdict_when=(
+            {str(verdict): str(text) for verdict, text in raw_when.items()}
+            if isinstance(raw_when, Mapping)
+            else {}
+        ),
     )
 
 
@@ -264,6 +272,8 @@ class StepContract(_Open):
     default_event: str = ""
     #: The persona's ``produces.schema`` verbatim, or ``None`` when it declares none.
     outcome_schema: dict[str, Any] | None = None
+    #: For each verdict, when the member should report it (the persona's ``produces.when``).
+    verdict_when: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _coherent(self) -> StepContract:
@@ -292,6 +302,7 @@ class StepContract(_Open):
             verdict_events=dict(contract.produces_map),
             default_event=contract.produces_event,
             outcome_schema=dict(contract.outcome_schema) if contract.outcome_schema else None,
+            verdict_when=dict(contract.verdict_when),
         )
 
     def mismatch(self, derived: StepContract) -> str | None:
@@ -330,6 +341,11 @@ class StepContract(_Open):
             reasons.append(
                 f"outcome_schema: offer says {self.outcome_schema}, "
                 f"persona derives {derived.outcome_schema}"
+            )
+        if self.verdict_when != derived.verdict_when:
+            reasons.append(
+                f"verdict_when: offer says {self.verdict_when}, "
+                f"persona derives {derived.verdict_when}"
             )
         return "; ".join(reasons) or None
 

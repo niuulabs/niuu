@@ -132,8 +132,28 @@ class _ReleasedPersonas(FilesystemPersonaAdapter):
         shipped = super().load_current_portable(persona_id)
         if shipped is None:
             return None
-        released = self._released(shipped, RELEASED_BUILTIN_TOOL_LISTS.get(persona_id, {}))
+        released = self._released(
+            _without_later_fields(shipped), RELEASED_BUILTIN_TOOL_LISTS.get(persona_id, {})
+        )
         return released if released.revision == revision else None
+
+
+#: Fields the shipped personas gained after the archived workflows pinned them.
+_LATER_PRODUCES_FIELDS = ("when",)
+
+
+def _without_later_fields(document: PortablePersonaDefinition) -> PortablePersonaDefinition:
+    """A shipped persona as it was released, before it gained ``_LATER_PRODUCES_FIELDS``."""
+    produces = document.definition.get("produces")
+    if not isinstance(produces, dict) or not any(key in produces for key in _LATER_PRODUCES_FIELDS):
+        return document
+    definition = {
+        **document.definition,
+        "produces": {k: v for k, v in produces.items() if k not in _LATER_PRODUCES_FIELDS},
+    }
+    return PortablePersonaDefinition(
+        id=document.id, revision=persona_revision_for_definition(definition), definition=definition
+    )
 
 
 def full_catalogue_personas() -> FilesystemPersonaAdapter:

@@ -99,6 +99,42 @@ def test_a_description_that_is_not_text_is_refused() -> None:
         )
 
 
+def _guided(when: object) -> dict:
+    return {
+        "schema_version": 1,
+        "id": "worker",
+        "revision": "content-1234567890abcdef",
+        "definition": {
+            "name": "worker",
+            "produces": {
+                "event_type_map": {"pass": "work.done", "blocked": "work.blocked"},
+                "when": when,
+            },
+        },
+    }
+
+
+def test_a_portable_persona_says_when_to_report_each_verdict() -> None:
+    portable = parse_portable_persona(_guided({"pass": "The work is done and pushed."}))
+
+    assert portable.definition["produces"]["when"] == {"pass": "The work is done and pushed."}
+
+
+@pytest.mark.parametrize(
+    ("when", "message"),
+    [
+        ({"approved": "Looks good."}, "names verdict 'approved'.*the verdicts are"),
+        ({"pass": "  "}, r"produces.when.pass must say when to report it"),
+        (["pass"], "produces.when must map each verdict"),
+    ],
+)
+def test_guidance_for_a_verdict_the_persona_cannot_report_or_empty_guidance_is_refused(
+    when: object, message: str
+) -> None:
+    with pytest.raises(PersonaDocumentError, match=message):
+        parse_portable_persona(_guided(when))
+
+
 def test_portable_persona_rejects_an_executor_field() -> None:
     document = {
         "schema_version": 1,

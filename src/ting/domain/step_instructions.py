@@ -195,11 +195,21 @@ def _endings_of(contract: StepContract, *, heading: bool = True) -> str:
 
 
 def _verdicts(contract: StepContract) -> str:
+    """The verdicts a step may close with, each with the event it hands off and, where the
+    persona says (``produces.when``), when to report it: the member picks its verdict here."""
     if contract.verdict_events:
-        lines = ["A `verdict` ending needs `verdict`, one of these (each hands off its event):"]
+        guided = any(contract.verdict_when.get(verdict) for verdict in contract.valid_verdicts)
+        lines = [
+            "A `verdict` ending needs `verdict`, the one of these that fits; each hands off its "
+            "event:"
+            if guided
+            else "A `verdict` ending needs `verdict`, one of these (each hands off its event):"
+        ]
         for verdict in contract.valid_verdicts:
             event = contract.verdict_events.get(verdict, "")
-            lines.append(f"- `{verdict}`" + (f" produces `{event}`" if event else ""))
+            line = f"- `{verdict}`" + (f" produces `{event}`" if event else "")
+            when = contract.verdict_when.get(verdict, "")
+            lines.append(f"{line}. Report it when: {when}" if when else line)
         return "\n".join(lines)
     if contract.default_event:
         return (

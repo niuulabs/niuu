@@ -302,3 +302,21 @@ def test_the_report_names_are_the_ones_skuld_writes() -> None:
         STEP_EVENT_CLOSED,
         STEP_EVENT_UNCLOSED,
     }
+
+
+def test_each_verdict_says_when_to_report_it_where_the_persona_says() -> None:
+    text = _render(
+        contracts=(
+            _contract(
+                verdict_when={"implemented": "The change is pushed and tested."},
+            ),
+        )
+    )
+
+    assert "the one of these that fits; each hands off its event:" in text
+    assert (
+        "- `implemented` produces `code.ready`. Report it when: The change is pushed and tested."
+        in text
+    )
+    # A verdict the persona gives no rule for is still listed.
+    assert "- `blocked` produces `work.blocked`\n" in text + "\n"

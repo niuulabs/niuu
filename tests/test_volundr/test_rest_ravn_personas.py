@@ -193,6 +193,16 @@ class TestRavnPersonaRoutes:
         ).json()
         assert detail["produces"]["event_type_map"] == reviewer["outcome_events"]
 
+    def test_detail_says_when_to_report_each_verdict(self) -> None:
+        client, _ = _make_client()
+        detail = client.get(
+            "/api/v1/personas/reviewer",
+            headers={"Authorization": "Bearer token"},
+        ).json()
+        when = detail["produces"]["when"]
+        assert set(when) == set(detail["produces"]["event_type_map"])
+        assert when["pass"].startswith("The committed change is ready to merge")
+
     def test_portable_source_is_owner_scoped_and_exactly_addressable(self) -> None:
         client, _ = _make_client()
         client.post(

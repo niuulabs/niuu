@@ -347,6 +347,9 @@ def _normalize_payload(
     normalized["produces_event_map"] = _normalize_str_map(
         payload.get("produces_event_map", base.get("produces_event_map"))
     )
+    normalized["produces_when"] = _normalize_str_map(
+        payload.get("produces_when", base.get("produces_when"))
+    )
     normalized["produces_schema"] = _normalize_schema(payload.get("produces_schema"))
     normalized["consumes_events"] = _normalize_consumes_events(payload.get("consumes_events"))
     normalized["consumes_schema"] = _normalize_schema(payload.get("consumes_schema"))
@@ -382,6 +385,7 @@ def _config_to_payload(config: PersonaConfig | None) -> dict[str, Any]:
         "llm_temperature": None,
         "produces_event_type": config.produces.event_type,
         "produces_event_map": dict(config.produces.event_type_map),
+        "produces_when": dict(config.produces.when),
         "produces_schema": {key: field.type for key, field in config.produces.schema.items()},
         "consumes_events": [{"name": name} for name in config.consumes.event_types],
         "consumes_schema": {key: field.type for key, field in config.consumes.schema.items()},
@@ -443,6 +447,7 @@ def _payload_to_config(payload: dict[str, Any]) -> PersonaConfig:
         produces=PersonaProduces(
             event_type=str(payload["produces_event_type"]),
             event_type_map=dict(payload.get("produces_event_map") or {}),
+            when=dict(payload.get("produces_when") or {}),
             schema=produces_schema,
         ),
         consumes=PersonaConsumes(
@@ -481,6 +486,7 @@ def _default_payload(name: str) -> dict[str, Any]:
         "llm_temperature": None,
         "produces_event_type": "",
         "produces_event_map": {},
+        "produces_when": {},
         "produces_schema": {},
         "consumes_events": [],
         "consumes_schema": {},

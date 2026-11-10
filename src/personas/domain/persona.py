@@ -33,6 +33,7 @@ Persona YAML format::
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -98,11 +99,15 @@ class PersonaProduces:
         {"pass": "review.passed", "needs_changes": "review.changes_requested"}
         The map is checked against the 'verdict' field in the outcome.
     schema: Expected fields in the outcome block
+    when: For each verdict, when to report it, e.g.:
+        {"pass": "The change is safe to run as it is."}
+        The member is told these where it closes a step, so it knows which verdict fits.
     """
 
     event_type: str = ""
     event_type_map: dict[str, str] = field(default_factory=dict)
     schema: dict[str, OutcomeField] = field(default_factory=dict)
+    when: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -198,12 +203,19 @@ class PersonaConfig:
         if self.iteration_budget:
             d["iteration_budget"] = self.iteration_budget
 
-        if self.produces.event_type or self.produces.event_type_map or self.produces.schema:
+        if (
+            self.produces.event_type
+            or self.produces.event_type_map
+            or self.produces.schema
+            or self.produces.when
+        ):
             produces_dict: dict = {}
             if self.produces.event_type:
                 produces_dict["event_type"] = self.produces.event_type
             if self.produces.event_type_map:
                 produces_dict["event_type_map"] = dict(self.produces.event_type_map)
+            if self.produces.when:
+                produces_dict["when"] = dict(self.produces.when)
             if self.produces.schema:
                 schema_dict: dict = {}
                 for fname, f in self.produces.schema.items():
@@ -309,7 +321,37 @@ def parse_produces(raw: Any) -> PersonaProduces:
             parsed = parse_outcome_field(fname, fval)
             if parsed is not None:
                 schema[fname] = parsed
-    return PersonaProduces(event_type=event_type, event_type_map=event_type_map, schema=schema)
+    return PersonaProduces(
+        event_type=event_type,
+        event_type_map=event_type_map,
+        schema=schema,
+        when=parse_verdict_guidance(raw.get("when"), event_type_map),
+    )
+
+
+def parse_verdict_guidance(raw: Any, event_type_map: Mapping[str, str]) -> dict[str, str]:
+    """Parse ``produces.when``: for each verdict, when the member should report it.
+
+    Every key must be a verdict the persona maps to an event, and every value says something:
+    guidance for a verdict the persona cannot report, or empty guidance, is a mistake in the
+    document, so it is refused, naming the verdict.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("produces.when must map each verdict to when to report it")
+    guidance: dict[str, str] = {}
+    for verdict, text in raw.items():
+        verdict = str(verdict)
+        if event_type_map and verdict not in event_type_map:
+            raise ValueError(
+                f"produces.when names verdict {verdict!r}, which produces.event_type_map does "
+                f"not map to an event; the verdicts are {sorted(event_type_map)}"
+            )
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"produces.when.{verdict} must say when to report {verdict!r}")
+        guidance[verdict] = text.strip()
+    return guidance
 
 
 def parse_consumes(raw: Any) -> PersonaConsumes:
