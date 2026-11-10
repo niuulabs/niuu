@@ -1,14 +1,9 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
-import { GateDecision } from '@niuulabs/ui';
 import type { IWorkService } from '../ports';
-import type { RunGraph } from '../domain/runGraph';
 import { runGraphIsMoving } from '../domain/runGraph';
-import type { RunReviews } from '../domain/review';
 import { GraphView } from './WorkflowBuilder/GraphView';
-import { decisionError } from './TicketPanel';
-import { useRunGateDecision } from './useWork';
 import './RunWorkflowGraph.css';
 
 /** While a run has work going on or waiting, its graph is read again this often. */
@@ -54,7 +49,6 @@ export function RunWorkflowGraph({ runId, onOpenSession }: RunWorkflowGraphProps
   }
   return (
     <div className="ting-run-graph" data-testid="run-graph">
-      {waitingGate(graph.data) ? <WaitingGate runId={runId} /> : null}
       <GraphView
         readOnly
         fitOnLoad
@@ -74,74 +68,6 @@ export function RunWorkflowGraph({ runId, onOpenSession }: RunWorkflowGraphProps
         onStartConnect={noop}
         onCancelConnect={noop}
         onCompleteConnect={noop}
-      />
-    </div>
-  );
-}
-
-/** Whether a gate of the run waits for a person. */
-function waitingGate(graph: RunGraph): boolean {
-  return graph.nodes.some(
-    (node) => node.kind === 'gate' && graph.states.get(node.id)?.state === 'waiting',
-  );
-}
-
-/** The gate waiting for a person, read from the run's reviews: its newest pending revision. */
-function pendingGate(reviews: RunReviews | undefined) {
-  for (const review of reviews?.reviews ?? []) {
-    const latest = review.revisions[review.revisions.length - 1];
-    if (latest?.status === 'pending') return { review, revision: latest };
-  }
-  return null;
-}
-
-/**
- * Where the run says Needs you, the person answers: the gate's summary, a note, approve or
- * request changes, as the review page has them, and the review page for the full context.
- */
-function WaitingGate({ runId }: { runId: string }) {
-  const work = useService<IWorkService>('ting.work');
-  const reviews = useQuery({
-    queryKey: ['ting', 'work', 'reviews', 'run', runId],
-    queryFn: () => work.runReviews(runId),
-  });
-  const decide = useRunGateDecision(runId);
-  const [note, setNote] = useState('');
-  const waiting = pendingGate(reviews.data);
-  if (reviews.isError) {
-    return (
-      <div className="ting-run-graph__gate" role="alert" data-testid="run-gate-error">
-        The waiting gate could not be read: {String(reviews.error)}
-      </div>
-    );
-  }
-  if (!waiting) return null;
-  const { review, revision } = waiting;
-  const submit = (decision: 'approve' | 'request_changes') =>
-    decide.mutate(
-      { gateId: revision.gateId, activationId: revision.activationId, decision, notes: note },
-      { onSuccess: () => setNote('') },
-    );
-  return (
-    <div className="ting-run-graph__gate" data-testid="run-gate">
-      <GateDecision
-        eyebrow="Needs you"
-        title={review.title}
-        summary={revision.summary}
-        hint={
-          <>
-            Approving continues the run; changes go back to the agent.{' '}
-            <a href={`/ting/review/run/${encodeURIComponent(runId)}`}>Open the review</a>
-          </>
-        }
-        note={note}
-        onNoteChange={setNote}
-        notePlaceholder="Anything you want changed."
-        requireNote
-        busy={decide.isPending}
-        error={decide.error ? decisionError(decide.error) : null}
-        onApprove={() => submit('approve')}
-        onRequestChanges={() => submit('request_changes')}
       />
     </div>
   );

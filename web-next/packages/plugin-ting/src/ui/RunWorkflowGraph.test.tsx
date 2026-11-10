@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { RunWorkflowGraph } from './RunWorkflowGraph';
@@ -45,46 +45,11 @@ function runGraph(): RunGraph {
   };
 }
 
-const WAITING_REVIEWS = {
-  run: { slug: 'run-1' },
-  unreadableRuns: [],
-  reviews: [
-    {
-      columnId: 'approve',
-      title: 'Approve merge',
-      review: null,
-      workflowName: 'Code, Review and Merge',
-      taskId: 'run-1',
-      sessionId: '',
-      panels: [],
-      revisions: [
-        {
-          number: 1,
-          gateId: 'approve',
-          activationId: 'activation-1',
-          requestedAt: '2026-11-09T12:00:00Z',
-          status: 'pending',
-          summary: 'PR #22 passed review and the security audit.',
-          decidedBy: '',
-          notes: '',
-          decidedAt: '',
-          fields: {},
-        },
-      ],
-    },
-  ],
-};
-
-function renderGraph(
-  runGraphFn: () => Promise<RunGraph>,
-  onOpenSession = vi.fn(),
-  decideRunGate = vi.fn(async () => {}),
-) {
+function renderGraph(runGraphFn: () => Promise<RunGraph>, onOpenSession = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const work = { runGraph: runGraphFn, runReviews: async () => WAITING_REVIEWS, decideRunGate };
   render(
     <QueryClientProvider client={client}>
-      <ServicesProvider services={{ 'ting.work': work }}>
+      <ServicesProvider services={{ 'ting.work': { runGraph: runGraphFn } }}>
         <RunWorkflowGraph runId="run-1" onOpenSession={onOpenSession} />
       </ServicesProvider>
     </QueryClientProvider>,
@@ -159,39 +124,6 @@ describe('RunWorkflowGraph', () => {
     const approve = await screen.findByTestId('workflow-run-state-approve');
     expect(approve).toHaveAttribute('data-run-state', 'pending');
     expect(approve).not.toHaveTextContent('Not reached');
-  });
-
-  it('answers a waiting gate where the run says Needs you', async () => {
-    const decideRunGate = vi.fn(async () => {});
-    renderGraph(async () => runGraph(), vi.fn(), decideRunGate);
-
-    const gate = await screen.findByTestId('run-gate');
-    expect(gate).toHaveTextContent('Approve merge');
-    expect(gate).toHaveTextContent('PR #22 passed review and the security audit.');
-    expect(within(gate).getByRole('link', { name: 'Open the review' })).toHaveAttribute(
-      'href',
-      '/ting/review/run/run-1',
-    );
-
-    fireEvent.click(within(gate).getByRole('button', { name: /^Approve/ }));
-
-    await waitFor(() =>
-      expect(decideRunGate).toHaveBeenCalledWith('run-1', {
-        gateId: 'approve',
-        activationId: 'activation-1',
-        decision: 'approve',
-        notes: '',
-      }),
-    );
-  });
-
-  it('shows no decision while no gate waits', async () => {
-    const graph = runGraph();
-    graph.states.set('approve', { nodeId: 'approve', state: 'done', members: [] });
-    renderGraph(async () => graph);
-
-    await screen.findByTestId('workflow-run-state-approve');
-    expect(screen.queryByTestId('run-gate')).toBeNull();
   });
 
   it("opens a member's session from its chip", async () => {
