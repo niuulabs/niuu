@@ -674,6 +674,7 @@ class TestLifespan:
                 registry = app.state.session_proxy_registry
                 if enforce:
                     from types import SimpleNamespace
+                    from uuid import uuid4
 
                     from identity.models import Principal
                     from niuu.ports.identity import InvalidTokenError
@@ -690,7 +691,12 @@ class TestLifespan:
                         patch(
                             "volundr.main.PostgresSessionRepository.get",
                             new=AsyncMock(
-                                return_value=SimpleNamespace(owner_id="alice", tenant_id="acme")
+                                return_value=SimpleNamespace(
+                                    id=uuid4(),
+                                    owner_id="alice",
+                                    tenant_id="acme",
+                                    coordination=None,
+                                )
                             ),
                         ),
                     ):
