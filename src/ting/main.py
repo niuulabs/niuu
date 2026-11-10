@@ -8,6 +8,7 @@ import sys
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import Depends, FastAPI, Request, Response
@@ -17,6 +18,7 @@ from identity.ports import AuthorizationDeniedError, AuthorizationEvaluationErro
 from niuu.adapters.http_integrations import HTTPIntegrationRepository
 from niuu.adapters.notifications.integrations import NotificationChannelFactory
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
+from niuu.adapters.postgres_integration_usage import PostgresIntegrationUsageLog
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
@@ -29,7 +31,7 @@ from niuu.mesh.platform_identity import (
 )
 from niuu.observability import enable_trace_log_correlation
 from niuu.ports.delivery import EvidenceAuthenticator
-from niuu.ports.integrations import IntegrationRepository
+from niuu.ports.integrations import IntegrationRepository, IntegrationUsageLog
 from niuu.ports.workload_identity import WorkloadTokenIssuer
 from niuu.review_widgets import load_review_widgets
 from niuu.service_runtime import (
@@ -563,6 +565,16 @@ async def _seed_linear_integration(
     await integration_repo.save_connection(connection)
 
 
+@dataclass(frozen=True)
+class IntegrationStores:
+    """The integration repository and, when it has a database, the team usage log."""
+
+    repository: IntegrationRepository
+    #: ``None`` when integrations are read over HTTP: there is no database to record
+    #: team uses in, so team trackers are refused (``teamUsageUnrecorded``).
+    usage_log: IntegrationUsageLog | None
+
+
 @asynccontextmanager
 async def _integration_repository(settings: Settings, pool):
     config = settings.shared_integrations
@@ -571,7 +583,10 @@ async def _integration_repository(settings: Settings, pool):
     if config.database_name:
         database = settings.database.model_copy(update={"name": config.database_name})
         async with database_pool(database) as shared_pool:
-            yield PostgresIntegrationRepository(shared_pool)
+            yield IntegrationStores(
+                PostgresIntegrationRepository(shared_pool),
+                PostgresIntegrationUsageLog(shared_pool),
+            )
         return
     if config.base_url:
         if not settings.auth.allow_anonymous_dev and config.auth.adapter.endswith(
@@ -587,11 +602,11 @@ async def _integration_repository(settings: Settings, pool):
             auth_kwargs=resolve_secret_kwargs(config.auth.kwargs, config.auth.secret_kwargs_env),
         )
         try:
-            yield repository
+            yield IntegrationStores(repository, None)
         finally:
             await repository.close()
         return
-    yield PostgresIntegrationRepository(pool)
+    yield IntegrationStores(PostgresIntegrationRepository(pool), PostgresIntegrationUsageLog(pool))
 
 
 def mesh_signing_report(*, required: bool) -> dict[str, Any]:
@@ -730,8 +745,9 @@ def create_app(
 
         async with (
             database_pool(settings.database) as pool,
-            _integration_repository(settings, pool) as integration_repo,
+            _integration_repository(settings, pool) as integration_stores,
         ):
+            integration_repo = integration_stores.repository
             app.state.pool = pool
 
             # Wire shared credential/integration infrastructure
@@ -776,8 +792,23 @@ def create_app(
                     allow_unauthenticated=settings.auth.allow_anonymous_dev,
                     target_auth=_create_http_auth_adapter(settings.volundr.auth),
                 )
+            volundr_factory = app.state.volundr_factory
+
+            async def member_projects(owner_id: str) -> list[str]:
+                primary = await volundr_factory.primary_for_owner(owner_id)
+                if primary is None:
+                    raise LookupError(
+                        f"owner {owner_id} has no Forge connection, so their project "
+                        "memberships cannot be read; connect a Forge for this owner"
+                    )
+                return await primary.list_member_project_ids()
+
             app.state.tracker_factory = TrackerAdapterFactory(
-                integration_repo, credential_store, pool=pool
+                integration_repo,
+                credential_store,
+                pool=pool,
+                member_projects=member_projects,
+                usage_log=integration_stores.usage_log,
             )
 
             # Seed Linear integration from config so the tracker factory

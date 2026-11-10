@@ -324,6 +324,15 @@ class VolundrPort(ABC):
         """The project as this Forge knows it; None when it does not."""
         raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
 
+    async def list_member_project_ids(
+        self,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[str]:
+        """Ids of the Forge projects the caller is a member of."""
+        raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
+
     async def ensure_project(
         self,
         project_id: str,

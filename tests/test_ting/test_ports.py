@@ -69,6 +69,7 @@ class TestVolundrPort:
         methods = {
             "spawn_session",
             "get_project",
+            "list_member_project_ids",
             "ensure_project",
             "session_project",
             "join_project",
