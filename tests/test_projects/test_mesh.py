@@ -59,6 +59,52 @@ def test_explicit_host_routes_project_receipts_and_registration():
 
 
 @respx.mock
+def test_project_members_route_to_the_host_that_owns_the_project():
+    project_id = str(uuid4())
+    base = f"http://spark.test/api/v1/forge/projects/{project_id}"
+    listed = respx.get(f"{base}/members").mock(return_value=httpx.Response(200, json=[]))
+    candidates = respx.get(f"{base}/member-candidates").mock(
+        return_value=httpx.Response(200, json=[{"user_id": "alice"}])
+    )
+    added = respx.post(f"{base}/members").mock(
+        return_value=httpx.Response(201, json={"user_id": "alice", "role": "approver"})
+    )
+    changed = respx.patch(f"{base}/members/alice").mock(
+        return_value=httpx.Response(200, json={"user_id": "alice", "role": "owner"})
+    )
+    removed = respx.delete(f"{base}/members/alice").mock(return_value=httpx.Response(204))
+    api = client()
+    path = f"/api/v1/forge/projects/{project_id}"
+    assert api.get(f"{path}/members?instance_id=spark", headers=_headers()).json() == []
+    response = api.get(f"{path}/member-candidates?instance_id=spark&q=ali", headers=_headers())
+    assert response.json() == [{"user_id": "alice"}]
+    assert candidates.calls.last.request.url.params["q"] == "ali"
+    response = api.post(
+        f"{path}/members?instance_id=spark",
+        headers=_headers(),
+        json={"user_id": "alice", "role": "approver"},
+    )
+    assert response.json()["role"] == "approver"
+    response = api.patch(
+        f"{path}/members/alice?instance_id=spark", headers=_headers(), json={"role": "owner"}
+    )
+    assert response.json()["role"] == "owner"
+    response = api.delete(f"{path}/members/alice?instance_id=spark", headers=_headers())
+    assert response.status_code == 204
+    assert all(route.called for route in (listed, candidates, added, changed, removed))
+
+
+@respx.mock
+def test_project_gateway_refuses_operations_it_does_not_know():
+    project_id = str(uuid4())
+    api = client()
+    path = f"/api/v1/forge/projects/{project_id}"
+    for method, tail in (("DELETE", "members"), ("PATCH", "receipts"), ("DELETE", "members/a/b")):
+        response = api.request(method, f"{path}/{tail}?instance_id=spark", headers=_headers())
+        assert response.status_code == 404, (method, tail)
+
+
+@respx.mock
 def test_session_collision_and_explicit_target_never_fall_back_to_other_host():
     session_id = str(uuid4())
     for host in ("thor", "spark"):

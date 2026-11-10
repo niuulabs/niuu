@@ -2057,6 +2057,8 @@ def create_volundr_router(
     @router.patch("/projects/{project_id}")
     @router.get("/projects/{project_id}/{operation:path}")
     @router.post("/projects/{project_id}/{operation:path}")
+    @router.patch("/projects/{project_id}/{operation:path}")
+    @router.delete("/projects/{project_id}/{operation:path}")
     async def project_operation(
         request: Request,
         project_id: UUID,
@@ -2070,6 +2072,9 @@ def create_volundr_router(
             ("GET", "receipts"),
             ("POST", "receipts"),
             ("POST", "export"),
+            ("GET", "members"),
+            ("POST", "members"),
+            ("GET", "member-candidates"),
         }
         pieces = operation.split("/")
         is_ack = len(pieces) == 3 and pieces[0] == "receipts" and pieces[2] == "ack"
@@ -2078,7 +2083,14 @@ def create_volundr_router(
                 UUID(pieces[1])
             except ValueError as exc:
                 raise HTTPException(422, "Invalid receipt ID") from exc
-        if (request.method, operation) not in allowed and not (request.method == "POST" and is_ack):
+        # One member: change their role or profile, or remove them.
+        is_member = len(pieces) == 2 and pieces[0] == "members" and bool(pieces[1])
+        known = (
+            (request.method, operation) in allowed
+            or (request.method == "POST" and is_ack)
+            or (request.method in ("PATCH", "DELETE") and is_member)
+        )
+        if not known:
             raise HTTPException(404, "Unknown project operation")
         instance = await _resolve_target_instance(
             service,
@@ -2102,6 +2114,8 @@ def create_volundr_router(
             embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
+        if response.status_code == status.HTTP_204_NO_CONTENT:
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
         payload = response.json()
         return _with_instance(payload, instance) if not operation else payload
 
