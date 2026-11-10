@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -231,6 +232,9 @@ class SessionService:
         self._provisioning_timeout = provisioning_timeout
         self._provisioning_initial_delay = provisioning_initial_delay
         self._provisioning_tasks: dict[UUID, asyncio.Task] = {}
+        #: Unit roots this process is starting with their members (``unit_starting``): from
+        #: the moment the members are marked STARTING until the root's own start task exists.
+        self._units_starting: set[UUID] = set()
         # Who started each running unit: its members' specs are built for that principal
         # whenever the pod manager asks for them (at the unit's start, and to start one
         # member again). Forgotten when the unit stops.
@@ -2543,8 +2547,33 @@ class SessionService:
         still being created. The task owns the transition (PROVISIONING, or
         FAILED with the cause). A STARTING row with no task here (the process
         restarted mid-spawn) is reconciled normally.
+
+        A unit's member has no task of its own: the root's start spawns it, and the
+        member is marked STARTING before that task exists (``unit_starting``). It is in
+        flight while its unit is being started or its root's start task runs.
         """
-        return session.status == SessionStatus.STARTING and session.id in self._provisioning_tasks
+        if session.status != SessionStatus.STARTING:
+            return False
+        if session.id in self._provisioning_tasks:
+            return True
+        unit = session.hosted_by
+        return unit is not None and (
+            unit in self._units_starting or unit in self._provisioning_tasks
+        )
+
+    @asynccontextmanager
+    async def unit_starting(self, root_id: UUID) -> AsyncIterator[None]:
+        """Hold a unit's members as being started while its root is started.
+
+        The caller marks the members STARTING and then starts the root, whose start task
+        spawns them; inside this block a member is not reconciled against a runtime that
+        does not exist yet, which would read as STOPPED and end it before it ran.
+        """
+        self._units_starting.add(root_id)
+        try:
+            yield
+        finally:
+            self._units_starting.discard(root_id)
 
     def _reconciled_session(
         self,

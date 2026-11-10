@@ -369,6 +369,30 @@ class TestStart:
         for member in (coder, reviewer):
             assert (await unit.stored(member)).status == SessionStatus.STARTING
 
+    async def test_a_member_read_while_its_unit_starts_is_not_reaped(self, unit: Unit):
+        root = await unit.root()
+        coder = await unit.member(root, "coder-1")
+        service = unit.app.session_service
+        start_root = service.start_session
+        seen: list[SessionStatus] = []
+
+        async def read_the_member_first(*args, **kwargs):
+            # A reader (Ting's sweep) asks for the member after it is marked STARTING and
+            # before the root's start spawns it: no runtime exists yet.
+            looked_up = await service.reconcile_session_if_active(coder.id)
+            seen.append(looked_up.status)
+            return await start_root(*args, **kwargs)
+
+        async def no_runtime_for_members(session):
+            return SessionStatus.STOPPED if session.hosted_by else session.status
+
+        unit.app.pod_manager.status = no_runtime_for_members
+        service.start_session = read_the_member_first
+        await unit.start(root)
+
+        assert seen == [SessionStatus.STARTING]
+        assert (await unit.stored(coder)).status == SessionStatus.STARTING
+
     async def test_the_unit_is_started_with_its_members_fixed(self, unit: Unit):
         root = await unit.root()
         coder = await unit.member(root, "coder-1")

@@ -536,33 +536,36 @@ class ForgeService:
         launch = HostedLaunch.model_validate(root.workload_config[HOSTED_UNIT_KEY])
         repository = self._session_service._repository
         members = await repository.list_hosted(root.id)
-        prepared = [
-            await self._prepare_member(m, principal, launch_spec=launch_spec) for m in members
-        ]
         unit_config = {
             # The pool execution the service pinned stays on the row; a caller may not send it.
             **{k: v for k, v in root.workload_config.items() if k != "_compute_execution"},
             HOSTED_MEMBERS_KEY: [{"id": str(m.id), "port": m.hosted_port} for m in members],
         }
-        try:
-            started = await self._session_service.start_session(
-                root.id,
-                definition=launch.definition,
-                launch_spec=launch_spec or launch.launch_spec,
-                principal=principal,
-                terminal_restricted=launch.terminal_restricted,
-                credential_names=launch.credential_names,
-                integration_ids=integration_ids or launch.integration_ids,
-                resource_config=launch.resource_config or None,
-                system_prompt=launch.system_prompt,
-                initial_prompt=launch.initial_prompt,
-                workload_type=launch.workload_type,
-                workload_config=unit_config,
-            )
-        except BaseException:
-            for original in members:
-                await repository.update(original)
-            raise
+        # From the members' STARTING until the root's start task exists, a read of a member
+        # must not reconcile it against a runtime the root has not spawned yet.
+        async with self._session_service.unit_starting(root.id):
+            prepared = [
+                await self._prepare_member(m, principal, launch_spec=launch_spec) for m in members
+            ]
+            try:
+                started = await self._session_service.start_session(
+                    root.id,
+                    definition=launch.definition,
+                    launch_spec=launch_spec or launch.launch_spec,
+                    principal=principal,
+                    terminal_restricted=launch.terminal_restricted,
+                    credential_names=launch.credential_names,
+                    integration_ids=integration_ids or launch.integration_ids,
+                    resource_config=launch.resource_config or None,
+                    system_prompt=launch.system_prompt,
+                    initial_prompt=launch.initial_prompt,
+                    workload_type=launch.workload_type,
+                    workload_config=unit_config,
+                )
+            except BaseException:
+                for original in members:
+                    await repository.update(original)
+                raise
         for member in prepared:
             await self._publish_updated(member)
         return started
