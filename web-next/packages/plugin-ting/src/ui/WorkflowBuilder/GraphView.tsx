@@ -1775,6 +1775,7 @@ export function GraphView({
     <div
       ref={rootRef}
       data-testid="graph-view"
+      data-editing={readOnly ? undefined : 'true'}
       className="workflow-canvas niuu:flex-1 niuu:relative niuu:overflow-hidden niuu:min-h-[400px]"
       tabIndex={0}
       aria-label="Workflow canvas"

@@ -252,7 +252,9 @@ g[role='button']:hover > foreignObject > .workflow-card {
   fill: var(--status-amber);
   stroke: var(--status-amber);
 }
-.workflow-socket[data-resolved='false'] {
+/* A port whose contract cannot be confirmed is a problem only while the workflow is edited:
+   a viewer (a run, a saved version) may not have the personas to confirm it against. */
+.workflow-canvas[data-editing='true'] .workflow-socket[data-resolved='false'] {
   stroke: var(--color-critical);
 }
 .workflow-socket[role='button']:hover,
@@ -283,7 +285,7 @@ g[role='button']:hover > foreignObject > .workflow-card {
   stroke: var(--status-amber);
   stroke-dasharray: 6 6;
 }
-.workflow-wire[data-resolved='false'] .workflow-edge-line {
+.workflow-canvas[data-editing='true'] .workflow-wire[data-resolved='false'] .workflow-edge-line {
   stroke: var(--color-critical);
   stroke-dasharray: 5 5;
 }

@@ -2016,6 +2016,14 @@ describe('GraphView', () => {
     expect(Math.max(...ys)).toBeGreaterThan(lowest);
   });
 
+  it('marks the canvas as edited only when it can be edited, so viewers never flag contracts', () => {
+    const { rerender } = render(<GraphView {...flowProps()} />);
+    expect(screen.getByTestId('graph-view')).toHaveAttribute('data-editing', 'true');
+
+    rerender(<GraphView {...flowProps({ readOnly: true })} />);
+    expect(screen.getByTestId('graph-view')).not.toHaveAttribute('data-editing');
+  });
+
   it('says a rework wire with no limit has none', () => {
     expect(reworkLimitLabel({})).toBe('↩ no limit');
     expect(reworkLimitLabel({ maxIterations: 2 })).toBe('↩ up to 2×');
