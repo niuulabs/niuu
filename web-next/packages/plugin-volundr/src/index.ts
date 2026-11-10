@@ -160,6 +160,7 @@ export type {
   VolundrSessionChanges,
 } from './ports/IVolundrService';
 export type { IClusterAdapter } from './ports/IClusterAdapter';
+export { RUN_GATE_SERVICE, type IRunGateService, type RunGate } from './ports/IRunGateService';
 export {
   RUN_WORKFLOW_VIEW_SERVICE,
   type RunWorkflowView,

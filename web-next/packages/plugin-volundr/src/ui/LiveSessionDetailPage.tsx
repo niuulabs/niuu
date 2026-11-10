@@ -106,6 +106,7 @@ import {
 import { TerminalDock } from './detail/TerminalDock';
 import { WorkflowDock } from './detail/WorkflowDock';
 import { RUN_WORKFLOW_VIEW_SERVICE, type RunWorkflowView } from '../ports/IRunWorkflowView';
+import { RUN_GATE_SERVICE, type IRunGateService, type RunGate } from '../ports/IRunGateService';
 import { FilePreviewPane } from './detail/FilePreviewPane';
 import { LivePreviewPane } from './detail/LivePreviewPane';
 import { LIVE_PREVIEW_DISABLED, findLocalUrls } from '../domain/livePreview';
@@ -166,6 +167,9 @@ import {
 export type LiveSessionTab = 'chat' | 'diffs' | 'files' | 'chronicles' | 'telemetry' | 'logs';
 
 type SessionTab = LiveSessionTab;
+
+/** While a run's coordinator is open, its run is asked this often whether a gate waits. */
+const RUN_GATE_REFRESH_MS = 5000;
 
 /** Statuses that change only through an action or a pushed state change. */
 const SETTLED_RAW_STATUSES: ReadonlySet<VolundrSession['status']> = new Set([
@@ -253,6 +257,8 @@ function WorkflowHumanGateCard({
   reason,
   recommendation,
   comments,
+  busy = false,
+  error = null,
   onApprove,
   onRequestChanges,
 }: {
@@ -261,6 +267,8 @@ function WorkflowHumanGateCard({
   reason?: string;
   recommendation?: string;
   comments: readonly ReviewComment[];
+  busy?: boolean;
+  error?: string | null;
   onApprove: (notes: string) => void;
   onRequestChanges: (notes: string) => void;
 }) {
@@ -287,6 +295,8 @@ function WorkflowHumanGateCard({
         noteLabel="Reply Notes"
         notePlaceholder="Optional context for the gate decision."
         commentCount={comments.length}
+        busy={busy}
+        error={error}
         onApprove={() => answer(onApprove)}
         onRequestChanges={() => answer(onRequestChanges)}
       />
@@ -3458,6 +3468,39 @@ function LiveSessionDetailPageInner({
     [transcriptTurns],
   );
   const replayMeshEvents = useMemo(() => meshEventsFromTurns(transcriptTurns), [transcriptTurns]);
+  // A workflow run's gate waits in Ting; the run's own session asks for it above its composer,
+  // as it asks every other question, when the host wired a run gate service.
+  const runGates = useOptionalService<IRunGateService>(RUN_GATE_SERVICE);
+  const runRootId =
+    liveSession?.runId && !liveSession.coordination?.parent ? liveSession.runId : null;
+  const runGateQuery = useQuery({
+    queryKey: ['volundr', 'run-gate', runRootId],
+    queryFn: () => runGates!.waitingGate(runRootId!),
+    enabled: Boolean(runGates && runRootId),
+    refetchInterval: RUN_GATE_REFRESH_MS,
+  });
+  const runGate: RunGate | null = runRootId ? (runGateQuery.data ?? null) : null;
+  const [runGateDecision, setRunGateDecision] = useState<{
+    busy: boolean;
+    error: string | null;
+  }>({ busy: false, error: null });
+  const decideRunGate = useCallback(
+    async (decision: 'approve' | 'request_changes', notes: string) => {
+      if (!runGates || !runRootId || !runGate) return;
+      setRunGateDecision({ busy: true, error: null });
+      try {
+        await runGates.decide(runRootId, runGate, decision, notes);
+        setRunGateDecision({ busy: false, error: null });
+        await queryClient.invalidateQueries({ queryKey: ['volundr', 'run-gate', runRootId] });
+      } catch (error) {
+        setRunGateDecision({
+          busy: false,
+          error: errorText(error, 'The decision did not go through'),
+        });
+      }
+    },
+    [queryClient, runGate, runGates, runRootId],
+  );
   const activeHumanGate = useMemo(() => {
     const latest = [...chat.meshEvents]
       .reverse()
@@ -3502,13 +3545,15 @@ function LiveSessionDetailPageInner({
         title: activeHumanGate.participant.displayName || 'Workflow gate',
         detail: activeHumanGate.event.summary,
       });
+    } else if (runGate) {
+      gates.push({ id: runGate.activationId, title: runGate.title, detail: runGate.summary });
     }
     return buildAttentionItems({
       gates,
       permissions: chat.pendingPermissions,
       inputRequests: chat.pendingInputRequests,
     });
-  }, [activeHumanGate, chat.pendingInputRequests, chat.pendingPermissions]);
+  }, [activeHumanGate, runGate, chat.pendingInputRequests, chat.pendingPermissions]);
   const checklist = useMemo(
     () => resolveChecklist(chat.plan, chat.messages),
     [chat.plan, chat.messages],
@@ -4104,7 +4149,11 @@ function LiveSessionDetailPageInner({
   }
 
   // A waiting decision sits by the composer, folded to a strip, as Lexi keeps its questions.
-  const gateRequestedAt = activeHumanGate ? activeHumanGate.event.timestamp.getTime() : Number.NaN;
+  const gateRequestedAt = activeHumanGate
+    ? activeHumanGate.event.timestamp.getTime()
+    : runGate
+      ? Date.parse(runGate.requestedAt)
+      : Number.NaN;
   const gateWaitingLabel = Number.isFinite(gateRequestedAt)
     ? compactDuration(Math.max(0, minuteNow - gateRequestedAt))
     : undefined;
@@ -4130,6 +4179,24 @@ function LiveSessionDetailPageInner({
         }}
         onRequestChanges={(notes) => {
           handleHumanGateReply('CHANGES_REQUESTED', notes);
+          review.clear();
+        }}
+      />
+    </DecisionDock>
+  ) : runGate ? (
+    <DecisionDock title={runGate.title} waiting={gateWaitingLabel}>
+      <WorkflowHumanGateCard
+        title={runGate.title}
+        summary={runGate.summary}
+        comments={review.comments}
+        busy={runGateDecision.busy}
+        error={runGateDecision.error}
+        onApprove={(notes) => {
+          void decideRunGate('approve', notes);
+          review.clear();
+        }}
+        onRequestChanges={(notes) => {
+          void decideRunGate('request_changes', notes);
           review.clear();
         }}
       />
@@ -4604,6 +4671,8 @@ function LiveSessionDetailPageInner({
                       ) : canReplayTranscript && replayMessages.length > 0 ? (
                         <SessionChat
                           className="niuu:h-full"
+                          // A stopped run's gate still waits: it is asked for here too.
+                          aboveComposer={decisionDock}
                           showToolbar={false}
                           showDisplayControls={false}
                           showWorkersStrip={!workersInList}

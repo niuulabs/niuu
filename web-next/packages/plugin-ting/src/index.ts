@@ -484,6 +484,11 @@ export type {
 export { WorkflowImportDialog, type WorkflowImportDialogProps } from './ui/WorkflowImportDialog';
 // A run drawn on its workflow, for hosts that show a run (Forge's workflow panel).
 export { RunWorkflowGraph, type RunWorkflowGraphProps } from './ui/RunWorkflowGraph';
+export {
+  buildRunGateService,
+  type RunGateService,
+  type WaitingRunGate,
+} from './application/runGates';
 export type { RunGraph, RunGraphMember, RunGraphNodeState, RunNodeState } from './domain/runGraph';
 export { WorkflowLaunchModal, type WorkflowLaunchModalProps } from './ui/WorkflowLaunchModal';
 export {

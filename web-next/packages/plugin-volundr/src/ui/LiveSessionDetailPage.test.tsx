@@ -6,6 +6,7 @@ import { ChatConnectionsContext } from '@niuulabs/ui';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { ApiClientError } from '@niuulabs/query';
 import { RUN_WORKFLOW_VIEW_SERVICE } from '../ports/IRunWorkflowView';
+import { RUN_GATE_SERVICE } from '../ports/IRunGateService';
 import { LiveSessionDetailPage, buildTelemetryTimelineRows } from './LiveSessionDetailPage';
 import * as chatHooks from './hooks/useSkuldChat';
 import {
@@ -1005,6 +1006,44 @@ describe('LiveSessionDetailPage', () => {
 
       fireEvent.click(screen.getByTestId('workflow-panel-toggle'));
       expect(screen.getByTestId('run-view')).toBeInTheDocument();
+    });
+
+    it("asks for a run's waiting gate above the composer and decides it there", async () => {
+      const decide = vi.fn(async () => {});
+      const runGates = {
+        waitingGate: vi.fn(async () => ({
+          gateId: 'code-approve',
+          activationId: 'activation-1',
+          title: 'Approve merge',
+          summary: 'PR #22 passed review and the security audit.',
+          requestedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+        })),
+        decide,
+      };
+      mockChatState({});
+      wrap('test-session-id-1234', {
+        session: { ...RUNNING_SESSION, runId: 'probe-9' },
+        services: { [RUN_GATE_SERVICE]: runGates },
+      });
+
+      await waitFor(() => expect(runGates.waitingGate).toHaveBeenCalled());
+      const strip = await screen.findByTestId('decision-strip');
+      expect(strip).toHaveTextContent('1 decision waiting');
+      expect(strip).toHaveTextContent('Approve merge');
+      expect(runGates.waitingGate).toHaveBeenCalledWith('probe-9');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Show the decision: Approve merge' }));
+      expect(screen.getByText('PR #22 passed review and the security audit.')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /^Approve/ }));
+
+      await waitFor(() =>
+        expect(decide).toHaveBeenCalledWith(
+          'probe-9',
+          expect.objectContaining({ gateId: 'code-approve', activationId: 'activation-1' }),
+          'approve',
+          '',
+        ),
+      );
     });
 
     it('has no workflow panel without a run, or where no workflow view is wired', async () => {

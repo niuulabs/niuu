@@ -18,6 +18,7 @@ const bifrostMocks = vi.hoisted(() => ({
 
 const tingMocks = vi.hoisted(() => ({
   RunWorkflowGraph: () => null,
+  buildRunGateService: vi.fn(() => ({ kind: 'run-gates' })),
   createMockTingService: vi.fn(() => ({ kind: 'mock-ting' })),
   createMockDispatcherService: vi.fn(() => ({ kind: 'mock-dispatcher' })),
   createMockTingSessionService: vi.fn(() => ({ kind: 'mock-sessions' })),
@@ -78,6 +79,7 @@ const realmsMocks = vi.hoisted(() => ({
 
 const volundrMocks = vi.hoisted(() => ({
   RUN_WORKFLOW_VIEW_SERVICE: 'volundr.runWorkflowView',
+  RUN_GATE_SERVICE: 'volundr.runGates',
   createMockVolundrService: vi.fn(() => ({ kind: 'mock-volundr' })),
   createMockClusterAdapter: vi.fn(() => ({ kind: 'mock-clusters' })),
   createMockSessionStore: vi.fn(() => ({ kind: 'mock-session-store' })),
@@ -571,9 +573,12 @@ describe('buildServices live base selection', () => {
   it("wires Ting's run workflow view into Forge only where Ting can read the run", () => {
     const demo = buildServices({ demoMode: true, services: {} } as any);
     expect(demo['volundr.runWorkflowView']).toBe(tingMocks.RunWorkflowGraph);
+    expect(demo['volundr.runGates']).toEqual({ kind: 'run-gates' });
+    expect(tingMocks.buildRunGateService).toHaveBeenCalledWith(demo['ting.work']);
 
     const live = buildServices({ demoMode: false, services: {} } as any);
     expect(live['volundr.runWorkflowView']).toBeUndefined();
+    expect(live['volundr.runGates']).toBeUndefined();
   });
 
   it('reports work as a demo adapter in demo mode', () => {
