@@ -891,6 +891,13 @@ function buildSplitVolundrService(
     getProjects: (options) => forge.getProjects(options),
     createProject: (name, options) => forge.createProject(name, options),
     updateProject: (project, changes) => forge.updateProject(project, changes),
+    getProjectMembers: (project) => forge.getProjectMembers(project),
+    getProjectMemberCandidates: (project, query) =>
+      forge.getProjectMemberCandidates(project, query),
+    addProjectMember: (project, member) => forge.addProjectMember(project, member),
+    updateProjectMember: (project, userId, change) =>
+      forge.updateProjectMember(project, userId, change),
+    removeProjectMember: (project, userId) => forge.removeProjectMember(project, userId),
     getSessionProject: (id, options) => forge.getSessionProject(id, options),
     assignSessionProject: (id, assignment, options) =>
       forge.assignSessionProject(id, assignment, options),

@@ -3035,6 +3035,36 @@ describe('Forge project grouping contract', () => {
     expect(client.patch).toHaveBeenLastCalledWith('/projects/lexi', { repo_url: '', revision: 4 });
   });
 
+  it('reaches project members on the host that owns the project', async () => {
+    const client = makeClient();
+    const service = buildVolundrHttpAdapter(client);
+    const project = { id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' as const };
+    const remote = { ...project, instance_id: 'ymir' };
+    await service.getProjectMembers(project);
+    expect(client.get).toHaveBeenLastCalledWith('/projects/lexi/members');
+    await service.getProjectMemberCandidates(remote, 'ali');
+    expect(client.get).toHaveBeenLastCalledWith(
+      '/projects/lexi/member-candidates?q=ali&instance_id=ymir',
+    );
+    await service.addProjectMember(project, { userId: 'alice', role: 'approver' });
+    expect(client.post).toHaveBeenLastCalledWith('/projects/lexi/members', {
+      user_id: 'alice',
+      role: 'approver',
+    });
+    await service.addProjectMember(project, { userId: 'bram', role: 'viewer', expertise: 'Ting' });
+    expect(client.post).toHaveBeenLastCalledWith('/projects/lexi/members', {
+      user_id: 'bram',
+      role: 'viewer',
+      expertise: 'Ting',
+    });
+    await service.updateProjectMember(remote, 'a b', { role: 'owner' });
+    expect(client.patch).toHaveBeenLastCalledWith('/projects/lexi/members/a%20b?instance_id=ymir', {
+      role: 'owner',
+    });
+    await service.removeProjectMember(project, 'alice');
+    expect(client.delete).toHaveBeenLastCalledWith('/projects/lexi/members/alice');
+  });
+
   it('sends a description, a status and a checkout folder as the project’s own fields', async () => {
     const client = makeClient();
     client.patch.mockResolvedValue({ id: 'lexi' });

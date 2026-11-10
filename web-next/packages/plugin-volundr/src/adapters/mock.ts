@@ -3,7 +3,7 @@
  */
 import type { SecretRequest } from '@niuulabs/domain';
 import type { IVolundrService } from '../ports/IVolundrService';
-import type { ForgeProject } from '../models/volundr.model';
+import type { ForgeProject, ProjectMember } from '../models/volundr.model';
 import type { IClusterAdapter } from '../ports/IClusterAdapter';
 import type { ISessionStore } from '../ports/ISessionStore';
 import type { IPtyStream } from '../ports/IPtyStream';
@@ -1283,6 +1283,33 @@ const SEED_PROJECTS: ForgeProject[] = [
 export function createMockVolundrService(): IVolundrService {
   const sessions = [...SEED_SESSIONS];
   const projects = SEED_PROJECTS.map((project) => ({ ...project }));
+  /** Project members by project id; every seeded project starts with its creator as owner. */
+  const projectMembers = new Map<string, ProjectMember[]>(
+    projects.map((project) => [
+      project.id,
+      [
+        {
+          project_id: project.id,
+          user_id: 'dev-user',
+          role: 'owner',
+          expertise: '',
+          skills: [],
+          display_name: 'You',
+          email: 'dev@localhost',
+        },
+      ],
+    ]),
+  );
+  /** People of the mock org who can be added to a project. */
+  const orgPeople = [
+    { user_id: 'alice', display_name: 'Alice Lindqvist', email: 'alice@example.com' },
+    { user_id: 'bram', display_name: 'Bram Koster', email: 'bram@example.com' },
+  ];
+  const membersOf = (projectId: string): ProjectMember[] => {
+    const members = projectMembers.get(projectId);
+    if (!members) throw new Error('Project not found');
+    return members;
+  };
   const projectRevisions = new Map<string, number>();
   const secretRequests = new Map(
     SEED_SECRET_REQUESTS.map((request) => [request.id, { ...request }]),
@@ -1383,6 +1410,17 @@ export function createMockVolundrService(): IVolundrService {
         revision: 1,
       };
       projects.push(project);
+      projectMembers.set(project.id, [
+        {
+          project_id: project.id,
+          user_id: 'dev-user',
+          role: 'owner',
+          expertise: '',
+          skills: [],
+          display_name: 'You',
+          email: 'dev@localhost',
+        },
+      ]);
       return { ...project };
     },
     updateProject: async (project, changes) => {
@@ -1392,6 +1430,53 @@ export function createMockVolundrService(): IVolundrService {
         throw new Error('Project changed; reload before saving');
       Object.assign(stored, changes, { revision: (stored.revision ?? 1) + 1 });
       return { ...stored };
+    },
+    getProjectMembers: async (project) => membersOf(project.id).map((member) => ({ ...member })),
+    getProjectMemberCandidates: async (project, query) => {
+      const taken = new Set(membersOf(project.id).map((member) => member.user_id));
+      const needle = query.trim().toLowerCase();
+      return orgPeople.filter(
+        (person) =>
+          !taken.has(person.user_id) &&
+          (!needle ||
+            person.display_name.toLowerCase().includes(needle) ||
+            person.email.toLowerCase().includes(needle)),
+      );
+    },
+    addProjectMember: async (project, member) => {
+      const members = membersOf(project.id);
+      const person = orgPeople.find((candidate) => candidate.user_id === member.userId);
+      if (!person) throw new Error('Cannot add this person to the project');
+      if (members.some((existing) => existing.user_id === member.userId))
+        throw new Error('That person is already a member of this project');
+      const added: ProjectMember = {
+        project_id: project.id,
+        ...person,
+        role: member.role,
+        expertise: member.expertise ?? '',
+        skills: [],
+      };
+      members.push(added);
+      return { ...added };
+    },
+    updateProjectMember: async (project, userId, change) => {
+      const members = membersOf(project.id);
+      const member = members.find((existing) => existing.user_id === userId);
+      if (!member) throw new Error('That person is not a member of this project');
+      const owners = members.filter((existing) => existing.role === 'owner');
+      if (change.role && change.role !== 'owner' && member.role === 'owner' && owners.length === 1)
+        throw new Error('A project needs at least one owner');
+      Object.assign(member, change);
+      return { ...member };
+    },
+    removeProjectMember: async (project, userId) => {
+      const members = membersOf(project.id);
+      const index = members.findIndex((existing) => existing.user_id === userId);
+      if (index < 0) throw new Error('That person is not a member of this project');
+      const owners = members.filter((existing) => existing.role === 'owner');
+      if (members[index]?.role === 'owner' && owners.length === 1)
+        throw new Error('A project needs at least one owner');
+      members.splice(index, 1);
     },
     getSessionProject: async (id) => {
       const session = sessions.find((item) => item.id === id);

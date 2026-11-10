@@ -39,6 +39,10 @@ import type {
   ProjectRepoMapping,
   ForgeProject,
   ForgeProjectChanges,
+  ProjectMember,
+  ProjectMemberCandidate,
+  ProjectMemberChange,
+  ProjectRole,
   SessionProjectMembership,
   VolundrIdentity,
   VolundrUser,
@@ -245,6 +249,23 @@ export interface IVolundrService {
    * goes to the host that owns the project. Setting `workspace_path` connects a checkout.
    */
   updateProject(project: ForgeProject, changes: ForgeProjectChanges): Promise<ForgeProject>;
+  /** Everyone on the project, with their role, expertise and skills. */
+  getProjectMembers(project: ForgeProject): Promise<ProjectMember[]>;
+  /** People of the project's org who are not on it yet, for its owners. */
+  getProjectMemberCandidates(
+    project: ForgeProject,
+    query: string,
+  ): Promise<ProjectMemberCandidate[]>;
+  addProjectMember(
+    project: ForgeProject,
+    member: { userId: string; role: ProjectRole; expertise?: string },
+  ): Promise<ProjectMember>;
+  updateProjectMember(
+    project: ForgeProject,
+    userId: string,
+    change: ProjectMemberChange,
+  ): Promise<ProjectMember>;
+  removeProjectMember(project: ForgeProject, userId: string): Promise<void>;
   getSessionProject(
     sessionId: string,
     options?: SessionReadOptions,

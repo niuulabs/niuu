@@ -183,6 +183,38 @@ export interface ForgeProjectChanges {
   repo_url?: string;
   workspace_path?: string;
 }
+/** A project role. Roles are a ladder: each one can do everything the ones before it can. */
+export type ProjectRole = 'viewer' | 'contributor' | 'approver' | 'owner';
+export const PROJECT_ROLES: readonly ProjectRole[] = ['viewer', 'contributor', 'approver', 'owner'];
+/** A skill in the A2A `AgentSkill` shape, so people and agents are described alike. */
+export interface MemberSkill {
+  id: string;
+  name: string;
+  description?: string;
+  tags?: string[];
+}
+/** A person of the project's org and what they may do on the project. */
+export interface ProjectMember {
+  project_id: string;
+  user_id: string;
+  role: ProjectRole;
+  expertise: string;
+  skills: MemberSkill[];
+  display_name: string;
+  email: string;
+  added_by?: string;
+}
+/** An active member of the project's org who is not on the project yet. */
+export interface ProjectMemberCandidate {
+  user_id: string;
+  display_name: string;
+  email: string;
+}
+export interface ProjectMemberChange {
+  role?: ProjectRole;
+  expertise?: string;
+  skills?: MemberSkill[];
+}
 export interface SessionProjectMembership {
   sessionId: string;
   revision: number;

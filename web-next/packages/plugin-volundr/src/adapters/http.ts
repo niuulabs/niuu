@@ -71,6 +71,7 @@ import type {
   SessionReadState,
   SessionStartup,
   StartupStageState,
+  ForgeProject,
 } from '../models/volundr.model';
 import { normalizeSecretRequest, type SecretRequestPayload } from './secretRequestWire';
 import { SessionForkError, SessionReadStateConflictError } from '../domain/session';
@@ -133,6 +134,18 @@ interface SessionProjectPayload {
   session_id: string;
   revision: number;
   coordination: { project_id: string; role: string } | null;
+}
+
+/** A project's member route, on the host that owns the project. */
+function projectMembersPath(
+  project: ForgeProject,
+  tail = 'members',
+  query: Record<string, string> = {},
+): string {
+  const params = new URLSearchParams(query);
+  if (project.instance_id) params.set('instance_id', project.instance_id);
+  const search = params.toString();
+  return `/projects/${encodeURIComponent(project.id)}/${tail}${search ? `?${search}` : ''}`;
 }
 
 function sessionProjectPath(id: string, instanceId?: string): string {
@@ -2088,6 +2101,25 @@ export function buildVolundrHttpAdapter(
         `/projects/${encodeURIComponent(project.id)}${project.instance_id ? `?instance_id=${encodeURIComponent(project.instance_id)}` : ''}`,
         { ...changes, revision: project.revision },
       ),
+    getProjectMembers: (project) => forgeClient.get(projectMembersPath(project)),
+    getProjectMemberCandidates: (project, query) =>
+      forgeClient.get(projectMembersPath(project, 'member-candidates', { q: query })),
+    addProjectMember: (project, member) =>
+      forgeClient.post(projectMembersPath(project), {
+        user_id: member.userId,
+        role: member.role,
+        ...(member.expertise ? { expertise: member.expertise } : {}),
+      }),
+    updateProjectMember: (project, userId, change) =>
+      forgeClient.patch(
+        projectMembersPath(project, `members/${encodeURIComponent(userId)}`),
+        change,
+      ),
+    removeProjectMember: async (project, userId) => {
+      await forgeClient.delete(
+        projectMembersPath(project, `members/${encodeURIComponent(userId)}`),
+      );
+    },
     getSessionProject: async (id, options) => {
       const payload = await forgeClient.get<SessionProjectPayload>(
         sessionProjectPath(id, options?.instanceId),

@@ -1023,6 +1023,52 @@ describe('mock Forge projects', () => {
   });
 });
 
+describe('mock project members', () => {
+  it('starts a project with its creator as owner and adds people of the org', async () => {
+    const service = createMockVolundrService();
+    const project = await service.createProject('Push relay');
+    expect((await service.getProjectMembers(project)).map((m) => m.role)).toEqual(['owner']);
+    const candidates = await service.getProjectMemberCandidates(project, 'ali');
+    expect(candidates.map((c) => c.user_id)).toEqual(['alice']);
+    const added = await service.addProjectMember(project, { userId: 'alice', role: 'approver' });
+    expect(added).toMatchObject({
+      user_id: 'alice',
+      role: 'approver',
+      display_name: 'Alice Lindqvist',
+    });
+    expect(await service.getProjectMemberCandidates(project, '')).toHaveLength(1);
+    await expect(
+      service.addProjectMember(project, { userId: 'alice', role: 'viewer' }),
+    ).rejects.toThrow('already a member');
+    await expect(
+      service.addProjectMember(project, { userId: 'mallory', role: 'viewer' }),
+    ).rejects.toThrow('Cannot add this person');
+  });
+
+  it('changes a role, keeps the last owner and removes a member', async () => {
+    const service = createMockVolundrService();
+    const project = await service.createProject('Push relay');
+    await service.addProjectMember(project, { userId: 'bram', role: 'viewer' });
+    expect(
+      await service.updateProjectMember(project, 'bram', { role: 'owner', expertise: 'Ting' }),
+    ).toMatchObject({ role: 'owner', expertise: 'Ting' });
+    await service.removeProjectMember(project, 'bram');
+    await expect(
+      service.updateProjectMember(project, 'dev-user', { role: 'viewer' }),
+    ).rejects.toThrow('at least one owner');
+    await expect(service.removeProjectMember(project, 'dev-user')).rejects.toThrow(
+      'at least one owner',
+    );
+    await expect(service.removeProjectMember(project, 'bram')).rejects.toThrow('not a member');
+    await expect(service.updateProjectMember(project, 'bram', { role: 'viewer' })).rejects.toThrow(
+      'not a member',
+    );
+    await expect(
+      service.getProjectMembers({ id: 'nope', name: 'x', slug: 'x', status: 'active' }),
+    ).rejects.toThrow('Project not found');
+  });
+});
+
 describe('mock session read state', () => {
   it('marks a session unread and read, advancing the revision each time', async () => {
     const service = createMockVolundrService();
