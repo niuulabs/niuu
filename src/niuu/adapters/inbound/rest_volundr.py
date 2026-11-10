@@ -2922,15 +2922,22 @@ def create_volundr_router(
                 ),
             )
         transport = httpx.ASGITransport(app=embedded_forge_app)
-        # The browser's own origin, so Forge builds the provider's redirect back to it.
-        origin = str(request.base_url).rstrip("/")
-        async with httpx.AsyncClient(transport=transport, base_url=origin) as c:
+        # A fixed in-process address; the browser's scheme and Host travel along so Forge
+        # builds the provider's redirect back to the browser's origin, not to this hop.
+        base = (
+            "https://embedded.local" if request.url.scheme == "https" else "http://embedded.local"
+        )
+        async with httpx.AsyncClient(transport=transport, base_url=base) as c:
             upstream = await c.request(
                 method,
                 f"/api/v1/forge{path}",
                 params=_query_params(request),
                 content=await request.body(),
-                headers={**headers, "content-type": request.headers.get("content-type", "")},
+                headers={
+                    **headers,
+                    "host": request.headers.get("host", "embedded.local"),
+                    "content-type": request.headers.get("content-type", ""),
+                },
             )
         return Response(
             content=upstream.content,
@@ -2940,7 +2947,9 @@ def create_volundr_router(
 
     @router.post("/integrations/oauth/{slug}/authorize-team")
     async def authorize_team_install(
-        request: Request, slug: str, principal: Principal = Depends(extract_principal)
+        request: Request,
+        slug: str = Path(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$"),
+        principal: Principal = Depends(extract_principal),
     ) -> Response:
         """Start a project team's app install (project owners only, checked by Forge)."""
         return await _team_oauth_on_this_node(

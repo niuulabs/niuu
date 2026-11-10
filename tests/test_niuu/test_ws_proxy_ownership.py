@@ -346,3 +346,31 @@ async def test_browser_proxy_forwards_only_allowlisted_history_protocol_fields(m
     assert captured == [
         "ws://127.0.0.1:9123/session?history=recent&history_protocol=2&history_delivery=none"
     ]
+
+
+async def test_a_failed_author_name_lookup_is_raised_not_a_silently_refused_socket(monkeypatch):
+    """A broken user store used to end in a swallowed exception and a bare 403."""
+    from niuu import session_proxy
+
+    reg = _guarded_registry()
+    reg.register("named-session", 9123)
+
+    async def broken(user_id: str) -> str | None:
+        raise ConnectionError("user store unavailable")
+
+    reg.set_display_name_resolver(broken)
+    bridged = []
+
+    async def bridge(socket, url, **kwargs):
+        bridged.append(url)
+
+    monkeypatch.setattr(session_proxy, "bridge_websocket", bridge)
+    with pytest.raises(ConnectionError, match="user store unavailable"):
+        await session_proxy._proxy_ws(
+            _ws(headers={"x-auth-user-id": "alice", "x-auth-tenant": "t1"}),
+            "named-session",
+            reg,
+            "/session",
+            log_label="test",
+        )
+    assert bridged == []
