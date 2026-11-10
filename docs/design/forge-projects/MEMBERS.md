@@ -115,6 +115,35 @@ A member's message makes the agent act on the session owner's credentials. This 
 invite and Members UI. A session a contributor starts in the project is theirs and runs on their
 own credentials. Per-member credentials inside one session are out of scope.
 
+### 7. Team integrations
+
+A project owner connects integrations for the whole team, the same way they manage members.
+A team connection is owned by the project, not a person: its `owner_id` is `project:<id>`, its
+`project_id` is set, and its credential is stored under the `project` credential owner
+(`credential_owner()` in `niuu.domain.models`). No per-person lookup finds it, and a missing
+team connection is an error, never a switch to someone's personal one.
+
+- **It acts as the team's bot or service account.** The catalog's `team_install` says how:
+  `oauth` is the provider's app install (a Slack bot; Linear with `actor=app`),
+  `client_credentials` is a service account minted into short-lived tokens and renewed by the
+  token refresher (an Atlassian service account for Jira). `team_only` integrations (Slack)
+  cannot be personal connections.
+- **Owners manage, members read** (`/api/v1/forge/projects/{id}/integrations`). An app install
+  starts at `POST /api/v1/integrations/oauth/{slug}/authorize-team`, and the callback checks
+  again that the installer still owns the project.
+- **Team routes** forward a project's notifications through its messaging connection: one
+  notification rule per event, owned by the project (`needs_decision`, `person_question`,
+  `progress`, `errors`), each to a channel (one post per item) or to each person it is for (a
+  direct message to every recipient's copy, found by their identity-provider email).
+- **Ting** uses a project's team trackers for every member of it (the projects a member is on
+  come from Forge) and wraps each in a recorder.
+- **Every use is recorded** in `integration_usage`: connect, reconnect, disconnect, each team
+  post, and each tracker write Ting makes, with who it acted for.
+
+Not yet: team connections are not mounted into session pods (agents reach team trackers through
+Ting, not an MCP token in their pod), Forge's own tracker routes still list personal trackers
+only, and GitHub Issues has no team tracker because Ting has no GitHub Issues adapter.
+
 ## Phases
 
 1. **Members and access:** table, roles, REST, project and session access for members.

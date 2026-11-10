@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 
-from niuu.domain.models import IntegrationConnection, IntegrationType
+from niuu.domain.models import IntegrationConnection, IntegrationType, IntegrationUsage
 
 
 class IntegrationRepository(ABC):
@@ -42,3 +43,17 @@ class IntegrationRepository(ABC):
     @abstractmethod
     async def delete_connection(self, connection_id: str) -> None:
         """Delete a connection by ID."""
+
+
+class IntegrationUsageLog(ABC):
+    """Record of what a team connection was used for, and for whom."""
+
+    @abstractmethod
+    async def record(self, usage: IntegrationUsage) -> None:
+        """Store one use. Raises when it cannot: an unrecorded use is not allowed."""
+
+    @abstractmethod
+    async def list_for_project(
+        self, project_id: str, *, limit: int, before: datetime | None = None
+    ) -> list[IntegrationUsage]:
+        """The project's uses, newest first, ``limit`` per page, older than ``before``."""

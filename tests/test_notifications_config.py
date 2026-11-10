@@ -100,10 +100,11 @@ def test_delivery_defaults():
     assert config.integration_sinks == {
         "telegram": "niuu.adapters.notifications.telegram.TelegramNotificationSink",
         "webhook": "niuu.adapters.notifications.webhook.WebhookNotificationSink",
+        "slack": "niuu.adapters.notifications.slack.SlackNotificationSink",
     }
     assert config.public_web_url == ""
     assert config.session_link_path.format(session_id="s", notification_id="n") == (
-        "/volundr/session/s#notification-n"
+        "/volundr/sessions/s#notification-n"
     )
     assert (
         NotificationsConfig(dispatcher={"default_rate_limit": None}).dispatcher.default_rate_limit

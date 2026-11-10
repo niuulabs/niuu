@@ -75,6 +75,9 @@ from volundr.adapters.inbound.conversation_voice import VOICE_DETAIL, voice_page
 from volundr.adapters.inbound.durable_transcripts import DurableTranscripts
 from volundr.adapters.inbound.forge_session_auth import require_bound_session
 from volundr.adapters.inbound.rest_guild import own_instance
+from volundr.adapters.inbound.rest_project_integrations import (
+    create_project_integrations_router,
+)
 from volundr.adapters.inbound.rest_projects import (
     create_projects_router,
     create_session_projects_router,
@@ -2408,6 +2411,7 @@ def create_router(
     preview_edge_limit: int = PREVIEW_EDGE_LIMIT,
     durable_transcripts: DurableTranscripts | None = None,
     project_service=None,
+    project_integration_service=None,
     runtime_build: dict | None = None,
     session_status_host: str | None = None,
     runtime_health_timeout: float = 3.0,
@@ -2586,6 +2590,10 @@ def create_router(
 
         router.include_router(create_projects_router(project_service, project_principal))
         router.include_router(create_session_projects_router(project_service, project_principal))
+        if project_integration_service is not None:
+            router.include_router(
+                create_project_integrations_router(project_integration_service, project_principal)
+            )
 
     @router.get("/session-runtimes", tags=["Sessions"], response_model=SessionRuntimesResponse)
     async def get_session_runtimes() -> SessionRuntimesResponse:

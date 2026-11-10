@@ -18,8 +18,16 @@ from typing import Any
 
 import httpx
 
-from volundr.domain.models import IntegrationConnection, OAuthSpec, SecretType
+from niuu.domain.models import credential_owner
+from volundr.domain.models import (
+    IntegrationConnection,
+    OAuthSpec,
+    SecretType,
+    TeamInstallMethod,
+    TeamInstallSpec,
+)
 from volundr.domain.ports import CredentialStorePort, IntegrationRepository
+from volundr.domain.services.client_credentials import ClientCredentialsMinter
 from volundr.domain.services.integration_registry import IntegrationRegistry
 from volundr.domain.services.oauth_clients import DEFAULT_APP, OAuthClientRegistry
 
@@ -47,6 +55,7 @@ class OAuthTokenRefreshService:
         integration_registry: IntegrationRegistry,
         credential_store: CredentialStorePort,
         clients: OAuthClientRegistry,
+        client_credentials_minter: ClientCredentialsMinter,
         refresh_skew_seconds: int = DEFAULT_REFRESH_SKEW_SECONDS,
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     ) -> None:
@@ -54,6 +63,7 @@ class OAuthTokenRefreshService:
         self._registry = integration_registry
         self._store = credential_store
         self._clients = clients
+        self._minter = client_credentials_minter
         self._skew = timedelta(seconds=int(refresh_skew_seconds))
         self._timeout = float(request_timeout)
 
@@ -66,22 +76,32 @@ class OAuthTokenRefreshService:
         await self._clients.load()
         for connection in await self._repository.list_connections_global(enabled_only=True):
             definition = self._registry.get_definition(connection.slug)
-            if definition is None or definition.oauth is None:
+            if definition is None:
                 continue
-            stored = await self._store.get("user", connection.owner_id, connection.credential_name)
+            team_spec = _client_credentials_spec(definition.team_install)
+            if team_spec is None and definition.oauth is None:
+                continue
+            stored = await self._store.get(
+                *credential_owner(connection), connection.credential_name
+            )
             if stored and stored.metadata.get("renewal_owner"):
                 continue
             values = await self._store.get_value(
-                "user", connection.owner_id, connection.credential_name
+                *credential_owner(connection), connection.credential_name
             )
-            if not values or not values.get("refresh_token"):
+            if not values:
                 continue
-            expires_at = _parse(values.get("expires_at"))
-            if expires_at is None or expires_at - now > self._skew:
+            mints = team_spec is not None and bool(values.get("client_id"))
+            if mints and not self._mint_due(values, now):
+                continue
+            if not mints and not self._refresh_due(definition.oauth, values, now):
                 continue
             label = f"{connection.slug}/{connection.owner_id}/{connection.credential_name}"
             try:
-                await self._refresh(connection, definition.oauth, values, now)
+                if mints:
+                    await self._mint(connection, team_spec, values, now)
+                else:
+                    await self._refresh(connection, definition.oauth, values, now)
             except Exception as exc:
                 logger.error("Token refresh for %s failed: %s", label, exc)
                 await self._mark(
@@ -91,6 +111,40 @@ class OAuthTokenRefreshService:
                 continue
             report.refreshed.append(label)
         return report
+
+    def _mint_due(self, values: dict[str, str], now: datetime) -> bool:
+        """A service account's token is due when absent or inside the skew window."""
+        expires_at = _parse(values.get("expires_at"))
+        if not values.get("access_token") or expires_at is None:
+            return True
+        return expires_at - now <= self._skew
+
+    def _refresh_due(self, oauth: OAuthSpec | None, values: dict[str, str], now: datetime) -> bool:
+        if oauth is None or not values.get("refresh_token"):
+            return False
+        expires_at = _parse(values.get("expires_at"))
+        if expires_at is None:
+            return False
+        return expires_at - now <= self._skew
+
+    async def _mint(
+        self,
+        connection: IntegrationConnection,
+        spec: TeamInstallSpec,
+        values: dict[str, str],
+        now: datetime,
+    ) -> None:
+        minted = await self._minter.mint(spec, values)
+        await self._save(
+            connection,
+            minted,
+            {
+                "auth_state": "active",
+                "auth_expires_at": minted["expires_at"],
+                "auth_refreshed_at": now.isoformat(),
+            },
+            clear_error=True,
+        )
 
     async def _refresh(
         self,
@@ -162,7 +216,7 @@ class OAuthTokenRefreshService:
         self, connection: IntegrationConnection, *, state: str, error_code: str
     ) -> None:
         values = await self._store.get_value(
-            "user", connection.owner_id, connection.credential_name
+            *credential_owner(connection), connection.credential_name
         )
         await self._save(
             connection,
@@ -179,7 +233,7 @@ class OAuthTokenRefreshService:
         *,
         clear_error: bool,
     ) -> None:
-        stored = await self._store.get("user", connection.owner_id, connection.credential_name)
+        stored = await self._store.get(*credential_owner(connection), connection.credential_name)
         metadata = dict(stored.metadata) if stored is not None else {}
         metadata.update(
             {k: v for k, v in metadata_update.items() if v != ""}
@@ -188,13 +242,18 @@ class OAuthTokenRefreshService:
         if clear_error:
             metadata.pop("auth_error_code", None)
         await self._store.store(
-            "user",
-            connection.owner_id,
+            *credential_owner(connection),
             connection.credential_name,
             stored.secret_type if stored is not None else SecretType.OAUTH_TOKEN,
             values,
             metadata,
         )
+
+
+def _client_credentials_spec(spec: TeamInstallSpec | None) -> TeamInstallSpec | None:
+    if spec is None or spec.method is not TeamInstallMethod.CLIENT_CREDENTIALS:
+        return None
+    return spec
 
 
 def _parse(raw: object) -> datetime | None:

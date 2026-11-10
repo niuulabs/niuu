@@ -2311,6 +2311,15 @@ class IntegrationDefinitionConfig(BaseModel):
             "('bearer' or a header name) and optional extra headers."
         ),
     )
+    team_install: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Lets a project owner install this integration for the project's team, acting "
+            "as a bot or service account: {method: oauth, authorize_params, scopes} for the "
+            "provider's app install, or {method: client_credentials, token_url, "
+            "token_params} for a service account. Absent: personal connections only."
+        ),
+    )
 
 
 GITHUB_DEVICE_AUTHORIZATION_URL = "https://github.com/login/device/code"
@@ -2512,6 +2521,14 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "credential_field": "access_token",
                 "default_credential_name": "jira-signin",
             },
+            # A team's Jira is an Atlassian service account's OAuth 2.0 client
+            # credentials, minted into short-lived tokens; it needs cloud_id.
+            team_install={
+                "method": "client_credentials",
+                "token_url": "https://auth.atlassian.com/oauth/token",
+                "token_params": {"audience": "api.atlassian.com"},
+                "required_config": ["cloud_id"],
+            },
         ),
         IntegrationDefinitionConfig(
             slug="linear",
@@ -2531,6 +2548,15 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "token_field": "api_key",
             },
             auth_type="api_key",
+            oauth=OAuthSpecConfig(
+                authorize_url="https://linear.app/oauth/authorize",
+                token_url="https://api.linear.app/oauth/token",
+                # Linear takes a comma-separated scope list.
+                extra_authorize_params={"scope": "read,write,issues:create,comments:create"},
+                client_secret_required=True,
+            ),
+            # A team's Linear is the OAuth app acting as itself, never as the installer.
+            team_install={"method": "oauth", "authorize_params": {"actor": "app"}},
         ),
         IntegrationDefinitionConfig(
             slug="anthropic",
@@ -2704,6 +2730,45 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 },
             },
             auth_type="api_key",
+        ),
+        IntegrationDefinitionConfig(
+            slug="slack",
+            name="Slack",
+            description=(
+                "Slack bot for a project team: posts to a team channel and messages a "
+                "person directly when something waits on them"
+            ),
+            integration_type="messaging",
+            # Forge delivers through the slug's sink (notifications.integration_sinks).
+            adapter="",
+            icon="slack",
+            credential_schema={
+                "required": ["access_token"],
+                "properties": {"access_token": {"label": "Bot token", "type": "password"}},
+            },
+            config_schema={
+                "properties": {
+                    "channel": {
+                        "label": "Team channel",
+                        "type": "string",
+                        "description": (
+                            "Where team posts go, for example #payments-team. Invite the "
+                            "bot to the channel first."
+                        ),
+                    },
+                },
+            },
+            auth_type="oauth2_authorization_code",
+            oauth=OAuthSpecConfig(
+                authorize_url="https://slack.com/oauth/v2/authorize",
+                token_url="https://slack.com/api/oauth.v2.access",
+                # Slack takes a comma-separated bot scope list.
+                extra_authorize_params={
+                    "scope": "chat:write,im:write,users:read,users:read.email",
+                },
+                client_secret_required=True,
+            ),
+            team_install={"method": "oauth", "team_only": True},
         ),
     ]
 
@@ -3407,6 +3472,14 @@ class ProjectsConfig(BaseModel):
     git_timeout_seconds: float = Field(default=15.0, gt=0)
     dispatch_wait_seconds: float = Field(default=30.0, gt=0)
     dispatch_poll_seconds: float = Field(default=0.05, gt=0)
+    team_usage_page_size: int = Field(
+        default=50,
+        ge=1,
+        description=(
+            "Uses of a project's team integrations returned per page; older uses are "
+            "paged with `before`, never dropped."
+        ),
+    )
 
 
 class Settings(BaseSettings):

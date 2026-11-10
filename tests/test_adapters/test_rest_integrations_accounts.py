@@ -227,3 +227,26 @@ def test_mcp_connection_test_uses_internal_host_allowlist(tmp_path, monkeypatch)
 
     assert result["success"] is True, result
     assert initialized == [(url, ("*.asgard.niuu.world",), {"Authorization": "Bearer test-access"})]
+
+
+def test_a_team_only_integration_is_not_a_personal_connection(tmp_path) -> None:
+    client, _ = _client(tmp_path)
+
+    response = client.post(
+        "/api/v1/integrations",
+        json={"slug": "slack", "config": {}, "credential": {"name": "s", "data": {"a": "b"}}},
+    )
+
+    assert response.status_code == 422
+    assert "project's Team integrations" in response.json()["detail"]
+
+
+def test_the_catalog_says_how_each_integration_is_installed_for_a_team(tmp_path) -> None:
+    client, _ = _client(tmp_path)
+
+    catalog = {e["slug"]: e for e in client.get("/api/v1/integrations/catalog").json()}
+
+    assert (catalog["slack"]["team_install"], catalog["slack"]["team_only"]) == ("oauth", True)
+    assert catalog["linear"]["team_install"] == "oauth"
+    assert catalog["jira"]["team_install"] == "client_credentials"
+    assert (catalog["github"]["team_install"], catalog["github"]["team_only"]) == ("", False)

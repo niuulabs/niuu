@@ -17,6 +17,8 @@ from volundr.domain.models import (
     IntegrationType,
     MCPServerSpec,
     OAuthSpec,
+    TeamInstallMethod,
+    TeamInstallSpec,
 )
 
 logger = logging.getLogger(__name__)
@@ -167,6 +169,27 @@ def definitions_from_config(
                 default_credential_name=enrollment_raw["default_credential_name"],
             )
 
+        team_raw = item.get("team_install")
+        team_spec: TeamInstallSpec | None = None
+        if team_raw:
+            team_spec = TeamInstallSpec(
+                method=TeamInstallMethod(team_raw["method"]),
+                authorize_params=dict(team_raw.get("authorize_params") or {}),
+                scopes=tuple(team_raw.get("scopes") or ()),
+                token_url=str(team_raw.get("token_url") or ""),
+                token_params=dict(team_raw.get("token_params") or {}),
+                required_config=tuple(team_raw.get("required_config") or ()),
+                team_only=bool(team_raw.get("team_only", False)),
+            )
+            if team_spec.method is TeamInstallMethod.OAUTH and oauth_spec is None:
+                raise ValueError(
+                    f"Integration {item['slug']!r} declares team_install oauth but has no oauth"
+                )
+            if team_spec.method is TeamInstallMethod.CLIENT_CREDENTIALS and not team_spec.token_url:
+                raise ValueError(
+                    f"Integration {item['slug']!r} team_install client_credentials needs token_url"
+                )
+
         defn = IntegrationDefinition(
             slug=item["slug"],
             name=item["name"],
@@ -185,6 +208,7 @@ def definitions_from_config(
             credential_enrollment=enrollment_spec,
             model_vendor=item.get("model_vendor", ""),
             key_probe=item.get("key_probe") or {},
+            team_install=team_spec,
         )
         result.append(defn)
         logger.debug("Loaded integration definition: %s", defn.slug)

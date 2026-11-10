@@ -50,6 +50,7 @@ from volundr.domain.notifications import (
     PendingNotificationImage,
     ProcessedNotificationImage,
     ReadWatermark,
+    rule_owner_keys,
     rules_matching,
 )
 
@@ -369,7 +370,7 @@ class PostgresNotificationRepository(NotificationRepository):
     async def _schedule_deliveries(
         conn: asyncpg.Connection, notifications: list[Notification]
     ) -> None:
-        owners = sorted({notification.owner_id for notification in notifications})
+        owners = sorted({key for n in notifications for key in rule_owner_keys(n)})
         rows = await conn.fetch(SELECT_RULES_FOR_OWNERS_SQL, owners)
         rules = [row_to_rule(row) for row in rows]
         args = [

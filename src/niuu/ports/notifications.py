@@ -68,6 +68,12 @@ class OutboundNotification:
     #: channel it came from (``None`` for the resident's main room).
     resident_id: str | None = None
     resident_session_id: str | None = None
+    #: Set by a project's team route: where a team sink posts (a channel such as
+    #: ``#payments-team``). ``None`` uses the connection's own default destination.
+    destination: str | None = None
+    #: Set by a team route that messages each recipient directly: the email of the
+    #: person this row is for (``owner_id``), from the identity provider's record.
+    recipient_email: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
         """The full notification as JSON-safe data (used by webhook-style sinks)."""
