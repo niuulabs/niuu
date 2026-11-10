@@ -383,6 +383,8 @@ export interface VolundrSession {
   /** True when the session is blocked waiting on the user (awaiting_input). */
   needsAttention?: boolean;
   ownerId?: string;
+  /** Who owns the session, by name, on a session shared with the caller (when known). */
+  ownerName?: string;
   tenantId?: string;
   instanceId?: string;
   instanceName?: string;
@@ -406,6 +408,52 @@ export function isSharedSession(session: Pick<VolundrSession, 'room'>): boolean 
   return session.room !== undefined && session.room.role !== 'owner';
 }
 
+/** An invitation to this chat the caller has not answered: they cannot read the session yet. */
+export function isInvitation(session: Pick<VolundrSession, 'room'>): boolean {
+  return session.room?.participantStatus === 'invited';
+}
+
+/** The role a per-session invitation offers, and the room role a project role gives. */
+export type ParticipantRole = 'viewer' | 'approver';
+export const PARTICIPANT_ROLES: readonly ParticipantRole[] = ['viewer', 'approver'];
+
+/** Where a person's grant on a chat stands. A removed grant is never listed. */
+export type ParticipantStatus = 'invited' | 'active';
+
+/** One person invited into a single chat, or already in it. */
+export interface SessionParticipant {
+  userId: string;
+  displayName: string;
+  role: ParticipantRole;
+  status: ParticipantStatus;
+  /** Who invited them (a user id). */
+  invitedBy: string;
+  expiresAt: string | null;
+}
+
+/** A member of the session's org who could be invited into the chat. */
+export interface ParticipantCandidate {
+  userId: string;
+  displayName: string;
+  email: string;
+}
+
+/**
+ * A member of the session's project, with the room role the project gives them on the
+ * project's sessions: approver and owner approve, viewer and contributor chat and steer.
+ */
+export interface SessionProjectPerson {
+  userId: string;
+  displayName: string;
+  projectRole: ProjectRole;
+  roomRole: ParticipantRole;
+}
+
+/** The room role a project role gives (`room_role_for_project_role`). */
+export function roomRoleOfProjectRole(role: ProjectRole): ParticipantRole {
+  return role === 'approver' || role === 'owner' ? 'approver' : 'viewer';
+}
+
 /** How a shared session reads in a list: "Shared · approver". */
 export function sharedSessionLabel(room: SessionRoom): string {
   return `Shared · ${room.role}`;
@@ -417,7 +465,8 @@ export function sharedSessionLabel(room: SessionRoom): string {
  * whether to offer the control.
  */
 export function canAnswerGates(session: Pick<VolundrSession, 'room'>): boolean {
-  return session.room === undefined || session.room.role !== 'viewer';
+  if (session.room === undefined) return true;
+  return session.room.role !== 'viewer' && session.room.participantStatus !== 'invited';
 }
 
 /**

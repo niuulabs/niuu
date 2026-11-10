@@ -146,6 +146,7 @@ import './LiveSessionDetailPage.css';
 import { useSessionTabs } from './ForgeSessionSettings';
 import { useForgePreference } from './useForgePreference';
 import { SessionEnvironment } from './SessionEnvironment';
+import { SessionPeopleButton } from './SessionPeople';
 import { SessionRuntimeVersion } from './SessionRuntimeVersion';
 import { modelLabel } from '@niuulabs/domain';
 import {
@@ -4572,6 +4573,12 @@ function LiveSessionDetailPageInner({
                     }
                   />
                 )}
+                {liveSession && !readOnly ? (
+                  <SessionPeopleButton
+                    session={liveSession}
+                    onLeft={() => void navigate({ to: '/volundr/sessions', replace: true })}
+                  />
+                ) : null}
                 {shared ? null : (
                   <>
                     <SessionToolbarButton

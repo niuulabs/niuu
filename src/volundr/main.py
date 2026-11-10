@@ -1881,6 +1881,9 @@ def create_app(
                     )
 
                 session_participant_service.set_revocation_notifier(_close_revoked_connections)
+            if notification_service is not None:
+                # An invitation is announced to the invitee and settled when answered.
+                session_participant_service.set_invitation_notices(notification_service)
 
             archive_store = _create_archive_store(settings)
             archive_service = SessionArchiveService(

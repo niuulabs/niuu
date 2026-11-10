@@ -27,6 +27,7 @@ from volundr.domain.session_participants import (
     InviteeNotFoundError,
     OwnerInviteError,
     ParticipantAlreadyActiveError,
+    ParticipantCandidate,
     ParticipantNotFoundError,
     ParticipantRole,
     ParticipantStateError,
@@ -178,6 +179,9 @@ class ParticipantResponse(BaseModel):
 
     session_id: UUID
     user_id: str
+    display_name: str = Field(
+        default="", description="The person's name where the directory has one (listings only)"
+    )
     tenant_id: str
     role: str
     status: str
@@ -187,10 +191,13 @@ class ParticipantResponse(BaseModel):
     expires_at: datetime | None = None
 
     @classmethod
-    def from_participant(cls, participant: SessionParticipant) -> ParticipantResponse:
+    def from_participant(
+        cls, participant: SessionParticipant, display_name: str = ""
+    ) -> ParticipantResponse:
         return cls(
             session_id=participant.session_id,
             user_id=participant.user_id,
+            display_name=display_name,
             tenant_id=participant.tenant_id,
             role=participant.role.value,
             status=participant.status.value,
@@ -199,6 +206,18 @@ class ParticipantResponse(BaseModel):
             updated_at=participant.updated_at,
             expires_at=participant.expires_at,
         )
+
+
+class MyParticipationResponse(BaseModel):
+    """What the caller is to a session: their room role and their own grant, if any."""
+
+    session_id: UUID
+    user_id: str
+    room_role: str | None = Field(
+        default=None,
+        description="owner/approver/viewer; null while an invitation is still unanswered",
+    )
+    grant: ParticipantResponse | None = None
 
 
 class EffectiveRoomRoleResponse(BaseModel):
@@ -318,6 +337,49 @@ def create_session_participants_router(
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return ParticipantResponse.from_participant(participant)
 
+    @router.get(
+        "/sessions/{session_id}/participant-candidates",
+        response_model=list[ParticipantCandidate],
+    )
+    async def participant_candidates(
+        request: Request, session_id: UUID, q: str = Query("")
+    ) -> list[ParticipantCandidate]:
+        """Active people of the session's org who could be invited into its chat.
+
+        For the owner and admins. Not the owner, and not anyone already invited or in the
+        chat; someone removed earlier can be invited again."""
+        principal = await extract_principal(request)
+        session = await _get_session(session_id)
+        try:
+            return await service.candidates(session, principal, q)
+        except SessionAccessDeniedError:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "Not authorized to invite participants"
+            ) from None
+
+    @router.get(
+        "/sessions/{session_id}/participants/me",
+        response_model=MyParticipationResponse,
+    )
+    async def my_participation(request: Request, session_id: UUID) -> MyParticipationResponse:
+        """The caller's own standing in the session: room role and grant.
+
+        Answers anyone with any relation to the session, an invitee who has not accepted
+        yet included, and nobody else (the same 404 as a session that does not exist). It
+        is how a gateway finds the node that holds the session for a person who cannot
+        read it yet, and how a client learns whether an invitation is still open."""
+        principal = await extract_principal(request)
+        session = await _get_session(session_id)
+        role, grant = await service.participation(session, principal)
+        if role is None and grant is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+        return MyParticipationResponse(
+            session_id=session.id,
+            user_id=principal.user_id,
+            room_role=role,
+            grant=ParticipantResponse.from_participant(grant) if grant is not None else None,
+        )
+
     @router.post(
         "/sessions/{session_id}/participants/accept",
         response_model=ParticipantResponse,
@@ -367,7 +429,10 @@ def create_session_participants_router(
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN, "Not authorized to list participants"
             ) from None
-        return [ParticipantResponse.from_participant(p) for p in participants]
+        names = await service.display_names({p.user_id for p in participants})
+        return [
+            ParticipantResponse.from_participant(p, names.get(p.user_id, "")) for p in participants
+        ]
 
     if room_role_source == "remote":
 

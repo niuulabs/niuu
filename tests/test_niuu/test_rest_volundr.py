@@ -2607,7 +2607,7 @@ def test_a_room_view_no_node_grants_is_not_found() -> None:
 def test_session_people_come_from_the_owning_node() -> None:
     session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
     client = _client([_instance("alpha", base_url="http://alpha")])
-    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}").mock(
+    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}/participants/me").mock(
         return_value=Response(200, json={"id": session_id})
     )
     people = [{"user_id": "alice", "role": "owner", "can_answer_gates": True}]
@@ -2625,7 +2625,7 @@ def test_session_people_come_from_the_owning_node() -> None:
 def test_a_session_without_a_project_is_the_nodes_409_not_an_empty_list() -> None:
     session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
     client = _client([_instance("alpha", base_url="http://alpha")])
-    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}").mock(
+    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}/participants/me").mock(
         return_value=Response(200, json={"id": session_id})
     )
     respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}/people").mock(
@@ -2677,7 +2677,7 @@ def test_person_questions_reach_the_session_owner_with_forges_answer(
 def test_a_malformed_people_answer_is_a_bad_gateway() -> None:
     session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
     client = _client([_instance("alpha", base_url="http://alpha")])
-    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}").mock(
+    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}/participants/me").mock(
         return_value=Response(200, json={"id": session_id})
     )
     respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}/people").mock(
@@ -3465,5 +3465,127 @@ def test_compute_hosts_reject_an_invisible_instance() -> None:
     client = _client([_instance("private", base_url="http://private", tenant_id="other")])
 
     response = client.get("/api/v1/forge/compute/hosts?instance_id=private", headers=_headers())
+
+    assert response.status_code == 404
+
+
+SESSION = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
+NODE = f"http://alpha/api/v1/forge/sessions/{SESSION}"
+GATEWAY = f"/api/v1/forge/sessions/{SESSION}"
+
+
+def _holds_the_session(*, role: str | None = None) -> None:
+    """The node answers the caller's own-standing probe, as it does for an invitee."""
+    respx.get(f"{NODE}/participants/me").mock(
+        return_value=Response(
+            200, json={"session_id": SESSION, "user_id": "u", "room_role": role, "grant": None}
+        )
+    )
+
+
+@respx.mock
+def test_an_invitee_who_cannot_read_the_session_still_reaches_the_node_that_holds_it() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    _holds_the_session()
+    full_read = respx.get(NODE).mock(return_value=Response(403, json={"detail": "Access denied"}))
+    accept = respx.post(f"{NODE}/participants/accept").mock(
+        return_value=Response(200, json={"status": "active", "role": "viewer"})
+    )
+
+    response = client.post(f"{GATEWAY}/participants/accept", headers=_headers())
+
+    assert response.status_code == 200 and response.json()["status"] == "active"
+    assert accept.calls.last.request.headers["authorization"] == "Bearer test-token"
+    assert not full_read.called
+
+
+@respx.mock
+def test_an_invitation_is_forwarded_with_its_body_and_answered_201() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    _holds_the_session(role="owner")
+    invite = respx.post(f"{NODE}/participants").mock(
+        return_value=Response(201, json={"user_id": "ivan", "status": "invited"})
+    )
+
+    response = client.post(
+        f"{GATEWAY}/participants", json={"user_id": "ivan", "role": "approver"}, headers=_headers()
+    )
+
+    assert response.status_code == 201 and response.json()["status"] == "invited"
+    assert json.loads(invite.calls.last.request.content) == {"user_id": "ivan", "role": "approver"}
+
+
+@respx.mock
+def test_a_refused_invitation_keeps_the_nodes_status_and_reason() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    _holds_the_session(role="owner")
+    respx.post(f"{NODE}/participants").mock(
+        return_value=Response(422, json={"detail": "Cannot invite this user"})
+    )
+
+    response = client.post(
+        f"{GATEWAY}/participants", json={"user_id": "x", "role": "viewer"}, headers=_headers()
+    )
+
+    assert response.status_code == 422
+    assert "Cannot invite this user" in response.json()["detail"]
+
+
+@respx.mock
+def test_removing_a_participant_answers_204_and_encodes_the_user() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    _holds_the_session(role="owner")
+    removal = respx.delete(f"{NODE}/participants/ivan%40example.test").mock(
+        return_value=Response(204)
+    )
+
+    response = client.delete(f"{GATEWAY}/participants/ivan%40example.test", headers=_headers())
+
+    assert response.status_code == 204 and removal.called
+
+
+@respx.mock
+def test_participants_and_candidates_are_lists_from_the_node() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    _holds_the_session(role="owner")
+    respx.get(f"{NODE}/participants").mock(return_value=Response(200, json=[{"user_id": "ivan"}]))
+    candidates = respx.get(f"{NODE}/participant-candidates").mock(
+        return_value=Response(200, json=[{"user_id": "zed", "display_name": "Zed"}])
+    )
+
+    assert client.get(f"{GATEWAY}/participants", headers=_headers()).json() == [{"user_id": "ivan"}]
+    found = client.get(f"{GATEWAY}/participant-candidates", params={"q": "ze"}, headers=_headers())
+
+    assert found.json() == [{"user_id": "zed", "display_name": "Zed"}]
+    assert candidates.calls.last.request.url.params["q"] == "ze"
+
+
+@respx.mock
+def test_a_participant_list_that_is_not_a_list_is_a_bad_gateway() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    _holds_the_session(role="owner")
+    respx.get(f"{NODE}/participants").mock(return_value=Response(200, json={"x": 1}))
+
+    assert client.get(f"{GATEWAY}/participants", headers=_headers()).status_code == 502
+
+
+@respx.mock
+def test_my_participation_is_the_nodes_answer() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    _holds_the_session(role="approver")
+
+    response = client.get(f"{GATEWAY}/participants/me", headers=_headers())
+
+    assert response.status_code == 200 and response.json()["room_role"] == "approver"
+
+
+@respx.mock
+def test_a_session_nobody_holds_for_this_caller_is_not_found() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get(f"{NODE}/participants/me").mock(
+        return_value=Response(404, json={"detail": "Session not found"})
+    )
+
+    response = client.post(f"{GATEWAY}/participants/accept", headers=_headers())
 
     assert response.status_code == 404

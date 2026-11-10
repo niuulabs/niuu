@@ -530,6 +530,15 @@ async function sessionFixture(page: Page) {
     chat_endpoint: `${origin.replace('http:', 'ws:')}/forge-host/thor/s/review/session`,
     created_at: '2026-09-23T09:00:00Z',
   };
+  // Who is looking: the session header asks, to decide who may manage the chat's people.
+  const viewer = {
+    userId: 'u1',
+    email: 'dev@niuu.world',
+    tenantId: 't1',
+    roles: ['user'],
+    displayName: 'Dev',
+    status: 'active',
+  };
   const draft = {
     kind: 'milestone',
     severity: 'success',
@@ -609,13 +618,15 @@ async function sessionFixture(page: Page) {
     return route.fulfill({
       json: path.endsWith('/sessions/review')
         ? session
-        : path.endsWith('/sessions')
-          ? [session]
-          : path.includes('/features/modules')
-            ? [{ key: 'chat', scope: 'session', enabled: true, label: 'Chat', order: 0 }]
-            : path.includes('/stats') || path.endsWith('/read-state')
-              ? {}
-              : [],
+        : path.endsWith('/identity/me')
+          ? viewer
+          : path.endsWith('/sessions')
+            ? [session]
+            : path.includes('/features/modules')
+              ? [{ key: 'chat', scope: 'session', enabled: true, label: 'Chat', order: 0 }]
+              : path.includes('/stats') || path.endsWith('/read-state')
+                ? {}
+                : [],
     });
   });
 }

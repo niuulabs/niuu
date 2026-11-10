@@ -77,6 +77,27 @@ class SessionParticipant(BaseModel):
             return True
         return self.expires_at > datetime.now(UTC)
 
+    @property
+    def is_pending(self) -> bool:
+        """An invitation that has not been answered and has not expired.
+
+        The invitee may see the session in their list to accept or decline it, but a
+        pending grant gives no room access: Cedar sees only ``is_active`` grants.
+        """
+        if self.status != ParticipantStatus.INVITED:
+            return False
+        if self.expires_at is None:
+            return True
+        return self.expires_at > datetime.now(UTC)
+
+
+class ParticipantCandidate(BaseModel):
+    """An active member of a session's org who could be invited into its chat."""
+
+    user_id: str
+    display_name: str
+    email: str
+
 
 class ParticipantNotFoundError(LookupError):
     """No participant grant exists for this (session, user) pair."""

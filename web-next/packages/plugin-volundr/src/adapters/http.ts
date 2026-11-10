@@ -72,9 +72,13 @@ import type {
   SessionStartup,
   StartupStageState,
   ForgeProject,
+  ParticipantRole,
+  ParticipantStatus,
+  ProjectRole,
+  SessionParticipant,
   SessionRoomRole,
 } from '../models/volundr.model';
-import { isSharedSession } from '../models/volundr.model';
+import { isSharedSession, roomRoleOfProjectRole } from '../models/volundr.model';
 import { normalizeSecretRequest, type SecretRequestPayload } from './secretRequestWire';
 import { SessionForkError, SessionReadStateConflictError } from '../domain/session';
 import type { SessionRuntimeOffer } from '../domain/sessionRuntimes';
@@ -148,6 +152,45 @@ function projectMembersPath(
   if (project.instance_id) params.set('instance_id', project.instance_id);
   const search = params.toString();
   return `/projects/${encodeURIComponent(project.id)}/${tail}${search ? `?${search}` : ''}`;
+}
+
+type ParticipantPayload = {
+  user_id: string;
+  display_name?: string;
+  role: ParticipantRole;
+  status: ParticipantStatus | 'revoked';
+  invited_by?: string;
+  expires_at?: string | null;
+};
+
+function normalizeParticipant(payload: ParticipantPayload): SessionParticipant {
+  return {
+    userId: payload.user_id,
+    displayName: payload.display_name ?? '',
+    role: payload.role,
+    status: payload.status === 'invited' ? 'invited' : 'active',
+    invitedBy: payload.invited_by ?? '',
+    expiresAt: payload.expires_at ?? null,
+  };
+}
+
+type SessionPersonPayload = {
+  user_id: string;
+  display_name?: string;
+  role: ProjectRole;
+};
+
+/** A session's chat route (people, invitations), on the host that holds the session. */
+function sessionPeoplePath(
+  id: string,
+  tail: string,
+  instanceId?: string,
+  query: Record<string, string> = {},
+): string {
+  const params = new URLSearchParams(query);
+  if (instanceId) params.set('instance_id', instanceId);
+  const search = params.toString();
+  return `/sessions/${encodeURIComponent(id)}/${tail}${search ? `?${search}` : ''}`;
 }
 
 function sessionProjectPath(id: string, instanceId?: string): string {
@@ -235,6 +278,7 @@ type SessionPayload = {
   activity_metadata?: Record<string, unknown> | null;
   ownerId?: string | null;
   owner_id?: string | null;
+  owner_name?: string | null;
   tenantId?: string | null;
   tenant_id?: string | null;
   instanceId?: string | null;
@@ -652,6 +696,7 @@ function normalizeSession(session: SessionPayload): VolundrSession {
         }
       : {}),
     source: session.source ?? null,
+    ...(session.owner_name ? { ownerName: session.owner_name } : {}),
     ...(session.room
       ? {
           room: {
@@ -1690,6 +1735,11 @@ export function buildVolundrHttpAdapter(
     return { cursor: payload.cursor, ids: payload.ids, sessions: live };
   }
 
+  /** The host a session was listed from, when this client has seen it. */
+  function cachedInstanceId(sessionId: string): string | undefined {
+    return sessionCache.get(sessionId)?.instanceId ?? archivedSessionOwners.get(sessionId);
+  }
+
   function sessionPath(sessionId: string, suffix = '', explicitInstanceId?: string): string {
     const instanceId =
       explicitInstanceId ??
@@ -2224,6 +2274,73 @@ export function buildVolundrHttpAdapter(
     },
     getTeamIntegrationUsage: (project, before) =>
       forgeClient.get(projectMembersPath(project, 'integrations/usage', before ? { before } : {})),
+    getSessionParticipants: async (id, options) => {
+      const payload = await forgeClient.get<ParticipantPayload[]>(
+        sessionPeoplePath(id, 'participants', options?.instanceId ?? cachedInstanceId(id)),
+        { signal: options?.signal },
+      );
+      return payload.filter((entry) => entry.status !== 'revoked').map(normalizeParticipant);
+    },
+    getSessionProjectPeople: async (id, options) => {
+      try {
+        const payload = await forgeClient.get<SessionPersonPayload[]>(
+          sessionPeoplePath(id, 'people', options?.instanceId ?? cachedInstanceId(id)),
+          { signal: options?.signal },
+        );
+        return payload.map((person) => ({
+          userId: person.user_id,
+          displayName: person.display_name ?? '',
+          projectRole: person.role,
+          roomRole: roomRoleOfProjectRole(person.role),
+        }));
+      } catch (error) {
+        // 409 is Forge saying the session has no project: an answer, not a failure.
+        if (error instanceof ApiClientError && error.status === 409) return null;
+        throw error;
+      }
+    },
+    getParticipantCandidates: async (id, query, options) => {
+      const payload = await forgeClient.get<
+        Array<{ user_id: string; display_name: string; email: string }>
+      >(
+        sessionPeoplePath(
+          id,
+          'participant-candidates',
+          options?.instanceId ?? cachedInstanceId(id),
+          {
+            q: query,
+          },
+        ),
+        { signal: options?.signal },
+      );
+      return payload.map((person) => ({
+        userId: person.user_id,
+        displayName: person.display_name,
+        email: person.email,
+      }));
+    },
+    inviteSessionParticipant: async (id, invitation, options) =>
+      normalizeParticipant(
+        await forgeClient.post<ParticipantPayload>(
+          sessionPeoplePath(id, 'participants', options?.instanceId ?? cachedInstanceId(id)),
+          { user_id: invitation.userId, role: invitation.role },
+        ),
+      ),
+    acceptSessionInvitation: async (id, options) =>
+      normalizeParticipant(
+        await forgeClient.post<ParticipantPayload>(
+          sessionPeoplePath(id, 'participants/accept', options?.instanceId ?? cachedInstanceId(id)),
+        ),
+      ),
+    removeSessionParticipant: async (id, userId, options) => {
+      await forgeClient.delete(
+        sessionPeoplePath(
+          id,
+          `participants/${encodeURIComponent(userId)}`,
+          options?.instanceId ?? cachedInstanceId(id),
+        ),
+      );
+    },
     getSessionProject: async (id, options) => {
       const payload = await forgeClient.get<SessionProjectPayload>(
         sessionProjectPath(id, options?.instanceId),

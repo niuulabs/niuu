@@ -3,9 +3,11 @@
  */
 import type { SecretRequest } from '@niuulabs/domain';
 import type { IVolundrService } from '../ports/IVolundrService';
+import { roomRoleOfProjectRole } from '../models/volundr.model';
 import type {
   ForgeProject,
   ProjectMember,
+  SessionParticipant,
   TeamCatalogEntry,
   TeamIntegration,
   TeamIntegrationUse,
@@ -1355,6 +1357,13 @@ export function createMockVolundrService(): IVolundrService {
     { user_id: 'alice', display_name: 'Alice Lindqvist', email: 'alice@example.com' },
     { user_id: 'bram', display_name: 'Bram Koster', email: 'bram@example.com' },
   ];
+  /** The chats' per-session grants: session id -> people invited into it. */
+  const chatParticipants = new Map<string, SessionParticipant[]>();
+  const participantsOf = (sessionId: string): SessionParticipant[] => {
+    const held = chatParticipants.get(sessionId) ?? [];
+    chatParticipants.set(sessionId, held);
+    return held;
+  };
   const membersOf = (projectId: string): ProjectMember[] => {
     const members = projectMembers.get(projectId);
     if (!members) throw new Error('Project not found');
@@ -1538,6 +1547,69 @@ export function createMockVolundrService(): IVolundrService {
         throw new Error('Project changed; reload before saving');
       Object.assign(stored, changes, { revision: (stored.revision ?? 1) + 1 });
       return { ...stored };
+    },
+    getSessionParticipants: async (sessionId) =>
+      participantsOf(sessionId).map((participant) => ({ ...participant })),
+    getSessionProjectPeople: async (sessionId) => {
+      const projectId = sessions.find((session) => session.id === sessionId)?.coordination
+        ?.projectId;
+      if (!projectId) return null;
+      return membersOf(projectId).map((member) => ({
+        userId: member.user_id,
+        displayName: member.display_name,
+        projectRole: member.role,
+        roomRole: roomRoleOfProjectRole(member.role),
+      }));
+    },
+    getParticipantCandidates: async (sessionId, query) => {
+      const held = new Set(participantsOf(sessionId).map((participant) => participant.userId));
+      const needle = query.trim().toLowerCase();
+      return orgPeople
+        .filter(
+          (person) =>
+            !held.has(person.user_id) &&
+            (!needle ||
+              person.display_name.toLowerCase().includes(needle) ||
+              person.email.toLowerCase().includes(needle)),
+        )
+        .map((person) => ({
+          userId: person.user_id,
+          displayName: person.display_name,
+          email: person.email,
+        }));
+    },
+    inviteSessionParticipant: async (sessionId, invitation) => {
+      const person = orgPeople.find((candidate) => candidate.user_id === invitation.userId);
+      if (!person) throw new Error('Cannot invite this user');
+      const held = participantsOf(sessionId);
+      const invited: SessionParticipant = {
+        userId: person.user_id,
+        displayName: person.display_name,
+        role: invitation.role,
+        status: 'invited',
+        invitedBy: 'u1',
+        expiresAt: null,
+      };
+      const index = held.findIndex((participant) => participant.userId === invitation.userId);
+      if (index >= 0 && held[index]?.status === 'active')
+        throw new Error('That person is already in this chat; remove them first to change role');
+      if (index >= 0) held[index] = invited;
+      else held.push(invited);
+      return { ...invited };
+    },
+    acceptSessionInvitation: async (sessionId) => {
+      const mine = participantsOf(sessionId).find(
+        (participant) => participant.userId === 'u1' && participant.status === 'invited',
+      );
+      if (!mine) throw new Error('No invitation to accept');
+      mine.status = 'active';
+      return { ...mine };
+    },
+    removeSessionParticipant: async (sessionId, userId) => {
+      const held = participantsOf(sessionId);
+      const index = held.findIndex((participant) => participant.userId === userId);
+      if (index < 0) throw new Error('That person is not in this chat');
+      held.splice(index, 1);
     },
     getProjectMembers: async (project) => membersOf(project.id).map((member) => ({ ...member })),
     getProjectMemberCandidates: async (project, query) => {

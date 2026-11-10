@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
@@ -193,5 +193,85 @@ describe('SessionsPage shared sessions', () => {
     expect(screen.getByRole('button', { name: 'Actions for my-work' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Actions for alice-feature' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Actions for stranger-work' })).toBeNull();
+  });
+
+  describe('an invitation to a chat', () => {
+    const INVITATION = makeSession({
+      id: 'asked-in',
+      name: 'login-fix',
+      personaName: 'Login fix',
+      state: 'idle',
+      ownerId: 'olivia',
+      ownerName: 'Olivia Owner',
+      room: { role: 'approver', participantStatus: 'invited', expiresAt: null },
+    });
+
+    it('shows as an invitation with Join and Decline, not as a shared session', async () => {
+      setup([...SESSIONS, INVITATION]);
+
+      const row = await screen.findByTestId('pod-entry-asked-in');
+      const entry = row.closest('.forge-session-row') as HTMLElement;
+      expect(within(entry).getByTestId('session-shared-asked-in')).toHaveTextContent(
+        'Invited by Olivia Owner · approver',
+      );
+      expect(within(entry).getByRole('button', { name: 'Join' })).toBeInTheDocument();
+      expect(within(entry).getByRole('button', { name: 'Decline' })).toBeInTheDocument();
+      expect(within(entry).queryByRole('button', { name: /Actions for/ })).toBeNull();
+    });
+
+    it('is answered from the list: joining accepts and opens the chat', async () => {
+      const volundr = setup([...SESSIONS, INVITATION]);
+      volundr.acceptSessionInvitation = vi.fn().mockResolvedValue({});
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Join' }));
+
+      await waitFor(() =>
+        expect(volundr.acceptSessionInvitation).toHaveBeenCalledWith('asked-in', expect.anything()),
+      );
+      await waitFor(() =>
+        expect(navigate).toHaveBeenCalledWith({
+          to: '/volundr/sessions/$sessionId',
+          params: { sessionId: 'asked-in' },
+        }),
+      );
+    });
+
+    it('shows the invitation, not the chat, when the invited session is the one open', async () => {
+      params = { sessionId: 'asked-in' };
+      setup([...SESSIONS, INVITATION]);
+
+      expect(await screen.findByTestId('invitation-pane')).toHaveTextContent('login-fix');
+      expect(screen.queryByTestId('live-session-detail-page')).not.toBeInTheDocument();
+    });
+
+    it('leaves the open invitation when it is declined', async () => {
+      params = { sessionId: 'asked-in' };
+      const volundr = setup([...SESSIONS, INVITATION]);
+      volundr.getIdentity = vi.fn().mockResolvedValue({
+        userId: 'ivan',
+        email: 'i@x.test',
+        tenantId: 't',
+        roles: [],
+        displayName: 'Ivan',
+        status: 'active',
+      });
+      volundr.removeSessionParticipant = vi.fn().mockResolvedValue(undefined);
+
+      const pane = await screen.findByTestId('invitation-pane');
+      const decline = within(pane).getByRole('button', { name: 'Decline' });
+      await waitFor(() => expect(decline).toBeEnabled());
+      fireEvent.click(decline);
+
+      await waitFor(() =>
+        expect(volundr.removeSessionParticipant).toHaveBeenCalledWith(
+          'asked-in',
+          'ivan',
+          expect.anything(),
+        ),
+      );
+      await waitFor(() =>
+        expect(navigate).toHaveBeenCalledWith({ to: '/volundr/sessions', replace: true }),
+      );
+    });
   });
 });

@@ -1215,6 +1215,7 @@ describe('buildServices', () => {
       source: null,
       room,
       ownerId: 'alice',
+      ownerName: 'Alice Smith',
       coordination: { projectId: 'p1', role: 'worker' },
       lastActive: 0,
     });
@@ -1225,6 +1226,7 @@ describe('buildServices', () => {
       id: 'shared-1',
       room,
       ownerId: 'alice',
+      ownerName: 'Alice Smith',
       coordination: { projectId: 'p1', role: 'worker' },
     });
     expect(session.source).toBeUndefined();

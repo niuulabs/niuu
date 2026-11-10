@@ -110,3 +110,32 @@ async def test_list_active_for_user_queries_by_user_id():
     sql = pool.fetch.call_args.args[0]
     assert "user_id = $1" in sql
     assert pool.fetch.call_args.args[1] == "someone"
+
+
+async def test_list_invited_for_user_reads_only_unanswered_invitations():
+    repo, pool = adapter()
+    pool.fetch.return_value = [_row(user_id="someone")]
+    results = await repo.list_invited_for_user("someone")
+    assert [r.status.value for r in results] == ["invited"]
+    sql = pool.fetch.call_args.args[0]
+    assert "status = 'invited'" in sql
+    assert pool.fetch.call_args.args[1] == "someone"
+
+
+async def test_candidates_are_the_orgs_active_people_without_a_live_grant_or_the_owner():
+    repo, pool = adapter()
+    sid = uuid4()
+    pool.fetch.return_value = [
+        {"id": "ivan", "display_name": "Ivan Invitee", "email": "ivan@example.test"}
+    ]
+
+    found = await repo.candidates(sid, "acme", "owner", "iv")
+
+    assert [(c.user_id, c.display_name, c.email) for c in found] == [
+        ("ivan", "Ivan Invitee", "ivan@example.test")
+    ]
+    sql, *params = pool.fetch.call_args.args
+    assert "tenant_memberships" in sql and "u.status = 'active'" in sql
+    assert "u.id <> $3" in sql
+    assert "p.status IN ('invited', 'active')" in sql
+    assert params == [sid, "acme", "owner", "iv"]

@@ -1234,3 +1234,54 @@ describe('mock secret requests', () => {
     );
   });
 });
+
+describe('the mock chat participants', () => {
+  it('invites someone from the org, lists them, and no longer offers them as a candidate', async () => {
+    const svc = createMockVolundrService();
+    const before = await svc.getParticipantCandidates('s1', '');
+    expect(before.map((person) => person.userId)).toContain('alice');
+
+    const invited = await svc.inviteSessionParticipant('s1', { userId: 'alice', role: 'approver' });
+
+    expect(invited).toMatchObject({ userId: 'alice', role: 'approver', status: 'invited' });
+    expect((await svc.getSessionParticipants('s1')).map((p) => p.userId)).toEqual(['alice']);
+    expect((await svc.getParticipantCandidates('s1', '')).map((p) => p.userId)).not.toContain(
+      'alice',
+    );
+    expect((await svc.getParticipantCandidates('s1', 'LINDQ')).length).toBe(0);
+    expect((await svc.getParticipantCandidates('s2', 'lindq')).map((p) => p.userId)).toEqual([
+      'alice',
+    ]);
+  });
+
+  it('refuses someone outside the org, and someone already in the chat', async () => {
+    const svc = createMockVolundrService();
+    await expect(
+      svc.inviteSessionParticipant('s1', { userId: 'ghost', role: 'viewer' }),
+    ).rejects.toThrow('Cannot invite this user');
+    await svc.inviteSessionParticipant('s1', { userId: 'bram', role: 'viewer' });
+    // Re-inviting an unanswered invitation replaces it.
+    await expect(
+      svc.inviteSessionParticipant('s1', { userId: 'bram', role: 'approver' }),
+    ).resolves.toMatchObject({ role: 'approver' });
+    expect(await svc.getSessionParticipants('s1')).toHaveLength(1);
+  });
+
+  it('removes a participant, and refuses someone who is not in the chat', async () => {
+    const svc = createMockVolundrService();
+    await svc.inviteSessionParticipant('s1', { userId: 'bram', role: 'viewer' });
+    await svc.removeSessionParticipant('s1', 'bram');
+    expect(await svc.getSessionParticipants('s1')).toEqual([]);
+    await expect(svc.removeSessionParticipant('s1', 'bram')).rejects.toThrow('not in this chat');
+  });
+
+  it('accepts only an invitation that exists', async () => {
+    const svc = createMockVolundrService();
+    await expect(svc.acceptSessionInvitation('s1')).rejects.toThrow('No invitation to accept');
+  });
+
+  it('knows the project people of a session in a project, and none for one without', async () => {
+    const svc = createMockVolundrService();
+    expect(await svc.getSessionProjectPeople('no-such-session')).toBeNull();
+  });
+});

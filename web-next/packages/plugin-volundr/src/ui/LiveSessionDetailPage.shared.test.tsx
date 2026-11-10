@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { ChatConnectionsContext } from '@niuulabs/ui';
@@ -223,6 +223,17 @@ function build(session: VolundrSession): IVolundrService {
   const base = createMockVolundrService();
   return {
     ...base,
+    getSessionParticipants: vi.fn().mockResolvedValue([
+      {
+        userId: 'u1',
+        displayName: 'Dev',
+        role: 'viewer',
+        status: 'active',
+        invitedBy: 'alice',
+        expiresAt: null,
+      },
+    ]),
+    removeSessionParticipant: vi.fn().mockResolvedValue(undefined),
     getSessions: vi.fn().mockResolvedValue([session]),
     getSession: vi.fn().mockResolvedValue(session),
     getFeatureModules: vi.fn().mockResolvedValue(SESSION_FEATURES),
@@ -393,6 +404,27 @@ describe('LiveSessionDetailPage for a session shared through a room', () => {
     expect(screen.getByRole('button', { name: 'Show session panel' })).not.toHaveTextContent(
       'Needs you',
     );
+  });
+
+  describe('the people in the chat', () => {
+    it('gives a participant a People button to see who is in it and to leave', async () => {
+      mockChatState();
+      const volundr = renderShared(sharedSession('viewer'));
+
+      fireEvent.click(await screen.findByRole('button', { name: 'People' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Leave chat' }));
+
+      await waitFor(() =>
+        expect(volundr.removeSessionParticipant).toHaveBeenCalledWith(
+          'shared-session-1',
+          'u1',
+          expect.anything(),
+        ),
+      );
+      await waitFor(() =>
+        expect(navigate).toHaveBeenCalledWith({ to: '/volundr/sessions', replace: true }),
+      );
+    });
   });
 
   describe('a question the agent put to a person', () => {

@@ -45,7 +45,11 @@ from volundr.domain.ports import (
     TokenTracker,
 )
 from volundr.domain.services.session_participants import SessionParticipantService
-from volundr.domain.session_participants import ParticipantStatus, SessionParticipant
+from volundr.domain.session_participants import (
+    ParticipantCandidate,
+    ParticipantStatus,
+    SessionParticipant,
+)
 
 # Ambient configuration a developer box leaks into the test process. A machine
 # running a live Forge/Skuld session exports ``SKULD__*`` / ``VOLUNDR*`` /
@@ -332,6 +336,9 @@ class InMemorySessionParticipantRepository(SessionParticipantRepository):
 
     def __init__(self):
         self._grants: dict[tuple[UUID, str], SessionParticipant] = {}
+        # Who the tenant holds, as (user_id, display_name, email, tenant_id); a test
+        # that asks for invitation candidates fills it.
+        self.directory: list[tuple[str, str, str, str]] = []
 
     async def invite(self, session_id, user_id, tenant_id, role, invited_by, expires_at):
         now = datetime.now(UTC)
@@ -391,6 +398,32 @@ class InMemorySessionParticipantRepository(SessionParticipantRepository):
             p
             for p in self._grants.values()
             if p.user_id == user_id and p.status == ParticipantStatus.ACTIVE
+        ]
+
+    async def list_invited_for_user(self, user_id):
+        return [
+            p
+            for p in self._grants.values()
+            if p.user_id == user_id and p.status == ParticipantStatus.INVITED
+        ]
+
+    async def candidates(self, session_id, tenant_id, owner_id, query):
+        held = {
+            p.user_id
+            for p in self._grants.values()
+            if p.session_id == session_id
+            and p.status in (ParticipantStatus.INVITED, ParticipantStatus.ACTIVE)
+        }
+        needle = query.lower()
+        return [
+            ParticipantCandidate(user_id=user_id, display_name=name, email=email)
+            for user_id, name, email, member_of in sorted(
+                self.directory, key=lambda e: (e[1], e[2])
+            )
+            if member_of == tenant_id
+            and user_id != owner_id
+            and user_id not in held
+            and (not needle or needle in name.lower() or needle in email.lower())
         ]
 
 

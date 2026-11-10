@@ -185,7 +185,7 @@ from volundr.domain.session_broker import (
     server_side_http_proxy_target,
     session_proxy_url,
 )
-from volundr.domain.session_participants import SessionParticipant
+from volundr.domain.session_participants import ParticipantStatus, SessionParticipant
 from volundr.domain.session_read_state import (
     SessionReadState,
     SessionReadStateChange,
@@ -1890,6 +1890,10 @@ class SessionRoomSummary(BaseModel):
     name: str = Field(description="Human-readable session name")
     status: SessionStatus = Field(description="Current lifecycle status")
     owner_id: str | None = Field(default=None, description="User ID of the session owner")
+    owner_name: str | None = Field(
+        default=None,
+        description="Who shared the session: the owner's display name, when the directory has one",
+    )
     room: SessionRoomInfo
     coordination: SessionRoomCoordination | None = Field(
         default=None,
@@ -2722,28 +2726,40 @@ def create_router(
             ]
         return sessions
 
-    def _room_summary(session: Session, room: SessionRoomInfo) -> SessionRoomSummary:
+    def _room_summary(
+        session: Session, room: SessionRoomInfo, owner_names: dict[str, str] | None = None
+    ) -> SessionRoomSummary:
+        # An invitation not yet accepted names the session, its owner and the offered role;
+        # the room's content (project, endpoint, activity) is for those who joined.
+        joined = room.participant_status != ParticipantStatus.INVITED.value
         coordination = session.coordination
         return SessionRoomSummary(
             id=session.id,
             name=session.name,
             status=session.status,
             owner_id=session.owner_id,
+            owner_name=(owner_names or {}).get(session.owner_id or ""),
             room=room,
             coordination=(
                 SessionRoomCoordination(project_id=coordination.project_id, role=coordination.role)
-                if coordination is not None
+                if coordination is not None and joined
                 else None
             ),
             model=session.effective_model,
-            chat_endpoint=_public_session_endpoint(
-                session.chat_endpoint,
-                str(session.id),
-                public_host=server_public_host,
+            chat_endpoint=(
+                _public_session_endpoint(
+                    session.chat_endpoint,
+                    str(session.id),
+                    public_host=server_public_host,
+                )
+                if joined
+                else None
             ),
             last_active=(session.last_active or session.created_at).isoformat(),
-            activity_state=(session.activity_state.value if session.activity_state else None),
-            needs_attention=session.needs_attention,
+            activity_state=(
+                session.activity_state.value if session.activity_state and joined else None
+            ),
+            needs_attention=session.needs_attention and joined,
         )
 
     def _grant_room(grant: SessionParticipant) -> SessionRoomInfo:
@@ -2857,8 +2873,13 @@ def create_router(
             parent_instance_id=parent_instance_id,
         )
         room_session_ids = {s.id for s in room_sessions}
+        owner_names = await session_participant_service.display_names(
+            {s.owner_id for s, _ in room_pairs if s.id in room_session_ids and s.owner_id}
+        )
         result.extend(
-            _room_summary(s, _grant_room(g)) for s, g in room_pairs if s.id in room_session_ids
+            _room_summary(s, _grant_room(g), owner_names)
+            for s, g in room_pairs
+            if s.id in room_session_ids
         )
         if limit is not None or fields == "summary":
             result.sort(key=_session_activity_key, reverse=True)
@@ -3323,7 +3344,13 @@ def create_router(
         if principal is not None:
             grant = await session_participant_service.get_own_grant(session_id, principal.user_id)
         if grant is not None and grant.is_active:
-            return _room_summary(session, _grant_room(grant))
+            return _room_summary(
+                session,
+                _grant_room(grant),
+                await session_participant_service.display_names(
+                    {session.owner_id} if session.owner_id else set()
+                ),
+            )
         # No active grant: read_room passed some other way (owner/admin),
         # which Cedar only ever grants that role without a room_* attribute
         # match.

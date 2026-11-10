@@ -8,6 +8,15 @@ import { test, expect, type Page, type WebSocketRoute } from '@playwright/test';
 const origin = 'http://forge-lexi.invalid';
 const now = Date.now();
 const iso = (seconds: number) => new Date(now + seconds * 1000).toISOString();
+// Who is looking: the session header asks, to decide who may manage the chat's people.
+const viewer = {
+  userId: 'u1',
+  email: 'dev@niuu.world',
+  tenantId: 't1',
+  roles: ['user'],
+  displayName: 'Dev',
+  status: 'active',
+};
 
 const unreadSession = {
   id: 'gates',
@@ -130,6 +139,7 @@ async function intercept(page: Page, onReadState: (body: unknown) => void = () =
       return route.fulfill({
         json: new URL(request.url()).searchParams.get('status') === 'archived' ? [] : sessions,
       });
+    if (path.endsWith('/identity/me')) return route.fulfill({ json: viewer });
     if (path.includes('/stats')) return route.fulfill({ json: {} });
     return route.fulfill({ json: [] });
   });

@@ -50,6 +50,7 @@ from volundr.domain.notification_ports import (
 from volundr.domain.notifications import (
     COPY_OF_KEY,
     INTEGRATION_SINK,
+    PARTICIPANT_INVITATION_KEY,
     RESIDENT_ID_KEY,
     RESIDENT_SESSION_ID_KEY,
     Notification,
@@ -74,6 +75,7 @@ from volundr.domain.notifications import (
 from volundr.domain.ports import EventBroadcaster, IntegrationRepository
 from volundr.domain.services.notification_images import notification_event
 from volundr.domain.services.room_grants import RoomGrantSource
+from volundr.domain.session_participants import SessionParticipant
 from volundr.domain.session_read_state import is_final_output
 
 logger = logging.getLogger(__name__)
@@ -155,6 +157,15 @@ def submit_dedupe_key(session_id: UUID | None, principal_id: str, idempotency_ke
 def person_question_dedupe_key(session_id: UUID, question_id: str) -> str:
     """Dedupe key of the notification for one question put to one person."""
     return f"person-question:{session_id}:{question_id}"
+
+
+def participant_invitation_dedupe_key(session_id: UUID, user_id: str, invited_at: datetime) -> str:
+    """Dedupe key of the notification for one invitation of one person to one session.
+
+    Stamped with the grant's own time, so inviting someone again after they declined or
+    were removed is a new invitation and tells them again.
+    """
+    return f"participant-invite:{session_id}:{user_id}:{invited_at.isoformat()}"
 
 
 def _resident_anchor(resident_id: UUID, resident_session_id: UUID | None) -> str:
@@ -438,6 +449,62 @@ class NotificationService(NotificationRecorder):
         for row in changed:
             await self._broadcast(row)
         return await self._repository.get(notification.id) or notification
+
+    async def invitation_sent(
+        self, session: Session, participant: SessionParticipant, *, invited_by_name: str
+    ) -> None:
+        """Tell the invitee they were invited into this session's chat.
+
+        One row, owned by the invitee and nobody else (the owner knows; they invited).
+        Idempotent per invitation, and open until the invitation is answered or withdrawn
+        (:meth:`invitation_settled`).
+        """
+        context = replace(self._context(session), owner_id=participant.user_id)
+        draft = NotificationDraft(
+            kind=NotificationKind.DECISION,
+            severity=NotificationSeverity.INFO,
+            title=_bounded(
+                f"{invited_by_name} invited you to {context.session_name}", MAX_TITLE_CHARS
+            ),
+            body=f"You can join this chat as {participant.role.value}.",
+        )
+        candidate = self._candidate(
+            context,
+            dedupe_key=participant_invitation_dedupe_key(
+                session.id, participant.user_id, participant.updated_at
+            ),
+            draft=draft,
+            source=NotificationSource.SYSTEM,
+            session_seq=None,
+            metadata={PARTICIPANT_INVITATION_KEY: participant.role.value},
+        )
+        await self._record([candidate])
+
+    async def invitation_settled(
+        self, session: Session, participant: SessionParticipant, *, resolution: str
+    ) -> None:
+        """The invitation was accepted, declined or withdrawn: its notification settles.
+
+        A missing row is not an error: an invitation made before invitations were
+        announced, or while this host ran without the feed, never had one.
+        """
+        row_id = notification_id(
+            participant_invitation_dedupe_key(
+                session.id, participant.user_id, participant.updated_at
+            )
+        )
+        notification = await self._repository.get(row_id)
+        if notification is None or notification.resolved:
+            return
+        changed = await self._repository.resolve(
+            notification.owner_id,
+            [notification.id],
+            resolved_at=datetime.now(UTC),
+            resolved_by=None,
+            resolution=resolution,
+        )
+        for row in changed:
+            await self._broadcast(row)
 
     # -- Residents ---------------------------------------------------------
     #

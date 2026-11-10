@@ -43,6 +43,10 @@ import type {
   ProjectMemberCandidate,
   ProjectMemberChange,
   ProjectRole,
+  ParticipantCandidate,
+  ParticipantRole,
+  SessionParticipant,
+  SessionProjectPerson,
   SessionProjectMembership,
   TeamCatalogEntry,
   TeamIntegration,
@@ -309,6 +313,48 @@ export interface IVolundrService {
     project: ForgeProject,
     before?: string,
   ): Promise<TeamIntegrationUsagePage>;
+  /**
+   * Everyone with a grant in one chat (invited or joined), for its owner, admins and the
+   * people already in it. A removed grant is not listed.
+   */
+  getSessionParticipants(
+    sessionId: string,
+    options?: SessionReadOptions,
+  ): Promise<SessionParticipant[]>;
+  /**
+   * The members of the session's project with the room role the project gives them, or
+   * null when the session is not attached to a project.
+   */
+  getSessionProjectPeople(
+    sessionId: string,
+    options?: SessionReadOptions,
+  ): Promise<SessionProjectPerson[] | null>;
+  /** People of the session's org who could be invited into the chat, for its owner and admins. */
+  getParticipantCandidates(
+    sessionId: string,
+    query: string,
+    options?: SessionReadOptions,
+  ): Promise<ParticipantCandidate[]>;
+  /** Invite a person of the org into this chat only (not the whole project). */
+  inviteSessionParticipant(
+    sessionId: string,
+    invitation: { userId: string; role: ParticipantRole },
+    options?: SessionReadOptions,
+  ): Promise<SessionParticipant>;
+  /** The invitee joins the chat. */
+  acceptSessionInvitation(
+    sessionId: string,
+    options?: SessionReadOptions,
+  ): Promise<SessionParticipant>;
+  /**
+   * Remove someone from the chat: the owner removes anyone, an invitee declines and a
+   * participant leaves by removing themselves.
+   */
+  removeSessionParticipant(
+    sessionId: string,
+    userId: string,
+    options?: SessionReadOptions,
+  ): Promise<void>;
   getSessionProject(
     sessionId: string,
     options?: SessionReadOptions,

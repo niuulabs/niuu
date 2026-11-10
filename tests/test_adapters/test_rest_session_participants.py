@@ -339,9 +339,11 @@ def test_list_returns_every_grant(participants_api):
     client, service, session_service, path = participants_api
     session_service.get_session.return_value = object()
     service.list_participants.return_value = [_participant(), _participant(user_id="second")]
+    service.display_names.return_value = {"second": "Second Person"}
     response = client.get(path)
     assert response.status_code == 200
     assert [p["user_id"] for p in response.json()] == ["invitee", "second"]
+    assert [p["display_name"] for p in response.json()] == ["", "Second Person"]
 
 
 def test_list_denied_is_403(participants_api):
