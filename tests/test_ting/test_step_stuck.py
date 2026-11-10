@@ -203,7 +203,7 @@ def test_an_offer_that_is_taken_failed_or_queued_is_not_unclaimed(state: StepSta
     assert kinds(RunState(RUN_ID, (item,), tuple(published(item, GRACE * 3)))) == []
 
 
-def test_an_offer_is_never_judged_by_a_session_or_called_unclosed() -> None:
+def test_an_offer_is_never_called_unclosed_or_session_gone() -> None:
     item = offer()
     unclosed = RunEvent(
         run_id=RUN_ID,
@@ -214,7 +214,36 @@ def test_an_offer_is_never_judged_by_a_session_or_called_unclosed() -> None:
         source_activation_id=item.id,
     )
 
-    assert kinds(RunState(RUN_ID, (item,), (unclosed,)), {item.id: SessionLiveness.GONE}) == []
+    assert kinds(RunState(RUN_ID, (item,), (unclosed,)), {item.id: SessionLiveness.RUNNING}) == []
+
+
+@pytest.mark.parametrize(
+    "liveness", [SessionLiveness.STOPPED, SessionLiveness.FAILED, SessionLiveness.GONE]
+)
+def test_an_open_offer_whose_run_root_ended_is_unit_stopped(liveness: SessionLiveness) -> None:
+    item = offer(node_id="code-merge")
+
+    [found] = detect_stuck(
+        RunState(RUN_ID, (item,)), {item.id: liveness}, now=NOW, settings=SETTINGS
+    )
+
+    assert found.kind is FlagKind.UNIT_STOPPED and found.since == NOW
+    assert liveness.value in found.detail and "'code-merge'" in found.detail
+
+
+@pytest.mark.parametrize("liveness", [SessionLiveness.STARTING, SessionLiveness.RUNNING])
+def test_an_offer_whose_run_root_is_up_or_coming_up_is_not_unit_stopped(
+    liveness: SessionLiveness,
+) -> None:
+    item = offer()
+
+    assert kinds(RunState(RUN_ID, (item,)), {item.id: liveness}) == []
+
+
+def test_an_offer_that_is_not_open_is_not_unit_stopped() -> None:
+    item = offer(state=StepState.DONE)
+
+    assert kinds(RunState(RUN_ID, (item,)), {item.id: SessionLiveness.STOPPED}) == []
 
 
 # --- pickups: session gone and unclosed -------------------------------------------------

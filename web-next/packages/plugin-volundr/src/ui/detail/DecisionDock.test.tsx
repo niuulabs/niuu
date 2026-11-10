@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { DecisionDock } from './DecisionDock';
+import { DecisionDock, RunPausedStrip } from './DecisionDock';
 
 describe('DecisionDock', () => {
   it('waits as a strip, opens the decision in place and folds back', () => {
@@ -32,5 +32,30 @@ describe('DecisionDock', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: /Show the decision/ }));
     expect(screen.getByTestId('decision-card')).not.toHaveTextContent('Waiting');
+  });
+
+  it('says which step a stopped run holds and starts it', () => {
+    const onStart = vi.fn();
+    render(<RunPausedStrip step="Merge the change" busy={false} onStart={onStart} />);
+
+    const strip = screen.getByTestId('run-paused-strip');
+    expect(strip).toHaveTextContent('Run paused');
+    expect(strip).toHaveTextContent(
+      "Merge the change is ready, but the run's sessions are stopped",
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Start the run to carry on with Merge the change' }),
+    );
+    expect(onStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('cannot be started twice while it starts', () => {
+    render(<RunPausedStrip step="Merge the change" busy onStart={vi.fn()} />);
+
+    const start = screen.getByRole('button', {
+      name: 'Start the run to carry on with Merge the change',
+    });
+    expect(start).toBeDisabled();
+    expect(start).toHaveTextContent('Starting…');
   });
 });

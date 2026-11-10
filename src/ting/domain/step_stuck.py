@@ -5,7 +5,7 @@ the clock. It decides nothing and changes nothing: the sweep
 (``ting.domain.services.workflow_step_watch``) raises the flags, takes the safe automatic
 actions and tells a person.
 
-A step is stuck in one of four ways (``FlagKind``):
+A step is stuck in one of five ways (``FlagKind``):
 
 * **overdue**: an ``active`` or ``waiting`` step, or an offer nobody took up, is past its
   ``deadline_at``;
@@ -14,7 +14,10 @@ A step is stuck in one of four ways (``FlagKind``):
   a cap;
 * **unclosed**: a turn ended with the step still open (the engine logged it when the
   session said so);
-* **session gone**: the session failed, stopped or no longer exists.
+* **session gone**: the session failed, stopped or no longer exists;
+* **unit stopped**: an offer cannot go out because the run's root session is stopped, failed
+  or gone. The members' sessions stop with it, so nothing can take the step until the run
+  is resumed. For an offer, ``liveness`` holds the root's liveness.
 
 A session that has not come up yet (created, starting) is not gone: nothing can be asked of
 it, so nothing is claimed about the step. An offer that is not published yet is waiting for
@@ -75,8 +78,9 @@ def detect_stuck(
 ) -> list[Condition]:
     """Every way the run's open steps are stuck.
 
-    ``liveness`` holds, per activation, whether its session is up; a step with no entry
-    could not be asked, so only the conditions that need no question are judged for it.
+    ``liveness`` holds, per activation, whether its session is up (for an offer, whether
+    the run's root is); a step with no entry could not be asked, so only the conditions
+    that need no question are judged for it.
     """
     grace = timedelta(seconds=settings.pickup_grace_seconds)
     unclosed = _unclosed_since(state)
@@ -88,6 +92,7 @@ def detect_stuck(
         conditions.extend(_overdue(step, now))
         if step.kind is StepKind.OFFER:
             conditions.extend(_unclaimed(step, published.get(step.offer_id or "", ()), now, grace))
+            conditions.extend(_unit_stopped(step, liveness.get(step.id), now))
             continue
         if step.kind is not StepKind.STAGE_MEMBER:
             continue
@@ -150,6 +155,22 @@ def _session_gone(
             step,
             FlagKind.SESSION_GONE,
             f"its session {step.session_id} is {liveness.value}",
+            now,
+        )
+    ]
+
+
+def _unit_stopped(
+    offer: WorkflowStep, root: SessionLiveness | None, now: datetime
+) -> list[Condition]:
+    if root is None or root not in _SESSION_ENDED:
+        return []
+    return [
+        Condition(
+            offer,
+            FlagKind.UNIT_STOPPED,
+            f"the run's root session is {root.value}, so the offer of {offer.node_id!r} cannot "
+            "go out and no member can take it up",
             now,
         )
     ]

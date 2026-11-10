@@ -147,4 +147,14 @@ describe('RunWorkflowGraph', () => {
     graph.states.set('approve', { nodeId: 'approve', state: 'done', members: [] });
     expect(runGraphIsMoving(graph)).toBe(false);
   });
+
+  it('says a step its stopped sessions hold is paused, and keeps following the run', async () => {
+    const graph = runGraph();
+    graph.states.set('approve', { nodeId: 'approve', state: 'paused', members: [] });
+    expect(runGraphIsMoving(graph)).toBe(true);
+
+    renderGraph(async () => graph);
+
+    expect(await screen.findByTestId('workflow-run-state-approve')).toHaveTextContent('Paused');
+  });
 });

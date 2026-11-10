@@ -8,6 +8,8 @@ node's own state, one of:
 
 * ``waiting``: a person or something outside must act (a gate waiting for a decision, a member
   waiting on something);
+* ``paused``: work at the node is offered, but the run's sessions are stopped, so nothing can
+  take it up until the run is resumed (a live ``unit_stopped`` flag);
 * ``active``: work at the node is offered or under way;
 * ``failed``: the node's work failed;
 * ``done``: the node's work closed;
@@ -21,11 +23,13 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import UUID
 
 from ting.domain.models import WorkflowCampaign
-from ting.domain.workflow_steps import RunState, StepKind, StepState, WorkflowStep
+from ting.domain.workflow_steps import FlagKind, RunState, StepKind, StepState, WorkflowStep
 
 NODE_WAITING = "waiting"
+NODE_PAUSED = "paused"
 NODE_ACTIVE = "active"
 NODE_FAILED = "failed"
 NODE_DONE = "done"
@@ -80,28 +84,41 @@ def run_graph(campaign: WorkflowCampaign, state: RunState) -> RunGraph:
     for step in state.steps:
         steps_by_node.setdefault(step.node_id, []).append(step)
     started = bool(state.steps)
+    paused = {
+        flag.activation_id for flag in state.live_flags() if flag.kind is FlagKind.UNIT_STOPPED
+    }
     return RunGraph(
         workflow_name=campaign.workflow_name,
         graph=graph,
         nodes=tuple(
-            _node(str(node.get("id") or ""), str(node.get("kind") or ""), steps_by_node, started)
+            _node(
+                str(node.get("id") or ""),
+                str(node.get("kind") or ""),
+                steps_by_node,
+                started=started,
+                paused=paused,
+            )
             for node in nodes
         ),
     )
 
 
 def _node(
-    node_id: str, kind: str, steps_by_node: Mapping[str, list[WorkflowStep]], started: bool
+    node_id: str,
+    kind: str,
+    steps_by_node: Mapping[str, list[WorkflowStep]],
+    *,
+    started: bool,
+    paused: set[UUID],
 ) -> RunGraphNode:
     steps = _newest_round(steps_by_node.get(node_id, []))
     if not steps:
         reached = kind == "trigger" and started
         return RunGraphNode(node_id=node_id, state=NODE_DONE if reached else NODE_PENDING)
-    return RunGraphNode(
-        node_id=node_id,
-        state=_node_state(step.state for step in steps),
-        members=_members(steps),
-    )
+    state = _node_state(step.state for step in steps)
+    if state == NODE_ACTIVE and any(step.id in paused for step in steps):
+        state = NODE_PAUSED
+    return RunGraphNode(node_id=node_id, state=state, members=_members(steps))
 
 
 def _newest_round(steps: list[WorkflowStep]) -> list[WorkflowStep]:

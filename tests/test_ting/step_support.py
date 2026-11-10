@@ -114,6 +114,14 @@ class _FakeTransaction(LedgerTransaction):
         self._repository.flags[key] = flag
         return True
 
+    async def reopen_flag(self, flag: StepFlag) -> bool:
+        key = (flag.activation_id, flag.kind)
+        current = self._repository.flags.get(key)
+        if current is None or not current.is_resolved:
+            return False
+        self._repository.flags[key] = flag
+        return True
+
     async def resolve_flag(
         self, activation_id: UUID, kind: FlagKind, *, at: datetime, resolution: str
     ) -> None:

@@ -57,6 +57,7 @@ _STEP_FLAG_LABELS = {
     "unclaimed": "unclaimed (no member took the offer up)",
     "unclosed": "unclosed (a turn ended without closing it)",
     "session_gone": "without its session",
+    "unit_stopped": "waiting (the run's sessions are stopped)",
 }
 
 # ---------------------------------------------------------------------------

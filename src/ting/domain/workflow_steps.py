@@ -136,6 +136,19 @@ class FlagKind(StrEnum):
     UNCLOSED = "unclosed"
     #: The step's Forge session failed, stopped or no longer exists.
     SESSION_GONE = "session_gone"
+    #: An offer cannot go out because the run's root session (and with it the unit) is
+    #: stopped, failed or gone; it waits for the run to be resumed.
+    UNIT_STOPPED = "unit_stopped"
+
+    @property
+    def recurs(self) -> bool:
+        """Whether a resolved flag of this kind is raised again when its condition returns.
+
+        A run can be stopped and started more than once while one step waits, and each stop
+        needs the owner. The other kinds are raised once per step: an unclaimed offer clears
+        with each republication, and telling the owner each time would be noise.
+        """
+        return self is FlagKind.UNIT_STOPPED
 
 
 class RecoveryAction(StrEnum):

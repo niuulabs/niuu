@@ -94,7 +94,7 @@ import { coordinationOf, isCoordinationRole, leaderTag } from '../domain/project
 import { withRunMembers } from '../domain/runRoom';
 import { buildSessionLinks } from './sessions/sessionLinks';
 import { CoordinatorTag, WorkerOf, WorkerTopics } from './detail/Coordination';
-import { DecisionDock } from './detail/DecisionDock';
+import { DecisionDock, RunPausedStrip } from './detail/DecisionDock';
 import { RightDock, type RightDockTab } from './detail/RightDock';
 import {
   EMPTY_DOCK,
@@ -106,7 +106,12 @@ import {
 import { TerminalDock } from './detail/TerminalDock';
 import { WorkflowDock } from './detail/WorkflowDock';
 import { RUN_WORKFLOW_VIEW_SERVICE, type RunWorkflowView } from '../ports/IRunWorkflowView';
-import { RUN_GATE_SERVICE, type IRunGateService, type RunGate } from '../ports/IRunGateService';
+import {
+  RUN_GATE_SERVICE,
+  type IRunGateService,
+  type RunGate,
+  type RunPause,
+} from '../ports/IRunGateService';
 import { FilePreviewPane } from './detail/FilePreviewPane';
 import { LivePreviewPane } from './detail/LivePreviewPane';
 import { LIVE_PREVIEW_DISABLED, findLocalUrls } from '../domain/livePreview';
@@ -3480,6 +3485,17 @@ function LiveSessionDetailPageInner({
     refetchInterval: RUN_GATE_REFRESH_MS,
   });
   const runGate: RunGate | null = runRootId ? (runGateQuery.data ?? null) : null;
+  // A run whose sessions are stopped cannot hand its next step out; its coordinator says so
+  // where it asks for the gate, with the start that carries the run on.
+  const runPauseQuery = useQuery({
+    queryKey: ['volundr', 'run-pause', runRootId],
+    queryFn: () => runGates!.pausedStep(runRootId!),
+    enabled: Boolean(runGates && runRootId),
+    refetchInterval: RUN_GATE_REFRESH_MS,
+  });
+  // Ting resolves the pause on its next sweep; once this session runs again it is not shown.
+  const runPause: RunPause | null =
+    runRootId && sessionStatus !== 'running' ? (runPauseQuery.data ?? null) : null;
   const [runGateDecision, setRunGateDecision] = useState<{
     busy: boolean;
     error: string | null;
@@ -4201,6 +4217,12 @@ function LiveSessionDetailPageInner({
         }}
       />
     </DecisionDock>
+  ) : runPause ? (
+    <RunPausedStrip
+      step={runPause.title}
+      busy={actionBusy === 'start'}
+      onStart={() => void handleResumeSession()}
+    />
   ) : null;
 
   return (

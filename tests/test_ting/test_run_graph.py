@@ -14,7 +14,9 @@ from ting.api.work import create_work_router
 from ting.config import AuthConfig, Settings
 from ting.domain.run_graph import run_graph
 from ting.domain.workflow_steps import (
+    FlagKind,
     RunState,
+    StepFlag,
     StepKind,
     StepState,
     WaitingOn,
@@ -114,6 +116,36 @@ def test_a_waiting_step_makes_its_node_wait_and_a_rework_replaces_the_earlier_ro
     assert make.state == "waiting"
     assert [(m.member, m.state) for m in make.members] == [("alpha", "waiting")]
     assert next(node for node in drawn.nodes if node.node_id == "done").state == "done"
+
+
+def _stopped(step: WorkflowStep, *, resolved: bool = False) -> StepFlag:
+    return StepFlag(
+        run_id=step.run_id,
+        activation_id=step.id,
+        kind=FlagKind.UNIT_STOPPED,
+        since=AT,
+        raised_at=AT,
+        resolved_at=AT if resolved else None,
+    )
+
+
+def test_an_offer_held_by_the_runs_stopped_sessions_pauses_its_node() -> None:
+    campaign = make_campaign()
+    offer = _step("make", StepKind.OFFER, StepState.ACTIVE)
+
+    drawn = run_graph(campaign, RunState(campaign.id, steps=(offer,), flags=(_stopped(offer),)))
+
+    assert {node.node_id: node.state for node in drawn.nodes}["make"] == "paused"
+
+
+def test_a_node_is_at_work_again_once_its_unit_stopped_flag_resolved() -> None:
+    campaign = make_campaign()
+    offer = _step("make", StepKind.OFFER, StepState.ACTIVE)
+    flags = (_stopped(offer, resolved=True),)
+
+    drawn = run_graph(campaign, RunState(campaign.id, steps=(offer,), flags=flags))
+
+    assert {node.node_id: node.state for node in drawn.nodes}["make"] == "active"
 
 
 @pytest.fixture

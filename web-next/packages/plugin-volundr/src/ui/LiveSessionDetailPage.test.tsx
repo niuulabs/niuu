@@ -1018,6 +1018,7 @@ describe('LiveSessionDetailPage', () => {
           summary: 'PR #22 passed review and the security audit.',
           requestedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
         })),
+        pausedStep: vi.fn(async () => null),
         decide,
       };
       mockChatState({});
@@ -1044,6 +1045,62 @@ describe('LiveSessionDetailPage', () => {
           '',
         ),
       );
+    });
+
+    it("offers to start a run its stopped sessions hold, where the run's gate is asked", async () => {
+      const stopped: VolundrSession = { ...STOPPED_SESSION, runId: 'probe-9' };
+      const service = buildVolundrService(stopped);
+      service.resumeSession = vi.fn().mockResolvedValue(undefined);
+      service.getConversationHistory = vi.fn().mockResolvedValue({
+        turns: [
+          {
+            id: 'turn-user-1',
+            role: 'user',
+            content: 'Merge it once approved.',
+            created_at: '2026-11-09T18:00:00Z',
+          },
+        ],
+      });
+      const runGates = {
+        waitingGate: vi.fn(async () => null),
+        pausedStep: vi.fn(async () => ({ nodeId: 'code-merge', title: 'Merge the change' })),
+        decide: vi.fn(async () => {}),
+      };
+      wrap('test-session-id-1234', {
+        session: stopped,
+        volundr: service,
+        services: { [RUN_GATE_SERVICE]: runGates },
+      });
+
+      const strip = await screen.findByTestId('run-paused-strip');
+      expect(runGates.pausedStep).toHaveBeenCalledWith('probe-9');
+      expect(strip).toHaveTextContent('Run paused');
+      expect(strip).toHaveTextContent(
+        "Merge the change is ready, but the run's sessions are stopped",
+      );
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Start the run to carry on with Merge the change' }),
+      );
+
+      await waitFor(() =>
+        expect(service.resumeSession).toHaveBeenCalledWith('test-session-id-1234'),
+      );
+    });
+
+    it('does not say a running run is paused while Ting has yet to notice', async () => {
+      const runGates = {
+        waitingGate: vi.fn(async () => null),
+        pausedStep: vi.fn(async () => ({ nodeId: 'code-merge', title: 'Merge the change' })),
+        decide: vi.fn(async () => {}),
+      };
+      mockChatState({});
+      wrap('test-session-id-1234', {
+        session: { ...RUNNING_SESSION, runId: 'probe-9' },
+        services: { [RUN_GATE_SERVICE]: runGates },
+      });
+
+      await waitFor(() => expect(runGates.pausedStep).toHaveBeenCalled());
+      expect(screen.queryByTestId('run-paused-strip')).toBeNull();
     });
 
     it('has no workflow panel without a run, or where no workflow view is wired', async () => {

@@ -399,6 +399,109 @@ async def test_the_sweep_publishes_an_offer_that_could_not_go_out_when_its_membe
     assert harness.flags(live=False) == []
 
 
+# --- a run whose sessions are stopped -------------------------------------------------
+
+
+def root_of(harness: StuckHarness) -> str:
+    return f"root-{harness.campaign.id}"
+
+
+@pytest.mark.parametrize(
+    "liveness", [SessionLiveness.STOPPED, SessionLiveness.FAILED, SessionLiveness.GONE]
+)
+async def test_an_offer_whose_run_root_ended_is_flagged_unit_stopped_and_told_once(
+    offered: StuckHarness, recorder: Recorder, liveness: SessionLiveness
+) -> None:
+    offered.sessions.liveness[root_of(offered)] = liveness
+
+    flagged = await offered.sweep()
+    await offered.sweep()
+
+    item = offered.offer()
+    assert flagged[FlagKind.UNIT_STOPPED] == 1
+    flag = offered.state.flag(item.id, FlagKind.UNIT_STOPPED)
+    assert flag is not None and liveness.value in flag.detail
+    # Only flagged: the offer waits for the run to be resumed, nothing is failed.
+    assert item.state is StepState.ACTIVE
+    assert not offered.state.finished
+    [event] = [e for e in offered.notifications() if e.data["kind"] == "unit_stopped"]
+    assert event.data["node_id"] == item.node_id
+    assert "Resume the run's coordinator session" in event.data["next"]
+    assert recorder.counted("ting_workflow_step_flags_raised_total", kind="unit_stopped") == 1
+
+
+async def test_a_unit_stopped_flag_resolves_once_the_run_root_is_up_again(
+    offered: StuckHarness,
+) -> None:
+    offered.sessions.liveness[root_of(offered)] = SessionLiveness.STOPPED
+    await offered.sweep()
+    assert offered.kinds() == ["unit_stopped"]
+
+    offered.sessions.liveness[root_of(offered)] = SessionLiveness.STARTING
+    await offered.sweep()
+
+    assert offered.flags() == []
+    assert offered.offer().state is StepState.ACTIVE
+
+
+async def test_a_run_stopped_again_while_the_same_step_waits_is_flagged_and_told_again(
+    offered: StuckHarness, recorder: Recorder
+) -> None:
+    root = root_of(offered)
+    offered.sessions.liveness[root] = SessionLiveness.STOPPED
+    await offered.sweep()
+    offered.sessions.liveness[root] = SessionLiveness.RUNNING
+    await offered.sweep()
+    assert offered.flags() == []
+
+    offered.advance(60)
+    offered.sessions.liveness[root] = SessionLiveness.STOPPED
+    await offered.sweep()
+
+    flag = offered.state.flag(offered.offer().id, FlagKind.UNIT_STOPPED)
+    assert flag is not None and not flag.is_resolved
+    assert flag.raised_at == offered.clock.now and flag.notified_at == offered.clock.now
+    told = [e for e in offered.notifications() if e.data["kind"] == "unit_stopped"]
+    assert len(told) == 2
+    assert recorder.counted("ting_workflow_step_flags_raised_total", kind="unit_stopped") == 2
+
+
+async def test_other_flags_are_still_raised_once_per_step(offered: StuckHarness) -> None:
+    offered.advance(PICKUP_GRACE_SECONDS + 1)
+    await offered.sweep()  # unclaimed, published again
+    await offered.sweep()  # within the grace of the republication: the flag resolves
+    offered.advance(PICKUP_GRACE_SECONDS + 1)
+
+    await offered.sweep()
+
+    unclaimed = [e for e in offered.notifications() if e.data["kind"] == "unclaimed"]
+    assert len(unclaimed) == 1
+
+
+async def test_a_run_root_that_cannot_be_asked_keeps_the_offers_flag_and_is_counted(
+    offered: StuckHarness, recorder: Recorder, caplog: pytest.LogCaptureFixture
+) -> None:
+    offered.sessions.liveness[root_of(offered)] = SessionLiveness.STOPPED
+    await offered.sweep()
+    offered.sessions.fail_observe.add(root_of(offered))
+
+    with caplog.at_level(logging.ERROR):
+        await offered.sweep()
+
+    # Not known to be up again, so the flag stays.
+    assert offered.kinds() == ["unit_stopped"]
+    assert recorder.counted("ting_workflow_step_sweep_errors_total", stage="observe") == 1
+    assert any("Could not ask whether root session" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_run_without_an_open_offer_never_asks_about_its_root(run: StuckHarness) -> None:
+    run.sessions.fail_observe.add(root_of(run))
+
+    await run.sweep()
+
+    assert run.flags(live=False) == []
+
+
 # --- an offer that cannot be taken ----------------------------------------------------
 
 
@@ -472,6 +575,37 @@ async def test_an_offer_waiting_for_a_member_whose_session_ended_fails_without_w
         )
         == 1
     )
+
+
+async def test_an_offer_whose_member_ended_after_it_listened_fails_naming_why(
+    offered: StuckHarness,
+) -> None:
+    # A member that listened and then could not start again (after a restart) can no more
+    # take the offer than one that never listened.
+    bravo = offered.session_of("bravo")
+    offered.sessions.liveness[bravo] = SessionLiveness.STOPPED
+    offered.sessions.failures[bravo] = "MeshAttestationUnavailableError: Forge refused it"
+
+    await offered.sweep()
+
+    failed = offered.offer()
+    assert failed.state is StepState.FAILED
+    assert "member 'bravo' cannot take the offer of 'make'" in failed.note
+    assert f"session {bravo} is stopped: MeshAttestationUnavailableError" in failed.note
+
+
+async def test_an_offer_held_by_a_stopped_run_is_paused_not_failed_for_its_stopped_members(
+    offered: StuckHarness,
+) -> None:
+    offered.sessions.liveness[root_of(offered)] = SessionLiveness.STOPPED
+    for member in ("alpha", "bravo"):
+        offered.sessions.liveness[offered.session_of(member)] = SessionLiveness.STOPPED
+
+    await offered.sweep()
+
+    assert offered.offer().state is StepState.ACTIVE
+    assert offered.kinds() == ["unit_stopped"]
+    assert not offered.state.finished
 
 
 async def test_a_failure_recorded_but_whose_sessions_could_not_be_stopped_is_not_a_lost_step(

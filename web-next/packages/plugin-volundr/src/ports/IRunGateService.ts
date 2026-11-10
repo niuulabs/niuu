@@ -10,6 +10,13 @@ export interface RunGate {
   requestedAt: string;
 }
 
+/** A step of a workflow run that nothing can take up because the run's sessions are stopped. */
+export interface RunPause {
+  nodeId: string;
+  /** The step, e.g. "Merge the change". */
+  title: string;
+}
+
 /**
  * A workflow run's waiting gate, read and answered for the run's coordinator session, so the
  * session asks for the decision where it asks every other question: above its composer. Forge
@@ -19,6 +26,11 @@ export interface RunGate {
 export interface IRunGateService {
   /** The run's gate waiting for a person, or ``null`` when none waits. */
   waitingGate(runId: string): Promise<RunGate | null>;
+  /**
+   * The run's step held because its sessions are stopped, or ``null``: the run carries on
+   * once its coordinator is started again.
+   */
+  pausedStep(runId: string): Promise<RunPause | null>;
   decide(
     runId: string,
     gate: Pick<RunGate, 'gateId' | 'activationId'>,

@@ -68,7 +68,9 @@
   --run-state-color: var(--color-brand);
 }
 .workflow-run-state[data-run-state='waiting'],
-.workflow-run-member[data-run-state='waiting'] {
+.workflow-run-member[data-run-state='waiting'],
+.workflow-run-state[data-run-state='paused'],
+.workflow-run-member[data-run-state='paused'] {
   --run-state-color: var(--status-amber);
 }
 .workflow-run-state[data-run-state='failed'],

@@ -11,6 +11,10 @@ run: the run's own session (its room) when it has one, where the run is read; el
 session of the step whose outcome opened the gate, else the run's most recent session.
 The notification belongs to that session's owner. Forge never calls Ting for any of this.
 
+A run whose sessions are stopped while a step waits to go out (a ``unit_stopped`` flag) is
+told the same way: an ``attention`` notification on the run's own session, the one to resume,
+resolved when the run is up again or the step closes.
+
 A run that fails is told the same way: an ``error`` notification for its owner naming each
 step that failed and why (a member session that could not start says what its broker
 reported), recorded on the failed step's session, else the run's newest one.
@@ -36,7 +40,14 @@ from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.run_room_notices import run_room_of
 from ting.domain.step_graph import GATE_MODE_AUTOMATED_APPROVAL
 from ting.domain.workflow_board import GATE_STATUS_APPROVED, GATE_STATUS_PENDING
-from ting.domain.workflow_steps import RunState, StepKind, StepState, WorkflowStep
+from ting.domain.workflow_steps import (
+    FlagKind,
+    RunState,
+    StepFlag,
+    StepKind,
+    StepState,
+    WorkflowStep,
+)
 from ting.ports.volundr import VolundrFactory, VolundrPort
 
 logger = logging.getLogger(__name__)
@@ -49,6 +60,15 @@ _DEGRADED_PATH = "ting.workflow_gate_notification"
 def gate_correlation_id(run_id: UUID, activation_id: UUID | str) -> str:
     """The notification's correlation and idempotency key for one opening of a gate."""
     return f"workflow-gate:{run_id}:{activation_id}"
+
+
+def paused_correlation_id(run_id: UUID, flag: StepFlag) -> str:
+    """The notification's key for one time a step was held by the run's stopped sessions.
+
+    A run can be stopped more than once while one step waits; each stop is its own flag
+    raising (``raised_at``) and its own notification.
+    """
+    return f"workflow-run-paused:{run_id}:{flag.activation_id}:{flag.raised_at.isoformat()}"
 
 
 def review_path(campaign: WorkflowCampaign) -> str:
@@ -102,6 +122,94 @@ class GateNotifier:
                 )
                 self._done.discard((step.id, phase))
                 continue
+
+    async def sync_paused(self, campaign: WorkflowCampaign, state: RunState) -> None:
+        """Tell the owner a step cannot go out while the run's sessions are stopped.
+
+        One notification per ``unit_stopped`` flag, raised while the flag is live and
+        resolved once the flag is resolved (the run is up again) or its step closed.
+        """
+        open_ids = {step.id for step in state.steps if step.is_open}
+        steps = {step.id: step for step in state.steps}
+        for flag in state.flags:
+            if flag.kind is not FlagKind.UNIT_STOPPED:
+                continue
+            live = not flag.is_resolved and flag.activation_id in open_ids
+            phase = "paused" if live else "resumed"
+            claim = (flag.activation_id, f"{phase}:{flag.raised_at.isoformat()}")
+            if claim in self._done:
+                continue
+            self._done.add(claim)
+            try:
+                await self._sync_paused(campaign, steps[flag.activation_id], flag, live)
+            except Exception as exc:
+                self._done.discard(claim)
+                logger.error(
+                    "Could not %s the paused-run notification of step %s of run %s: %s: %s",
+                    "raise" if live else "resolve",
+                    flag.activation_id,
+                    campaign.slug,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
+                get_observability().count(
+                    "ting_workflow_paused_notification_failures_total",
+                    attributes={"phase": phase},
+                    description=(
+                        "Paused-run notifications Forge could not record or resolve; retried "
+                        "on the run's next change."
+                    ),
+                )
+
+    async def _sync_paused(
+        self, campaign: WorkflowCampaign, step: WorkflowStep, flag: StepFlag, live: bool
+    ) -> None:
+        forge = await self._forge(campaign)
+        room = run_room_of(await forge.list_sessions(), campaign)
+        if room is None:
+            raise LookupError(
+                f"run {campaign.slug} has a unit_stopped flag but Forge lists no root session "
+                "for it to be resumed from"
+            )
+        key = paused_correlation_id(campaign.id, flag)
+        stored = await forge.submit_session_notification(
+            room.id,
+            {
+                "kind": "attention",
+                "severity": "warning",
+                "title": _fit(
+                    f"{campaign.name}: the run's sessions are stopped", MAX_TITLE_CHARS, "title"
+                ),
+                "body": _fit(
+                    f"{step.node_id} is ready to start, but nothing can take it up while the "
+                    "run's sessions are stopped. Resume this session to start every session "
+                    "of the run again; Ting then hands the step out.",
+                    MAX_BODY_CHARS,
+                    "body",
+                ),
+                "links": [{"label": "Open the run", "url": self._link(campaign), "kind": "url"}],
+                "correlation_id": key,
+            },
+            idempotency_key=key,
+        )
+        if live:
+            logger.info(
+                "Raised the paused-run notification of step %s of run %s on session %s",
+                step.node_id,
+                campaign.slug,
+                room.id,
+            )
+            return
+        resolution = (
+            "The run's sessions are running again."
+            if flag.is_resolved
+            else f"The step ended ({step.state.value})."
+        )
+        await forge.resolve_notification(str(stored["id"]), resolution=resolution)
+        logger.info(
+            "Resolved the paused-run notification of step %s of run %s", step.node_id, campaign.slug
+        )
 
     async def sync_failure(
         self, campaign: WorkflowCampaign, state: RunState, status: WorkflowCampaignStatus
@@ -306,4 +414,4 @@ def _fit(text: str, limit: int, field: str) -> str:
     return kept
 
 
-__all__ = ["GateNotifier", "gate_correlation_id", "review_path"]
+__all__ = ["GateNotifier", "gate_correlation_id", "paused_correlation_id", "review_path"]

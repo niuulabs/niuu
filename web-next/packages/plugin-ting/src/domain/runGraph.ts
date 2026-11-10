@@ -1,7 +1,10 @@
 import type { WorkflowEdge, WorkflowNode } from './workflow';
 
-/** Where a run is at one node: someone must act, at work, failed, closed, or not reached. */
-export type RunNodeState = 'waiting' | 'active' | 'failed' | 'done' | 'pending';
+/**
+ * Where a run is at one node: someone must act, held because the run's sessions are stopped,
+ * at work, failed, closed, or not reached.
+ */
+export type RunNodeState = 'waiting' | 'paused' | 'active' | 'failed' | 'done' | 'pending';
 
 /** One member's part in a node's newest round of work. */
 export interface RunGraphMember {
@@ -28,7 +31,9 @@ export interface RunGraph {
 /** Whether the run still has work going on or waiting, so its states can still change. */
 export function runGraphIsMoving(graph: RunGraph): boolean {
   for (const state of graph.states.values()) {
-    if (state.state === 'active' || state.state === 'waiting') return true;
+    if (state.state === 'active' || state.state === 'waiting' || state.state === 'paused') {
+      return true;
+    }
   }
   return false;
 }

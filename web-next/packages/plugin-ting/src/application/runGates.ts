@@ -9,9 +9,16 @@ export interface WaitingRunGate {
   requestedAt: string;
 }
 
+/** A run's step that nothing can take up while the run's sessions are stopped. */
+export interface PausedRunStep {
+  nodeId: string;
+  title: string;
+}
+
 /** A run's waiting gate read and answered through Ting's run reviews and gate decision. */
 export interface RunGateService {
   waitingGate(runId: string): Promise<WaitingRunGate | null>;
+  pausedStep(runId: string): Promise<PausedRunStep | null>;
   decide(
     runId: string,
     gate: Pick<WaitingRunGate, 'gateId' | 'activationId'>,
@@ -22,7 +29,8 @@ export interface RunGateService {
 
 /**
  * The run gates a host shows (Forge, above a run's coordinator's composer): the newest
- * pending revision of the run's reviews, decided as the review page decides it.
+ * pending revision of the run's reviews, decided as the review page decides it, and the step
+ * the run's stopped sessions hold (a ``paused`` node of the run's graph).
  */
 export function buildRunGateService(work: IWorkService): RunGateService {
   return {
@@ -38,6 +46,14 @@ export function buildRunGateService(work: IWorkService): RunGateService {
           summary: latest.summary,
           requestedAt: latest.requestedAt,
         };
+      }
+      return null;
+    },
+    async pausedStep(runId) {
+      const graph = await work.runGraph(runId);
+      for (const node of graph.nodes) {
+        if (graph.states.get(node.id)?.state !== 'paused') continue;
+        return { nodeId: node.id, title: node.label };
       }
       return null;
     },

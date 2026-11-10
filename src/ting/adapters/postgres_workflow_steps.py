@@ -82,6 +82,15 @@ ON CONFLICT (activation_id, kind) DO NOTHING
 RETURNING activation_id
 """
 
+_REOPEN_FLAG = """
+UPDATE workflow_step_flags
+SET since = $3, raised_at = $4, detail = $5, notified_at = NULL,
+    resolved_at = NULL, resolution = '',
+    action_at = NULL, action_done_at = NULL, action_error = ''
+WHERE activation_id = $1 AND kind = $2 AND resolved_at IS NOT NULL
+RETURNING activation_id
+"""
+
 _RESOLVE_FLAG = """
 UPDATE workflow_step_flags
 SET resolved_at = $3, resolution = $4
@@ -207,6 +216,17 @@ class _PostgresLedgerTransaction(LedgerTransaction):
             flag.activation_id,
             flag.kind.value,
             flag.run_id,
+            flag.since,
+            flag.raised_at,
+            flag.detail,
+        )
+        return row is not None
+
+    async def reopen_flag(self, flag: StepFlag) -> bool:
+        row = await self._conn.fetchrow(
+            _REOPEN_FLAG,
+            flag.activation_id,
+            flag.kind.value,
             flag.since,
             flag.raised_at,
             flag.detail,

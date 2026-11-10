@@ -186,6 +186,11 @@ class LedgerTransaction(ABC):
         """Record the flag unless the step already has one of its kind; True if it is new."""
 
     @abstractmethod
+    async def reopen_flag(self, flag: StepFlag) -> bool:
+        """Raise a resolved flag again as ``flag`` (a kind that ``recurs``): its resolution,
+        notification and action are cleared. True if a resolved flag was reopened."""
+
+    @abstractmethod
     async def resolve_flag(
         self, activation_id: UUID, kind: FlagKind, *, at: datetime, resolution: str
     ) -> None:

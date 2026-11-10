@@ -1889,6 +1889,7 @@ function InsertFromPortMenu({
 
 const RUN_STATE_LABELS: Record<RunNodeState, string> = {
   waiting: 'Needs you',
+  paused: 'Paused',
   active: 'Working',
   failed: 'Failed',
   done: 'Done',

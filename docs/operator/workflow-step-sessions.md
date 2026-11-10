@@ -88,6 +88,13 @@ consume.
   same event is published again, counted. The grace is when to look again, not a cap. An offer
   every member passed is an answer and is not published again. At the step deadline the step
   fails naming `workflow_steps.step_deadline_seconds`.
+- **The run's sessions are stopped.** An offer goes out through the run's root, so while the
+  root is stopped, failed or gone (a restart of the platform stops every session of the run)
+  nothing can take it. The stuck sweep flags the offer `unit_stopped`, tells the owner once and
+  raises an `attention` notification on the root session ("the run's sessions are stopped"):
+  resuming the root starts every session of the run again, and Ting then hands the step out.
+  The flag and the notification resolve once the root is up again; the step deadline still
+  fails the step if the run is never resumed.
 
 The offer carries what the session is told: the workflow, step, valid endings and verdicts,
 outcome schema, deadline, and the rendered instructions: the inputs (the payloads of the

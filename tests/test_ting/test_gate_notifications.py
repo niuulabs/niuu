@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -9,9 +10,15 @@ from uuid import UUID, uuid4
 import pytest
 
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
-from ting.domain.services.gate_notifications import GateNotifier, gate_correlation_id
+from ting.domain.services.gate_notifications import (
+    GateNotifier,
+    gate_correlation_id,
+    paused_correlation_id,
+)
 from ting.domain.workflow_steps import (
+    FlagKind,
     RunState,
+    StepFlag,
     StepInput,
     StepKind,
     StepState,
@@ -21,6 +28,7 @@ from ting.domain.workflow_steps import (
 )
 
 from .fake_forge import FakeForge, FakeForgeFactory
+from .step_support import Recorder
 
 NOW = datetime(2026, 11, 8, 9, 0, tzinfo=UTC)
 
@@ -358,3 +366,165 @@ async def test_a_run_that_failed_before_a_member_took_a_step_is_told_on_its_root
     [(session_id, draft)] = forge.notifications.values()
     assert session_id == root
     assert "cannot take the offer" in draft["body"]
+
+
+# --- a run whose sessions are stopped ---------------------------------------------------
+
+
+def _offer(run_id: UUID, state: StepState = StepState.ACTIVE) -> WorkflowStep:
+    offer_id = uuid4()
+    return WorkflowStep(
+        id=offer_id,
+        run_id=run_id,
+        node_id="code-merge",
+        member=None,
+        kind=StepKind.OFFER,
+        attempt=1,
+        generation=0,
+        state=state,
+        created_at=NOW,
+        offer_id=str(offer_id),
+    )
+
+
+def _stopped_flag(step: WorkflowStep, *, resolved: bool = False) -> StepFlag:
+    return StepFlag(
+        run_id=step.run_id,
+        activation_id=step.id,
+        kind=FlagKind.UNIT_STOPPED,
+        since=NOW,
+        raised_at=NOW,
+        detail="the run's root session is stopped",
+        resolved_at=NOW if resolved else None,
+    )
+
+
+def _with_root(forge: FakeForge, campaign: WorkflowCampaign) -> str:
+    root = forge.add_session("wf-run-1", f"workflow:{campaign.slug}")
+    forge.sessions[root] = replace(forge.sessions[root], project_id="project-1")
+    return root
+
+
+async def test_a_run_whose_sessions_are_stopped_asks_its_owner_to_resume_it_on_its_root() -> None:
+    forge = FakeForge()
+    campaign = _campaign()
+    root = _with_root(forge, campaign)
+    offer = _offer(campaign.id)
+    state = RunState(campaign.id, steps=(offer,), flags=(_stopped_flag(offer),))
+    notifier = _notifier(forge)
+
+    await notifier.sync_paused(campaign, state)
+    await notifier.sync_paused(campaign, state)
+
+    [(key, (session_id, draft))] = forge.notifications.items()
+    assert key == paused_correlation_id(campaign.id, _stopped_flag(offer))
+    assert session_id == root
+    assert draft["kind"] == "attention"
+    assert "sessions are stopped" in draft["title"]
+    assert "code-merge" in draft["body"] and "Resume this session" in draft["body"]
+    assert forge.resolved == {}
+    assert forge.notification_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("resolved", "offer_state", "resolution"),
+    [
+        (True, StepState.ACTIVE, "The run's sessions are running again."),
+        (False, StepState.FAILED, "The step ended (failed)."),
+    ],
+)
+async def test_the_paused_notice_is_resolved_when_the_run_is_up_again_or_the_step_ended(
+    resolved: bool, offer_state: StepState, resolution: str
+) -> None:
+    forge = FakeForge()
+    campaign = _campaign()
+    _with_root(forge, campaign)
+    offer = _offer(campaign.id)
+    notifier = _notifier(forge)
+    await notifier.sync_paused(
+        campaign, RunState(campaign.id, steps=(offer,), flags=(_stopped_flag(offer),))
+    )
+
+    ended = replace(offer, state=offer_state)
+    await notifier.sync_paused(
+        campaign,
+        RunState(campaign.id, steps=(ended,), flags=(_stopped_flag(offer, resolved=resolved),)),
+    )
+
+    [(_, (_, note))] = forge.notifications.items()
+    assert forge.resolved == {note["id"]: resolution}
+
+
+async def test_a_paused_notice_forge_refused_is_counted_and_raised_on_the_next_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counters = Recorder()
+    monkeypatch.setattr(
+        "ting.domain.services.gate_notifications.get_observability", lambda: counters
+    )
+    forge = FakeForge()
+    campaign = _campaign()
+    _with_root(forge, campaign)
+    offer = _offer(campaign.id)
+    state = RunState(campaign.id, steps=(offer,), flags=(_stopped_flag(offer),))
+    notifier = _notifier(forge)
+    forge.fail_notify = RuntimeError("feed down")
+
+    await notifier.sync_paused(campaign, state)
+    forge.fail_notify = None
+    await notifier.sync_paused(campaign, state)
+
+    assert counters.counted("ting_workflow_paused_notification_failures_total", phase="paused") == 1
+    assert list(forge.notifications) == [paused_correlation_id(campaign.id, _stopped_flag(offer))]
+
+
+async def test_a_paused_run_without_a_root_in_forge_is_loud(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    forge = FakeForge()
+    campaign = _campaign()
+    offer = _offer(campaign.id)
+    state = RunState(campaign.id, steps=(offer,), flags=(_stopped_flag(offer),))
+
+    with caplog.at_level(logging.ERROR):
+        await _notifier(forge).sync_paused(campaign, state)
+
+    assert forge.notifications == {}
+    assert any("lists no root session" in str(r.exc_info) for r in caplog.records if r.exc_info)
+
+
+async def test_other_flags_raise_no_paused_notice() -> None:
+    forge = FakeForge()
+    campaign = _campaign()
+    _with_root(forge, campaign)
+    offer = _offer(campaign.id)
+    flag = replace(_stopped_flag(offer), kind=FlagKind.UNCLAIMED)
+
+    await _notifier(forge).sync_paused(
+        campaign, RunState(campaign.id, steps=(offer,), flags=(flag,))
+    )
+
+    assert forge.notifications == {} and forge.notification_calls == 0
+
+
+async def test_each_time_the_run_is_stopped_gets_its_own_paused_notice() -> None:
+    forge = FakeForge()
+    campaign = _campaign()
+    _with_root(forge, campaign)
+    offer = _offer(campaign.id)
+    first = _stopped_flag(offer)
+    notifier = _notifier(forge)
+    await notifier.sync_paused(campaign, RunState(campaign.id, steps=(offer,), flags=(first,)))
+    resolved = replace(first, resolved_at=NOW, resolution="cleared")
+    await notifier.sync_paused(campaign, RunState(campaign.id, steps=(offer,), flags=(resolved,)))
+
+    again = replace(first, raised_at=NOW.replace(hour=10))
+    await notifier.sync_paused(campaign, RunState(campaign.id, steps=(offer,), flags=(again,)))
+
+    assert list(forge.notifications) == [
+        paused_correlation_id(campaign.id, first),
+        paused_correlation_id(campaign.id, again),
+    ]
+    assert list(forge.resolved) == [
+        forge.notifications[paused_correlation_id(campaign.id, first)][1]["id"]
+    ]

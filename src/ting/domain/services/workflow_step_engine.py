@@ -1007,8 +1007,9 @@ class WorkflowStepEngine:
         """Flag the stuck steps, once per step and kind; returns the flags that are new.
 
         A flag already on the step (open or resolved) is left alone, so a pass that
-        finds the same condition again raises nothing. Each new flag is written to the
-        run's log, logged at error and counted by kind.
+        finds the same condition again raises nothing, except a resolved flag of a kind
+        that ``recurs``: its condition came back, so it is raised again. Each new flag is
+        written to the run's log, logged at error and counted by kind.
         """
         if not conditions:
             return []
@@ -1021,7 +1022,9 @@ class WorkflowStepEngine:
                 step = state.step(condition.step.id)
                 if step is None or not step.is_open:
                     continue
-                if state.flag(step.id, condition.kind) is not None:
+                existing = state.flag(step.id, condition.kind)
+                again = existing is not None and existing.is_resolved and condition.kind.recurs
+                if existing is not None and not again:
                     continue
                 flag = StepFlag(
                     run_id=run_id,
@@ -1031,7 +1034,8 @@ class WorkflowStepEngine:
                     raised_at=now,
                     detail=condition.detail,
                 )
-                if not await tx.raise_flag(flag):
+                written = await tx.reopen_flag(flag) if again else await tx.raise_flag(flag)
+                if not written:
                     continue
                 await ledger.append(
                     EVENT_STEP_FLAGGED,

@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { ChevronDown, MessageSquareWarning } from 'lucide-react';
+import { ChevronDown, MessageSquareWarning, PauseCircle } from 'lucide-react';
 import './DecisionDock.css';
 
 /**
@@ -56,5 +56,40 @@ export function DecisionDock({
       </header>
       {children}
     </section>
+  );
+}
+
+/**
+ * A workflow run held because its sessions are stopped, kept by the composer where the run's
+ * other questions are: the step that waits, and starting the run's coordinator, which starts
+ * every session of the run again.
+ */
+export function RunPausedStrip({
+  step,
+  busy,
+  onStart,
+}: {
+  /** The step that waits, e.g. "Merge the change". */
+  step: string;
+  busy: boolean;
+  onStart: () => void;
+}) {
+  return (
+    <div className="forge-decision-strip" role="status" data-testid="run-paused-strip">
+      <PauseCircle className="forge-decision-strip__icon" aria-hidden="true" />
+      <span className="forge-decision-strip__count">Run paused</span>
+      <span className="forge-decision-strip__title">
+        {step} is ready, but the run&apos;s sessions are stopped
+      </span>
+      <button
+        type="button"
+        className="forge-decision-strip__show"
+        onClick={onStart}
+        disabled={busy}
+        aria-label={`Start the run to carry on with ${step}`}
+      >
+        {busy ? 'Starting…' : 'Start the run'}
+      </button>
+    </div>
   );
 }

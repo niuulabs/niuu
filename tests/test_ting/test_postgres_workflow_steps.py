@@ -425,6 +425,33 @@ async def test_raising_a_flag_is_one_insert_that_reports_whether_it_was_new(
     assert (first, again) == (True, False)
 
 
+async def test_reopening_a_flag_clears_how_it_ended_only_when_it_had_ended(
+    repository: PostgresWorkflowStepRepository, connection: _Connection
+) -> None:
+    run_id, activation_id = uuid4(), uuid4()
+    flag = StepFlag(
+        run_id=run_id,
+        activation_id=activation_id,
+        kind=FlagKind.UNIT_STOPPED,
+        since=NOW,
+        raised_at=NOW,
+        detail="the run's root session is stopped",
+    )
+
+    async with repository.transaction(run_id) as tx:
+        connection.fetchrow_result = {"activation_id": activation_id}
+        reopened = await tx.reopen_flag(flag)
+        connection.fetchrow_result = None
+        open_already = await tx.reopen_flag(flag)
+
+    query, args = connection.executed[1]
+    assert "resolved_at = NULL" in query and "notified_at = NULL" in query
+    assert "action_at = NULL" in query
+    assert "resolved_at IS NOT NULL" in query
+    assert args == (activation_id, "unit_stopped", NOW, NOW, "the run's root session is stopped")
+    assert (reopened, open_already) == (True, False)
+
+
 async def test_resolving_and_notifying_a_flag_touch_only_that_flag(
     repository: PostgresWorkflowStepRepository, connection: _Connection
 ) -> None:

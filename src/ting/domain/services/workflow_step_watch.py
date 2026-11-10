@@ -12,8 +12,9 @@ A periodic task, one pass over every active workflow run. For each run it
 4. takes the automatic actions that cannot change the outcome: it publishes an unclaimed
    offer again (the same offer, counted: the pickup grace is when to look again, never a
    cap), and fails a step whose session is gone, an offer whose members' sessions ended
-   before they listened, and an offer that reached its deadline untaken, naming the knob. An
-   overdue or unclosed step is only flagged;
+   (unless the whole run is stopped, which is flagged ``unit_stopped`` until it is
+   started), and an offer that reached its deadline untaken, naming the knob. An overdue
+   or unclosed step is only flagged;
 5. resolves flags whose step closed or whose condition cleared, and projects the run's
    open flags onto its campaign for the web to show.
 
@@ -38,7 +39,11 @@ from ting.domain.services.workflow_step_engine import (
     RunSessionsNotStoppedError,
     WorkflowStepEngine,
 )
-from ting.domain.step_engine import listening_members, offer_members, unit_sessions
+from ting.domain.step_engine import (
+    offer_members,
+    unit_root,
+    unit_sessions,
+)
 from ting.domain.step_graph import compile_step_graph
 from ting.domain.step_stuck import Condition, StuckSettings, detect_stuck
 from ting.domain.workflow_steps import (
@@ -75,6 +80,11 @@ _NEXT_BY_KIND = {
     FlagKind.SESSION_GONE: (
         "Ting is failing the step; the run's other branches carry on. Retry or reassign "
         "it if the run is still open."
+    ),
+    FlagKind.UNIT_STOPPED: (
+        "Nothing can take the step while the run's sessions are stopped. Resume the run's "
+        "coordinator session, which starts every session of the run again; Ting then hands "
+        "the step out. The step deadline still fails it if the run is not resumed."
     ),
 }
 
@@ -203,7 +213,12 @@ class StuckStepSweeper:
                 await self._fail_gone(campaign, condition)
             elif condition.kind is FlagKind.OVERDUE and condition.step.kind is StepKind.OFFER:
                 await self._fail_expired_offer(campaign, condition)
-        await self._fail_unreachable_offers(campaign, await self._steps.load(campaign.id))
+        paused = {
+            condition.step.id for condition in conditions if condition.kind is FlagKind.UNIT_STOPPED
+        }
+        await self._fail_unreachable_offers(
+            campaign, await self._steps.load(campaign.id), paused=paused
+        )
         await self._engine.resolve_flags(
             campaign.id,
             {(condition.step.id, condition.kind) for condition in conditions},
@@ -214,9 +229,14 @@ class StuckStepSweeper:
     async def _observe(
         self, campaign: WorkflowCampaign, state: RunState
     ) -> tuple[dict[UUID, SessionLiveness], set[UUID]]:
-        """Whether each open step's session is up; the steps that could not be asked."""
+        """Whether each open step's session is up; the steps that could not be asked.
+
+        An open offer has no session of its own: it goes out through the run's root, so
+        its entry is whether the root is up.
+        """
         liveness: dict[UUID, SessionLiveness] = {}
         unobserved: set[UUID] = set()
+        await self._observe_root(campaign, state, liveness, unobserved)
         for step in state.steps:
             if (
                 step.kind is not StepKind.STAGE_MEMBER
@@ -241,6 +261,36 @@ class StuckStepSweeper:
                 self._count_error("observe")
                 unobserved.add(step.id)
         return liveness, unobserved
+
+    async def _observe_root(
+        self,
+        campaign: WorkflowCampaign,
+        state: RunState,
+        liveness: dict[UUID, SessionLiveness],
+        unobserved: set[UUID],
+    ) -> None:
+        offers = [
+            step
+            for step in state.steps
+            if step.kind is StepKind.OFFER and step.state is StepState.ACTIVE
+        ]
+        root_id = unit_root(state)
+        if not offers or not root_id:
+            return
+        try:
+            root = await self._sessions.session_liveness(campaign.id, root_id)
+        except Exception:
+            logger.error(
+                "Could not ask whether root session %s of run %s is up",
+                root_id,
+                campaign.slug,
+                exc_info=True,
+            )
+            self._count_error("observe")
+            unobserved.update(offer.id for offer in offers)
+            return
+        for offer in offers:
+            liveness[offer.id] = root
 
     # -- telling a person -------------------------------------------------------
 
@@ -317,26 +367,33 @@ class StuckStepSweeper:
             "start slower than that, or fix the member",
         )
 
-    async def _fail_unreachable_offers(self, campaign: WorkflowCampaign, state: RunState) -> None:
-        """Fail an unpublished offer whose member's session ended before it listened.
+    async def _fail_unreachable_offers(
+        self, campaign: WorkflowCampaign, state: RunState, *, paused: set[UUID]
+    ) -> None:
+        """Fail an open offer whose member's session ended, before or after it listened.
 
-        Waiting for a member that can never listen is waiting for the deadline for nothing.
+        Waiting for a member that can never take the offer is waiting for the deadline for
+        nothing. A member that listened and then ended (its session stopped or failed after
+        a restart) can no more take it than one that never listened. An offer held because
+        the whole run is stopped (``paused``) is left to the ``unit_stopped`` flag: starting
+        the run brings every member back.
         """
         waiting = [
             offer
             for offer in state.steps
-            if offer.kind is StepKind.OFFER and offer.state is StepState.ACTIVE
+            if offer.kind is StepKind.OFFER
+            and offer.state is StepState.ACTIVE
+            and offer.id not in paused
         ]
         if not waiting:
             return
         definition = await self._definitions.get(campaign.id)
         graph = compile_step_graph(definition.graph, definition.persona_definitions)
-        listening = listening_members(state)
         unit = unit_sessions(state)
         for offer in waiting:
             for member in offer_members(graph, offer):
                 session_id = unit.get(member.alias)
-                if member.alias in listening or not session_id:
+                if not session_id:
                     continue
                 gone = await self._ended_reason(campaign, session_id)
                 if not gone:
@@ -354,8 +411,9 @@ class StuckStepSweeper:
         if liveness not in (SessionLiveness.FAILED, SessionLiveness.STOPPED, SessionLiveness.GONE):
             return ""
         detail = f"session {session_id} is {liveness.value}"
-        if liveness is not SessionLiveness.FAILED:
+        if liveness is SessionLiveness.GONE:
             return detail
+        # A stopped session keeps the error that stopped it (a member that could not start).
         failure = await self._sessions.session_failure(campaign.id, session_id)
         return f"{detail}: {failure}" if failure else detail
 
