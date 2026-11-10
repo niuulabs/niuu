@@ -201,17 +201,20 @@ function MemberRow({
             </span>
           ) : null}
         </div>
-        {manage ? (
-          <RoleSelect
-            label={`Role of ${name}`}
-            value={member.role}
-            disabled={update.isPending}
-            onChange={(role) => update.mutate({ userId: member.user_id, change: { role } })}
-          />
-        ) : (
+        {manage ? null : (
           <span className="niuu:text-xs niuu:text-text-muted">{ROLE_LABEL[member.role]}</span>
         )}
-        {manage || isViewer ? (
+      </div>
+      {manage || isViewer ? (
+        <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2 niuu:pl-10">
+          {manage ? (
+            <RoleSelect
+              label={`Role of ${name}`}
+              value={member.role}
+              disabled={update.isPending}
+              onChange={(role) => update.mutate({ userId: member.user_id, change: { role } })}
+            />
+          ) : null}
           <button
             type="button"
             className={BUTTON}
@@ -220,19 +223,19 @@ function MemberRow({
           >
             Expertise
           </button>
-        ) : null}
-        {manage ? (
-          <button
-            type="button"
-            className={BUTTON}
-            aria-label={`Remove ${name}`}
-            disabled={remove.isPending}
-            onClick={() => remove.mutate(member.user_id)}
-          >
-            Remove
-          </button>
-        ) : null}
-      </div>
+          {manage ? (
+            <button
+              type="button"
+              className={BUTTON}
+              aria-label={`Remove ${name}`}
+              disabled={remove.isPending}
+              onClick={() => remove.mutate(member.user_id)}
+            >
+              Remove
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {editing ? (
         <div className="niuu:flex niuu:gap-2 niuu:pl-10">
           <input
