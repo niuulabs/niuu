@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import type { RepoRecord } from '@niuulabs/ui';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ResearchCampaign, SpecCampaign, TrackerIssue, TrackerProject } from '../ports';
@@ -10,8 +11,9 @@ import { WorkflowCatalogPage } from './WorkflowCatalogPage';
 
 const mockNavigate = vi.fn();
 const mockSearch = vi.hoisted(() => ({
-  current: {} as { workflow?: string; repo?: string; branch?: string },
+  current: {} as { workflow?: string; id?: string; repo?: string; branch?: string },
 }));
+const mockDownload = vi.hoisted(() => vi.fn());
 const mockOpenEventStream = vi.hoisted(() => vi.fn());
 
 vi.mock('@tanstack/react-router', () => ({
@@ -37,6 +39,11 @@ vi.mock('@tanstack/react-router', () => ({
 
 vi.mock('@niuulabs/query', () => ({
   openEventStream: mockOpenEventStream,
+}));
+
+vi.mock('./workflowFiles', () => ({
+  downloadWorkflowFile: mockDownload,
+  readWorkflowFile: vi.fn(),
 }));
 
 const now = '2026-09-01T10:00:00.000Z';
@@ -86,6 +93,23 @@ const buildWorkflow: Workflow = {
     { id: 'e3', source: 'build', target: 'qa-gate', cp1: { x: 0, y: 0 }, cp2: { x: 0, y: 0 } },
   ],
 };
+
+const editable: Workflow = { ...buildWorkflow, canEdit: true };
+
+const versionSummaries = [
+  {
+    version: '1.1.0',
+    documentRevision: 'sha256:11',
+    createdAt: '2026-09-20T12:00:00Z',
+    isHead: true,
+  },
+  {
+    version: '1.0.0',
+    documentRevision: 'sha256:10',
+    createdAt: '2026-09-19T12:00:00Z',
+    isHead: false,
+  },
+];
 
 const researchWorkflow: Workflow = {
   id: '22222222-2222-4222-8222-222222222222',
@@ -169,8 +193,16 @@ const issue: TrackerIssue = {
 
 function makeServices(overrides: Record<string, unknown> = {}) {
   return {
+    bifrost: createMockBifrostService(),
     'ting.workflows': {
       listWorkflows: vi.fn().mockResolvedValue([buildWorkflow, researchWorkflow]),
+      listWorkflowVersions: vi.fn().mockResolvedValue([]),
+      getWorkflowVersion: vi.fn().mockResolvedValue(null),
+      deleteWorkflow: vi.fn().mockResolvedValue(undefined),
+      exportWorkflow: vi.fn().mockResolvedValue({
+        filename: 'build-and-ship.yaml',
+        data: new Blob(['name: Build and ship']),
+      }),
       saveWorkflow: vi.fn(async (workflow: Workflow) => workflow),
       launchWorkflow: vi.fn().mockResolvedValue({
         workflowId: buildWorkflow.id,
@@ -204,6 +236,15 @@ function makeServices(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** Services whose workflow port keeps the defaults apart from `workflows`. */
+function withWorkflows(workflows: Record<string, unknown>) {
+  const base = makeServices();
+  return {
+    ...base,
+    'ting.workflows': { ...(base['ting.workflows'] as Record<string, unknown>), ...workflows },
+  };
+}
+
 function renderPage(services: Record<string, unknown> = makeServices()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -219,6 +260,7 @@ function renderPage(services: Record<string, unknown> = makeServices()) {
 describe('WorkflowCatalogPage', () => {
   beforeEach(() => {
     mockNavigate.mockReset();
+    mockDownload.mockReset();
     mockSearch.current = {};
     mockOpenEventStream.mockReset();
     mockOpenEventStream.mockReturnValue({ close: vi.fn() });
@@ -238,12 +280,15 @@ describe('WorkflowCatalogPage', () => {
       'data-selected',
       'true',
     );
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Build and ship');
+    await waitFor(() =>
+      expect(screen.getByTestId('builder-title')).toHaveTextContent('Build and ship'),
+    );
+    expect(screen.getByTestId('workflow-builder')).toBeInTheDocument();
     expect(screen.getByText('yours')).toBeInTheDocument();
     expect(screen.getByText('Stops for you at 1 gate')).toBeInTheDocument();
   });
 
-  it('opens workflow import from the simple catalog', () => {
+  it('opens workflow import from the list', () => {
     renderPage();
     fireEvent.click(screen.getByTestId('catalog-workflow-import'));
     expect(screen.getByRole('dialog', { name: 'Import workflow' })).toBeInTheDocument();
@@ -265,11 +310,7 @@ describe('WorkflowCatalogPage', () => {
         },
       ],
     };
-    renderPage(
-      makeServices({
-        'ting.workflows': { listWorkflows: vi.fn().mockResolvedValue([twoGates]) },
-      }),
-    );
+    renderPage(withWorkflows({ listWorkflows: vi.fn().mockResolvedValue([twoGates]) }));
 
     await waitFor(() =>
       expect(screen.getByTestId(`catalog-workflow-${twoGates.id}`)).toBeInTheDocument(),
@@ -283,7 +324,7 @@ describe('WorkflowCatalogPage', () => {
     renderPage();
 
     await waitFor(() =>
-      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Research sweep'),
+      expect(screen.getByTestId('builder-title')).toHaveTextContent('Research sweep'),
     );
     expect(screen.getByText('shared')).toBeInTheDocument();
     expect(
@@ -293,21 +334,59 @@ describe('WorkflowCatalogPage', () => {
     fireEvent.click(screen.getByTestId(`catalog-workflow-${buildWorkflow.id}`));
     expect(mockNavigate).toHaveBeenCalledWith({
       to: '/ting/workflows',
-      search: { workflow: buildWorkflow.id },
+      search: { id: undefined, workflow: buildWorkflow.id },
     });
   });
 
-  it('creates a workflow and opens it in the builder', async () => {
-    const services = makeServices();
+  it('opens the workflow an older builder link names in ?id=', async () => {
+    mockSearch.current = { id: researchWorkflow.id };
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('builder-title')).toHaveTextContent('Research sweep'),
+    );
+    expect(screen.getByTestId(`catalog-workflow-${researchWorkflow.id}`)).toHaveAttribute(
+      'data-selected',
+      'true',
+    );
+  });
+
+  it('creates a workflow and opens it for editing in place', async () => {
+    const created: Workflow[] = [];
+    const services = withWorkflows({
+      listWorkflows: vi.fn(async () => [buildWorkflow, researchWorkflow, ...created]),
+      saveWorkflow: vi.fn(async (workflow: Workflow) => {
+        created.push(workflow);
+        return workflow;
+      }),
+    });
+    mockNavigate.mockImplementation(({ search }: { search?: typeof mockSearch.current }) => {
+      if (search) mockSearch.current = search;
+    });
     renderPage(services);
     await waitFor(() => expect(screen.getByTestId('catalog-workflow-new')).toBeEnabled());
 
     fireEvent.click(screen.getByTestId('catalog-workflow-new'));
 
     await waitFor(() => expect(mockNavigate).toHaveBeenCalled());
-    const call = mockNavigate.mock.calls[0]?.[0] as { to: string; search: { id: string } };
-    expect(call.to).toBe('/ting/workflows/build');
-    expect(call.search.id).toBeTruthy();
+    const call = mockNavigate.mock.calls[0]?.[0] as { to: string; search: { workflow: string } };
+    expect(call.to).toBe('/ting/workflows');
+    expect(call.search.workflow).toBe(created[0]?.id);
+    await waitFor(() =>
+      expect(screen.getByTestId('workflow-editor-mode')).toHaveTextContent('Editing'),
+    );
+    expect(screen.getByTestId('builder-title')).toHaveTextContent('New Workflow');
+    expect(screen.queryByLabelText('Workflow catalog')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('workflow-run-panel')).not.toBeInTheDocument();
+  });
+
+  it('says when a new workflow cannot be created', async () => {
+    renderPage(withWorkflows({ saveWorkflow: vi.fn().mockRejectedValue(new Error('no room')) }));
+    await waitFor(() => expect(screen.getByTestId('catalog-workflow-new')).toBeEnabled());
+
+    fireEvent.click(screen.getByTestId('catalog-workflow-new'));
+
+    expect(await screen.findByText('Could not create a workflow: no room')).toBeInTheDocument();
   });
 
   it('prefills the prompt from a tracker issue', async () => {
@@ -410,11 +489,9 @@ describe('WorkflowCatalogPage', () => {
   });
 
   it('surfaces a launch failure instead of navigating', async () => {
-    const services = makeServices({
-      'ting.workflows': {
-        listWorkflows: vi.fn().mockResolvedValue([buildWorkflow]),
-        launchWorkflow: vi.fn().mockRejectedValue(new Error('cluster is full')),
-      },
+    const services = withWorkflows({
+      listWorkflows: vi.fn().mockResolvedValue([buildWorkflow]),
+      launchWorkflow: vi.fn().mockRejectedValue(new Error('cluster is full')),
     });
     renderPage(services);
     await waitFor(() => expect(screen.getByTestId('catalog-workflow-launch')).toBeInTheDocument());
@@ -511,9 +588,7 @@ describe('WorkflowCatalogPage', () => {
   });
 
   it('says so when the workflow list is empty', async () => {
-    const services = makeServices({
-      'ting.workflows': { listWorkflows: vi.fn().mockResolvedValue([]) },
-    });
+    const services = withWorkflows({ listWorkflows: vi.fn().mockResolvedValue([]) });
     renderPage(services);
 
     await waitFor(() =>
@@ -523,11 +598,310 @@ describe('WorkflowCatalogPage', () => {
   });
 
   it('surfaces a workflow list failure', async () => {
-    const services = makeServices({
-      'ting.workflows': { listWorkflows: vi.fn().mockRejectedValue(new Error('ting is down')) },
+    const services = withWorkflows({
+      listWorkflows: vi.fn().mockRejectedValue(new Error('ting is down')),
     });
     renderPage(services);
 
     expect(await screen.findByRole('alert')).toHaveTextContent('ting is down');
+  });
+
+  it('caches the model catalog apart from the model list the AI models page reads', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const modelList = [{ id: 'claude-opus' }];
+    client.setQueryData(['bifrost', 'models'], modelList);
+
+    render(
+      <QueryClientProvider client={client}>
+        <ServicesProvider services={makeServices()}>
+          <WorkflowCatalogPage />
+        </ServicesProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() =>
+      expect(client.getQueryData(['bifrost', 'model-catalog'])).toEqual(expect.any(Object)),
+    );
+    expect(Array.isArray(client.getQueryData(['bifrost', 'model-catalog']))).toBe(false);
+    expect(client.getQueryData(['bifrost', 'models'])).toBe(modelList);
+  });
+
+  it('keeps the canvas free of a second workflow picker and launch button', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('workflow-builder')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('workflow-picker-trigger'));
+    expect(screen.queryByTestId('workflow-picker')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('launch-workflow')).not.toBeInTheDocument();
+  });
+
+  it('edits in place: the list and run panel step aside until cancel', async () => {
+    renderPage(withWorkflows({ listWorkflows: vi.fn().mockResolvedValue([editable]) }));
+    await waitFor(() => expect(screen.getByTestId('edit-workflow')).toBeInTheDocument());
+    expect(screen.getByTestId('workflow-editor-mode')).toHaveTextContent('Viewing');
+    expect(screen.getByLabelText('Workflow catalog')).toBeInTheDocument();
+    expect(screen.getByTestId('workflow-run-panel')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('edit-workflow'));
+
+    expect(screen.getByTestId('workflow-editor-mode')).toHaveTextContent('Editing');
+    expect(screen.getByTestId('workflow-catalog-page')).toHaveAttribute('data-editing', 'true');
+    expect(screen.queryByLabelText('Workflow catalog')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('workflow-run-panel')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('cancel-workflow-edit'));
+
+    expect(screen.getByTestId('workflow-editor-mode')).toHaveTextContent('Viewing');
+    expect(screen.getByLabelText('Workflow catalog')).toBeInTheDocument();
+    expect(screen.getByTestId('workflow-run-panel')).toBeInTheDocument();
+  });
+
+  it('saves an edit and returns to viewing the saved workflow', async () => {
+    const services = withWorkflows({ listWorkflows: vi.fn().mockResolvedValue([editable]) });
+    renderPage(services);
+    await waitFor(() => expect(screen.getByTestId('edit-workflow')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('edit-workflow'));
+    fireEvent.click(screen.getByTestId('open-workflow-meta'));
+    fireEvent.change(screen.getByDisplayValue('Build and ship'), {
+      target: { value: 'Build and ship well' },
+    });
+    fireEvent.click(screen.getByTestId('save-workflow'));
+
+    const workflows = services['ting.workflows'] as { saveWorkflow: ReturnType<typeof vi.fn> };
+    await waitFor(() => expect(workflows.saveWorkflow).toHaveBeenCalledTimes(1));
+    const saved = workflows.saveWorkflow.mock.calls[0]![0] as Workflow;
+    expect(saved.name).toBe('Build and ship well');
+    await waitFor(() =>
+      expect(screen.getByTestId('workflow-editor-mode')).toHaveTextContent('Viewing'),
+    );
+    expect(screen.getByTestId('workflow-run-panel')).toBeInTheDocument();
+  });
+
+  it('loads an exact historical version and launches that version', async () => {
+    const head: Workflow = {
+      ...editable,
+      version: '1.1.0',
+      revision: 'head-cas-2',
+      documentRevision: 'sha256:11',
+      isHead: true,
+    };
+    const historical: Workflow = {
+      ...head,
+      version: '1.0.0',
+      documentRevision: 'sha256:10',
+      isHead: false,
+    };
+    let releaseVersion!: (workflow: Workflow) => void;
+    const services = withWorkflows({
+      listWorkflows: vi.fn().mockResolvedValue([head]),
+      listWorkflowVersions: vi.fn().mockResolvedValue(versionSummaries),
+      getWorkflowVersion: vi.fn().mockReturnValue(
+        new Promise<Workflow>((resolve) => {
+          releaseVersion = resolve;
+        }),
+      ),
+    });
+    renderPage(services);
+
+    await waitFor(() => expect(screen.getByTestId('workflow-version-picker')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('workflow-version-picker'), {
+      target: { value: '1.0.0' },
+    });
+
+    const workflows = services['ting.workflows'] as {
+      getWorkflowVersion: ReturnType<typeof vi.fn>;
+      launchWorkflow: ReturnType<typeof vi.fn>;
+    };
+    await waitFor(() => expect(screen.getByTestId('edit-workflow')).toBeDisabled());
+    expect(screen.getByTestId('workflow-versions-loading')).toBeInTheDocument();
+    expect(workflows.getWorkflowVersion).toHaveBeenCalledWith(head.id, '1.0.0');
+
+    releaseVersion(historical);
+    await waitFor(() => expect(screen.getByTestId('workflow-version-picker')).toHaveValue('1.0.0'));
+    expect(screen.getByTestId('edit-workflow')).toBeEnabled();
+
+    fireEvent.change(screen.getByTestId('workflow-launch-prompt'), {
+      target: { value: 'Replay the old flow.' },
+    });
+    fireEvent.click(screen.getByTestId('catalog-workflow-launch'));
+    await waitFor(() =>
+      expect(workflows.launchWorkflow).toHaveBeenCalledWith(
+        head.id,
+        expect.objectContaining({ prompt: 'Replay the old flow.', workflowVersion: '1.0.0' }),
+      ),
+    );
+  });
+
+  it('walks into a child workflow and back to the exact parent draft', async () => {
+    const child: Workflow = {
+      ...researchWorkflow,
+      version: '1.2.0',
+      documentRevision: 'sha256:child-12',
+      canEdit: true,
+    };
+    const parent: Workflow = {
+      ...buildWorkflow,
+      name: 'Historical parent',
+      version: '0.9.0',
+      documentRevision: 'sha256:parent-09',
+      isHead: false,
+      canEdit: true,
+      workflowDependencies: {
+        child: {
+          id: child.id,
+          revision: child.documentRevision!,
+          digest: child.documentRevision!,
+        },
+      },
+      nodes: [
+        {
+          id: 'child-node',
+          kind: 'subworkflow',
+          label: 'Original child label',
+          templates: { default: 'child' },
+          allowedCoordinator: '',
+          inputSchema: { type: 'object', properties: {} },
+          resultSchema: { type: 'object', properties: {} },
+          maxChildren: 10,
+          maxAttempts: 3,
+          maxActiveChildren: 4,
+          joinMode: 'all',
+          blockedEvent: 'children.blocked',
+          position: { x: 100, y: 100 },
+        },
+      ],
+      edges: [],
+    };
+    renderPage(withWorkflows({ listWorkflows: vi.fn().mockResolvedValue([parent, child]) }));
+
+    await waitFor(() => expect(screen.getByTestId('builder-title')).toHaveTextContent(parent.name));
+    fireEvent.click(screen.getByTestId('edit-workflow'));
+    fireEvent.mouseDown(screen.getByTestId('workflow-node-child-node'));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Draft child label' } });
+
+    fireEvent.click(screen.getByTestId('open-child-workflow'));
+    expect(screen.getByTestId('builder-title')).toHaveTextContent(child.name);
+    expect(screen.getByTestId('workflow-editor-mode')).toHaveTextContent('Viewing');
+    expect(screen.getByTestId('workflow-parent-0')).toHaveTextContent(parent.name);
+
+    fireEvent.click(screen.getByTestId('workflow-parent-back'));
+    expect(screen.getByTestId('builder-title')).toHaveTextContent(parent.name);
+    expect(screen.getByTestId('workflow-editor-mode')).toHaveTextContent('Editing');
+    expect(screen.getByTestId('workflow-dirty-state')).toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByTestId('workflow-node-child-node'));
+    expect(screen.getByLabelText('Name')).toHaveValue('Draft child label');
+  });
+
+  it('repins a persona dependency while editing', async () => {
+    const bundled: Workflow = {
+      ...editable,
+      origin: 'bundled',
+      personaDependencies: { coder: { id: 'coder', revision: 'r1', digest: 'sha256:r1' } },
+    };
+    const services = withWorkflows({ listWorkflows: vi.fn().mockResolvedValue([bundled]) });
+    renderPage(services);
+    await waitFor(() => expect(screen.getByTestId('edit-workflow')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('edit-workflow'));
+    fireEvent.click(screen.getByRole('button', { name: 'Use current local persona' }));
+
+    const workflows = services['ting.workflows'] as { saveWorkflow: ReturnType<typeof vi.fn> };
+    await waitFor(() =>
+      expect(workflows.saveWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ id: bundled.id, refreshPersonas: ['coder'] }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('workflow-editor-mode')).toHaveTextContent('Editing'),
+    );
+  });
+
+  it('exports the version on the canvas', async () => {
+    const services = renderPage(
+      withWorkflows({
+        listWorkflows: vi.fn().mockResolvedValue([{ ...editable, version: '2.0.0' }]),
+      }),
+    );
+    await waitFor(() => expect(screen.getByTestId('export-workflow-yaml')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('export-workflow-yaml'));
+
+    const workflows = services['ting.workflows'] as { exportWorkflow: ReturnType<typeof vi.fn> };
+    await waitFor(() =>
+      expect(workflows.exportWorkflow).toHaveBeenCalledWith(editable.id, 'yaml', '2.0.0'),
+    );
+    await waitFor(() => expect(mockDownload).toHaveBeenCalledTimes(1));
+  });
+
+  it('deletes the workflow on the canvas and goes back to the list', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const services = renderPage(
+      withWorkflows({ listWorkflows: vi.fn().mockResolvedValue([editable, researchWorkflow]) }),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId(`delete-workflow-${editable.id}`)).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByTestId(`delete-workflow-${editable.id}`));
+
+    const workflows = services['ting.workflows'] as { deleteWorkflow: ReturnType<typeof vi.fn> };
+    await waitFor(() => expect(workflows.deleteWorkflow).toHaveBeenCalledWith(editable.id));
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: '/ting/workflows',
+        search: { id: undefined, workflow: undefined },
+      }),
+    );
+  });
+
+  it('keeps the workflow when the delete is not confirmed', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const services = renderPage(
+      withWorkflows({ listWorkflows: vi.fn().mockResolvedValue([editable]) }),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId(`delete-workflow-${editable.id}`)).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByTestId(`delete-workflow-${editable.id}`));
+
+    const workflows = services['ting.workflows'] as { deleteWorkflow: ReturnType<typeof vi.fn> };
+    expect(workflows.deleteWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a failed export under the canvas', async () => {
+    renderPage(
+      withWorkflows({
+        listWorkflows: vi.fn().mockResolvedValue([editable]),
+        exportWorkflow: vi.fn().mockRejectedValue(new Error('export broke')),
+      }),
+    );
+    await waitFor(() => expect(screen.getByTestId('export-workflow-yaml')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('export-workflow-yaml'));
+
+    expect(await screen.findByText('export broke')).toBeInTheDocument();
+  });
+
+  it('tells the person to edit before launching a workflow with unresolved bindings', async () => {
+    renderPage(
+      withWorkflows({
+        listWorkflows: vi.fn().mockResolvedValue([
+          {
+            ...buildWorkflow,
+            requirements: [{ id: 'repo', kind: 'repository', resolved: false, message: '' }],
+          },
+        ]),
+      }),
+    );
+
+    expect(await screen.findByTestId('catalog-workflow-unresolved')).toHaveTextContent(
+      'choose Edit',
+    );
+    fireEvent.change(screen.getByTestId('workflow-launch-prompt'), {
+      target: { value: 'Ship it.' },
+    });
+    expect(screen.getByTestId('catalog-workflow-launch')).toBeDisabled();
   });
 });

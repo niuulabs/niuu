@@ -37,10 +37,21 @@ test('the retired plan wizard sends people to Projects', async ({ page }) => {
   await expect(page).toHaveURL(/\/realms$/);
 });
 
-test('workflow catalog opens the existing builder', async ({ page }) => {
+test('one Workflows page views, edits and redirects old builder links', async ({ page }) => {
   await page.goto('/ting/workflows');
 
   await expect(page.getByTestId('workflow-catalog-page')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('ting-tab-builder')).toHaveCount(0);
+  await expect(page.getByTestId('ting-tab-workflows')).toHaveClass(/--active/);
+  await expect(page.getByTestId('workflow-builder')).toBeVisible();
+  await expect(page.getByTestId('graph-view')).toBeVisible();
+  await expect(page.getByTestId('workflow-run-panel')).toBeVisible();
+  await expect(page.getByTestId('workflow-editor-mode')).toHaveText('Viewing');
+
+  await page.goto('/ting/workflows/build');
+  await expect(page).toHaveURL(/\/ting\/workflows$/);
+  await expect(page.getByTestId('workflow-catalog-page')).toBeVisible();
+});
   await expect(page.getByTestId('ting-tab-builder')).toHaveText(/Builder/);
   await expect(page.getByTestId('catalog-workflow-edit')).toHaveText('Open in builder');
   await page.getByTestId('catalog-workflow-edit').click();

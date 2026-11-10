@@ -2,8 +2,7 @@ import { createElement } from 'react';
 import { createRoute, redirect } from '@tanstack/react-router';
 import { WorkIcon } from '@niuulabs/ui';
 import { definePlugin } from '@niuulabs/plugin-sdk';
-import { WorkflowBuilderPage } from './ui/WorkflowBuilderPage';
-import { WorkflowsRoute } from './ui/WorkflowsRoute';
+import { WorkflowCatalogPage } from './ui/WorkflowCatalogPage';
 import { WorkPage } from './ui/WorkPage';
 import { DispatchView } from './ui/DispatchView';
 import { TingTopbar } from './ui/TingTopbar';
@@ -74,7 +73,6 @@ export const tingPlugin = definePlugin({
     { id: 'work', label: 'Board', path: '/ting/work' },
     { id: 'artifacts', label: 'Artifacts', path: '/ting/artifacts' },
     { id: 'workflows', label: 'Workflows', path: '/ting/workflows' },
-    { id: 'builder', label: 'Builder', path: '/ting/workflows/build' },
   ],
   routes: (rootRoute) => [
     createRoute({
@@ -126,7 +124,7 @@ export const tingPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/workflows',
-      component: WorkflowsRoute,
+      component: WorkflowCatalogPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -136,7 +134,15 @@ export const tingPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/workflows/build',
-      component: WorkflowBuilderPage,
+      // The builder is the Workflows page's canvas now; old links land there.
+      beforeLoad: ({ search }) => {
+        const { id, ...rest } = search as { id?: string } & Record<string, unknown>;
+        throw redirect({
+          to: '/ting/workflows' as never,
+          search: (id ? { ...rest, workflow: id } : rest) as never,
+        });
+      },
+      component: () => null,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
