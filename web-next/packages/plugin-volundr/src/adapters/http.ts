@@ -325,6 +325,7 @@ type ConversationPayload = {
     participant_meta?: Record<string, unknown>;
     thread_id?: string;
     visibility?: 'visible' | 'internal';
+    author?: { user_id?: string; display_name?: string } | null;
   }>;
 };
 
@@ -877,6 +878,7 @@ function normalizeConversationHistory(payload: ConversationPayload): VolundrConv
       participant_meta: turn.participant_meta,
       thread_id: turn.thread_id,
       visibility: turn.visibility,
+      ...(turn.author ? { author: turn.author } : {}),
     })),
   };
 }

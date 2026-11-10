@@ -139,5 +139,14 @@ export type {
   SessionLinksProviderProps,
   SessionLinksValue,
 } from './sessionLinks';
+export {
+  ChatAuthorshipProvider,
+  useChatAuthorship,
+  conversationAuthorship,
+  showsAuthor,
+  authorName,
+  authorInitials,
+} from './authorship';
+export type { ChatAuthorship, ChatAuthorshipProviderProps } from './authorship';
 export { classifyRelayedTurn } from './components/ChatMessages/relayedTurn';
 export type { RelayedTurn, RelayKind } from './components/ChatMessages/relayedTurn';

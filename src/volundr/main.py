@@ -1796,6 +1796,16 @@ def create_app(
                 if hasattr(skuld_reg, "set_room_role_resolver"):
                     skuld_reg.set_room_role_resolver(_resolve_room_role)
 
+                if hasattr(skuld_reg, "set_display_name_resolver"):
+
+                    async def _resolve_display_name(user_id: str) -> str | None:
+                        """The provisioned user's display name, stamped on proxied sessions
+                        as the author name of the caller's messages."""
+                        user = await user_repository.get(user_id)
+                        return user.display_name if user is not None else None
+
+                    skuld_reg.set_display_name_resolver(_resolve_display_name)
+
             stats_service = StatsService(stats_repository, session_service)
             token_service = TokenService(
                 token_tracker, repository, pricing_provider, broadcaster=broadcaster

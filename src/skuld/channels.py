@@ -18,6 +18,7 @@ from typing import Any, Literal
 from fastapi import WebSocketDisconnect
 
 from niuu.domain.history_control import history_gap
+from niuu.domain.message_author import MessageAuthor
 from niuu.domain.outcome import parse_outcome_block
 from niuu.observability import get_observability
 from skuld.live_frames import prepare_live_frame
@@ -237,6 +238,7 @@ class WebSocketChannel(MessageChannel):
         history_protocol: int = 0,
         history_bootstrap_max_frames: int = 256,
         room_role: str = "owner",
+        author: MessageAuthor | None = None,
     ) -> None:
         """Initialize with a FastAPI WebSocket instance.
 
@@ -253,6 +255,10 @@ class WebSocketChannel(MessageChannel):
                 other construction site (none currently exist outside
                 handle_websocket) keeps today's unrestricted behavior rather
                 than silently becoming the least-privileged role.
+            author: The verified person behind this connection (the session
+                proxy's stamped user id and display name), or None when the
+                connection carried no identity. Every human turn sent over
+                this connection is recorded as said by this author.
         """
         self._ws = ws
         self._closed = False
@@ -268,6 +274,7 @@ class WebSocketChannel(MessageChannel):
         self._bootstrap_bytes = 0
         self._bootstrap_overflow = False
         self._room_role = room_role
+        self._author = author
 
     async def finish_history_bootstrap(self) -> None:
         """Send only post-snapshot events, after the snapshot, in broadcast order.
@@ -364,6 +371,11 @@ class WebSocketChannel(MessageChannel):
     def room_role(self) -> str:
         """The verified room role resolved for this connection."""
         return self._room_role
+
+    @property
+    def author(self) -> MessageAuthor | None:
+        """The verified person behind this connection, if it carried an identity."""
+        return self._author
 
 
 # ---------------------------------------------------------------------------

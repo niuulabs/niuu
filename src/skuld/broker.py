@@ -28,6 +28,7 @@ from fastapi import WebSocket, WebSocketDisconnect  # noqa: F401
 
 from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
 from niuu.domain.logging import LoggingConfig
+from niuu.domain.message_author import AUTHOR_KEY, MessageAuthor
 from niuu.domain.outcome import parse_outcome_block
 from niuu.domain.peer_message import (
     PEER_MESSAGE_FRAME,
@@ -619,6 +620,10 @@ class Broker(
         self._pending_attention: dict[str, str] = {}
         self._activity_heartbeat_task: asyncio.Task[None] | None = None
         self._conversation_turns: list[ConversationTurn] = []
+        # User ids of every person who has spoken in this session, restored from the
+        # local history and the durable log. More than one means the model is told who
+        # said each message (see _author_prefix).
+        self._human_author_ids: set[str] = set()
         self._pending_assistant_content: str = ""
         self._pending_assistant_parts: list[dict] = []
         # Tool details are available before their live preview is sent, including
@@ -768,9 +773,11 @@ class Broker(
                     participant_meta=t.get("participant_meta"),
                     thread_id=t.get("thread_id"),
                     visibility=t.get("visibility", "public"),
+                    author=t.get("author"),
                 )
                 for t in turns
             ]
+            self._note_authors_of_turns(self._conversation_turns)
             logger.info(
                 "Loaded %d conversation turns from %s",
                 len(self._conversation_turns),
@@ -778,6 +785,46 @@ class Broker(
             )
         except Exception:
             logger.warning("Failed to load conversation history from %s", path, exc_info=True)
+
+    def _note_human_author(self, author: MessageAuthor | None) -> None:
+        """Count a person who spoke in this session (no author: nobody to count)."""
+        if author is not None:
+            self._human_author_ids.add(author.user_id)
+
+    def _note_authors_of_turns(self, turns: list[ConversationTurn]) -> None:
+        """Count the authors of already-recorded turns (restore after a restart)."""
+        for turn in turns:
+            if turn.role == "user":
+                self._note_human_author(MessageAuthor.from_wire(turn.author))
+
+    def _restore_durable_authors(self, frames: list) -> None:
+        """Count the authors of the durable log's human frames, so a restarted broker
+        knows the session already had more than one person speaking."""
+        for frame in frames:
+            if frame.kind in ("user", "user_confirmed"):
+                self._note_human_author(MessageAuthor.from_wire(frame.payload.get(AUTHOR_KEY)))
+
+    def _author_prefix(self, author: MessageAuthor | None) -> str:
+        """What opens a human message the model reads: ``[<name>] `` once more than one
+        person has spoken in this session, so every voice is attributed and none is
+        presumed to be "the user". A session with one person is unchanged."""
+        if author is None or len(self._human_author_ids) < 2:
+            return ""
+        return f"[{author.label}] "
+
+    def _author_for(self, sender_ws: WebSocket | None) -> MessageAuthor | None:
+        """The verified person behind the live connection *sender_ws*, if it has one.
+
+        ``sender_ws is None`` is an internally synthesized dispatch (Telegram, replay,
+        resume): there is no connection, so no author. A connection whose channel cannot
+        be found has none either.
+        """
+        if sender_ws is None:
+            return None
+        for ch in self._channels.channels:
+            if isinstance(ch, WebSocketChannel) and ch.ws is sender_ws:
+                return ch.author
+        return None
 
     def _save_conversation_history(self) -> None:
         """Persist conversation history to disk."""
@@ -3253,6 +3300,7 @@ class Broker(
                             if isinstance(data.get("metadata"), dict)
                             else None,
                         ),
+                        author=self._author_for(sender_ws),
                     )
                 except LookupError as exc:
                     if sender_ws:
@@ -3379,6 +3427,7 @@ class Broker(
                             source=source,
                             request_id=request_id,
                             metadata=metadata,
+                            author=self._author_for(sender_ws),
                         )
                     except LookupError as exc:
                         if sender_ws:
@@ -3416,7 +3465,11 @@ class Broker(
                         return
                     self._message_claim_tokens[request_id] = token
                 await self._submit_user_turn(
-                    content_str, msg_id=msg_id, request_id=request_id, source="browser"
+                    content_str,
+                    msg_id=msg_id,
+                    request_id=request_id,
+                    source="browser",
+                    author=self._author_for(sender_ws),
                 )
 
     async def _accept_peer_message_frame(self, data: dict) -> None:
@@ -3446,6 +3499,7 @@ class Broker(
         request_id: str | None,
         source: str,
         extra_metadata: dict[str, Any] | None = None,
+        author: MessageAuthor | None = None,
     ) -> asyncio.Task[None]:
         """Record a user turn, echo it to every client and deliver it to the transport.
 
@@ -3453,10 +3507,16 @@ class Broker(
         is steered into the harness exactly as a person's message is: same durable turn, same
         bounded-retry delivery, same acknowledgement. Returns the delivery task, which ends
         once the outcome is decided (delivered, or the turn marked failed).
+
+        ``author`` is the verified person who sent it (None for a workflow step or any
+        sender that is not a verified person). It is recorded on the turn, the durable log
+        frame, the ``user_confirmed`` broadcast and the trace span, and once the session has
+        had more than one person it opens the message the model reads.
         """
+        self._note_human_author(author)
         now = datetime.now(UTC)
         input_timeline = self._enqueue_human_turn_event(
-            content_str, msg_id, request_id=request_id, ts=now
+            content_str, msg_id, request_id=request_id, ts=now, author=author
         )
         self._append_turn(
             ConversationTurn(
@@ -3475,6 +3535,7 @@ class Broker(
                     **({TIMELINE_KEY: input_timeline} if input_timeline else {}),
                     **(extra_metadata or {}),
                 },
+                author=author.to_dict() if author is not None else None,
             )
         )
         # Mirror the human turn into the durable event log so log-only
@@ -3484,8 +3545,8 @@ class Broker(
             name=content_str[:120] or "user turn",
             parent_span_id=self._trace_session_span_id,
             actor_type="user",
-            actor_id=request_id or msg_id,
-            actor_label="user",
+            actor_id=author.user_id if author is not None else request_id or msg_id,
+            actor_label=author.label if author is not None else "user",
             attributes={"source": source},
             started_at=now,
             ended_at=now,
@@ -3503,6 +3564,7 @@ class Broker(
                 "steering_state": "pending",
                 "created_at": now.isoformat(),
                 **({TIMELINE_KEY: input_timeline} if input_timeline else {}),
+                **({AUTHOR_KEY: author.to_dict()} if author is not None else {}),
             }
         )
 
@@ -3519,6 +3581,7 @@ class Broker(
                 content_str,
                 request_id=request_id,
                 msg_id=msg_id,
+                author=author,
             ),
             name=f"transport-deliver-{msg_id}",
         )
@@ -3687,7 +3750,12 @@ class Broker(
         return native_steering or turn_active
 
     async def _attempt_transport_delivery(
-        self, content: str, *, msg_id: str, request_id: str | None
+        self,
+        content: str,
+        *,
+        msg_id: str,
+        request_id: str | None,
+        author: MessageAuthor | None = None,
     ) -> None:
         """One delivery attempt. Re-resolves routing so a moved turn boundary routes
         correctly, then sends with a per-attempt timeout so a wedged input channel is
@@ -3699,9 +3767,17 @@ class Broker(
             # Preserve correlation for both app-server acceptance and native hooks.
             mode = getattr(self._transport.capabilities, "steering_mode", "none")
             control = "steer" if mode == "live" else "redirect"
+            prefix = self._author_prefix(author)
+            # A transport that merges steers (the SDK) names who sent them: the author
+            # rides beside the content, and only once the content is attributed.
+            attribution = {"author_name": author.label} if prefix and author is not None else {}
             accepted = await asyncio.wait_for(
                 self._transport.send_control(
-                    control, content=content, msg_id=msg_id, request_id=request_id
+                    control,
+                    content=f"{prefix}{content}",
+                    msg_id=msg_id,
+                    request_id=request_id,
+                    **attribution,
                 ),
                 timeout=timeout,
             )
@@ -3713,7 +3789,7 @@ class Broker(
         # Idle / non-native transports (Codex turn/start, SDK, …). Thread the ids so a
         # transport that CAN correlate a consumption signal (Codex turn/started) flips
         # the bubble; transports that can't simply ignore the kwargs.
-        outbound = await self._apply_retrieval_reflex(content)
+        outbound = self._author_prefix(author) + await self._apply_retrieval_reflex(content)
         sending = self._transport.send_message(outbound, msg_id=msg_id, request_id=request_id)
         if getattr(self._transport.capabilities, "send_runs_turn", False) is True:
             # The send returns when the whole turn is over (SDK, ``claude -p``). Cutting it at
@@ -3731,6 +3807,7 @@ class Broker(
         *,
         request_id: str | None,
         msg_id: str,
+        author: MessageAuthor | None = None,
     ) -> None:
         """Deliver a user message to the transport with BOUNDED RETRY and a durable,
         observable outcome (SRD FR-5 / INV-7).
@@ -3782,7 +3859,7 @@ class Broker(
             for attempt in range(1, attempts + 1):
                 try:
                     await self._attempt_transport_delivery(
-                        content, msg_id=msg_id, request_id=request_id
+                        content, msg_id=msg_id, request_id=request_id, author=author
                     )
                     last_error = None
                     break
@@ -4127,10 +4204,17 @@ class Broker(
         metadata: dict[str, Any] | None = None,
         participant_id: str | None = None,
         deliver_to_transport: bool = True,
+        author: MessageAuthor | None = None,
     ) -> str:
-        """Record and broadcast a human-originated room message."""
+        """Record and broadcast a human-originated room message.
+
+        ``author`` is the verified person who sent it, when a verified connection or
+        request carried one; messages relayed from a channel, an agent or a session carry
+        none and are recorded without.
+        """
         if not content.strip():
             raise ValueError("content is required")
+        self._note_human_author(author)
         participant_meta = None
         participant = None
         if participant_id:
@@ -4153,6 +4237,7 @@ class Broker(
                 thread_id=_non_empty_str(metadata_payload.get("thread_id")),
                 visibility=_non_empty_str(metadata_payload.get("visibility")) or "public",
                 metadata=metadata_payload,
+                author=author.to_dict() if author is not None else None,
             )
         )
         now = datetime.now(UTC)
@@ -4161,8 +4246,8 @@ class Broker(
             name=content[:120] or "human turn",
             parent_span_id=self._trace_session_span_id,
             actor_type="user",
-            actor_id=source,
-            actor_label=source,
+            actor_id=author.user_id if author is not None else source,
+            actor_label=author.label if author is not None else source,
             attributes={"source": source, "metadata": metadata_payload},
             started_at=now,
             ended_at=now,
@@ -4174,6 +4259,8 @@ class Broker(
             "source": source,
             "metadata": metadata_payload,
         }
+        if author is not None:
+            event[AUTHOR_KEY] = author.to_dict()
         if request_id:
             event["request_id"] = request_id
         if participant_id:
@@ -4197,7 +4284,7 @@ class Broker(
                     metadata=metadata_payload,
                 )
         if deliver_to_transport:
-            await self._send_explicit_human_message_to_transport(content)
+            await self._send_explicit_human_message_to_transport(content, author)
         return msg_id
 
     async def handle_room_message_rpc(self, message: dict) -> dict:
@@ -4286,6 +4373,7 @@ class Broker(
         source: str = "external",
         request_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        author: MessageAuthor | None = None,
     ) -> str:
         """Record and route a directed human message to a room participant."""
         if self._room_bridge is None:
@@ -4316,6 +4404,7 @@ class Broker(
             metadata=routing_metadata,
             participant_id=_non_empty_str(routing_metadata.get("participant_id")),
             deliver_to_transport=False,
+            author=author,
         )
 
         delivered = await self._room_bridge.route_directed_message(
@@ -4532,19 +4621,27 @@ class Broker(
             summary=summary,
         )
 
-    async def _send_explicit_human_message_to_transport(self, content: str) -> None:
+    async def _send_explicit_human_message_to_transport(
+        self, content: str, author: MessageAuthor | None = None
+    ) -> None:
         """Deliver an explicit human room message to Skuld's own transport."""
         if self._transport is None:
             logger.warning("No transport available for explicit human room message")
             return
-        outbound = self._format_room_message_for_skuld(content)
+        outbound = self._format_room_message_for_skuld(content, author)
         self._pending_explicit_human_messages.append((content, outbound))
         self._pending_explicit_human_response_count += 1
         await self._ensure_transport_started()
         await self._transport.send_message(outbound)
 
-    def _format_room_message_for_skuld(self, content: str) -> str:
-        """Wrap an explicit human room message with flock context for Skuld."""
+    def _format_room_message_for_skuld(
+        self, content: str, author: MessageAuthor | None = None
+    ) -> str:
+        """Wrap an explicit human room message with flock context for Skuld.
+
+        The wrapper names the person who sent it when the message carried a verified
+        author; a message with none (a channel relay, an agent) is wrapped as before.
+        """
         if self._room_bridge is None:
             return content
 
@@ -4574,7 +4671,11 @@ class Broker(
         lines.extend(
             [
                 "",
-                "Human message from an external communication interface:",
+                (
+                    f"Human message from {author.label} via an external communication interface:"
+                    if author is not None
+                    else "Human message from an external communication interface:"
+                ),
                 content,
             ]
         )
@@ -4662,6 +4763,7 @@ class Broker(
         # Direct cache replacement, never _append_turn: replayed frames are
         # already durable and must not be emitted/persisted a second time.
         self._conversation_turns = hydrated
+        self._note_authors_of_turns(hydrated)
         self._save_conversation_history()
         logger.info("Hydrated %d conversation turns from durable history", len(hydrated))
         await self._rejoin_room_members()
@@ -4696,6 +4798,7 @@ class Broker(
         self._restore_durable_peer_inbox(frames)
         self._restore_durable_mesh_follows(frames)
         self._restore_durable_room_members(frames)
+        self._restore_durable_authors(frames)
 
     def _restore_durable_room_members(self, frames: list) -> None:
         """Work out who holds a seat from another session, by their latest join or leave."""

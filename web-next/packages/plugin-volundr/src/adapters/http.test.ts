@@ -1104,6 +1104,27 @@ describe('buildVolundrHttpAdapter', () => {
     expect(history.turns[0]?.visibility).toBe('internal');
   });
 
+  it('getConversationHistory keeps who sent a user turn and none for older turns', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      turns: [
+        { id: 'old', role: 'user', content: 'before authorship', created_at: '2026-11-01' },
+        {
+          id: 'new',
+          role: 'user',
+          content: 'hello',
+          created_at: '2026-11-10',
+          author: { user_id: 'u-alice', display_name: 'Alice Liddell' },
+        },
+      ],
+    });
+
+    const history = await buildVolundrHttpAdapter(client).getConversationHistory('sess-1');
+
+    expect(history.turns[0]).not.toHaveProperty('author');
+    expect(history.turns[1]?.author).toEqual({ user_id: 'u-alice', display_name: 'Alice Liddell' });
+  });
+
   it('getConversationTurn calls GET /sessions/:id/conversation/turns/:turnId', async () => {
     const client = makeClient();
     client.get.mockResolvedValue({

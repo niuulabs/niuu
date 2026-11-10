@@ -2064,4 +2064,43 @@ describe("SessionChat — a workflow run's room", () => {
       'wf-run-1-reviewer',
     ]);
   });
+
+  describe('message authors', () => {
+    const alice = { userId: 'u-alice', displayName: 'Alice Liddell' };
+    const bob = { userId: 'u-bob', displayName: 'Bob Stone' };
+    const said = (id: string, author?: typeof alice): ChatMessage => ({
+      ...userMessage,
+      id,
+      content: `message ${id}`,
+      ...(author ? { author } : {}),
+    });
+
+    it('keeps the plain look when only the viewer has spoken', () => {
+      render(
+        <SessionChat
+          {...defaultProps}
+          viewerId="u-alice"
+          messages={[said('1', alice), said('2', alice)]}
+        />,
+      );
+      expect(screen.queryByTestId('user-author')).not.toBeInTheDocument();
+    });
+
+    it('names someone else who spoke in a session the viewer is in', () => {
+      render(<SessionChat {...defaultProps} viewerId="u-alice" messages={[said('1', bob)]} />);
+      expect(screen.getByTestId('user-author')).toHaveTextContent('Bob Stone');
+    });
+
+    it('names every author, the viewer too, once two people have spoken', () => {
+      render(
+        <SessionChat
+          {...defaultProps}
+          viewerId="u-alice"
+          messages={[said('1', alice), said('2', bob), said('3')]}
+        />,
+      );
+      const names = screen.getAllByTestId('user-author').map((node) => node.textContent);
+      expect(names).toEqual(['Alice Liddell', 'Bob Stone']);
+    });
+  });
 });

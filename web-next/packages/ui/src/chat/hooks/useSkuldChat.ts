@@ -41,6 +41,7 @@ import { reconcileHistoryMessages } from './historyReconciliation';
 import {
   advanceDelivery,
   deliveryFromSteeringState,
+  parseMessageAuthor,
   effortFromRuntimeOptions,
   parseAgentUpdate,
   parseDeliveryFrame,
@@ -175,6 +176,8 @@ type CliStreamEvent = {
   threadId?: string;
   visibility?: 'visible' | 'internal';
   metadata?: Record<string, unknown>;
+  /** Who sent a `user_confirmed` message: `{user_id, display_name}`. */
+  author?: unknown;
   eventType?: string;
   verdict?: string;
   summary?: string;
@@ -229,6 +232,8 @@ export interface ConversationTurn {
   participant_meta?: Record<string, unknown>;
   thread_id?: string;
   visibility?: 'visible' | 'internal';
+  /** Who sent a user turn: `{user_id, display_name}`; absent on turns from before authorship. */
+  author?: { user_id?: string; display_name?: string } | null;
   in_progress?: boolean;
   history_preview?: boolean;
   history_metadata_preview?: boolean;
@@ -618,6 +623,7 @@ export function transformTurns(turns: ConversationTurn[]): ChatMessage[] {
       const metadataStatus = (turn.metadata as Record<string, unknown> | undefined)?.status;
       const delivery =
         turn.role === 'user' ? deliveryFromSteeringState(turn.metadata?.steering_state) : undefined;
+      const author = turn.role === 'user' ? parseMessageAuthor(turn.author) : undefined;
       return {
         id: turn.id,
         role: turn.role === 'user' ? 'user' : 'assistant',
@@ -635,6 +641,7 @@ export function transformTurns(turns: ConversationTurn[]): ChatMessage[] {
         threadId: turn.thread_id,
         visibility: turn.visibility,
         ...(delivery ? { delivery } : {}),
+        ...(author ? { author } : {}),
       };
     });
 }
@@ -2240,6 +2247,7 @@ export function useSkuldChat(
               optimisticUserMessagesRef.current.delete(requestId);
             }
             const confirmedDelivery = deliveryFromSteeringState(event.steering_state);
+            const confirmedAuthor = parseMessageAuthor(event.author);
             setMessages((prev) => {
               if (optimisticMessageId) {
                 return prev.map((message) =>
@@ -2253,6 +2261,7 @@ export function useSkuldChat(
                         createdAt: event.created_at
                           ? new Date(event.created_at)
                           : message.createdAt,
+                        ...(confirmedAuthor ? { author: confirmedAuthor } : {}),
                         status: 'done',
                         visibility: event.visibility ?? message.visibility,
                         metadata:
@@ -2283,6 +2292,7 @@ export function useSkuldChat(
                       : undefined,
                   visibility: event.visibility,
                   ...(confirmedDelivery ? { delivery: confirmedDelivery } : {}),
+                  ...(confirmedAuthor ? { author: confirmedAuthor } : {}),
                 },
               ];
             });
