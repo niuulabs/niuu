@@ -3446,6 +3446,16 @@ function LiveSessionDetailPageInner({
     [chatEndpoint, historyLocator],
   );
   const chat = useSkuldChat(chatEndpoint, { historyEndpoint });
+  // Questions the agent put to people: the broker decides who may answer; the cards show it.
+  const personQuestions = useMemo(
+    () => ({
+      answers: chat.personAnswers,
+      errors: chat.personAnswerErrors,
+      sending: chat.personAnswersSending,
+      onAnswer: chat.sendPersonAnswer,
+    }),
+    [chat.personAnswers, chat.personAnswerErrors, chat.personAnswersSending, chat.sendPersonAnswer],
+  );
   // Each Forge host has its own preview domain: ask the one that runs this session.
   const previewInstanceId = liveSession?.instanceId ?? instanceId;
   const livePreviewQuery = useQuery({
@@ -4693,6 +4703,8 @@ function LiveSessionDetailPageInner({
                             showTokenUsage={showTokenUsage}
                             messages={chat.messages}
                             viewerId={viewerId}
+                            roomApprover={mayAnswerGates}
+                            personQuestions={personQuestions}
                             streamingContent={chat.streamingContent}
                             streamingParts={chat.streamingParts}
                             streamingModel={chat.streamingModel}

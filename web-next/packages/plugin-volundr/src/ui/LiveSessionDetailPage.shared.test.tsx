@@ -394,4 +394,76 @@ describe('LiveSessionDetailPage for a session shared through a room', () => {
       'Needs you',
     );
   });
+
+  describe('a question the agent put to a person', () => {
+    const QUESTION_MESSAGE = {
+      id: 'pq_q-1',
+      role: 'assistant' as const,
+      content: 'Asked Carol: Which branch?',
+      createdAt: new Date(0),
+      status: 'done' as const,
+      parts: [
+        {
+          type: 'tool_use' as const,
+          id: 'q-1',
+          name: 'ask_person',
+          input: {
+            question_id: 'q-1',
+            user_id: 'carol',
+            display_name: 'Carol',
+            role: 'viewer',
+            question: 'Which branch?',
+          },
+        },
+      ],
+    };
+
+    it('lets an approver answer it, sending person_answer through the chat', async () => {
+      const sendPersonAnswer = vi.fn();
+      mockChatState({
+        messages: [QUESTION_MESSAGE],
+        sendPersonAnswer,
+        personAnswers: new Map(),
+        personAnswerErrors: new Map(),
+        personAnswersSending: new Set(),
+      } as never);
+      renderShared(sharedSession('approver'));
+
+      fireEvent.change(await screen.findByRole('textbox', { name: /Answer Carol/ }), {
+        target: { value: 'Use main' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Send answer' }));
+
+      expect(sendPersonAnswer).toHaveBeenCalledWith('q-1', 'Use main');
+    });
+
+    it('shows a viewer the question and who can answer it, with no box', async () => {
+      mockChatState({
+        messages: [QUESTION_MESSAGE],
+        sendPersonAnswer: vi.fn(),
+        personAnswers: new Map(),
+        personAnswerErrors: new Map(),
+        personAnswersSending: new Set(),
+      } as never);
+      renderShared(sharedSession('viewer'));
+
+      expect(await screen.findByTestId('person-question-who-can-answer')).toBeInTheDocument();
+      expect(screen.queryByRole('textbox', { name: /Answer Carol/ })).not.toBeInTheDocument();
+    });
+
+    it('shows who answered it when the answer came back', async () => {
+      mockChatState({
+        messages: [QUESTION_MESSAGE],
+        sendPersonAnswer: vi.fn(),
+        personAnswers: new Map([
+          ['q-1', { content: 'Use main', answeredBy: { userId: 'dan', displayName: 'Dan' } }],
+        ]),
+        personAnswerErrors: new Map(),
+        personAnswersSending: new Set(),
+      } as never);
+      renderShared(sharedSession('viewer'));
+
+      expect(await screen.findByTestId('person-question-answer')).toHaveTextContent('Dan');
+    });
+  });
 });
