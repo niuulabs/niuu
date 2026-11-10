@@ -45,6 +45,13 @@ async function card() {
   return screen.findByTestId('project-integrations');
 }
 
+/** A ``storage`` event as another window's write raises it: only ``key`` and ``newValue``. */
+function storageSignal(key: string, newValue: string): Event {
+  const event = new Event('storage');
+  Object.defineProperties(event, { key: { value: key }, newValue: { value: newValue } });
+  return event;
+}
+
 describe('ProjectIntegrations', () => {
   afterEach(() => {
     cleanup();
@@ -322,20 +329,14 @@ describe('ProjectIntegrations', () => {
     // A signal for another install is not this one.
     act(() => {
       window.dispatchEvent(
-        new StorageEvent('storage', {
-          key: 'niuu:provider-connected',
-          newValue: teamInstallSignal('project-yggdrasil', 'slack'),
-        }),
+        storageSignal('niuu:provider-connected', teamInstallSignal('project-yggdrasil', 'slack')),
       );
     });
     expect(screen.getByTestId('project-integration-connect')).toBeInTheDocument();
 
     act(() => {
       window.dispatchEvent(
-        new StorageEvent('storage', {
-          key: 'niuu:provider-connected',
-          newValue: 'team:project-yggdrasil:linear',
-        }),
+        storageSignal('niuu:provider-connected', 'team:project-yggdrasil:linear'),
       );
     });
     await waitFor(() =>
