@@ -470,8 +470,8 @@ class TestTeamInstall:
         team.definition = lambda slug: defn
         client = TestClient(app)
         resp = client.post(
-            f"{TEAM_PREFIX}/linear/authorize-team",
-            json={"project_id": self.PROJECT, "config": {"team": "PAY"}},
+            f"{TEAM_PREFIX}/authorize-team",
+            json={"slug": "linear", "project_id": self.PROJECT, "config": {"team": "PAY"}},
             headers=AUTH,
         )
         assert resp.status_code == 200
@@ -502,14 +502,18 @@ class TestTeamInstall:
         team.owner_project.side_effect = ProjectAccessDeniedError("owners only")
         app, _ = self._app(team)
         resp = TestClient(app).post(
-            f"{TEAM_PREFIX}/linear/authorize-team", json={"project_id": self.PROJECT}, headers=AUTH
+            f"{TEAM_PREFIX}/authorize-team",
+            json={"slug": "linear", "project_id": self.PROJECT},
+            headers=AUTH,
         )
         assert resp.status_code == 403
 
     def test_the_shared_oauth_routes_do_not_take_team_installs(self):
         app, _ = self._app(None)
         resp = TestClient(app).post(
-            f"{PREFIX}/linear/authorize-team", json={"project_id": self.PROJECT}, headers=AUTH
+            f"{PREFIX}/authorize-team",
+            json={"slug": "linear", "project_id": self.PROJECT},
+            headers=AUTH,
         )
         assert resp.status_code in (404, 405)
 
@@ -520,7 +524,9 @@ class TestTeamInstall:
         app, defn = self._app(team)
         team.definition = lambda slug: defn
         resp = TestClient(app).post(
-            f"{TEAM_PREFIX}/linear/authorize-team", json={"project_id": self.PROJECT}, headers=AUTH
+            f"{TEAM_PREFIX}/authorize-team",
+            json={"slug": "linear", "project_id": self.PROJECT},
+            headers=AUTH,
         )
         redirect = parse_qs(urlparse(resp.json()["url"]).query)["redirect_uri"][0]
         assert redirect == f"https://app.test{TEAM_PREFIX}/callback"
@@ -528,6 +534,19 @@ class TestTeamInstall:
     def test_an_integration_without_a_team_oauth_install_is_refused(self):
         app, defn = self._app(self._team(), team_install=False)
         resp = TestClient(app).post(
-            f"{TEAM_PREFIX}/linear/authorize-team", json={"project_id": self.PROJECT}, headers=AUTH
+            f"{TEAM_PREFIX}/authorize-team",
+            json={"slug": "linear", "project_id": self.PROJECT},
+            headers=AUTH,
         )
         assert resp.status_code == 422
+
+    def test_an_integration_name_must_be_a_catalog_slug(self):
+        team = self._team()
+        app, _ = self._app(team)
+        resp = TestClient(app).post(
+            f"{TEAM_PREFIX}/authorize-team",
+            json={"slug": "../admin", "project_id": self.PROJECT},
+            headers=AUTH,
+        )
+        assert resp.status_code == 422
+        team.owner_project.assert_not_awaited()

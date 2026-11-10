@@ -72,6 +72,7 @@ class AuthorizeRequest(BaseModel):
 class TeamAuthorizeRequest(BaseModel):
     """Start a provider's app install for a project team (project owners only)."""
 
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$", description="Catalog integration")
     project_id: UUID
     oauth_app: str = Field(default="", max_length=64)
     config: dict[str, Any] = Field(default_factory=dict)
@@ -314,7 +315,6 @@ def _build_oauth_router(
         )
 
     async def authorize_team(
-        slug: str,
         data: TeamAuthorizeRequest,
         request: Request,
         principal: Principal = Depends(extract_principal),
@@ -323,9 +323,9 @@ def _build_oauth_router(
         assert team_integrations is not None
         with team_http_errors():
             await team_integrations.owner_project(data.project_id, principal)
-            team_integrations.definition(slug)
+            team_integrations.definition(data.slug)
         return _start_authorization(
-            slug=slug,
+            slug=data.slug,
             user_id=principal.user_id,
             tenant_id=principal.tenant_id,
             oauth_app=data.oauth_app,
@@ -340,7 +340,7 @@ def _build_oauth_router(
 
     if team_integrations is not None:
         router.add_api_route(
-            "/{slug}/authorize-team",
+            "/authorize-team",
             authorize_team,
             methods=["POST"],
             response_model=AuthorizeResponse,
@@ -610,7 +610,7 @@ def create_team_oauth_router(
     team_integrations: ProjectIntegrationService,
     oauth_clients: OAuthClientRegistry | None = None,
 ) -> APIRouter:
-    """Forge's OAuth routes for team installs (``{slug}/authorize-team`` and ``callback``)."""
+    """Forge's OAuth routes for team installs (``authorize-team`` and ``callback``)."""
     return _build_oauth_router(
         oauth_config,
         integration_registry,

@@ -129,7 +129,7 @@ team connection is an error, never a switch to someone's personal one.
   token refresher (an Atlassian service account for Jira). `team_only` integrations (Slack)
   cannot be personal connections.
 - **Owners manage, members read** (`/api/v1/forge/projects/{id}/integrations`). An app install
-  starts at `POST /api/v1/forge/integrations/oauth/{slug}/authorize-team` (Forge owns team installs,
+  starts at `POST /api/v1/forge/integrations/oauth/authorize-team` (with the `slug` in the body) (Forge owns team installs,
   so it starts and returns on the Forge holding the project), and the callback checks
   again that the installer still owns the project.
 - **Team routes** forward a project's notifications through its messaging connection: one

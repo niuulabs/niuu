@@ -2945,18 +2945,16 @@ def create_volundr_router(
             media_type=upstream.headers.get("content-type"),
         )
 
-    @router.post("/integrations/oauth/{slug}/authorize-team")
+    @router.post("/integrations/oauth/authorize-team")
     async def authorize_team_install(
-        request: Request,
-        slug: str = Path(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$"),
-        principal: Principal = Depends(extract_principal),
+        request: Request, principal: Principal = Depends(extract_principal)
     ) -> Response:
-        """Start a project team's app install (project owners only, checked by Forge)."""
+        """Start a project team's app install (project owners only, checked by Forge).
+
+        The integration travels in the body, so the forwarded path is a constant.
+        """
         return await _team_oauth_on_this_node(
-            request,
-            "POST",
-            f"/integrations/oauth/{slug}/authorize-team",
-            _forward_local_headers(request),
+            request, "POST", "/integrations/oauth/authorize-team", _forward_local_headers(request)
         )
 
     @router.get("/integrations/oauth/callback")

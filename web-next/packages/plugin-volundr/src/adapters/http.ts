@@ -2196,7 +2196,8 @@ export function buildVolundrHttpAdapter(
     connectTeamServiceAccount: (project, connect) =>
       forgeClient.post(projectMembersPath(project, 'integrations'), connect),
     startTeamOAuth: (project, slug, config) =>
-      forgeClient.post(`/integrations/oauth/${encodeURIComponent(slug)}/authorize-team`, {
+      forgeClient.post('/integrations/oauth/authorize-team', {
+        slug,
         project_id: project.id,
         config,
       }),

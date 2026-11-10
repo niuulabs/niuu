@@ -51,10 +51,15 @@ def _forge(calls: list) -> FastAPI:
         calls.append(("route", event, body))
         return {"event": event, **body}
 
-    @app.post(f"{PREFIX}/integrations/oauth/{{slug}}/authorize-team")
-    async def authorize(slug: str, request: Request, body: dict):
+    @app.post(f"{PREFIX}/integrations/oauth/authorize-team")
+    async def authorize(request: Request, body: dict):
         calls.append(
-            ("authorize", slug, request.headers.get("x-auth-user-id"), str(request.base_url))
+            (
+                "authorize",
+                body["slug"],
+                request.headers.get("x-auth-user-id"),
+                str(request.base_url),
+            )
         )
         return {"url": f"https://provider/authorize?redirect={request.base_url}"}
 
@@ -83,8 +88,8 @@ def test_team_install_runs_on_this_nodes_forge_with_the_callers_origin():
     calls: list = []
     client = _client([LOCAL], embedded_forge_app=_forge(calls))
     started = client.post(
-        f"{PREFIX}/integrations/oauth/slack/authorize-team",
-        json={"project_id": str(uuid4())},
+        f"{PREFIX}/integrations/oauth/authorize-team",
+        json={"slug": "slack", "project_id": str(uuid4())},
         headers=_headers(),
     )
     assert started.status_code == 200
@@ -102,15 +107,3 @@ def test_a_node_without_its_own_forge_refuses_team_installs():
     response = client.get(f"{PREFIX}/integrations/oauth/callback?code=c&state=s")
     assert response.status_code == 502
     assert "home node" in response.json()["detail"]
-
-
-def test_a_slug_that_is_not_a_catalog_name_never_reaches_forge():
-    calls: list = []
-    client = _client([LOCAL], embedded_forge_app=_forge(calls))
-    response = client.post(
-        f"{PREFIX}/integrations/oauth/..%2Fadmin/authorize-team",
-        json={"project_id": str(uuid4())},
-        headers=_headers(),
-    )
-    assert response.status_code in (404, 422)
-    assert calls == []

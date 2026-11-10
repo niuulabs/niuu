@@ -3115,7 +3115,8 @@ describe('Forge project grouping contract', () => {
     await service.connectTeamServiceAccount(project, connect);
     expect(client.post).toHaveBeenLastCalledWith('/projects/lexi/integrations', connect);
     await service.startTeamOAuth(project, 'slack', { channel: '#eng' });
-    expect(client.post).toHaveBeenLastCalledWith('/integrations/oauth/slack/authorize-team', {
+    expect(client.post).toHaveBeenLastCalledWith('/integrations/oauth/authorize-team', {
+      slug: 'slack',
       project_id: 'lexi',
       config: { channel: '#eng' },
     });
