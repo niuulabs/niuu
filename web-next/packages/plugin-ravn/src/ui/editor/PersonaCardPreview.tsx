@@ -59,14 +59,14 @@ export function PersonaCardPreview({ doc }: { doc: PersonaDocument }) {
                 {inputs[index] && (
                   <>
                     <i className="rw-ed-card__dot" data-direction="input" />
-                    {inputs[index]}
+                    <span className="rw-ed-card__label">{inputs[index]}</span>
                   </>
                 )}
               </span>
               <span className="rw-ed-card__out">
                 {outputs[index] && (
                   <>
-                    {outputs[index]}
+                    <span className="rw-ed-card__label">{outputs[index]}</span>
                     <i className="rw-ed-card__dot" data-direction="output" />
                   </>
                 )}

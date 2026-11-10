@@ -590,9 +590,8 @@
 .rw-ed-card__out {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
-  overflow: hidden;
   white-space: nowrap;
 }
 
@@ -604,21 +603,30 @@
   color: var(--color-text-secondary);
 }
 
+.rw-ed-card__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A socket sits on the card's edge, half outside it, as the builder draws it. */
 .rw-ed-card__dot {
+  box-sizing: border-box;
+  display: block;
   flex: none;
-  width: 10px;
-  height: 10px;
-  border: 2px solid var(--color-text-secondary);
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--color-text-secondary);
   border-radius: 999px;
   background: var(--color-bg-secondary);
 }
 
 .rw-ed-card__dot[data-direction='input'] {
-  margin-left: -6px;
+  margin-left: -4.5px;
 }
 
 .rw-ed-card__dot[data-direction='output'] {
-  margin-right: -6px;
+  margin-right: -4.5px;
   border-color: var(--color-brand);
   background: var(--color-brand);
 }
