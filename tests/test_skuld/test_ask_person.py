@@ -222,6 +222,22 @@ class TestTheAnswerWhileWaiting:
             QUESTION_ID,
         )
 
+    async def test_a_browser_that_attaches_later_is_told_the_answer(
+        self, tmp_path, outcomes
+    ) -> None:
+        host, broker, _ = _world(tmp_path)
+        alice = _connect(broker, ALICE)
+        asking = asyncio.create_task(_ask(host))
+        await asyncio.sleep(0.05)
+        assert broker.answered_person_question_frames() == []
+
+        await _answer(broker, alice)
+        await asyncio.wait_for(asking, 2)
+
+        [replayed] = broker.answered_person_question_frames()
+        [recorded] = _frames(broker, PERSON_ANSWERED_FRAME)
+        assert replayed == recorded
+
     async def test_forge_is_told_who_answered_so_the_notification_settles(
         self, tmp_path, outcomes
     ) -> None:

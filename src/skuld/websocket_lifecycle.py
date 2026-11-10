@@ -567,6 +567,12 @@ class WebSocketLifecycleMixin:
                     if not await self._safe_browser_send_json(websocket, ask_question):
                         return
 
+            # A question put to a person may already be answered; its answer is not in
+            # the turns above, so tell the new browser or it shows the card as waiting.
+            for answered in self.answered_person_question_frames():
+                if not await self._safe_browser_send_json(websocket, answered):
+                    return
+
             # Persisted question text is evidence, not a usable RPC address after
             # the native process restarts. Show the retained card honestly and
             # never route its answer onto a different live prompt.

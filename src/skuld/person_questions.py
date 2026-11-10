@@ -124,6 +124,43 @@ class PersonQuestionMixin:
             question=asked["question"],
         )
 
+    def answered_person_question_frames(self) -> list[dict[str, Any]]:
+        """The ``person_answered`` frame of every question in this conversation that has an
+        answer, for a browser that attaches after it was given.
+
+        The answer lives in the peer inbox (rebuilt from the durable log on restart) and
+        nowhere in the conversation's turns, so without this a late browser shows an
+        answered question as still waiting.
+        """
+        session_id = str(self.session_id)
+        frames: list[dict[str, Any]] = []
+        for turn in self._conversation_turns:
+            if not turn.id.startswith(PERSON_QUESTION_TURN_PREFIX):
+                continue
+            question = self.person_question(turn.id.removeprefix(PERSON_QUESTION_TURN_PREFIX))
+            if question is None:
+                continue
+            entry = self._peer_inbox.get(person_answer_id(session_id, question.question_id))
+            if entry is None:
+                continue
+            sender = entry.envelope.sender
+            frames.append(
+                {
+                    "type": PERSON_ANSWERED_FRAME,
+                    "question_id": question.question_id,
+                    "message_id": entry.envelope.message_id,
+                    "content": entry.envelope.content,
+                    AUTHOR_KEY: MessageAuthor(
+                        user_id=sender.id, display_name=sender.name
+                    ).to_dict(),
+                    "addressee": {
+                        "user_id": question.addressee_id,
+                        "display_name": question.addressee_name,
+                    },
+                }
+            )
+        return frames
+
     @asynccontextmanager
     async def awaiting_person_answer(self, question_id: str) -> AsyncIterator[PersonAnswerWait]:
         """Hold the answer to ``question_id`` back from the harness while the caller waits.
