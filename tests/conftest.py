@@ -172,6 +172,15 @@ class InMemorySessionRepository(SessionRepository):
             sessions = [s for s in sessions if s.owner_id == owner_id]
         return sessions
 
+    async def list_by_project(self, project_ids: list[UUID], tenant_id: str) -> list[Session]:
+        return [
+            s
+            for s in self._sessions.values()
+            if s.coordination is not None
+            and s.coordination.project_id in project_ids
+            and s.tenant_id == tenant_id
+        ]
+
     async def update(self, session: Session) -> Session:
         current = self._sessions[session.id]
         config = dict(session.workload_config)

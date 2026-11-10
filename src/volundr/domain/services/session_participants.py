@@ -17,6 +17,8 @@ from uuid import UUID
 
 from volundr.domain.models import Principal, Session, SessionStatus
 from volundr.domain.ports import SessionParticipantRepository, UserRepository
+from volundr.domain.project_ports import ProjectMemberRepository
+from volundr.domain.projects import ProjectMember
 from volundr.domain.session_participants import (
     CrossTenantInviteError,
     InviteeNotFoundError,
@@ -30,6 +32,7 @@ from volundr.domain.session_participants import (
     SelfInviteError,
     SessionParticipant,
     compute_room_grants,
+    room_role_for_project_role,
 )
 
 from .session import SessionAccessDeniedError, SessionService
@@ -45,10 +48,15 @@ class SessionParticipantService:
         repository: SessionParticipantRepository,
         session_service: SessionService,
         user_repository: UserRepository,
+        project_members: ProjectMemberRepository | None = None,
     ) -> None:
         self._repository = repository
         self._session_service = session_service
         self._user_repository = user_repository
+        # The members of a session's project hold a room role on it. ``None`` is the
+        # configured decision that this host runs without projects (``projects.enabled:
+        # false``): such a host has no session attached to a project either.
+        self._project_members = project_members
         # Optional async hook: notified with (session_id, user_id) right after
         # a revoke commits, so the composition root can close an
         # ALREADY-OPEN proxied socket immediately instead of relying solely
@@ -224,17 +232,23 @@ class SessionParticipantService:
             for g in await self._repository.list_active_for_user(principal.user_id)
             if g.is_active and g.tenant_id == principal.tenant_id
         ]
-        if not grants:
-            return []
-        sessions_by_id = await self._session_service.get_many_sessions(
-            [g.session_id for g in grants]
+        sessions_by_id = (
+            await self._session_service.get_many_sessions([g.session_id for g in grants])
+            if grants
+            else {}
         )
+        by_session: dict[UUID, tuple[Session, SessionParticipant]] = {
+            g.session_id: (sessions_by_id[g.session_id], g)
+            for g in grants
+            if g.session_id in sessions_by_id
+        }
+        for session, project_grant in await self._project_sessions(principal):
+            held = by_session.get(session.id)
+            if held is None or _room_rank(project_grant.role) > _room_rank(held[1].role):
+                by_session[session.id] = (session, project_grant)
         candidates: list[tuple[Session, SessionParticipant]] = []
         resources = []
-        for grant in grants:
-            session = sessions_by_id.get(grant.session_id)
-            if session is None:
-                continue
+        for session, grant in by_session.values():
             if not include_archived and session.status == SessionStatus.ARCHIVED:
                 continue
             candidates.append((session, grant))
@@ -253,6 +267,8 @@ class SessionParticipantService:
                     else [],
                 )
             )
+        if not candidates:
+            return []
         allowed_ids = {
             r.id
             for r in await self._session_service.filter_authorized(
@@ -261,11 +277,49 @@ class SessionParticipantService:
         }
         return [(s, g) for s, g in candidates if str(s.id) in allowed_ids]
 
+    async def _project_sessions(
+        self, principal: Principal
+    ) -> list[tuple[Session, SessionParticipant]]:
+        """Sessions of the projects *principal* is a member of, each with the room
+        grant their project role gives (shaped as a participant grant so the room
+        summary renders it like an invited one)."""
+        if self._project_members is None:
+            return []
+        memberships = {
+            m.project_id: m
+            for m in await self._project_members.list_for_user(
+                principal.user_id, principal.tenant_id
+            )
+        }
+        if not memberships:
+            return []
+        sessions = await self._session_service.list_project_sessions(
+            list(memberships), principal.tenant_id
+        )
+        return [
+            (session, _project_grant(session, memberships[session.coordination.project_id]))
+            for session in sessions
+            if session.coordination is not None and session.coordination.project_id in memberships
+        ]
+
     # --- Room-scoped authorization (read_room / attach / speak / resolve_gate) --
 
-    async def active_grants(self, session_id: UUID) -> RoomGrants:
-        """Compute the Cedar-visible room grant sets from ACTIVE, unexpired rows."""
-        return compute_room_grants(await self._repository.list_active_for_session(session_id))
+    async def active_grants(self, session: Session) -> RoomGrants:
+        """Compute the Cedar-visible room grant sets for *session*.
+
+        Built from its ACTIVE, unexpired participant rows and from the members of the
+        project it is attached to; the more senior of the two applies to a user in both.
+        """
+        return compute_room_grants(
+            await self._repository.list_active_for_session(session.id),
+            await self._session_project_members(session),
+        )
+
+    async def _session_project_members(self, session: Session) -> list[ProjectMember]:
+        if self._project_members is None or session.coordination is None:
+            return []
+        members = await self._project_members.list_for_project(session.coordination.project_id)
+        return [m for m in members if m.tenant_id == session.tenant_id]
 
     async def check_room_access(
         self, session: Session, principal: Principal | None, action: str
@@ -276,7 +330,7 @@ class SessionParticipantService:
             PermissionError: Authorization is configured and no principal was given.
             SessionAccessDeniedError: The policy denies *action*.
         """
-        grants = await self.active_grants(session.id)
+        grants = await self.active_grants(session)
         resource = SessionService.attributed_resource(
             str(session.id),
             owner_id=session.owner_id,
@@ -309,7 +363,7 @@ class SessionParticipantService:
         that a Kubernetes-backed session pod's ``RemoteAuthorizationAdapter``
         (``skuld.room_role_remote``) calls over HTTP.
         """
-        grants = await self.active_grants(session.id)
+        grants = await self.active_grants(session)
         resource = SessionService.attributed_resource(
             str(session.id),
             owner_id=session.owner_id,
@@ -324,3 +378,23 @@ class SessionParticipantService:
         if await self._session_service.authorizes(principal, "read_room", resource):
             return "viewer"
         return None
+
+
+_ROOM_ROLE_RANK = {ParticipantRole.VIEWER: 0, ParticipantRole.APPROVER: 1}
+
+
+def _room_rank(role: ParticipantRole) -> int:
+    return _ROOM_ROLE_RANK[role]
+
+
+def _project_grant(session: Session, member: ProjectMember) -> SessionParticipant:
+    return SessionParticipant(
+        session_id=session.id,
+        user_id=member.user_id,
+        tenant_id=member.tenant_id,
+        role=room_role_for_project_role(member.role),
+        status=ParticipantStatus.ACTIVE,
+        invited_by=member.added_by,
+        created_at=member.created_at,
+        updated_at=member.updated_at,
+    )

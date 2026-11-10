@@ -441,6 +441,14 @@ class SessionService:
         """Batch-fetch sessions by ID. Returns only the ones that exist."""
         return await self._repository.get_many(session_ids)
 
+    async def list_project_sessions(self, project_ids: list[UUID], tenant_id: str) -> list[Session]:
+        """Sessions of *tenant_id* attached to any of the projects, without access checks.
+
+        Callers decide what the caller may do with them (room role through project
+        membership); this is a lookup, not an authorization.
+        """
+        return await self._repository.list_by_project(project_ids, tenant_id)
+
     async def with_read_states(
         self, sessions: list[Session], principal: Principal | None
     ) -> list[Session]:

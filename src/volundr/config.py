@@ -3394,6 +3394,13 @@ class ProjectsConfig(BaseModel):
         "volundr.adapters.outbound.postgres_projects.PostgresProjectRepository"
     )
     repository_kwargs: dict[str, Any] = Field(default_factory=dict)
+    member_repository_adapter: str = (
+        "volundr.adapters.outbound.postgres_project_members.PostgresProjectMemberRepository"
+    )
+    member_repository_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra constructor kwargs for the project member store.",
+    )
     workspace_adapter: str = "volundr.adapters.outbound.project_workspace.GitProjectWorkspace"
     workspace_kwargs: dict[str, Any] = Field(default_factory=dict)
     context_bytes: int = Field(default=8192, ge=1024, le=65536)

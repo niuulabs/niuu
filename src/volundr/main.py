@@ -1743,7 +1743,7 @@ def create_app(
                     # session_participants grant (see
                     # SessionParticipantService.active_grants), unlike "start"
                     # which is owner/admin only.
-                    grants = await session_participant_service.active_grants(resource_id)
+                    grants = await session_participant_service.active_grants(session)
                     resource = SessionService.attributed_resource(
                         session_id,
                         owner_id=session.owner_id,
@@ -1818,10 +1818,22 @@ def create_app(
                 timeline_repository=timeline_repository,
             )
             session_participant_repository = PostgresSessionParticipantRepository(pool)
+            # The people on projects hold a room role on the projects' sessions, so the
+            # participant service and the project service share one member store.
+            project_member_repository = None
+            if settings.projects.enabled:
+                from volundr.domain.project_ports import ProjectMemberRepository
+
+                project_member_repository = import_class(
+                    settings.projects.member_repository_adapter
+                )(pool=pool, **settings.projects.member_repository_kwargs)
+                if not isinstance(project_member_repository, ProjectMemberRepository):
+                    raise TypeError("Project member adapter must implement ProjectMemberRepository")
             session_participant_service = SessionParticipantService(
                 session_participant_repository,
                 session_service,
                 user_repository,
+                project_members=project_member_repository,
             )
             app.state.session_participant_service = session_participant_service
             if skuld_reg is not None and hasattr(skuld_reg, "close_connections"):
@@ -1908,6 +1920,8 @@ def create_app(
                     project_workspace,
                     session_service,
                     instance_id=project_config.instance_id or settings.server_public_host,
+                    members=project_member_repository,
+                    users=user_repository,
                 )
                 app.state.project_service = project_service
 

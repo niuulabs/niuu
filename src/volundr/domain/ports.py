@@ -179,6 +179,10 @@ class SessionRepository(ABC):
         """Retrieve sessions, filtered by status/tenant/owner."""
 
     @abstractmethod
+    async def list_by_project(self, project_ids: list[UUID], tenant_id: str) -> list[Session]:
+        """Sessions of *tenant_id* attached to any of the projects, newest first."""
+
+    @abstractmethod
     async def update(self, session: Session) -> Session:
         """Update an existing session."""
 

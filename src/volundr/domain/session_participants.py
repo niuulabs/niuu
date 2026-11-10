@@ -9,6 +9,10 @@ sees the *computed* active/unexpired sets built by ``compute_room_grants``.
 
 Both roles read the room and speak in it; ``approver`` additionally
 answers tool-permission prompts.
+
+Members of the project a session is attached to hold a room role on it too, derived
+from their project role (``room_role_for_project_role``) and merged into the same two
+sets; the more senior of a per-session grant and a project-derived one applies.
 """
 
 from __future__ import annotations
@@ -20,10 +24,24 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from volundr.domain.projects import ProjectMember, ProjectRole
+
 
 class ParticipantRole(StrEnum):
     VIEWER = "viewer"
     APPROVER = "approver"
+
+
+def room_role_for_project_role(role: ProjectRole) -> ParticipantRole:
+    """A project role's room role on the project's sessions.
+
+    ``viewer`` and ``contributor`` read and speak in the room; ``approver`` and
+    ``owner`` also answer gates and permission prompts. The session's own owner stays
+    its room ``owner`` through the session, not through a project.
+    """
+    if role.at_least(ProjectRole.APPROVER):
+        return ParticipantRole.APPROVER
+    return ParticipantRole.VIEWER
 
 
 class ParticipantStatus(StrEnum):
@@ -120,13 +138,23 @@ class RoomGrants(BaseModel):
     approver_ids: frozenset[str] = frozenset()
 
 
-def compute_room_grants(participants: Iterable[SessionParticipant]) -> RoomGrants:
+def compute_room_grants(
+    participants: Iterable[SessionParticipant],
+    project_members: Iterable[ProjectMember] = (),
+) -> RoomGrants:
     """Reduce a session's participant rows to the two Cedar room-grant sets.
 
     Every active participant, regardless of role, may read the room and
     speak in it; only ``approver`` grants also land in ``approver_ids``.
+    ``project_members`` are the members of the session's project (already limited to the
+    session's tenant): each adds their derived room role to the same sets, so a user
+    holding both kinds of grant gets the more senior one.
     """
     active = [p for p in participants if p.is_active]
-    viewer_ids = frozenset(p.user_id for p in active)
-    approver_ids = frozenset(p.user_id for p in active if p.role == ParticipantRole.APPROVER)
-    return RoomGrants(viewer_ids=viewer_ids, approver_ids=approver_ids)
+    viewer_ids = {p.user_id for p in active}
+    approver_ids = {p.user_id for p in active if p.role == ParticipantRole.APPROVER}
+    for member in project_members:
+        viewer_ids.add(member.user_id)
+        if room_role_for_project_role(member.role) == ParticipantRole.APPROVER:
+            approver_ids.add(member.user_id)
+    return RoomGrants(viewer_ids=frozenset(viewer_ids), approver_ids=frozenset(approver_ids))

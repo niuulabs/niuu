@@ -15,15 +15,25 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from identity.models import TenantRole
+from identity.ports import UserRepository
 from volundr.domain.models import Principal, SessionStatus
-from volundr.domain.project_ports import ProjectConflictError, ProjectRepository, ProjectWorkspace
+from volundr.domain.project_ports import (
+    ProjectAccessDeniedError,
+    ProjectConflictError,
+    ProjectMemberRepository,
+    ProjectRepository,
+    ProjectWorkspace,
+)
 from volundr.domain.projects import (
     ForgeProject,
     ProjectReceipt,
+    ProjectRole,
     SessionCoordination,
     SessionReference,
     canonical_repository_url,
 )
+from volundr.domain.services.project_members import ProjectMemberService
 from volundr.domain.services.session import SessionService
 
 #: Sentinel for "leave this membership field as it is".
@@ -46,7 +56,7 @@ _ROLE_GUIDANCE = {
 
 
 class ProjectNotFoundError(LookupError):
-    """Project is absent or belongs to another principal."""
+    """Project is absent or the principal is not on it."""
 
 
 class ProjectService:
@@ -57,23 +67,72 @@ class ProjectService:
         sessions: SessionService,
         *,
         instance_id: str,
+        members: ProjectMemberRepository,
+        users: UserRepository,
     ):
         self.repository = repository
         self.workspace = workspace
         self.sessions = sessions
         self.instance_id = instance_id
+        self.members = members
+        self.users = users
+        self.member_service = ProjectMemberService(self)
 
     @staticmethod
     def scope(principal: Principal | None) -> tuple[str, str]:
         return (principal.user_id or "", principal.tenant_id or "") if principal else ("", "")
 
     async def list(self, principal: Principal | None) -> list[ForgeProject]:
-        return await self.repository.list(*self.scope(principal))
+        """The projects the principal created or was added to."""
+        owner, tenant = self.scope(principal)
+        found = {project.id: project for project in await self.repository.list(owner, tenant)}
+        if owner:
+            for project in await self.repository.list_member_projects(owner, tenant):
+                found[project.id] = project
+        return sorted(found.values(), key=lambda p: (-p.updated_at.timestamp(), str(p.id)))
 
-    async def get(self, project_id: UUID, principal: Principal | None) -> ForgeProject:
+    async def role_of(
+        self, project: ForgeProject, principal: Principal | None
+    ) -> ProjectRole | None:
+        """The principal's project role; ``None`` when they are not on the project.
+
+        Another tenant's principal has none. A tenant admin holds ``owner`` authority over
+        the tenant's projects. A project registered without an identity (``owner_id`` empty)
+        belongs to the identity-less caller, as before members existed. Everyone else has
+        exactly the role of their membership row.
+        """
+        user_id, tenant_id = self.scope(principal)
+        if tenant_id != project.tenant_id:
+            return None
+        if principal is not None and TenantRole.ADMIN in principal.roles:
+            return ProjectRole.OWNER
+        if not project.owner_id and not user_id:
+            return ProjectRole.OWNER
+        if not user_id:
+            return None
+        member = await self.members.get(project.id, user_id)
+        return member.role if member is not None and member.tenant_id == tenant_id else None
+
+    async def get(
+        self,
+        project_id: UUID,
+        principal: Principal | None,
+        minimum: ProjectRole = ProjectRole.VIEWER,
+    ) -> ForgeProject:
+        """The project, if the principal's role is at least *minimum*.
+
+        Raises ``ProjectNotFoundError`` for a project the principal is not on (its
+        existence is not revealed) and ``ProjectAccessDeniedError`` for one they are on
+        with too little authority.
+        """
         project = await self.repository.get(project_id)
-        if project is None or (project.owner_id, project.tenant_id) != self.scope(principal):
+        if project is None:
             raise ProjectNotFoundError("Project not found")
+        role = await self.role_of(project, principal)
+        if role is None:
+            raise ProjectNotFoundError("Project not found")
+        if not role.at_least(minimum):
+            raise ProjectAccessDeniedError(f"This needs the {minimum.value} role on the project")
         return project
 
     async def discover(self, workspace_path: str, principal) -> ForgeProject:
@@ -81,7 +140,7 @@ class ProjectService:
         existing = await self.repository.get(project.id)
         if existing is None:
             return project
-        if (existing.owner_id, existing.tenant_id) != self.scope(principal):
+        if await self.role_of(existing, principal) is None:
             raise ProjectNotFoundError("Project not found")
         if existing.workspace_path != project.workspace_path:
             raise ProjectConflictError(
@@ -131,7 +190,7 @@ class ProjectService:
         return await self.repository.register(project)
 
     async def update(self, project_id: UUID, changes: dict, revision: int, principal):
-        project = await self.get(project_id, principal)
+        project = await self.get(project_id, principal, ProjectRole.CONTRIBUTOR)
         allowed = {"name", "description", "brief", "status", "workspace_path", "repo_url"}
         if changes.keys() - allowed:
             raise ValueError("Project identity is immutable; update presentation or repository")
@@ -274,7 +333,7 @@ class ProjectService:
         if project_id is None:
             return await self._detach(session, principal)
 
-        project = await self.get(project_id, principal)
+        project = await self.get(project_id, principal, ProjectRole.CONTRIBUTOR)
         if project.status != "active":
             raise ProjectConflictError("Restore the archived project before assigning sessions")
         moving = previous is None or previous.project_id != project.id
@@ -330,7 +389,7 @@ class ProjectService:
             return
 
     async def briefing(self, coordination: SessionCoordination, principal):
-        project = await self.get(coordination.project_id, principal)
+        project = await self.get(coordination.project_id, principal, ProjectRole.CONTRIBUTOR)
         if project.status != "active":
             raise ProjectConflictError("Restore the archived project before launching new work")
         await self.validate_reference(coordination.parent, project.id, principal)
@@ -384,7 +443,7 @@ class ProjectService:
         session_id = uuid5(key, "session")
         payload = json.dumps(data.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
         fingerprint = hashlib.sha256(payload.encode()).hexdigest()
-        await self.get(data.coordination.project_id, principal)
+        await self.get(data.coordination.project_id, principal, ProjectRole.CONTRIBUTOR)
         parent = data.coordination.parent
         if parent and parent.instance_id == self.instance_id and parent.session_id == session_id:
             raise ValueError("A session cannot be its own parent")
@@ -417,7 +476,7 @@ class ProjectService:
             await self.repository.complete_dispatch(key)
 
     async def record(self, receipt: ProjectReceipt, principal) -> ProjectReceipt:
-        await self.get(receipt.project_id, principal)
+        await self.get(receipt.project_id, principal, ProjectRole.CONTRIBUTOR)
         await self.validate_reference(receipt.sender, receipt.project_id, principal)
         await self.validate_reference(receipt.recipient, receipt.project_id, principal)
         receipt = receipt.model_copy(
@@ -426,7 +485,7 @@ class ProjectService:
         return await self.repository.put_receipt(receipt)
 
     async def export(self, project_id: UUID, principal, *, after: int, limit: int) -> dict:
-        project = await self.get(project_id, principal)
+        project = await self.get(project_id, principal, ProjectRole.CONTRIBUTOR)
         if not project.workspace_path:
             raise ValueError("Attach a repository checkout on this host before exporting")
         receipts = await self.repository.receipts(project_id, after, limit)

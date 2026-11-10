@@ -130,7 +130,7 @@ async def test_reinviting_an_active_participant_is_refused():
             session, OWNER, user_id="invitee", role=ParticipantRole.APPROVER, expires_at=None
         )
     # The original role must be unchanged — the attempted re-invite never applied.
-    grants = await service.active_grants(session.id)
+    grants = await service.active_grants(session)
     assert "invitee" not in grants.approver_ids
 
 
@@ -173,7 +173,7 @@ async def test_accept_after_expiry_is_rejected_without_activating():
     )
     with pytest.raises(ParticipantStateError):
         await service.accept(session, INVITEE)
-    grants = await service.active_grants(session.id)
+    grants = await service.active_grants(session)
     assert "invitee" not in grants.viewer_ids
 
 
@@ -184,7 +184,7 @@ async def test_owner_can_revoke_any_participant():
     )
     await service.accept(session, INVITEE)
     await service.revoke(session, OWNER, "invitee")
-    grants = await service.active_grants(session.id)
+    grants = await service.active_grants(session)
     assert "invitee" not in grants.viewer_ids
 
 
@@ -195,7 +195,7 @@ async def test_participant_can_leave_without_owner_authorization():
     )
     await service.accept(session, INVITEE)
     await service.revoke(session, INVITEE, "invitee")
-    grants = await service.active_grants(session.id)
+    grants = await service.active_grants(session)
     assert "invitee" not in grants.viewer_ids
 
 
@@ -367,7 +367,7 @@ async def test_revoke_succeeds_even_when_the_notifier_fails():
     service.set_revocation_notifier(broken_notifier)
     await service.revoke(session, OWNER, "invitee")  # must not raise
 
-    grants = await service.active_grants(session.id)
+    grants = await service.active_grants(session)
     assert "invitee" not in grants.viewer_ids  # the revoke itself still took effect
 
 

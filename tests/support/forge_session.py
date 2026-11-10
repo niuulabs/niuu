@@ -192,12 +192,18 @@ def build_forge_app(
     if projects:
         from unittest.mock import AsyncMock
 
-        from tests.test_projects.conftest import MemoryProjects
+        from tests.test_projects.conftest import MemoryProjectMembers, MemoryProjects
         from volundr.domain.project_ports import ProjectWorkspace
         from volundr.domain.services.projects import ProjectService
 
+        members = MemoryProjectMembers()
         project_service = ProjectService(
-            MemoryProjects(), AsyncMock(spec=ProjectWorkspace), session_service, instance_id="thor"
+            MemoryProjects(members),
+            AsyncMock(spec=ProjectWorkspace),
+            session_service,
+            instance_id="thor",
+            members=members,
+            users=InMemoryUsers(),
         )
     app.include_router(
         create_router(

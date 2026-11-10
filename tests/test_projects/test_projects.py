@@ -186,7 +186,12 @@ async def test_receipts_survive_service_replacement_and_export_retry(rig):
     with pytest.raises(ProjectConflictError):
         await service.record(receipt.model_copy(update={"content": "different"}), None)
     restored = ProjectService(
-        service.repository, service.workspace, service.sessions, instance_id="thor"
+        service.repository,
+        service.workspace,
+        service.sessions,
+        instance_id="thor",
+        members=service.members,
+        users=service.users,
     )
     page = await restored.repository.receipts(project.id, 0, 10)
     assert len(page) == 1 and page[0]["acknowledged_at"] is None
