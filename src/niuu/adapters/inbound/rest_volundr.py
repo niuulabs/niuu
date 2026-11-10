@@ -421,6 +421,7 @@ def _event_visible(name: str, data: Any, principal: Principal) -> bool:
         tenant_id=principal.tenant_id,
         owner_id=data.get("owner_id"),
         notification_tenant_id=data.get("tenant_id"),
+        recipient_copy=data.get("copy_of") is not None,
     )
 
 
@@ -4159,6 +4160,31 @@ def create_volundr_router(
         if not isinstance(payload, dict):
             raise HTTPException(502, "Unexpected Forge status response")
         return {**payload, "host": instance.id}
+
+    @router.get("/sessions/{session_id}/people")
+    async def list_session_people(
+        request: Request,
+        session_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict[str, Any]]:
+        """The people on the session's project, from the node that owns the session.
+
+        A session with no project is the owner's 409, passed through with its reason."""
+        instance, _ = await _find_session_owner(
+            service, principal, request, str(session_id), embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/people",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = _remote_json(response)
+        if not isinstance(payload, list):
+            raise HTTPException(502, "Unexpected Forge people response")
+        return payload
 
     @router.get("/sessions/{session_id}/runtime-version")
     async def get_session_runtime_version(

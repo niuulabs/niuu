@@ -57,6 +57,7 @@ def test_composition_builds_service_from_config():
             ]
         }
     )
+    room_grants = MagicMock()
     service, image_worker = _create_notification_service(
         settings,
         MagicMock(),
@@ -64,7 +65,9 @@ def test_composition_builds_service_from_config():
         integration_repository=None,
         session_lookup=AsyncMock(return_value=None),
         broker_target=AsyncMock(return_value=None),
+        room_grants=room_grants,
     )
+    assert service._room_grants is room_grants
     assert [(s.name, s.label) for s in service._sinks] == [("ops", "Ops"), ("page", "page")]
     assert service._image_scheduler is image_worker
     assert image_worker._settings.fetch_timeout_seconds == (
@@ -82,6 +85,7 @@ def test_composition_builds_service_from_config():
             integration_repository=None,
             session_lookup=AsyncMock(return_value=None),
             broker_target=AsyncMock(return_value=None),
+            room_grants=MagicMock(),
         )
         is None
     )

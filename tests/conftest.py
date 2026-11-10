@@ -435,7 +435,7 @@ class InMemoryUserRepository(UserRepository):
 
 
 def make_session_participant_service(
-    session_service, user_repository=None
+    session_service, user_repository=None, project_members=None
 ) -> SessionParticipantService:
     """Build a SessionParticipantService backed by in-memory state.
 
@@ -449,6 +449,7 @@ def make_session_participant_service(
         InMemorySessionParticipantRepository(),
         session_service,
         user_repository if user_repository is not None else InMemoryUserRepository(),
+        project_members=project_members,
     )
 
 
