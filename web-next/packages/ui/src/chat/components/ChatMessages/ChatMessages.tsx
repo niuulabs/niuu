@@ -18,7 +18,7 @@ import {
 import { cn } from '../../../utils/cn';
 import { MarkdownContent } from '../MarkdownContent';
 import { ToolBlock, ToolGroupBlock, groupContentBlocks } from '../ToolBlock';
-import type { ChatMessage, ChatMessagePart } from '../../types';
+import type { ChatMessage, ChatMessagePart, MessageAuthor } from '../../types';
 import type { ContentBlock as ToolContentBlock } from '../ToolBlock';
 import type { CompactionBlock } from '../ToolBlock/groupContentBlocks';
 import { isSubagentTool } from '../ToolBlock/toolFamilies';
@@ -32,6 +32,8 @@ import {
 } from '../TranscriptCards';
 import { engineInk } from '../../utils/engineInk';
 import { useCompactUxChatPrefs } from '../../compactUxPrefs';
+import { authorInitials, authorName, showsAuthor, useChatAuthorship } from '../../authorship';
+import { resolveParticipantColor } from '../../utils/participantColor';
 import './ChatMessages.css';
 import { ToolImageCard } from '../ToolImages';
 import { PresentedFileCard } from '../ConversationResources';
@@ -182,6 +184,25 @@ export function ModelSpeaker({ model }: { model?: string }) {
   );
 }
 
+/** Who sent a user message: their initials on their colour, then their name. */
+export function UserAuthor({ author }: { author: MessageAuthor }) {
+  return (
+    <span
+      className="niuu-chat-speaker niuu-chat-user-author"
+      style={{ '--niuu-chat-engine': resolveParticipantColor(author.userId) } as CSSProperties}
+      data-testid="user-author"
+    >
+      {/* The initials are drawn, not written, so the author reads as their name alone. */}
+      <i
+        className="niuu-chat-speaker-avatar niuu-chat-user-author-avatar"
+        aria-hidden="true"
+        data-initial={authorInitials(author)}
+      />
+      {authorName(author)}
+    </span>
+  );
+}
+
 /* ── UserMessage ── */
 
 interface UserMessageProps {
@@ -191,6 +212,8 @@ interface UserMessageProps {
 export function UserMessage({ message }: UserMessageProps) {
   const uxPrefs = useCompactUxChatPrefs();
   const links = useSessionLinks();
+  const authorship = useChatAuthorship();
+  const author = showsAuthor(message, authorship) ? message.author : undefined;
   const delivery = message.delivery;
   const queued = delivery?.state === 'queued';
   // A turn this client sent has a delivery state and is the operator's own, whatever it says.
@@ -218,6 +241,7 @@ export function UserMessage({ message }: UserMessageProps) {
       data-timestamp={uxPrefs.timestamp}
       data-delivery={delivery?.state}
     >
+      {author && <UserAuthor author={author} />}
       <div className={cn('niuu-chat-user-bubble', queued && 'niuu-chat-user-bubble--queued')}>
         <div className="niuu-chat-user-text">
           <MarkdownContent content={message.content} />

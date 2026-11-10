@@ -801,6 +801,49 @@ describe('useSkuldChat', () => {
     expect(result.current.messages[2]?.id).toBeTruthy();
   });
 
+  it('names the author a user_confirmed frame carries, on a new and on an optimistic message', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'user_confirmed',
+          id: 'from-bob',
+          content: 'Bob says hi',
+          author: { user_id: 'u-bob', display_name: 'Bob Stone' },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({ type: 'user_confirmed', id: 'legacy', content: 'No author here' }),
+      );
+    });
+
+    await act(async () => {
+      result.current.sendMessage('Mine', []);
+    });
+    const requestId = sendJson.mock.calls.at(-1)?.[0]?.request_id as string;
+    expect(result.current.messages.at(-1)).not.toHaveProperty('author');
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'user_confirmed',
+          request_id: requestId,
+          id: 'mine',
+          content: 'Mine',
+          author: { user_id: 'u-alice', display_name: 'Alice Liddell' },
+        }),
+      );
+    });
+
+    const byId = new Map(result.current.messages.map((message) => [message.id, message]));
+    expect(byId.get('from-bob')?.author).toEqual({ userId: 'u-bob', displayName: 'Bob Stone' });
+    expect(byId.get('legacy')).not.toHaveProperty('author');
+    expect(byId.get('mine')?.author).toEqual({ userId: 'u-alice', displayName: 'Alice Liddell' });
+  });
+
   it('ignores empty user_confirmed content and preserves optimistic metadata when confirmation metadata is absent', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 

@@ -84,6 +84,8 @@ export interface VolundrConversationTurn {
   participant_meta?: Record<string, unknown>;
   thread_id?: string;
   visibility?: 'visible' | 'internal';
+  /** Who sent a user turn; absent on turns recorded before authorship existed. */
+  author?: { user_id?: string; display_name?: string } | null;
 }
 
 export interface VolundrConversationHistory {

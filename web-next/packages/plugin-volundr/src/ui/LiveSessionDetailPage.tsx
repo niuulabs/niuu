@@ -3373,6 +3373,13 @@ function LiveSessionDetailPageInner({
   const sessionQuery = useSessionDetail(sessionId, instanceId);
   const sessionListQuery = useSessionList();
   const sessionRead = useSessionRead();
+  // Who is looking, so a message someone else wrote in this session names its author.
+  const identityQuery = useQuery({
+    queryKey: ['volundr', 'identity'],
+    queryFn: () => volundr.getIdentity(),
+    staleTime: Infinity,
+  });
+  const viewerId = identityQuery.data?.userId;
   const liveSessionQuery = useQuery({
     queryKey: ['volundr', 'raw-session', sessionId, instanceId ?? null],
     queryFn: ({ signal }) => volundr.getSession(sessionId, { instanceId, signal }),
@@ -4610,6 +4617,7 @@ function LiveSessionDetailPageInner({
                             internalVisibility={showInternalMessages}
                             showTokenUsage={showTokenUsage}
                             messages={chat.messages}
+                            viewerId={viewerId}
                             streamingContent={chat.streamingContent}
                             streamingParts={chat.streamingParts}
                             streamingModel={chat.streamingModel}
@@ -4702,6 +4710,7 @@ function LiveSessionDetailPageInner({
                           internalVisibility={showInternalMessages}
                           showTokenUsage={showTokenUsage}
                           messages={replayMessages}
+                          viewerId={viewerId}
                           chatEndpoint={chatEndpoint}
                           connected={false}
                           historyLoaded={!transcriptQuery.isLoading}
