@@ -249,8 +249,8 @@ g[role='button']:hover > foreignObject > .workflow-card {
   stroke: var(--color-brand);
 }
 .workflow-socket[data-wiring='rework'] {
-  fill: var(--status-amber);
-  stroke: var(--status-amber);
+  fill: color-mix(in srgb, var(--status-amber) 55%, var(--color-bg-secondary));
+  stroke: color-mix(in srgb, var(--status-amber) 55%, var(--color-bg-secondary));
 }
 /* A port whose contract cannot be confirmed is a problem only while the workflow is edited:
    a viewer (a run, a saved version) may not have the personas to confirm it against. */
@@ -281,9 +281,11 @@ g[role='button']:hover > foreignObject > .workflow-card {
   stroke-linecap: round;
   stroke-width: 2;
 }
+/* Work sent back runs quietly under the cards: a thin, faded amber lane. */
 .workflow-wire[data-feedback='true'] .workflow-edge-line {
-  stroke: var(--status-amber);
-  stroke-dasharray: 6 6;
+  stroke: color-mix(in srgb, var(--status-amber) 35%, transparent);
+  stroke-dasharray: 4 4;
+  stroke-width: 1.25;
 }
 .workflow-canvas[data-editing='true'] .workflow-wire[data-resolved='false'] .workflow-edge-line {
   stroke: var(--color-critical);
@@ -297,7 +299,7 @@ g[role='button']:hover > foreignObject > .workflow-card {
   fill: var(--color-brand);
 }
 .workflow-arrow[data-tone='rework'] {
-  fill: var(--status-amber);
+  fill: color-mix(in srgb, var(--status-amber) 45%, transparent);
 }
 .workflow-arrow[data-tone='passed'] {
   fill: var(--status-emerald);
@@ -314,10 +316,10 @@ g[role='button']:hover > foreignObject > .workflow-card {
 }
 .workflow-wire-pill[data-tone='rework'] rect {
   fill: var(--color-bg-secondary);
-  stroke: var(--status-amber);
+  stroke: var(--color-border);
 }
 .workflow-wire-pill[data-tone='rework'] text {
-  fill: var(--status-amber);
+  fill: color-mix(in srgb, var(--status-amber) 60%, var(--color-text-secondary));
 }
 
 /* ── The selected step's toolbar, floating above its card ──────────────────────────── */
