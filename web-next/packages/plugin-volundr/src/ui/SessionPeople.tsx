@@ -59,10 +59,12 @@ function Person({
       data-testid={`session-person-${userId}`}
     >
       <Avatar name={name} userId={userId} />
-      <span className="niuu:min-w-0 niuu:flex-1 niuu:truncate niuu:text-sm niuu:text-text-primary">
-        {name}
-        {you ? <span className="niuu:ml-1 niuu:text-text-muted">(you)</span> : null}
-        {note ? <span className="niuu:ml-2 niuu:text-xs niuu:text-text-muted">{note}</span> : null}
+      <span className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col">
+        <span className="niuu:truncate niuu:text-sm niuu:text-text-primary">
+          {name}
+          {you ? <span className="niuu:ml-1 niuu:text-text-muted">(you)</span> : null}
+        </span>
+        {note ? <span className="niuu:text-xs niuu:text-text-muted">{note}</span> : null}
       </span>
       {children}
     </li>

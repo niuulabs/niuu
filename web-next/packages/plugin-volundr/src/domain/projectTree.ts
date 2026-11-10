@@ -11,6 +11,18 @@ export interface ProjectSessionGroup {
   sessions: Session[];
 }
 
+/** Label for sessions in a project the viewer cannot read (someone invited them into one chat). */
+export const UNREADABLE_PROJECT_LABEL = 'Shared with you';
+
+/**
+ * A group's label: the project's name; for a project the viewer is not on (only one of its
+ * chats was shared with them) a plain label, never the project's raw id.
+ */
+function groupLabel(id: string, projects: ForgeProject[]): string {
+  if (!id) return 'Independent sessions';
+  return projects.find((project) => project.id === id)?.name ?? UNREADABLE_PROJECT_LABEL;
+}
+
 /**
  * Sessions by project. With `includeEmpty`, every active registered project gets a group
  * even when it has no sessions, as Lexi lists a project folder before its first session.
@@ -31,7 +43,7 @@ export function groupByProject(
     const id = session.coordination?.projectId ?? '';
     const group = groups.get(id) ?? {
       id,
-      label: projects.find((project) => project.id === id)?.name ?? (id || 'Independent sessions'),
+      label: groupLabel(id, projects),
       sessions: [],
     };
     group.sessions.push(session);
