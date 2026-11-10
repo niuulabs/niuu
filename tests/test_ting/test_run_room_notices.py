@@ -211,7 +211,12 @@ async def test_notices_go_to_the_runs_room_once_each() -> None:
     )
 
     assert forge.room_notices == [
-        (room, "Approve the merge is waiting for a decision.", f"{gate.id}:open"),
+        (
+            room,
+            "Approve the merge is waiting for a decision."
+            " [Review and decide](/ting/review/run/crm-1)",
+            f"{gate.id}:open",
+        ),
         (room, "Approve the merge approved.", f"{gate.id}:decided"),
     ]
 
@@ -229,7 +234,7 @@ async def test_a_notice_forge_refused_is_posted_again_on_the_next_change() -> No
     await notifier.sync(campaign, state, WorkflowCampaignStatus.BLOCKED)
 
     assert [text for _, text, _ in forge.room_notices] == [
-        "Approve the merge is waiting for a decision."
+        "Approve the merge is waiting for a decision. [Review and decide](/ting/review/run/crm-1)"
     ]
 
 

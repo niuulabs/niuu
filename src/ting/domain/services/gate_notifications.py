@@ -7,9 +7,9 @@ for the run's owner with a link to the run's review page; when the gate is decid
 the run ends with it open), the same notification is resolved with what happened.
 
 Forge's feed is per session, so a gate's notification is recorded on a session of its
-run: the session of the step whose outcome opened the gate, else the run's most recent
-session. The notification belongs to that session's owner. Forge never calls Ting for
-any of this.
+run: the run's own session (its room) when it has one, where the run is read; else the
+session of the step whose outcome opened the gate, else the run's most recent session.
+The notification belongs to that session's owner. Forge never calls Ting for any of this.
 
 A run that fails is told the same way: an ``error`` notification for its owner naming each
 step that failed and why (a member session that could not start says what its broker
@@ -179,7 +179,11 @@ class GateNotifier:
         gate: Mapping[str, Any] | None,
         phase: str,
     ) -> None:
-        session_id = _anchor_session(state, step)
+        forge = await self._forge(campaign)
+        # On the run's own session when it has one: its thread is where the run is read and
+        # where Needs you shows; else the session whose outcome opened the gate.
+        room = run_room_of(await forge.list_sessions(), campaign)
+        session_id = room.id if room is not None else _anchor_session(state, step)
         if session_id is None:
             record_degraded(
                 _DEGRADED_PATH,
@@ -188,7 +192,6 @@ class GateNotifier:
                 f"waiting on the review page {review_path(campaign)}",
             )
             return
-        forge = await self._forge(campaign)
         key = gate_correlation_id(campaign.id, step.id)
         stored = await forge.submit_session_notification(
             session_id, self._draft(campaign, step, gate or {}, key), idempotency_key=key

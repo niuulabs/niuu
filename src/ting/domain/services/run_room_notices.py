@@ -51,10 +51,19 @@ _ELLIPSIS = "…"
 
 @dataclass(frozen=True)
 class RoomNotice:
-    """One notice: its key (step and phase) and what the room shows."""
+    """One notice: its key (step and phase), what the room shows, and where to act on it."""
 
     id: str
     text: str
+    #: A page where the person acts on the notice, as (label, path): the room shows it as a
+    #: link after the text; a notice recorded in the feed carries it as the feed's own link.
+    action: tuple[str, str] | None = None
+
+    def room_text(self) -> str:
+        if self.action is None:
+            return self.text
+        label, path = self.action
+        return f"{self.text} [{label}]({path})"
 
 
 def run_notices(
@@ -67,7 +76,7 @@ def run_notices(
     for step in sorted(state.steps, key=lambda item: item.created_at):
         label = labels.get(step.node_id) or step.node_id
         if step.kind is StepKind.GATE:
-            notices.extend(_gate_notices(step, label, gates.get(str(step.id)) or {}))
+            notices.extend(_gate_notices(campaign, step, label, gates.get(str(step.id)) or {}))
     ended = _ENDED.get(status)
     if ended:
         notices.append(RoomNotice(id=f"{campaign.id}:{status.value}", text=ended))
@@ -87,10 +96,19 @@ def _request_notice(campaign: WorkflowCampaign) -> list[RoomNotice]:
     ]
 
 
-def _gate_notices(step: WorkflowStep, label: str, gate: Mapping[str, Any]) -> list[RoomNotice]:
+def _gate_notices(
+    campaign: WorkflowCampaign, step: WorkflowStep, label: str, gate: Mapping[str, Any]
+) -> list[RoomNotice]:
     if step.state not in (StepState.WAITING, StepState.DONE):
         return []
-    notices = [RoomNotice(id=f"{step.id}:open", text=f"{label} is waiting for a decision.")]
+    notices = [
+        RoomNotice(
+            id=f"{step.id}:open",
+            text=f"{label} is waiting for a decision.",
+            # The room says where to decide: a waiting gate is only answered on its review.
+            action=("Review and decide", f"/ting/review/run/{campaign.slug}"),
+        )
+    ]
     status = str(gate.get("status") or "")
     if step.state is StepState.DONE and status != GATE_STATUS_PENDING:
         who = str(gate.get("decided_by") or "")
@@ -154,7 +172,7 @@ class RunRoomNotifier:
                 if room_is_down(room):
                     await self._record_on_root(forge, campaign, room, notice)
                     continue
-                await forge.post_room_notice(room.id, notice.text, notice_id=notice.id)
+                await forge.post_room_notice(room.id, notice.room_text(), notice_id=notice.id)
             except Exception as exc:
                 self._done.discard(notice.id)
                 logger.error(

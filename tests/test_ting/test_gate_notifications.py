@@ -111,6 +111,25 @@ async def test_the_gate_is_recorded_on_the_session_whose_outcome_opened_it() -> 
     assert session_id == reviewer
 
 
+async def test_a_run_with_its_own_session_has_its_gate_recorded_there() -> None:
+    forge = FakeForge()
+    reviewer = forge.add_session("reviewer", "t")
+    campaign = _campaign()
+    root = forge.add_session("wf-run-1", f"workflow:{campaign.slug}")
+    forge.sessions[root] = replace(forge.sessions[root], project_id="project-1")
+    gate = _gate(
+        campaign.id,
+        StepState.WAITING,
+        inputs=[StepInput(1, "review.passed", "e4", "review", "reviewer")],
+    )
+    steps = (_member(campaign.id, "review", "reviewer", reviewer), gate)
+
+    await _notifier(forge).sync(campaign, RunState(campaign.id, steps=steps))
+
+    [(session_id, _)] = forge.notifications.values()
+    assert session_id == root
+
+
 async def test_without_a_public_origin_the_review_link_is_relative() -> None:
     forge = FakeForge()
     session = forge.add_session("coder", "t")
